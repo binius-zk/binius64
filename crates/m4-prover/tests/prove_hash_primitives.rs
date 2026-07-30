@@ -1,7 +1,10 @@
 // Copyright 2026 The Binius Developers
-//! Single-instance M4 proofs of a BLAKE3 compression and a Keccak permutation.
+//! M4 proofs of a batch of BLAKE3 compressions, Keccak permutations, or 64-bit multiplications.
 //!
-//! Each test proves one primitive a single time and verifies it.
+//! Each test proves one primitive, batched across many M4 instances, and verifies it.
+//! Each test's batch size is controlled by its own env var (see the `#[test]` doc comments below),
+//! expressed in the primitive's natural unit — compressions, permutations, or instances — rather
+//! than the raw M4 instance count, since some circuits pack more than one primitive per instance.
 //! The proof runs inside a timing span.
 //! With tracing enabled, the prover's internal spans nest beneath that span.
 //! The per-phase breakdown of proving is then visible.
@@ -28,14 +31,28 @@ use tracing::{debug, info_span, level_filters::LevelFilter};
 use tracing_forest::ForestLayer;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Base-2 logarithm of the instance count.
-const LOG_INSTANCES: usize = 13;
-
 /// Base-2 logarithm of the inverse Reed-Solomon rate: rate 1/2, matching the hash benches.
 const LOG_INV_RATE: usize = 1;
 
 /// The number of 64-bit lanes in a Keccak-f1600 state.
 const KECCAK_STATE_LANES: usize = 25;
+
+/// Reads a base-2 logarithm of a size from the environment variable `var`, or `default` if unset.
+///
+/// Lets each test's instance count be tuned from the command line, e.g.
+/// `LOG_BLAKE3_COMPRESSIONS=16 cargo test -p binius-m4-prover --test prove_hash_primitives`.
+///
+/// # Panics
+///
+/// Panics if `var` is set but does not parse as a `usize`.
+fn log_size_from_env(var: &str, default: usize) -> usize {
+	match std::env::var(var) {
+		Ok(val) => val
+			.parse()
+			.unwrap_or_else(|_| panic!("{var} must be a non-negative integer, got {val:?}")),
+		Err(_) => default,
+	}
+}
 
 /// Installs a timing-tree tracing subscriber, once per test binary.
 ///
@@ -67,7 +84,7 @@ fn init_tracing() {
 ///
 /// Panics if the witness inputs do not satisfy the circuit.
 /// Panics if the proof fails to verify.
-fn prove_once<F>(name: &str, circuit: &Circuit, fill: F)
+fn prove_once<F>(name: &str, circuit: &Circuit, log_instances: usize, fill: F)
 where
 	F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 {
@@ -79,7 +96,7 @@ where
 
 	// Generate the single-instance witness in its own span.
 	let table = info_span!("witness_generation", primitive = name)
-		.in_scope(|| ValueTable::populate(circuit, LOG_INSTANCES, fill).unwrap());
+		.in_scope(|| ValueTable::populate(circuit, log_instances, fill).unwrap());
 
 	// Clone and validate the shared single-instance constraint system.
 	let cs = circuit.constraint_system().clone();
@@ -87,7 +104,7 @@ where
 
 	// Set up the verifier.
 	// Build the prover from it, sharing its FRI parameters.
-	let verifier = Verifier::setup(&cs, LOG_INSTANCES, LOG_INV_RATE);
+	let verifier = Verifier::setup(&cs, log_instances, LOG_INV_RATE);
 	let prover = Prover::<OptimalPackedB128>::setup(&verifier);
 
 	// Warm up first, discarding the proof.
@@ -133,36 +150,43 @@ struct Blake3Inputs {
 	flags: Wire,
 }
 
-/// Builds a circuit for one two-lane BLAKE3 compression and force-commits its output.
-fn build_blake3_circuit() -> (Circuit, Blake3Inputs) {
+/// Builds a circuit for `N` independent two-lane BLAKE3 compressions, force-committing every
+/// output word.
+///
+/// Each two-lane compression is itself two independent compressions, so the circuit proves
+/// `2 * N` compressions total.
+/// Packing several into one circuit fills the value vector more densely, so less of it is padding.
+fn build_blake3_circuit<const N: usize>() -> (Circuit, [Blake3Inputs; N]) {
 	let builder = CircuitBuilder::new();
 
-	// Every compression input is a witness wire.
-	let cv = array::from_fn(|_| builder.add_witness());
-	let block = array::from_fn(|_| builder.add_witness());
-	let counter_lo = builder.add_witness();
-	let counter_hi = builder.add_witness();
-	let block_len = builder.add_witness();
-	let flags = builder.add_witness();
+	// Every compression's inputs are witness wires.
+	let inputs: [Blake3Inputs; N] = array::from_fn(|_| Blake3Inputs {
+		cv: array::from_fn(|_| builder.add_witness()),
+		block: array::from_fn(|_| builder.add_witness()),
+		counter_lo: builder.add_witness(),
+		counter_hi: builder.add_witness(),
+		block_len: builder.add_witness(),
+		flags: builder.add_witness(),
+	});
 
-	// Force-commit each output word.
-	// This keeps the compression alive under dead-code elimination.
-	let out = blake3_compress_2x(&builder, cv, block, counter_lo, counter_hi, block_len, flags);
-	for wire in out {
-		builder.force_commit(wire);
+	for &Blake3Inputs {
+		cv,
+		block,
+		counter_lo,
+		counter_hi,
+		block_len,
+		flags,
+	} in &inputs
+	{
+		// Force-commit each output word.
+		// This keeps the compression alive under dead-code elimination.
+		let out = blake3_compress_2x(&builder, cv, block, counter_lo, counter_hi, block_len, flags);
+		for wire in out {
+			builder.force_commit(wire);
+		}
 	}
 
-	(
-		builder.build(),
-		Blake3Inputs {
-			cv,
-			block,
-			counter_lo,
-			counter_hi,
-			block_len,
-			flags,
-		},
-	)
+	(builder.build(), inputs)
 }
 
 /// Packs two independent 32-bit lane values into one 64-bit word.
@@ -170,28 +194,34 @@ const fn pack_lanes(lane0: u32, lane1: u32) -> Word {
 	Word((lane0 as u64) | ((lane1 as u64) << 32))
 }
 
-/// Fills the BLAKE3 instance's inputs with two independent 32-bit lanes per word.
+/// Fills every BLAKE3 instance's inputs with two independent 32-bit lanes per word.
 ///
 /// The compression derives its output from these inputs.
 /// So any assignment is valid.
-fn fill_blake3(inputs: &Blake3Inputs, _instance: usize, w: &mut BatchWitnessFiller<'_, '_>) {
+fn fill_blake3<const N: usize>(
+	inputs: &[Blake3Inputs; N],
+	_instance: usize,
+	w: &mut BatchWitnessFiller<'_, '_>,
+) {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	// A 32-bit value per chaining-value word, per lane.
-	for wire in inputs.cv {
-		w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
+	for input in inputs {
+		// A 32-bit value per chaining-value word, per lane.
+		for wire in input.cv {
+			w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
+		}
+		// A 32-bit value per message word, per lane.
+		for wire in input.block {
+			w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
+		}
+		// The 64-bit counter, split into low and high halves, per lane.
+		w[input.counter_lo] = pack_lanes(rng.next_u32(), rng.next_u32());
+		w[input.counter_hi] = pack_lanes(rng.next_u32(), rng.next_u32());
+		// A byte length in 0..=64, per lane.
+		w[input.block_len] = pack_lanes(rng.next_u32() % 65, rng.next_u32() % 65);
+		// Arbitrary domain-separation flags, per lane.
+		w[input.flags] = pack_lanes(rng.next_u32(), rng.next_u32());
 	}
-	// A 32-bit value per message word, per lane.
-	for wire in inputs.block {
-		w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
-	}
-	// The 64-bit counter, split into low and high halves, per lane.
-	w[inputs.counter_lo] = pack_lanes(rng.next_u32(), rng.next_u32());
-	w[inputs.counter_hi] = pack_lanes(rng.next_u32(), rng.next_u32());
-	// A byte length in 0..=64, per lane.
-	w[inputs.block_len] = pack_lanes(rng.next_u32() % 65, rng.next_u32() % 65);
-	// Arbitrary domain-separation flags, per lane.
-	w[inputs.flags] = pack_lanes(rng.next_u32(), rng.next_u32());
 }
 
 /// Builds a circuit for `N` independent Keccak-f1600 permutations, force-committing every output
@@ -270,37 +300,69 @@ fn fill_imul(inputs: &[Wire; 2], _instance: usize, w: &mut BatchWitnessFiller<'_
 	}
 }
 
-// Proves one BLAKE3 compression through M4 and verifies it.
+// Proves BLAKE3 compressions through M4 and verifies them.
+//
+// Each instance packs two lanes, so the instance count is half the compression count. Overridable
+// via `LOG_BLAKE3_COMPRESSIONS`.
 #[test]
 fn prove_blake3_compression() {
-	let (circuit, inputs) = build_blake3_circuit();
-	prove_once("blake3", &circuit, |instance, w| fill_blake3(&inputs, instance, w));
+	let log_compressions = log_size_from_env("LOG_BLAKE3_COMPRESSIONS", 14);
+	assert!(log_compressions >= 1, "LOG_BLAKE3_COMPRESSIONS must be at least 1");
+	let log_instances = log_compressions - 1;
+	let (circuit, inputs) = build_blake3_circuit::<1>();
+	prove_once("blake3", &circuit, log_instances, |instance, w| fill_blake3(&inputs, instance, w));
 }
 
-// Proves one Keccak-f1600 permutation through M4 and verifies it.
+// Proves three independent two-lane BLAKE3 compressions per instance through M4 and verifies them,
+// like `prove_keccak_permutation_3x` does for Keccak.
+//
+// Three two-lane compressions per instance pack the value vector more densely than one, so a
+// smaller share of the committed trace is padding. The instance count is overridable via
+// `LOG_BLAKE3_3X_INSTANCES`; each instance holds 6 compressions.
+#[test]
+fn prove_blake3_compression_3x() {
+	let log_instances = log_size_from_env("LOG_BLAKE3_3X_INSTANCES", 13);
+	let (circuit, inputs) = build_blake3_circuit::<3>();
+	prove_once("blake3_3x", &circuit, log_instances, |instance, w| {
+		fill_blake3(&inputs, instance, w)
+	});
+}
+
+// Proves Keccak-f1600 permutations through M4 and verifies them.
+//
+// Overridable via `LOG_KECCAK_PERMUTATIONS`.
 #[test]
 fn prove_keccak_permutation() {
+	let log_permutations = log_size_from_env("LOG_KECCAK_PERMUTATIONS", 13);
 	let (circuit, inputs) = build_keccak_circuit::<1>();
-	prove_once("keccak", &circuit, |instance, w| fill_keccak(&inputs, instance, w));
+	prove_once("keccak", &circuit, log_permutations, |instance, w| {
+		fill_keccak(&inputs, instance, w)
+	});
 }
 
-// Proves three independent Keccak-f1600 permutations through M4 and verifies them.
+// Proves three independent Keccak-f1600 permutations per instance through M4 and verifies them.
 //
 // Three permutations per instance pack the value vector more densely than one, so a smaller share
-// of the committed trace is padding.
+// of the committed trace is padding. The instance count is overridable via
+// `LOG_KECCAK_3X_INSTANCES`; each instance holds 3 permutations.
 #[test]
 fn prove_keccak_permutation_3x() {
+	let log_instances = log_size_from_env("LOG_KECCAK_3X_INSTANCES", 13);
 	let (circuit, inputs) = build_keccak_circuit::<3>();
-	prove_once("keccak_3x", &circuit, |instance, w| fill_keccak(&inputs, instance, w));
+	prove_once("keccak_3x", &circuit, log_instances, |instance, w| {
+		fill_keccak(&inputs, instance, w)
+	});
 }
 
-// Proves one 64×64→128-bit multiplication through M4 and verifies it.
+// Proves 64×64→128-bit multiplications through M4 and verifies them.
 //
 // This is the only primitive here with IMUL constraints, so it covers the IntMul pushforward oracle
 // spec that `IOPVerifier::oracle_specs` derives — a wrong spec list would make the shared
-// prover/verifier compiler disagree and fail the trace opening.
+// prover/verifier compiler disagree and fail the trace opening. Overridable via
+// `LOG_IMUL_INSTANCES`.
 #[test]
 fn prove_integer_multiplication() {
+	let log_instances = log_size_from_env("LOG_IMUL_INSTANCES", 13);
 	let (circuit, inputs) = build_imul_circuit();
-	prove_once("imul", &circuit, |instance, w| fill_imul(&inputs, instance, w));
+	prove_once("imul", &circuit, log_instances, |instance, w| fill_imul(&inputs, instance, w));
 }
