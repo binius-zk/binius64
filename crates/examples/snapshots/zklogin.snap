@@ -5,28 +5,28 @@ Gates & Instructions
 └─ Number of evaluation instructions: 459,115
 
 Constraints
-├─ ZERO constraints: 23,445 used (71.5% of 2^15)
-│  [▓▓▓▓▓▓▓░░░] spare: 9,323
+├─ ZERO constraints: 22,862 used (69.8% of 2^15)
+│  [▓▓▓▓▓▓░░░░] spare: 9,906
 ├─ AND constraints: 235,124 used (89.7% of 2^18)
 │  [▓▓▓▓▓▓▓▓░░] spare: 27,020
 ├─ IMUL constraints: 8,262 used (50.4% of 2^14)
 │  [▓▓▓▓▓░░░░░] spare: 8,122
 ├─ BMUL constraints: 0 used (0.0% of 0)
 │  [░░░░░░░░░░] spare: 0
-└─ Distinct value indices: 545,530
+└─ Distinct value indices: 544,947
    ├─ Distinct shifted value indices: 284,342
-   └─ Distinct unshifted value indices: 261,188
+   └─ Distinct unshifted value indices: 260,605
 
 Value Vector
 ├─ Public Section: 1,031 used (50.3% of 2^11)
 │  [▓▓▓▓▓░░░░░] spare: 1,017
 │  ├─ Constants: 729
 │  └─ Inout: 302
-├─ Private Section: 260,167 used (49.8%)
-│  [▓▓▓▓░░░░░░] spare: 262,073
+├─ Private Section: 259,584 used (99.8%)
+│  [▓▓▓▓▓▓▓▓▓░] spare: 512
 │  ├─ Witness: 1,381
-│  └─ Internal: 258,786
-├─ Total Committed: 261,198 used (49.8% of 2^19)
-│  [▓▓▓▓░░░░░░] spare: 263,090
-└─ Scratch (uncommitted): 319,862 (peak live: 1,542)
+│  └─ Internal: 258,203
+├─ Total Committed: 260,615 used (99.4% of 2^18)
+│  [▓▓▓▓▓▓▓▓▓░] spare: 1,529
+└─ Scratch (uncommitted): 320,445 (peak live: 1,542)
 
