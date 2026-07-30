@@ -33,10 +33,17 @@ pub use ntt_lookup::NTTLookup;
 /// `BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1)`, matching the domain the shift reduction
 /// folds its bit axis over.
 ///
+/// `n_real_rows` is the true, non-padding row count: one row per AND constraint for the
+/// single-instance prover, one per (instance, constraint) pair for the M4 batch prover. Rows from
+/// this index onward are zero-padding, zeroed by the caller when it built `columns` up to the
+/// next power of two. Passing the exact boundary lets the round-1 message and fold step skip whole
+/// windows/chunks entirely past it, instead of rediscovering the padding at runtime.
+///
 /// See [`binius_verifier::protocols::bitand`] for the protocol specification and
 /// [`AndCheckOutput`] for the output shape.
 pub fn prove<A, F, PChallenge, Channel, Data>(
 	columns: [Data; 2],
+	n_real_rows: usize,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> AndCheckOutput<F>
@@ -55,6 +62,7 @@ where
 	// one per (instance, constraint) pair for the M4 batch prover, in both cases zero-padded up to
 	// a power of two.
 	let log_constraint_count = checked_log_2(a.len());
+	assert!(n_real_rows <= a.len());
 
 	// Pin the first few zerocheck coordinates to fixed small-field elements (friendly challenges),
 	// and draw the rest from the large field. The prover and verifier pin and draw the same split,
@@ -65,6 +73,7 @@ where
 
 	let prover = OblongZerocheckProver::<_, PChallenge, _>::new(
 		log_constraint_count,
+		n_real_rows,
 		a,
 		b,
 		big_field_zerocheck_challenges,

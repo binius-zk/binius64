@@ -212,7 +212,17 @@ impl IOPProver {
 			// Reduce over borrowed columns so the owned `a`/`b` can be moved into `and_columns`
 			// afterward, avoiding a full clone. Nothing touches the channel between the reduction
 			// and building `and_columns`, so the transcript is unchanged.
-			let output = and_reduction::prove::<_, B128, P, _, _>([&a[..], &b[..]], channel, alloc);
+			//
+			// The columns are laid out constraint-major (`row = constraint_index * n_instances +
+			// instance`), so the real-row boundary is the constraint count scaled by the instance
+			// count, not the constraint count alone.
+			let n_real_rows = cs.n_and_constraints() << table.log_instances();
+			let output = and_reduction::prove::<_, B128, P, _, _>(
+				[&a[..], &b[..]],
+				n_real_rows,
+				channel,
+				alloc,
+			);
 			let and_columns = (mul.is_some() || bmul.is_some()).then(|| {
 				// The re-randomization re-reads the three BitAnd operand columns.
 				// Only `A` and `B` are stored.

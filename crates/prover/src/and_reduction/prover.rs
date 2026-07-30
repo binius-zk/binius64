@@ -38,6 +38,7 @@ where
 	FChallenge: BinaryField,
 {
 	log_words: usize,
+	n_real_rows: usize,
 	first_col: Data,
 	second_col: Data,
 	big_field_zerocheck_challenges: Vec<FChallenge>,
@@ -73,6 +74,10 @@ where
 	/// # Arguments
 	///
 	/// * `log_words` - Base-2 logarithm of the number of words in each column
+	/// * `n_real_rows` - The number of non-padding rows at the start of each column. Rows from this
+	///   index onward must already be zero in both operands, per the reductions' zero-padding
+	///   contract; this lets the round-1 message and fold step skip whole windows/chunks entirely
+	///   past the boundary instead of rediscovering them at runtime.
 	/// * `first_col` - The oblong multilinear polynomial A in the AND constraint A & B ^ C = 0
 	/// * `second_col` - The oblong multilinear polynomial B in the AND constraint
 	/// * `big_field_zerocheck_challenges` - Challenges Z_{k+1},...,Zₙ in the large field FChallenge
@@ -86,6 +91,7 @@ where
 	/// 3. Caches these evaluations for later use in the execute() method
 	pub fn new(
 		log_words: usize,
+		n_real_rows: usize,
 		first_col: Data,
 		second_col: Data,
 		big_field_zerocheck_challenges: Vec<F>,
@@ -95,6 +101,7 @@ where
 			.in_scope(|| {
 				sumcheck_round_messages::univariate_round_message_extension_domain::<F>(
 					log_words,
+					n_real_rows,
 					&first_col,
 					&second_col,
 					&big_field_zerocheck_challenges,
@@ -104,6 +111,7 @@ where
 
 		Self {
 			log_words,
+			n_real_rows,
 			first_col,
 			second_col,
 			univariate_round_message,
@@ -170,8 +178,12 @@ where
 		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
-		let proving_polys =
-			folder.fold_bitand_operands::<PChallenge, _>(alloc, &self.first_col, &self.second_col);
+		let proving_polys = folder.fold_bitand_operands::<PChallenge, _>(
+			alloc,
+			self.n_real_rows,
+			&self.first_col,
+			&self.second_col,
+		);
 
 		let upcasted_small_field_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
 			.iter()
@@ -319,8 +331,11 @@ mod test {
 		// Prover is instantiated
 		let big_field_zerocheck_challenges = prover_challenger
 			.sample_vec(log_num_rows - PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
+		// Every row here is real (no padding boundary in this fixture), so n_real_rows covers the
+		// whole column.
 		let prover = OblongZerocheckProver::<_, OptimalPackedB128, _>::new(
 			log_num_rows,
+			1 << log_num_rows,
 			first_mlv.clone(),
 			second_mlv.clone(),
 			big_field_zerocheck_challenges.to_vec(),

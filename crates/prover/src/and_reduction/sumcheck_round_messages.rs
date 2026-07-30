@@ -50,6 +50,9 @@ use crate::fold_word::duplicate_to_fixed_chunks;
 /// # Arguments
 ///
 /// * `log_words` - Base-2 logarithm of the number of words in each column
+/// * `n_real_rows` - The number of non-padding rows at the start of each column. The padding
+///   contract guarantees every row from this index onward is `Word::ZERO` in both operands, so
+///   whole windows entirely past this boundary are skipped without reading their words.
 /// * `a_words` - First multiplicand (a) as a one-bit oblong multilinear polynomial
 /// * `b_words` - Second multiplicand (b) as a one-bit oblong multilinear polynomial
 /// * `eq_ind_big_field_challenges` - Partial equality indicator evaluations for big field variables
@@ -67,6 +70,7 @@ use crate::fold_word::duplicate_to_fixed_chunks;
 /// * `F` - The challenge field type (must be a binary field)
 pub fn univariate_round_message_extension_domain<F>(
 	log_words: usize,
+	n_real_rows: usize,
 	a_words: &[Word],
 	b_words: &[Word],
 	big_field_challenges: &[F],
@@ -84,6 +88,7 @@ where
 	for col in [a_words, b_words] {
 		assert_eq!(col.len(), 1 << log_words);
 	}
+	assert!(n_real_rows <= a_words.len());
 
 	let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
 		.in_scope(|| NTTLookup::new(prover_message_domain));
@@ -132,18 +137,17 @@ where
 	// Accumulate resulting polynomial evals by iterating over each hypercube vertex.
 	(a_col_chunks.as_ref(), b_col_chunks.as_ref())
 		.into_par_iter()
-		.map(|(a_chunk, b_chunk)| {
-			// Skip zero-padding windows: their chunks add nothing to the round message.
+		.enumerate()
+		.map(|(window_idx, (a_chunk, b_chunk))| {
+			// Skip windows entirely past the last real row: the padding contract guarantees every
+			// word from `n_real_rows` onward is `Word::ZERO` in both operands, so `A = B = C = 0`
+			// there and the term `A*B - C` vanishes over the whole window without reading its
+			// words.
 			//
-			// Invariant: C is derived as C = A & B.
-			//   A = 0 forces C = 0, so the term A*B - C vanishes.
-			//   B = 0 forces C = 0, so the term A*B - C vanishes.
-			//   A chunk all-zero in either operand sums to exactly 0 over the window.
-			//
-			// A populated chunk stops the scan at its first non-zero word.
-			// Dense inputs therefore pay only a couple of word comparisons.
-			if a_chunk.iter().all(|w| *w == Word::ZERO) || b_chunk.iter().all(|w| *w == Word::ZERO)
-			{
+			// A window that straddles the boundary still holds real rows, so it runs the full
+			// computation below; only a window entirely past the boundary is free to skip.
+			let window_start_row = window_idx << LOG_CHUNK_SIZE;
+			if window_start_row >= n_real_rows {
 				return [F::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
 			}
 
@@ -265,12 +269,13 @@ mod test {
 		// 2^10 rows total; each 64-bit word packs 2^SKIPPED_VARS rows, leaving this many words.
 		let log_num_words = 10 - SKIPPED_VARS;
 
-		// Every word is random and non-zero, so no window is skipped.
-		// This pins the dense path, where the skip must leave the result unchanged.
+		// Every word is random and non-zero, and n_real_rows covers every row, so no window is
+		// skipped. This pins the dense path, where the skip must leave the result unchanged.
 		let mlv_1 = random_words(log_num_words, &mut rng);
 		let mlv_2 = random_words(log_num_words, &mut rng);
+		let n_real_rows = mlv_1.len();
 
-		assert_round_message_consistent(&mlv_1, &mlv_2, &mut rng);
+		assert_round_message_consistent(n_real_rows, &mlv_1, &mlv_2, &mut rng);
 	}
 
 	#[test]
@@ -287,19 +292,44 @@ mod test {
 		let mut mlv_2 = random_words(log_num_words, &mut rng);
 
 		// Zero the top 512 words in both operands: the last 4 windows become all-zero.
-		// This is the padding a non-power-of-two AND count leaves after rounding up.
+		// This is the padding a non-power-of-two AND count leaves after rounding up, with the
+		// boundary landing exactly on a window edge.
 		//
 		//     words:   [ 0 .. 512 random | 512 .. 1024 zero      ]
 		//     windows: [ w0 w1 w2 w3     | w4 w5 w6 w7 (skipped)  ]
-		let padding_start = (1 << log_num_words) / 2;
+		let n_real_rows = (1 << log_num_words) / 2;
 		for words in [&mut mlv_1, &mut mlv_2] {
-			words[padding_start..].fill(Word::ZERO);
+			words[n_real_rows..].fill(Word::ZERO);
 		}
 
 		// The skipped windows must contribute exactly zero.
 		// The verifier-side fold recomputes the claim independently.
 		// A window skipped in error would break the equality inside the helper.
-		assert_round_message_consistent(&mlv_1, &mlv_2, &mut rng);
+		assert_round_message_consistent(n_real_rows, &mlv_1, &mlv_2, &mut rng);
+	}
+
+	#[test]
+	fn test_first_round_message_with_boundary_inside_a_window() {
+		// A third seed, distinct from the other two tests' witnesses.
+		let mut rng = StdRng::from_seed([2; 32]);
+
+		// Four whole windows of 128 words, with the real-row boundary landing 40 words into the
+		// third: the true AND constraint count rarely lands on a window edge, so this is the shape
+		// that matters for real (Keccak/SHA-256-sized) batches.
+		let log_chunk_size = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() + 4;
+		let log_num_words = log_chunk_size + 2;
+
+		let mut mlv_1 = random_words(log_num_words, &mut rng);
+		let mut mlv_2 = random_words(log_num_words, &mut rng);
+
+		//     words:   [ 0 .. 256 random | 256 .. 296 random | 296 .. 384 zero | 384 .. 512 zero ]
+		//     windows: [ w0 w1 real      | w2 straddles, runs in full          | w3 skipped      ]
+		let n_real_rows = 2 * (1 << log_chunk_size) + 40;
+		for words in [&mut mlv_1, &mut mlv_2] {
+			words[n_real_rows..].fill(Word::ZERO);
+		}
+
+		assert_round_message_consistent(n_real_rows, &mlv_1, &mlv_2, &mut rng);
 	}
 
 	/// Asserts the first-round univariate message agrees with the next-round sum claim.
@@ -308,7 +338,12 @@ mod test {
 	/// - Extrapolate the round message at the challenge to get the expected next-round sum.
 	/// - Fold A, B, and C = A & B at the same challenge, then form the sum claim directly.
 	/// - The two values must be equal.
-	fn assert_round_message_consistent(mlv_1: &[Word], mlv_2: &[Word], mut rng: impl Rng) {
+	fn assert_round_message_consistent(
+		n_real_rows: usize,
+		mlv_1: &[Word],
+		mlv_2: &[Word],
+		mut rng: impl Rng,
+	) {
 		assert_eq!(mlv_1.len(), mlv_2.len());
 		let log_num_words = mlv_1.len().ilog2() as usize;
 
@@ -330,6 +365,7 @@ mod test {
 		// Prover generates first round message
 		let first_round_message_on_ext_domain = univariate_round_message_extension_domain::<B128>(
 			log_num_words,
+			n_real_rows,
 			mlv_1,
 			mlv_2,
 			&big_field_zerocheck_challenges,

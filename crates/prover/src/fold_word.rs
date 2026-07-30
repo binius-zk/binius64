@@ -189,13 +189,17 @@ impl<UOut: UnderlierType> LinearTransformationFactory<u64, UOut>
 /// - Two input streams instead of three.
 /// - Two register ANDs per word pair replace one memory stream.
 /// - The bytewise lookup tables stay hot across all three outputs.
+/// - A chunk entirely past `n_real_rows` is known all-zero, so it is written directly instead of
+///   paying the bytewise lookup on padding words.
 ///
 /// # Preconditions
 ///
 /// * The two word-lists have equal length.
+/// * `n_real_rows <= a_words.len()`.
 fn fold_bitand_operands_with_transform<F, P, T, A>(
 	alloc: &A,
 	transform: &T,
+	n_real_rows: usize,
 	a_words: &[Word],
 	b_words: &[Word],
 ) -> [FieldBuffer<P, A::Vec<P>>; 3]
@@ -206,6 +210,7 @@ where
 	A: Allocator,
 {
 	assert_eq!(a_words.len(), b_words.len());
+	assert!(n_real_rows <= a_words.len());
 
 	// Padding contract, mirrored from the single-column fold:
 	// the high words up to the next power of two read as zero.
@@ -231,6 +236,11 @@ where
 
 	// Phase 2: fold the aligned chunks in parallel.
 	// Each task owns one chunk of both inputs and writes one packed element per output.
+	//
+	// A chunk whose row range lies entirely at or past `n_real_rows` is guaranteed all-zero by the
+	// padding contract, so `A = B = C = 0` there: write the zero element directly instead of paying
+	// the bytewise lookup on padding words. A chunk that straddles the boundary still holds real
+	// rows, so it runs the lookup normally.
 	(
 		a_out,
 		b_out,
@@ -239,7 +249,15 @@ where
 		b_aligned.par_chunks_exact(P::WIDTH),
 	)
 		.into_par_iter()
-		.for_each(|(a_i, b_i, c_i, a_chunk, b_chunk)| {
+		.enumerate()
+		.for_each(|(chunk_idx, (a_i, b_i, c_i, a_chunk, b_chunk))| {
+			if chunk_idx * P::WIDTH >= n_real_rows {
+				a_i.write(P::default());
+				b_i.write(P::default());
+				c_i.write(P::default());
+				return;
+			}
+
 			// Safety:
 			// - both aligned slices have length n_chunks * P::WIDTH
 			// - both are split into P::WIDTH chunks
@@ -265,13 +283,21 @@ where
 
 	// Phase 3: fold the short tail into one final packed element per output.
 	if !a_remaining.is_empty() {
-		a_values
-			.push(P::from_scalars(a_remaining.iter().map(|&word| transform.transform(&word.0))));
-		b_values
-			.push(P::from_scalars(b_remaining.iter().map(|&word| transform.transform(&word.0))));
-		c_values.push(P::from_scalars(
-			iter::zip(a_remaining, b_remaining).map(|(&a, &b)| transform.transform(&(a & b).0)),
-		));
+		if n_chunks * P::WIDTH >= n_real_rows {
+			a_values.push(P::default());
+			b_values.push(P::default());
+			c_values.push(P::default());
+		} else {
+			a_values.push(P::from_scalars(
+				a_remaining.iter().map(|&word| transform.transform(&word.0)),
+			));
+			b_values.push(P::from_scalars(
+				b_remaining.iter().map(|&word| transform.transform(&word.0)),
+			));
+			c_values.push(P::from_scalars(
+				iter::zip(a_remaining, b_remaining).map(|(&a, &b)| transform.transform(&(a & b).0)),
+			));
+		}
 	}
 
 	// Phase 4: zero-pad each output up to the power-of-two capacity.
@@ -332,12 +358,20 @@ impl<F: BinaryField> BitAxisFolder<F> {
 	///
 	/// The AND column is derived in registers and never written to memory.
 	///
+	/// # Arguments
+	///
+	/// * `n_real_rows` - The number of non-padding rows at the start of `a` and `b`. Rows from this
+	///   index onward must already be `Word::ZERO` in both operands; whole packed-width chunks
+	///   entirely past this boundary are skipped rather than folded.
+	///
 	/// # Preconditions
 	///
 	/// * The two word-lists have equal length.
+	/// * `n_real_rows <= a.len()`.
 	pub fn fold_bitand_operands<P, A>(
 		&self,
 		alloc: &A,
+		n_real_rows: usize,
 		a: &[Word],
 		b: &[Word],
 	) -> [FieldBuffer<P, A::Vec<P>>; 3]
@@ -345,7 +379,7 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		P: PackedField<Scalar = F>,
 		A: Allocator,
 	{
-		fold_bitand_operands_with_transform(alloc, &self.transform, a, b)
+		fold_bitand_operands_with_transform(alloc, &self.transform, n_real_rows, a, b)
 	}
 }
 
@@ -840,9 +874,12 @@ mod tests {
 			let vec = random_scalars::<B128>(&mut rng, Word::BITS);
 			let folder = BitAxisFolder::new(&vec);
 
-			// Fold the two stored columns and the derived column in one fused pass.
+			// Fold the two stored columns and the derived column in one fused pass. Every word here
+			// is real (no padding boundary within this fixture), so n_real_rows covers the whole
+			// column and the skip path never triggers.
 			let [a_fused, b_fused, c_fused] = folder.fold_bitand_operands::<OptimalPackedB128, _>(
 				&GlobalAllocator,
+				n_words,
 				&a_words,
 				&b_words,
 			);
@@ -863,6 +900,50 @@ mod tests {
 				"c mismatch at n_words = {n_words}"
 			);
 		}
+	}
+
+	#[test]
+	fn test_fold_bitand_operands_skips_padding_without_changing_output() {
+		let mut rng = StdRng::seed_from_u64(1);
+
+		// A boundary inside the third packed-width chunk: not aligned to `P::WIDTH`, so that chunk
+		// still holds real rows and must run the fold in full, while only the whole chunk after it
+		// is free to skip.
+		let width = OptimalPackedB128::WIDTH;
+		let n_words = 4 * width;
+		let n_real_rows = 2 * width + width / 2;
+
+		let mut a_words = (0..n_words)
+			.map(|_| Word::from_u64(rng.random::<u64>()))
+			.collect::<Vec<_>>();
+		let mut b_words = (0..n_words)
+			.map(|_| Word::from_u64(rng.random::<u64>()))
+			.collect::<Vec<_>>();
+		for words in [&mut a_words, &mut b_words] {
+			words[n_real_rows..].fill(Word::ZERO);
+		}
+
+		let vec = random_scalars::<B128>(&mut rng, Word::BITS);
+		let folder = BitAxisFolder::new(&vec);
+
+		// The padding contract already zeroes every word past `n_real_rows`, so the words there are
+		// truly zero whether or not the fold is told about the boundary. Passing the real boundary
+		// (taking the skip path) must therefore agree exactly with passing the full length (running
+		// every chunk through the lookup, as if nothing were known to be padding).
+		let skipped = folder.fold_bitand_operands::<OptimalPackedB128, _>(
+			&GlobalAllocator,
+			n_real_rows,
+			&a_words,
+			&b_words,
+		);
+		let unskipped = folder.fold_bitand_operands::<OptimalPackedB128, _>(
+			&GlobalAllocator,
+			n_words,
+			&a_words,
+			&b_words,
+		);
+
+		assert_eq!(skipped, unskipped);
 	}
 
 	fn naive_fold_words_both_axes<F, P>(

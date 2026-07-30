@@ -53,6 +53,7 @@ fn bench(c: &mut Criterion) {
 		bench.iter(|| {
 			univariate_round_message_extension_domain::<B128>(
 				log_words,
+				1 << log_words,
 				&a_words,
 				&b_words,
 				&big_field_zerocheck_challenges,
@@ -76,6 +77,7 @@ fn bench(c: &mut Criterion) {
 			bench.iter(|| {
 				univariate_round_message_extension_domain::<B128>(
 					log_words,
+					padded_real,
 					&a_words_padded,
 					&b_words_padded,
 					&big_field_zerocheck_challenges,
@@ -87,6 +89,7 @@ fn bench(c: &mut Criterion) {
 
 	let urm = univariate_round_message_extension_domain::<B128>(
 		log_words,
+		1 << log_words,
 		&a_words,
 		&b_words,
 		&big_field_zerocheck_challenges,
@@ -100,8 +103,24 @@ fn bench(c: &mut Criterion) {
 			let folder = BitAxisFolder::new(&lagrange_evals);
 			folder.fold_bitand_operands::<OptimalPackedB128, _>(
 				&GlobalAllocator,
+				1 << log_words,
 				&a_words,
 				&b_words,
+			)
+		});
+	});
+
+	// Same padded shape as the round-message bench above: the fold step has no padding-skip logic
+	// before BINIUS-387, so this bench is the one that shows that change's speedup directly.
+	group.bench_function(format!("univariate fold 2^{log_words} (40% zero padding)"), |bench| {
+		bench.iter(|| {
+			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
+			let folder = BitAxisFolder::new(&lagrange_evals);
+			folder.fold_bitand_operands::<OptimalPackedB128, _>(
+				&GlobalAllocator,
+				padded_real,
+				&a_words_padded,
+				&b_words_padded,
 			)
 		});
 	});
@@ -123,8 +142,12 @@ fn bench(c: &mut Criterion) {
 
 	let alloc = &pool;
 	// Fold the operands once; each iteration clones the result from the pool.
-	let proving_polys =
-		folder.fold_bitand_operands::<OptimalPackedB128, _>(&alloc, &a_words, &b_words);
+	let proving_polys = folder.fold_bitand_operands::<OptimalPackedB128, _>(
+		&alloc,
+		1 << log_words,
+		&a_words,
+		&b_words,
+	);
 	group.bench_function(format!("remaining zerocheck 2^{log_words}"), |bench| {
 		bench.iter_batched(
 			|| proving_polys.clone(),

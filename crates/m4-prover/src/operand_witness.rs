@@ -866,11 +866,13 @@ mod tests {
 		let [a, b] =
 			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
 		let log_total = checked_log_2(a.len());
+		let n_real_rows = and_constraints.len() << table.log_instances();
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prove_output = and_reduction::prove::<_, B128, P, _, _>(
 			[a, b],
+			n_real_rows,
 			&mut prover_transcript,
 			&GlobalAllocator,
 		);
@@ -902,11 +904,13 @@ mod tests {
 		let [a, b] =
 			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
 		let log_total = checked_log_2(a.len());
+		let n_real_rows = and_constraints.len() << table.log_instances();
 
 		// Produce a faithful proof.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let _ = and_reduction::prove::<_, B128, P, _, _>(
 			[a, b],
+			n_real_rows,
 			&mut prover_transcript,
 			&GlobalAllocator,
 		);
@@ -961,9 +965,10 @@ mod tests {
 				.map(|(&a, &b)| a & b)
 				.collect();
 			let log_total = checked_log_2(a.len());
+			let n_real_rows = and_constraints.len() << table.log_instances();
 
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let prove_output = and_reduction::prove::<_, B128, P, _, _>([a, b], &mut prover_transcript, &GlobalAllocator);
+			let prove_output = and_reduction::prove::<_, B128, P, _, _>([a, b], n_real_rows, &mut prover_transcript, &GlobalAllocator);
 
 			let mut verifier_transcript = prover_transcript.into_verifier();
 			let verify_output =

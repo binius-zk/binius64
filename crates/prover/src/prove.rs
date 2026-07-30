@@ -192,7 +192,12 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = and_reduction::prove::<_, B128, P, _, _>(bitand_columns, &mut *channel, alloc);
+			} = and_reduction::prove::<_, B128, P, _, _>(
+				bitand_columns,
+				cs.n_and_constraints(),
+				&mut *channel,
+				alloc,
+			);
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
