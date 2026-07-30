@@ -178,7 +178,7 @@ impl<F: Field> IOPProver<F> {
 	///   [`Self::commit_precommit`])
 	pub fn prove<P, Channel, A>(
 		&self,
-		witness: Witness<F>,
+		witness: &Witness<F>,
 		precommit_oracle: Channel::Oracle,
 		precommit_packed: FieldVec<P, A>,
 		mut rng: impl CryptoRng,
@@ -283,7 +283,7 @@ impl<F: Field> IOPProver<F> {
 		let lambda = channel.sample();
 
 		// Batch together the constraint operand evaluation claims.
-		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
+		let batched_sum = evaluate_univariate(&mulcheck_evals, &lambda);
 
 		// Compute eq indicator tensor for r_x (shared across all segment evaluations)
 		let r_x_tensor = eq_ind_partial_eval::<F>(&r_x);
@@ -292,7 +292,7 @@ impl<F: Field> IOPProver<F> {
 		let public_eval = evaluate_wiring_mle_public(
 			cs.mul_constraints(),
 			witness.public(),
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 		);
 
@@ -338,7 +338,7 @@ where
 	/// Constructs a prover corresponding to a constraint system verifier.
 	///
 	/// See [`Prover`] struct documentation for details.
-	pub fn setup(verifier: Verifier<F, H>) -> Result<Self, Error> {
+	pub fn setup(verifier: &Verifier<F, H>) -> Result<Self, Error> {
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 
 		// Get the largest subspace from the verifier compiler for NTT creation
@@ -384,7 +384,7 @@ where
 	/// * The witness length must match the constraint system size
 	pub fn prove<Challenger_: Challenger>(
 		&self,
-		witness: Witness<F>,
+		witness: &Witness<F>,
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
@@ -402,7 +402,7 @@ where
 		let alloc = &self.pool;
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
-				.commit_precommit::<P, _, _>(&witness, &mut rng, &mut channel, &alloc);
+				.commit_precommit::<P, _, _>(witness, &mut rng, &mut channel, &alloc);
 		// The IOP prover only queues the oracle relations; `finish` runs the single combined
 		// opening.
 		self.iop_prover.prove::<P, _, _>(

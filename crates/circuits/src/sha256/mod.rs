@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 pub mod compress;
 
@@ -12,6 +13,7 @@ use crate::{
 	bytes::swap_bytes_32,
 	fixed_byte_vec::ByteVec,
 	multiplexer::{multi_wire_multiplex, single_wire_multiplex},
+	util::clear_high_bits,
 };
 
 /// Computes SHA-256 hash of a fixed-length message.
@@ -123,18 +125,22 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 		.collect();
 	let n_blocks = blocks.len();
 
-	let mask32 = builder.add_constant(Word::MASK_32);
 	let mut state = State::iv(builder);
 	let mut block_idx = 0;
+	// The threaded state carries the pair's first compression in its high half.
+	// That half is left as it is rather than masked off, since nothing downstream reads it:
+	//
+	// - A compression never lets a carry or a rotate cross bit 32, so the halves stay apart.
+	// - The paired core takes an input state's low half only, through a left shift.
+	//
+	// So the low half of a result depends on the low halves of its inputs alone.
 	while block_idx + 1 < n_blocks {
-		let out = sha256_compress_2x_seq(
+		// The chaining state after the pair is the second compression's output, in the low half.
+		state = sha256_compress_2x_seq(
 			&builder.subcircuit(format!("sha256_fixed_compress[{block_idx}..{}]", block_idx + 2)),
 			state,
 			[blocks[block_idx], blocks[block_idx + 1]],
 		);
-		// The chaining state after the pair is the second compression's output.
-		// It sits in the low 32 bits of each word; the mask restores the empty high half.
-		state = State::new(std::array::from_fn(|i| builder.band(out.0[i], mask32)));
 		block_idx += 2;
 	}
 	if block_idx < n_blocks {
@@ -145,8 +151,17 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 		);
 	}
 
-	// Return the final state as 8 32-bit words
-	state.0
+	// The escaping digest is the one place a clean high half is required.
+	// So clear the high half once here rather than after every pair, since a caller compares all
+	// 64 bits.
+	//
+	// Why a single-block message skips it:
+	// - Such a message never enters the paired core.
+	// - The one-lane core maps an empty high half to an empty high half.
+	if n_blocks < 2 {
+		return state.0;
+	}
+	std::array::from_fn(|i| clear_high_bits(builder, state.0[i], 32))
 }
 
 /// Computes the SHA-256 hash of a variable-length message.
@@ -205,11 +220,10 @@ pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
 	// 64-bit data word carries two schedule words: `swap_bytes_32` byte-reverses within each 32-bit
 	// half, so the low half becomes the big-endian schedule word for the first four bytes and the
 	// high half the schedule word for the next four. Split each into two low-32 wires.
-	let mask32 = builder.add_constant(Word::MASK_32);
 	let mut message_be: Vec<Wire> = Vec::with_capacity(message.data.len() * 2);
 	for &word in &message.data {
 		let swapped = swap_bytes_32(builder, word);
-		message_be.push(builder.band(swapped, mask32));
+		message_be.push(clear_high_bits(builder, swapped, 32));
 		message_be.push(builder.shr(swapped, 32));
 	}
 
@@ -302,12 +316,14 @@ pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
 	while block_no + 1 < n_blocks {
 		let out = sha256_compress_2x_seq(
 			&builder.subcircuit(format!("compress[{block_no}..{}]", block_no + 2)),
-			states[block_no].clone(),
+			states[block_no],
 			[mk_m(block_no), mk_m(block_no + 1)],
 		);
-		// The mask restores the empty high half that the single-lane digest packing relies on.
+		// Clearing the high half restores the empty half that the single-lane digest packing
+		// relies on.
 		let state_first = State::new(std::array::from_fn(|i| builder.shr(out.0[i], 32)));
-		let state_second = State::new(std::array::from_fn(|i| builder.band(out.0[i], mask32)));
+		let state_second =
+			State::new(std::array::from_fn(|i| clear_high_bits(builder, out.0[i], 32)));
 		states.push(state_first);
 		states.push(state_second);
 		block_no += 2;
@@ -316,7 +332,7 @@ pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
 	if block_no < n_blocks {
 		let state_out = sha256_compress(
 			&builder.subcircuit(format!("compress[{block_no}]")),
-			states[block_no].clone(),
+			states[block_no],
 			mk_m(block_no),
 		);
 		states.push(state_out);

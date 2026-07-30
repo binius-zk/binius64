@@ -161,7 +161,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> Mask<P, Da
 	/// Evaluates g_i(x) for a specific variable using Horner's method.
 	pub fn evaluate_univariate(&self, var_index: usize, x: F) -> F {
 		let coeffs: Vec<_> = self.coeffs_for_var(var_index).collect();
-		evaluate_univariate(&coeffs, x)
+		evaluate_univariate(&coeffs, &x)
 	}
 
 	/// Computes the MLE of the mask polynomial at a point.
@@ -316,7 +316,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		let coeffs = self.last_coeffs_or_claim.coeffs();
 
 		// Evaluate round polynomial at challenge to get new claim
-		let new_claim = coeffs.evaluate(challenge);
+		let new_claim = coeffs.evaluate(&challenge);
 
 		let var_idx = self.current_var_index();
 

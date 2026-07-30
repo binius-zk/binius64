@@ -5,21 +5,25 @@
 //! The main purpose of the evaluation form is to evaluate and assign the intermediate witness
 //! values. Those are also referred as internal wires.
 
-mod batch_interpreter;
+mod assertion;
+mod batch;
 mod builder;
 mod const_eval;
 mod exec;
-mod interpreter;
 mod opcode;
+mod scalar;
 #[cfg(test)]
 mod tests;
 
-pub use batch_interpreter::{BatchInterpreter, BatchPopulateError};
+use batch::BatchExecutionContext;
+pub use batch::BatchPopulateError;
 use binius_core::{ValueIndex, ValueVec, Word};
 use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;
 use cranelift_entity::SecondaryMap;
+use exec::Executor;
+use scalar::ExecutionContext;
 
 use crate::compiler::{
 	circuit::PopulateError,
@@ -83,9 +87,9 @@ impl EvalForm {
 		value_vec: &mut ValueVec,
 		path_spec_tree: Option<&PathSpecTree>,
 	) -> Result<(), PopulateError> {
-		let mut interpreter = interpreter::Interpreter::new(&self.bytecode, &self.hint_registry);
-		interpreter.run_with_value_vec(value_vec, path_spec_tree)?;
-		Ok(())
+		let mut ctx = ExecutionContext::new(value_vec);
+		self.executor().run(&mut ctx);
+		ctx.check_assertions(path_spec_tree)
 	}
 
 	/// Execute the evaluation form over a batch of instances at once.
@@ -98,8 +102,7 @@ impl EvalForm {
 		values: &mut StridedArray2DViewMut<'_, Word>,
 		path_spec_tree: Option<&PathSpecTree>,
 	) -> Result<(), BatchPopulateError> {
-		let mut interpreter = BatchInterpreter::new(&self.bytecode, &self.hint_registry);
-		interpreter.run(values, path_spec_tree)
+		self.evaluate_stripe(values, 0, path_spec_tree)
 	}
 
 	/// Execute the evaluation form over disjoint vertical instance stripes in parallel.
@@ -119,16 +122,28 @@ impl EvalForm {
 			.into_par_strides(stripe_width)
 			.enumerate()
 			.map(|(stripe_index, mut stripe)| {
-				let mut interpreter = BatchInterpreter::new(&self.bytecode, &self.hint_registry);
-				interpreter.run_with_instance_offset(
-					&mut stripe,
-					stripe_index * stripe_width,
-					path_spec_tree,
-				)
+				self.evaluate_stripe(&mut stripe, stripe_index * stripe_width, path_spec_tree)
 			})
 			.collect::<Result<Vec<_>, _>>()?;
 
 		Ok(())
+	}
+
+	/// Evaluate the bytecode over a view whose local column 0 is the global `instance_offset`.
+	fn evaluate_stripe(
+		&self,
+		values: &mut StridedArray2DViewMut<'_, Word>,
+		instance_offset: usize,
+		path_spec_tree: Option<&PathSpecTree>,
+	) -> Result<(), BatchPopulateError> {
+		let mut ctx = BatchExecutionContext::new(values, instance_offset);
+		self.executor().run(&mut ctx);
+		ctx.check_assertions(path_spec_tree)
+	}
+
+	/// A fresh executor over this form's bytecode, with its cursor at the first instruction.
+	fn executor(&self) -> Executor<'_> {
+		Executor::new(&self.bytecode, &self.hint_registry)
 	}
 
 	/// Get the number of evaluation instructions

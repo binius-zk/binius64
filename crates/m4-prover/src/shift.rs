@@ -127,6 +127,7 @@ pub fn fold_instances<F: BinaryField, A: Allocator>(
 /// - `key_collection`: the prover's key collection for the constraint system.
 /// - `public_words`: the public (constant) words, shared by every instance.
 /// - `folded_witness`: the hidden witness, folded over the instance axis, one word per entry.
+/// - `zero_data`: operator data for the zero (ZERO) constraints.
 /// - `bitand_data`: operator data for the bitand (AND) constraints.
 /// - `intmul_data`: operator data for the intmul (IMUL) constraints.
 /// - `domain_subspace`: the univariate evaluation domain.
@@ -139,6 +140,7 @@ pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
 	folded_witness: &[FoldedWord<F>],
+	zero_data: OperatorData<F>,
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
 	binmul_data: OperatorData<F>,
@@ -154,9 +156,11 @@ where
 {
 	// Sample one batching lambda per operator, then prepare the operator data (tensor expansions
 	// and lambda powers).
+	let zero_lambda = channel.sample();
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
 	let binmul_lambda = channel.sample();
+	let prepared_zero = PreparedOperatorData::new(zero_data, zero_lambda);
 	let prepared_bitand = PreparedOperatorData::new(bitand_data, bitand_lambda);
 	let prepared_intmul = PreparedOperatorData::new(intmul_data, intmul_lambda);
 	let prepared_bmul = PreparedOperatorData::new(binmul_data, binmul_lambda);
@@ -169,6 +173,7 @@ where
 		alloc,
 		public_words,
 		&key_collection.public,
+		&prepared_zero,
 		&prepared_bitand,
 		&prepared_intmul,
 		&prepared_bmul,
@@ -177,6 +182,7 @@ where
 		alloc,
 		folded_witness,
 		&key_collection.hidden,
+		&prepared_zero,
 		&prepared_bitand,
 		&prepared_intmul,
 		&prepared_bmul,
@@ -217,6 +223,7 @@ where
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		alloc,
 		key_collection,
+		&prepared_zero,
 		&prepared_bitand,
 		&prepared_intmul,
 		&prepared_bmul,
@@ -226,9 +233,9 @@ where
 	);
 
 	run_sumcheck::<F, P, _, _>(
-		public_folded,
+		&public_folded,
 		hidden_folded,
-		public_monster,
+		&public_monster,
 		hidden_monster,
 		public_words,
 		r_j,
@@ -264,6 +271,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 	alloc: &A,
 	folded_words: &[FoldedWord<F>],
 	segment: &KeySegment,
+	zero_operator_data: &PreparedOperatorData<F>,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
 	binmul_operator_data: &PreparedOperatorData<F>,
@@ -279,6 +287,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 		let keys = &segment.keys[range.start as usize..range.end as usize];
 		for key in keys {
 			let operator_data = match key.operation {
+				Operation::Zero => zero_operator_data,
 				Operation::BitwiseAnd => bitand_operator_data,
 				Operation::IntegerMul => intmul_operator_data,
 				Operation::BinMul => binmul_operator_data,
@@ -479,7 +488,7 @@ mod tests {
 		r_rho: &[B128],
 	) -> [B128; 3] {
 		let [a, b] = build_operation_columns(table, constants, and_constraints, &GlobalAllocator);
-		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
+		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, &r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
 			let folded_column = fold_words::<B128, P, _>(&GlobalAllocator, column, &lagrange);
@@ -586,6 +595,11 @@ mod tests {
 			public_words,
 			&folded_witness,
 			OperatorData {
+				evals: vec![B128::ZERO],
+				r_zhat_prime: r_z,
+				r_x_prime: Vec::new(),
+			},
+			OperatorData {
 				evals: bitand_evals.to_vec(),
 				r_zhat_prime: r_z,
 				r_x_prime: r_x.clone(),
@@ -607,11 +621,13 @@ mod tests {
 
 		// Verify against the single-instance shift verifier.
 		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_zero = VerifierOperatorData::new(Vec::new(), [B128::ZERO]);
 		let verifier_bitand = VerifierOperatorData::new(r_x, bitand_evals);
 		let verifier_intmul = VerifierOperatorData::new(Vec::new(), intmul_evals);
 		let verifier_bmul = VerifierOperatorData::new(Vec::new(), [B128::ZERO; 6]);
 		let verifier_output = verify(
 			&cs,
+			&verifier_zero,
 			&verifier_bitand,
 			&verifier_intmul,
 			&verifier_bmul,
@@ -621,6 +637,7 @@ mod tests {
 		check_eval(
 			&cs,
 			public_words,
+			&verifier_zero,
 			&verifier_bitand,
 			&verifier_intmul,
 			&verifier_bmul,
@@ -731,6 +748,14 @@ mod tests {
 			},
 			B128::random(&mut rng),
 		);
+		let prepared_zero = PreparedOperatorData::new(
+			OperatorData {
+				evals: Vec::new(),
+				r_zhat_prime: r_z,
+				r_x_prime: Vec::new(),
+			},
+			B128::random(&mut rng),
+		);
 
 		// The g parts: the public segment folds from raw constant words via the single-instance
 		// builder, the hidden segment from the instance-folded words. Add them. The h parts come
@@ -739,6 +764,7 @@ mod tests {
 			&GlobalAllocator,
 			public_words,
 			&key_collection.public,
+			&prepared_zero,
 			&prepared_bitand,
 			&prepared_intmul,
 			&prepared_bmul,
@@ -747,6 +773,7 @@ mod tests {
 			&GlobalAllocator,
 			&hidden_folded,
 			&key_collection.hidden,
+			&prepared_zero,
 			&prepared_bitand,
 			&prepared_intmul,
 			&prepared_bmul,

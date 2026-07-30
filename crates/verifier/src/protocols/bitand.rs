@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::iter::{self};
 
@@ -114,7 +115,7 @@ where
 	let sumcheck_claim = extrapolate_over_subspace(
 		round_message_univariate_domain,
 		&univariate_message_coeffs,
-		univariate_sumcheck_challenge.clone(),
+		&univariate_sumcheck_challenge,
 	);
 
 	let SumcheckOutput {

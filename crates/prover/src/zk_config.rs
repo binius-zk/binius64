@@ -62,7 +62,7 @@ where
 	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Constructs a ZK prover from a [`ZKVerifier`].
-	pub fn setup(zk_verifier: ZKVerifier<H>) -> Result<Self, Error> {
+	pub fn setup(zk_verifier: &ZKVerifier<H>) -> Result<Self, Error> {
 		let key_collection = {
 			let _guard = tracing::debug_span!("Build key collection").entered();
 			build_key_collection(zk_verifier.inner_iop_verifier().constraint_system())
@@ -74,7 +74,7 @@ where
 	/// dominant key-collection build. Private: external callers use [`Self::setup`], or
 	/// [`DeserializeBytes::deserialize`] to reuse a serialized prover.
 	fn setup_with_key_collection(
-		zk_verifier: ZKVerifier<H>,
+		zk_verifier: &ZKVerifier<H>,
 		key_collection: KeyCollection,
 	) -> Result<Self, Error> {
 		// Build the inner IOPProver.
@@ -128,12 +128,12 @@ where
 	/// Generates a ZK proof for a witness.
 	pub fn prove<Challenger_: Challenger>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Clone public words before moving witness into prove().
-		let public_words = witness.public().to_vec();
+		// The replay closure captures the public words as a borrowed slice.
+		let public_words = witness.public();
 
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs. The inner IOP proof and the outer wrapper proof (run inside
@@ -154,7 +154,7 @@ where
 				let inner_iop_verifier = &self.inner_iop_verifier;
 				move |replay_channel: &mut ReplayChannel<B128>| {
 					inner_iop_verifier
-						.verify(&public_words, replay_channel)
+						.verify(public_words, replay_channel)
 						.expect("replay verification should not fail");
 				}
 			},
@@ -197,7 +197,7 @@ where
 	/// [`Self::prove`] logic. See [`binius_verifier::signature`] for details.
 	pub fn prove_sig<Challenger_: Challenger>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		message: &[u8],
 		rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
@@ -250,7 +250,7 @@ where
 		let key_collection = KeyCollection::deserialize(&mut read_buf)?;
 		let zk_verifier = ZKVerifier::setup(constraint_system, log_inv_rate)
 			.map_err(|_| SerializationError::InvalidConstruction { name: "ZKProver" })?;
-		Self::setup_with_key_collection(zk_verifier, key_collection)
+		Self::setup_with_key_collection(&zk_verifier, key_collection)
 			.map_err(|_| SerializationError::InvalidConstruction { name: "ZKProver" })
 	}
 }

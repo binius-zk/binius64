@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! The operand expression DSL: build a [`WireExpr`] as an XOR of shifted-wire terms.
 
@@ -165,8 +166,8 @@ mod tests {
 			wire_c,
 		);
 
-		let (and_constraints, imul_constraints, _bmul_constraints) =
-			builder.build(&wire_mapping, all_one_wire);
+		let (_zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
+			builder.build(&wire_mapping, all_one_wire, false);
 
 		assert_eq!(and_constraints.len(), 1);
 		assert_eq!(imul_constraints.len(), 0);

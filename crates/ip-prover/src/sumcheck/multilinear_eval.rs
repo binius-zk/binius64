@@ -256,7 +256,7 @@ mod tests {
 			let round = prover.execute();
 			assert_eq!(prover.round_claim(), before);
 			let challenge = F::random(&mut rng);
-			let expected_next = round[0].evaluate(challenge);
+			let expected_next = round[0].evaluate(&challenge);
 			prover.fold(challenge);
 			assert_eq!(prover.round_claim(), vec![expected_next]);
 		}

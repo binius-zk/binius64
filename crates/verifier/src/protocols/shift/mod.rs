@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 pub const SHIFT_VARIANT_COUNT: usize = 8;
+pub const ZERO_ARITY: usize = 1;
 pub const BITAND_ARITY: usize = 3;
 pub const INTMUL_ARITY: usize = 4;
 pub const BINMUL_ARITY: usize = 6;

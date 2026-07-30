@@ -38,21 +38,43 @@ mod scratch_alloc;
 #[cfg(test)]
 mod tests;
 mod value_vec_alloc;
+mod zero_fold;
 
 pub use gate_graph::Wire;
 use scratch_alloc::{ScratchAlloc, ScratchPolicy};
 
-/// Which compiler passes run.
+/// Which compiler passes run, and how linear constraints are lowered.
 ///
 /// This is the only knob: a circuit compiles the same way whatever the process environment holds.
-/// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`].
-pub(crate) struct Options {
-	enable_gate_fusion: bool,
-	enable_constant_propagation: bool,
-	enable_common_subexpression_elimination: bool,
-	enable_dead_code_elimination: bool,
-	enable_algebraic_folding: bool,
-	enable_scratch_pooling: bool,
+/// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`],
+/// overriding the fields it cares about:
+///
+/// ```
+/// use binius_frontend::{CircuitBuilder, Options};
+///
+/// let builder = CircuitBuilder::with_opts(Options {
+///     enable_zero_constraints: true,
+///     ..Options::default()
+/// });
+/// ```
+pub struct Options {
+	/// Inline linear definitions into the non-linear gates that consume them.
+	pub enable_gate_fusion: bool,
+	/// Fold gates whose inputs are all constants.
+	pub enable_constant_propagation: bool,
+	/// Collapse structurally identical gates.
+	pub enable_common_subexpression_elimination: bool,
+	/// Drop gates that cannot affect the constraint system.
+	pub enable_dead_code_elimination: bool,
+	/// Apply algebraic identities that let a gate return one of its operands.
+	pub enable_algebraic_folding: bool,
+	/// Share scratch slots between values whose lifetimes do not overlap.
+	pub enable_scratch_pooling: bool,
+	/// Lower linear constraints to Zero constraints instead of AND constraints against the
+	/// all-ones constant.
+	pub enable_zero_constraints: bool,
+	/// Forward past the gates a zero operand turns into the identity.
+	pub enable_zero_propagation: bool,
 }
 
 impl Default for Options {
@@ -66,6 +88,10 @@ impl Default for Options {
 			// Why off: sharing slots stops an uncommitted value from being readable afterwards.
 			// A caller that inspects one has to opt in knowingly.
 			enable_scratch_pooling: false,
+			// Why off: both proof systems reduce Zero constraints, but the AND lowering stays the
+			// default until the two are compared.
+			enable_zero_constraints: false,
+			enable_zero_propagation: true,
 		}
 	}
 }
@@ -177,7 +203,8 @@ impl CircuitBuilder {
 		Self::with_opts(Options::default())
 	}
 
-	pub(crate) fn with_opts(opts: Options) -> Self {
+	/// Create a new circuit builder with the given options.
+	pub fn with_opts(opts: Options) -> Self {
 		let graph = GateGraph::new();
 		let root = graph.path_spec_tree.root();
 		CircuitBuilder {
@@ -217,6 +244,12 @@ impl CircuitBuilder {
 			const_prop::constant_propagation(&mut graph, &shared.hint_registry);
 		}
 
+		// Zero propagation: drop the gates a zero operand turns into the identity.
+		// This runs before the dead-code pass, which is what removes the gates it strands.
+		if shared.opts.enable_zero_propagation {
+			zero_fold::zero_propagation(&mut graph, &shared.force_committed, &shared.hint_registry);
+		}
+
 		// Common-subexpression elimination: collapse structurally-identical gates.
 		// This runs first so the dead-code pass sees the canonicalized graph.
 		let dead_gates = shared
@@ -251,7 +284,7 @@ impl CircuitBuilder {
 
 		// Perform fusion if the corresponding feature flag is turned on.
 		if shared.opts.enable_gate_fusion {
-			gate_fusion::run_pass(&mut builder, &shared.force_committed, all_one);
+			gate_fusion::run_pass(&mut builder, &shared.force_committed);
 		}
 
 		let constrained_wires = builder.mark_used_wires();
@@ -325,14 +358,15 @@ impl CircuitBuilder {
 		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex(0));
 		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
 
-		let (mut and_constraints, mut imul_constraints, mut bmul_constraints) =
-			builder.build(&wire_mapping, all_one);
+		let (mut zero_constraints, mut and_constraints, mut imul_constraints, mut bmul_constraints) =
+			builder.build(&wire_mapping, all_one, shared.opts.enable_zero_constraints);
 
 		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
 		// terms referencing a zero constant contribute nothing to an XOR operand.
 		let n_const = value_vec_layout.n_const;
 		{
 			let operands = chain!(
+				zero_constraints.iter_mut().flat_map(|c| &mut c.0),
 				and_constraints.iter_mut().flat_map(|c| &mut c.0),
 				imul_constraints.iter_mut().flat_map(|c| &mut c.0),
 				bmul_constraints.iter_mut().flat_map(|c| &mut c.0),
@@ -346,6 +380,7 @@ impl CircuitBuilder {
 		}
 
 		let cs = ConstraintSystem {
+			zero_constraints,
 			and_constraints,
 			imul_constraints,
 			bmul_constraints,

@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Wire-level constraint DSL and its lowering to core `ValueIndex` constraints.
 
@@ -6,7 +7,9 @@ mod constraint;
 pub mod expr;
 mod shift;
 
-use binius_core::constraint_system::{AndConstraint, BmulConstraint, ImulConstraint, ValueIndex};
+use binius_core::constraint_system::{
+	AndConstraint, BmulConstraint, ImulConstraint, ValueIndex, ZeroConstraint,
+};
 pub use constraint::{
 	WireAndConstraint, WireBmulConstraint, WireImulConstraint, WireLinearConstraint,
 };
@@ -35,7 +38,8 @@ pub struct ConstraintBuilder {
 	pub imul_constraints: Vec<WireImulConstraint>,
 	/// GHASH-field multiply constraints over `(lo, hi)` limb pairs.
 	pub bmul_constraints: Vec<WireBmulConstraint>,
-	/// Linear constraints `RHS == DST`, lowered to AND against the all-ones wire.
+	/// Linear constraints `RHS == DST`, lowered by [`build`](Self::build) to either an AND against
+	/// the all-ones wire or a Zero constraint.
 	pub linear_constraints: Vec<WireLinearConstraint>,
 }
 
@@ -107,14 +111,18 @@ impl ConstraintBuilder {
 
 	/// Lowers every wire-level constraint to its core `ValueIndex` form.
 	///
-	/// Linear constraints have no native core opcode, so each becomes
-	/// `RHS & all_one == DST` — an AND against the all-ones wire that acts as
-	/// the identity for `&`.
+	/// A linear constraint lowers one of two ways, selected by `linear_to_zero`:
+	///
+	/// - `false` — to `RHS & all_one == DST`, an AND against the all-ones wire that acts as the
+	///   identity for `&`;
+	/// - `true` — to the Zero constraint `RHS ^ DST == 0`, which carries one constraint array
+	///   rather than three.
 	pub fn build(
 		self,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 		all_one: Wire,
-	) -> (Vec<AndConstraint>, Vec<ImulConstraint>, Vec<BmulConstraint>) {
+		linear_to_zero: bool,
+	) -> (Vec<ZeroConstraint>, Vec<AndConstraint>, Vec<ImulConstraint>, Vec<BmulConstraint>) {
 		let mut and_constraints = self
 			.and_constraints
 			.into_iter()
@@ -133,15 +141,23 @@ impl ConstraintBuilder {
 			.map(|c| c.into_constraint(wire_mapping))
 			.collect();
 
-		if !self.linear_constraints.is_empty() {
+		let mut zero_constraints = Vec::new();
+		if linear_to_zero {
+			zero_constraints.extend(
+				self.linear_constraints
+					.into_iter()
+					.map(|c| c.into_zero_constraint(wire_mapping)),
+			);
+		} else if !self.linear_constraints.is_empty() {
 			let all_one = wire_mapping[all_one];
-			for linear_constraint in self.linear_constraints {
-				let and_constraint = linear_constraint.into_and_constraint(wire_mapping, all_one);
-				and_constraints.push(and_constraint);
-			}
+			and_constraints.extend(
+				self.linear_constraints
+					.into_iter()
+					.map(|c| c.into_and_constraint(wire_mapping, all_one)),
+			);
 		}
 
-		(and_constraints, imul_constraints, bmul_constraints)
+		(zero_constraints, and_constraints, imul_constraints, bmul_constraints)
 	}
 
 	/// Collects every wire referenced by any pending constraint.

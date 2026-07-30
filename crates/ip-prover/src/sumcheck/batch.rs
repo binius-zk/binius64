@@ -347,7 +347,7 @@ mod tests {
 
 		let composed_evals = vec![eval_a_0 * eval_b_0, eval_a_1 * eval_b_1];
 		let expected_batched_eval =
-			evaluate_univariate(&composed_evals, sumcheck_output.batch_coeff);
+			evaluate_univariate(&composed_evals, &sumcheck_output.batch_coeff);
 
 		assert_eq!(
 			expected_batched_eval, sumcheck_output.eval,

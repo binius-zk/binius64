@@ -23,7 +23,7 @@ use binius_utils::{SerializeBytes, rayon::prelude::*};
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
-	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput},
+	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput, zero},
 };
 use digest::Output;
 
@@ -87,7 +87,7 @@ impl IOPProver {
 	/// For most users, [`Prover::prove`] is the simpler interface.
 	pub fn prove<A, P, Channel>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		channel: &mut Channel,
 		alloc: &A,
 	) -> Result<(), Error>
@@ -140,7 +140,7 @@ impl IOPProver {
 			)
 			.entered();
 			let mul_columns = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_operation_columns(&cs.imul_constraints, &witness, alloc));
+				.in_scope(|| build_operation_columns(&cs.imul_constraints, witness, alloc));
 
 			let [a, b, lo, hi] = &mul_columns;
 			let intmul_output = intmul::prove::<_, _, P, _>([a, b, lo, hi], &mut *channel, alloc)?;
@@ -163,7 +163,7 @@ impl IOPProver {
 			)
 			.entered();
 			let binmul_columns = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_operation_columns(&cs.bmul_constraints, &witness, alloc));
+				.in_scope(|| build_operation_columns(&cs.bmul_constraints, witness, alloc));
 
 			let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = &binmul_columns;
 			let binmul_output = binmul::prove::<_, _, P, _>(
@@ -184,7 +184,7 @@ impl IOPProver {
 		let bitand_claim = {
 			// Only the `A` and `B` columns are built; the reduction derives `C = A & B`.
 			let bitand_columns = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_operation_columns(&cs.and_constraints, &witness, alloc));
+				.in_scope(|| build_operation_columns(&cs.and_constraints, witness, alloc));
 
 			let AndCheckOutput {
 				a_eval,
@@ -278,6 +278,19 @@ impl IOPProver {
 			},
 		};
 
+		// [phase] Zero Reduction - linear constraint reduction
+		//
+		// The reduction's claim, at the point the BitAnd sumcheck just output. See
+		// `IOPVerifier::verify` for why it carries no message.
+		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
+		let zero_claim = OperatorData {
+			evals: vec![B128::ZERO],
+			r_zhat_prime: bitand_claim.r_zhat_prime,
+			r_x_prime: zero::reduction_point(&bitand_claim.r_x_prime, log_n_zero, || {
+				channel.sample()
+			}),
+		};
+
 		// [phase] Shift Reduction - shift operations
 		let shift_guard = tracing::info_span!(
 			"[phase] Shift Reduction",
@@ -291,6 +304,7 @@ impl IOPProver {
 		} = prove_shift_reduction::<_, P, _, _>(
 			&self.key_collection,
 			witness.combined_witness(),
+			zero_claim,
 			bitand_claim,
 			intmul_claim,
 			binmul_claim,
@@ -432,7 +446,7 @@ where
 
 	pub fn prove<Challenger_: Challenger>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		let cs = self.iop_prover.constraint_system();

@@ -78,10 +78,10 @@ mod tests {
 		prover: impl SumcheckProver<F>,
 		eval_claims: [F; 2],
 		eval_point: &[F],
-		num_a: FieldBuffer<P>,
-		num_b: FieldBuffer<P>,
-		den_a: FieldBuffer<P>,
-		den_b: FieldBuffer<P>,
+		num_a: &FieldBuffer<P>,
+		num_b: &FieldBuffer<P>,
+		den_a: &FieldBuffer<P>,
+		den_b: &FieldBuffer<P>,
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
@@ -117,10 +117,10 @@ mod tests {
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
-		let eval_num_a = evaluate(&num_a, &reduced_eval_point);
-		let eval_den_a = evaluate(&den_a, &reduced_eval_point);
-		let eval_num_b = evaluate(&num_b, &reduced_eval_point);
-		let eval_den_b = evaluate(&den_b, &reduced_eval_point);
+		let eval_num_a = evaluate(num_a, &reduced_eval_point);
+		let eval_den_a = evaluate(den_a, &reduced_eval_point);
+		let eval_num_b = evaluate(num_b, &reduced_eval_point);
+		let eval_den_b = evaluate(den_b, &reduced_eval_point);
 
 		assert_eq!(
 			eval_num_a, multilinear_evals[0],
@@ -212,10 +212,10 @@ mod tests {
 			prover,
 			eval_claims,
 			&eval_point,
-			num_a,
-			num_b,
-			den_a,
-			den_b,
+			&num_a,
+			&num_b,
+			&den_a,
+			&den_b,
 		);
 	}
 }

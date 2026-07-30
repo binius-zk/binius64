@@ -106,11 +106,11 @@ impl ValueVec {
 	/// Creates a value vector from the words of its public and hidden segments.
 	///
 	/// The vector has no scratch tail; scratch words only exist while a circuit is evaluated.
-	pub fn new_from_data(public: Vec<Word>, private: Vec<Word>) -> ValueVec {
+	pub fn new_from_data(public: &[Word], private: &[Word]) -> ValueVec {
 		// Fresh 16-byte-aligned buffer holding the public words followed by the hidden ones.
 		let mut data = AlignedWords::zeroed(public.len() + private.len());
-		data[..public.len()].copy_from_slice(&public);
-		data[public.len()..].copy_from_slice(&private);
+		data[..public.len()].copy_from_slice(public);
+		data[public.len()..].copy_from_slice(private);
 
 		ValueVec {
 			n_public_words: public.len(),
@@ -188,7 +188,7 @@ mod tests {
 
 		let public = values.public();
 		let non_public = values.non_public();
-		let combined = ValueVec::new_from_data(public.to_vec(), non_public.to_vec());
+		let combined = ValueVec::new_from_data(public, non_public);
 		assert_eq!(combined.combined_witness(), values.combined_witness());
 	}
 
@@ -273,7 +273,7 @@ mod tests {
 			// A vector built from the layout carries the scratch tail; one built from its
 			// segments holds only those words.
 			let zeroed = ValueVec::new(&layout);
-			let vv = ValueVec::new_from_data(public_padded.clone(), private.clone());
+			let vv = ValueVec::new_from_data(&public_padded, &private);
 
 			// Alignment survives construction for any word count.
 			assert_16_byte_aligned(vv.combined_witness());

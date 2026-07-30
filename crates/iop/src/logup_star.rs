@@ -83,7 +83,7 @@ where
 	let oracle = channel.recv_oracle(table_n_vars, true)?;
 
 	// Run the bare reduction over the same channel, viewed as an IP channel.
-	let output = reduction::verify_reduction::<F, C>(gamma, table_n_vars, lookers, channel)?;
+	let output = reduction::verify_reduction::<F, C>(&gamma, table_n_vars, lookers, channel)?;
 
 	// Open the pushforward relation through the channel; a deferring channel (e.g. BaseFold)
 	// batches it with every other queued relation in `finish()`.

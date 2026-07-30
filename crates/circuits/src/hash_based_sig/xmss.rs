@@ -291,7 +291,7 @@ mod tests {
 	}
 
 	impl TestCase {
-		fn run(&self, spec: WinternitzSpec) {
+		fn run(&self, spec: &WinternitzSpec) {
 			let mut rng = StdRng::seed_from_u64(42);
 
 			match self {
@@ -301,9 +301,9 @@ mod tests {
 				} => {
 					// Generate test data
 					let test_data =
-						XmssTestData::generate(&spec, *tree_size, *signing_epoch, &mut rng);
+						XmssTestData::generate(spec, *tree_size, *signing_epoch, &mut rng);
 
-					let result = test_data.run(&spec);
+					let result = test_data.run(spec);
 					result.unwrap_or_else(|e| {
 						panic!("Test expected to pass but failed: {}", e);
 					});
@@ -315,12 +315,12 @@ mod tests {
 				} => {
 					// Generate test data
 					let mut test_data =
-						XmssTestData::generate(&spec, *tree_size, *signing_epoch, &mut rng);
+						XmssTestData::generate(spec, *tree_size, *signing_epoch, &mut rng);
 
 					// Apply corruption
 					corrupt_fn(&mut test_data);
 
-					let result = test_data.run(&spec);
+					let result = test_data.run(spec);
 					assert!(result.is_err(), "Test expected to fail but passed");
 				}
 			}
@@ -391,7 +391,7 @@ mod tests {
 			tree_size,
 			signing_epoch,
 		}
-		.run(spec);
+		.run(&spec);
 	}
 
 	/// Invalid test cases with various corruption scenarios
@@ -408,6 +408,6 @@ mod tests {
 			signing_epoch: 1,
 			corrupt_fn,
 		}
-		.run(test_spec_small());
+		.run(&test_spec_small());
 	}
 }

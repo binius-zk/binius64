@@ -1,11 +1,11 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! The Bitcoin double-SHA256 hash function.
 
-use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use sha2::Digest;
 
-use crate::{bytes::swap_bytes_32, sha256::sha256_fixed};
+use crate::{bytes::swap_bytes_32, sha256::sha256_fixed, util::clear_high_bits};
 
 /// Retained only so callers can obtain the reference digest via [`Self::populate_inner`].
 ///
@@ -24,19 +24,17 @@ impl DoubleSha256 {
 	/// - `message.len() * 8 == message_len`
 	pub fn construct_circuit(
 		builder: &CircuitBuilder,
-		message: Vec<Wire>,
+		message: &[Wire],
 		digest: [Wire; 4],
 	) -> Self {
-		let mask32 = builder.add_constant(Word::MASK_32);
-
 		// First SHA-256. `message` is little-endian 8-byte wires; `sha256_fixed` consumes
 		// big-endian 32-bit schedule words, so byte-swap within each 32-bit half and split each
 		// 64-bit wire into its two schedule words (mirrors `sha256::sha256_varlen`'s input
 		// prologue).
 		let mut message_be: Vec<Wire> = Vec::with_capacity(message.len() * 2);
-		for &w in &message {
+		for &w in message {
 			let swapped = swap_bytes_32(builder, w);
-			message_be.push(builder.band(swapped, mask32));
+			message_be.push(clear_high_bits(builder, swapped, 32));
 			message_be.push(builder.shr(swapped, 32));
 		}
 		let digest_0_be = sha256_fixed(builder, &message_be, message.len() * 8); // [Wire; 8] BE
@@ -83,8 +81,7 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let block_header: [Wire; 10] = array::from_fn(|_| builder.add_witness());
 		let block_hash: [Wire; 4] = array::from_fn(|_| builder.add_witness());
-		let double_sha_256 =
-			DoubleSha256::construct_circuit(&builder, block_header.to_vec(), block_hash);
+		let double_sha_256 = DoubleSha256::construct_circuit(&builder, &block_header, block_hash);
 		let circuit = builder.build();
 
 		// populate_witness
@@ -110,8 +107,7 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let block_header: [Wire; 10] = array::from_fn(|_| builder.add_witness());
 		let block_hash: [Wire; 4] = array::from_fn(|_| builder.add_witness());
-		let double_sha_256 =
-			DoubleSha256::construct_circuit(&builder, block_header.to_vec(), block_hash);
+		let double_sha_256 = DoubleSha256::construct_circuit(&builder, &block_header, block_hash);
 		let circuit = builder.build();
 
 		// populate_witness

@@ -6,7 +6,8 @@ use std::{array, borrow::Cow, hint::assert_unchecked, iter, ops::BitXor};
 use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, Divisible, Field, PackedField, UnderlierType, WideMul, WithUnderlier,
+	BinaryField, Divisible, Field, PackedBinaryField64x1b, PackedField, UnderlierType, WideMul,
+	WithUnderlier,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformation, OutputWrappingTransformationFactory, Transformation,
@@ -17,7 +18,11 @@ use binius_math::{
 	FieldBuffer, FieldSlice,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
 };
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::{checked_log_2, log2_ceil_usize},
+	rayon::prelude::*,
+};
+use binius_verifier::config::B1;
 
 /// Base-2 logarithm of the number of words folded together within a single chunk.
 const LOG_CHUNK_SIZE: usize = Word::LOG_BITS;
@@ -26,6 +31,11 @@ const CHUNK_SIZE: usize = 1 << LOG_CHUNK_SIZE;
 /// Number of bits in a byte; [`fold_across_words`] processes each chunk in groups of this many
 /// words, one per byte of the words.
 const BITS_PER_BYTE: usize = Word::BITS / Word::BYTES;
+/// Base-2 log of the row group a single subset-sum table covers.
+///
+/// Eight rows is the widest group whose lookup index still fits one byte.
+/// One table load then replaces eight conditional additions.
+const LOG_BITS_PER_BYTE: usize = BITS_PER_BYTE.ilog2() as usize;
 
 /// Computes a [`FieldBuffer`] where each element is the inner product of the bits of a word and a
 /// vector of field elements.
@@ -398,6 +408,36 @@ where
 	P::reduce(wide).iter().sum()
 }
 
+/// Folds one chunk of words into the accumulator, scaled by that chunk's weight.
+///
+/// Words are 64-bit rows, so a chunk is 64 of them and the columns are the 64 bit positions.
+/// A word and a 64-bit row of single-bit scalars share one underlier, so the view below is free.
+fn accumulate_word_chunk<F: BinaryField>(
+	chunk: &[Word; CHUNK_SIZE],
+	tables: &[[F; 1 << BITS_PER_BYTE]; Word::BYTES],
+	weight: F,
+	acc: &mut [F; Word::BITS],
+) {
+	// Reshape the chunk into one contiguous group of eight rows per table.
+	let groups = bytemuck::must_cast_ref::<
+		[Word; CHUNK_SIZE],
+		[[PackedBinaryField64x1b; BITS_PER_BYTE]; Word::BYTES],
+	>(chunk);
+
+	// Accumulate every group into one column accumulator before scaling it.
+	let mut columns = [[F::ZERO; BITS_PER_BYTE]; Word::BYTES];
+	for (group, table) in iter::zip(groups, tables) {
+		fold_row_group(group, table, &mut columns);
+	}
+
+	// Scale once per column and merge, unpacking the nesting into bit-position order.
+	for (i, group) in columns.iter().enumerate() {
+		for (j, &column) in group.iter().enumerate() {
+			acc[(i << LOG_BITS_PER_BYTE) | j] += column * weight;
+		}
+	}
+}
+
 /// Computes the bitwise fold of the word vector with a tensor product, by bit position.
 ///
 /// This computes a binary matrix multiplication of the word matrix by the tensor expansion of the
@@ -429,19 +469,15 @@ where
 	let chunks = duplicate_to_fixed_chunks::<CHUNK_SIZE>(words);
 	debug_assert_eq!(chunks.len(), folder.suffix_weights.as_ref().len());
 
-	// Each chunk folds into an accumulator that is transposed relative to bit position.
-	// The entry at `BITS_PER_BYTE * a + j` holds the result for bit position `BITS_PER_BYTE * j +
-	// a`. Scale each chunk accumulator by its suffix weight and sum them.
-	// Transpose the total once at the end.
-	let folded = chunks
+	// Each chunk contributes to every bit position, scaled by that chunk's suffix weight.
+	// Summing the per-chunk accumulators contracts the word axis.
+	chunks
 		.as_ref()
 		.par_iter()
 		.zip(folder.suffix_weights.as_ref().par_iter())
 		.map(|(chunk, &suffix_weight)| {
-			let mut acc = fold_chunk(chunk, &folder.lookups);
-			for acc_i in &mut acc {
-				*acc_i *= suffix_weight;
-			}
+			let mut acc = [F::ZERO; Word::BITS];
+			accumulate_word_chunk(chunk, &folder.lookups, suffix_weight, &mut acc);
 			acc
 		})
 		.reduce(
@@ -452,9 +488,7 @@ where
 				}
 				lhs
 			},
-		);
-
-	transpose_accumulator(folded)
+		)
 }
 
 /// A reusable [Method of Four Russians] folder over a fixed evaluation point.
@@ -485,29 +519,20 @@ impl<F: BinaryField> WordFolder<F> {
 	///
 	/// Each later [`fold`](Self::fold) call folds a `2^point.len()`-word list against this point.
 	pub fn new(point: &[F]) -> Self {
-		// Split the point into a prefix of at most LOG_CHUNK_SIZE coordinates and a suffix.
-		// Zero-pad the prefix up to LOG_CHUNK_SIZE coordinates.
-		// Why the padding is harmless:
-		//   - a list shorter than one chunk is filled by repeating its words.
-		//   - each repeated copy pairs with a zero prefix weight, so it adds nothing.
+		// The point splits into a prefix indexing words within a chunk and a suffix indexing
+		// chunks.
 		let prefix_len = point.len().min(LOG_CHUNK_SIZE);
-		let mut prefix = [F::ZERO; LOG_CHUNK_SIZE];
-		prefix[..prefix_len].copy_from_slice(&point[..prefix_len]);
-		let suffix = &point[prefix_len..];
+		let (prefix, suffix) = point.split_at(prefix_len);
 
-		// Build one 256-entry subset-sum lookup table per byte of the words.
-		// The prefix tensor expansion has CHUNK_SIZE entries, one per word in a chunk.
-		// Split those entries into Word::BYTES groups of BITS_PER_BYTE.
-		let prefix_expansion = eq_ind_partial_eval_scalars::<F>(&prefix);
-		let lookups: [[F; 1 << BITS_PER_BYTE]; Word::BYTES] = array::from_fn(|byte| {
-			let group: [F; BITS_PER_BYTE] = prefix_expansion
-				[byte * BITS_PER_BYTE..(byte + 1) * BITS_PER_BYTE]
-				.try_into()
-				.expect("prefix_expansion has CHUNK_SIZE = Word::BYTES * BITS_PER_BYTE entries");
-			expand_subset_sums_array(group)
-		});
+		// One weight per word of a chunk, from the prefix.
+		// A point shorter than one chunk yields fewer weights than a chunk holds, and the table
+		// build reads the rest as zero.
+		// Those zeros pair with the repeated words a short list is filled with, so they add
+		// nothing.
+		let prefix_expansion = eq_ind_partial_eval_scalars::<F>(prefix);
+		let lookups = row_fold_tables::<F, { Word::BYTES }>(&prefix_expansion);
 
-		// The suffix tensor expansion provides one weight per chunk of CHUNK_SIZE words.
+		// One weight per chunk of CHUNK_SIZE words, from the suffix.
 		let suffix_weights = eq_ind_partial_eval::<F>(suffix);
 
 		Self {
@@ -539,91 +564,148 @@ impl<F: BinaryField> WordFolder<F> {
 		let chunks = duplicate_to_fixed_chunks::<CHUNK_SIZE>(words);
 		debug_assert_eq!(chunks.len(), self.suffix_weights.as_ref().len());
 
-		// Accumulate each chunk's contribution, scaled by its suffix weight.
-		// The accumulator stays in the chunk kernel's transposed bit layout until the end.
+		// Accumulate each chunk's contribution, scaled by that chunk's suffix weight.
 		let mut folded = [F::ZERO; Word::BITS];
 		for (chunk, &suffix_weight) in iter::zip(chunks.as_ref(), self.suffix_weights.as_ref()) {
-			let acc = fold_chunk(chunk, &self.lookups);
-			for (folded_i, acc_i) in iter::zip(&mut folded, acc) {
-				*folded_i += acc_i * suffix_weight;
-			}
+			accumulate_word_chunk(chunk, &self.lookups, suffix_weight, &mut folded);
 		}
 
-		transpose_accumulator(folded)
+		folded
 	}
 }
 
-/// Transposes a reduced chunk accumulator back into bit-position order.
+/// Builds the subset-sum tables of a bitwise row fold.
 ///
-/// The chunk kernel stores bit `BITS_PER_BYTE * j + a`'s contribution at index `BITS_PER_BYTE * a +
-/// j`. Transposing that `Word::BYTES`-by-`BITS_PER_BYTE` layout restores bit-position order.
-fn transpose_accumulator<F: BinaryField>(folded: [F; Word::BITS]) -> [F; Word::BITS] {
-	let mut result = [F::ZERO; Word::BITS];
-	for a in 0..BITS_PER_BYTE {
-		for j in 0..Word::BYTES {
-			result[BITS_PER_BYTE * j + a] = folded[BITS_PER_BYTE * a + j];
-		}
-	}
-	result
+/// # Overview
+///
+/// A row fold contracts a matrix over GF(2) against one weight per row:
+///
+/// ```text
+///     out[b] = sum_r weight[r] * bit_b(row[r])
+/// ```
+///
+/// Taking eight rows at a time turns that inner sum into a single table lookup.
+/// Table `g` covers rows `8g .. 8g+8` and holds every subset sum of their eight weights.
+/// A byte carrying those eight rows' bits at one column then indexes their contribution directly.
+///
+/// # Arguments
+///
+/// * `weights` - one weight per row, from the first row onwards
+///
+/// # Why short input is allowed
+///
+/// Weights past the end of the slice are read as zero.
+/// They would weight rows past the end of a chunk, which are themselves read as zero.
+/// So a zero weight and its absent row contribute nothing either way.
+/// This is what lets one table layout serve a chunk that the row list does not fill.
+pub(crate) fn row_fold_tables<F: BinaryField, const N_TABLES: usize>(
+	weights: &[F],
+) -> [[F; 1 << BITS_PER_BYTE]; N_TABLES] {
+	array::from_fn(|group| {
+		// Weights of the eight rows this table covers, zero where the slice has run out.
+		// A group beyond the end of the slice starts at its end, so it copies nothing.
+		let mut group_weights = [F::ZERO; BITS_PER_BYTE];
+		let start = (group * BITS_PER_BYTE).min(weights.len());
+		let available = (weights.len() - start).min(BITS_PER_BYTE);
+		group_weights[..available].copy_from_slice(&weights[start..start + available]);
+
+		// Enumerate all 256 subset sums, so any byte of set bits indexes its sum in one load.
+		expand_subset_sums_array(group_weights)
+	})
 }
 
-/// Folds a single chunk of [`CHUNK_SIZE`] words against the prefix lookup tables, accumulating into
-/// an array that is transposed relative to bit position (before scaling by the suffix weight).
+/// Folds one group of eight rows into a column accumulator.
 ///
-/// The entry at index `BITS_PER_BYTE * a + j` holds the contribution for bit position
-/// `BITS_PER_BYTE * j + a`, matching the permutation performed by [`transpose_bits`]; the caller
-/// transposes the reduced accumulator back into bit-position order.
-fn fold_chunk<F: BinaryField>(
-	chunk: &[Word; CHUNK_SIZE],
-	lookups: &[[F; 1 << BITS_PER_BYTE]; Word::BYTES],
-) -> [F; Word::BITS] {
-	// Reshape the chunk into one sub-array per lookup table, each holding BITS_PER_BYTE words.
-	let subchunks =
-		bytemuck::must_cast_ref::<[Word; CHUNK_SIZE], [[Word; BITS_PER_BYTE]; Word::BYTES]>(chunk);
+/// # Overview
+///
+/// Rows arrive one bit per scalar, so a row is one packed element and a column is a scalar index.
+/// One table covers one group, holding every subset sum of that group's eight row weights.
+///
+/// # Algorithm
+///
+/// Transposing the group exchanges its row axis with the low three bits of the column index:
+///
+/// ```text
+///     before:  element r, bit 8i + j  =  row r, column 8i + j
+///     after:   element j, bit 8i + t  =  row t, column 8i + j
+/// ```
+///
+/// So byte `i` of element `j` then carries the eight rows' bits at column `8i + j`.
+/// One lookup of that byte yields those rows' whole contribution to that column.
+///
+/// The accumulator is nested to match, as `[byte of column index][low three bits]`.
+/// Reading that nesting in order walks the columns in order.
+///
+/// # Preconditions
+///
+/// * The row width in bits must equal eight times the accumulator's outer length.
+/// * Rows past the end of the matrix must be passed as zero, which contributes nothing.
+#[inline]
+pub(crate) fn fold_row_group<F, PB, const N_TABLES: usize>(
+	rows: &[PB; BITS_PER_BYTE],
+	table: &[F; 1 << BITS_PER_BYTE],
+	acc: &mut [[F; BITS_PER_BYTE]; N_TABLES],
+) where
+	F: BinaryField,
+	PB: PackedField<Scalar = B1> + WithUnderlier,
+	PB::Underlier: Divisible<u8>,
+{
+	// One byte of a row per table is what makes the nesting below line up with the columns.
+	debug_assert_eq!(PB::WIDTH, BITS_PER_BYTE * N_TABLES);
 
-	let mut acc = [F::ZERO; Word::BITS];
-	for (subchunk, lookup) in iter::zip(subchunks, lookups) {
-		// After the transpose, byte `j` of output word `a` collects bit `BITS_PER_BYTE * j + a`
-		// across the BITS_PER_BYTE words of this sub-chunk. Looking it up sums the prefix weights
-		// of the words whose bit at that position is set.
-		let mut words = *subchunk;
-		transpose_bits(&mut words);
-		for (a, word) in words.iter().enumerate() {
-			for (j, &byte) in word.as_u64().to_le_bytes().iter().enumerate() {
-				acc[BITS_PER_BYTE * a + j] += lookup[byte as usize];
-			}
+	// The transpose consumes its input, so work on a copy and leave the caller's rows intact.
+	let mut group = *rows;
+	square_transpose_const_size::<PB, LOG_BITS_PER_BYTE, BITS_PER_BYTE>(&mut group);
+
+	for (j, row) in group.iter().enumerate() {
+		// Byte `i` holds this group's bits at column `8i + j`, so it indexes that column's sum.
+		for (i, byte) in Divisible::<u8>::value_iter(row.to_underlier()).enumerate() {
+			acc[i][j] += table[byte as usize];
 		}
 	}
-	acc
 }
 
-/// Bit-transposes the within-byte bit axis and the word axis of [`BITS_PER_BYTE`] words in place.
+/// Transposes square blocks of scalars across an array of packed elements, in place.
 ///
-/// Viewing the input and output as `BITS_PER_BYTE`×`Word::BYTES`×`BITS_PER_BYTE` bit matrices
-/// where the axes are (bit within a byte, byte within a word, word), this permutes
-/// `out[i][j][k] = in[k][j][i]`, leaving the byte-within-word axis `j` unchanged. After the call,
-/// byte `j` of word `i` holds, in bit `k`, the value of bit `BITS_PER_BYTE * j + i` of input word
-/// `k`.
-fn transpose_bits(words: &mut [Word; BITS_PER_BYTE]) {
-	// Mask `b` selects, within each byte, the bit positions whose within-byte index has bit `b`
-	// set.
-	const MASKS: [u64; 3] = [
-		0xaaaa_aaaa_aaaa_aaaa,
-		0xcccc_cccc_cccc_cccc,
-		0xf0f0_f0f0_f0f0_f0f0,
-	];
-	for (b, &mask) in MASKS.iter().enumerate() {
-		let d = 1 << b;
-		for k in 0..BITS_PER_BYTE {
-			if k & d == 0 {
-				// Swap the bit-`b`-set within-byte bits of word `k` with the bit-`b`-clear
-				// within-byte bits of word `k + d`, exchanging the within-byte bit axis with
-				// the word axis.
-				let lo = words[k].as_u64();
-				let hi = words[k + d].as_u64();
-				let t = ((lo >> d) ^ hi) & (mask >> d);
-				words[k] = Word::from_u64(lo ^ (t << d));
-				words[k + d] = Word::from_u64(hi ^ t);
+/// # Overview
+///
+/// View the array as a matrix of elements by scalar positions.
+/// This exchanges the element axis with the low `LOG_N` bits of the scalar position.
+///
+/// Const generic sizes let the compiler unroll the butterfly and keep the whole array in registers.
+///
+/// # Algorithm
+///
+/// A butterfly network over `LOG_N` rounds, as in Hacker's Delight, Section 7-3.
+/// Round `i` interleaves element pairs `2^(log_w + i)` apart at block granularity `2^i`.
+///
+/// # Preconditions
+///
+/// * The array length must be a power of two.
+/// * `LOG_N` must not exceed the base-2 log of the array length.
+/// * `LOG_N` must not exceed the base-2 log of the packed width.
+pub(crate) fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usize>(
+	elems: &mut [P; S],
+) {
+	let log_size = checked_log_2(S);
+
+	assert!(LOG_N <= P::LOG_WIDTH);
+	assert!(LOG_N <= log_size);
+
+	// Elements per block that stays contiguous through the butterfly.
+	let log_w = log_size - LOG_N;
+
+	for i in 0..LOG_N {
+		for j in 0..1 << (LOG_N - i - 1) {
+			for k in 0..1 << (log_w + i) {
+				// Partner elements for this round, one stride apart.
+				let idx0 = (j << (log_w + i + 1)) | k;
+				let idx1 = idx0 | (1 << (log_w + i));
+
+				// Interleaving at block granularity 2^i swaps the axes one bit at a time.
+				let (v0, v1) = elems[idx0].interleave(elems[idx1], i);
+				elems[idx0] = v0;
+				elems[idx1] = v1;
 			}
 		}
 	}
@@ -663,7 +745,7 @@ pub(crate) fn duplicate_to_fixed_chunks<const N: usize>(words: &[Word]) -> Cow<'
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::arch::OptimalPackedB128;
+	use binius_field::{PackedBinaryField128x1b, arch::OptimalPackedB128};
 	use binius_math::test_utils::{random_field_buffer, random_scalars};
 	use binius_utils::checked_arithmetics::checked_log_2;
 	use binius_verifier::config::B128;
@@ -860,27 +942,44 @@ mod tests {
 		out
 	}
 
-	#[test]
-	fn test_transpose_bits() {
-		let mut rng = StdRng::seed_from_u64(0);
-		for _ in 0..100 {
-			let input: [Word; BITS_PER_BYTE] =
-				array::from_fn(|_| Word::from_u64(rng.random::<u64>()));
-			let mut output = input;
-			transpose_bits(&mut output);
+	// Both row folds read a transposed group of eight rows the same way: byte `i` of element `j`
+	// carries those rows' bits at column `8i + j`. That reading is what makes one byte a whole
+	// lookup index, so pin the permutation directly.
+	//
+	//     input :  element r, bit 8i + j  =  row r, column 8i + j
+	//     output:  element j, bit 8i + t  =  row t, column 8i + j
+	fn check_group_transpose<PB>(seed: u64)
+	where
+		PB: PackedField<Scalar = B1> + WithUnderlier,
+	{
+		let mut rng = StdRng::seed_from_u64(seed);
 
-			// out[i][j][k] = in[k][j][i]: bit `BITS_PER_BYTE * j + k` of output word `i` equals bit
-			// `BITS_PER_BYTE * j + i` of input word `k`.
-			for i in 0..BITS_PER_BYTE {
-				for j in 0..Word::BYTES {
-					for k in 0..BITS_PER_BYTE {
-						let out_bit = (output[i].as_u64() >> (BITS_PER_BYTE * j + k)) & 1;
-						let in_bit = (input[k].as_u64() >> (BITS_PER_BYTE * j + i)) & 1;
-						assert_eq!(out_bit, in_bit, "mismatch at i={i}, j={j}, k={k}");
+		// Random bits over many trials cover every one of the 8 * WIDTH positions.
+		for _ in 0..100 {
+			let input: [PB; BITS_PER_BYTE] = array::from_fn(|_| PB::random(&mut rng));
+			let mut output = input;
+			square_transpose_const_size::<PB, LOG_BITS_PER_BYTE, BITS_PER_BYTE>(&mut output);
+
+			// Bytes of a row, so the outer index walks the high bits of the column index.
+			for i in 0..PB::WIDTH / BITS_PER_BYTE {
+				// Element of the transposed group, which is the low three bits of the column.
+				for j in 0..BITS_PER_BYTE {
+					// Row within the group, which becomes the bit position inside the byte.
+					for t in 0..BITS_PER_BYTE {
+						let got = output[j].get(i * BITS_PER_BYTE + t);
+						let want = input[t].get(i * BITS_PER_BYTE + j);
+						assert_eq!(got, want, "i={i}, j={j}, t={t}");
 					}
 				}
 			}
 		}
+	}
+
+	#[test]
+	fn transpose_exchanges_row_axis_with_low_column_bits() {
+		// The two row widths the folds run at: 64-bit words and 128-bit field elements.
+		check_group_transpose::<PackedBinaryField64x1b>(0);
+		check_group_transpose::<PackedBinaryField128x1b>(1);
 	}
 
 	#[test]

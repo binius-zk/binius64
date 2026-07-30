@@ -11,6 +11,7 @@ use crate::{
 	ripemd::ripemd160_fixed,
 	secp256k1::{Secp256k1, Secp256k1Affine},
 	sha256::sha256_fixed,
+	util::clear_high_bits,
 };
 
 /// Convert 20-byte address payload into five little-endian u32 words (circuit witness layout).
@@ -120,7 +121,7 @@ pub fn compress_pubkey(builder: &CircuitBuilder, x: &BigUint, y: &BigUint) -> Ve
 
 	// We need to produce 9 words (33 bytes) for sha256_fixed
 	// Each word represents 4 bytes packed in big-endian format
-	let lower_32_bits = |limb| builder.band(limb, builder.add_constant_64(0xFFFFFFFF));
+	let lower_32_bits = |limb| clear_high_bits(builder, limb, 32);
 	vec![
 		builder.bor(builder.shr(x.limbs[3], 40), prefix_byte),
 		lower_32_bits(builder.shr(x.limbs[3], 8)),

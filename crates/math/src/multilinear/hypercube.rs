@@ -10,7 +10,10 @@ use std::{iter, slice};
 
 use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField, field::FieldOps};
-use binius_utils::rayon::prelude::*;
+use binius_utils::rayon::{
+	prelude::*,
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+};
 
 use crate::{FieldBuffer, FieldVec, field_buffer::BufferData};
 
@@ -221,11 +224,16 @@ fn tensor_prod_eq_ind_reserved<Cube: Hypercube, P: PackedField, Data: VecLike<P>
 		// SAFETY: `[0, old_packed)` is the initialized low half, disjoint from the spare `high`
 		// half `[old_packed, 2 * old_packed)`; the two slices never overlap.
 		let low = unsafe { slice::from_raw_parts_mut(low_ptr, old_packed) };
-		(low, high).into_par_iter().for_each(|(low_i, high_i)| {
-			let [new_low, new_high] = Cube::expand_var(low_i, &packed_r_i);
-			*low_i = new_low;
-			high_i.write(new_high);
-		});
+		// Each coordinate doubles the expansion, starting from a single word.
+		// The first iterations are therefore far too small to be worth splitting.
+		(low, high)
+			.into_par_iter()
+			.with_min_task(WorkPerItem::FieldMuls)
+			.for_each(|(low_i, high_i)| {
+				let [new_low, new_high] = Cube::expand_var(low_i, &packed_r_i);
+				*low_i = new_low;
+				high_i.write(new_high);
+			});
 		// SAFETY: the loop above initialized every one of the `old_packed` spare words.
 		unsafe { data.set_len(2 * old_packed) };
 	}
@@ -335,8 +343,11 @@ pub fn eq_ind_truncate_low_inplace<Cube: Hypercube, P: PackedField, Data: Buffer
 		{
 			let mut split = values.split_half_mut();
 			let (mut lo, hi) = split.halves();
+			// Contracting a variable costs additions only.
+			// So the cost of one step is the two words it reads, not its arithmetic.
 			(lo.as_mut(), hi.as_ref())
 				.into_par_iter()
+				.with_min_task_bytes::<[P; 2]>()
 				.for_each(|(zero, one)| {
 					Cube::contract_var(zero, one);
 				});
@@ -416,6 +427,7 @@ pub fn scaled_eq_ind_partial_eval_scalars<Cube: Hypercube, F: FieldOps>(
 
 #[cfg(test)]
 mod tests {
+	use binius_utils::rayon::task_size::{min_len_for_bytes, min_len_for_work};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
@@ -580,6 +592,34 @@ mod tests {
 			let vertex = index_to_hypercube_point(n_vars, index);
 			assert_eq!(expansion.get(index), eq_ind::<OneCube, F>(&point, &vertex));
 		}
+	}
+
+	#[test]
+	fn test_expansion_and_truncation_above_split_threshold() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Invariant: a round splits only once it exceeds the minimum task size.
+		// Below that it runs inline, leaving the parallel path unexercised.
+		//
+		// Expansion and contraction carry different minimums, so the larger governs:
+		//
+		//     words in the last round = 2^(n_vars - 1) / scalars per word
+		//     smallest n_vars with words in the last round >= the larger minimum
+		//
+		// Every other test here is smaller, so this one covers the split.
+		let min_len = min_len_for_work(WorkPerItem::FieldMuls).max(min_len_for_bytes::<[P; 2]>());
+		let n_vars = (2 * min_len * P::WIDTH).next_power_of_two().ilog2() as usize;
+		let point = random_scalars::<F>(&mut rng, n_vars);
+
+		let packed = eq_ind_partial_eval::<OneCube, P>(&point);
+		let reference = eq_ind_partial_eval_scalars::<OneCube, F>(&point);
+		assert!(packed.iter_scalars().eq(reference.iter().copied()));
+
+		// Contraction above the threshold: strip the top variable and compare against a
+		// direct expansion of the prefix, whose rounds also run through the split path.
+		let mut truncated = packed;
+		eq_ind_truncate_low_inplace::<OneCube, _, _>(&mut truncated, n_vars - 1);
+		assert_eq!(truncated, eq_ind_partial_eval::<OneCube, P>(&point[..n_vars - 1]));
 	}
 
 	proptest! {

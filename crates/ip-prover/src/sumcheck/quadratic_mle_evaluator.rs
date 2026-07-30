@@ -353,7 +353,7 @@ mod tests {
 			let round = prover.execute();
 			assert_eq!(prover.round_claim(), expected, "claim recovered from coeffs");
 			let challenge = F::random(&mut rng);
-			expected = round.iter().map(|r| r.evaluate(challenge)).collect();
+			expected = round.iter().map(|r| r.evaluate(&challenge)).collect();
 			prover.fold(challenge);
 		}
 	}

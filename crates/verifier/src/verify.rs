@@ -31,6 +31,7 @@ use crate::{
 		bitand::{AndCheckOutput, verify_with_channel},
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, OperatorData},
+		zero,
 	},
 	ring_switch,
 };
@@ -201,17 +202,17 @@ impl IOPVerifier {
 			n_constraints = self.constraint_system.n_and_constraints()
 		)
 		.entered();
+		// The BitAnd reduction has no skip branch: an empty AND set still reduces, over the single
+		// all-zero padding row, so `None` is zero variables here.
+		let log_n_and = self.constraint_system.log_and_constraints().unwrap_or(0);
 		let (r_zhat_prime, bitand_claim) = {
-			// The BitAnd reduction has no skip branch: an empty AND set still reduces, over the
-			// single all-zero padding row, so `None` is zero variables here.
-			let log_n_constraints = self.constraint_system.log_and_constraints().unwrap_or(0);
 			let AndCheckOutput {
 				a_eval,
 				b_eval,
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = verify_bitand_reduction(log_n_constraints, &extended_subspace, channel)?;
+			} = verify_bitand_reduction(log_n_and, &extended_subspace, channel)?;
 			(z_challenge, OperatorData::new(eval_point, [a_eval, b_eval, c_eval]))
 		};
 		drop(bitand_guard);
@@ -230,7 +231,7 @@ impl IOPVerifier {
 				c_hi_evals,
 				eval_point,
 			}) => {
-				let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
+				let l_tilde = lagrange_evals_scalars(&domain_subspace, &r_zhat_prime);
 				let make_final_claim =
 					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
 				OperatorData::new(
@@ -261,7 +262,7 @@ impl IOPVerifier {
 				c_lo_evals,
 				c_hi_evals,
 			}) => {
-				let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
+				let l_tilde = lagrange_evals_scalars(&domain_subspace, &r_zhat_prime);
 				let make_final_claim =
 					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
 				OperatorData::new(
@@ -279,6 +280,18 @@ impl IOPVerifier {
 			None => OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
 		};
 
+		// [phase] Verify Zero Reduction - linear constraint verification
+		//
+		// The reduction reads nothing from the transcript and runs no sumcheck: a ZERO constraint
+		// is linear, so its oblong multilinearization vanishing at one unpredictable point
+		// certifies it. The point is the one the BitAnd sumcheck just output, extended when the
+		// ZERO set has more rows; the prover draws the same extension at the same place. Like
+		// BitAnd, an empty ZERO set still reduces, over the single all-zero padding row.
+		let log_n_zero = self.constraint_system.log_zero_constraints().unwrap_or(0);
+		let zero_point =
+			zero::reduction_point(&bitand_claim.r_x_prime, log_n_zero, || channel.sample());
+		let zero_claim = OperatorData::new(zero_point, [Channel::Elem::zero()]);
+
 		// [phase] Verify Shift Reduction - shift operations and constraint validation
 		let constraint_guard = tracing::info_span!(
 			"[phase] Verify Shift Reduction",
@@ -288,6 +301,7 @@ impl IOPVerifier {
 		.entered();
 		let shift_output = shift::verify(
 			self.constraint_system(),
+			&zero_claim,
 			&bitand_claim,
 			&intmul_claim,
 			&binmul_claim,
@@ -305,6 +319,7 @@ impl IOPVerifier {
 		shift::check_eval(
 			self.constraint_system(),
 			public,
+			&zero_claim,
 			&bitand_claim,
 			&intmul_claim,
 			&binmul_claim,
@@ -396,7 +411,7 @@ where
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
-			merkle_scheme,
+			&merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,

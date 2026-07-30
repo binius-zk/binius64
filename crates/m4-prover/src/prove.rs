@@ -33,7 +33,10 @@ use binius_prover::{
 	ring_switch::{self, RingSwitchOutput},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::checked_log_2,
+	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
+};
 use binius_verifier::{
 	config::B128,
 	protocols::{
@@ -41,6 +44,7 @@ use binius_verifier::{
 		bitand::AndCheckOutput,
 		intmul::IntMulOutput,
 		shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY},
+		zero,
 	},
 };
 
@@ -219,8 +223,11 @@ impl IOPProver {
 				debug_assert_eq!(a.len(), b.len());
 				let n_rows = a.len();
 				let mut c_column = alloc.alloc::<Word>(n_rows);
+				// One conjunction per item is a single instruction.
+				// The cost is streaming three word columns, two read and one written.
 				(&a[..], &b[..], c_column.spare_capacity_mut())
 					.into_par_iter()
+					.with_min_task_bytes::<[Word; 3]>()
 					.for_each(|(&a_i, &b_i, out)| {
 						out.write(a_i & b_i);
 					});
@@ -235,6 +242,15 @@ impl IOPProver {
 		// coordinates, the constraint index on the high coordinates.
 		let (r_rho_and, r_x_and) = eval_point.split_at(table.log_instances());
 
+		// The Zero reduction's claim, at the constraint half of the AND-check output point. See
+		// `IOPVerifier::verify` for why it skips the re-randomization below.
+		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
+		let zero_data = OperatorData {
+			evals: vec![B128::ZERO],
+			r_zhat_prime: z_challenge,
+			r_x_prime: zero::reduction_point(r_x_and, log_n_zero, || channel.sample()),
+		};
+
 		// Reduce to one shared instance point `r_rho` and the operand claims at that point.
 		//
 		// The re-randomization runs whenever IntMul or BinMul is present: BitAnd always enters,
@@ -244,7 +260,7 @@ impl IOPProver {
 			// oblong claims at their own instance point.
 			// BitAnd is already oblong.
 			// IntMul and BinMul are collapsed from their per-bit form.
-			let lagrange = lagrange_evals_scalars::<B128, B128>(&shift_domain, z_challenge);
+			let lagrange = lagrange_evals_scalars::<B128, B128>(&shift_domain, &z_challenge);
 			let and_columns = and_columns
 				.expect("AND columns are retained whenever there are IMUL or BMUL constraints");
 			let log_instances = table.log_instances();
@@ -326,6 +342,7 @@ impl IOPProver {
 				&self.key_collection,
 				&public_words,
 				&folded_witness,
+				zero_data,
 				bitand_data,
 				intmul_data,
 				binmul_data,
@@ -910,6 +927,131 @@ mod tests {
 				.finalize()
 				.expect("no trailing proof data");
 		}
+	}
+
+	// A batch carrying ZERO constraints alongside AND, IMUL and BMUL round-trips.
+	//
+	// This is the case the Zero reduction has to survive in M4 but not in the single-instance
+	// protocol: with IMUL and BMUL present, the instance re-randomization runs, transporting every
+	// other operation's operand claims onto a shared instance point. The Zero claim skips it — a
+	// ZERO constraint array vanishes identically, so its fold at any instance point is still
+	// identically zero — and the reduction closes at the constraint half of the AND-check output
+	// point regardless.
+	#[test]
+	fn protocol_round_trips_with_zero_constraints() {
+		use binius_frontend::{Options, Wire};
+
+		// The `bxor` chain lowers to ZERO constraints under the option, `band` keeps the AND set
+		// non-empty, and `imul`/`bmul` bring the other two operations along so the re-randomization
+		// runs.
+		//
+		// Gate fusion is off: it inlines a linear definition into the gate that consumes it, which
+		// would leave no linear constraint for the option to lower.
+		let builder = CircuitBuilder::with_opts(Options {
+			enable_zero_constraints: true,
+			enable_gate_fusion: false,
+			..Options::default()
+		});
+		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_witness());
+		let x = builder.bxor(inputs[0], inputs[1]);
+		let y = builder.bxor(x, inputs[2]);
+		builder.force_commit(x);
+		builder.force_commit(y);
+		let and_out = builder.band(inputs[0], inputs[1]);
+		builder.force_commit(and_out);
+		let (hi, lo) = builder.imul(inputs[0], inputs[1]);
+		builder.force_commit(hi);
+		builder.force_commit(lo);
+		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
+		builder.force_commit(c_lo);
+		builder.force_commit(c_hi);
+		let circuit = builder.build();
+
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
+		assert!(!cs.zero_constraints.is_empty(), "the fixture must emit ZERO constraints");
+		assert!(!cs.and_constraints.is_empty(), "the fixture must emit AND constraints");
+		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit IMUL constraints");
+		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit BMUL constraints");
+
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			for &wire in &inputs {
+				w[wire] = Word(rng.next_u64());
+			}
+		})
+		.unwrap();
+
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
+	// A batch violating a ZERO constraint is rejected.
+	//
+	// Dropping the last term of a satisfied ZERO constraint leaves one that the same table no
+	// longer satisfies — `x ^ y ^ z = 0` becomes `x ^ y = 0`, false for all but a vanishing
+	// fraction of the random inputs. The prover has nothing to send for the Zero reduction, so it
+	// claims the constant zero regardless; the shift reduction, running against the committed
+	// witness, is what catches the discrepancy.
+	#[test]
+	fn protocol_rejects_violated_zero_constraint() {
+		use binius_core::constraint_system::ZeroConstraint;
+		use binius_frontend::{Options, Wire};
+
+		// Gate fusion off, so the `bxor` survives as a linear constraint the option can lower.
+		let builder = CircuitBuilder::with_opts(Options {
+			enable_zero_constraints: true,
+			enable_gate_fusion: false,
+			..Options::default()
+		});
+		let inputs: [Wire; 3] = array::from_fn(|_| builder.add_witness());
+		let x = builder.bxor(inputs[0], inputs[1]);
+		builder.force_commit(x);
+		let circuit = builder.build();
+
+		let mut cs = circuit.constraint_system().clone();
+		let victim = cs
+			.zero_constraints
+			.iter()
+			.position(|c| c.val().len() > 2)
+			.expect("the fixture must emit a ZERO constraint with a droppable term");
+		let mut terms = cs.zero_constraints[victim].val().clone();
+		terms.pop();
+		cs.zero_constraints[victim] = ZeroConstraint::new(terms);
+		cs.validate().unwrap();
+
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			for &wire in &inputs {
+				w[wire] = Word(rng.next_u64());
+			}
+		})
+		.unwrap();
+
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		assert!(
+			verifier.verify(&mut verifier_transcript).is_err(),
+			"a violated ZERO constraint must not verify"
+		);
 	}
 
 	// The prover and verifier run the whole protocol on one transcript.

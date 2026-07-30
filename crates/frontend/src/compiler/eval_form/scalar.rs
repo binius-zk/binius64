@@ -1,6 +1,6 @@
 // Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-//! Single-instance bytecode interpreter for circuit evaluation.
+//! Single-instance execution context for circuit evaluation.
 //!
 //! This is the one-instance case of the shared executor.
 //! It evaluates the bytecode against a single value vector.
@@ -8,19 +8,19 @@
 
 use binius_core::{ValueIndex, ValueVec, Word};
 
-use super::exec::{EvalContext, Executor};
+use super::{
+	assertion::{MAX_ASSERTION_FAILURES, symbolicate},
+	exec::EvalContext,
+};
 use crate::compiler::{
 	circuit::PopulateError,
-	hints::HintRegistry,
 	pathspec::{PathSpec, PathSpecTree},
 };
 
-const MAX_ASSERTION_FAILURES: usize = 100;
-
 /// Assertion failure information
-pub struct AssertionFailure {
-	pub path_spec: PathSpec,
-	pub message: String,
+struct AssertionFailure {
+	path_spec: PathSpec,
+	message: String,
 }
 
 /// Execution context holds a reference to ValueVec during execution
@@ -48,36 +48,18 @@ impl<'a> ExecutionContext<'a> {
 		self,
 		path_spec_tree: Option<&PathSpecTree>,
 	) -> Result<(), PopulateError> {
-		if !self.assertion_failures.is_empty() {
-			let messages = if let Some(tree) = path_spec_tree {
-				// Symbolicate the path specs
-				self.assertion_failures
-					.into_iter()
-					.map(|f| {
-						let mut path = String::new();
-						tree.stringify(f.path_spec, &mut path);
-						if path.is_empty() {
-							f.message
-						} else {
-							format!("{}: {}", path, f.message)
-						}
-					})
-					.collect()
-			} else {
-				// No tree provided, just use messages as-is
-				self.assertion_failures
-					.into_iter()
-					.map(|f| f.message)
-					.collect()
-			};
-
-			Err(PopulateError {
-				messages,
-				total_count: self.assertion_count,
-			})
-		} else {
-			Ok(())
+		if self.assertion_failures.is_empty() {
+			return Ok(());
 		}
+
+		Err(PopulateError {
+			messages: self
+				.assertion_failures
+				.into_iter()
+				.map(|f| symbolicate(path_spec_tree, f.path_spec, f.message))
+				.collect(),
+			total_count: self.assertion_count,
+		})
 	}
 }
 
@@ -102,36 +84,5 @@ impl EvalContext for ExecutionContext<'_> {
 			self.assertion_failures
 				.push(AssertionFailure { path_spec, message });
 		}
-	}
-}
-
-pub struct Interpreter<'a> {
-	executor: Executor<'a>,
-}
-
-impl<'a> Interpreter<'a> {
-	pub const fn new(bytecode: &'a [u8], hints: &'a HintRegistry) -> Self {
-		Self {
-			executor: Executor::new(bytecode, hints),
-		}
-	}
-
-	/// Evaluate the bytecode against `value_vec`, returning any assertion failures as an error.
-	pub fn run_with_value_vec(
-		&mut self,
-		value_vec: &mut ValueVec,
-		path_spec_tree: Option<&PathSpecTree>,
-	) -> Result<(), PopulateError> {
-		let mut ctx = ExecutionContext::new(value_vec);
-		self.run(&mut ctx);
-		ctx.check_assertions(path_spec_tree)
-	}
-
-	/// Evaluate the bytecode against a caller-owned context.
-	///
-	/// Assertion failures are recorded on the context.
-	/// Call the context's assertion check to turn them into an error.
-	pub fn run(&mut self, ctx: &mut ExecutionContext<'_>) {
-		self.executor.run(ctx);
 	}
 }

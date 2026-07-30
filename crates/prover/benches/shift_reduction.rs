@@ -139,6 +139,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				prove::<F, P, _, _>(
 					&key_collection,
 					value_vec.combined_witness(),
+					OperatorData {
+						evals: vec![F::ZERO],
+						r_zhat_prime,
+						r_x_prime: Vec::new(),
+					},
 					prover_bitand_data,
 					prover_intmul_data,
 					OperatorData {
@@ -170,6 +175,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
+			OperatorData {
+				evals: vec![F::ZERO],
+				r_zhat_prime,
+				r_x_prime: Vec::new(),
+			},
 			prover_bitand_data,
 			prover_intmul_data,
 			OperatorData {
@@ -196,6 +206,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				verify(
 					&cs,
+					&VerifierOperatorData::new(Vec::new(), [F::ZERO]),
 					&verifier_bitand_data,
 					&verifier_intmul_data,
 					&verifier_binmul_data,
@@ -256,6 +267,16 @@ fn bench_shift_phases(c: &mut Criterion) {
 		},
 		F::random(&mut rng),
 	);
+	// SHA256 has no ZERO constraints, so the Zero operator is the zero claim at an empty point,
+	// matching the real prover.
+	let prepared_zero = PreparedOperatorData::new(
+		OperatorData {
+			evals: vec![F::ZERO],
+			r_zhat_prime,
+			r_x_prime: Vec::new(),
+		},
+		F::random(&mut rng),
+	);
 	// SHA256 has no BMUL constraints, so the BinMul operator is the zero claim at an empty point,
 	// matching the real prover (`prove.rs` `None` branch).
 	let prepared_bmul = PreparedOperatorData::new(
@@ -280,6 +301,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			&GlobalAllocator,
 			public_words,
 			&key_collection.public,
+			&prepared_zero,
 			&prepared_bitand,
 			&prepared_intmul,
 			&prepared_bmul,
@@ -288,6 +310,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			&GlobalAllocator,
 			hidden_words,
 			&key_collection.hidden,
+			&prepared_zero,
 			&prepared_bitand,
 			&prepared_intmul,
 			&prepared_bmul,
@@ -325,6 +348,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		&GlobalAllocator,
 		&key_collection,
+		&prepared_zero,
 		&prepared_bitand,
 		&prepared_intmul,
 		&prepared_bmul,
@@ -364,6 +388,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			build_monster_segments::<F, P, _>(
 				&GlobalAllocator,
 				&key_collection,
+				&prepared_zero,
 				&prepared_bitand,
 				&prepared_intmul,
 				&prepared_bmul,
@@ -387,9 +412,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 			|(public_folded, hidden_folded, public_monster, hidden_monster, r_j)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
 				run_sumcheck::<F, P, _, _>(
-					public_folded,
+					&public_folded,
 					hidden_folded,
-					public_monster,
+					&public_monster,
 					hidden_monster,
 					public_words,
 					r_j,

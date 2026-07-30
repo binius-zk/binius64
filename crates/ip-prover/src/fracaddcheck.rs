@@ -8,8 +8,9 @@ use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim, sumcheck::RoundCoeffs
 use binius_math::{
 	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
-use binius_utils::rayon::iter::{
-	IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+use binius_utils::rayon::{
+	iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
 use itertools::izip;
 
@@ -28,13 +29,6 @@ use crate::{
 ///
 /// Both claims share the same evaluation point, that of the layer they describe.
 pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
-
-/// Minimum packed words a worker takes per fractional-addition layer chunk.
-///
-/// One output word is three field multiplies, a few ns.
-/// Splitting work across workers costs tens of microseconds.
-/// Below a few thousand words per chunk the split dominates.
-const LAYER_BUILD_MIN_CHUNK: usize = 1 << 13;
 
 /// The store-based MLE-check prover for one fractional-addition layer.
 ///
@@ -117,7 +111,8 @@ where
 			// the pooled buffers:
 			//     a_0/b_0 + a_1/b_1 = (a_0*b_1 + a_1*b_0) / (b_0*b_1)
 			// Workers each take a contiguous run of words.
-			// A floor on the run length keeps tasks coarse enough to amortize the split.
+			// One word is three multiplies and an add, a few nanoseconds of work.
+			// A run must therefore be long enough to pay back handing it off.
 			let out_len = num_0.as_ref().len();
 			let mut num_data = alloc.alloc::<P>(out_len);
 			let mut den_data = alloc.alloc::<P>(out_len);
@@ -130,7 +125,7 @@ where
 				den_1.as_ref(),
 			)
 				.into_par_iter()
-				.with_min_len(LAYER_BUILD_MIN_CHUNK)
+				.with_min_task(WorkPerItem::FieldMuls)
 				.for_each(|(num_out, den_out, &num_0, &den_0, &num_1, &den_1)| {
 					num_out.write(num_0 * den_1 + num_1 * den_0);
 					den_out.write(den_0 * den_1);
@@ -388,7 +383,7 @@ where
 		.map(|(_frac, prover)| prover)
 		.collect();
 	let (mut fractions, eval_point) =
-		reduce_layer::<A, F, P, _>(alloc, layer_provers, eval_point, k, channel);
+		reduce_layer::<A, F, P, _>(alloc, layer_provers, &eval_point, k, channel);
 
 	// Drop the padded (2^k) selector slots, keeping one reduced fraction per input prover.
 	fractions.truncate(n);
@@ -459,7 +454,7 @@ where
 	let (provers, claimed_fractions, eval_point) = (0..n_layers - 1).fold(
 		(provers, claimed_fractions, eval_point),
 		|(provers, claimed_fractions, eval_point), _| {
-			batch_prove_layer(provers, claimed_fractions, eval_point, k, channel)
+			batch_prove_layer(provers, &claimed_fractions, &eval_point, k, channel)
 		},
 	);
 
@@ -513,7 +508,7 @@ fn combine_claims<F: Field>(coeffs: Vec<RoundCoeffs<F>>, batch_coeff: F) -> Roun
 fn reduce_layer<'a, A, F, P, MP>(
 	alloc: &'a A,
 	mut layer_provers: Vec<MP>,
-	eval_point: Vec<F>,
+	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
 ) -> (Vec<(F, F)>, Vec<F>)
@@ -660,8 +655,8 @@ where
 #[allow(clippy::type_complexity)]
 fn batch_prove_layer<'a, A, F, P>(
 	provers: Vec<FracAddCheckProver<'a, A, P>>,
-	claimed_fractions: Vec<(F, F)>,
-	eval_point: Vec<F>,
+	claimed_fractions: &[(F, F)],
+	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
 ) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<(F, F)>, Vec<F>)
@@ -674,7 +669,7 @@ where
 	// coordinates.
 	let alloc = provers[0].alloc;
 	let inner_coords = eval_point[k..].to_vec();
-	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, &claimed_fractions)
+	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_fractions)
 		.map(|(prover, &(num, den))| {
 			let (remaining, layer_prover, _cols) = prover.layer_prover((
 				MultilinearEvalClaim {

@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! Popcount circuit implementation for counting 1-bits in a 64-bit word.
 //!
@@ -31,6 +32,8 @@
 
 use binius_frontend::{CircuitBuilder, Wire};
 
+use crate::util::clear_high_bits;
+
 /// Computes the population count (number of 1-bits) of a 64-bit word.
 ///
 /// This function implements the SWAR algorithm to efficiently count bits
@@ -52,7 +55,6 @@ pub fn popcount(builder: &mut CircuitBuilder, input: Wire) -> Wire {
 	let mask_0f0f = builder.add_constant_64(0x0F0F0F0F0F0F0F0F); // 00001111...
 	let mask_00ff = builder.add_constant_64(0x00FF00FF00FF00FF); // 8 ones, 8 zeros...
 	let mask_0000ffff = builder.add_constant_64(0x0000FFFF0000FFFF); // 16 ones, 16 zeros...
-	let mask_00000000ffffffff = builder.add_constant_64(0x00000000FFFFFFFF); // 32 ones
 
 	// Step 1: Count bits in 2-bit groups using subtraction trick
 	// n = n - ((n >> 1) & 0x5555555555555555)
@@ -100,7 +102,7 @@ pub fn popcount(builder: &mut CircuitBuilder, input: Wire) -> Wire {
 	let (n_sum6, _carry) = builder.iadd(n_step5, n_shr_32);
 
 	// The final result is in the lower bits and represents the popcount (0-64)
-	builder.band(n_sum6, mask_00000000ffffffff)
+	clear_high_bits(builder, n_sum6, 32)
 }
 
 #[cfg(test)]

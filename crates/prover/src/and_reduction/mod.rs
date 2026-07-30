@@ -68,7 +68,7 @@ where
 		a,
 		b,
 		big_field_zerocheck_challenges,
-		prover_message_domain,
+		&prover_message_domain,
 	);
 
 	prover.prove_with_channel(channel, alloc)

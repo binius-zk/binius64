@@ -42,8 +42,7 @@ pub fn blake3_compress(
 	flags: Wire,
 ) -> [Wire; 8] {
 	// Split the counter into 32-bit halves.
-	let mask_lo32 = builder.add_constant(Word(0xFFFF_FFFF));
-	let t_low = builder.band(counter, mask_lo32);
+	let t_low = clear_high_bits(builder, counter, 32);
 	let t_high = builder.shr(counter, 32);
 
 	let v: [Wire; 16] = [
@@ -198,6 +197,9 @@ fn round(builder: &CircuitBuilder, state: &mut [Wire; 16], msg: &[Wire; 16], rou
 ///
 /// All wires carry 32-bit values in their low 32 bits, matching [`blake3_compress`].
 ///
+/// - A wire feeding a lane's low half is masked here, not assumed clean.
+/// - So a caller leaving the high 32 bits dirty cannot steer either compression.
+///
 /// - `cv`: input chaining value for the first compression (8 words).
 /// - `blocks`: the two message blocks (`blocks[0]` for C1, `blocks[1]` for C2), 16 words each.
 /// - `counter`: the 64-bit block counter, shared by both compressions. Sequential chaining only
@@ -236,12 +238,6 @@ pub fn blake3_compress_2x_seq(
 	let pack = |lo: Wire, hi: Wire| builder.bxor(lo, builder.shl(hi, 32));
 	let clear = |w: Wire| clear_high_bits(builder, w, 32);
 
-	// Bind the hint's claimed first-compression input (high 32 bits of each merged CV word) to the
-	// genuine input `cv` (low 32 bits), so the high lane provably compresses the real `cv`.
-	for (merged, cv_word) in iter::zip(merged_cv, cv) {
-		builder.assert_eq("blake3_compress_2x_seq.cv_in", builder.shr(merged, 32), clear(cv_word));
-	}
-
 	let merged_block: [Wire; 16] = array::from_fn(|i| pack(clear(blocks[1][i]), blocks[0][i]));
 
 	// Both compressions share the same block counter. Sequential chaining (C2 takes C1's output
@@ -264,14 +260,26 @@ pub fn blake3_compress_2x_seq(
 		merged_flags,
 	);
 
-	// Bind the hint: the first compression's in-circuit output (high lane of `out`) must equal the
-	// chaining value the hint fed into the second compression's input (low 32 bits of `merged_cv`).
-	for (merged, out_word) in iter::zip(merged_cv, out) {
-		builder.assert_eq(
-			"blake3_compress_2x_seq.c1_out",
-			clear(merged),
-			builder.shr(out_word, 32),
-		);
+	// Bind the hinted chaining value, one 64-bit equality per word.
+	// A single equality pins both lanes, since the two halves never overlap.
+	//
+	//     bits 32..64 <- the first compression's declared input, shifted up
+	//     bits  0..32 <- the first compression's in-circuit output, shifted down
+	//
+	//     hinted word:  [ high lane = input cv | low lane = C1 output ]
+	//                          must equal              must equal
+	//                     input cv << 32     ^     result >> 32
+	//
+	// Consequences, which together leave the hint no freedom:
+	// - The high lane provably compresses the caller's own chaining value.
+	// - The low lane provably chains from what the first compression really produced.
+	//
+	// Each side is one shift of a committed word, so no masking is needed:
+	// - Shifting up discards the input's own high bits.
+	// - Shifting down discards the result's low bits.
+	for (merged, (cv_word, out_word)) in iter::zip(merged_cv, iter::zip(cv, out)) {
+		let expected = builder.bxor(builder.shl(cv_word, 32), builder.shr(out_word, 32));
+		builder.assert_eq("blake3_compress_2x_seq.merged_cv", merged, expected);
 	}
 
 	out
@@ -381,8 +389,10 @@ mod tests {
 	use std::array;
 
 	use binius_frontend::CircuitBuilder;
+	use proptest::prelude::*;
 
 	use super::*;
+	use crate::blake3::{CHUNK_END, CHUNK_START, PARENT, ROOT};
 
 	// --- Circuit-level tests --------------------------------------------------------
 
@@ -733,5 +743,158 @@ mod tests {
 		let exp_c2 = ref_compress(&exp_c1, &block2, counter, 40, super::super::CHUNK_END);
 		assert_eq!(c1, exp_c1);
 		assert_eq!(c2, exp_c2);
+	}
+
+	// Spec known-answer vectors
+	//
+	// Traces from Appendix B of draft-aumasson-blake3-00, "The BLAKE3 Hashing Framework".
+	// They pin the compression function against the specification text itself.
+	// So they hold even if the reference crate and this circuit were wrong together.
+
+	#[test]
+	fn draft_b1_compression_matches_spec_trace() {
+		// Fixture state: the 4-byte message "IETF", hashed unkeyed.
+		//
+		//     word 0     : 46 54 45 49 read little-endian -> 0x46544549
+		//     words 1..16: zero, the 60 padding bytes
+		let mut block = [0u32; 16];
+		block[0] = 0x4654_4549;
+
+		// The message is one block, which is therefore the whole chunk and the tree root.
+		let flags = CHUNK_START | CHUNK_END | ROOT;
+		assert_eq!(flags, 0x0b, "spec trace records flags 0b");
+
+		// The length parameter counts application bytes only, so 4 rather than 64.
+		let expected = [
+			0x1ede_a283,
+			0xabe6_f4e6,
+			0x2489_6868,
+			0xcfc0_4e8f,
+			0x9470_c54c,
+			0xff82_a646,
+			0xd6b4_cbd1,
+			0xe281_5116,
+		];
+		// Check the off-circuit reference first, then the compiled circuit against the same words.
+		assert_eq!(ref_compress(&IV, &block, 0, 4, flags), expected);
+		assert_eq!(run_compress(IV, block, 0, 4, flags), expected);
+	}
+
+	#[test]
+	fn draft_b2_parent_compression_matches_spec_trace() {
+		// Fixture state: the tree root of a two-chunk message.
+		// A parent node's 64-byte block is its two children's chaining values, concatenated.
+		//
+		//     words 0..8 : left child's 32-byte chaining value
+		//     words 8..16: right child's 32-byte chaining value
+		let block = [
+			0xc8d6_3b32,
+			0xb1d9_fecb,
+			0xdbf2_dac7,
+			0x7fba_1e91,
+			0xa71a_614b,
+			0x022d_5eb6,
+			0x43b8_8567,
+			0x5fb9_8dbb,
+			0x70dc_03d8,
+			0xbe50_bb38,
+			0x4a0f_7bf3,
+			0xdb9d_008b,
+			0xc02b_11fb,
+			0xf2ae_5f91,
+			0x4c20_d218,
+			0x5f7d_b224,
+		];
+		// A parent node that is also the tree root, so it carries both flags.
+		// A parent always uses counter 0 and a full 64-byte block length.
+		let flags = PARENT | ROOT;
+		assert_eq!(flags, 0x0c, "spec trace records flags 0c");
+		let expected = [
+			0x3828_9de7,
+			0xd3cc_5a91,
+			0xbab0_1bb2,
+			0xf8ed_b576,
+			0xd7d3_08dc,
+			0x5bb6_0d8d,
+			0x370f_3f71,
+			0x46c3_58ec,
+		];
+		// Check the off-circuit reference first, then the compiled circuit against the same words.
+		assert_eq!(ref_compress(&IV, &block, 0, 64, flags), expected);
+		assert_eq!(run_compress(IV, block, 0, 64, flags), expected);
+	}
+
+	// Circuit-versus-reference properties
+
+	/// A 32-bit word, weighted towards the values that stress carry propagation.
+	///
+	/// One case in four is drawn from the boundary set rather than uniformly.
+	///
+	/// - Zero and one exercise the shortest carry chains.
+	/// - All-ones makes every position carry.
+	/// - The lone top bit and the all-ones-below-it value straddle the lane boundary.
+	fn word32() -> impl Strategy<Value = u32> {
+		prop_oneof![
+			3 => any::<u32>(),
+			1 => prop_oneof![Just(0), Just(1), Just(u32::MAX), Just(1 << 31), Just(u32::MAX >> 1)],
+		]
+	}
+
+	fn cv8() -> impl Strategy<Value = [u32; 8]> {
+		prop::array::uniform8(word32())
+	}
+
+	fn block16() -> impl Strategy<Value = [u32; 16]> {
+		prop::array::uniform16(word32())
+	}
+
+	proptest! {
+		// Each case compiles and evaluates a whole compression circuit.
+		// So the sample stays small and the boundary weighting above carries the coverage.
+		#![proptest_config(ProptestConfig::with_cases(16))]
+
+		#[test]
+		fn compress_matches_reference(
+			cv in cv8(), block in block16(), counter in any::<u64>(),
+			block_len in 0u32..=64, flags in any::<u32>(),
+		) {
+			prop_assert_eq!(
+				run_compress(cv, block, counter, block_len, flags),
+				ref_compress(&cv, &block, counter, block_len, flags)
+			);
+		}
+
+		#[test]
+		fn compress_2x_lanes_are_independent(
+			cv0 in cv8(), cv1 in cv8(), b0 in block16(), b1 in block16(),
+			t0 in any::<u64>(), t1 in any::<u64>(),
+			l0 in 0u32..=64, l1 in 0u32..=64, f0 in any::<u32>(), f1 in any::<u32>(),
+		) {
+			// Invariant: the two lanes share one core but must not leak into each other.
+			// Every parameter differs per lane, so any carry or rotate crossing bit 32 shows up.
+			let actual = run_compress_2x([cv0, cv1], [b0, b1], [t0, t1], [l0, l1], [f0, f1]);
+			// Each lane is checked against a reference run of its own inputs alone.
+			prop_assert_eq!(actual[0], ref_compress(&cv0, &b0, t0, l0, f0));
+			prop_assert_eq!(actual[1], ref_compress(&cv1, &b1, t1, l1, f1));
+		}
+
+		#[test]
+		fn compress_2x_seq_matches_two_chained_references(
+			cv in cv8(), b1 in block16(), b2 in block16(), counter in any::<u64>(),
+			l1 in 0u32..=64, l2 in 0u32..=64, f1 in any::<u32>(), f2 in any::<u32>(),
+		) {
+			// Invariant: the two lanes run one after the other, not side by side.
+			// The second compression's input chaining value is the first one's output.
+			//
+			//     cv --block 1--> C1 --block 2--> C2
+			//
+			// The first output arrives through a hint, so this is what pins that hint honest.
+			let (c2, c1) = run_compress_2x_seq(cv, b1, b2, counter, l1, f1, l2, f2);
+			// The high lane must reproduce a plain compression of the caller's chaining value.
+			let exp_c1 = ref_compress(&cv, &b1, counter, l1, f1);
+			prop_assert_eq!(c1, exp_c1);
+			// The low lane must then compress that result, not anything else.
+			prop_assert_eq!(c2, ref_compress(&exp_c1, &b2, counter, l2, f2));
+		}
 	}
 }

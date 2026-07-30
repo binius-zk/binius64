@@ -105,6 +105,7 @@ needless_range_loop = "allow"
 missing_const_for_fn = "warn"
 needless_collect = "warn"
 redundant_clone = "warn"
+needless_pass_by_value = "warn"
 
 [workspace.metadata.typos]
 default.extend-words = { "typ" = "typ", "Toom" = "Toom", "inouts" = "inouts" }

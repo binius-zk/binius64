@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! BIP32 hierarchical-deterministic key derivation as a Binius64 circuit gadget.
 //!
@@ -27,6 +28,7 @@ use binius_circuits::{
 	multiplexer::multi_wire_multiplex,
 	secp256k1::{Secp256k1, Secp256k1Affine},
 	sha256::sha256_fixed,
+	util::clear_high_bits,
 };
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
@@ -161,7 +163,7 @@ fn assemble_message(b: &CircuitBuilder, prefix: Wire, value: &[Wire; 4], index: 
 	let m1 = b.bxor(b.shl(value[0], 56), b.shr(value[1], 8));
 	let m2 = b.bxor(b.shl(value[1], 56), b.shr(value[2], 8));
 	let m3 = b.bxor(b.shl(value[2], 56), b.shr(value[3], 8));
-	let index_bytes = b.band(index, b.add_constant_64(0xFFFF_FFFF));
+	let index_bytes = clear_high_bits(b, index, 32);
 	let m4 = b.bxor(b.shl(value[3], 56), b.shl(index_bytes, 24));
 	[m0, m1, m2, m3, m4]
 }

@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
 use super::legraph::LeGraph;
@@ -5,7 +6,7 @@ use crate::compiler::{
 	Wire,
 	constraint_builder::{
 		ConstraintBuilder, Shift, ShiftedWire, WireAndConstraint, WireBmulConstraint,
-		WireImulConstraint, WireOperand,
+		WireImulConstraint, WireLinearConstraint, WireOperand,
 	},
 	gate_fusion::legraph::ConstraintRef,
 };
@@ -20,13 +21,17 @@ pub struct Patch {
 	/// The constraint set that is going to be replaced with this one.
 	subsumes: Vec<ConstraintRef>,
 	/// The new constraints that is going to be added to the graph.
-	added: NonLinearConstraint,
+	added: AddedConstraint,
 }
 
-enum NonLinearConstraint {
+enum AddedConstraint {
 	And(WireAndConstraint),
 	Imul(WireImulConstraint),
 	Bmul(WireBmulConstraint),
+	/// A committed linear definition, kept linear so that
+	/// [`ConstraintBuilder::build`](crate::compiler::constraint_builder::ConstraintBuilder::build)
+	/// picks its lowering.
+	Linear(WireLinearConstraint),
 }
 
 /// Apply the given patches to the constraint builder given.
@@ -41,6 +46,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	let mut new_and_constraints = Vec::new();
 	let mut new_imul_constraints = Vec::new();
 	let mut new_bmul_constraints = Vec::new();
+	let mut new_linear_constraints = Vec::new();
 
 	// Collect all subsumed constraints and new constraints to add.
 	// Patches may name the same constraint more than once, which sets the same flag twice.
@@ -54,12 +60,11 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 			}
 		}
 		match patch.added {
-			NonLinearConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
-			NonLinearConstraint::Imul(imul_constraint) => {
-				new_imul_constraints.push(imul_constraint)
-			}
-			NonLinearConstraint::Bmul(bmul_constraint) => {
-				new_bmul_constraints.push(bmul_constraint)
+			AddedConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
+			AddedConstraint::Imul(imul_constraint) => new_imul_constraints.push(imul_constraint),
+			AddedConstraint::Bmul(bmul_constraint) => new_bmul_constraints.push(bmul_constraint),
+			AddedConstraint::Linear(linear_constraint) => {
+				new_linear_constraints.push(linear_constraint)
 			}
 		}
 	}
@@ -74,6 +79,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	cb.and_constraints.extend(new_and_constraints);
 	cb.imul_constraints.extend(new_imul_constraints);
 	cb.bmul_constraints.extend(new_bmul_constraints);
+	cb.linear_constraints.extend(new_linear_constraints);
 }
 
 /// Removes the constraints flagged as subsumed, preserving the order of the rest.
@@ -90,11 +96,11 @@ fn retain_unsubsumed<T>(constraints: &mut Vec<T>, subsumed: &[bool]) {
 /// AND constraints.
 ///
 /// NB: patches may have overlapping subsumes.
-pub fn build(cb: &ConstraintBuilder, leg: &LeGraph, all_one: Wire) -> Vec<Patch> {
+pub fn build(cb: &ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
 	let mut patches = vec![];
 	build_non_linear_patches(cb, leg, &mut patches);
 	for committed in leg.commit_set().iter() {
-		let patch = build_committed_lin_def_patch(cb, leg, all_one, committed);
+		let patch = build_committed_lin_def_patch(cb, leg, committed);
 		patches.push(patch);
 	}
 	patches
@@ -129,14 +135,14 @@ fn build_non_lin_patch(
 			let a = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].a);
 			let b = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].b);
 			let c = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].c);
-			NonLinearConstraint::And(WireAndConstraint { a, b, c })
+			AddedConstraint::And(WireAndConstraint { a, b, c })
 		}
 		ConstraintRef::Imul { index } => {
 			let a = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].a);
 			let b = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].b);
 			let lo = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].lo);
 			let hi = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].hi);
-			NonLinearConstraint::Imul(WireImulConstraint { a, b, lo, hi })
+			AddedConstraint::Imul(WireImulConstraint { a, b, lo, hi })
 		}
 		ConstraintRef::Bmul { index } => {
 			let bmul = &cb.bmul_constraints[index];
@@ -146,7 +152,7 @@ fn build_non_lin_patch(
 			let b_hi = process_operand(cb, leg, &mut subsumes, &bmul.b_hi);
 			let c_lo = process_operand(cb, leg, &mut subsumes, &bmul.c_lo);
 			let c_hi = process_operand(cb, leg, &mut subsumes, &bmul.c_hi);
-			NonLinearConstraint::Bmul(WireBmulConstraint {
+			AddedConstraint::Bmul(WireBmulConstraint {
 				a_lo,
 				a_hi,
 				b_lo,
@@ -172,12 +178,12 @@ fn build_non_lin_patch(
 /// Given the wire that defines a linear definition build a patch that replaces the original linear
 /// definition and all definitions that could be inlined into it. Therefore, the returned
 /// patch will replace the given linear definition and the cone of linear definitions it used.
-fn build_committed_lin_def_patch(
-	cb: &ConstraintBuilder,
-	leg: &LeGraph,
-	all_one: Wire,
-	root: Wire,
-) -> Patch {
+///
+/// The patch stays linear: the wire has to be committed, but *how* the defining equation is
+/// enforced — an AND against the all-ones wire, or a Zero constraint — is
+/// [`ConstraintBuilder::build`](crate::compiler::constraint_builder::ConstraintBuilder::build)'s
+/// decision, taken from the `enable_zero_constraints` option.
+fn build_committed_lin_def_patch(cb: &ConstraintBuilder, leg: &LeGraph, root: Wire) -> Patch {
 	// `subsumes` is a list of constraints that become redundant with application of this patch.
 	// The first redundant constraint is the linear definition that's being committed.
 	let mut subsumes = vec![leg.lin_def_constraint_ref(root)];
@@ -185,21 +191,12 @@ fn build_committed_lin_def_patch(
 	let old_operand = leg.lin_def_operand(cb, root);
 	let new_operand = process_operand(cb, leg, &mut subsumes, old_operand);
 
-	// Create an AND constraint that enforces: root = new_operand
+	// Enforce: root = new_operand, over the inlined cone rather than the original definition.
 	Patch {
 		subsumes,
-		added: NonLinearConstraint::And(WireAndConstraint {
-			a: new_operand,
-			b: vec![ShiftedWire {
-				wire: all_one,
-				shift: Shift::None,
-			}]
-			.into(),
-			c: vec![ShiftedWire {
-				wire: root,
-				shift: Shift::None,
-			}]
-			.into(),
+		added: AddedConstraint::Linear(WireLinearConstraint {
+			rhs: new_operand,
+			dst: root,
 		}),
 	}
 }
@@ -351,34 +348,24 @@ mod tests {
 	}
 
 	#[test]
-	fn test_committed_linear_of_constant_all_ones_shape() {
-		// Directly exercise build_committed_lin_def_patch for a constant RHS.
+	fn test_committed_lin_def_patch_stays_linear() {
+		// Directly exercise build_committed_lin_def_patch: a committed definition keeps its linear
+		// shape, leaving the AND-vs-Zero lowering to `ConstraintBuilder::build`.
 		fn w(id: u32) -> Wire {
 			Wire::from_u32(id)
 		}
 
 		let mut cb = ConstraintBuilder::new();
-		// x = const (opaque wire in this builder-level test)
-		// y = x  (linear def of a single opaque term)
-		cb.linear(expr::xor2(w(0), w(0)), w(1));
-		// Above uses xor2(w0,w0) which cancels logically, but at builder-level it's two terms.
-		// Use a simpler single-term variant as well
-		let mut cb_single = ConstraintBuilder::new();
-		cb_single.linear(expr::xor2(w(0), w(2)), w(3));
+		cb.linear(expr::xor2(w(0), w(2)), w(3));
 
-		let leg = LeGraph::new(&cb_single);
-		let all_one = w(9);
-		let patch = super::build_committed_lin_def_patch(&cb_single, &leg, all_one, w(3));
+		let leg = LeGraph::new(&cb);
+		let patch = super::build_committed_lin_def_patch(&cb, &leg, w(3));
 		match patch.added {
-			NonLinearConstraint::And(ref andc) => {
-				// b must be exactly [all_one]
-				assert_eq!(andc.b.len(), 1);
-				assert_eq!(andc.b[0].wire, all_one);
-				assert!(!andc.a.is_empty());
-				assert_eq!(andc.c.len(), 1);
-				assert_eq!(andc.c[0].wire, w(3));
+			AddedConstraint::Linear(ref linc) => {
+				assert!(!linc.rhs.is_empty());
+				assert_eq!(linc.dst, w(3));
 			}
-			_ => panic!("expected AND constraint in committed patch"),
+			_ => panic!("expected linear constraint in committed patch"),
 		}
 	}
 
@@ -401,7 +388,7 @@ mod tests {
 		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
-		let patches = super::build(&cb, &leg, w(9));
+		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
@@ -436,7 +423,7 @@ mod tests {
 		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
-		let patches = super::build(&cb, &leg, w(40));
+		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
@@ -512,7 +499,7 @@ mod tests {
 				crate::compiler::gate_fusion::commit_set::run_decide_commit_set(
 					&mut leg, &mut stat,
 				);
-				let patches = super::build(&cb, &leg, w(7));
+				let patches = super::build(&cb, &leg);
 				let mut cb2 = cb;
 				super::apply_patches(&mut cb2, patches);
 
@@ -572,9 +559,9 @@ mod tests {
 		map
 	}
 
-	fn assert_operand_eq(actual: &WireOperand, expected: Vec<ShiftedWire>, ctx: &str) {
+	fn assert_operand_eq(actual: &WireOperand, expected: &[ShiftedWire], ctx: &str) {
 		let am = operand_count_map(actual.as_slice());
-		let em = operand_count_map(&expected);
+		let em = operand_count_map(expected);
 		assert_eq!(
 			am, em,
 			"operand mismatch for {}\nexpected: {:?}\nactual:   {:?}",
@@ -802,7 +789,7 @@ mod tests {
 		let patches = vec![
 			Patch {
 				subsumes: vec![ConstraintRef::And { index: 1 }],
-				added: NonLinearConstraint::And(WireAndConstraint {
+				added: AddedConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(30),
 						shift: Shift::None,
@@ -822,7 +809,7 @@ mod tests {
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Linear { index: 0 }],
-				added: NonLinearConstraint::And(WireAndConstraint {
+				added: AddedConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(33),
 						shift: Shift::None,
@@ -842,7 +829,7 @@ mod tests {
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Imul { index: 0 }],
-				added: NonLinearConstraint::Imul(WireImulConstraint {
+				added: AddedConstraint::Imul(WireImulConstraint {
 					a: vec![ShiftedWire {
 						wire: w(36),
 						shift: Shift::None,
@@ -931,15 +918,17 @@ mod tests {
 		assert!(!leg.commit_set().contains(w(2)), "t should not be committed");
 		assert!(!leg.commit_set().contains(w(4)), "z should not be committed");
 
-		let patches = super::build(&cb, &leg, w(9));
+		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb; // clone-by-move and apply patches
 		super::apply_patches(&mut cb2, patches);
 
 		// Expectations:
-		// - AND constraints: start 2, both subsumed and replaced (2), plus 1 from committed y => 3
-		assert_eq!(cb2.and_constraints.len(), 3);
-		// - Linear constraints: t, y, z all subsumed => 0 remaining
-		assert_eq!(cb2.linear_constraints.len(), 0);
+		// - AND constraints: start 2, both subsumed and replaced => 2
+		assert_eq!(cb2.and_constraints.len(), 2);
+		// - Linear constraints: t, y, z all subsumed, and committed y re-added as a linear
+		//   definition over the inlined cone => 1 remaining
+		assert_eq!(cb2.linear_constraints.len(), 1);
+		assert_eq!(cb2.linear_constraints[0].dst, w(3));
 	}
 
 	#[test]
@@ -967,7 +956,7 @@ mod tests {
 		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
-		let patches = super::build(&cb, &leg, w(7));
+		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
@@ -976,7 +965,7 @@ mod tests {
 		let a = &cb2.imul_constraints[0].a;
 		assert_operand_eq(
 			a,
-			vec![
+			&[
 				ShiftedWire {
 					wire: w(0),
 					shift: Shift::None,
@@ -1024,7 +1013,7 @@ mod tests {
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		assert!(leg.commit_set().contains(w(1)), "t_committed should be committed");
-		let patches = super::build(&cb, &leg, w(8));
+		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
@@ -1032,7 +1021,7 @@ mod tests {
 		let m = &cb2.imul_constraints[0];
 		assert_operand_eq(
 			&m.a,
-			vec![ShiftedWire {
+			&[ShiftedWire {
 				wire: w(1),
 				shift: Shift::Sll(30),
 			}],
@@ -1040,7 +1029,7 @@ mod tests {
 		);
 		assert_operand_eq(
 			&m.b,
-			vec![
+			&[
 				ShiftedWire {
 					wire: w(3),
 					shift: Shift::None,
@@ -1075,7 +1064,7 @@ mod tests {
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		assert!(leg.commit_set().contains(w(1)), "inner t should be committed");
-		let patches = super::build(&cb, &leg, w(8));
+		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
@@ -1083,7 +1072,7 @@ mod tests {
 		let m = &cb2.imul_constraints[0];
 		assert_operand_eq(
 			&m.hi,
-			vec![ShiftedWire {
+			&[ShiftedWire {
 				wire: w(1),
 				shift: Shift::Sll(20),
 			}],
@@ -1091,7 +1080,7 @@ mod tests {
 		);
 		assert_operand_eq(
 			&m.lo,
-			vec![
+			&[
 				ShiftedWire {
 					wire: w(3),
 					shift: Shift::None,

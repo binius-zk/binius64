@@ -222,7 +222,7 @@ mod tests {
 		use binius_core::{ValueIndex, ValueVec, ValueVecLayout};
 
 		use crate::compiler::{
-			eval_form::{BytecodeBuilder, interpreter::Interpreter},
+			eval_form::{BytecodeBuilder, exec::Executor, scalar::ExecutionContext},
 			gate,
 			gate_graph::Wire,
 		};
@@ -249,10 +249,9 @@ mod tests {
 		let mut builder = BytecodeBuilder::new();
 		gate::emit_gate_bytecode(gate, graph, &mut builder, wire_to_reg, hints);
 		let (bytecode, _) = builder.finalize();
-		let mut interpreter = Interpreter::new(&bytecode, hints);
-		interpreter
-			.run_with_value_vec(&mut value_vec, None)
-			.map_err(|e| format!("{e:?}"))?;
+		let mut ctx = ExecutionContext::new(&mut value_vec);
+		Executor::new(&bytecode, hints).run(&mut ctx);
+		ctx.check_assertions(None).map_err(|e| format!("{e:?}"))?;
 		let start = shape.const_in.len() + shape.n_in;
 		Ok((start..start + shape.n_out)
 			.map(|i| value_vec[ValueIndex(i as u32)])

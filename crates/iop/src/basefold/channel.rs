@@ -107,7 +107,7 @@ where
 			return Ok(());
 		}
 
-		verify_batch_zk_basefold(&mut channel, oracle_specs, fri_params, oracle_commitments, queue)
+		verify_batch_zk_basefold(&mut channel, oracle_specs, fri_params, &oracle_commitments, queue)
 	}
 }
 
@@ -132,7 +132,7 @@ fn verify_batch_zk_basefold<F, Channel>(
 	channel: &mut Channel,
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
-	oracle_commitments: Vec<Channel::Commitment>,
+	oracle_commitments: &[Channel::Commitment],
 	relations: Vec<OracleLinearRelation<BaseFoldOracle, F>>,
 ) -> Result<(), Error>
 where
@@ -200,7 +200,7 @@ where
 			alpha_i * transparent_eval * pad_eq
 		})
 		.collect::<Vec<_>>();
-	let expected = evaluate_univariate(&contributions, sumcheck_batch_coeff);
+	let expected = evaluate_univariate(&contributions, &sumcheck_batch_coeff);
 	channel.assert_zero(sumcheck_reduced_eval - expected)?;
 
 	// === Phase B: single combined-FRI MLE-check over the piecewise-concatenated oracle ===
@@ -225,7 +225,7 @@ where
 	// The opening routine asserts the final FRI/MLE-check consistency internally.
 	basefold::verify_mlecheck_basefold(
 		fri_params,
-		&oracle_commitments,
+		oracle_commitments,
 		s_prime,
 		&point,
 		gamma,

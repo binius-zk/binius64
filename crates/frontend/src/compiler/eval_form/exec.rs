@@ -55,8 +55,8 @@ pub trait EvalContext {
 /// A bytecode program together with a cursor into it.
 ///
 /// The cursor advances as the dispatch loop consumes opcodes and operands.
-/// One executor drives one pass over the bytecode.
-/// The interpreters build a fresh executor per run, so the cursor starts at the first instruction.
+/// One executor drives one pass over the bytecode, and [`Self::run`] consumes it.
+/// So a cursor left at the end of the program can never be run a second time.
 pub struct Executor<'a> {
 	bytecode: &'a [u8],
 	hints: &'a HintRegistry,
@@ -81,7 +81,7 @@ impl<'a> Executor<'a> {
 	/// # Panics
 	///
 	/// Panics on an unknown opcode, which can only happen if the bytecode is malformed.
-	pub fn run<C: EvalContext>(&mut self, ctx: &mut C) {
+	pub fn run<C: EvalContext>(mut self, ctx: &mut C) {
 		while self.pc < self.bytecode.len() {
 			let byte = self.read_u8();
 			let opcode = EvalOpcode::from_byte(byte)
@@ -111,10 +111,6 @@ impl<'a> Executor<'a> {
 				// 32-bit operations
 				EvalOpcode::Iadd32CinCout => self.exec_iadd32_cin_cout(ctx),
 				EvalOpcode::Iadd32Cout => self.exec_iadd32_cout(ctx),
-
-				// Masks
-				EvalOpcode::MaskLow => self.exec_mask_low(ctx),
-				EvalOpcode::MaskHigh => self.exec_mask_high(ctx),
 
 				// Assertions
 				EvalOpcode::AssertEq => self.exec_assert_eq(ctx),
@@ -343,39 +339,6 @@ impl<'a> Executor<'a> {
 			let (sum, cout) = ctx.load(src1, i).iadd_cout_32(ctx.load(src2, i));
 			ctx.store(dst_sum, i, sum);
 			ctx.store(dst_cout, i, cout);
-		}
-	}
-
-	// Mask operations
-	fn exec_mask_low<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let n_bits = self.read_u8();
-		// The mask depends only on the immediate, so build it once for the whole batch.
-		let mask = if n_bits >= 64 {
-			Word::ALL_ONE
-		} else {
-			Word::from_u64((1u64 << n_bits) - 1)
-		};
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i) & mask;
-			ctx.store(dst, i, val);
-		}
-	}
-
-	fn exec_mask_high<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let n_bits = self.read_u8();
-		// The mask depends only on the immediate, so build it once for the whole batch.
-		let mask = if n_bits >= 64 {
-			Word::ALL_ONE
-		} else {
-			Word::from_u64(!((1u64 << (64 - n_bits)) - 1))
-		};
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i) & mask;
-			ctx.store(dst, i, val);
 		}
 	}
 

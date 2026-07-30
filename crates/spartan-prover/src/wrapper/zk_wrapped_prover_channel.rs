@@ -218,7 +218,7 @@ where
 
 		// Validate and generate the outer proof.
 		outer_prover.prove::<P, _, _>(
-			witness,
+			&witness,
 			precommit_oracle,
 			precommit_packed,
 			rng,

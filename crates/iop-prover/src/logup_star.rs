@@ -94,7 +94,7 @@ where
 		.iter()
 		.map(|looker| looker.eval_claim)
 		.collect::<Vec<_>>();
-	let combined_eval_claim = evaluate_univariate(&claims, gamma);
+	let combined_eval_claim = evaluate_univariate(&claims, &gamma);
 
 	// Run the reduction over the committed Y and the numerators, viewing the channel as IP.
 	let output = reduction::prove_reduction(
@@ -389,7 +389,7 @@ mod tests {
 		let oracle_specs = vec![OracleSpec::new_zk(m)];
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
+			&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,

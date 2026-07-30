@@ -17,7 +17,13 @@ use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
+};
 use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
@@ -57,6 +63,7 @@ use crate::fold_word::fold_words;
 pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
+	zero_data: &PreparedOperatorData<F>,
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
 	binmul_data: &PreparedOperatorData<F>,
@@ -92,6 +99,7 @@ where
 	let (public_monster, hidden_monster) = build_monster_segments(
 		alloc,
 		key_collection,
+		zero_data,
 		bitand_data,
 		intmul_data,
 		binmul_data,
@@ -101,9 +109,9 @@ where
 	);
 
 	run_sumcheck(
-		public_folded,
+		&public_folded,
 		hidden_folded,
-		public_monster,
+		&public_monster,
 		hidden_monster,
 		public_words,
 		r_j,
@@ -139,6 +147,7 @@ where
 	// The dense hidden-segment pass.
 	let wide_dense = (hidden_folded.as_ref(), hidden_monster.as_ref())
 		.into_par_iter()
+		.with_min_task(WorkPerItem::FieldMuls)
 		.map(|(&hidden_i, &monster_i)| P::wide_mul(hidden_i, monster_i))
 		.reduce(<P as WideMul>::Output::default, |lhs, rhs| lhs + rhs);
 
@@ -183,6 +192,7 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>, Data: DerefMut<Target = [
 	hidden
 		.as_mut()
 		.par_iter_mut()
+		.with_min_task(WorkPerItem::FieldMuls)
 		.for_each(|hidden_i| *hidden_i *= alpha_broadcast);
 
 	// Add the small public prefix sequentially. Its trailing partial packed element carries zero
@@ -215,9 +225,9 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>, Data: DerefMut<Target = [
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "run_sumcheck")]
 pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>, A: Allocator>(
-	public_folded: FieldVec<P, A>,
+	public_folded: &FieldVec<P, A>,
 	hidden_folded: FieldVec<P, A>,
-	public_monster: FieldVec<P, A>,
+	public_monster: &FieldVec<P, A>,
 	hidden_monster: FieldVec<P, A>,
 	public_words: &[Word],
 	r_j: Vec<F>,
@@ -235,15 +245,15 @@ where
 
 	// Round 1: bind the segment selector.
 	let round_coeffs =
-		first_round_coeffs(&public_folded, &hidden_folded, &public_monster, &hidden_monster, gamma);
+		first_round_coeffs(public_folded, &hidden_folded, public_monster, &hidden_monster, gamma);
 	channel.send_many(round_coeffs.clone().truncate().coeffs());
 	let alpha = channel.sample();
-	let round_sum = round_coeffs.evaluate(alpha);
+	let round_sum = round_coeffs.evaluate(&alpha);
 
 	// Fold the segment pairs at the selector challenge and run the remaining rounds with the
 	// standard prover.
-	let folded_witness = fold_segments(&public_folded, hidden_folded, alpha);
-	let folded_monster = fold_segments(&public_monster, hidden_monster, alpha);
+	let folded_witness = fold_segments(public_folded, hidden_folded, alpha);
+	let folded_monster = fold_segments(public_monster, hidden_monster, alpha);
 	let prover = bivariate_product_prover(alloc, [folded_witness, folded_monster], round_sum);
 
 	let ProveSingleOutput {
