@@ -24,17 +24,18 @@ use binius_core::word::Word;
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 };
 
 pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::ALL_ONE, Word::ZERO], // Need all_one and zero constants
+		const_in: &[Word::ALL_ONE],
 		n_in: 2,
 		n_out: 1,
 		n_aux: 0,
-		n_scratch: 2, // Need 2 scratch registers for intermediate computations
+		n_scratch: 1, // Holds the negated left operand
 		n_imm: 0,
 	}
 }
@@ -46,25 +47,22 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 		constants,
 		..
 	} = data.gate_param();
-	let [all_one, _zero] = constants else {
-		unreachable!()
-	};
+	let [all_one] = constants else { unreachable!() };
 	let [x, y] = inputs else { unreachable!() };
 	let [bout] = outputs else { unreachable!() };
 
 	// Constraint 1: Carry propagation for comparison
 	// ((x ⊕ all-1) ⊕ (bout << 1)) ∧ (y ⊕ (bout << 1)) = bout ⊕ (bout << 1)
-	builder
-		.and()
-		.a(expr::xor3(*x, *all_one, expr::sll(*bout, 1)))
-		.b(expr::xor2(*y, expr::sll(*bout, 1)))
-		.c(expr::xor2(*bout, expr::sll(*bout, 1)))
-		.build();
+	builder.and(
+		expr::xor3(*x, *all_one, expr::sll(*bout, 1)),
+		expr::xor2(*y, expr::sll(*bout, 1)),
+		expr::xor2(*bout, expr::sll(*bout, 1)),
+	);
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {
@@ -74,24 +72,17 @@ pub fn emit_eval_bytecode(
 		scratch,
 		..
 	} = data.gate_param();
-	let [all_one, zero] = constants else {
-		unreachable!()
-	};
+	let [all_one] = constants else { unreachable!() };
 	let [x, y] = inputs else { unreachable!() };
 	let [bout] = outputs else { unreachable!() };
-	let [scratch_nx, scratch_sum_unused] = scratch else {
+	let [scratch_nx] = scratch else {
 		unreachable!()
 	};
 
 	// Compute ¬x (x XOR all_one)
 	builder.emit_bxor(wire_to_reg(*scratch_nx), wire_to_reg(*x), wire_to_reg(*all_one));
 
-	// Compute carry bits from ¬x + y
-	builder.emit_iadd_cin_cout(
-		wire_to_reg(*scratch_sum_unused), // sum (unused)
-		wire_to_reg(*bout),               // cout
-		wire_to_reg(*scratch_nx),         // ¬x
-		wire_to_reg(*y),                  // y
-		wire_to_reg(*zero),               // cin = 0
-	);
+	// Carry bits of ¬x + y.
+	// Only the carries matter, so the sum is not stored.
+	builder.emit_iadd_carry(wire_to_reg(*bout), wire_to_reg(*scratch_nx), wire_to_reg(*y));
 }

@@ -157,7 +157,7 @@ mod tests {
 	}
 
 	impl MultisigTestCase {
-		fn run(&self, spec: WinternitzSpec) {
+		fn run(&self, spec: &WinternitzSpec) {
 			let mut rng = StdRng::seed_from_u64(42);
 
 			match self {
@@ -170,10 +170,10 @@ mod tests {
 						*num_validators,
 						*tree_height,
 						*epoch,
-						&spec,
+						spec,
 						&mut rng,
 					);
-					test_data.run(&spec, *tree_height).unwrap();
+					test_data.run(spec, *tree_height).unwrap();
 				}
 				MultisigTestCase::Invalid {
 					num_validators,
@@ -185,11 +185,11 @@ mod tests {
 						*num_validators,
 						*tree_height,
 						*epoch,
-						&spec,
+						spec,
 						&mut rng,
 					);
 					corrupt_fn(&mut test_data);
-					let result = test_data.run(&spec, *tree_height);
+					let result = test_data.run(spec, *tree_height);
 					assert!(result.is_err(), "Test expected to fail but passed");
 				}
 			}
@@ -332,7 +332,7 @@ mod tests {
 			tree_height,
 			epoch,
 		}
-		.run(spec);
+		.run(&spec);
 	}
 
 	fn corrupt_one_validator_signature(test_data: &mut MultisigTestData) {
@@ -447,6 +447,6 @@ mod tests {
 			epoch: 2, // All validators sign at epoch 2
 			corrupt_fn,
 		}
-		.run(test_spec_small());
+		.run(&test_spec_small());
 	}
 }

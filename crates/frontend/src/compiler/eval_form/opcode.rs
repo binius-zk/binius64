@@ -24,8 +24,8 @@ pub enum EvalOpcode {
 	Shift = 0x10,
 
 	// Arithmetic.
-	IaddCout = 0x20,
 	IaddCinCout = 0x21,
+	IaddCarry = 0x22,
 	IsubBinBout = 0x23,
 	Imul = 0x30,
 	Bmul = 0x31,
@@ -33,10 +33,6 @@ pub enum EvalOpcode {
 	// 32-bit lanewise arithmetic.
 	Iadd32CinCout = 0x40,
 	Iadd32Cout = 0x46,
-
-	// Masks.
-	MaskLow = 0x50,
-	MaskHigh = 0x51,
 
 	// Assertions.
 	AssertEq = 0x60,
@@ -64,15 +60,13 @@ impl EvalOpcode {
 			0x06 => Self::BxorMulti,
 			0x07 => Self::Fax,
 			0x10 => Self::Shift,
-			0x20 => Self::IaddCout,
 			0x21 => Self::IaddCinCout,
+			0x22 => Self::IaddCarry,
 			0x23 => Self::IsubBinBout,
 			0x30 => Self::Imul,
 			0x31 => Self::Bmul,
 			0x40 => Self::Iadd32CinCout,
 			0x46 => Self::Iadd32Cout,
-			0x50 => Self::MaskLow,
-			0x51 => Self::MaskHigh,
 			0x60 => Self::AssertEq,
 			0x61 => Self::AssertEqCond,
 			0x62 => Self::AssertZero,
@@ -100,15 +94,13 @@ mod tests {
 		EvalOpcode::BxorMulti,
 		EvalOpcode::Fax,
 		EvalOpcode::Shift,
-		EvalOpcode::IaddCout,
 		EvalOpcode::IaddCinCout,
+		EvalOpcode::IaddCarry,
 		EvalOpcode::IsubBinBout,
 		EvalOpcode::Imul,
 		EvalOpcode::Bmul,
 		EvalOpcode::Iadd32CinCout,
 		EvalOpcode::Iadd32Cout,
-		EvalOpcode::MaskLow,
-		EvalOpcode::MaskHigh,
 		EvalOpcode::AssertEq,
 		EvalOpcode::AssertEqCond,
 		EvalOpcode::AssertZero,

@@ -19,6 +19,7 @@
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 };
@@ -44,17 +45,12 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	// Constraint: Select operation
 	//
 	// (cond >> 63) ∧ (t ⊕ f) = out ⊕ f
-	builder
-		.and()
-		.a(expr::sar(*cond, 63))
-		.b(expr::xor2(*t, *f))
-		.c(expr::xor2(*out, *f))
-		.build();
+	builder.and(expr::sar(*cond, 63), expr::xor2(*t, *f), expr::xor2(*out, *f));
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::iter;
 
@@ -10,7 +11,7 @@ use binius_field::{
 use binius_math::{
 	inner_product::inner_product_scalars, multilinear::eq::eq_ind_partial_eval_scalars,
 };
-use binius_utils::rayon::prelude::*;
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
 	SHIFT_VARIANT_COUNT,
@@ -120,14 +121,14 @@ impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 
 	/// Splits the flat [`FieldFn`] input into `(r_x_prime, lambda, shift_scalars, r_y_tensor)`.
 	///
-	/// The `r_x'` section has `log2(constraints.len())` entries — the constraint counts handed to
-	/// the shift reduction are powers of two — so the split needs no state beyond the constraints.
+	/// The `r_x'` section has `ceil(log2(constraints.len()))` entries — the reductions run over the
+	/// constraint count rounded up to a power of two — so the split needs no state beyond the
+	/// constraints.
 	fn split_input<'i, E>(
 		&self,
 		input: &'i [E],
 	) -> (&'i [E], &'i E, &'i [E; SHIFT_VARIANT_COUNT * Word::BITS], &'i [E]) {
-		debug_assert!(self.constraints.len().is_power_of_two());
-		let n_vars = self.constraints.len().ilog2() as usize;
+		let n_vars = log2_ceil_usize(self.constraints.len());
 		let (r_x_prime, rest) = input.split_at(n_vars);
 		let (lambda, rest) = rest.split_first().expect("input encodes lambda");
 		let (shift_scalars, r_y_tensor) = rest.split_at(SHIFT_VARIANT_COUNT * Word::BITS);
@@ -152,11 +153,13 @@ where
 
 		// Accumulate one contribution per constraint. Within a constraint, each shifted-value term
 		// over all operands is weighted by its operand shift scalar and the word-index tensor
-		// entry; the running sum is then scaled by the constraint-index tensor entry.
+		// entry; the running sum is then scaled by the constraint-index tensor entry. The tensor
+		// covers the padded constraint count, so the zip stops at the last real constraint; the
+		// padding rows have no operand terms and contribute nothing.
 		let mut eval = E::zero();
-		for (constraint, r_x_prime_entry) in r_x_prime_tensor.iter().enumerate() {
+		for (constraint, r_x_prime_entry) in iter::zip(self.constraints, &r_x_prime_tensor) {
 			let mut constraint_eval = E::zero();
-			for (operand_id, operand) in self.constraints[constraint].as_ref().iter().enumerate() {
+			for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 				for svi in operand {
 					let variant = svi.shift_variant as usize;
 					let index = (variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
@@ -185,15 +188,16 @@ where
 
 		// One unreduced wide product per constraint. The constraints partition cleanly across
 		// rayon: each produces a single wide element and they are summed, so there is no large
-		// per-task accumulator. The single final reduction is `F`-linear.
-		let eval = r_x_prime_tensor
+		// per-task accumulator. The single final reduction is `F`-linear. The tensor covers the
+		// padded constraint count, so the zip stops at the last real constraint; the padding rows
+		// have no operand terms and contribute nothing.
+		let eval = self
+			.constraints
 			.par_iter()
-			.enumerate()
+			.zip(r_x_prime_tensor.par_iter())
 			.map(|(constraint, &r_x_prime_entry)| {
 				let mut constraint_eval = F::ZERO;
-				for (operand_id, operand) in
-					self.constraints[constraint].as_ref().iter().enumerate()
-				{
+				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 					for svi in operand {
 						let variant = svi.shift_variant as usize;
 						let index =
@@ -250,6 +254,10 @@ fn operand_shift_scalar_table<E: FieldOps>(
 
 #[cfg(test)]
 mod tests {
+	use binius_core::{
+		ShiftVariant,
+		constraint_system::{AndConstraint, ShiftedValueIndex, ValueIndex},
+	};
 	use binius_field::{BinaryField128bGhash, Field, Random};
 	use binius_math::{
 		BinarySubspace,
@@ -260,18 +268,13 @@ mod tests {
 
 	use super::*;
 
-	/// The native `WideMul` variant must produce exactly the same result as the generic
-	/// evaluation (deferred reduction is `F`-linear).
-	#[test]
-	fn evaluate_monster_native_matches_generic() {
-		use binius_core::{
-			ShiftVariant,
-			constraint_system::{AndConstraint, ShiftedValueIndex, ValueIndex},
-		};
-
-		type F = BinaryField128bGhash;
-		let mut rng = StdRng::seed_from_u64(3);
-
+	/// Builds `n_constraints` random arity-3 constraints (like `AndConstraint`), constraint-major:
+	/// one array of operands per constraint.
+	fn random_and_constraints(
+		rng: &mut StdRng,
+		n_constraints: usize,
+		n_words: usize,
+	) -> Vec<AndConstraint> {
 		let shift_variants = [
 			ShiftVariant::Sll,
 			ShiftVariant::Slr,
@@ -282,13 +285,7 @@ mod tests {
 			ShiftVariant::Sra32,
 			ShiftVariant::Rotr32,
 		];
-		let n_words = 40usize;
-		let log_constraints = 6usize;
-		let n_constraints = 1usize << log_constraints;
-
-		// Arity-3 constraints (like `AndConstraint`), constraint-major: one array of operands per
-		// constraint.
-		let constraints: Vec<AndConstraint> = (0..n_constraints)
+		(0..n_constraints)
 			.map(|_| {
 				AndConstraint(std::array::from_fn(|_| {
 					(0..rng.random_range(0..=3))
@@ -300,19 +297,73 @@ mod tests {
 						.collect()
 				}))
 			})
-			.collect();
+			.collect()
+	}
 
-		let r_x_prime = random_scalars::<F>(&mut rng, log_constraints);
+	/// The native `WideMul` variant must produce exactly the same result as the generic
+	/// evaluation (deferred reduction is `F`-linear). Covers a power-of-two constraint count and a
+	/// non-power-of-two one, whose `r_x'` tensor runs past the last constraint.
+	#[test]
+	fn evaluate_monster_native_matches_generic() {
+		type F = BinaryField128bGhash;
+		let mut rng = StdRng::seed_from_u64(3);
+
+		let n_words = 40usize;
+		for n_constraints in [64usize, 37] {
+			let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
+
+			let r_x_prime = random_scalars::<F>(&mut rng, log2_ceil_usize(n_constraints));
+			let lambda = F::random(&mut rng);
+			let shift_scalars: [F; SHIFT_VARIANT_COUNT * Word::BITS] =
+				std::array::from_fn(|_| F::random(&mut rng));
+			let r_y_tensor = random_scalars::<F>(&mut rng, n_words);
+
+			let eval_fn = OperationEvalFn::new(&constraints);
+			let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, &r_y_tensor);
+			let generic = eval_fn.call::<F>(&input);
+			let native = eval_fn.call_native(&input);
+			assert_eq!(generic, native, "n_constraints = {n_constraints}");
+		}
+	}
+
+	/// Appending all-zero padding constraints must not change the evaluation: a padding constraint
+	/// has no operand terms, so it contributes nothing. This is what lets the constraint system
+	/// keep its true count while the reductions run over the padded one.
+	///
+	/// [`FieldFn::call`] and [`FieldFn::call_native`] walk the constraints over independent zips,
+	/// so both are checked.
+	#[test]
+	fn evaluate_monster_ignores_zero_padding_constraints() {
+		type F = BinaryField128bGhash;
+		let mut rng = StdRng::seed_from_u64(5);
+
+		let n_words = 40usize;
+		let n_constraints = 21usize;
+		let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
+		let padded = constraints
+			.iter()
+			.cloned()
+			.chain(iter::repeat_n(
+				AndConstraint::default(),
+				n_constraints.next_power_of_two() - n_constraints,
+			))
+			.collect::<Vec<_>>();
+
+		let r_x_prime = random_scalars::<F>(&mut rng, log2_ceil_usize(n_constraints));
 		let lambda = F::random(&mut rng);
 		let shift_scalars: [F; SHIFT_VARIANT_COUNT * Word::BITS] =
 			std::array::from_fn(|_| F::random(&mut rng));
 		let r_y_tensor = random_scalars::<F>(&mut rng, n_words);
 
-		let eval_fn = OperationEvalFn::new(&constraints);
 		let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, &r_y_tensor);
-		let generic = eval_fn.call::<F>(&input);
-		let native = eval_fn.call_native(&input);
-		assert_eq!(generic, native);
+		assert_eq!(
+			OperationEvalFn::new(&constraints).call::<F>(&input),
+			OperationEvalFn::new(&padded).call::<F>(&input)
+		);
+		assert_eq!(
+			OperationEvalFn::new(&constraints).call_native(&input),
+			OperationEvalFn::new(&padded).call_native(&input)
+		);
 	}
 
 	#[test]
@@ -334,7 +385,7 @@ mod tests {
 			let s = rng.random_range(0..64);
 
 			let challenge = subspace.get(i);
-			let l_tilde = lagrange_evals_scalars(&subspace, challenge);
+			let l_tilde = lagrange_evals_scalars(&subspace, &challenge);
 
 			let r_j = index_to_hypercube_point::<BinaryField128bGhash>(Word::LOG_BITS, j);
 			let r_s = index_to_hypercube_point::<BinaryField128bGhash>(Word::LOG_BITS, s);
@@ -385,7 +436,7 @@ mod tests {
 		// Generate random evaluation points
 		let challenge = BinaryField128bGhash::random(&mut rng);
 		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(Word::LOG_BITS);
-		let l_tilde = lagrange_evals_scalars(&subspace, challenge);
+		let l_tilde = lagrange_evals_scalars(&subspace, &challenge);
 		let r_j = random_scalars::<BinaryField128bGhash>(&mut rng, Word::LOG_BITS);
 		let r_s = random_scalars::<BinaryField128bGhash>(&mut rng, Word::LOG_BITS);
 

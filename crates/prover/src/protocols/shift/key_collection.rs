@@ -19,11 +19,12 @@ use super::PreparedOperatorData;
 
 /// Represents the type of operations handled by the shift protocol.
 ///
-/// The shift protocol supports three fundamental operation types that correspond
+/// The shift protocol supports four fundamental operation types that correspond
 /// to the constraint types in Binius64:
 ///
 /// # Operation Types
 ///
+/// - **Zero**: Corresponds to ZERO constraints of the form `VAL = 0`
 /// - **BitwiseAnd**: Corresponds to AND constraints of the form `A & B ^ C = 0`
 /// - **IntegerMul**: Corresponds to IMUL constraints of the form `A * B = (HI << 64) | LO`
 /// - **BinMul**: Corresponds to BMUL constraints of the form `A * B = C` in the GHASH field
@@ -33,6 +34,7 @@ use super::PreparedOperatorData;
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u16)]
 pub enum Operation {
+	Zero,
 	BitwiseAnd,
 	IntegerMul,
 	BinMul,
@@ -351,6 +353,7 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 		(0..cs.value_vec_len()).map(|_| Vec::new()).collect();
 
 	// Update the builder keys lists with respect to each operand of each operation.
+	update_with_constraints(Operation::Zero, &cs.zero_constraints, &mut builder_key_lists);
 	update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, &mut builder_key_lists);
 	update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, &mut builder_key_lists);
 	update_with_constraints(Operation::BinMul, &cs.bmul_constraints, &mut builder_key_lists);
@@ -413,6 +416,7 @@ impl SerializeBytes for Operation {
 			Operation::BitwiseAnd => 0u8,
 			Operation::IntegerMul => 1u8,
 			Operation::BinMul => 2u8,
+			Operation::Zero => 3u8,
 		};
 		val.serialize(write_buf)
 	}
@@ -425,6 +429,7 @@ impl DeserializeBytes for Operation {
 			0 => Ok(Operation::BitwiseAnd),
 			1 => Ok(Operation::IntegerMul),
 			2 => Ok(Operation::BinMul),
+			3 => Ok(Operation::Zero),
 			_ => Err(SerializationError::UnknownEnumVariant {
 				name: "Operation",
 				index: val,

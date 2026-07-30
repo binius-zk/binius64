@@ -97,7 +97,7 @@ impl ExampleBenchmark for HashSignBenchmark {
 
 fn bench_hashsign(c: &mut Criterion) {
 	let benchmark = HashSignBenchmark::new();
-	run_cs_benchmark(c, benchmark, "hashsign", &HASHSIGN_PEAK_ALLOC);
+	run_cs_benchmark(c, &benchmark, "hashsign", &HASHSIGN_PEAK_ALLOC);
 }
 
 criterion_group!(hashsign, bench_hashsign);

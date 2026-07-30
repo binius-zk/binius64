@@ -37,17 +37,18 @@ use binius_core::word::Word;
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 };
 
 pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::ALL_ONE, Word::MSB_ONE, Word::ZERO], // Need zero constant for cin
+		const_in: &[Word::ALL_ONE, Word::MSB_ONE],
 		n_in: 2,
 		n_out: 1,
 		n_aux: 1,     // carry-out register used in eval bytecode
-		n_scratch: 2, // Need 2 scratch registers for intermediate computations
+		n_scratch: 1, // Holds the difference of the two operands
 		n_imm: 0,
 	}
 }
@@ -59,7 +60,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 		outputs,
 		..
 	} = data.gate_param();
-	let [all_one, msb_one, _zero] = constants else {
+	let [all_one, msb_one] = constants else {
 		unreachable!()
 	};
 	let [x, y] = inputs else { unreachable!() };
@@ -69,17 +70,16 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 	// Constraint 1: Constrain carry-out
 	// (x ⊕ y ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
-	builder
-		.and()
-		.a(expr::xor3(*x, *y, cin))
-		.b(expr::xor2(*all_one, cin))
-		.c(expr::xor3(cin, *out_wire, *msb_one))
-		.build();
+	builder.and(
+		expr::xor3(*x, *y, cin),
+		expr::xor2(*all_one, cin),
+		expr::xor3(cin, *out_wire, *msb_one),
+	);
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {
@@ -90,27 +90,22 @@ pub fn emit_eval_bytecode(
 		scratch,
 		..
 	} = data.gate_param();
-	let [all_one, msb_one, zero] = constants else {
+	let [all_one, msb_one] = constants else {
 		unreachable!()
 	};
 	let [x, y] = inputs else { unreachable!() };
 	let [out_wire] = outputs else { unreachable!() };
 	let [cout] = aux else { unreachable!() };
-	let [scratch_diff, scratch_sum_unused] = scratch else {
+	let [scratch_diff] = scratch else {
 		unreachable!()
 	};
 
 	// Compute diff = x ^ y
 	builder.emit_bxor(wire_to_reg(*scratch_diff), wire_to_reg(*x), wire_to_reg(*y));
 
-	// Compute carry bits from all_one + diff
-	builder.emit_iadd_cin_cout(
-		wire_to_reg(*scratch_sum_unused), // sum (unused)
-		wire_to_reg(*cout),               // cout
-		wire_to_reg(*all_one),            // all_one
-		wire_to_reg(*scratch_diff),       // diff
-		wire_to_reg(*zero),               // cin = 0
-	);
+	// Carry bits of all_one + diff.
+	// Only the carries matter, so the sum is not stored.
+	builder.emit_iadd_carry(wire_to_reg(*cout), wire_to_reg(*all_one), wire_to_reg(*scratch_diff));
 
 	// Invert: out_wire = out_wire ^ msb_one
 	builder.emit_bxor(wire_to_reg(*out_wire), wire_to_reg(*cout), wire_to_reg(*msb_one));

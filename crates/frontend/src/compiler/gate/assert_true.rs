@@ -17,6 +17,7 @@ use binius_core::word::Word;
 
 use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 	pathspec::PathSpec,
@@ -41,13 +42,13 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let [x] = inputs else { unreachable!() };
 
 	// Constraint: x ∧ msb_one = msb_one
-	builder.and().a(*x).b(*msb_one).c(*msb_one).build();
+	builder.and(*x, *msb_one, *msb_one);
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
 	assertion_path: PathSpec,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam { inputs, .. } = data.gate_param();

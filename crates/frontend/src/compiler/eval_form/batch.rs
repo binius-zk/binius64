@@ -1,7 +1,7 @@
 // Copyright 2025-2026 The Binius Developers
-//! Batched bytecode interpreter for circuit evaluation.
+//! Batched execution context for circuit evaluation.
 //!
-//! This is the structure-of-arrays counterpart to the single-instance interpreter.
+//! This is the structure-of-arrays counterpart to the single-instance context.
 //! It evaluates the same bytecode over many independent instances of one circuit at once.
 //! The opcode dispatch is shared through the executor and the execution-context trait.
 //!
@@ -22,17 +22,14 @@
 use binius_core::Word;
 use binius_utils::strided_array::StridedArray2DViewMut;
 
-use super::exec::{EvalContext, Executor};
+use super::{
+	assertion::{MAX_ASSERTION_FAILURES, symbolicate},
+	exec::EvalContext,
+};
 use crate::compiler::{
 	circuit::PopulateError,
-	hints::HintRegistry,
 	pathspec::{PathSpec, PathSpecTree},
 };
-
-/// The cap on how many assertion failures are retained across the whole batch.
-///
-/// This mirrors the single-instance interpreter's cap. Failures past it are counted but not stored.
-const MAX_ASSERTION_FAILURES: usize = 100;
 
 /// A single assertion failure, tagged with the instance whose values violated it.
 struct InstanceAssertionFailure {
@@ -54,7 +51,7 @@ pub struct BatchPopulateError {
 }
 
 /// Execution context holding the transposed value array during batch evaluation.
-struct BatchExecutionContext<'a, 'v> {
+pub struct BatchExecutionContext<'a, 'v> {
 	/// Rows are value-vector indices; columns are instances.
 	values: &'a mut StridedArray2DViewMut<'v, Word>,
 	/// The global instance index represented by local column 0.
@@ -68,7 +65,10 @@ struct BatchExecutionContext<'a, 'v> {
 }
 
 impl<'a, 'v> BatchExecutionContext<'a, 'v> {
-	const fn new(values: &'a mut StridedArray2DViewMut<'v, Word>, instance_offset: usize) -> Self {
+	pub const fn new(
+		values: &'a mut StridedArray2DViewMut<'v, Word>,
+		instance_offset: usize,
+	) -> Self {
 		Self {
 			values,
 			instance_offset,
@@ -79,7 +79,7 @@ impl<'a, 'v> BatchExecutionContext<'a, 'v> {
 	}
 
 	/// Turn recorded failures into an error attributed to the lowest-failing instance.
-	fn check_assertions(
+	pub fn check_assertions(
 		self,
 		path_spec_tree: Option<&PathSpecTree>,
 	) -> Result<(), BatchPopulateError> {
@@ -92,18 +92,7 @@ impl<'a, 'v> BatchExecutionContext<'a, 'v> {
 		let mut total_count = 0;
 		for failure in self.failures.into_iter().filter(|f| f.instance == instance) {
 			total_count += 1;
-			let message = if let Some(tree) = path_spec_tree {
-				let mut path = String::new();
-				tree.stringify(failure.path_spec, &mut path);
-				if path.is_empty() {
-					failure.message
-				} else {
-					format!("{}: {}", path, failure.message)
-				}
-			} else {
-				failure.message
-			};
-			messages.push(message);
+			messages.push(symbolicate(path_spec_tree, failure.path_spec, failure.message));
 		}
 
 		Err(BatchPopulateError {
@@ -151,43 +140,6 @@ impl EvalContext for BatchExecutionContext<'_, '_> {
 				message,
 			});
 		}
-	}
-}
-
-/// Bytecode interpreter that evaluates one circuit over many instances at once.
-pub struct BatchInterpreter<'a> {
-	executor: Executor<'a>,
-}
-
-impl<'a> BatchInterpreter<'a> {
-	pub const fn new(bytecode: &'a [u8], hints: &'a HintRegistry) -> Self {
-		Self {
-			executor: Executor::new(bytecode, hints),
-		}
-	}
-
-	/// Evaluate the bytecode over the transposed value array, filling every instance's wires.
-	///
-	/// The constant and input rows must already be populated for every instance. Returns an error
-	/// naming the lowest-indexed instance whose assignment fails an assertion.
-	pub fn run(
-		&mut self,
-		values: &mut StridedArray2DViewMut<'_, Word>,
-		path_spec_tree: Option<&PathSpecTree>,
-	) -> Result<(), BatchPopulateError> {
-		self.run_with_instance_offset(values, 0, path_spec_tree)
-	}
-
-	/// Evaluate the bytecode over a view whose local column 0 corresponds to `instance_offset`.
-	pub(crate) fn run_with_instance_offset(
-		&mut self,
-		values: &mut StridedArray2DViewMut<'_, Word>,
-		instance_offset: usize,
-		path_spec_tree: Option<&PathSpecTree>,
-	) -> Result<(), BatchPopulateError> {
-		let mut ctx = BatchExecutionContext::new(values, instance_offset);
-		self.executor.run(&mut ctx);
-		ctx.check_assertions(path_spec_tree)
 	}
 }
 

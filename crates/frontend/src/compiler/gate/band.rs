@@ -14,6 +14,7 @@
 
 use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 };
@@ -39,12 +40,12 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	// Constraint: Bitwise AND
 	//
 	// x ∧ y = z
-	builder.and().a(*x).b(*y).c(*z).build();
+	builder.and(*x, *y, *z);
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

@@ -6,6 +6,7 @@
 
 use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 };
@@ -33,20 +34,12 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	};
 
 	// Create BmulConstraint: (A_LO, A_HI) * (B_LO, B_HI) = (C_LO, C_HI) in GF(2^128).
-	builder
-		.bmul()
-		.a_lo(*a_lo)
-		.a_hi(*a_hi)
-		.b_lo(*b_lo)
-		.b_hi(*b_hi)
-		.c_lo(*c_lo)
-		.c_hi(*c_hi)
-		.build();
+	builder.bmul(*a_lo, *a_hi, *b_lo, *b_hi, *c_lo, *c_hi);
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

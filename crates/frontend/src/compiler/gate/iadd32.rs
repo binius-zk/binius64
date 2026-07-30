@@ -22,6 +22,7 @@
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 };
@@ -49,26 +50,21 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	// Constraint 1: Carry propagation
 	//
 	// (x ⊕ (cout <<₃₂ 1)) ∧ (y ⊕ (cout <<₃₂ 1)) = cout ⊕ (cout <<₃₂ 1)
-	builder
-		.and()
-		.a(expr::xor2(*x, cout_shifted))
-		.b(expr::xor2(*y, cout_shifted))
-		.c(expr::xor2(*cout, cout_shifted))
-		.build();
+	builder.and(
+		expr::xor2(*x, cout_shifted),
+		expr::xor2(*y, cout_shifted),
+		expr::xor2(*cout, cout_shifted),
+	);
 
 	// Constraint 2: Result
 	//
 	// z = x ⊕ y ⊕ (cout <<₃₂ 1)
-	builder
-		.linear()
-		.dst(*z)
-		.rhs(expr::xor3(*x, *y, cout_shifted))
-		.build();
+	builder.linear(expr::xor3(*x, *y, cout_shifted), *z);
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

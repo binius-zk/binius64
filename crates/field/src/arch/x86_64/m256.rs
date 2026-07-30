@@ -20,8 +20,7 @@ use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
-		Divisible, NumCast, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_self,
-		mapget,
+		Divisible, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_self, mapget,
 	},
 };
 
@@ -174,24 +173,6 @@ impl DeserializeBytes for M256 {
 }
 
 impl_divisible_bitmask!(M256, 1, 2, 4);
-
-impl<U: NumCast<u128>> NumCast<M256> for U {
-	#[inline(always)]
-	fn num_cast_from(val: M256) -> Self {
-		let [low, _high] = val.into();
-		Self::num_cast_from(low)
-	}
-}
-
-// `M128` is not a `NumCast<u128>` type (so it is not covered by the blanket above), but the GHASH
-// subfield extraction for `GhashSq256b` needs to pull the low 128-bit half out as an `M128`.
-impl NumCast<M256> for M128 {
-	#[inline(always)]
-	fn num_cast_from(val: M256) -> Self {
-		let [low, _high]: [u128; 2] = val.into();
-		Self::from(low)
-	}
-}
 
 impl Default for M256 {
 	#[inline(always)]

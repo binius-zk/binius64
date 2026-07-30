@@ -23,7 +23,6 @@ use binius_math::{
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::checked_arithmetics::checked_log_2;
 use binius_verifier::{
 	Error,
 	config::{B1, B128},
@@ -32,6 +31,7 @@ use binius_verifier::{
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData},
+		zero,
 	},
 	ring_switch::{self, RingSwitchVerifyOutput},
 	verify_bitand_reduction,
@@ -69,7 +69,7 @@ type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 /// Both operand claims at that point then feed the shift.
 #[derive(Debug, Clone)]
 pub struct IOPVerifier {
-	/// The prepared single-instance constraint system shared by every instance.
+	/// The validated single-instance constraint system shared by every instance.
 	cs: ConstraintSystem,
 	/// The committed-multilinear shape of the batch.
 	layout: BatchCommitLayout,
@@ -81,7 +81,7 @@ impl IOPVerifier {
 		Self { cs, layout }
 	}
 
-	/// The prepared constraint system this verifier checks against.
+	/// The validated constraint system this verifier checks against.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.cs
 	}
@@ -156,8 +156,7 @@ impl IOPVerifier {
 		//
 		// The IntMul columns span every instance's constraints.
 		// So the check runs over `log_instances + log_n_imul` row variables.
-		let intmul_output = if cs.n_imul_constraints() > 0 {
-			let log_n_imul = checked_log_2(cs.n_imul_constraints());
+		let intmul_output = if let Some(log_n_imul) = cs.log_imul_constraints() {
 			Some(verify_intmul_reduction::<B128, _>(log_instances + log_n_imul, channel)?)
 		} else {
 			None
@@ -170,15 +169,15 @@ impl IOPVerifier {
 		//
 		// The BinMul columns span every instance's constraints.
 		// So the check runs over `log_instances + log_n_binmul` row variables.
-		let binmul_output = if cs.n_bmul_constraints() > 0 {
-			let log_n_binmul = checked_log_2(cs.n_bmul_constraints());
+		let binmul_output = if let Some(log_n_binmul) = cs.log_bmul_constraints() {
 			Some(verify_binmul_reduction::<B128, _>(log_instances + log_n_binmul, channel)?)
 		} else {
 			None
 		};
 
-		// AND-check over all `K * n_and` rows.
-		let log_n_and = checked_log_2(cs.and_constraints.len());
+		// AND-check over all `K * n_and` rows. The check has no skip branch: an empty AND set still
+		// reduces, over the single all-zero padding row, so `None` is zero constraint variables.
+		let log_n_and = cs.log_and_constraints().unwrap_or(0);
 		let AndCheckOutput {
 			a_eval,
 			b_eval,
@@ -191,6 +190,19 @@ impl IOPVerifier {
 		// index high.
 		let (r_rho_and, r_x_and) = eval_point.split_at(log_instances);
 
+		// The Zero reduction reads nothing from the transcript and runs no sumcheck: a ZERO
+		// constraint is linear, so its oblong multilinearization vanishing at one unpredictable
+		// point certifies it. It takes the constraint half of the AND-check output point, extended
+		// when the ZERO set has more rows; the prover draws the same extension at the same place.
+		// Like BitAnd, an empty ZERO set still reduces, over the single all-zero padding row.
+		//
+		// Unlike IntMul and BinMul, the claim skips the instance re-randomization below. That step
+		// transports operand claims onto one shared instance point, and a ZERO constraint array
+		// vanishes identically, so its fold at any instance point is still identically zero.
+		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
+		let zero_point = zero::reduction_point(r_x_and, log_n_zero, || channel.sample());
+		let zero = OperatorData::new(zero_point, [Channel::Elem::zero()]);
+
 		// Reduce to one shared instance point and every operand claim at it.
 		//
 		// The re-randomization runs whenever IntMul or BinMul is present: BitAnd always enters,
@@ -201,7 +213,7 @@ impl IOPVerifier {
 			// instance point. BitAnd is already oblong; IntMul and BinMul are collapsed from their
 			// per-bit form.
 			let lagrange =
-				lagrange_evals_scalars::<B128, Channel::Elem>(&shift_domain, z_challenge.clone());
+				lagrange_evals_scalars::<B128, Channel::Elem>(&shift_domain, &z_challenge);
 			RerandomizedOperations {
 				bitand: OperationClaim::new([a_eval, b_eval, c_eval], r_x_and, r_rho_and),
 				intmul: intmul_output
@@ -222,7 +234,7 @@ impl IOPVerifier {
 		};
 
 		// Reduce the operand claims to one witness evaluation.
-		let shift = shift::verify::<B128, _>(cs, &bitand, &intmul, &binmul, channel)?;
+		let shift = shift::verify::<B128, _>(cs, &zero, &bitand, &intmul, &binmul, channel)?;
 
 		// Tie in the shared constants through the public-input consistency check.
 		// The shift evaluates them over the layout's power-of-two word count.
@@ -230,6 +242,7 @@ impl IOPVerifier {
 		shift::check_eval::<B128, _>(
 			cs,
 			&cs.constants,
+			&zero,
 			&bitand,
 			&intmul,
 			&binmul,
@@ -283,7 +296,7 @@ impl Verifier {
 	///
 	/// # Arguments
 	///
-	/// - `cs`: the prepared single-instance constraint system shared by every instance.
+	/// - `cs`: the validated single-instance constraint system shared by every instance.
 	/// - `log_instances`: base-2 logarithm of the instance count.
 	/// - `log_inv_rate`: base-2 logarithm of the inverse Reed-Solomon rate.
 	pub fn setup(cs: &ConstraintSystem, log_instances: usize, log_inv_rate: usize) -> Self {
@@ -308,7 +321,7 @@ impl Verifier {
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
-			merkle_scheme,
+			&merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,
@@ -321,7 +334,7 @@ impl Verifier {
 		}
 	}
 
-	/// The prepared constraint system this verifier checks against.
+	/// The validated constraint system this verifier checks against.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		self.iop_verifier.constraint_system()
 	}
@@ -559,7 +572,7 @@ impl<F: FieldOps> RerandomizedOperations<F> {
 			let eq_binmul = eq_ind(&binmul.r_rho, &r_rho);
 			expected.extend(evals.iter().map(|eval| eval.clone() * &eq_binmul));
 		}
-		channel.assert_zero(evaluate_univariate(&expected, batch_coeff) - eval)?;
+		channel.assert_zero(evaluate_univariate(&expected, &batch_coeff) - eval)?;
 
 		let bitand_data = OperatorData::new(self.bitand.r_x, bitand_evals);
 		let intmul_data = match (self.intmul, intmul_evals) {

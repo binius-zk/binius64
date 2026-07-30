@@ -144,7 +144,7 @@ where
 		gpow_c_lo_eval.clone() * gpow_c_hi_eval.clone() * eq_ind(c_eval_point, &eval_point);
 
 	let expected_terms = [expected_selected_agg, expected_c_prod_eval];
-	let expected_batched_eval = evaluate_univariate(&expected_terms, batch_coeff);
+	let expected_batched_eval = evaluate_univariate(&expected_terms, &batch_coeff);
 
 	channel.assert_zero(expected_batched_eval - eval)?;
 
@@ -365,7 +365,7 @@ where
 		expected_overflow_eval,
 		expected_b_rerand_eval,
 	];
-	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);
+	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, &batch_coeff);
 
 	// Compare expected evaluation against given evaluation `eval`.
 	channel.assert_zero(expected_batched_eval - eval)?;
@@ -466,8 +466,10 @@ where
 ///
 /// ### Parameters
 ///
-/// - `n_vars`: Number of variables in the row dimension (i.e., $\log_2$ of the number of
-///   multiplication constraints).
+/// - `n_vars`: Number of variables in the row dimension — the $\log_2$ of the operand column
+///   length, which the prover zero-pads up to a power of two. The single-instance verifier passes
+///   $\lceil \log_2 n \rceil$ for $n$ IMUL constraints; the batched M4 verifier adds its $\log_2$
+///   instance count.
 ///
 /// The integer operands are fixed at the `Word::BITS` bit width.
 pub fn verify<F, C>(n_vars: usize, channel: &mut C) -> Result<IntMulOutput<C::Elem>, Error>

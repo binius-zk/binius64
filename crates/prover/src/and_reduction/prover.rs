@@ -89,7 +89,7 @@ where
 		first_col: Data,
 		second_col: Data,
 		big_field_zerocheck_challenges: Vec<F>,
-		prover_message_domain: BinarySubspace<B8>,
+		prover_message_domain: &BinarySubspace<B8>,
 	) -> Self {
 		let univariate_round_message = tracing::debug_span!("Compute univariate round message")
 			.in_scope(|| {
@@ -98,7 +98,7 @@ where
 					&first_col,
 					&second_col,
 					&big_field_zerocheck_challenges,
-					&prover_message_domain,
+					prover_message_domain,
 				)
 			});
 
@@ -162,12 +162,12 @@ where
 	/// 5. Constructs the AND reduction sumcheck prover with the folded multilinears
 	pub fn fold_and_send_reduced_prover<'alloc, A: Allocator>(
 		self,
-		round_message_domain: BinarySubspace<F>,
+		round_message_domain: &BinarySubspace<F>,
 		challenge: F,
 		alloc: &'alloc A,
 	) -> impl MleCheckProver<F> + 'alloc {
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
-		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, challenge);
+		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
 		let proving_polys =
@@ -195,9 +195,9 @@ where
 			|[a, b, _]| a * b,
 			verifier_field_zerocheck_challenges,
 			extrapolate_over_subspace(
-				&round_message_domain,
+				round_message_domain,
 				&first_round_message_coeffs,
-				challenge,
+				&challenge,
 			),
 		)
 	}
@@ -239,7 +239,7 @@ where
 		let univariate_round_message_domain = self.univariate_round_message_domain.clone();
 		let sumcheck_prover = tracing::debug_span!("Fold univariate round").in_scope(|| {
 			self.fold_and_send_reduced_prover(
-				univariate_round_message_domain,
+				&univariate_round_message_domain,
 				univariate_sumcheck_challenge,
 				alloc,
 			)
@@ -324,7 +324,7 @@ mod test {
 			first_mlv.clone(),
 			second_mlv.clone(),
 			big_field_zerocheck_challenges.to_vec(),
-			prover_message_domain,
+			&prover_message_domain,
 		);
 
 		let prove_output = prover.prove_with_channel(&mut prover_challenger, &GlobalAllocator);
@@ -366,7 +366,7 @@ mod test {
 		let one_bit_mlvs = [first_mlv, second_mlv, third_mlv];
 
 		let verifier_lagrange_evals =
-			lagrange_evals_scalars(&verifier_univariate_domain, z_challenge);
+			lagrange_evals_scalars(&verifier_univariate_domain, &z_challenge);
 		let folder = BitAxisFolder::new(&verifier_lagrange_evals);
 		for (i, eval) in [a_eval, b_eval, c_eval].iter().enumerate() {
 			let folded: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &one_bit_mlvs[i]);

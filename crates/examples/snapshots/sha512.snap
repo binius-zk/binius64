@@ -5,6 +5,8 @@ Gates & Instructions
 └─ Number of evaluation instructions: 24,839
 
 Constraints
+├─ ZERO constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
 ├─ AND constraints: 10,311 used (62.9% of 2^14)
 │  [▓▓▓▓▓▓░░░░] spare: 6,073
 ├─ IMUL constraints: 0 used (0.0% of 0)
@@ -26,5 +28,5 @@ Value Vector
 │  └─ Internal: 10,303
 ├─ Total Committed: 10,540 used (64.3% of 2^14)
 │  [▓▓▓▓▓▓░░░░] spare: 5,844
-└─ Scratch (uncommitted): 21,368 (peak live: 17)
+└─ Scratch (uncommitted): 21,368 (peak live: 13)
 

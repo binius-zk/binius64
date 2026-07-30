@@ -1,7 +1,7 @@
 // Copyright 2023-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_utils::checked_arithmetics::log2_strict_usize;
+use binius_utils::checked_arithmetics::checked_log_2;
 
 use super::packed::PackedField;
 use crate::{BinaryField, ExtensionField, PackedSubfield, WithUnderlier, cast_bases_mut};
@@ -27,7 +27,7 @@ pub fn square_transpose<P: PackedField>(log_n: usize, elems: &mut [P]) {
 
 	let size = elems.len();
 	assert!(size.is_power_of_two(), "elems length must be a power of two, got {size}");
-	let log_size = log2_strict_usize(size);
+	let log_size = checked_log_2(size);
 	assert!(
 		log_size >= log_n,
 		"elems must have length at least 2^log_n = {}, got {size}",

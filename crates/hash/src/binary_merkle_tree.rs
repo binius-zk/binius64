@@ -5,7 +5,7 @@ use std::{fmt::Debug, mem::MaybeUninit};
 
 use binius_field::Field;
 use binius_utils::{
-	checked_arithmetics::log2_strict_usize,
+	checked_arithmetics::checked_log_2,
 	rand::par_rand,
 	rayon::{prelude::*, slice::ParallelSlice},
 };
@@ -106,7 +106,7 @@ where
 	R: Rng + CryptoRng,
 	ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 {
-	let log_len = log2_strict_usize(iterated_chunks.len()); // precondition
+	let log_len = checked_log_2(iterated_chunks.len()); // precondition
 
 	// Generate salts if needed
 	let salts =

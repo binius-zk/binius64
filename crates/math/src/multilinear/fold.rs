@@ -4,7 +4,13 @@ use std::ops::{Deref, DerefMut};
 
 use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
-use binius_utils::{random_access_sequence::RandomAccessSequence, rayon::prelude::*};
+use binius_utils::{
+	random_access_sequence::RandomAccessSequence,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
+};
 
 use crate::{FieldBuffer, FieldVec, field_buffer::BufferData, line::extrapolate_line_packed};
 
@@ -26,6 +32,7 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: BufferData<P>>(
 		let (mut lo, mut hi) = split.halves();
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()
+			.with_min_task(WorkPerItem::FieldMuls)
 			.for_each(|(lo_i, hi_i)| {
 				*lo_i = extrapolate_line_packed(*lo_i, *hi_i, broadcast_scalar)
 			});
@@ -63,6 +70,7 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 	let spare = &mut data.spare_capacity_mut()[..len];
 	(spare, lo.as_ref(), hi.as_ref())
 		.into_par_iter()
+		.with_min_task(WorkPerItem::FieldMuls)
 		.for_each(|(out, &lo_i, &hi_i)| {
 			out.write(extrapolate_line_packed(lo_i, hi_i, broadcast_scalar));
 		});
@@ -87,7 +95,7 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 pub fn binary_fold_high<P, DataOut, DataIn>(
 	values: &mut FieldBuffer<P, DataOut>,
 	tensor: &FieldBuffer<P, DataIn>,
-	bits: impl RandomAccessSequence<bool> + Sync,
+	bits: &(impl RandomAccessSequence<bool> + Sync),
 ) where
 	P: PackedField,
 	DataOut: DerefMut<Target = [P]>,
@@ -132,10 +140,12 @@ mod tests {
 	use std::iter::repeat_with;
 
 	use binius_compute::GlobalAllocator;
+	use binius_utils::rayon::task_size::min_len_for_work;
 	use rand::prelude::*;
 
 	use super::*;
 	use crate::{
+		line::extrapolate_line,
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
 	};
@@ -159,6 +169,34 @@ mod tests {
 		}
 
 		assert_eq!(multilinear.get(0), eval);
+	}
+
+	#[test]
+	fn test_fold_highest_var_inplace_above_split_threshold() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Invariant: a fold splits only once each half holds two minimum tasks.
+		// Below that it runs inline, leaving the parallel path unexercised.
+		//
+		//     words in one half = 2^(n_vars - 1) / scalars per word
+		//     smallest n_vars with words in one half >= 2 * minimum
+		//
+		// Every other fold test is smaller, so this one covers the split.
+		let min_len = min_len_for_work(WorkPerItem::FieldMuls);
+		let n_vars = (2 * min_len * P::WIDTH).next_power_of_two().ilog2() as usize + 1;
+		let half = 1 << (n_vars - 1);
+		let original = random_field_buffer::<P>(&mut rng, n_vars);
+		let challenge = random_scalars::<F>(&mut rng, 1)[0];
+
+		let mut folded = original.clone();
+		fold_highest_var_inplace(&mut folded, challenge);
+		assert_eq!(folded.log_len(), n_vars - 1);
+
+		// Scalar reference: each output interpolates one (lo, hi) pair at the challenge.
+		for i in 0..half {
+			let expected = extrapolate_line(original.get(i), original.get(i | half), challenge);
+			assert_eq!(folded.get(i), expected, "mismatch at index {i}");
+		}
 	}
 
 	#[test]
@@ -205,7 +243,7 @@ mod tests {
 		let mut bits_buffer = FieldBuffer::<P>::from_values(&bits_scalars);
 
 		let mut binary_fold_result = FieldBuffer::<P>::zeros(n_vars - tensor_n_vars);
-		binary_fold_high(&mut binary_fold_result, &tensor, bits.as_slice());
+		binary_fold_high(&mut binary_fold_result, &tensor, &bits.as_slice());
 
 		for &scalar in point.iter().rev() {
 			fold_highest_var_inplace(&mut bits_buffer, scalar);

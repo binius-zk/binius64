@@ -2,7 +2,7 @@
 
 use std::array;
 
-use binius_compute::{BufferPool, PoolVec};
+use binius_compute::BufferPool;
 use binius_field::{Field, FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
@@ -119,10 +119,7 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 				|| {
 					(
 						multilinears.each_ref().map(|multilin| {
-							FieldBuffer::<_, PoolVec<_>>::clone_from_slice(
-								&alloc,
-								multilin.to_ref(),
-							)
+							FieldBuffer::clone_from_slice(&alloc, multilin.to_ref())
 						}),
 						eval_point.clone(),
 					)

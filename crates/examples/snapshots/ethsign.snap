@@ -2,29 +2,31 @@ ethsign circuit
 --
 Gates & Instructions
 ├─ Number of gates: 214,965
-└─ Number of evaluation instructions: 252,550
+└─ Number of evaluation instructions: 250,294
 
 Constraints
-├─ AND constraints: 159,866 used (61.0% of 2^18)
-│  [▓▓▓▓▓▓░░░░] spare: 102,278
+├─ ZERO constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
+├─ AND constraints: 159,863 used (61.0% of 2^18)
+│  [▓▓▓▓▓▓░░░░] spare: 102,281
 ├─ IMUL constraints: 20,554 used (62.7% of 2^15)
 │  [▓▓▓▓▓▓░░░░] spare: 12,214
 ├─ BMUL constraints: 0 used (0.0% of 0)
 │  [░░░░░░░░░░] spare: 0
-└─ Distinct value indices: 379,033
-   ├─ Distinct shifted value indices: 189,010
-   └─ Distinct unshifted value indices: 190,023
+└─ Distinct value indices: 379,027
+   ├─ Distinct shifted value indices: 189,007
+   └─ Distinct unshifted value indices: 190,020
 
 Value Vector
 ├─ Public Section: 114 used (89.1% of 2^7)
 │  [▓▓▓▓▓▓▓▓░░] spare: 14
 │  ├─ Constants: 85
 │  └─ Inout: 29
-├─ Private Section: 189,918 used (72.5%)
-│  [▓▓▓▓▓▓▓░░░] spare: 72,098
+├─ Private Section: 189,915 used (72.5%)
+│  [▓▓▓▓▓▓▓░░░] spare: 72,101
 │  ├─ Witness: 0
-│  └─ Internal: 189,918
-├─ Total Committed: 190,032 used (72.5% of 2^18)
-│  [▓▓▓▓▓▓▓░░░] spare: 72,112
-└─ Scratch (uncommitted): 175,646 (peak live: 192)
+│  └─ Internal: 189,915
+├─ Total Committed: 190,029 used (72.5% of 2^18)
+│  [▓▓▓▓▓▓▓░░░] spare: 72,115
+└─ Scratch (uncommitted): 149,996 (peak live: 192)
 

@@ -30,6 +30,7 @@ use binius_core::word::Word;
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 	pathspec::PathSpec,
@@ -42,7 +43,7 @@ pub const fn shape() -> OpcodeShape {
 		n_in: 1,
 		n_out: 0,
 		n_aux: 1,
-		n_scratch: 1,
+		n_scratch: 0,
 		n_imm: 0,
 	}
 }
@@ -62,53 +63,35 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 	// Constraint 1: Constrain carry-out
 	// (x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
-	builder
-		.and()
-		.a(expr::xor2(*x, cin))
-		.b(expr::xor2(*all_one, cin))
-		.c(expr::xor2(cin, *cout))
-		.build();
+	builder.and(expr::xor2(*x, cin), expr::xor2(*all_one, cin), expr::xor2(cin, *cout));
 
 	// Constraint 2 (AND): sar(cout, 63) ∧ all_one = all_one, i.e. MSB(cout) = 1 (x ≠ 0).
 	// sar(cout, 63) sign-extends the MSB across all 64 bits, so it equals all_one iff
 	// MSB(cout) = 1; the AND with all_one then equals all_one iff MSB(cout) = 1. This is
 	// emitted as an AND (which defines no wire) so gate fusion cannot inline it and
 	// substitute the constant back into Constraint 1, reopening the soundness hole.
-	builder
-		.and()
-		.a(expr::sar(*cout, 63))
-		.b(*all_one)
-		.c(*all_one)
-		.build();
+	builder.and(expr::sar(*cout, 63), *all_one, *all_one);
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
 	assertion_path: PathSpec,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {
 		constants,
 		inputs,
 		aux,
-		scratch,
 		..
 	} = data.gate_param();
 	let [all_one] = constants else { unreachable!() };
 	let [x] = inputs else { unreachable!() };
 	let [cout] = aux else { unreachable!() };
-	let [scratch_sum_unused] = scratch else {
-		unreachable!()
-	};
 
-	// Compute carry bits from all_one + x (cin = 0 implicit)
-	builder.emit_iadd_cout(
-		wire_to_reg(*scratch_sum_unused), // sum (unused)
-		wire_to_reg(*cout),               // cout
-		wire_to_reg(*all_one),            // all_one
-		wire_to_reg(*x),                  // x
-	);
+	// Carry bits of all_one + x.
+	// Only the carries matter, so the sum is not stored.
+	builder.emit_iadd_carry(wire_to_reg(*cout), wire_to_reg(*all_one), wire_to_reg(*x));
 
 	builder.emit_assert_non_zero(wire_to_reg(*cout), assertion_path.as_u32());
 }

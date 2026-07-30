@@ -14,10 +14,9 @@
 //! The gate generates 1 AND constraint:
 //! - `(x ⊕ y) ∧ (cond ~>> 63) = 0`
 
-use binius_core::constraint_system::ShiftVariant;
-
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 	pathspec::PathSpec,
@@ -29,7 +28,7 @@ pub const fn shape() -> OpcodeShape {
 		n_in: 3,
 		n_out: 0,
 		n_aux: 0,
-		n_scratch: 1,
+		n_scratch: 0,
 		n_imm: 0,
 	}
 }
@@ -40,31 +39,22 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 	// Constraint: (x ⊕ y) ∧ (cond ~>> 63) = 0
 	let mask = expr::sar(*cond, 63);
-	builder
-		.and()
-		.a(expr::xor2(*x, *y))
-		.b(mask)
-		.c(expr::empty())
-		.build();
+	builder.and(expr::xor2(*x, *y), mask, expr::empty());
 }
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
 	assertion_path: PathSpec,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
-	let GateParam {
-		inputs, scratch, ..
-	} = data.gate_param();
+	let GateParam { inputs, .. } = data.gate_param();
 	let [x, y, cond] = inputs else { unreachable!() };
-	let [mask] = scratch else { unreachable!() };
 
-	// Broadcast MSB: mask = cond >> 63 (arithmetic)
-	builder.emit_shift(wire_to_reg(*mask), wire_to_reg(*cond), ShiftVariant::Sar, 63);
-
+	// The condition is read as an MSB-bool, and broadcasting the sign bit preserves it.
+	// So the condition is passed as it stands, with no mask to compute or hold.
 	builder.emit_assert_eq_cond(
-		wire_to_reg(*mask),
+		wire_to_reg(*cond),
 		wire_to_reg(*x),
 		wire_to_reg(*y),
 		assertion_path.as_u32(),

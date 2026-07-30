@@ -1,6 +1,6 @@
 // Copyright 2025-2026 The Binius Developers
 
-use binius_compute::{BufferPool, PoolVec};
+use binius_compute::BufferPool;
 use binius_field::{FieldOps, arch::OptimalPackedB128};
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::prodcheck::ProdcheckProver;
@@ -33,7 +33,7 @@ fn bench_prodcheck_new(c: &mut Criterion) {
 			let alloc = &pool;
 
 			b.iter_batched(
-				|| FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, witness_buffer.to_ref()),
+				|| FieldBuffer::clone_from_slice(&alloc, witness_buffer.to_ref()),
 				|witness| ProdcheckProver::<_, P>::new(k, &alloc, witness),
 				BatchSize::SmallInput,
 			);

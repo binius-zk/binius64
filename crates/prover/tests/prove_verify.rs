@@ -1,13 +1,16 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::collections::HashSet;
+
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueVec},
+	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
+	verify::verify_constraints,
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
-use binius_frontend::{CircuitBuilder, Wire};
+use binius_frontend::{CircuitBuilder, Options, Wire};
 use binius_hash::StdHashSuite;
 use binius_prover::{Prover, zk_config::ZKProver};
 use binius_transcript::ProverTranscript;
@@ -15,7 +18,7 @@ use binius_utils::{DeserializeBytes, SerializeBytes};
 use binius_verifier::{Verifier, config::StdChallenger, zk_config::ZKVerifier};
 use rand::{SeedableRng, rngs::StdRng};
 
-fn prove_verify(cs: ConstraintSystem, witness: ValueVec) {
+fn prove_verify(cs: ConstraintSystem, witness: &ValueVec) {
 	const LOG_INV_RATE: usize = 1;
 
 	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
@@ -23,9 +26,7 @@ fn prove_verify(cs: ConstraintSystem, witness: ValueVec) {
 	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone()).unwrap();
 
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-	prover
-		.prove(witness.clone(), &mut prover_transcript)
-		.unwrap();
+	prover.prove(witness, &mut prover_transcript).unwrap();
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	verifier
@@ -34,18 +35,17 @@ fn prove_verify(cs: ConstraintSystem, witness: ValueVec) {
 	verifier_transcript.finalize().unwrap();
 }
 
-fn prove_verify_zk(cs: ConstraintSystem, witness: ValueVec) {
+fn prove_verify_zk(cs: ConstraintSystem, witness: &ValueVec) {
 	const LOG_INV_RATE: usize = 1;
 
 	let zk_verifier = ZKVerifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
 
-	let zk_prover =
-		ZKProver::<OptimalPackedB128, StdHashSuite>::setup(zk_verifier.clone()).unwrap();
+	let zk_prover = ZKProver::<OptimalPackedB128, StdHashSuite>::setup(&zk_verifier).unwrap();
 
 	let mut rng = StdRng::seed_from_u64(0);
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	zk_prover
-		.prove(witness.clone(), &mut rng, &mut prover_transcript)
+		.prove(witness, &mut rng, &mut prover_transcript)
 		.unwrap();
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
@@ -55,12 +55,11 @@ fn prove_verify_zk(cs: ConstraintSystem, witness: ValueVec) {
 	verifier_transcript.finalize().unwrap();
 }
 
-fn prove_verify_zk_serialized(cs: ConstraintSystem, witness: ValueVec) {
+fn prove_verify_zk_serialized(cs: ConstraintSystem, witness: &ValueVec) {
 	const LOG_INV_RATE: usize = 1;
 
 	let zk_verifier = ZKVerifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
-	let zk_prover =
-		ZKProver::<OptimalPackedB128, StdHashSuite>::setup(zk_verifier.clone()).unwrap();
+	let zk_prover = ZKProver::<OptimalPackedB128, StdHashSuite>::setup(&zk_verifier).unwrap();
 
 	// Round-trip both through serialization, mimicking save-to-disk / reload-in-a-fresh-process.
 	// The reloaded prover (which reuses the deserialized KeyCollection and recomputes the cheaper
@@ -77,7 +76,7 @@ fn prove_verify_zk_serialized(cs: ConstraintSystem, witness: ValueVec) {
 	let mut rng = StdRng::seed_from_u64(0);
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	zk_prover
-		.prove(witness.clone(), &mut rng, &mut prover_transcript)
+		.prove(witness, &mut rng, &mut prover_transcript)
 		.unwrap();
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
@@ -129,7 +128,7 @@ fn sha256_preimage_circuit() -> (ConstraintSystem, ValueVec) {
 #[test]
 fn test_prove_verify_sha256_preimage() {
 	let (cs, witness) = sha256_preimage_circuit();
-	prove_verify(cs, witness);
+	prove_verify(cs, &witness);
 }
 
 /// Builds a circuit that computes the 7th power of an input GHASH-field element `x` using four
@@ -179,8 +178,114 @@ fn binmul_seventh_power_circuit() -> (ConstraintSystem, ValueVec) {
 fn test_prove_verify_binmul_seventh_power() {
 	let (cs, witness) = binmul_seventh_power_circuit();
 	assert!(cs.n_bmul_constraints() > 0, "circuit should have BMUL constraints");
-	prove_verify(cs.clone(), witness.clone());
-	prove_verify_zk(cs, witness);
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
+}
+
+/// Builds a circuit whose AND, IMUL and BMUL constraint counts are all non-powers of two, so every
+/// reduction runs over operand columns whose tail rows are zero padding.
+///
+/// Each asserted `band` contributes two AND constraints (the `band` itself and the equality), each
+/// `imul` gate one IMUL constraint, and each `bmul` gate one BMUL constraint — 6, 3 and 3 in total.
+/// The caller asserts those counts are not powers of two rather than relying on it silently.
+fn non_power_of_two_constraint_circuit() -> (ConstraintSystem, ValueVec) {
+	const N_AND_GATES: usize = 3;
+	const N_IMUL_GATES: usize = 3;
+	const N_BMUL_GATES: usize = 3;
+
+	let circuit = CircuitBuilder::new();
+
+	// `z == x & y`, with all three words private.
+	let and_wires = (0..N_AND_GATES)
+		.map(|i| {
+			let x = circuit.add_witness();
+			let y = circuit.add_witness();
+			let z = circuit.add_witness();
+			circuit.assert_eq(format!("and_{i}"), circuit.band(x, y), z);
+			(x, y, z)
+		})
+		.collect::<Vec<_>>();
+
+	// `(hi, lo) = a * b`. `force_commit` makes both product words hidden, so the IMUL operands read
+	// them from the witness rather than folding them away.
+	let imul_wires = (0..N_IMUL_GATES)
+		.map(|_| {
+			let a = circuit.add_witness();
+			let b = circuit.add_witness();
+			let (hi, lo) = circuit.imul(a, b);
+			circuit.force_commit(hi);
+			circuit.force_commit(lo);
+			(a, b)
+		})
+		.collect::<Vec<_>>();
+
+	// GHASH-field products `(c_lo, c_hi) = (a_lo, a_hi) * (b_lo, b_hi)`, likewise committed.
+	let bmul_wires = (0..N_BMUL_GATES)
+		.map(|_| {
+			let a_lo = circuit.add_witness();
+			let a_hi = circuit.add_witness();
+			let b_lo = circuit.add_witness();
+			let b_hi = circuit.add_witness();
+			let (c_lo, c_hi) = circuit.bmul(a_lo, a_hi, b_lo, b_hi);
+			circuit.force_commit(c_lo);
+			circuit.force_commit(c_hi);
+			[a_lo, a_hi, b_lo, b_hi]
+		})
+		.collect::<Vec<_>>();
+
+	let circuit = circuit.build();
+	let mut w = circuit.new_witness_filler();
+
+	for (i, &(x, y, z)) in and_wires.iter().enumerate() {
+		let x_val = Word(0x0123_4567_89AB_CDEF ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+		let y_val = Word(0xFEDC_BA98_7654_3210 ^ (i as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
+		w[x] = x_val;
+		w[y] = y_val;
+		w[z] = x_val & y_val;
+	}
+
+	for (i, &(a, b)) in imul_wires.iter().enumerate() {
+		w[a] = Word(0xDEAD_BEEF_CAFE_BABE ^ (i as u64).wrapping_mul(0x1234_5678_9ABC_DEF0));
+		w[b] = Word(0x0F0F_0F0F_0F0F_0F0F ^ (i as u64).wrapping_mul(0xA5A5_A5A5_A5A5_A5A5));
+	}
+
+	let mut rng = StdRng::seed_from_u64(0);
+	for &[a_lo, a_hi, b_lo, b_hi] in &bmul_wires {
+		let a = u128::from(BinaryField128bGhash::random(&mut rng));
+		let b = u128::from(BinaryField128bGhash::random(&mut rng));
+		w[a_lo] = Word(a as u64);
+		w[a_hi] = Word((a >> 64) as u64);
+		w[b_lo] = Word(b as u64);
+		w[b_hi] = Word((b >> 64) as u64);
+	}
+
+	// The gates derive the AND, product and GHASH-product outputs, so the filled witness satisfies
+	// every constraint.
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	(circuit.constraint_system().clone(), w.into_value_vec())
+}
+
+/// A circuit whose AND, IMUL and BMUL constraint counts are all non-powers of two proves and
+/// verifies. The constraint system keeps those true counts; the prover zero-pads each operand
+/// column up to a power of two, and both sides derive their sumcheck variable counts by rounding
+/// the same true count up.
+#[test]
+fn test_prove_verify_non_power_of_two_constraint_counts() {
+	let (cs, witness) = non_power_of_two_constraint_circuit();
+	for (name, n_constraints) in [
+		("AND", cs.n_and_constraints()),
+		("IMUL", cs.n_imul_constraints()),
+		("BMUL", cs.n_bmul_constraints()),
+	] {
+		assert!(
+			n_constraints > 0 && !n_constraints.is_power_of_two(),
+			"{name} constraint count is {n_constraints}, which must be non-zero and not a power \
+			 of two for this test to exercise padding"
+		);
+	}
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
 }
 
 /// A SHA-256 circuit uses only AND constraints, so its constraint system has zero IMUL
@@ -191,20 +296,156 @@ fn test_prove_verify_binmul_seventh_power() {
 fn test_prove_verify_zero_imul_constraints() {
 	let (cs, witness) = sha256_preimage_circuit();
 	assert_eq!(cs.n_imul_constraints(), 0, "SHA-256 circuit should have no IMUL constraints");
-	prove_verify(cs.clone(), witness.clone());
-	prove_verify_zk(cs, witness);
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
+}
+
+/// Builds a circuit whose linear constraints lower to ZERO constraints: `n_xor` from `bxor` gates,
+/// `n_rotr` from `rotr` gates (whose ZERO constraints carry a *shifted* operand), and `n_and` AND
+/// constraints from `band` gates.
+///
+/// Gate fusion is off: it inlines a linear definition into the gate that consumes it, which would
+/// leave no linear constraint for the option to lower. The remaining passes are off so the counts
+/// are exactly what the gates emit.
+fn zero_constraint_circuit(
+	n_xor: usize,
+	n_rotr: usize,
+	n_and: usize,
+) -> (ConstraintSystem, ValueVec) {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_zero_constraints: true,
+		enable_gate_fusion: false,
+		enable_common_subexpression_elimination: false,
+		enable_dead_code_elimination: false,
+		enable_algebraic_folding: false,
+		..Options::default()
+	});
+	let a = builder.add_witness();
+	let b = builder.add_witness();
+
+	// Each `bxor` emits one linear constraint, which the option lowers to a ZERO constraint.
+	let mut acc = a;
+	for _ in 0..n_xor {
+		acc = builder.bxor(acc, b);
+		builder.force_commit(acc);
+	}
+
+	// Each `rotr` likewise emits one linear constraint, whose ZERO constraint names a shifted
+	// value rather than a plain one.
+	for i in 0..n_rotr {
+		let rotated = builder.rotr(acc, 5 + i as u32);
+		builder.force_commit(rotated);
+	}
+
+	// Each `band` emits one AND constraint.
+	for _ in 0..n_and {
+		let and_out = builder.band(a, b);
+		builder.force_commit(and_out);
+	}
+
+	let circuit = builder.build();
+	let mut w = circuit.new_witness_filler();
+	w[a] = Word(0x0123_4567_89AB_CDEF);
+	w[b] = Word(0xFEDC_BA98_7654_3210);
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	let cs = circuit.constraint_system().clone();
+	assert_eq!(cs.n_zero_constraints(), n_xor + n_rotr);
+	assert_eq!(cs.n_and_constraints(), n_and);
+	assert!(
+		cs.zero_constraints
+			.iter()
+			.any(|c| c.val().iter().any(|svi| svi.amount != 0)),
+		"the fixture must emit a ZERO constraint with a shifted operand"
+	);
+	let witness = w.into_value_vec();
+	verify_constraints(&cs, &witness).unwrap();
+	(cs, witness)
+}
+
+/// The Zero reduction discharges ZERO constraints end to end. The reduction sends nothing itself;
+/// its claim rides along in the shift reduction's batch, so this exercises the whole path from the
+/// constraint system through the key collection to the final evaluation check.
+///
+/// The ZERO set is the larger of the two, so the reduction's constraint point runs past the BitAnd
+/// output point and draws a fresh challenge. Neither count is a power of two.
+#[test]
+fn test_prove_verify_zero_constraints() {
+	let (cs, witness) = zero_constraint_circuit(3, 2, 3);
+	assert_eq!(cs.log_zero_constraints(), Some(3));
+	assert_eq!(cs.log_and_constraints(), Some(2));
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
+}
+
+/// The ZERO set smaller than the AND set, so the reduction's constraint point is a strict prefix
+/// of the BitAnd output point and draws nothing of its own.
+#[test]
+fn test_prove_verify_fewer_zero_than_and_constraints() {
+	let (cs, witness) = zero_constraint_circuit(1, 1, 5);
+	assert_eq!(cs.log_zero_constraints(), Some(1));
+	assert_eq!(cs.log_and_constraints(), Some(3));
+	prove_verify(cs, &witness);
+}
+
+/// A witness violating one ZERO constraint is rejected. The prover has nothing to send for the
+/// Zero reduction, so it claims the constant zero regardless; the shift reduction, running against
+/// the committed witness, is what catches the discrepancy.
+#[test]
+fn test_prove_verify_rejects_violated_zero_constraint() {
+	const LOG_INV_RATE: usize = 1;
+
+	let (cs, witness) = zero_constraint_circuit(3, 2, 3);
+
+	// Corrupt a word that only the ZERO constraints read, so a ZERO constraint is the only thing
+	// standing between this witness and a valid proof.
+	let and_words = cs
+		.and_constraints
+		.iter()
+		.flat_map(|c| &c.0)
+		.flatten()
+		.map(|svi| svi.value_index)
+		.collect::<HashSet<_>>();
+	let victim = cs
+		.zero_constraints
+		.iter()
+		.flat_map(|c| &c.0)
+		.flatten()
+		.map(|svi| svi.value_index)
+		.find(|index| !and_words.contains(index) && *index != ValueIndex(0))
+		.expect("some ZERO constraint reads a word no AND constraint does");
+
+	let mut words = witness.combined_witness().to_vec();
+	words[victim.0 as usize] = words[victim.0 as usize] ^ Word::ONE;
+	let corrupted =
+		ValueVec::new_from_data(&words[..cs.n_public_words()], &words[cs.n_public_words()..]);
+	assert!(verify_constraints(&cs, &corrupted).is_err());
+
+	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
+	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone()).unwrap();
+
+	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+	prover.prove(&corrupted, &mut prover_transcript).unwrap();
+
+	let mut verifier_transcript = prover_transcript.into_verifier();
+	assert!(
+		verifier
+			.verify(corrupted.public(), &mut verifier_transcript)
+			.is_err(),
+		"a violated ZERO constraint must not verify"
+	);
 }
 
 #[test]
 fn test_zk_prove_verify_sha256_preimage() {
 	let (cs, witness) = sha256_preimage_circuit();
-	prove_verify_zk(cs, witness);
+	prove_verify_zk(cs, &witness);
 }
 
 #[test]
 fn test_zk_prove_verify_serialized() {
 	let (cs, witness) = sha256_preimage_circuit();
-	prove_verify_zk_serialized(cs, witness);
+	prove_verify_zk_serialized(cs, &witness);
 }
 
 /// Produces a ZK signature-of-knowledge proof over `sign_message`, then verifies it against
@@ -213,24 +454,23 @@ fn test_zk_prove_verify_serialized() {
 /// Signatures of knowledge are only supported by the ZK prover/verifier.
 fn sign_verify(
 	cs: ConstraintSystem,
-	witness: ValueVec,
+	witness: &ValueVec,
 	sign_message: Option<&[u8]>,
 	verify_message: Option<&[u8]>,
 ) -> bool {
 	const LOG_INV_RATE: usize = 1;
 
 	let zk_verifier = ZKVerifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
-	let zk_prover =
-		ZKProver::<OptimalPackedB128, StdHashSuite>::setup(zk_verifier.clone()).unwrap();
+	let zk_prover = ZKProver::<OptimalPackedB128, StdHashSuite>::setup(&zk_verifier).unwrap();
 
 	let mut rng = StdRng::seed_from_u64(0);
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	match sign_message {
 		Some(message) => zk_prover
-			.prove_sig(witness.clone(), message, &mut rng, &mut prover_transcript)
+			.prove_sig(witness, message, &mut rng, &mut prover_transcript)
 			.unwrap(),
 		None => zk_prover
-			.prove(witness.clone(), &mut rng, &mut prover_transcript)
+			.prove(witness, &mut rng, &mut prover_transcript)
 			.unwrap(),
 	}
 
@@ -250,26 +490,26 @@ fn sign_verify(
 fn test_signature_of_knowledge_roundtrip() {
 	let (cs, witness) = sha256_preimage_circuit();
 	// Signing and verifying with the same message succeeds.
-	assert!(sign_verify(cs, witness, Some(b"hello world"), Some(b"hello world")));
+	assert!(sign_verify(cs, &witness, Some(b"hello world"), Some(b"hello world")));
 }
 
 #[test]
 fn test_signature_of_knowledge_wrong_message_fails() {
 	let (cs, witness) = sha256_preimage_circuit();
 	// A proof signed over one message must not verify against a different message.
-	assert!(!sign_verify(cs, witness, Some(b"hello world"), Some(b"goodbye world")));
+	assert!(!sign_verify(cs, &witness, Some(b"hello world"), Some(b"goodbye world")));
 }
 
 #[test]
 fn test_signature_of_knowledge_missing_message_fails() {
 	let (cs, witness) = sha256_preimage_circuit();
 	// A signature of knowledge must not verify as a plain proof of knowledge (no message).
-	assert!(!sign_verify(cs, witness, Some(b"hello world"), None));
+	assert!(!sign_verify(cs, &witness, Some(b"hello world"), None));
 }
 
 #[test]
 fn test_plain_proof_rejects_message() {
 	let (cs, witness) = sha256_preimage_circuit();
 	// A plain proof of knowledge must not verify when a message is supplied.
-	assert!(!sign_verify(cs, witness, None, Some(b"hello world")));
+	assert!(!sign_verify(cs, &witness, None, Some(b"hello world")));
 }

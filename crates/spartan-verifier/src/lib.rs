@@ -137,7 +137,7 @@ impl<F: Field> IOPVerifier<F> {
 		let public = vec![DummyElem::<F>::default(); 1 << cs.log_public()];
 		// Discarded: the setup channel performs no real verification; we only read back the
 		// recorded oracle specs.
-		let _ = self.verify((), public, &mut channel);
+		let _ = self.verify((), &public, &mut channel);
 		channel.into_oracle_specs()
 	}
 
@@ -159,7 +159,7 @@ impl<F: Field> IOPVerifier<F> {
 	pub fn verify<Channel>(
 		&self,
 		precommit_oracle: Channel::Oracle,
-		public: Vec<Channel::Elem>,
+		public: &[Channel::Elem],
 		channel: &mut Channel,
 	) -> Result<(), Error>
 	where
@@ -197,7 +197,7 @@ impl<F: Field> IOPVerifier<F> {
 		let lambda = channel.sample();
 
 		// Batch together the constraint operand evaluation claims.
-		let batched_sum = evaluate_univariate(&[a_eval, b_eval, c_eval], lambda.clone());
+		let batched_sum = evaluate_univariate(&[a_eval, b_eval, c_eval], &lambda);
 
 		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x. Shared via `Rc` so the transparent closures can
 		// own it and outlive this call (the opening is deferred to the channel's `finish()`). `Rc`
@@ -210,12 +210,7 @@ impl<F: Field> IOPVerifier<F> {
 		// field values, run the MLE evaluation in plaintext, and materialize the result as a
 		// single inout wire instead of building the entire sub-circuit.
 		let public_eval = {
-			let inputs = [
-				public.as_slice(),
-				slice::from_ref(&lambda),
-				r_x_tensor.as_ref(),
-			]
-			.concat();
+			let inputs = [public, slice::from_ref(&lambda), r_x_tensor.as_ref()].concat();
 
 			let eval_fn = wiring::PublicWiringEvalFn::new(cs.mul_constraints(), public.len());
 			channel.compute_public_value(&inputs, eval_fn)
@@ -292,7 +287,7 @@ where
 
 		// Create the BaseFold ZK compiler for IOP verification
 		let basefold_compiler = BaseFoldVerifierCompiler::new(
-			merkle_scheme,
+			&merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,
@@ -346,7 +341,7 @@ where
 		let precommit_oracle =
 			channel.recv_oracle(self.constraint_system().log_precommit() as usize, true)?;
 		self.iop_verifier
-			.verify(precommit_oracle, public.to_vec(), &mut channel)?;
+			.verify(precommit_oracle, public, &mut channel)?;
 		Ok(channel.finish()?)
 	}
 }

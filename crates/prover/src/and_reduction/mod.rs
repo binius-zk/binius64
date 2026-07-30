@@ -51,6 +51,9 @@ where
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
 	let [a, b] = columns;
 
+	// The column length is the row count: one row per constraint for the single-instance prover,
+	// one per (instance, constraint) pair for the M4 batch prover, in both cases zero-padded up to
+	// a power of two.
 	let log_constraint_count = checked_log_2(a.len());
 
 	// Pin the first few zerocheck coordinates to fixed small-field elements (friendly challenges),
@@ -65,7 +68,7 @@ where
 		a,
 		b,
 		big_field_zerocheck_challenges,
-		prover_message_domain,
+		&prover_message_domain,
 	);
 
 	prover.prove_with_channel(channel, alloc)

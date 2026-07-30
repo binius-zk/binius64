@@ -316,7 +316,7 @@ pub mod bitmask {
 	///
 	/// The caller must ensure that `index < Big::N` (over `SmallU<BITS>` elements).
 	#[inline]
-	pub unsafe fn get<Big, const BITS: usize>(value: Big, index: usize) -> SmallU<BITS>
+	pub unsafe fn get<Big, const BITS: usize>(value: &Big, index: usize) -> SmallU<BITS>
 	where
 		Big: Divisible<u8>,
 	{
@@ -324,7 +324,7 @@ pub mod bitmask {
 		let byte_index = index / elems_per_byte;
 		let sub_index = index % elems_per_byte;
 		// Safety: `index < Big::N` over `SmallU<BITS>` implies `byte_index < Big::N` over `u8`.
-		let byte = unsafe { Divisible::<u8>::get_unchecked(&value, byte_index) };
+		let byte = unsafe { Divisible::<u8>::get_unchecked(value, byte_index) };
 		let shift = sub_index * BITS;
 		SmallU::<BITS>::new(byte >> shift)
 	}
@@ -619,7 +619,7 @@ macro_rules! impl_divisible_bitmask {
 				#[inline]
 				unsafe fn get_unchecked(&self, index: usize) -> $crate::underlier::SmallU<$bits> {
 					// Safety: the caller guarantees `index < Self::N`.
-					unsafe { $crate::underlier::bitmask::get::<Self, $bits>(*self, index) }
+					unsafe { $crate::underlier::bitmask::get::<Self, $bits>(self, index) }
 				}
 
 				#[inline]
@@ -979,9 +979,8 @@ mod tests {
 		assert_eq!(Divisible::<U4>::get(&val, 1), U4::new(0xF));
 		assert_eq!(Divisible::<U4>::get(&val, 15), U4::new(0x1));
 
-		// Test ref_iter
-		let parts: Vec<U4> = Divisible::<U4>::ref_iter(&val).collect();
-		assert_eq!(parts.len(), 16);
+		// Iterating a u64 as nibbles yields 64 / 4 = 16 parts.
+		assert_eq!(Divisible::<U4>::ref_iter(&val).count(), 16);
 	}
 
 	#[test]

@@ -61,6 +61,30 @@ fn bench(c: &mut Criterion) {
 		});
 	});
 
+	// Padded shape: rounding a non-power-of-two AND count up to a power of two leaves a zero
+	// suffix. Keccak and SHA-256 batches carry such a suffix; here it is 2/5 of the words.
+	// Keep the first 3/5 populated and zero the rest.
+	let padded_real = (1usize << log_words) * 3 / 5;
+	let mut a_words_padded = a_words.clone();
+	let mut b_words_padded = b_words.clone();
+	a_words_padded[padded_real..].fill(Word::ZERO);
+	b_words_padded[padded_real..].fill(Word::ZERO);
+
+	group.bench_function(
+		format!("univariate_round_message 2^{log_words} (40% zero padding)"),
+		|bench| {
+			bench.iter(|| {
+				univariate_round_message_extension_domain::<B128>(
+					log_words,
+					&a_words_padded,
+					&b_words_padded,
+					&big_field_zerocheck_challenges,
+					&prover_message_domain,
+				)
+			});
+		},
+	);
+
 	let urm = univariate_round_message_extension_domain::<B128>(
 		log_words,
 		&a_words,
@@ -72,7 +96,7 @@ fn bench(c: &mut Criterion) {
 
 	group.bench_function(format!("univariate fold 2^{log_words}"), |bench| {
 		bench.iter(|| {
-			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
+			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
 			let folder = BitAxisFolder::new(&lagrange_evals);
 			folder.fold_bitand_operands::<OptimalPackedB128, _>(
 				&GlobalAllocator,
@@ -82,7 +106,7 @@ fn bench(c: &mut Criterion) {
 		});
 	});
 
-	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
+	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
 	let folder = BitAxisFolder::new(&lagrange_evals);
 
 	let mut univariate_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
@@ -92,7 +116,7 @@ fn bench(c: &mut Criterion) {
 	let next_round_claim = extrapolate_over_subspace(
 		&prover_message_domain.clone().isomorphic::<B128>(),
 		&univariate_message_coeffs,
-		univariate_challenge,
+		&univariate_challenge,
 	);
 
 	let pool = BufferPool::new();

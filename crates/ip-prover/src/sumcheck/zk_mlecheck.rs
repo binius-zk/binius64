@@ -72,7 +72,7 @@ pub fn expand_libra_eval<A: Allocator, P: PackedField>(
 	debug_assert!(degree < 1 << m_d);
 
 	let log_size = m_n + m_d;
-	let mut buffer = FieldVec::<P, A>::zeros_in(alloc, log_size);
+	let mut buffer = FieldBuffer::zeros_in(alloc, log_size);
 	let row_stride = 1 << m_d;
 
 	for (j, &r_j) in challenge_point.iter().enumerate() {
@@ -161,7 +161,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> Mask<P, Da
 	/// Evaluates g_i(x) for a specific variable using Horner's method.
 	pub fn evaluate_univariate(&self, var_index: usize, x: F) -> F {
 		let coeffs: Vec<_> = self.coeffs_for_var(var_index).collect();
-		evaluate_univariate(&coeffs, x)
+		evaluate_univariate(&coeffs, &x)
 	}
 
 	/// Computes the MLE of the mask polynomial at a point.
@@ -316,7 +316,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		let coeffs = self.last_coeffs_or_claim.coeffs();
 
 		// Evaluate round polynomial at challenge to get new claim
-		let new_claim = coeffs.evaluate(challenge);
+		let new_claim = coeffs.evaluate(&challenge);
 
 		let var_idx = self.current_var_index();
 

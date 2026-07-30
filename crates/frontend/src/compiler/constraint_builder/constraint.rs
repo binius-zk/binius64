@@ -1,9 +1,10 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Wire-level constraint records, holding [`WireOperand`]s until the wire mapping lowers them.
 
 use binius_core::constraint_system::{
-	AndConstraint, BmulConstraint, ImulConstraint, ShiftedValueIndex, ValueIndex,
+	AndConstraint, BmulConstraint, ImulConstraint, ShiftedValueIndex, ValueIndex, ZeroConstraint,
 };
 use cranelift_entity::{EntitySet, SecondaryMap};
 
@@ -139,6 +140,20 @@ impl WireLinearConstraint {
 		])
 	}
 
+	/// Lowers to the Zero constraint `RHS ^ DST == 0`.
+	///
+	/// This is the direct encoding of the equality: one constraint array instead of the three an
+	/// AND constraint carries.
+	pub(super) fn into_zero_constraint(
+		self,
+		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
+	) -> ZeroConstraint {
+		let dst = wire_mapping[self.dst];
+		let mut operand = self.rhs.into_value_indices(wire_mapping);
+		operand.push(ShiftedValueIndex::plain(dst));
+		ZeroConstraint([operand])
+	}
+
 	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
 		self.rhs.mark_used(used_set);
 		used_set.insert(self.dst);
@@ -168,18 +183,17 @@ mod tests {
 		wire_mapping[all_one_wire] = ValueIndex(7);
 
 		let mut builder = ConstraintBuilder::new();
-		builder
-			.bmul()
-			.a_lo(wires[0])
-			.a_hi(wires[1])
-			.b_lo(wires[2])
-			.b_hi(wires[3])
-			.c_lo(wires[4])
-			.c_hi(expr::xor2(wires[5], expr::sll(wires[6], 5)))
-			.build();
+		builder.bmul(
+			wires[0],
+			wires[1],
+			wires[2],
+			wires[3],
+			wires[4],
+			expr::xor2(wires[5], expr::sll(wires[6], 5)),
+		);
 
-		let (and_constraints, imul_constraints, bmul_constraints) =
-			builder.build(&wire_mapping, all_one_wire);
+		let (_zero_constraints, and_constraints, imul_constraints, bmul_constraints) =
+			builder.build(&wire_mapping, all_one_wire, false);
 
 		assert_eq!(and_constraints.len(), 0);
 		assert_eq!(imul_constraints.len(), 0);

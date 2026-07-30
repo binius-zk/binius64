@@ -69,11 +69,21 @@ pub struct ConstraintSystemBenchmarkContext<'a, B: ExampleBenchmark> {
 	pub prover: &'a Prover<OptimalPackedB128, StdHashSuite>,
 }
 
+// Every field is a shared reference, so the context is a cheap by-value view for any `B`.
+// (A derive would demand `B: Copy`, which the benchmark types don't and needn't satisfy.)
+impl<B: ExampleBenchmark> Clone for ConstraintSystemBenchmarkContext<'_, B> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<B: ExampleBenchmark> Copy for ConstraintSystemBenchmarkContext<'_, B> {}
+
 /// Run a complete benchmark suite for a constraint system
 #[allow(dead_code)]
 pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	c: &mut Criterion,
-	benchmark: B,
+	benchmark: &B,
 	group_prefix: &str,
 	peak_alloc: &impl PeakMemAllocTrait,
 ) {
@@ -83,7 +93,7 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 /// Run a complete benchmark suite for a constraint system, with benchmark-specific extra groups.
 pub fn run_cs_benchmark_with_extra_groups<B, F>(
 	c: &mut Criterion,
-	benchmark: B,
+	benchmark: &B,
 	group_prefix: &str,
 	peak_alloc: &impl PeakMemAllocTrait,
 	extra_groups: F,
@@ -126,9 +136,7 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 	// Track memory for proof generation
 	peak_alloc.reset_peak_memory();
 	let mut prover_transcript_mem = ProverTranscript::new(StdChallenger::default());
-	prover
-		.prove(witness.clone(), &mut prover_transcript_mem)
-		.unwrap();
+	prover.prove(&witness, &mut prover_transcript_mem).unwrap();
 	let proof_bytes = prover_transcript_mem.finalize();
 	let proof_peak_bytes = peak_alloc.get_peak_memory();
 
@@ -176,9 +184,7 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 		group.bench_function(BenchmarkId::from_parameter(&bench_name), |b| {
 			b.iter(|| {
 				let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-				prover
-					.prove(witness.clone(), &mut prover_transcript)
-					.unwrap();
+				prover.prove(&witness, &mut prover_transcript).unwrap();
 				prover_transcript
 			})
 		});
@@ -191,7 +197,7 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 		ConstraintSystemBenchmarkContext {
 			group_prefix,
 			bench_name: &bench_name,
-			benchmark: &benchmark,
+			benchmark,
 			circuit: &circuit,
 			example: &example,
 			instance: &instance,

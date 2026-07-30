@@ -52,7 +52,7 @@ where
 		let challenge = channel.sample();
 
 		let round_coeffs = round_proof.recover(sum);
-		sum = round_coeffs.evaluate(challenge.clone());
+		sum = round_coeffs.evaluate(&challenge);
 		challenges.push(challenge);
 	}
 

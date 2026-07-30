@@ -90,7 +90,7 @@ pub struct LookerClaim<'a, Elem> {
 /// - the index evaluations do not combine to the batched leaf denominator,
 /// - the batched final layer is inconsistent.
 pub fn verify_reduction<F, C>(
-	gamma: C::Elem,
+	gamma: &C::Elem,
 	table_n_vars: usize,
 	lookers: &[LookerClaim<'_, C::Elem>],
 	channel: &mut C,
@@ -216,7 +216,7 @@ where
 		pushforward_eval_claim,
 	} = verify_final_layer::<F, C>(
 		m,
-		c,
+		&c,
 		combined_eval_claim,
 		layer1_num,
 		layer1_den,
@@ -254,6 +254,6 @@ mod tests {
 			eval_point: &[],
 			eval_claim: B128::ZERO,
 		};
-		let _ = verify_reduction::<B128, _>(B128::ZERO, 0, &[claim], &mut verifier);
+		let _ = verify_reduction::<B128, _>(&B128::ZERO, 0, &[claim], &mut verifier);
 	}
 }

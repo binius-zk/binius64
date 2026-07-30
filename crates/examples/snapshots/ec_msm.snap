@@ -2,9 +2,11 @@ ec_msm circuit
 --
 Gates & Instructions
 ├─ Number of gates: 208,914
-└─ Number of evaluation instructions: 246,270
+└─ Number of evaluation instructions: 244,030
 
 Constraints
+├─ ZERO constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
 ├─ AND constraints: 158,253 used (60.4% of 2^18)
 │  [▓▓▓▓▓▓░░░░] spare: 103,891
 ├─ IMUL constraints: 20,548 used (62.7% of 2^15)
@@ -26,5 +28,5 @@ Value Vector
 │  └─ Internal: 188,287
 ├─ Total Committed: 188,339 used (71.8% of 2^18)
 │  [▓▓▓▓▓▓▓░░░] spare: 73,805
-└─ Scratch (uncommitted): 170,883 (peak live: 190)
+└─ Scratch (uncommitted): 145,377 (peak live: 190)
 

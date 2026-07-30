@@ -1,5 +1,5 @@
 // Copyright 2025-2026 The Binius Developers
-use binius_compute::{BufferPool, PoolVec};
+use binius_compute::BufferPool;
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash1x128b};
 use binius_hash::StdHashSuite;
@@ -55,7 +55,7 @@ const N_TEST_QUERIES: usize = 1;
 fn basefold_compiler() -> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GenericPreExpanded<F>>>
 {
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
-		BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
+		&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
 		vec![OracleSpec::new(LIMB_BITS)],
 		LOG_INV_RATE,
 		N_TEST_QUERIES,
@@ -345,7 +345,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 	// Computing a product tree over the leaves.
 	group.bench_function("product_tree", |bencher| {
 		bencher.iter_batched(
-			|| FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, witness.b_leaves.to_ref()),
+			|| FieldBuffer::clone_from_slice(&alloc, witness.b_leaves.to_ref()),
 			|b_leaves| ProdcheckProver::<_, P>::new(Word::LOG_BITS, &alloc, b_leaves),
 			BatchSize::SmallInput,
 		);

@@ -47,6 +47,7 @@ pub enum Opcode {
 
 /// The shape of an opcode is a description of it's inputs and outputs. It allows treating a gate as
 /// a black box, correctly identifying its inputs or outputs.
+#[derive(Clone, Copy)]
 pub struct OpcodeShape {
 	/// The constants the gate with this opcode expects.
 	pub const_in: &'static [Word],
@@ -82,7 +83,7 @@ pub struct OpcodeShape {
 }
 
 impl Opcode {
-	pub fn shape(&self, dimensions: &[usize]) -> OpcodeShape {
+	pub fn shape(self, dimensions: &[usize]) -> OpcodeShape {
 		assert_eq!(self.is_const_shape(), dimensions.is_empty());
 
 		match self {
@@ -127,7 +128,7 @@ impl Opcode {
 		}
 	}
 
-	pub const fn is_const_shape(&self) -> bool {
+	pub const fn is_const_shape(self) -> bool {
 		#[allow(clippy::match_like_matches_macro)]
 		match self {
 			Opcode::BxorMulti => false,

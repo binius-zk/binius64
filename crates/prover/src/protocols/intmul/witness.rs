@@ -10,7 +10,10 @@ use binius_ip_prover::prodcheck::ProdcheckProver;
 use binius_math::{FieldVec, field_buffer::FieldBuffer};
 use binius_utils::{
 	checked_arithmetics::{checked_log_2, strict_log_2},
-	rayon::prelude::*,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
 	strided_array::StridedArray2DViewMut,
 };
 use binius_verifier::protocols::intmul::common::{LIMB_BITS, LOG_N_LIMBS, N_LIMBS};
@@ -187,7 +190,7 @@ where
 		let (b_prodcheck, b_root) = ProdcheckProver::new(
 			Word::LOG_BITS,
 			alloc,
-			FieldVec::<P, A>::clone_from_slice(alloc, b_leaves.to_ref()),
+			FieldBuffer::clone_from_slice(alloc, b_leaves.to_ref()),
 		);
 		let b_root = unpool::<A, P>(b_root);
 		drop(variable_base_tree_scope);
@@ -216,6 +219,8 @@ where
 /// The root fields are consumed by the phase provers as ordinary `FieldBuffer`s; the pooled block
 /// cannot be handed out as a `Vec` directly (its allocation is over-aligned for the free list), so
 /// it is copied out and the pooled block recycled.
+// Takes `src` by value so the pooled block returns to the free list here, not at the caller.
+#[allow(clippy::needless_pass_by_value)]
 fn unpool<A: Allocator, P: PackedField>(src: FieldVec<P, A>) -> FieldBuffer<P> {
 	FieldBuffer::new(src.log_len(), src.as_ref().to_vec())
 }
@@ -366,7 +371,7 @@ where
 	}
 
 	// Fallback: bases is too small to parallelize (n_vars < P::LOG_WIDTH)
-	let mut out = FieldVec::<P, A>::zeros_in(alloc, n_vars + Word::LOG_BITS);
+	let mut out = FieldBuffer::zeros_in(alloc, n_vars + Word::LOG_BITS);
 	let n_elems = 1 << n_vars;
 
 	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
@@ -445,6 +450,7 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 	assert_eq!(a.len(), b.len());
 	let product = (a.as_ref(), b.as_ref())
 		.into_par_iter()
+		.with_min_task(WorkPerItem::FieldMuls)
 		.map(|(&a, &b)| a * b)
 		.collect::<Vec<P>>();
 	FieldBuffer::new(a.log_len(), product)

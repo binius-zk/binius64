@@ -87,88 +87,6 @@ impl<T: Copy> RandomAccessSequenceMut<T> for &mut [T] {
 	}
 }
 
-/// A subrange adapter of a collection of scalars.
-#[derive(Clone)]
-pub struct SequenceSubrange<'a, T: Copy, Inner: RandomAccessSequence<T>> {
-	inner: &'a Inner,
-	offset: usize,
-	len: usize,
-	_marker: std::marker::PhantomData<T>,
-}
-
-impl<'a, T: Copy, Inner: RandomAccessSequence<T>> SequenceSubrange<'a, T, Inner> {
-	#[inline(always)]
-	pub fn new(inner: &'a Inner, offset: usize, len: usize) -> Self {
-		assert!(offset + len <= inner.len(), "subrange out of bounds");
-
-		Self {
-			inner,
-			offset,
-			len,
-			_marker: std::marker::PhantomData,
-		}
-	}
-}
-
-impl<T: Copy, Inner: RandomAccessSequence<T>> RandomAccessSequence<T>
-	for SequenceSubrange<'_, T, Inner>
-{
-	#[inline(always)]
-	fn len(&self) -> usize {
-		self.len
-	}
-
-	#[inline(always)]
-	unsafe fn get_unchecked(&self, index: usize) -> T {
-		unsafe { self.inner.get_unchecked(index + self.offset) }
-	}
-}
-
-/// A subrange adapter of a mutable collection of scalars.
-pub struct SequenceSubrangeMut<'a, T: Copy, Inner: RandomAccessSequenceMut<T>> {
-	inner: &'a mut Inner,
-	offset: usize,
-	len: usize,
-	_marker: std::marker::PhantomData<&'a T>,
-}
-
-impl<'a, T: Copy, Inner: RandomAccessSequenceMut<T>> SequenceSubrangeMut<'a, T, Inner> {
-	#[inline(always)]
-	pub fn new(inner: &'a mut Inner, offset: usize, len: usize) -> Self {
-		assert!(offset + len <= inner.len(), "subrange out of bounds");
-
-		Self {
-			inner,
-			offset,
-			len,
-			_marker: std::marker::PhantomData,
-		}
-	}
-}
-impl<T: Copy, Inner: RandomAccessSequenceMut<T>> RandomAccessSequence<T>
-	for SequenceSubrangeMut<'_, T, Inner>
-{
-	#[inline(always)]
-	fn len(&self) -> usize {
-		self.len
-	}
-
-	#[inline(always)]
-	unsafe fn get_unchecked(&self, index: usize) -> T {
-		unsafe { self.inner.get_unchecked(index + self.offset) }
-	}
-}
-impl<T: Copy, Inner: RandomAccessSequenceMut<T>> RandomAccessSequenceMut<T>
-	for SequenceSubrangeMut<'_, T, Inner>
-{
-	#[inline(always)]
-	unsafe fn set_unchecked(&mut self, index: usize, value: T) {
-		unsafe {
-			self.inner.set_unchecked(index + self.offset, value);
-		}
-	}
-}
-
 /// Power-of-two aligned vertical slice of a sequence when viewed as a row-major matrix.
 /// This is useful access pattern for algorithms like 4-step NTT or switchover.
 #[derive(Clone)]
@@ -285,24 +203,5 @@ mod tests {
 		let mut slice: &mut [usize] = &mut [1, 2, 3];
 		check_collection(&slice, slice);
 		check_collection_get_set(&mut slice, &mut random);
-	}
-
-	#[test]
-	fn test_subrange() {
-		let slice: &[usize] = &[1, 2, 3, 4, 5];
-		let subrange = SequenceSubrange::new(&slice, 1, 3);
-		check_collection(&subrange, &[2, 3, 4]);
-	}
-
-	#[test]
-	fn test_subrange_mut() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let mut random = || -> usize { rng.random::<u64>() as usize };
-
-		let mut slice: &mut [usize] = &mut [1, 2, 3, 4, 5];
-		let values = slice[1..4].to_vec();
-		let mut subrange = SequenceSubrangeMut::new(&mut slice, 1, 3);
-		check_collection(&subrange, &values);
-		check_collection_get_set(&mut subrange, &mut random);
 	}
 }

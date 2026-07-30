@@ -1,5 +1,12 @@
 // Copyright 2025 Irreducible Inc.
-use binius_core::{constraint_system::ShiftedValueIndex, verify::verify_constraints, word::Word};
+// Copyright 2026 The Binius Developers
+use std::collections::HashSet;
+
+use binius_core::{
+	constraint_system::{ShiftedValueIndex, ValueIndex},
+	verify::verify_constraints,
+	word::Word,
+};
 use binius_utils::strided_array::StridedArray2DViewMut;
 use proptest::prelude::*;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
@@ -80,6 +87,100 @@ fn test_algebraic_fold_bxor_self_is_zero_in_witness() {
 
 	assert_eq!(w[zero], Word::ZERO);
 	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+}
+
+/// Builds `assert_eq(x ^ y, z)` under the given lowering of linear constraints.
+///
+/// Gate fusion is off so that the `bxor` gate keeps its own linear constraint instead of being
+/// inlined into the assertion's operand; the assertion itself emits an AND constraint either way.
+fn build_xor_circuit(enable_zero_constraints: bool) -> (Circuit, Wire, Wire, Wire) {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_gate_fusion: false,
+		enable_zero_constraints,
+		..Options::default()
+	});
+	let x = builder.add_inout();
+	let y = builder.add_inout();
+	let z = builder.add_inout();
+	builder.assert_eq("xor", builder.bxor(x, y), z);
+	(builder.build(), x, y, z)
+}
+
+#[test]
+fn test_zero_constraints_disabled_by_default() {
+	let (circuit, ..) = build_xor_circuit(false);
+	let cs = circuit.constraint_system();
+
+	// The `bxor` linear constraint and the assertion, both as AND constraints.
+	assert_eq!(cs.n_zero_constraints(), 0);
+	assert_eq!(cs.n_and_constraints(), 2);
+}
+
+#[test]
+fn test_zero_constraints_replace_the_linear_and_constraints() {
+	let (zero_circuit, x, y, z) = build_xor_circuit(true);
+	let cs = zero_circuit.constraint_system();
+
+	// The `bxor` linear constraint moves to the ZERO set, leaving only the assertion's AND.
+	assert_eq!(cs.n_zero_constraints(), 1);
+	assert_eq!(cs.n_and_constraints(), 1);
+
+	// The Zero constraint XORs the linear constraint's terms with its destination, and names no
+	// all-ones constant.
+	let all_one = ValueIndex(0);
+	let val = cs.zero_constraints[0].val();
+	assert_eq!(val.len(), 3);
+	assert!(val.iter().all(|svi| svi.value_index != all_one));
+
+	let mut filler = zero_circuit.new_witness_filler();
+	filler[x] = Word(0x1234_5678_9abc_def0);
+	filler[y] = Word(0x0fed_cba9_8765_4321);
+	filler[z] = Word(0x1234_5678_9abc_def0 ^ 0x0fed_cba9_8765_4321);
+	zero_circuit.populate_wire_witness(&mut filler).unwrap();
+	verify_constraints(cs, &filler.value_vec).unwrap();
+}
+
+/// Builds `((x << 32) >> 32) & y == z` with gate fusion left on.
+///
+/// A left-then-right shift pair is not expressible as one shifted operand, so fusion cannot
+/// inline the intermediate into the `band` and has to commit it. That committed definition is the
+/// one the option has to reach.
+fn build_committed_lin_def_circuit(enable_zero_constraints: bool) -> (Circuit, Wire, Wire, Wire) {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_zero_constraints,
+		..Options::default()
+	});
+	let x = builder.add_inout();
+	let y = builder.add_inout();
+	let z = builder.add_inout();
+	let low = builder.shr(builder.shl(x, 32), 32);
+	builder.assert_eq("and", builder.band(low, y), z);
+	(builder.build(), x, y, z)
+}
+
+#[test]
+fn test_zero_constraints_reach_a_fused_committed_lin_def() {
+	let (and_circuit, ..) = build_committed_lin_def_circuit(false);
+	let (zero_circuit, x, y, z) = build_committed_lin_def_circuit(true);
+	let and_cs = and_circuit.constraint_system();
+	let zero_cs = zero_circuit.constraint_system();
+
+	// With the option off every committed definition is an AND against all-ones.
+	assert_eq!(and_cs.n_zero_constraints(), 0);
+
+	// With it on they move to the ZERO set, one for one, and nothing else changes.
+	assert!(zero_cs.n_zero_constraints() > 0);
+	assert_eq!(
+		zero_cs.n_zero_constraints(),
+		and_cs.n_and_constraints() - zero_cs.n_and_constraints()
+	);
+
+	let mut filler = zero_circuit.new_witness_filler();
+	filler[x] = Word(0x1234_5678_9abc_def0);
+	filler[y] = Word(0x0fed_cba9_8765_4321);
+	filler[z] = Word(0x9abc_def0 & 0x0fed_cba9_8765_4321);
+	zero_circuit.populate_wire_witness(&mut filler).unwrap();
+	verify_constraints(zero_cs, &filler.value_vec).unwrap();
 }
 
 #[test]
@@ -862,7 +963,7 @@ fn test_zero_constant_not_in_binius64_operands() {
 	let cs = circuit.constraint_system();
 	let constants = &cs.constants;
 
-	let zero_const_indices: std::collections::HashSet<usize> = constants
+	let zero_const_indices: HashSet<usize> = constants
 		.iter()
 		.enumerate()
 		.filter(|&(_, v)| *v == Word::ZERO)

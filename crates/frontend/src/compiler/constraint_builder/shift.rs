@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! The shift algebra shared by operands: a [`Shift`] applied to a [`Wire`].
 
@@ -271,14 +272,10 @@ mod tests {
 		// c = rotr(a, 0) ^ b  ->  rotr(0) collapses to plain(a).
 		{
 			let mut builder = ConstraintBuilder::new();
-			builder
-				.linear()
-				.rhs(expr::xor2(expr::rotr(wire_a, 0), wire_b))
-				.dst(wire_c)
-				.build();
+			builder.linear(expr::xor2(expr::rotr(wire_a, 0), wire_b), wire_c);
 
-			let (and_constraints, imul_constraints, _bmul_constraints) =
-				builder.build(&wire_mapping, all_one_wire);
+			let (_zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
+				builder.build(&wire_mapping, all_one_wire, false);
 
 			// Linear lowers to `(a ^ b) & all_one = c`.
 			assert_eq!(and_constraints.len(), 1);
@@ -312,14 +309,10 @@ mod tests {
 		// c = rotr(a, 5) ^ b  ->  native rotr(a, 5).
 		{
 			let mut builder = ConstraintBuilder::new();
-			builder
-				.linear()
-				.rhs(expr::xor2(expr::rotr(wire_a, 5), wire_b))
-				.dst(wire_c)
-				.build();
+			builder.linear(expr::xor2(expr::rotr(wire_a, 5), wire_b), wire_c);
 
-			let (and_constraints, imul_constraints, _bmul_constraints) =
-				builder.build(&wire_mapping, all_one_wire);
+			let (_zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
+				builder.build(&wire_mapping, all_one_wire, false);
 
 			assert_eq!(and_constraints.len(), 1);
 			assert_eq!(imul_constraints.len(), 0);
@@ -357,14 +350,9 @@ mod tests {
 		// a & rotr(b, 0) = c  ->  b stays plain.
 		{
 			let mut builder = ConstraintBuilder::new();
-			builder
-				.and()
-				.a(wire_a)
-				.b(expr::rotr(wire_b, 0))
-				.c(wire_c)
-				.build();
+			builder.and(wire_a, expr::rotr(wire_b, 0), wire_c);
 
-			let (and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire);
+			let (_, and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire, false);
 
 			assert_eq!(and_constraints.len(), 1);
 			let and_c = &and_constraints[0];
@@ -385,14 +373,9 @@ mod tests {
 		// a & rotr(b, 8) = c  ->  b keeps native rotr(8).
 		{
 			let mut builder = ConstraintBuilder::new();
-			builder
-				.and()
-				.a(wire_a)
-				.b(expr::rotr(wire_b, 8))
-				.c(wire_c)
-				.build();
+			builder.and(wire_a, expr::rotr(wire_b, 8), wire_c);
 
-			let (and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire);
+			let (_, and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire, false);
 
 			assert_eq!(and_constraints.len(), 1);
 			let and_c = &and_constraints[0];

@@ -188,7 +188,7 @@ impl<F: Field> MulAssign<F> for Polynomial<F> {
 /// Computes the subspace polynomial of a given binary field subspace $V$.
 ///
 /// That is, it computes $\prod_{a \in V} (X - a)$.
-fn subspace_polynomial<F: BinaryField>(subspace: BinarySubspace<F>) -> Polynomial<F> {
+fn subspace_polynomial<F: BinaryField>(subspace: &BinarySubspace<F>) -> Polynomial<F> {
 	let mut poly = Polynomial::one();
 
 	for elem in subspace.iter() {
@@ -219,8 +219,7 @@ fn novel_basis<DC: DomainContext>(domain_context: &DC) -> Vec<Polynomial<DC::Fie
 
 	// collect subspace polynomials $W_i$ (this is *not* yet $\hat{W}_i$)
 	let mut w_hat: Vec<_> = (0..log_d)
-		.map(|i| domain.reduce_dim(i))
-		.map(subspace_polynomial)
+		.map(|i| subspace_polynomial(&domain.reduce_dim(i)))
 		.collect();
 	// and normalize them to get $\hat{W}_i$
 	for i in 0..log_d {

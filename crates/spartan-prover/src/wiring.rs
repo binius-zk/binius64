@@ -203,35 +203,34 @@ pub fn build_mulcheck_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>
 	let mut b = alloc.alloc::<P>(len);
 	let mut c = alloc.alloc::<P>(len);
 
-	(a.spare_capacity_mut(), b.spare_capacity_mut(), c.spare_capacity_mut())
+	// Fill the packed words in parallel through the allocated buffers' spare capacity, then commit
+	// the lengths once every word has been written.
+	(
+		mul_constraints.par_chunks(P::WIDTH),
+		a.spare_capacity_mut(),
+		b.spare_capacity_mut(),
+		c.spare_capacity_mut(),
+	)
 		.into_par_iter()
-		.enumerate()
-		.for_each(|(i, (a_i, b_i, c_i))| {
-			let offset = i << P::LOG_WIDTH;
-
+		.for_each(|(constraints_chunk, a_i, b_i, c_i)| {
 			for (dst, get_operand) in [
 				(a_i, get_a as fn(&MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex>),
 				(b_i, get_b as fn(&MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex>),
 				(c_i, get_c as fn(&MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex>),
 			] {
-				let val = P::from_fn(|j| {
-					let constraint_idx = offset + j;
-					if constraint_idx < n_constraints {
-						eval_operand(
-							public,
-							&precommit_packed,
-							&private_packed,
-							get_operand(&mul_constraints[constraint_idx]),
-						)
-					} else {
-						F::ZERO
-					}
-				});
+				let val = P::from_iter(constraints_chunk.iter().map(|constraint| {
+					eval_operand(
+						public,
+						&precommit_packed,
+						&private_packed,
+						get_operand(constraint),
+					)
+				}));
 				dst.write(val);
 			}
 		});
 
-	// Safety: all entries in a, b, c are initialized in the parallel loop above.
+	// SAFETY: the loop above initialized every one of the `len` spare words of each buffer.
 	unsafe {
 		a.set_len(len);
 		b.set_len(len);
@@ -318,7 +317,7 @@ mod tests {
 			}
 		}
 
-		evaluate_univariate(&acc, lambda)
+		evaluate_univariate(&acc, &lambda)
 	}
 
 	#[test]
@@ -349,7 +348,7 @@ mod tests {
 		let expected = evaluate_segment_wiring_mle(
 			&constraints,
 			WitnessSegment::Private,
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 			&r_y,
 		);
@@ -393,7 +392,7 @@ mod tests {
 		let expected = evaluate_segment_wiring_mle(
 			&constraints,
 			WitnessSegment::Private,
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 			&r_y,
 		);
@@ -491,9 +490,9 @@ mod tests {
 		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 
 		// Compute the batched sum and public contribution
-		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
+		let batched_sum = evaluate_univariate(&mulcheck_evals, &lambda);
 		let public_eval =
-			evaluate_wiring_mle_public(&constraints, &public, lambda, r_x_tensor.as_ref());
+			evaluate_wiring_mle_public(&constraints, &public, &lambda, r_x_tensor.as_ref());
 		let trace_claim = batched_sum - public_eval;
 
 		// Fold constraints to get the private wiring polynomial
@@ -526,12 +525,12 @@ mod tests {
 		let verifier_lambda: B128 = verifier_channel.sample();
 
 		// Compute the same claim on the verifier side
-		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, verifier_lambda);
+		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, &verifier_lambda);
 		let verifier_r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 		let verifier_public_eval = evaluate_wiring_mle_public(
 			&constraints,
 			&public,
-			verifier_lambda,
+			&verifier_lambda,
 			verifier_r_x_tensor.as_ref(),
 		);
 		let verifier_trace_claim = verifier_batched_sum - verifier_public_eval;

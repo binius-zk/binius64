@@ -19,7 +19,6 @@ use binius_prover::{
 	},
 };
 use binius_transcript::ProverTranscript;
-use binius_utils::checked_arithmetics::strict_log_2;
 use binius_verifier::{
 	config::StdChallenger,
 	protocols::shift::{OperatorData as VerifierOperatorData, verify},
@@ -91,12 +90,13 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 	for &log_message_len_bytes in &log_message_lengths_bytes {
 		let message_len_bytes = 1 << log_message_len_bytes;
-		let (mut cs, value_vec) = create_sha256_cs_with_witness(log_message_len_bytes, &mut rng);
-		cs.validate_and_prepare().unwrap();
+		let (cs, value_vec) = create_sha256_cs_with_witness(log_message_len_bytes, &mut rng);
+		cs.validate().unwrap();
 
 		// Sample multilinear eval points
 		let r_x_prime_bitand = {
-			let log_bitand_constraint_count = strict_log_2(cs.and_constraints.len()).unwrap();
+			// The BitAnd reduction always runs; `None` is its single all-zero padding row.
+			let log_bitand_constraint_count = cs.log_and_constraints().unwrap_or(0);
 			(0..log_bitand_constraint_count as u128)
 				.map(F::new)
 				.collect::<Vec<_>>()
@@ -139,6 +139,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				prove::<F, P, _, _>(
 					&key_collection,
 					value_vec.combined_witness(),
+					OperatorData {
+						evals: vec![F::ZERO],
+						r_zhat_prime,
+						r_x_prime: Vec::new(),
+					},
 					prover_bitand_data,
 					prover_intmul_data,
 					OperatorData {
@@ -170,6 +175,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
+			OperatorData {
+				evals: vec![F::ZERO],
+				r_zhat_prime,
+				r_x_prime: Vec::new(),
+			},
 			prover_bitand_data,
 			prover_intmul_data,
 			OperatorData {
@@ -196,6 +206,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				verify(
 					&cs,
+					&VerifierOperatorData::new(Vec::new(), [F::ZERO]),
 					&verifier_bitand_data,
 					&verifier_intmul_data,
 					&verifier_binmul_data,
@@ -219,10 +230,11 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// benches share one setup and stay quick.
 	const LOG_MESSAGE_LEN_BYTES: usize = 14;
 
-	let (mut cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
-	cs.validate_and_prepare().unwrap();
+	let (cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
+	cs.validate().unwrap();
 
-	let r_x_prime_bitand = (0..strict_log_2(cs.and_constraints.len()).unwrap() as u128)
+	// The BitAnd reduction always runs; `None` is its single all-zero padding row.
+	let r_x_prime_bitand = (0..cs.log_and_constraints().unwrap_or(0) as u128)
 		.map(F::new)
 		.collect::<Vec<_>>();
 	// SHA256 has no IMUL constraints, so the IntMul operator is the zero claim at an empty point,
@@ -255,6 +267,16 @@ fn bench_shift_phases(c: &mut Criterion) {
 		},
 		F::random(&mut rng),
 	);
+	// SHA256 has no ZERO constraints, so the Zero operator is the zero claim at an empty point,
+	// matching the real prover.
+	let prepared_zero = PreparedOperatorData::new(
+		OperatorData {
+			evals: vec![F::ZERO],
+			r_zhat_prime,
+			r_x_prime: Vec::new(),
+		},
+		F::random(&mut rng),
+	);
 	// SHA256 has no BMUL constraints, so the BinMul operator is the zero claim at an empty point,
 	// matching the real prover (`prove.rs` `None` branch).
 	let prepared_bmul = PreparedOperatorData::new(
@@ -279,6 +301,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			&GlobalAllocator,
 			public_words,
 			&key_collection.public,
+			&prepared_zero,
 			&prepared_bitand,
 			&prepared_intmul,
 			&prepared_bmul,
@@ -287,6 +310,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			&GlobalAllocator,
 			hidden_words,
 			&key_collection.hidden,
+			&prepared_zero,
 			&prepared_bitand,
 			&prepared_intmul,
 			&prepared_bmul,
@@ -324,6 +348,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		&GlobalAllocator,
 		&key_collection,
+		&prepared_zero,
 		&prepared_bitand,
 		&prepared_intmul,
 		&prepared_bmul,
@@ -363,6 +388,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			build_monster_segments::<F, P, _>(
 				&GlobalAllocator,
 				&key_collection,
+				&prepared_zero,
 				&prepared_bitand,
 				&prepared_intmul,
 				&prepared_bmul,
@@ -386,9 +412,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 			|(public_folded, hidden_folded, public_monster, hidden_monster, r_j)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
 				run_sumcheck::<F, P, _, _>(
-					public_folded,
+					&public_folded,
 					hidden_folded,
-					public_monster,
+					&public_monster,
 					hidden_monster,
 					public_words,
 					r_j,

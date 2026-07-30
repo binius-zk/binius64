@@ -21,7 +21,7 @@ use binius_core::{
 	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
-use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use crate::ValueTable;
 
@@ -39,13 +39,13 @@ use crate::ValueTable;
 ///
 /// - `table`: the wire-major batch witness holding every instance's hidden words.
 /// - `constants`: the circuit's constant words, shared by every instance.
-/// - `constraints`: the per-instance constraints, shared by every instance. Pass constraints from a
-///   prepared constraint system, so their count is a power of two.
+/// - `constraints`: the per-instance constraints, shared by every instance. Their count need not be
+///   a power of two; the columns are zero-padded up to one.
 /// - `alloc`: the allocator backing the returned columns.
 ///
 /// # Panics
 ///
-/// Panics if `N_COLS` exceeds `ARITY`, or if the constraint count is not a power of two.
+/// Panics if `N_COLS` exceeds `ARITY`.
 pub fn build_operation_columns<C, A, const ARITY: usize, const N_COLS: usize>(
 	table: &ValueTable,
 	constants: &[Word],
@@ -105,29 +105,36 @@ where
 /// - `table`: the wire-major batch witness holding every instance's hidden words.
 /// - `constants`: the circuit's constant words, shared by every instance.
 /// - `operands`: one operand per constraint, in order; the returned column follows that same order.
-///   Pass operands from a prepared constraint system, so their count is a power of two.
+///   Their count need not be a power of two; the constraint axis is zero-padded up to one, and a
+///   zero row satisfies every constraint type.
 /// - `alloc`: the allocator backing the returned column.
-///
-/// # Panics
-///
-/// Panics if the constraint count is not a power of two.
 pub fn build_operation_witness<'a, A: Allocator>(
 	table: &ValueTable,
 	constants: &[Word],
 	operands: impl IndexedParallelIterator<Item = &'a Operand>,
 	alloc: &A,
 ) -> A::Vec<Word> {
-	// Rows per instance, and total rows across the batch.
-	let log_constraints = log2_strict_usize(operands.len());
+	// Rows per instance, and total rows across the batch. The constraint axis is rounded up to a
+	// power of two, so the columns end in `(n_padded - n_constraints) << log_instances` zero rows.
+	let n_constraints = operands.len();
+	let log_constraints = log2_ceil_usize(n_constraints);
 	let log_instances = table.log_instances();
 
 	let table_words = table.as_words();
 	let witness_offset = ValueIndex(table.layout().offset_witness as u32);
 
-	let mut out = alloc.alloc::<Word>(1 << (log_instances + log_constraints));
+	let total = 1 << (log_instances + log_constraints);
+	let mut out = alloc.alloc::<Word>(total);
+	// The allocator may hand back more capacity than requested, so bound the spare slice to the row
+	// count before splitting it into the constraint rows and the zero padding.
+	let (constraint_rows, padding_rows) =
+		out.spare_capacity_mut()[..total].split_at_mut(n_constraints << log_instances);
+	// Zeroing a `MaybeUninit<Word>` initializes it to `Word::ZERO`: `Word` is `repr(transparent)`
+	// over `u64`, whose all-zero bit pattern is zero.
+	bytemuck::fill_zeroes(padding_rows);
 
 	operands
-		.zip(out.spare_capacity_mut().par_chunks_mut(1 << log_instances))
+		.zip(constraint_rows.par_chunks_mut(1 << log_instances))
 		.for_each(|(operand, out_chunk)| {
 			let mut shifted_indices_iter = operand.iter();
 
@@ -161,13 +168,11 @@ pub fn build_operation_witness<'a, A: Allocator>(
 			}
 		});
 
-	// SAFETY: the stripes partition `[0, total)` and each writes its whole range — the operand's
-	// first term initializes every cell, later terms XOR in place, and an empty operand zeroes the
-	// stripe. So all `total` elements are initialized. `alloc` may hand back more capacity than
-	// requested (the pool rounds the block up to a power-of-two byte count, minimum 64 bytes), so
-	// `spare_capacity_mut` can be longer than `total`; the zip against the operands truncates to
-	// `total`, and nothing past it is ever claimed by `set_len`.
-	unsafe { out.set_len(1 << (log_instances + log_constraints)) };
+	// SAFETY: the constraint stripes partition `[0, n_constraints << log_instances)` and each
+	// writes its whole range — the operand's first term initializes every cell, later terms XOR in
+	// place, and an empty operand zeroes the stripe. The remaining `[n_constraints <<
+	// log_instances, total)` was zeroed above. So all `total` elements are initialized.
+	unsafe { out.set_len(total) };
 	out
 }
 
@@ -368,16 +373,16 @@ mod tests {
 		let univariate_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1)
 			.isomorphic::<B128>()
 			.reduce_dim(SKIPPED_VARS);
-		let lagrange = lagrange_evals_scalars(&univariate_domain, z_challenge);
+		let lagrange = lagrange_evals_scalars(&univariate_domain, &z_challenge);
 		let folded: FieldBuffer<B128> = BitAxisFolder::new(&lagrange).fold(&GlobalAllocator, col);
 		evaluate(&folded, eval_point)
 	}
 
-	// The prepared per-instance AND constraints, padded to a power of two.
+	// The per-instance AND constraints, at their true (unpadded) count.
 	// This mirrors how the prover feeds constraints downstream.
 	fn table_constraints(c: &AndCircuit) -> Vec<AndConstraint> {
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		cs.and_constraints
 	}
 
@@ -385,6 +390,21 @@ mod tests {
 	// This circuit declares none, so the slice is empty; operands read only hidden words.
 	fn constants(c: &AndCircuit) -> &[Word] {
 		&c.circuit.constraint_system().constants
+	}
+
+	// One AND constraint whose `A` and `B` operands evaluate to a non-zero word on every instance
+	// of `table`, chosen with the reference evaluator rather than the builder under test.
+	fn all_nonzero_constraint(c: &AndCircuit, table: &ValueTable) -> AndConstraint {
+		table_constraints(c)
+			.into_iter()
+			.find(|constraint| {
+				(0..table.n_instances()).all(|instance| {
+					let vv = table.instance_value_vec(instance, constants(c));
+					vv.eval_operand(constraint.a()) != Word::ZERO
+						&& vv.eval_operand(constraint.b()) != Word::ZERO
+				})
+			})
+			.expect("the fixture has an AND constraint with non-zero A and B on every instance")
 	}
 
 	// A circuit asserting `z == (x & y) ^ w`, over four witness words.
@@ -557,9 +577,9 @@ mod tests {
 		];
 		let table = populate_mul_table(&c, &inputs);
 
-		// The prepared per-instance IMUL constraints, padded to a power of two.
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		// The per-instance IMUL constraints, at their true (unpadded) count.
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		let imul_constraints = &cs.imul_constraints;
 		assert!(!imul_constraints.is_empty(), "the circuit must emit an IMUL constraint");
 
@@ -655,9 +675,9 @@ mod tests {
 		];
 		let table = populate_binmul_table(&c, &inputs);
 
-		// The prepared per-instance BMUL constraints, padded to a power of two.
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		// The per-instance BMUL constraints, at their true (unpadded) count.
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		let bmul_constraints = &cs.bmul_constraints;
 		assert!(!bmul_constraints.is_empty(), "the circuit must emit a BMUL constraint");
 
@@ -705,23 +725,36 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "Not a power of two")]
-	fn build_rejects_non_power_of_two_constraint_count() {
+	fn build_zero_pads_a_non_power_of_two_constraint_count() {
 		let c = and_circuit();
 
-		// Fixture state: a valid batch with one instance (K = 1).
-		let table = populate_table(&c, &[(1, 3, 7)]);
+		// Fixture state: a batch of 2 instances (K = 2).
+		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0)]);
+		let n_instances = table.n_instances();
 
-		// Invariant: the per-instance constraint count must be a power of two.
+		// Invariant: the constraint axis is rounded up to a power of two, so 3 constraints yield 4
+		// constraint stripes, the last of which is all zeros.
 		//
-		// Mutation: hand the builder 3 constraints.
-		//
-		//     3 is not a power of two → build asserts on the count before reading any row.
-		//
-		// The operands are empty, so the panic is the count check, never an out-of-range index.
-		let three = vec![AndConstraint::default(); 3];
-		let _: [Vec<Word>; 2] =
-			build_operation_columns(&table, constants(&c), &three, &GlobalAllocator);
+		// The three constraints all repeat one whose `A` and `B` are non-zero on every instance, so
+		// every leading stripe carries non-zero words. Asserting that pins the split point: a
+		// column zeroed past the wrong offset fails here rather than slipping through the
+		// trailing-zero check.
+		let constraints = vec![all_nonzero_constraint(&c, &table); 3];
+		let [a, b] = build_operation_columns(&table, constants(&c), &constraints, &GlobalAllocator);
+
+		for col in [&a, &b] {
+			assert_eq!(col.len(), 4 * n_instances);
+			assert!(
+				col[..3 * n_instances]
+					.iter()
+					.all(|&word| word != Word::ZERO)
+			);
+			assert!(
+				col[3 * n_instances..]
+					.iter()
+					.all(|&word| word == Word::ZERO)
+			);
+		}
 	}
 
 	proptest! {

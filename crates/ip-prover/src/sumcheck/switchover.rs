@@ -201,5 +201,5 @@ fn get_binary_chunk<P, DataOut, DataIn>(
 		chunk_vars,
 		chunk_index,
 	);
-	binary_fold_high(dest, tensor, matrix_vert_slice);
+	binary_fold_high(dest, tensor, &matrix_vert_slice);
 }

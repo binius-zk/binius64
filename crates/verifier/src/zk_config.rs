@@ -63,13 +63,10 @@ where
 	Output<H::LeafHash>: DeserializeBytes,
 {
 	/// Constructs a ZK verifier for a constraint system.
-	pub fn setup(
-		mut constraint_system: ConstraintSystem,
-		log_inv_rate: usize,
-	) -> Result<Self, Error> {
+	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
 		let _setup_guard = tracing::debug_span!("Setup ZK verifier").entered();
 
-		constraint_system.validate_and_prepare()?;
+		constraint_system.validate()?;
 
 		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
@@ -110,7 +107,7 @@ where
 			n_dummy_constraints: 2,
 		};
 		let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
-		let outer_layout = Arc::new(outer_layout.with_blinding(outer_cs.blinding_info().clone()));
+		let outer_layout = Arc::new(outer_layout.with_blinding(*outer_cs.blinding_info()));
 		let outer_iop_verifier = IronSpartanIOPVerifier::new(outer_cs);
 
 		// Transcript layout: outer precommit oracle first (committed at wrapper construction),
@@ -125,7 +122,7 @@ where
 
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 		let basefold_compiler = BaseFoldVerifierCompiler::new(
-			merkle_scheme,
+			&merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,
