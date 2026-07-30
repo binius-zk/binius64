@@ -58,16 +58,7 @@ pub fn evaluate_gate_constants(
 			};
 			let variant = ShiftVariant::from_u8(variant as u8)
 				.expect("shift gate carries a valid ShiftVariant discriminant");
-			Ok(vec![match variant {
-				ShiftVariant::Sll => *x << n,
-				ShiftVariant::Slr => *x >> n,
-				ShiftVariant::Sar => x.sar(n),
-				ShiftVariant::Rotr => x.rotr(n),
-				ShiftVariant::Sll32 => x.sll32(n),
-				ShiftVariant::Srl32 => x.srl32(n),
-				ShiftVariant::Sra32 => x.sra32(n),
-				ShiftVariant::Rotr32 => x.rotr32(n),
-			}])
+			Ok(vec![variant.apply(*x, n as usize)])
 		}
 		Opcode::IaddCinCout => {
 			// The carry in is carried in the MSB.

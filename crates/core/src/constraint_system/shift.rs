@@ -50,7 +50,49 @@ pub enum ShiftVariant {
 	Rotr32 = 7,
 }
 
+/// A callback that runs against one concrete word-level shift.
+///
+/// Resolving a variant once turns it into a closure over words, handed to the callback here.
+/// Each variant gets its own specialized copy, so the callback's loop keeps no per-word branch.
+pub trait ShiftKernel {
+	/// What the callback produces.
+	type Output;
+
+	/// Runs the callback against `shift`, the resolved word operation.
+	fn call(self, shift: impl Fn(Word) -> Word) -> Self::Output;
+}
+
+/// Applies a resolved shift to a single word.
+struct ShiftOneWord {
+	/// The word the shift is applied to.
+	word: Word,
+}
+
+impl ShiftKernel for ShiftOneWord {
+	type Output = Word;
+
+	#[inline]
+	fn call(self, shift: impl Fn(Word) -> Word) -> Word {
+		// A single word carries no loop to specialize, so the resolved shift runs once.
+		shift(self.word)
+	}
+}
+
 impl ShiftVariant {
+	/// Every variant, ordered so that the array index equals the discriminant.
+	///
+	/// Callers that must cover all variants iterate this: random fixtures, exhaustive checks.
+	pub const ALL: [Self; 8] = [
+		Self::Sll,
+		Self::Slr,
+		Self::Sar,
+		Self::Rotr,
+		Self::Sll32,
+		Self::Srl32,
+		Self::Sra32,
+		Self::Rotr32,
+	];
+
 	/// Decodes a variant from its `u8` discriminant.
 	///
 	/// The discriminants match the `#[repr(u8)]` layout: `0..=7` map to the eight variants.
@@ -95,34 +137,54 @@ impl ShiftVariant {
 		if self.is_half_word() { 32 } else { 64 }
 	}
 
+	/// Resolves this variant to its word-level operation and runs a callback against it.
+	///
+	/// This is the single place that says what a variant does to a word:
+	/// - Logical left and logical right shift zeros in.
+	/// - Arithmetic right replicates the sign bit.
+	/// - Rotate wraps the bits that fall off one end around to the other.
+	/// - The half-word forms apply the same operation to each 32-bit half on its own.
+	///
+	/// # Arguments
+	///
+	/// - `amount`: the shift amount in bits, below this variant's upper bound.
+	/// - `kernel`: the callback to run against the resolved operation.
+	///
+	/// # Performance
+	///
+	/// The variant is decided here, once, ahead of whatever loop the callback runs.
+	/// Each branch hands over a distinct zero-sized closure, leaving no branch in the callback.
+	#[inline]
+	pub fn dispatch<K: ShiftKernel>(self, amount: u32, kernel: K) -> K::Output {
+		match self {
+			ShiftVariant::Sll => kernel.call(move |word| word << amount),
+			ShiftVariant::Slr => kernel.call(move |word| word >> amount),
+			ShiftVariant::Sar => kernel.call(move |word| word.sar(amount)),
+			ShiftVariant::Rotr => kernel.call(move |word| word.rotr(amount)),
+			ShiftVariant::Sll32 => kernel.call(move |word| word.sll32(amount)),
+			ShiftVariant::Srl32 => kernel.call(move |word| word.srl32(amount)),
+			ShiftVariant::Sra32 => kernel.call(move |word| word.sra32(amount)),
+			ShiftVariant::Rotr32 => kernel.call(move |word| word.rotr32(amount)),
+		}
+	}
+
 	/// Applies this shift to a 64-bit word and returns the result.
 	///
-	/// The variant selects which word-level operation runs.
 	/// Full-width variants act on the whole 64-bit word.
-	/// The 32-bit variants act on the upper and lower halves independently.
+	/// The half-word variants act on the upper and lower 32-bit halves independently.
 	///
 	/// # Arguments
 	/// - The word to shift.
 	/// - The shift amount in bits.
+	///
+	/// # Performance
+	///
+	/// Which operation to run is decided on every call.
+	/// To shift many words by one fixed variant, resolve the variant once instead.
 	#[inline]
 	pub fn apply(self, word: Word, amount: usize) -> Word {
-		// The word-level operators take the amount as a 32-bit count.
-		let amount = amount as u32;
-		// Dispatch to the matching operation:
-		// - logical left / logical right shift in zeros.
-		// - arithmetic right replicates the sign bit.
-		// - rotate wraps bits around the word.
-		// - the `*32` family applies the same op to each 32-bit half on its own.
-		match self {
-			ShiftVariant::Sll => word << amount,
-			ShiftVariant::Slr => word >> amount,
-			ShiftVariant::Sar => word.sar(amount),
-			ShiftVariant::Rotr => word.rotr(amount),
-			ShiftVariant::Sll32 => word.sll32(amount),
-			ShiftVariant::Srl32 => word.srl32(amount),
-			ShiftVariant::Sra32 => word.sra32(amount),
-			ShiftVariant::Rotr32 => word.rotr32(amount),
-		}
+		// The word-level operators count the amount in 32 bits.
+		self.dispatch(amount as u32, ShiftOneWord { word })
 	}
 }
 
@@ -358,29 +420,82 @@ impl DeserializeBytes for ShiftedValueIndex {
 
 #[cfg(test)]
 mod tests {
+	use proptest::prelude::*;
+
 	use super::*;
+
+	// What each variant means, spelled out over raw integers.
+	// Independent of the word methods the implementation names, so a mis-wired variant fails here.
+	fn reference_shift(variant: ShiftVariant, word: u64, amount: u32) -> u64 {
+		// Half-word variants act on each 32-bit half on its own, reading only the low 5 bits.
+		let halves = |op: fn(u32, u32) -> u32| {
+			let amount = amount & 0x1F;
+			op(word as u32, amount) as u64 | ((op((word >> 32) as u32, amount) as u64) << 32)
+		};
+		match variant {
+			ShiftVariant::Sll => word << amount,
+			ShiftVariant::Slr => word >> amount,
+			ShiftVariant::Sar => (word as i64 >> amount) as u64,
+			ShiftVariant::Rotr => word.rotate_right(amount),
+			ShiftVariant::Sll32 => halves(|half, n| half << n),
+			ShiftVariant::Srl32 => halves(|half, n| half >> n),
+			ShiftVariant::Sra32 => halves(|half, n| ((half as i32) >> n) as u32),
+			ShiftVariant::Rotr32 => halves(|half, n| half.rotate_right(n)),
+		}
+	}
+
+	#[test]
+	fn all_covers_every_discriminant_in_order() {
+		// `ALL` is indexed by discriminant, and every entry decodes back to itself.
+		for (discriminant, variant) in ShiftVariant::ALL.into_iter().enumerate() {
+			assert_eq!(variant as usize, discriminant);
+			assert_eq!(ShiftVariant::from_u8(discriminant as u8), Some(variant));
+		}
+		// The list is exhaustive: the next discriminant, and any byte above it, decode to nothing.
+		assert_eq!(ShiftVariant::from_u8(ShiftVariant::ALL.len() as u8), None);
+		assert_eq!(ShiftVariant::from_u8(255), None);
+	}
+
+	#[test]
+	fn every_variant_is_the_identity_at_amount_zero() {
+		// The batched witness builder leans on this: at amount 0 it copies instead of dispatching.
+		for variant in ShiftVariant::ALL {
+			for word in [
+				Word::ZERO,
+				Word::ONE,
+				Word::ALL_ONE,
+				Word(0x0123_4567_89AB_CDEF),
+			] {
+				assert_eq!(variant.apply(word, 0), word, "{variant:?} is not the identity at 0");
+			}
+		}
+	}
+
+	proptest! {
+		// Invariant: each variant resolves to the operation it denotes, at every valid amount.
+		#[test]
+		fn dispatch_matches_the_reference_for_every_variant(word in any::<u64>()) {
+			for variant in ShiftVariant::ALL {
+				// Amounts run 0..max, so both extremes are covered.
+				for amount in 0..variant.max_amount() {
+					let expected = Word(reference_shift(variant, word, amount as u32));
+					// Both entry points share one resolution step, so checking both pins it.
+					prop_assert_eq!(variant.apply(Word(word), amount), expected);
+					let kernel = ShiftOneWord { word: Word(word) };
+					prop_assert_eq!(variant.dispatch(amount as u32, kernel), expected);
+				}
+			}
+		}
+	}
 
 	#[test]
 	fn test_shift_variant_serialization_round_trip() {
-		let variants = [
-			ShiftVariant::Sll,
-			ShiftVariant::Slr,
-			ShiftVariant::Sar,
-			ShiftVariant::Rotr,
-		];
-
-		for variant in variants {
+		for variant in ShiftVariant::ALL {
 			let mut buf = Vec::new();
 			variant.serialize(&mut buf).unwrap();
 
 			let deserialized = ShiftVariant::deserialize(&mut buf.as_slice()).unwrap();
-			match (variant, deserialized) {
-				(ShiftVariant::Sll, ShiftVariant::Sll)
-				| (ShiftVariant::Slr, ShiftVariant::Slr)
-				| (ShiftVariant::Sar, ShiftVariant::Sar)
-				| (ShiftVariant::Rotr, ShiftVariant::Rotr) => {}
-				_ => panic!("ShiftVariant round trip failed: {:?} != {:?}", variant, deserialized),
-			}
+			assert_eq!(variant, deserialized);
 		}
 	}
 
@@ -437,23 +552,15 @@ mod tests {
 
 	#[test]
 	fn test_max_amount_and_is_half_word() {
+		// The four full-width variants come first, then the four half-word ones.
+		let (full_width, half_word) = ShiftVariant::ALL.split_at(4);
 		// Full-width variants take amounts up to 63.
-		for variant in [
-			ShiftVariant::Sll,
-			ShiftVariant::Slr,
-			ShiftVariant::Sar,
-			ShiftVariant::Rotr,
-		] {
+		for &variant in full_width {
 			assert!(!variant.is_half_word());
 			assert_eq!(variant.max_amount(), 64);
 		}
 		// Half-word variants take amounts up to 31.
-		for variant in [
-			ShiftVariant::Sll32,
-			ShiftVariant::Srl32,
-			ShiftVariant::Sra32,
-			ShiftVariant::Rotr32,
-		] {
+		for &variant in half_word {
 			assert!(variant.is_half_word());
 			assert_eq!(variant.max_amount(), 32);
 		}
@@ -515,26 +622,5 @@ mod tests {
 		// Padded to the u32 alignment, that is 8 bytes.
 		// Holding this at one word matters: systems carry millions of these on the prover hot path.
 		assert_eq!(size_of::<ShiftedValueIndex>(), 8);
-	}
-
-	#[test]
-	fn test_shift_variant_from_u8_round_trip() {
-		// Every variant decodes back from its own discriminant.
-		let variants = [
-			ShiftVariant::Sll,
-			ShiftVariant::Slr,
-			ShiftVariant::Sar,
-			ShiftVariant::Rotr,
-			ShiftVariant::Sll32,
-			ShiftVariant::Srl32,
-			ShiftVariant::Sra32,
-			ShiftVariant::Rotr32,
-		];
-		for variant in variants {
-			assert_eq!(ShiftVariant::from_u8(variant as u8), Some(variant));
-		}
-		// The discriminants are exactly 0..=7, so 8 and above are undefined.
-		assert_eq!(ShiftVariant::from_u8(8), None);
-		assert_eq!(ShiftVariant::from_u8(255), None);
 	}
 }

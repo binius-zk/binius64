@@ -11,7 +11,10 @@
 //! The single-instance form is then the degenerate case of one instance.
 //! The dispatch loop, the opcode handlers, and the bytecode readers live here once.
 
-use binius_core::{Word, constraint_system::ShiftVariant};
+use binius_core::{
+	Word,
+	constraint_system::{ShiftKernel, ShiftVariant},
+};
 use binius_field::BinaryField128bGhash;
 use smallvec::{SmallVec, smallvec};
 
@@ -50,6 +53,29 @@ pub trait EvalContext {
 	/// The index is local to this context.
 	/// A context that covers a stripe of a larger batch remaps it to a global index.
 	fn note_assertion_failure(&mut self, instance: usize, path_spec: PathSpec, message: String);
+}
+
+/// Applies one resolved shift to a register across every instance of a context.
+struct ShiftEach<'a, C> {
+	/// The instances to read from and write back to.
+	ctx: &'a mut C,
+	/// The register each shifted word is written to.
+	dst: u32,
+	/// The register each source word is read from.
+	src: u32,
+}
+
+impl<C: EvalContext> ShiftKernel for ShiftEach<'_, C> {
+	type Output = ();
+
+	#[inline]
+	fn call(self, shift: impl Fn(Word) -> Word) {
+		let Self { ctx, dst, src } = self;
+		// One instruction covers the whole context, so the same shift runs on every instance.
+		for i in 0..ctx.n_instances() {
+			ctx.store(dst, i, shift(ctx.load(src, i)));
+		}
+	}
 }
 
 /// A bytecode program together with a cursor into it.
@@ -211,28 +237,8 @@ impl<'a> Executor<'a> {
 		let amount = self.read_u8() as u32;
 		// The variant is fixed for this instruction, so dispatch on it once, not per word.
 		//
-		// Each arm is then a branch-free tight loop, the shape Keccak's many rotations need.
-		match variant {
-			ShiftVariant::Sll => Self::shift_each(ctx, dst, src, |w| w << amount),
-			ShiftVariant::Slr => Self::shift_each(ctx, dst, src, |w| w >> amount),
-			ShiftVariant::Sar => Self::shift_each(ctx, dst, src, |w| w.sar(amount)),
-			ShiftVariant::Rotr => Self::shift_each(ctx, dst, src, |w| w.rotr(amount)),
-			ShiftVariant::Sll32 => Self::shift_each(ctx, dst, src, |w| w.sll32(amount)),
-			ShiftVariant::Srl32 => Self::shift_each(ctx, dst, src, |w| w.srl32(amount)),
-			ShiftVariant::Sra32 => Self::shift_each(ctx, dst, src, |w| w.sra32(amount)),
-			ShiftVariant::Rotr32 => Self::shift_each(ctx, dst, src, |w| w.rotr32(amount)),
-		}
-	}
-
-	/// Applies one fixed word-level shift across every instance.
-	///
-	/// The op is a distinct zero-sized closure per call site.
-	/// So the compiler monomorphizes this into a branch-free tight loop with the shift inlined.
-	#[inline]
-	fn shift_each<C: EvalContext>(ctx: &mut C, dst: u32, src: u32, op: impl Fn(Word) -> Word) {
-		for i in 0..ctx.n_instances() {
-			ctx.store(dst, i, op(ctx.load(src, i)));
-		}
+		// The kernel is then a branch-free tight loop, the shape Keccak's many rotations need.
+		variant.dispatch(amount, ShiftEach { ctx, dst, src })
 	}
 
 	// Arithmetic operations
