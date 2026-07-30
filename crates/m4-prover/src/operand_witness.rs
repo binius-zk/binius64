@@ -18,7 +18,7 @@ use std::{iter, mem::MaybeUninit, ptr};
 use binius_compute::{Allocator, VecLike};
 use binius_core::{
 	ValueIndex,
-	constraint_system::{Operand, ShiftKernel, ShiftedValueIndex},
+	constraint_system::{Operand, ShiftedValueIndex},
 	word::Word,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -176,29 +176,6 @@ pub fn build_operation_witness<'a, A: Allocator>(
 	out
 }
 
-/// Writes one shifted source word into each output cell, initializing it.
-///
-/// This serves the first term of an operand's accumulation.
-/// Each cell is written rather than read, so the caller need not zero the output first.
-struct WriteShiftedWords<'a> {
-	/// The uninitialized output cells, one per instance in this stripe.
-	out: &'a mut [MaybeUninit<Word>],
-	/// The source words to shift, one per instance.
-	src: &'a [Word],
-}
-
-impl ShiftKernel for WriteShiftedWords<'_> {
-	type Output = ();
-
-	#[inline]
-	fn call(self, shift: impl Fn(Word) -> Word) {
-		// Positions line up one to one: instance `i` reads source `i` and writes cell `i`.
-		for (out_i, &src_i) in iter::zip(self.out, self.src) {
-			out_i.write(shift(src_i));
-		}
-	}
-}
-
 /// Writes one shifted value into every element of `out_chunk`, initializing it.
 ///
 /// This is the first term of an operand's accumulation: it initializes the cell rather than
@@ -252,36 +229,7 @@ fn write_shifted_values(
 				)
 			};
 		} else {
-			shift_variant.dispatch(
-				amount,
-				WriteShiftedWords {
-					out: out_chunk,
-					src,
-				},
-			);
-		}
-	}
-}
-
-/// XORs one shifted source word into each output cell.
-///
-/// This serves every term of an operand's accumulation after the first.
-/// The cells already hold the running XOR, so each is read and written back.
-struct XorShiftedWords<'a> {
-	/// The output cells holding the running XOR, one per instance in this stripe.
-	out: &'a mut [Word],
-	/// The source words to shift, one per instance.
-	src: &'a [Word],
-}
-
-impl ShiftKernel for XorShiftedWords<'_> {
-	type Output = ();
-
-	#[inline]
-	fn call(self, shift: impl Fn(Word) -> Word) {
-		// Positions line up one to one: instance `i` reads source `i` and folds into cell `i`.
-		for (out_i, &src_i) in iter::zip(self.out, self.src) {
-			*out_i = *out_i ^ shift(src_i);
+			shift_variant.write_shifted(out_chunk, src, amount);
 		}
 	}
 }
@@ -331,13 +279,7 @@ fn accum_shifted_values(
 				*out_i = *out_i ^ src_i;
 			}
 		} else {
-			shift_variant.dispatch(
-				amount,
-				XorShiftedWords {
-					out: out_chunk,
-					src,
-				},
-			);
+			shift_variant.xor_shifted(out_chunk, src, amount);
 		}
 	}
 }

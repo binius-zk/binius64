@@ -1,4 +1,6 @@
 // Copyright 2025 Irreducible Inc.
+use std::{iter, mem::MaybeUninit};
+
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
@@ -54,7 +56,7 @@ pub enum ShiftVariant {
 ///
 /// Resolving a variant once turns it into a closure over words, handed to the callback here.
 /// Each variant gets its own specialized copy, so the callback's loop keeps no per-word branch.
-pub trait ShiftKernel {
+trait ShiftKernel {
 	/// What the callback produces.
 	type Output;
 
@@ -75,6 +77,46 @@ impl ShiftKernel for ShiftOneWord {
 	fn call(self, shift: impl Fn(Word) -> Word) -> Word {
 		// A single word carries no loop to specialize, so the resolved shift runs once.
 		shift(self.word)
+	}
+}
+
+/// Writes one shifted source word into each output cell, initializing it.
+struct WriteShiftedWords<'a> {
+	/// The uninitialized output cells.
+	out: &'a mut [MaybeUninit<Word>],
+	/// The source words to shift, one per output cell.
+	src: &'a [Word],
+}
+
+impl ShiftKernel for WriteShiftedWords<'_> {
+	type Output = ();
+
+	#[inline]
+	fn call(self, shift: impl Fn(Word) -> Word) {
+		// Positions line up one to one, so the pair iterator stops at the shorter slice.
+		for (out_i, &src_i) in iter::zip(self.out, self.src) {
+			out_i.write(shift(src_i));
+		}
+	}
+}
+
+/// XORs one shifted source word into each output cell.
+struct XorShiftedWords<'a> {
+	/// The output cells, each holding a running XOR.
+	out: &'a mut [Word],
+	/// The source words to shift, one per output cell.
+	src: &'a [Word],
+}
+
+impl ShiftKernel for XorShiftedWords<'_> {
+	type Output = ();
+
+	#[inline]
+	fn call(self, shift: impl Fn(Word) -> Word) {
+		// Positions line up one to one, so the pair iterator stops at the shorter slice.
+		for (out_i, &src_i) in iter::zip(self.out, self.src) {
+			*out_i = *out_i ^ shift(src_i);
+		}
 	}
 }
 
@@ -155,7 +197,7 @@ impl ShiftVariant {
 	/// The variant is decided here, once, ahead of whatever loop the callback runs.
 	/// Each branch hands over a distinct zero-sized closure, leaving no branch in the callback.
 	#[inline]
-	pub fn dispatch<K: ShiftKernel>(self, amount: u32, kernel: K) -> K::Output {
+	fn dispatch<K: ShiftKernel>(self, amount: u32, kernel: K) -> K::Output {
 		match self {
 			ShiftVariant::Sll => kernel.call(move |word| word << amount),
 			ShiftVariant::Slr => kernel.call(move |word| word >> amount),
@@ -185,6 +227,35 @@ impl ShiftVariant {
 	pub fn apply(self, word: Word, amount: usize) -> Word {
 		// The word-level operators count the amount in 32 bits.
 		self.dispatch(amount as u32, ShiftOneWord { word })
+	}
+
+	/// Applies this shift to each source word and writes the result to the matching output cell.
+	///
+	/// Every output cell is written, so the caller need not initialize them first.
+	/// Cells past the end of either slice are left alone.
+	///
+	/// # Arguments
+	///
+	/// - `out`: the cells to initialize, one per source word.
+	/// - `src`: the words to shift.
+	/// - `amount`: the shift amount in bits, below this variant's upper bound.
+	#[inline]
+	pub fn write_shifted(self, out: &mut [MaybeUninit<Word>], src: &[Word], amount: u32) {
+		self.dispatch(amount, WriteShiftedWords { out, src })
+	}
+
+	/// Applies this shift to each source word and XORs the result into the matching output cell.
+	///
+	/// Cells past the end of either slice are left alone.
+	///
+	/// # Arguments
+	///
+	/// - `out`: the cells to accumulate into, one per source word.
+	/// - `src`: the words to shift.
+	/// - `amount`: the shift amount in bits, below this variant's upper bound.
+	#[inline]
+	pub fn xor_shifted(self, out: &mut [Word], src: &[Word], amount: u32) {
+		self.dispatch(amount, XorShiftedWords { out, src })
 	}
 }
 
@@ -483,6 +554,56 @@ mod tests {
 					prop_assert_eq!(variant.apply(Word(word), amount), expected);
 					let kernel = ShiftOneWord { word: Word(word) };
 					prop_assert_eq!(variant.dispatch(amount as u32, kernel), expected);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn slice_forms_stop_at_the_shorter_slice() {
+		// Fixture state: 3 source words, 2 output cells, shifting left by 1.
+		//
+		//     src: [1, 2, 4]  ->  [2, 4, 8]
+		//     out: [0, 0]         only two cells to fill, so the third result is dropped
+		let src = [Word(1), Word(2), Word(4)];
+		let mut out = [Word::ZERO; 2];
+		ShiftVariant::Sll.xor_shifted(&mut out, &src, 1);
+		assert_eq!(out, [Word(2), Word(4)]);
+
+		// Fixture state: 2 source words, 3 output cells preset to 1.
+		//
+		//     src: [1, 2]  ->  [2, 4]
+		//     out: [1, 1, 1]   XOR gives [3, 5, _], and the trailing cell keeps its value
+		let mut out = [Word::ONE; 3];
+		ShiftVariant::Sll.xor_shifted(&mut out, &src[..2], 1);
+		assert_eq!(out, [Word(3), Word(5), Word::ONE]);
+	}
+
+	proptest! {
+		// Invariant: the slice forms agree with the single-word form, cell by cell.
+		#[test]
+		fn slice_forms_match_the_single_word_form(src in prop::collection::vec(any::<u64>(), 1..24)) {
+			let src: Vec<Word> = src.into_iter().map(Word).collect();
+			for variant in ShiftVariant::ALL {
+				for amount in 0..variant.max_amount() {
+					let expected: Vec<Word> = src.iter().map(|&w| variant.apply(w, amount)).collect();
+
+					// The write form fills cells that start out uninitialized.
+					let mut out = vec![MaybeUninit::uninit(); src.len()];
+					variant.write_shifted(&mut out, &src, amount as u32);
+					// Safety: the call above wrote every cell, since the slices are the same length.
+					let written: Vec<Word> =
+						out.iter().map(|cell| unsafe { cell.assume_init() }).collect();
+					prop_assert_eq!(&written, &expected);
+
+					// Folding into zeroed cells reduces the XOR to the shift itself.
+					let mut out = vec![Word::ZERO; src.len()];
+					variant.xor_shifted(&mut out, &src, amount as u32);
+					prop_assert_eq!(&out, &expected);
+
+					// Folding the same term a second time cancels it, restoring the zeroes.
+					variant.xor_shifted(&mut out, &src, amount as u32);
+					prop_assert_eq!(out, vec![Word::ZERO; src.len()]);
 				}
 			}
 		}
