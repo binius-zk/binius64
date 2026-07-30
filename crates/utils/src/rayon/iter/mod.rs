@@ -10,7 +10,11 @@ mod par_bridge;
 mod parallel_iterator;
 mod parallel_wrapper;
 
-pub use core::iter::{empty, once, repeat};
+pub use core::iter::{empty, repeat};
+
+pub fn once<T: Clone>(elt: T) -> ParallelWrapper<core::iter::Once<T>> {
+	ParallelWrapper::new(core::iter::once(elt))
+}
 
 pub fn repeat_n<T: Clone>(elt: T, n: usize) -> ParallelWrapper<core::iter::RepeatN<T>> {
 	ParallelWrapper::new(core::iter::repeat_n(elt, n))
