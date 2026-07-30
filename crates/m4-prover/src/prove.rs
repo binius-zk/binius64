@@ -946,9 +946,8 @@ mod tests {
 		// runs.
 		//
 		// Gate fusion is off: it inlines a linear definition into the gate that consumes it, which
-		// would leave no linear constraint for the option to lower.
+		// would leave no linear constraint to lower.
 		let builder = CircuitBuilder::with_opts(Options {
-			enable_zero_constraints: true,
 			enable_gate_fusion: false,
 			..Options::default()
 		});
@@ -1010,9 +1009,8 @@ mod tests {
 		use binius_core::constraint_system::ZeroConstraint;
 		use binius_frontend::{Options, Wire};
 
-		// Gate fusion off, so the `bxor` survives as a linear constraint the option can lower.
+		// Gate fusion off, so the `bxor` survives as a linear constraint to lower.
 		let builder = CircuitBuilder::with_opts(Options {
-			enable_zero_constraints: true,
 			enable_gate_fusion: false,
 			..Options::default()
 		});

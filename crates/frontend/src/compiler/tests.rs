@@ -89,14 +89,13 @@ fn test_algebraic_fold_bxor_self_is_zero_in_witness() {
 	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
 }
 
-/// Builds `assert_eq(x ^ y, z)` under the given lowering of linear constraints.
+/// Builds `assert_eq(x ^ y, z)`.
 ///
 /// Gate fusion is off so that the `bxor` gate keeps its own linear constraint instead of being
 /// inlined into the assertion's operand; the assertion itself emits an AND constraint either way.
-fn build_xor_circuit(enable_zero_constraints: bool) -> (Circuit, Wire, Wire, Wire) {
+fn build_xor_circuit() -> (Circuit, Wire, Wire, Wire) {
 	let builder = CircuitBuilder::with_opts(Options {
 		enable_gate_fusion: false,
-		enable_zero_constraints,
 		..Options::default()
 	});
 	let x = builder.add_inout();
@@ -107,18 +106,8 @@ fn build_xor_circuit(enable_zero_constraints: bool) -> (Circuit, Wire, Wire, Wir
 }
 
 #[test]
-fn test_zero_constraints_disabled_by_default() {
-	let (circuit, ..) = build_xor_circuit(false);
-	let cs = circuit.constraint_system();
-
-	// The `bxor` linear constraint and the assertion, both as AND constraints.
-	assert_eq!(cs.n_zero_constraints(), 0);
-	assert_eq!(cs.n_and_constraints(), 2);
-}
-
-#[test]
-fn test_zero_constraints_replace_the_linear_and_constraints() {
-	let (zero_circuit, x, y, z) = build_xor_circuit(true);
+fn test_linear_constraints_lower_to_zero_constraints() {
+	let (zero_circuit, x, y, z) = build_xor_circuit();
 	let cs = zero_circuit.constraint_system();
 
 	// The `bxor` linear constraint moves to the ZERO set, leaving only the assertion's AND.
@@ -143,13 +132,10 @@ fn test_zero_constraints_replace_the_linear_and_constraints() {
 /// Builds `((x << 32) >> 32) & y == z` with gate fusion left on.
 ///
 /// A left-then-right shift pair is not expressible as one shifted operand, so fusion cannot
-/// inline the intermediate into the `band` and has to commit it. That committed definition is the
-/// one the option has to reach.
-fn build_committed_lin_def_circuit(enable_zero_constraints: bool) -> (Circuit, Wire, Wire, Wire) {
-	let builder = CircuitBuilder::with_opts(Options {
-		enable_zero_constraints,
-		..Options::default()
-	});
+/// inline the intermediate into the `band` and has to commit it. That committed definition lowers
+/// to a ZERO constraint like any other linear constraint.
+fn build_committed_lin_def_circuit() -> (Circuit, Wire, Wire, Wire) {
+	let builder = CircuitBuilder::new();
 	let x = builder.add_inout();
 	let y = builder.add_inout();
 	let z = builder.add_inout();
@@ -160,19 +146,18 @@ fn build_committed_lin_def_circuit(enable_zero_constraints: bool) -> (Circuit, W
 
 #[test]
 fn test_zero_constraints_reach_a_fused_committed_lin_def() {
-	let (and_circuit, ..) = build_committed_lin_def_circuit(false);
-	let (zero_circuit, x, y, z) = build_committed_lin_def_circuit(true);
-	let and_cs = and_circuit.constraint_system();
+	let (zero_circuit, x, y, z) = build_committed_lin_def_circuit();
 	let zero_cs = zero_circuit.constraint_system();
 
-	// With the option off every committed definition is an AND against all-ones.
-	assert_eq!(and_cs.n_zero_constraints(), 0);
-
-	// With it on they move to the ZERO set, one for one, and nothing else changes.
-	assert!(zero_cs.n_zero_constraints() > 0);
-	assert_eq!(
-		zero_cs.n_zero_constraints(),
-		and_cs.n_and_constraints() - zero_cs.n_and_constraints()
+	// The committed shift pair is a ZERO constraint, and it names no all-ones constant — the AND
+	// set holds only the `band` and the assertion.
+	assert_eq!(zero_cs.n_zero_constraints(), 1);
+	assert_eq!(zero_cs.n_and_constraints(), 2);
+	assert!(
+		zero_cs.zero_constraints[0]
+			.val()
+			.iter()
+			.all(|svi| svi.value_index != ValueIndex(0))
 	);
 
 	let mut filler = zero_circuit.new_witness_filler();
@@ -586,7 +571,7 @@ fn test_multiple_xor_operations() {
 }
 
 #[test]
-fn test_linear_constraint_conversion_to_and() {
+fn test_linear_constraint_conversion_to_zero() {
 	// This test verifies that linear constraints (created by XOR/shift operations)
 	// are properly converted to AND constraints during circuit building.
 	// The conversion happens in constraint_builder.rs build() method.
@@ -610,20 +595,20 @@ fn test_linear_constraint_conversion_to_and() {
 	let final_result = builder.bxor(combined1, combined2);
 
 	// Pin the result as committed so its linear cone survives dead-code elimination.
-	// A computation read by nothing is otherwise dropped, leaving no AND constraint to check.
+	// A computation read by nothing is otherwise dropped, leaving no constraint to check.
 	builder.force_commit(final_result);
 
 	let circuit = builder.build();
 
-	// Get the constraint system which should have AND constraints
-	// (linear constraints were converted to AND constraints)
+	// Get the constraint system which should have ZERO constraints
+	// (linear constraints were converted to ZERO constraints)
 	let cs = circuit.constraint_system();
 
-	// The circuit should have AND constraints but no separate linear constraints
+	// The circuit should have ZERO constraints but no separate linear constraints
 	// (they were all converted during build)
 	assert!(
-		!cs.and_constraints.is_empty(),
-		"Should have AND constraints from converted linear constraints"
+		!cs.zero_constraints.is_empty(),
+		"Should have ZERO constraints from converted linear constraints"
 	);
 
 	// Test with values to ensure correctness

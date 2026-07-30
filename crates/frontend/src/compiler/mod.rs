@@ -43,7 +43,7 @@ mod zero_fold;
 pub use gate_graph::Wire;
 use scratch_alloc::{ScratchAlloc, ScratchPolicy};
 
-/// Which compiler passes run, and how linear constraints are lowered.
+/// Which compiler passes run.
 ///
 /// This is the only knob: a circuit compiles the same way whatever the process environment holds.
 /// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`],
@@ -53,7 +53,7 @@ use scratch_alloc::{ScratchAlloc, ScratchPolicy};
 /// use binius_frontend::{CircuitBuilder, Options};
 ///
 /// let builder = CircuitBuilder::with_opts(Options {
-///     enable_zero_constraints: true,
+///     enable_gate_fusion: false,
 ///     ..Options::default()
 /// });
 /// ```
@@ -70,9 +70,6 @@ pub struct Options {
 	pub enable_algebraic_folding: bool,
 	/// Share scratch slots between values whose lifetimes do not overlap.
 	pub enable_scratch_pooling: bool,
-	/// Lower linear constraints to Zero constraints instead of AND constraints against the
-	/// all-ones constant.
-	pub enable_zero_constraints: bool,
 	/// Forward past the gates a zero operand turns into the identity.
 	pub enable_zero_propagation: bool,
 }
@@ -88,9 +85,6 @@ impl Default for Options {
 			// Why off: sharing slots stops an uncommitted value from being readable afterwards.
 			// A caller that inspects one has to opt in knowingly.
 			enable_scratch_pooling: false,
-			// Why off: both proof systems reduce Zero constraints, but the AND lowering stays the
-			// default until the two are compared.
-			enable_zero_constraints: false,
 			enable_zero_propagation: true,
 		}
 	}
@@ -116,7 +110,7 @@ pub(crate) struct Shared {
 /// Methods like [`band`] and [`iadd_32`] add gates to the graph and return handles
 /// to output wires.
 ///
-/// During [`build`], the gate graph compiles into AND, IMUL, and BMUL constraints
+/// During [`build`], the gate graph compiles into ZERO, AND, IMUL, and BMUL constraints
 /// that the proof system operates on directly.
 ///
 /// # Wire Types
@@ -157,7 +151,7 @@ pub(crate) struct Shared {
 /// **Linear operations** - XOR and shifts generate virtual linear constraints.
 /// During compilation these either:
 /// - Fuse into adjacent non-linear gates (near-zero cost)
-/// - Materialize as AND constraints
+/// - Materialize as ZERO constraints, which the Zero reduction discharges without a prover message
 ///
 /// Gate fusion inlines compatible XOR expressions and shifts into existing AND gates.
 /// Incompatible operations (e.g., right shift into left shift) and heuristic limits
@@ -359,7 +353,7 @@ impl CircuitBuilder {
 		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
 
 		let (mut zero_constraints, mut and_constraints, mut imul_constraints, mut bmul_constraints) =
-			builder.build(&wire_mapping, all_one, shared.opts.enable_zero_constraints);
+			builder.build(&wire_mapping);
 
 		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
 		// terms referencing a zero constant contribute nothing to an XOR operand.

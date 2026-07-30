@@ -166,24 +166,24 @@ mod tests {
 			wire_c,
 		);
 
-		let (_zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
-			builder.build(&wire_mapping, all_one_wire, false);
+		let (zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
+			builder.build(&wire_mapping);
 
-		assert_eq!(and_constraints.len(), 1);
+		assert_eq!(zero_constraints.len(), 1);
+		assert_eq!(and_constraints.len(), 0);
 		assert_eq!(imul_constraints.len(), 0);
 
-		let and_c = &and_constraints[0];
-		assert_eq!(and_c.a().len(), 3);
+		// The operand is the three RHS terms plus the destination.
+		let val = zero_constraints[0].val();
+		assert_eq!(val.len(), 4);
 
 		assert!(
-			and_c
-				.a()
-				.iter()
+			val.iter()
 				.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0),
 			"plain(a) from rotr(a, 0)"
 		);
 		assert!(
-			and_c.a().iter().any(|svi| {
+			val.iter().any(|svi| {
 				svi.value_index == ValueIndex(1)
 					&& svi.amount == 5
 					&& matches!(svi.shift_variant, ShiftVariant::Sll)
@@ -191,7 +191,7 @@ mod tests {
 			"native sll(b, 5)"
 		);
 		assert!(
-			and_c.a().iter().any(|svi| {
+			val.iter().any(|svi| {
 				svi.value_index == ValueIndex(0)
 					&& svi.amount == 12
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
