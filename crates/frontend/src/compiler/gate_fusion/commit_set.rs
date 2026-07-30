@@ -7,6 +7,13 @@ use petgraph::{
 use super::{LeGraph, Stat};
 use crate::compiler::constraint_builder::{Shift, ShiftKind};
 
+/// Longest chain of inlined multi-term definitions allowed between a definition and its root.
+///
+/// Each inlining substitutes a definition's whole cone into every user, so a chain of them
+/// multiplies operand sizes. Past this many links a definition is committed instead.
+///
+/// Definitions of a single term are exempt, since inlining one leaves every operand the size it
+/// already was.
 pub const MAX_DEPTH: usize = 6;
 
 /// Which shift kinds appeared on a path, and the largest distance any of them used.
@@ -147,6 +154,10 @@ impl CommitSetCx {
 /// 2. Inlining is prone to term explosion. To prevent that we avoid inlining expressions that lie
 ///    past a certain depth.
 ///
+/// The depth cap guards against term explosion, so it does not apply to a definition of a single
+/// term: inlining one substitutes a term for a term in each user and cannot grow any operand. See
+/// [`MAX_DEPTH`].
+///
 /// Note that this is all-or-nothing decision: if at least one user cannot inline an expression
 /// then no users should inline it.
 pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
@@ -205,6 +216,11 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 			let incoming = leg.pg.edges_directed(node, Direction::Incoming);
 			let outcoming = leg.pg.edges_directed(node, Direction::Outgoing);
 
+			// A definition of a single term costs its users nothing to inline: each one swaps a
+			// term for a term, composing a shift and no more. Only a definition of several terms
+			// can grow an operand, so only one of those is worth committing on depth grounds.
+			let grows_operands = incoming.clone().count() > 1;
+
 			let mut composable = true;
 			let mut depth = 0;
 
@@ -222,7 +238,8 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 				}
 			}
 
-			if depth > MAX_DEPTH || !composable {
+			let too_deep = depth > MAX_DEPTH && grows_operands;
+			if too_deep || !composable {
 				// Decision: commit.
 				//
 				// Every incoming edge context is going to be a brand new one seeded with the
@@ -236,7 +253,7 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 				assert!(leg.lin_committed.insert(lin_def_wire));
 
 				stat.note_committed();
-				if depth > MAX_DEPTH {
+				if too_deep {
 					stat.note_committed_linear_depth();
 				}
 			} else {

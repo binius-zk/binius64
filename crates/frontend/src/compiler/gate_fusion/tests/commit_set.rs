@@ -10,24 +10,29 @@ fn w(id: u32) -> Wire {
 	Wire::from_u32(id)
 }
 
-/// Test helper to build a simple test circuit and verify the commit set
-fn test_commit_set(
-	build_constraints: impl FnOnce(&mut ConstraintBuilder),
-	expected_committed: &[Wire],
-	expected_not_committed: &[Wire],
-) {
+/// Test helper to run the pass over a circuit and return the wires it decided to commit
+fn commit_set_of(build_constraints: impl FnOnce(&mut ConstraintBuilder)) -> Vec<Wire> {
 	let mut cb = ConstraintBuilder::new();
 	build_constraints(&mut cb);
 
 	let mut stat = Stat::default();
 	let mut leg = LeGraph::new(&cb);
 	commit_set::run_decide_commit_set(&mut leg, &mut stat);
-	let commit_set = leg.commit_set();
+	leg.commit_set().iter().collect()
+}
+
+/// Test helper to build a simple test circuit and verify the commit set
+fn test_commit_set(
+	build_constraints: impl FnOnce(&mut ConstraintBuilder),
+	expected_committed: &[Wire],
+	expected_not_committed: &[Wire],
+) {
+	let commit_set = commit_set_of(build_constraints);
 
 	// Verify expected wires are committed
 	for &wire in expected_committed {
 		assert!(
-			commit_set.contains(wire),
+			commit_set.contains(&wire),
 			"Wire {:?} should be committed but wasn't. Commit set: {:?}",
 			wire,
 			commit_set
@@ -37,7 +42,7 @@ fn test_commit_set(
 	// Verify expected wires are NOT committed (i.e., can be inlined)
 	for &wire in expected_not_committed {
 		assert!(
-			!commit_set.contains(wire),
+			!commit_set.contains(&wire),
 			"Wire {:?} should NOT be committed but was. Commit set: {:?}",
 			wire,
 			commit_set
@@ -724,4 +729,37 @@ fn test_rotr_with_mixed_shift_xor() {
 		&[w(6)],       // b_shifted must be committed (can't compose Rotr with Sll)
 		&[w(2), w(3)], // y and z can still be inlined
 	);
+}
+
+#[test]
+fn single_term_definitions_inline_past_the_depth_cap() {
+	// A chain of rotates longer than the depth cap. Every definition is a single term, so
+	// inlining one swaps a term for a term and leaves each operand the size it already was.
+	// The cap guards against operands growing, so it has nothing to guard against here.
+	let len = commit_set::MAX_DEPTH as u32 + 4;
+	let chain: Vec<Wire> = (1..=len).map(w).collect();
+	test_commit_set(
+		|cb| {
+			for i in 0..len {
+				cb.linear(expr::rotr(w(i), 1), w(i + 1));
+			}
+			cb.and(w(len), w(100), w(101));
+		},
+		&[],
+		&chain,
+	);
+}
+
+#[test]
+fn multi_term_definitions_still_commit_past_the_depth_cap() {
+	// The same chain length built from two-term definitions. Each inlining does grow its
+	// consumer's operand, so the cap still fires and breaks the chain.
+	let len = commit_set::MAX_DEPTH as u32 + 4;
+	let committed = commit_set_of(|cb| {
+		for i in 0..len {
+			cb.linear(expr::xor2(w(i), w(200 + i)), w(i + 1));
+		}
+		cb.and(w(len), w(100), w(101));
+	});
+	assert!(!committed.is_empty(), "the depth cap should have committed a definition");
 }
