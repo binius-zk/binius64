@@ -205,10 +205,10 @@ fn build_non_lin_patch(
 /// definition and all definitions that could be inlined into it. Therefore, the returned
 /// patch will replace the given linear definition and the cone of linear definitions it used.
 ///
-/// The patch stays linear: the wire has to be committed, but *how* the defining equation is
-/// enforced — an AND against the all-ones wire, or a Zero constraint — is
-/// [`ConstraintBuilder::build`](crate::compiler::constraint_builder::ConstraintBuilder::build)'s
-/// decision, taken from the `enable_zero_constraints` option.
+/// The patch stays linear: the wire has to be committed, and its defining equation is enforced by
+/// the Zero constraint
+/// [`ConstraintBuilder::build`](crate::compiler::constraint_builder::ConstraintBuilder::build)
+/// lowers it to.
 fn build_committed_lin_def_patch(_cb: &ConstraintBuilder, leg: &LeGraph, root: Wire) -> Patch {
 	// `subsumes` is a list of constraints that become redundant with application of this patch.
 	// The first redundant constraint is the linear definition that's being committed.

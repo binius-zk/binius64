@@ -5,10 +5,10 @@ Gates & Instructions
 └─ Number of evaluation instructions: 244,030
 
 Constraints
-├─ ZERO constraints: 0 used (0.0% of 0)
-│  [░░░░░░░░░░] spare: 0
-├─ AND constraints: 158,253 used (60.4% of 2^18)
-│  [▓▓▓▓▓▓░░░░] spare: 103,891
+├─ ZERO constraints: 2,140 used (52.2% of 2^12)
+│  [▓▓▓▓▓░░░░░] spare: 1,956
+├─ AND constraints: 156,113 used (59.6% of 2^18)
+│  [▓▓▓▓▓░░░░░] spare: 106,031
 ├─ IMUL constraints: 20,548 used (62.7% of 2^15)
 │  [▓▓▓▓▓▓░░░░] spare: 12,220
 ├─ BMUL constraints: 0 used (0.0% of 0)

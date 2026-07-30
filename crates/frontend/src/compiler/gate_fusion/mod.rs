@@ -11,9 +11,8 @@
 //! `ConstraintBuilder` which this pass operates consists of AND, IMUL and linear constraints.
 //! Linear constraints are basically are constraints that define a single wire using a XOR
 //! combination and/or shifts. Since our system does not suppose standalone linear combinations a
-//! wire whose definition survives has to be committed, and its definition costs a constraint of
-//! its own — an AND against the all-ones wire, or a Zero constraint under
-//! `enable_zero_constraints`.
+//! wire whose definition survives has to be committed, and its definition costs a Zero constraint
+//! of its own.
 //!
 //! BUT we have a chance of avoiding that if we manage to inline that wire into every consumer
 //! constraint which means we don't have to commit that value and thus we don't spend a constraint

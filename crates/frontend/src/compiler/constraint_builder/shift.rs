@@ -274,36 +274,29 @@ mod tests {
 			let mut builder = ConstraintBuilder::new();
 			builder.linear(expr::xor2(expr::rotr(wire_a, 0), wire_b), wire_c);
 
-			let (_zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
-				builder.build(&wire_mapping, all_one_wire, false);
+			let (zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
+				builder.build(&wire_mapping);
 
-			// Linear lowers to `(a ^ b) & all_one = c`.
-			assert_eq!(and_constraints.len(), 1);
+			// Linear lowers to the ZERO constraint `a ^ b ^ c = 0`.
+			assert_eq!(zero_constraints.len(), 1);
+			assert_eq!(and_constraints.len(), 0);
 			assert_eq!(imul_constraints.len(), 0);
 
-			let and_c = &and_constraints[0];
-
-			assert_eq!(and_c.a().len(), 2);
+			let val = zero_constraints[0].val();
+			assert_eq!(val.len(), 3);
 			assert!(
-				and_c
-					.a()
-					.iter()
+				val.iter()
 					.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0)
 			);
 			assert!(
-				and_c
-					.a()
-					.iter()
+				val.iter()
 					.any(|svi| svi.value_index == ValueIndex(1) && svi.amount == 0)
 			);
-
-			assert_eq!(and_c.b().len(), 1);
-			assert_eq!(and_c.b()[0].value_index, ValueIndex(3));
-			assert_eq!(and_c.b()[0].amount, 0);
-
-			assert_eq!(and_c.c().len(), 1);
-			assert_eq!(and_c.c()[0].value_index, ValueIndex(2));
-			assert_eq!(and_c.c()[0].amount, 0);
+			// The destination joins the operand rather than sitting in its own `c`.
+			assert!(
+				val.iter()
+					.any(|svi| svi.value_index == ValueIndex(2) && svi.amount == 0)
+			);
 		}
 
 		// c = rotr(a, 5) ^ b  ->  native rotr(a, 5).
@@ -311,23 +304,22 @@ mod tests {
 			let mut builder = ConstraintBuilder::new();
 			builder.linear(expr::xor2(expr::rotr(wire_a, 5), wire_b), wire_c);
 
-			let (_zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
-				builder.build(&wire_mapping, all_one_wire, false);
+			let (zero_constraints, and_constraints, imul_constraints, _bmul_constraints) =
+				builder.build(&wire_mapping);
 
-			assert_eq!(and_constraints.len(), 1);
+			assert_eq!(zero_constraints.len(), 1);
+			assert_eq!(and_constraints.len(), 0);
 			assert_eq!(imul_constraints.len(), 0);
 
-			let and_c = &and_constraints[0];
-			assert_eq!(and_c.a().len(), 2);
-			assert!(and_c.a().iter().any(|svi| {
+			let val = zero_constraints[0].val();
+			assert_eq!(val.len(), 3);
+			assert!(val.iter().any(|svi| {
 				svi.value_index == ValueIndex(0)
 					&& svi.amount == 5
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
 			}));
 			assert!(
-				and_c
-					.a()
-					.iter()
+				val.iter()
 					.any(|svi| svi.value_index == ValueIndex(1) && svi.amount == 0)
 			);
 		}
@@ -352,7 +344,7 @@ mod tests {
 			let mut builder = ConstraintBuilder::new();
 			builder.and(wire_a, expr::rotr(wire_b, 0), wire_c);
 
-			let (_, and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire, false);
+			let (_, and_constraints, _, _) = builder.build(&wire_mapping);
 
 			assert_eq!(and_constraints.len(), 1);
 			let and_c = &and_constraints[0];
@@ -375,7 +367,7 @@ mod tests {
 			let mut builder = ConstraintBuilder::new();
 			builder.and(wire_a, expr::rotr(wire_b, 8), wire_c);
 
-			let (_, and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire, false);
+			let (_, and_constraints, _, _) = builder.build(&wire_mapping);
 
 			assert_eq!(and_constraints.len(), 1);
 			let and_c = &and_constraints[0];

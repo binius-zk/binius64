@@ -297,12 +297,16 @@ fn test_shift_prove_and_verify() {
 			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul.clone(),
 		};
-		// These circuits have no ZERO constraints, so the Zero claim is the zero claim at an empty
-		// point, exactly as the prover synthesizes it.
+		// The Zero claim closes at its own constraint point, as wide as the ZERO set. Its value is
+		// zero at any point: a satisfied ZERO constraint array vanishes identically, so its
+		// multilinear extension is the zero polynomial.
+		let r_x_prime_zero = (0..cs.log_zero_constraints().unwrap_or(0) as u128)
+			.map(F::new)
+			.collect::<Vec<_>>();
 		let prover_zero_data = OperatorData {
 			evals: vec![F::ZERO],
 			r_zhat_prime,
-			r_x_prime: Vec::new(),
+			r_x_prime: r_x_prime_zero.clone(),
 		};
 		// These circuits have no BMUL constraints, so the BinMul claim is the zero claim at an
 		// empty point (the prover's skipped-case `None` branch).
@@ -327,7 +331,7 @@ fn test_shift_prove_and_verify() {
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		let verifier_zero_data = VerifierOperatorData::new(Vec::new(), [F::ZERO]);
+		let verifier_zero_data = VerifierOperatorData::new(r_x_prime_zero, [F::ZERO]);
 		let verifier_bitand_data = VerifierOperatorData::new(r_x_prime_bitand, bitand_evals);
 		let verifier_intmul_data = VerifierOperatorData::new(r_x_prime_intmul, intmul_evals);
 		let verifier_binmul_data = VerifierOperatorData::new(Vec::new(), [F::ZERO; 6]);
