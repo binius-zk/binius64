@@ -2,11 +2,13 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::Field;
-use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 
 use crate::{
 	channel::IPProverChannel,
-	sumcheck::common::{MleCheckProver, SumcheckProver},
+	sumcheck::{
+		common::{MleCheckProver, SumcheckProver},
+		drive::{self, RoundProofKind},
+	},
 };
 
 /// Prover view of the execution result of a batched sumcheck.
@@ -39,68 +41,14 @@ pub struct BatchSumcheckOutput<F: Field> {
 /// but does not write the evaluation claims to the channel. Use [`batch_prove_and_write_evals`]
 /// if you need to write the evaluations to the channel.
 pub fn batch_prove<F, Prover>(
-	mut provers: Vec<Prover>,
+	provers: Vec<Prover>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchSumcheckOutput<F>
 where
 	F: Field,
 	Prover: SumcheckProver<F>,
 {
-	let Some(first_prover) = provers.first() else {
-		return BatchSumcheckOutput {
-			challenges: Vec::new(),
-			multilinear_evals: Vec::new(),
-		};
-	};
-
-	let n_vars = first_prover.n_vars();
-
-	assert!(
-		provers.iter().all(|prover| prover.n_vars() == n_vars),
-		"batched provers must have the same number of rounds"
-	);
-
-	// Random linear-combination coefficient for batching multiple sum claims.
-	let batch_coeff = channel.sample();
-
-	let mut challenges = Vec::with_capacity(n_vars);
-	for _ in 0..n_vars {
-		let mut all_round_coeffs = Vec::new();
-
-		for prover in &mut provers {
-			// Each prover emits its round polynomial; we batch across provers.
-			all_round_coeffs.extend(prover.execute());
-		}
-
-		// Horner-fold round polynomials into a single batched polynomial.
-		let batched_round_coeffs = all_round_coeffs
-			.into_iter()
-			.rfold(RoundCoeffs::default(), |acc, coeffs| acc * batch_coeff + &coeffs);
-
-		// Truncate to the verifier-visible coefficients for this round.
-		let round_proof = batched_round_coeffs.truncate();
-
-		// Commit to the round polynomial, then sample the next challenge.
-		channel.send_many(round_proof.coeffs());
-
-		let challenge = channel.sample();
-		challenges.push(challenge);
-
-		// Fold all provers on the shared challenge to advance the state machine.
-		for prover in &mut provers {
-			prover.fold(challenge);
-		}
-	}
-
-	let multilinear_evals = provers
-		.into_iter()
-		.map(|prover| prover.finish())
-		.collect::<Vec<_>>();
-
-	BatchSumcheckOutput {
-		challenges,
-		multilinear_evals,
-	}
+	drive::batch(RoundProofKind::Sumcheck, provers, channel)
 }
 
 /// Prove a batched sumcheck protocol and write evaluation claims to the channel.
@@ -127,11 +75,7 @@ where
 	Prover: SumcheckProver<F>,
 {
 	let output = batch_prove(provers, channel);
-
-	for evals in &output.multilinear_evals {
-		// Preserve per-prover ordering when emitting evaluation claims.
-		channel.send_many(evals);
-	}
+	drive::send_evals(&output, channel);
 	output
 }
 
@@ -141,78 +85,31 @@ where
 /// agree on the same evaluation point, so the batched protocol can fold every prover with the
 /// same per-round challenge and reduce all evaluation claims via a single batching coefficient.
 pub fn batch_prove_mle<F, MleCheckProver_>(
-	mut provers: Vec<MleCheckProver_>,
+	provers: Vec<MleCheckProver_>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchSumcheckOutput<F>
 where
 	F: Field,
 	MleCheckProver_: MleCheckProver<F>,
 {
-	let Some(first_prover) = provers.first() else {
-		return BatchSumcheckOutput {
-			challenges: Vec::new(),
-			multilinear_evals: Vec::new(),
-		};
-	};
-
-	let n_vars = first_prover.n_vars();
-	let eval_point = first_prover.eval_point();
-
-	assert!(
-		provers.iter().all(|prover| prover.n_vars() == n_vars),
-		"batched provers must have the same number of rounds"
-	);
-
-	// All MLE-check provers must share the same evaluation point to batch safely.
-	assert!(
-		provers
-			.iter()
-			.all(|prover| prover.eval_point() == eval_point),
-		"batched MLE-check provers must share the same evaluation point"
-	);
-	// Random linear-combination coefficient for batching multiple eval claims.
-	let batch_coeff = channel.sample();
-
-	let mut challenges = Vec::with_capacity(n_vars);
-	for _ in 0..n_vars {
-		let mut all_round_coeffs = Vec::new();
-
-		for prover in &mut provers {
-			// Each prover emits its round polynomial; we batch across provers.
-			all_round_coeffs.extend(prover.execute());
-		}
-
-		// Horner-fold round polynomials into a single batched polynomial.
-		let batched_round_coeffs = all_round_coeffs
-			.into_iter()
-			.rfold(RoundCoeffs::default(), |acc, coeffs| acc * batch_coeff + &coeffs);
-
-		// MLE-check uses a distinct round proof type.
-		let round_proof = mlecheck::RoundProof::truncate(batched_round_coeffs);
-
-		// Commit to the round polynomial, then sample the next challenge.
-		channel.send_many(round_proof.coeffs());
-
-		let challenge = channel.sample();
-		challenges.push(challenge);
-
-		// Fold all provers on the shared challenge to advance the state machine.
-		for prover in &mut provers {
-			prover.fold(challenge);
-		}
+	// All MLE-check provers must share the same evaluation point to batch safely. An empty batch
+	// has no point to agree on, and the driver treats it as a no-op.
+	if let Some(first_prover) = provers.first() {
+		let eval_point = first_prover.eval_point();
+		assert!(
+			provers
+				.iter()
+				.all(|prover| prover.eval_point() == eval_point),
+			"batched MLE-check provers must share the same evaluation point"
+		);
 	}
 
-	let multilinear_evals = provers
-		.into_iter()
-		.map(|prover| prover.finish())
-		.collect::<Vec<_>>();
-
-	BatchSumcheckOutput {
-		challenges,
-		multilinear_evals,
-	}
+	drive::batch(RoundProofKind::MleCheck, provers, channel)
 }
 
+/// Prove a batched MLE-check and write evaluation claims to the channel.
+///
+/// This is the MLE-check analog of [`batch_prove_and_write_evals`].
 pub fn batch_prove_mle_and_write_evals<F, MleCheckProver_>(
 	provers: Vec<MleCheckProver_>,
 	channel: &mut impl IPProverChannel<F>,
@@ -222,11 +119,7 @@ where
 	MleCheckProver_: MleCheckProver<F>,
 {
 	let output = batch_prove_mle(provers, channel);
-
-	for evals in &output.multilinear_evals {
-		// Preserve per-prover ordering when emitting evaluation claims.
-		channel.send_many(evals);
-	}
+	drive::send_evals(&output, channel);
 	output
 }
 
