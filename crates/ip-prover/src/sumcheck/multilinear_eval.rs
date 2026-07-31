@@ -7,7 +7,7 @@ use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldSlice, FieldVec};
 
 use super::{
-	mle_store::{ColId, EvaluationChunk, MleStore},
+	mle_store::{ColId, EvaluationChunk, MleStore, RoundContext},
 	round_evals::RoundEvals1,
 	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
@@ -31,9 +31,8 @@ impl MultilinearEvalEvaluator {
 	}
 }
 
-impl<A, F, P> MleCheckRoundEvaluator<A, F, P> for MultilinearEvalEvaluator
+impl<F, P> MleCheckRoundEvaluator<F, P> for MultilinearEvalEvaluator
 where
-	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -65,14 +64,14 @@ where
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, A, P>,
+		ctx: &RoundContext<'_, P>,
 		accum: &[P],
 		claim: F,
 		alpha: F,
 	) -> RoundCoeffs<F> {
 		// The store has not folded this round yet.
 		// Its remaining-variable count is therefore this round's.
-		let n_vars_remaining = store.n_vars();
+		let n_vars_remaining = ctx.n_vars();
 		assert!(n_vars_remaining > 0);
 
 		// `accum` is already reduced by the prover's map pass.

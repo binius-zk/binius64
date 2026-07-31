@@ -1,14 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::multilinear::eq::eq_one_var;
 
 use crate::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
-	mle_store::{EqId, EvaluationChunk, MleStore},
+	mle_store::{EqId, EvaluationChunk, RoundContext},
 	round_evals::round_coeffs_by_eq,
 	round_evaluator::{MleCheckRoundEvaluator, SumcheckRoundEvaluator},
 };
@@ -124,12 +123,11 @@ impl<Inner> MleToSumCheckEvaluator<Inner> {
 	}
 }
 
-impl<A, F, P, Inner> SumcheckRoundEvaluator<A, F, P> for MleToSumCheckEvaluator<Inner>
+impl<F, P, Inner> SumcheckRoundEvaluator<F, P> for MleToSumCheckEvaluator<Inner>
 where
-	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Inner: MleCheckRoundEvaluator<A, F, P>,
+	Inner: MleCheckRoundEvaluator<F, P>,
 {
 	fn degree(&self) -> usize {
 		// The eq factor multiplies the emitted round polynomial, not the accumulator: the wide
@@ -144,7 +142,7 @@ where
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, A, P>,
+		ctx: &RoundContext<'_, P>,
 		accum: &[<P as WideMul>::Output],
 		claim: F,
 	) -> RoundCoeffs<F> {
@@ -155,8 +153,8 @@ where
 		//
 		// alpha and the equality prefix are read from the shared eq tracker (the store has not yet
 		// folded this round, so the tracker is at the current round's alpha and prefix).
-		let eq_prefix = store.eq_prefix(self.eq_tracker);
-		let alpha = store.eq_alpha(self.eq_tracker);
+		let eq_prefix = ctx.eq_prefix(self.eq_tracker);
+		let alpha = ctx.eq_alpha(self.eq_tracker);
 		let inner_claim = claim * eq_prefix.invert_or_zero();
 		// The inner MLE-check evaluator now takes a reduced accumulator; the plain sumcheck prover
 		// driving this wrapper leaves the wide accumulators unreduced, so reduce them here.
@@ -164,7 +162,7 @@ where
 			.iter()
 			.map(|slot| P::reduce(slot.clone()))
 			.collect::<Vec<_>>();
-		let round_coeffs = self.inner.interpolate(store, &reduced, inner_claim, alpha);
+		let round_coeffs = self.inner.interpolate(ctx, &reduced, inner_claim, alpha);
 
 		// Multiply the inner MLE-check round polynomial by (X - α) and the equality prefix.
 		round_coeffs_by_eq(&round_coeffs, alpha) * eq_prefix

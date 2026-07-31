@@ -96,7 +96,6 @@ where
 	prover.finish()
 }
 
-#[allow(clippy::type_complexity)]
 fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 	let mut group = c.benchmark_group("mlecheck/batch_quadratic");
 	let mut rng = StdRng::seed_from_u64(0);
@@ -133,10 +132,8 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 						QuadraticMleEvaluator::new(cols, comp_0::<P>, comp_0_inf::<P>);
 					let evaluator_1 =
 						QuadraticMleEvaluator::new(cols, comp_1::<P>, comp_1_inf::<P>);
-					let claims_with_evaluators: [(
-						F,
-						Box<dyn MleCheckRoundEvaluator<&BufferPool, F, P> + '_>,
-					); 2] = [
+					let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P> + '_>);
+						2] = [
 						(eval_claims[0], Box::new(evaluator_0)),
 						(eval_claims[1], Box::new(evaluator_1)),
 					];

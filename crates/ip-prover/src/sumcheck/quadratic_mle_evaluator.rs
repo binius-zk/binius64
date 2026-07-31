@@ -6,7 +6,7 @@ use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldSlice, FieldVec};
 
 use super::{
-	mle_store::{ColId, ColumnChunk, EvaluationChunk, MleStore},
+	mle_store::{ColId, ColumnChunk, EvaluationChunk, MleStore, RoundContext},
 	round_evals::RoundEvals2,
 	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
@@ -122,10 +122,9 @@ where
 	SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point)
 }
 
-impl<A, F, P, Composition, InfinityComposition, const N: usize> MleCheckRoundEvaluator<A, F, P>
+impl<F, P, Composition, InfinityComposition, const N: usize> MleCheckRoundEvaluator<F, P>
 	for QuadraticMleEvaluator<Composition, InfinityComposition, N>
 where
-	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 	Composition: Fn([P; N]) -> P + Send + Sync,
@@ -177,13 +176,13 @@ where
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, A, P>,
+		ctx: &RoundContext<'_, P>,
 		accum: &[P],
 		claim: F,
 		alpha: F,
 	) -> RoundCoeffs<F> {
 		// The store has not yet folded this round, so its remaining-variable count is this round's.
-		let n_vars_remaining = store.n_vars();
+		let n_vars_remaining = ctx.n_vars();
 		assert!(n_vars_remaining > 0);
 
 		// `accum` is already reduced (the prover's `map` pass reduced the wide accumulators). Sum

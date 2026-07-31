@@ -7,7 +7,7 @@ use binius_math::FieldVec;
 use itertools::izip;
 
 use super::{
-	mle_store::{ColId, EvaluationChunk, MleStore},
+	mle_store::{ColId, EvaluationChunk, MleStore, RoundContext},
 	round_evals::WideRoundEvals2,
 	round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 };
@@ -53,7 +53,7 @@ pub fn bivariate_product_prover<'alloc, A: Allocator, F: Field, P: PackedField<S
 	SharedSumcheckProver::new(store, [(sum, BivariateProductEvaluator::new(cols))])
 }
 
-impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<A, F, P>
+impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
 	for BivariateProductEvaluator
 {
 	fn degree(&self) -> usize {
@@ -91,12 +91,12 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, A, P>,
+		ctx: &RoundContext<'_, P>,
 		accum: &[<P as WideMul>::Output],
 		claim: F,
 	) -> RoundCoeffs<F> {
 		// The store has not yet folded this round, so its remaining-variable count is this round's.
-		let n_vars_remaining = store.n_vars();
+		let n_vars_remaining = ctx.n_vars();
 		assert!(n_vars_remaining > 0);
 
 		let evals = WideRoundEvals2 {

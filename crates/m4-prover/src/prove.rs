@@ -516,7 +516,7 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 		&self,
 		lagrange: &[B128],
 		store: &mut MleStore<'alloc, A, P>,
-		evaluators: &mut Vec<Box<dyn SumcheckRoundEvaluator<A, B128, P> + 'alloc>>,
+		evaluators: &mut Vec<Box<dyn SumcheckRoundEvaluator<B128, P> + 'alloc>>,
 		claims: &mut Vec<B128>,
 		alloc: &'alloc A,
 	) where
@@ -678,7 +678,7 @@ impl RerandomizedOperations<'_> {
 		// [BitAnd a, b, c | IntMul a, b, lo, hi | BinMul a_lo, a_hi, b_lo, b_hi, c_lo, c_hi].
 		// The verifier reads the reduced evaluations back in the same order.
 		let mut store = MleStore::<A, P>::new(log_instances, alloc);
-		let mut evaluators: Vec<Box<dyn SumcheckRoundEvaluator<A, B128, P> + 'alloc>> =
+		let mut evaluators: Vec<Box<dyn SumcheckRoundEvaluator<B128, P> + 'alloc>> =
 			Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
 		let mut claims: Vec<B128> = Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
 		self.bitand

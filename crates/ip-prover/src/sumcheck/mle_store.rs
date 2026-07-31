@@ -205,26 +205,14 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			.collect()
 	}
 
-	/// Returns the highest remaining coordinate of a registered eq tracker.
+	/// Returns the read-only view of the current round that the evaluators interpolate against.
 	///
-	/// This is the coordinate of the variable bound in the current round — the round's `alpha`. The
-	/// store pops one coordinate off each tracker as [`Self::fold`] advances, so this is always the
-	/// coordinate for the round about to run, and an evaluator reads it here instead of tracking
-	/// the point and remaining-variable count itself.
-	pub fn eq_alpha(&self, id: EqId) -> F {
-		self.eq_trackers[id.0].next_coordinate()
-	}
-
-	/// Returns the equality prefix of a registered eq tracker.
-	///
-	/// This is the product of the equality terms of all previously bound coordinates, which the
-	/// [Gruen24] technique multiplies into each round polynomial. The store maintains it on the
-	/// tracker across [`Self::fold`] calls, so an eq-weighted evaluator reads it here rather than
-	/// accumulating its own copy.
-	///
-	/// [Gruen24]: <https://eprint.iacr.org/2024/108>
-	pub fn eq_prefix(&self, id: EqId) -> F {
-		self.eq_trackers[id.0].eq_prefix_eval()
+	/// Valid until the next [`Self::fold`], which is when the values it exposes advance.
+	pub fn round_context(&self) -> RoundContext<'_, P> {
+		RoundContext {
+			n_vars: self.n_vars,
+			eq_trackers: &self.eq_trackers,
+		}
 	}
 
 	/// Folds every column and every eq tracker with a verifier challenge.
@@ -665,6 +653,39 @@ impl<'a, P: PackedField> PreFoldEvaluationChunk<'a, P> {
 			.map(|eq| FieldSlice::from_slice(n_vars, eq.fold_eq()))
 			.collect();
 		EvaluationChunk { n_vars, cols, eqs }
+	}
+}
+
+/// The scalar state of one round, as an evaluator may read it while interpolating.
+///
+/// Holds no columns and no allocator, so an evaluator is generic over neither.
+/// The store has not folded this round yet, so every value here is the current round's.
+pub struct RoundContext<'a, P: PackedField> {
+	n_vars: usize,
+	eq_trackers: &'a [Gruen32<P>],
+}
+
+impl<F: Field, P: PackedField<Scalar = F>> RoundContext<'_, P> {
+	/// Returns the number of variables not yet bound, this round's included.
+	pub const fn n_vars(&self) -> usize {
+		self.n_vars
+	}
+
+	/// Returns the coordinate of the variable this round binds, for a registered eq tracker.
+	///
+	/// This is the round's `alpha`: the highest coordinate of that tracker's point still unbound.
+	pub fn eq_alpha(&self, id: EqId) -> F {
+		self.eq_trackers[id.index()].next_coordinate()
+	}
+
+	/// Returns the equality prefix of a registered eq tracker.
+	///
+	/// This is the product of the equality terms over all coordinates bound so far.
+	/// The [Gruen24] technique multiplies it into each round polynomial.
+	///
+	/// [Gruen24]: <https://eprint.iacr.org/2024/108>
+	pub fn eq_prefix(&self, id: EqId) -> F {
+		self.eq_trackers[id.index()].eq_prefix_eval()
 	}
 }
 
