@@ -140,12 +140,7 @@ where
 			.accumulate(chunk, chunk.eq(self.eq_tracker).to_ref(), accum)
 	}
 
-	fn interpolate(
-		&self,
-		ctx: &RoundContext<'_, P>,
-		accum: &[<P as WideMul>::Output],
-		claim: F,
-	) -> RoundCoeffs<F> {
+	fn interpolate(&self, ctx: &RoundContext<'_, P>, accum: &[P], claim: F) -> RoundCoeffs<F> {
 		// `claim` is the sumcheck round claim: the inner MLE-check claim `m` scaled by the
 		// accumulated equality prefix. Recover `m` for the inner evaluator by dividing the prefix
 		// back out. (`invert_or_zero` mirrors the interpolation routines; the prefix is a product
@@ -156,13 +151,8 @@ where
 		let eq_prefix = ctx.eq_prefix(self.eq_tracker);
 		let alpha = ctx.eq_alpha(self.eq_tracker);
 		let inner_claim = claim * eq_prefix.invert_or_zero();
-		// The inner MLE-check evaluator now takes a reduced accumulator; the plain sumcheck prover
-		// driving this wrapper leaves the wide accumulators unreduced, so reduce them here.
-		let reduced = accum
-			.iter()
-			.map(|slot| P::reduce(slot.clone()))
-			.collect::<Vec<_>>();
-		let round_coeffs = self.inner.interpolate(ctx, &reduced, inner_claim, alpha);
+		// The inner evaluator interpolates its prime polynomial from the same reduced slots.
+		let round_coeffs = self.inner.interpolate(ctx, accum, inner_claim, alpha);
 
 		// Multiply the inner MLE-check round polynomial by (X - α) and the equality prefix.
 		round_coeffs_by_eq(&round_coeffs, alpha) * eq_prefix
