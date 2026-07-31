@@ -2,15 +2,11 @@
 
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
-use binius_math::FieldBuffer;
 
 use crate::sumcheck::{
 	mle_store::ColId, quadratic_mle_evaluator::QuadraticMleEvaluator,
 	round_evaluator::MleCheckRoundEvaluator,
 };
-
-/// The numerator and denominator buffers of one fractional-addition layer.
-pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
 
 /// Creates the round evaluators for the fractional-addition claims required in logUp*.
 ///

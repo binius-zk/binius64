@@ -205,18 +205,6 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			.collect()
 	}
 
-	/// Returns the full evaluation point of a registered eq tracker.
-	///
-	/// The point spans all of the store's original variables — it is not truncated as the store
-	/// folds, so the remaining (unbound) coordinates are the prefix `eq_point(id)[..n_vars()]`. An
-	/// evaluator registers its point once (via [`Self::register_eq_tracker`]) and reads it back
-	/// here from the returned [`EqId`], rather than owning a second copy. Most evaluators only need
-	/// the current round's coordinate ([`Self::eq_alpha`]) and equality prefix
-	/// ([`Self::eq_prefix`]) and can avoid handling the point directly.
-	pub fn eq_point(&self, id: EqId) -> &[F] {
-		self.eq_trackers[id.0].eval_point()
-	}
-
 	/// Returns the highest remaining coordinate of a registered eq tracker.
 	///
 	/// This is the coordinate of the variable bound in the current round — the round's `alpha`. The
