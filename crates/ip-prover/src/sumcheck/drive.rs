@@ -143,14 +143,3 @@ where
 		multilinear_evals,
 	}
 }
-
-/// Sends each prover's evaluation claims to the verifier.
-pub fn send_evals<F: Field>(
-	output: &BatchSumcheckOutput<F>,
-	channel: &mut impl IPProverChannel<F>,
-) {
-	for evals in &output.multilinear_evals {
-		// Preserve per-prover ordering when emitting evaluation claims.
-		channel.send_many(evals);
-	}
-}

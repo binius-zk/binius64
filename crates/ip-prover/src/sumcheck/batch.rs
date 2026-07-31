@@ -28,6 +28,19 @@ pub struct BatchSumcheckOutput<F: Field> {
 	pub multilinear_evals: Vec<Vec<F>>,
 }
 
+impl<F: Field> BatchSumcheckOutput<F> {
+	/// Sends every prover's evaluation claims to the verifier, in prover order.
+	///
+	/// The per-prover grouping is prover-side bookkeeping only.
+	/// The elements reach the transcript as one flat run, which is how the verifier reads them.
+	pub fn send_evals(&self, channel: &mut impl IPProverChannel<F>) {
+		for evals in &self.multilinear_evals {
+			// Preserve per-prover ordering when emitting evaluation claims.
+			channel.send_many(evals);
+		}
+	}
+}
+
 /// Prove a batched sumcheck protocol execution, where all provers have the same number of rounds.
 ///
 /// The batched sumcheck reduces a set of claims about the sums of multivariate polynomials over
@@ -75,7 +88,7 @@ where
 	Prover: SumcheckProver<F>,
 {
 	let output = batch_prove(provers, channel);
-	drive::send_evals(&output, channel);
+	output.send_evals(channel);
 	output
 }
 
@@ -119,7 +132,7 @@ where
 	MleCheckProver_: MleCheckProver<F>,
 {
 	let output = batch_prove_mle(provers, channel);
-	drive::send_evals(&output, channel);
+	output.send_evals(channel);
 	output
 }
 
