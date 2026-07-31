@@ -1,12 +1,11 @@
 // Copyright 2025-2026 The Binius Developers
 
-use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::FieldSlice;
 
 use crate::sumcheck::{
-	mle_store::{ColId, ColumnChunk, EvaluationChunk, MleStore},
+	mle_store::{ColId, ColumnChunk, EvaluationChunk, RoundContext},
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
 	round_evals::RoundEvals2,
 	round_evaluator::MleCheckRoundEvaluator,
@@ -22,14 +21,10 @@ use crate::sumcheck::{
 /// that point's eq tracker and holds the two claimed evaluations, so the evaluators carry neither.
 ///
 /// [`SharedMleCheckProver`]: crate::sumcheck::round_evaluator::SharedMleCheckProver
-pub fn evaluators<A, F, P>(
+pub fn evaluators<F, P>(
 	cols: [ColId; 4],
-) -> (
-	impl MleCheckRoundEvaluator<A, F, P> + 'static,
-	impl MleCheckRoundEvaluator<A, F, P> + 'static,
-)
+) -> (impl MleCheckRoundEvaluator<F, P> + 'static, impl MleCheckRoundEvaluator<F, P> + 'static)
 where
-	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -91,9 +86,8 @@ impl<F: Field> FracAddFusedEvaluator<F> {
 	}
 }
 
-impl<A, F, P> MleCheckRoundEvaluator<A, F, P> for FracAddFusedEvaluator<F>
+impl<F, P> MleCheckRoundEvaluator<F, P> for FracAddFusedEvaluator<F>
 where
-	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -152,13 +146,13 @@ where
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, A, P>,
+		ctx: &RoundContext<'_, P>,
 		accum: &[P],
 		claim: F,
 		alpha: F,
 	) -> RoundCoeffs<F> {
 		// The store has not yet folded this round, so its count is this round's.
-		let n_vars_remaining = store.n_vars();
+		let n_vars_remaining = ctx.n_vars();
 		assert!(n_vars_remaining > 0);
 
 		// Sum each claim's packed lanes into scalars.
@@ -235,7 +229,6 @@ mod tests {
 	}
 
 	#[test]
-	#[allow(clippy::type_complexity)]
 	fn fused_evaluator_matches_batched_split_evaluators() {
 		type F = OptimalB128;
 		type P = OptimalPackedB128;
@@ -258,8 +251,8 @@ mod tests {
 			let [s_num_a, s_num_b] = split_store.push_split_half(num_parent.clone());
 			let [s_den_a, s_den_b] = split_store.push_split_half(den_parent.clone());
 			let (num_evaluator, den_evaluator) =
-				evaluators::<GlobalAllocator, F, P>([s_num_a, s_num_b, s_den_a, s_den_b]);
-			let split_claims: [(F, Box<dyn MleCheckRoundEvaluator<GlobalAllocator, F, P>>); 2] = [
+				evaluators::<F, P>([s_num_a, s_num_b, s_den_a, s_den_b]);
+			let split_claims: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] = [
 				(num_claim, Box::new(num_evaluator)),
 				(den_claim, Box::new(den_evaluator)),
 			];
@@ -392,7 +385,6 @@ mod tests {
 	}
 
 	#[test]
-	#[allow(clippy::type_complexity)]
 	fn test_frac_add_sumcheck() {
 		type F = OptimalB128;
 		type P = OptimalPackedB128;
@@ -434,8 +426,7 @@ mod tests {
 		// knows nothing of eq indicators, so the wrappers hold the tracker themselves).
 		let eq_tracker = store.register_eq_tracker(&eval_point);
 		// Wrap each MLE-check evaluator so it emits sumcheck-compatible round polynomials.
-		let claims_with_evaluators: [(F, Box<dyn SumcheckRoundEvaluator<GlobalAllocator, F, P>>);
-			2] = [
+		let claims_with_evaluators: [(F, Box<dyn SumcheckRoundEvaluator<F, P>>); 2] = [
 			(eval_claims[0], Box::new(MleToSumCheckEvaluator::new(num_evaluator, eq_tracker))),
 			(eval_claims[1], Box::new(MleToSumCheckEvaluator::new(den_evaluator, eq_tracker))),
 		];

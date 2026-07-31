@@ -36,7 +36,7 @@ pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 /// self-contained: a caller can drive it, batch it, or extend its store with more columns and
 /// evaluators (as the logUp* final layer does).
 pub type LayerProver<'a, A, F, P> =
-	SharedMleCheckProver<'a, A, F, P, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>>;
+	SharedMleCheckProver<'a, A, F, P, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>>;
 
 /// A numerator/denominator pair of pooled column buffers.
 type PooledFractionalBuffer<A, P> = (FieldVec<P, A>, FieldVec<P, A>);
@@ -177,7 +177,6 @@ where
 	/// - `remaining` is `Some(self)` if there are more layers, `None` otherwise
 	/// - `layer_prover` is a sumcheck prover for the popped layer
 	/// - `cols` contains the [`MleStore`] column IDs `[num_0, num_1, den_0, den_1]`
-	#[allow(clippy::type_complexity)]
 	pub fn layer_prover(
 		mut self,
 		claim: FracEvalClaim<F>,
@@ -205,9 +204,9 @@ where
 		let [num_0, num_1] = store.push_split_half(num);
 		let [den_0, den_1] = store.push_split_half(den);
 		let cols = [num_0, num_1, den_0, den_1];
-		let (num_evaluator, den_evaluator) = frac_add_mle::evaluators::<A, F, P>(cols);
+		let (num_evaluator, den_evaluator) = frac_add_mle::evaluators::<F, P>(cols);
 
-		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>); 2] = [
+		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>); 2] = [
 			(num_claim.eval, Box::new(num_evaluator)),
 			(den_claim.eval, Box::new(den_evaluator)),
 		];
@@ -229,7 +228,6 @@ where
 	/// It must then drive the returned prover with a driver that does not sample another one.
 	/// The round polynomials and reduced column evaluations match [`Self::layer_prover`]'s.
 	/// So the transcript is unchanged.
-	#[allow(clippy::type_complexity)]
 	fn fused_layer_prover(
 		mut self,
 		claim: FracEvalClaim<F>,
@@ -258,7 +256,7 @@ where
 		let evaluator = FracAddFusedEvaluator::new([num_0, num_1, den_0, den_1], batch_coeff);
 
 		// One claim, batched the way the verifier batches the two it holds.
-		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>); 1] =
+		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>); 1] =
 			[(num_claim.eval + batch_coeff * den_claim.eval, Box::new(evaluator))];
 		(remaining, SharedMleCheckProver::new(store, claims_with_evaluators, num_claim.point))
 	}
@@ -575,7 +573,6 @@ fn combine_claims<F: Field>(coeffs: Vec<RoundCoeffs<F>>, batch_coeff: F) -> Roun
 /// The two (numerator, denominator) claims of every layer are batched via a single `batch_coeff`
 /// that the verifier's `batch_verify_mle` samples once per layer, before the round polynomials; the
 /// same coefficient is reused for the content and selector rounds.
-#[allow(clippy::type_complexity)]
 fn reduce_layer<'a, A, F, P, MP>(
 	alloc: &'a A,
 	mut layer_provers: Vec<MP>,
@@ -675,8 +672,8 @@ where
 		FieldBuffer::from_values_in(alloc, &den_1s),
 	]
 	.map(|buffer| selector_store.push_owned(buffer));
-	let (selector_num, selector_den) = frac_add_mle::evaluators::<A, F, P>(selector_cols);
-	let selector_claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>); 2] = [
+	let (selector_num, selector_den) = frac_add_mle::evaluators::<F, P>(selector_cols);
+	let selector_claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>); 2] = [
 		(num_eval, Box::new(selector_num)),
 		(den_eval, Box::new(selector_den)),
 	];
