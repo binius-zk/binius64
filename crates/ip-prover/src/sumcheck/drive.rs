@@ -73,17 +73,16 @@ pub fn single<F: Field>(
 	}
 }
 
-/// Drives a group of provers that share a round count through all of their rounds.
+/// Drives a group of provers that share a round count, drawing the batching coefficient.
 ///
-/// The group's round polynomials are combined into one, so it costs a single round proof per
-/// variable. An empty group is a no-op.
+/// An empty group returns without touching the channel, so it draws no coefficient.
 ///
 /// # Panics
 ///
 /// Panics if the provers do not all have the same number of rounds.
 pub fn batch<F, Prover>(
 	kind: RoundProofKind,
-	mut provers: Vec<Prover>,
+	provers: Vec<Prover>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchSumcheckOutput<F>
 where
@@ -106,6 +105,30 @@ where
 
 	// Random linear-combination coefficient for batching multiple claims.
 	let batch_coeff = channel.sample();
+
+	batch_with_coeff(kind, provers, batch_coeff, channel)
+}
+
+/// Drives a group of provers with a batching coefficient the caller already drew.
+///
+/// The group's round polynomials are combined into one, so it costs a single round proof per
+/// variable. An empty group runs zero rounds.
+///
+/// The coefficient must come from the same channel immediately before this call, so that the
+/// transcript matches the one [`batch`] would have produced.
+pub fn batch_with_coeff<F, Prover>(
+	kind: RoundProofKind,
+	mut provers: Vec<Prover>,
+	batch_coeff: F,
+	channel: &mut impl IPProverChannel<F>,
+) -> BatchSumcheckOutput<F>
+where
+	F: Field,
+	Prover: SumcheckProver<F>,
+{
+	let n_vars = provers
+		.first()
+		.map_or(0, |prover| SumcheckProver::n_vars(prover));
 
 	let mut challenges = Vec::with_capacity(n_vars);
 	for _ in 0..n_vars {
