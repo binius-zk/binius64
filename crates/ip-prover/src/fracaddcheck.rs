@@ -130,10 +130,28 @@ where
 					num_out.write(num_0 * den_1 + num_1 * den_0);
 					den_out.write(den_0 * den_1);
 				});
-			// Safety: the length claims below cover only slots this loop initialized.
-			// - A parallel zip yields as many items as its shortest input holds.
-			// - The sibling halves each hold exactly one word per claimed slot.
-			// - Each item initializes one numerator slot and one denominator slot.
+			// Invariant: every zip input holds at least `out_len` words.
+			//
+			// A parallel zip yields as many items as its shortest input holds.
+			// A shorter input would leave trailing slots uninitialized.
+			//
+			//     spare capacity:  >= out_len   allocated for at least that many
+			//     sibling halves:  == out_len   halves of two equal-length buffers
+			debug_assert!(
+				num_data.spare_capacity_mut().len() >= out_len
+					&& den_data.spare_capacity_mut().len() >= out_len,
+				"allocated buffers must hold every claimed slot"
+			);
+			debug_assert!(
+				[den_0.as_ref(), num_1.as_ref(), den_1.as_ref()]
+					.iter()
+					.all(|half| half.len() == out_len),
+				"the four sibling halves must hold exactly one word per claimed slot"
+			);
+			// Safety: both length claims cover only initialized slots.
+			// - The assertions above bound every zip input below by `out_len`.
+			// - So the loop ran `out_len` items.
+			// - Each item wrote one numerator slot and one denominator slot.
 			unsafe {
 				num_data.set_len(out_len);
 				den_data.set_len(out_len);
