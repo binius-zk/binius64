@@ -94,10 +94,6 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 		&self.suffix_eq_expansion
 	}
 
-	pub const fn n_vars_remaining(&self) -> usize {
-		self.n_vars_remaining
-	}
-
 	// An interpolation routine for degree-2 round polynomials. Takes P'(x) evals and sum claim on
 	// P(x).
 	pub fn interpolate2(
