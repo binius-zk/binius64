@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Prover implementation for the sumcheck protocol.
 //!
 //! This module provides functionality for executing the sumcheck proving protocol,
@@ -6,10 +7,12 @@
 //! polynomial is correct through an interactive proof protocol.
 
 use binius_field::Field;
-use binius_ip::mlecheck;
 
-use super::common::SumcheckProver;
-use crate::{channel::IPProverChannel, sumcheck::common::MleCheckProver};
+use super::{
+	common::{MleCheckProver, SumcheckProver},
+	drive::{self, RoundProofKind},
+};
+use crate::channel::IPProverChannel;
 
 /// Executes the sumcheck proving protocol for a single multivariate polynomial.
 ///
@@ -43,68 +46,20 @@ use crate::{channel::IPProverChannel, sumcheck::common::MleCheckProver};
 ///
 /// After all rounds, `finish()` is called to obtain the final multilinear evaluations.
 pub fn prove_single<F: Field>(
-	mut prover: impl SumcheckProver<F>,
+	prover: impl SumcheckProver<F>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> ProveSingleOutput<F> {
-	let n_vars = prover.n_vars();
-	let mut challenges = Vec::with_capacity(n_vars);
-
-	for _ in 0..n_vars {
-		let mut round_coeffs_vec = prover.execute();
-		assert_eq!(
-			round_coeffs_vec.len(),
-			1,
-			"function expects prover to evaluate one composition, but it returned {} from execute()",
-			round_coeffs_vec.len()
-		);
-		let round_coeffs = round_coeffs_vec.pop().expect("round_coeffs_vec.len() == 1");
-
-		channel.send_many(round_coeffs.truncate().coeffs());
-
-		let challenge = channel.sample();
-		challenges.push(challenge);
-		prover.fold(challenge);
-	}
-
-	let multilinear_evals = prover.finish();
-	ProveSingleOutput {
-		multilinear_evals,
-		challenges,
-	}
+	drive::single(RoundProofKind::Sumcheck, prover, channel)
 }
 
 /// Executes the MLE-check proving protocol for a single multivariate polynomial.
 ///
 /// Analogous to [`prove_single`] for the MLE-check protocol instead of sumcheck.
 pub fn prove_single_mlecheck<F: Field>(
-	mut prover: impl MleCheckProver<F>,
+	prover: impl MleCheckProver<F>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> ProveSingleOutput<F> {
-	let n_vars = prover.n_vars();
-	let mut challenges = Vec::with_capacity(n_vars);
-
-	for _ in 0..n_vars {
-		let mut round_coeffs_vec = prover.execute();
-		assert_eq!(
-			round_coeffs_vec.len(),
-			1,
-			"function expects prover to evaluate one composition, but it returned {} from execute()",
-			round_coeffs_vec.len()
-		);
-		let round_coeffs = round_coeffs_vec.pop().expect("round_coeffs_vec.len() == 1");
-
-		channel.send_many(mlecheck::RoundProof::truncate(round_coeffs).coeffs());
-
-		let challenge = channel.sample();
-		challenges.push(challenge);
-		prover.fold(challenge);
-	}
-
-	let multilinear_evals = prover.finish();
-	ProveSingleOutput {
-		multilinear_evals,
-		challenges,
-	}
+	drive::single(RoundProofKind::MleCheck, prover, channel)
 }
 
 /// Output of the sumcheck proving protocol for a single multivariate polynomial.
