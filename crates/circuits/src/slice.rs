@@ -3,7 +3,7 @@ use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use crate::{
-	multiplexer::single_wire_multiplex,
+	multiplexer::rotate_left_dynamic,
 	shift::{var_sll_bytes, var_srl_bytes},
 };
 
@@ -126,32 +126,36 @@ pub fn slice(
 		Vec::new()
 	} else {
 		let zero = b.add_constant(Word::ZERO);
-		let one = b.add_constant(Word::ONE);
 
 		// Decompose offset = word_offset * 8 + byte_offset
-		let mut word_offset = b.shr(offset, 3); // offset / 8
+		let word_offset = b.shr(offset, 3); // offset / 8
 		let byte_offset = b.band(offset, b.add_constant(Word(7))); // offset % 8
 		let (neg_byte_offset, _) = b.isub_bin_bout(b.add_constant(Word(8)), byte_offset, zero);
 		let is_aligned = b.icmp_eq(byte_offset, zero);
 
-		let mut in_word = single_wire_multiplex(b, input, word_offset);
+		// Every output word reads `input[word_offset + i]` and its successor, so one rotate of the
+		// input serves all of them. A multiplexer per output word would instead cost
+		// `input.len() - 1` selects each.
+		//
+		// The rotate wraps, so a position past `len_slice` reads the front of the input rather than
+		// the multiplexer's out-of-range value. Both are garbage that this function leaves
+		// unconstrained.
+		let window = (max_n_words + 1).min(input.len());
+		let rotated = rotate_left_dynamic(b, input, word_offset, window);
+
 		(0..max_n_words)
 			.map(|slice_idx| {
 				let b = b.subcircuit(format!("slice_word[{slice_idx}]"));
 
-				// TODO: This could maybe benefit from a CircuitBuilder::incr gate.
-				(word_offset, _) = b.iadd(word_offset, one);
-				let next_word = single_wire_multiplex(&b, input, word_offset);
+				let in_word = rotated[slice_idx % window];
+				let next_word = rotated[(slice_idx + 1) % window];
 
 				let aligned_out_word = in_word;
 				let unaligned_out_word = b.bxor(
 					var_srl_bytes(&b, in_word, byte_offset),
 					var_sll_bytes(&b, next_word, neg_byte_offset),
 				);
-				let out_word = b.select(is_aligned, aligned_out_word, unaligned_out_word);
-
-				in_word = next_word;
-				out_word
+				b.select(is_aligned, aligned_out_word, unaligned_out_word)
 			})
 			.collect()
 	}

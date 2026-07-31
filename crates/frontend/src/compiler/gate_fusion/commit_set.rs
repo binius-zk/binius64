@@ -7,20 +7,38 @@ use petgraph::{
 use super::{LeGraph, Stat};
 use crate::compiler::constraint_builder::{Shift, ShiftKind};
 
+/// Longest inline chain a definition of two or more terms may sit at the top of.
+///
+/// Inlining substitutes a definition's whole cone into every consumer.
+/// Chaining that without a bound multiplies operand sizes.
+/// Past this depth a definition is committed instead, which truncates the cone.
+///
+/// A definition of a single term is exempt, since it substitutes one term for one term.
+///
+/// # Why this value
+///
+/// The bound is empirical, not derived.
+/// It trades committed words against operand size, and both costs are prover-side.
 pub const MAX_DEPTH: usize = 6;
 
-/// Which shift kinds appeared on a path, and the largest distance any of them used.
+/// Which shift kinds appeared on a path, and how far the path shifts in total.
 ///
 /// One question is asked of a path, once per graph edge.
 /// Can a further shift compose with every shift already on it?
 ///
-/// Two shifts compose only when one is the identity, or when both share a kind.
-/// So only two facts about the path decide the answer:
+/// Inlining collapses a whole path into a single shift.
+/// So a further shift meets that collapsed shift, never the individual links.
+/// Two shifts compose only under two conditions.
 ///
-/// - which kinds are present, since a second kind already rules out composing;
-/// - the largest distance among them, since that is what pushes a sum past the width.
+/// - One of them is the identity, which composes with anything.
+/// - Both share a kind, and their distances together stay inside the word width.
 ///
-/// Both fit in an integer, so the context is [`Copy`] and allocates nothing.
+/// So only two facts about the path decide the answer.
+///
+/// - Which kinds are present, since a second kind already rules out composing.
+/// - The distance the path accumulates, since that is what a further distance adds to.
+///
+/// Both fit in an integer, so the summary is [`Copy`] and allocates nothing.
 #[derive(Copy, Clone, Default)]
 struct ShiftSummary {
 	/// One bit per shift kind seen, excluding the identity.
@@ -28,10 +46,10 @@ struct ShiftSummary {
 	/// A kind's bit is its discriminant.
 	/// There are eight kinds, so a byte holds them all.
 	kinds: u8,
-	/// Largest distance among the kinds seen.
+	/// Total distance covered by the farthest-shifting path this summary spans.
 	///
 	/// Zero when only the identity was seen, which imposes no distance.
-	max_amount: u32,
+	total_amount: u32,
 }
 
 impl ShiftSummary {
@@ -41,22 +59,31 @@ impl ShiftSummary {
 	}
 
 	/// The summary of this path extended by one more shift.
-	fn with(self, shift: Shift) -> Self {
+	const fn with(self, shift: Shift) -> Self {
 		match shift.kind_and_amount() {
 			// The identity composes with anything, so it constrains nothing.
 			None => self,
+			// Composing two shifts of one kind adds their distances.
+			// So walking a path accumulates the distances of its links:
+			//     sll(3) then sll(5) then sll(4)  ->  sll(12)
+			// Saturating keeps an absurdly long chain from wrapping back to a small total.
 			Some((kind, amount)) => Self {
 				kinds: self.kinds | bit_of(kind),
-				max_amount: self.max_amount.max(amount),
+				total_amount: self.total_amount.saturating_add(amount),
 			},
 		}
 	}
 
 	/// The summary covering every path in `summaries`.
 	fn union(summaries: impl Iterator<Item = Self>) -> Self {
+		// A further shift has to compose with every path at once.
+		// So the path that shifts farthest is the one that binds:
+		//     path A accumulates sll(10)
+		//     path B accumulates sll(50)   <- binding
+		//     -> a further sll(13) fits A but leaves the width on B, so it is rejected
 		summaries.fold(Self::default(), |acc, s| Self {
 			kinds: acc.kinds | s.kinds,
-			max_amount: acc.max_amount.max(s.max_amount),
+			total_amount: acc.total_amount.max(s.total_amount),
 		})
 	}
 
@@ -77,9 +104,10 @@ impl ShiftSummary {
 			return false;
 		}
 
-		// A cyclic kind loses nothing, so distances always compose.
-		// Otherwise the largest distance seen plus this one has to stay inside the width.
-		kind.is_cyclic() || self.max_amount + amount < kind.width()
+		// A cyclic kind loses no bits, so its distances wrap and always compose.
+		// Any other kind drops the bits it shifts out.
+		// So the distance the path already covers plus this one has to stay inside the width.
+		kind.is_cyclic() || self.total_amount.saturating_add(amount) < kind.width()
 	}
 }
 
@@ -128,7 +156,7 @@ impl CommitSetCx {
 	}
 
 	/// Create a new context by adding a new shift and incrementing depth.
-	fn add(&self, out_shift: Shift) -> CommitSetCx {
+	const fn add(&self, out_shift: Shift) -> CommitSetCx {
 		Self {
 			shifts: self.shifts.with(out_shift),
 			depth: self.depth + 1,
@@ -146,6 +174,11 @@ impl CommitSetCx {
 ///
 /// 2. Inlining is prone to term explosion. To prevent that we avoid inlining expressions that lie
 ///    past a certain depth.
+///
+/// A definition of a single term is exempt from the second case.
+/// Substituting it swaps one term for one term, so it cannot make any operand grow.
+/// Depth is still counted through such a definition.
+/// So a definition of two or more terms further up still reaches the cap and commits there.
 ///
 /// Note that this is all-or-nothing decision: if at least one user cannot inline an expression
 /// then no users should inline it.
@@ -222,7 +255,19 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 				}
 			}
 
-			if depth > MAX_DEPTH || !composable {
+			// One incoming edge is one term on the right-hand side.
+			// Substituting such a definition rewrites a consumer's term in place:
+			//
+			//     definition:  y = sll(x, 4)
+			//     consumer:    ... ^ sll(y, 3) ^ ...
+			//     substituted: ... ^ sll(x, 7) ^ ...
+			//
+			// The operand keeps its size, so no operand can grow out of a chain of these.
+			// The depth cap guards against operands growing, so it has nothing to guard here.
+			let single_term = incoming.clone().count() == 1;
+			let too_deep = depth > MAX_DEPTH && !single_term;
+
+			if too_deep || !composable {
 				// Decision: commit.
 				//
 				// Every incoming edge context is going to be a brand new one seeded with the
@@ -236,7 +281,7 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 				assert!(leg.lin_committed.insert(lin_def_wire));
 
 				stat.note_committed();
-				if depth > MAX_DEPTH {
+				if too_deep {
 					stat.note_committed_linear_depth();
 				}
 			} else {
@@ -269,11 +314,35 @@ mod tests {
 
 	use super::*;
 
-	/// The predicate the summary replaces, evaluated over the shifts themselves.
+	/// The single shift a chain collapses to, or nothing when it does not collapse.
 	///
-	/// Kept as the reference the summary is checked against.
-	fn composable_reference(path: &[Shift], shift: Shift) -> bool {
-		path.iter().all(|s| Shift::compose(*s, shift).is_some())
+	/// This is what inlining a whole path leaves behind:
+	/// ```text
+	///     [sll(3), sll(5), sll(4)]  ->  sll(12)
+	///     [sll(3), srl(5)]          ->  nothing, two kinds never merge
+	///     [sll(40), sll(30)]        ->  nothing, 70 leaves the 64-bit width
+	/// ```
+	fn collapse(chain: &[Shift]) -> Option<Shift> {
+		// Composing shifts of one kind adds their distances, and addition commutes.
+		// So folding left over the chain gives the same answer as any other order.
+		chain
+			.iter()
+			.try_fold(Shift::None, |acc, s| Shift::compose(acc, *s))
+	}
+
+	/// Whether one more shift composes with a chain once that chain has collapsed.
+	///
+	/// This is the predicate the summary stands in for.
+	/// It is the reference the summary is checked against.
+	fn composable_reference(chain: &[Shift], shift: Shift) -> bool {
+		collapse(chain).is_some_and(|collapsed| Shift::compose(collapsed, shift).is_some())
+	}
+
+	/// The summary of one chain, accumulated link by link the way the pass accumulates it.
+	fn summary_of(chain: &[Shift]) -> ShiftSummary {
+		chain
+			.iter()
+			.fold(ShiftSummary::default(), |summary, shift| summary.with(*shift))
 	}
 
 	/// Every shift kind, at a distance inside its own width.
@@ -291,51 +360,95 @@ mod tests {
 		]
 	}
 
+	/// The eight shift constructors, in discriminant order.
+	const KINDS: [fn(u32) -> Shift; 8] = [
+		Shift::Sll,
+		Shift::Sll32,
+		Shift::Srl,
+		Shift::Srl32,
+		Shift::Sar,
+		Shift::Sra32,
+		Shift::Rotr,
+		Shift::Rotr32,
+	];
+
+	/// A chain of one kind, mixed with identity links, as an inlined path carries.
+	///
+	/// A chain of two kinds never collapses, so it is out of scope here.
+	///
+	/// Distances run up to 8 over up to 11 links, which puts the total between 0 and 88.
+	/// That straddles both widths, 32 and 64, instead of blowing past them every time.
+	/// So the collapsing and the non-collapsing side of the boundary are both reachable.
+	fn same_kind_chain() -> impl Strategy<Value = Vec<Shift>> {
+		(0usize..KINDS.len(), prop::collection::vec(prop::option::of(0u32..9), 1..12)).prop_map(
+			|(kind, amounts)| {
+				// An absent distance stands for an identity link.
+				// Identity links are legal anywhere and must not sway the answer.
+				amounts
+					.into_iter()
+					.map(|amount| amount.map_or(Shift::None, KINDS[kind]))
+					.collect()
+			},
+		)
+	}
+
 	proptest! {
 		#[test]
-		fn summary_answers_as_the_shift_list_does(
-			path in prop::collection::vec(any_shift(), 1..12),
+		fn summary_answers_as_the_collapsed_chain_does(
+			chain in same_kind_chain(),
 			query in any_shift(),
 		) {
-			// Invariant: the summary decides composability exactly as walking the shifts would.
-			let summary = ShiftSummary::union(path.iter().copied().map(ShiftSummary::of));
-			prop_assert_eq!(summary.composable(query), composable_reference(&path, query));
-		}
+			// Only chains that collapse are in scope.
+			// The pass commits the rest rather than inlining them, so no summary is ever built.
+			prop_assume!(collapse(&chain).is_some());
 
-		#[test]
-		fn extending_a_path_matches_appending_to_the_list(
-			path in prop::collection::vec(any_shift(), 1..12),
-			extra in any_shift(),
-			query in any_shift(),
-		) {
-			// Invariant: extending a summary is the same as appending to the list it stands for.
-			let summary = ShiftSummary::union(path.iter().copied().map(ShiftSummary::of));
-
-			let mut extended_path = path;
-			extended_path.push(extra);
-
+			// Invariant: the summary answers exactly as the collapsed chain answers.
+			//
+			//     chain:   [sll(3), sll(5), sll(4)]   summary: kind sll, total 12
+			//     collapse:              sll(12)
+			//     query sll(51) -> 12 + 51 = 63, inside 64  -> both say yes
+			//     query sll(52) -> 12 + 52 = 64, at the width -> both say no
 			prop_assert_eq!(
-				summary.with(extra).composable(query),
-				composable_reference(&extended_path, query)
+				summary_of(&chain).composable(query),
+				composable_reference(&chain, query)
 			);
 		}
 
 		#[test]
-		fn joining_paths_matches_concatenating_the_lists(
-			left in prop::collection::vec(any_shift(), 1..8),
-			right in prop::collection::vec(any_shift(), 1..8),
+		fn extending_a_chain_matches_appending_a_link(
+			chain in same_kind_chain(),
 			query in any_shift(),
 		) {
-			// Invariant: joining two summaries is the same as concatenating the two lists.
-			let left_summary = ShiftSummary::union(left.iter().copied().map(ShiftSummary::of));
-			let right_summary = ShiftSummary::union(right.iter().copied().map(ShiftSummary::of));
-			let joined = ShiftSummary::union([left_summary, right_summary].into_iter());
+			prop_assume!(collapse(&chain).is_some());
 
-			let concatenated: Vec<Shift> = left.iter().chain(&right).copied().collect();
+			// Split the last link off, so the head is a shorter chain and the link is new to it.
+			let (extra, head) = chain.split_last().expect("the chain has at least one link");
 
+			// Invariant: extending a summary by one link answers as the longer chain does.
+			// This is the step the pass takes at every graph edge it walks.
+			prop_assert_eq!(
+				summary_of(head).with(*extra).composable(query),
+				composable_reference(&chain, query)
+			);
+		}
+
+		#[test]
+		fn joining_chains_answers_for_both(
+			left in same_kind_chain(),
+			right in same_kind_chain(),
+			query in any_shift(),
+		) {
+			prop_assume!(collapse(&left).is_some());
+			prop_assume!(collapse(&right).is_some());
+
+			// A definition with two consumers reaches its roots by two paths.
+			// Its summary spans both, since inlining it has to satisfy both at once.
+			let joined = ShiftSummary::union([summary_of(&left), summary_of(&right)].into_iter());
+
+			// Invariant: a shift joins the spanning summary only when it composes with each path.
 			prop_assert_eq!(
 				joined.composable(query),
-				composable_reference(&concatenated, query)
+				composable_reference(&left, query) && composable_reference(&right, query)
 			);
 		}
 	}

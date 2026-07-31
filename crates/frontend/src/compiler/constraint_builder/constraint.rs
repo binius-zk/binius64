@@ -123,23 +123,6 @@ pub struct WireLinearConstraint {
 }
 
 impl WireLinearConstraint {
-	/// Lowers to `RHS & all_ones == DST`.
-	///
-	/// AND against the all-ones wire is the identity on `&`, so this encodes
-	/// the equality `RHS == DST` with the only opcode available for it.
-	pub(super) fn into_and_constraint(
-		self,
-		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
-		all_ones: ValueIndex,
-	) -> AndConstraint {
-		let dst = wire_mapping[self.dst];
-		AndConstraint([
-			self.rhs.into_value_indices(wire_mapping),
-			vec![ShiftedValueIndex::plain(all_ones)],
-			vec![ShiftedValueIndex::plain(dst)],
-		])
-	}
-
 	/// Lowers to the Zero constraint `RHS ^ DST == 0`.
 	///
 	/// This is the direct encoding of the equality: one constraint array instead of the three an
@@ -193,7 +176,7 @@ mod tests {
 		);
 
 		let (_zero_constraints, and_constraints, imul_constraints, bmul_constraints) =
-			builder.build(&wire_mapping, all_one_wire, false);
+			builder.build(&wire_mapping);
 
 		assert_eq!(and_constraints.len(), 0);
 		assert_eq!(imul_constraints.len(), 0);

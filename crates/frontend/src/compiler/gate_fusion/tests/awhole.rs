@@ -57,6 +57,15 @@ fn stringify_constraint_system(cs: &ConstraintSystem) -> String {
 
 	let mut output = String::new();
 
+	// ZERO constraints
+	if !cs.zero_constraints.is_empty() {
+		for (i, constraint) in cs.zero_constraints.iter().enumerate() {
+			write!(output, "ZERO[{}]: (", i).unwrap();
+			format_operand(&mut output, constraint.val(), cs);
+			writeln!(output, ") = 0").unwrap();
+		}
+	}
+
 	// AND constraints
 	if !cs.and_constraints.is_empty() {
 		for (i, constraint) in cs.and_constraints.iter().enumerate() {
@@ -154,8 +163,6 @@ fn mk_circuit_builder() -> CircuitBuilder {
 		enable_algebraic_folding: false,
 		// Scratch pooling only moves uncommitted slots, so it cannot affect these snapshots.
 		enable_scratch_pooling: false,
-		// The snapshots record the AND constraints linear constraints lower to.
-		enable_zero_constraints: false,
 		// Zero propagation would forward past the gates these snapshots assert on.
 		enable_zero_propagation: false,
 	};
@@ -236,8 +243,8 @@ fn test_mul_inlining_into_hi_lo() {
 
 	let cs = compile(&b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @r"
-	AND[0]: (v[2] ⊕ v[3]) ∧ (all-1) = (v[8])
-	AND[1]: (v[4] ⊕ v[5]) ∧ (all-1) = (v[9])
+	ZERO[0]: (v[2] ⊕ v[3] ⊕ v[8]) = 0
+	ZERO[1]: (v[4] ⊕ v[5] ⊕ v[9]) = 0
 	IMUL[0]: (v[6]) * (v[7]) = (HI: v[10], LO: v[11])
 	");
 }
@@ -273,7 +280,7 @@ fn test_xor_unused_preserved() {
 	let v1 = b.add_witness();
 	let _v2 = b.bxor(v0, v1);
 	let cs = compile(&b);
-	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (0xe4 ⊕ v[2]) ∧ (all-1) = (v[3])");
+	insta::assert_snapshot!(stringify_constraint_system(&cs), @"ZERO[0]: (0xe4 ⊕ v[2] ⊕ v[3]) = 0");
 }
 
 #[test]
@@ -619,8 +626,8 @@ fn test_dont_inline_shifted_producer_into_shifted_use() {
 	let cs = compile(&b);
 	// Cannot compose different shift types (srl then sll), so it commits the intermediate
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @r"
+	ZERO[0]: (v[2]≫7 ⊕ v[4]) = 0
 	AND[0]: (v[4]≪3) ∧ (v[3]) = (v[5])
-	AND[1]: (v[2]≫7) ∧ (all-1) = (v[4])
 	");
 }
 
@@ -835,8 +842,8 @@ fn test_depth_limit_deep_chain() {
 	// We expect the optimizer to commit some intermediate value and create multiple AND constraints
 	// The exact output depends on where the depth limit triggers commitment
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @r"
+	ZERO[0]: (v[2] ⊕ v[3] ⊕ v[12]) = 0
 	AND[0]: (v[12] ⊕ v[4] ⊕ v[5] ⊕ v[6] ⊕ v[7] ⊕ v[8] ⊕ v[9] ⊕ v[10]) ∧ (v[11]) = (v[13])
-	AND[1]: (v[2] ⊕ v[3]) ∧ (all-1) = (v[12])
 	");
 }
 
@@ -888,7 +895,66 @@ fn test_depth_limit_with_shifts() {
 	// With shifts in the chain, the depth limit should still apply
 	// The optimizer should handle the complexity and commit when needed
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @r"
+	ZERO[0]: (v[2]≫3 ⊕ v[3]≫3 ⊕ v[4] ⊕ v[12]) = 0
 	AND[0]: (v[12]≪7 ⊕ v[5]≪7 ⊕ v[6] ⊕ v[7] ⊕ v[8] ⊕ v[9] ⊕ v[10]) ∧ (v[11]) = (v[13])
-	AND[1]: (v[2]≫3 ⊕ v[3]≫3 ⊕ v[4]) ∧ (all-1) = (v[12])
 	");
+}
+
+#[test]
+fn test_chained_shifts_beyond_the_word_width_compile() {
+	let b = mk_circuit_builder();
+
+	// Fusion may only inline a run of shifts when the run has a single-shift form.
+	// Four left shifts of 20 sum to 80, which a 64-bit word has no single-shift form for.
+	// So this run must be broken by a commit, and the circuit must still compile.
+	//
+	// Fixture state: 4 chained left shifts of 20, at depth 3, inside the cap of 6.
+	// So depth decides nothing here.
+	// The width alone forces the break.
+	let x = b.add_witness();
+	let mut v = x;
+	for _ in 0..4 {
+		v = b.shl(v, 20);
+	}
+	let y = b.add_witness();
+	let _out = b.band(v, y);
+
+	let cs = compile(&b);
+
+	// The break lands on the topmost link, which is committed as v[4].
+	// The three links below it merge into the single shift of 60 in the AND operand.
+	insta::assert_snapshot!(stringify_constraint_system(&cs), @r"
+	ZERO[0]: (v[2]≪20 ⊕ v[4]) = 0
+	AND[0]: (v[4]≪60) ∧ (v[3]) = (v[5])
+	");
+}
+
+#[test]
+fn test_chained_shifts_beyond_the_word_width_evaluate() {
+	// Breaking the run must preserve what the circuit computes, not just let it compile.
+	// A 64-bit word shifted left by 80 keeps none of its bits, so the run evaluates to zero.
+	// Masking with all ones then leaves zero, which pins the whole run to a known value.
+	let b = CircuitBuilder::new();
+	let x = b.add_witness();
+	let mut v = x;
+	for _ in 0..4 {
+		v = b.shl(v, 20);
+	}
+	let y = b.add_witness();
+	let out = b.band(v, y);
+
+	// Pin the result so dead-code elimination keeps the run alive.
+	b.force_commit(out);
+	let circuit = b.build();
+
+	// Feed a word with bits set across all four bytes, so a dropped shift would show up.
+	let mut w = circuit.new_witness_filler();
+	w[x] = Word(0xDEAD_BEEF_CAFE_BABE);
+	w[y] = Word(u64::MAX);
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	assert_eq!(w[out], Word::ZERO);
+
+	// The committed break carries its own Zero constraint, so check the constraints agree too.
+	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
 }

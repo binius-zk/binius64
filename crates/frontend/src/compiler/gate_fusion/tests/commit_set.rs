@@ -2,7 +2,11 @@
 use crate::compiler::{
 	Wire,
 	constraint_builder::{ConstraintBuilder, expr},
-	gate_fusion::{Stat, commit_set, legraph::LeGraph},
+	gate_fusion::{
+		Stat,
+		commit_set::{self, MAX_DEPTH},
+		legraph::LeGraph,
+	},
 };
 
 /// Test helper to create a Wire with a given ID
@@ -707,6 +711,88 @@ fn test_rotr_with_unshifted_xor_terms() {
 }
 
 #[test]
+fn test_single_term_chain_past_the_depth_cap_stays_inlined() {
+	// A definition of one term substitutes one term for one term into each consumer.
+	// So a run of them cannot grow any operand, however long the run gets.
+	// The depth cap exists to stop operands growing, so it must not fire on such a run.
+	//
+	// Fixture state: 9 chained rotations, against a cap of 6.
+	//
+	//   w(0) ──rotr─> w(1) ──rotr─> ... ──rotr─> w(9) ──> AND
+	//   depth:            8              7  ...      0
+	//
+	// Wires w(1) and w(2) sit at depth 8 and 7, both past the cap, yet neither may commit.
+	let n = MAX_DEPTH as u32 + 3;
+
+	test_commit_set(
+		|cb| {
+			for i in 0..n {
+				cb.linear(expr::rotr(w(i), 1), w(i + 1));
+			}
+			cb.and(w(n), w(n + 1), w(n + 2));
+		},
+		// Nothing is committed: every rotation composes and none of them can grow an operand.
+		&[],
+		&(1..=n).map(w).collect::<Vec<_>>(),
+	);
+}
+
+#[test]
+fn test_depth_still_counts_through_exempt_definitions() {
+	// Exempting a definition from the cap must not reset how deep its producers sit.
+	// Otherwise a run of one-term definitions would hide an arbitrarily deep cone above it.
+	//
+	// Fixture state: one two-term definition, then 8 chained rotations, against a cap of 6.
+	//
+	//   w(0) ─┐
+	//         ├─> w(2) ──rotr─> w(3) ──rotr─> ... ──rotr─> w(10) ──> AND
+	//   w(1) ─┘
+	//   depth:      8              7             ...          0
+	//
+	// The rotations are exempt at depth 7 and below, but each one still adds a level.
+	// So the two-term definition lands at depth 8 and commits there.
+	let n = MAX_DEPTH as u32 + 2;
+
+	test_commit_set(
+		|cb| {
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
+			for i in 2..n + 2 {
+				cb.linear(expr::rotr(w(i), 1), w(i + 1));
+			}
+			cb.and(w(n + 2), w(n + 3), w(n + 4));
+		},
+		&[w(2)],
+		&(3..=n + 2).map(w).collect::<Vec<_>>(),
+	);
+}
+
+#[test]
+fn test_exempt_definition_with_a_non_composing_shift_is_still_committed() {
+	// The depth exemption reasons about operand size only.
+	// It never licenses an inline that the shifts themselves forbid.
+	//
+	// Fixture state: a rotation at the top of a run of 8 left shifts, all one-term.
+	//
+	//   w(0) ──rotr─> w(1) ──sll─> w(2) ──sll─> ... ──sll─> w(9) ──> AND
+	//
+	// A rotation and a left shift are different kinds, so they never merge into one shift.
+	// Inlining w(1) would ask for exactly that merge, so w(1) has to be committed.
+	let n = MAX_DEPTH as u32 + 3;
+
+	test_commit_set(
+		|cb| {
+			cb.linear(expr::rotr(w(0), 1), w(1));
+			for i in 1..n {
+				cb.linear(expr::sll(w(i), 1), w(i + 1));
+			}
+			cb.and(w(n), w(n + 1), w(n + 2));
+		},
+		&[w(1)],
+		&(2..=n).map(w).collect::<Vec<_>>(),
+	);
+}
+
+#[test]
 fn test_rotr_with_mixed_shift_xor() {
 	// Test: y = a ^ (b << 5), z = rotr(y, 10)
 	// When we try to inline with rotr(10), the Sll(5) is incompatible
@@ -724,4 +810,60 @@ fn test_rotr_with_mixed_shift_xor() {
 		&[w(6)],       // b_shifted must be committed (can't compose Rotr with Sll)
 		&[w(2), w(3)], // y and z can still be inlined
 	);
+}
+
+#[test]
+fn test_chained_shifts_commit_before_the_accumulated_distance_leaves_the_width() {
+	// Inlining a run of same-kind shifts merges them into one shift of the summed distance.
+	// A left shift drops the bits it pushes out.
+	// So a summed distance of 64 or more has no single-shift form at all.
+	// Whether a run may be inlined therefore turns on the sum of its distances.
+	// It does not turn on any one pair of neighbours, which is why no pair here objects.
+	//
+	// Fixture state: 4 chained left shifts of 20, at depth 3, well inside the cap of 6.
+	//
+	//   w(0) ──sll20─> w(1) ──sll20─> w(2) ──sll20─> w(3) ──sll20─> w(4) ──> AND
+	//   running sum:        80             60             40             20
+	test_commit_set(
+		|cb| {
+			cb.linear(expr::sll(w(0), 20), w(1));
+			cb.linear(expr::sll(w(1), 20), w(2));
+			cb.linear(expr::sll(w(2), 20), w(3));
+			cb.linear(expr::sll(w(3), 20), w(4));
+			cb.and(w(4), w(5), w(6));
+		},
+		&[w(1)],             // reaching w(0) needs a shift of 80, past the 64-bit width
+		&[w(2), w(3), w(4)], // a shift of 60 still has a single-shift form
+	);
+}
+
+#[test]
+fn test_a_long_single_term_shift_run_commits_as_often_as_the_width_requires() {
+	// The cap exempts one-term definitions, so the width is all that can break a run of them.
+	// A run this long must therefore be broken exactly as often as the width demands.
+	//
+	// Fixture state: 65 chained left shifts of 1, every one of them exempt from the cap.
+	//
+	//   w(0) ──sll1─> w(1) ──sll1─> ... ──sll1─> w(65) ──> AND
+	//
+	// An inlined stretch may sum to at most 63, so it may span at most 63 links.
+	// Walking up from the AND, links w(65) down to w(3) fill that budget exactly.
+	// Reaching w(2) would make 64, so w(2) commits and the count restarts above it.
+	let n = 65;
+
+	let mut cb = ConstraintBuilder::new();
+	for i in 0..n {
+		cb.linear(expr::sll(w(i), 1), w(i + 1));
+	}
+	cb.and(w(n), w(n + 1), w(n + 2));
+
+	let mut stat = Stat::default();
+	let mut leg = LeGraph::new(&cb);
+	commit_set::run_decide_commit_set(&mut leg, &mut stat);
+
+	// One break covers all 65 links, and it lands on the one the width forces.
+	let committed: Vec<u32> = (1..=n)
+		.filter(|&i| leg.commit_set().contains(w(i)))
+		.collect();
+	assert_eq!(committed, vec![2]);
 }

@@ -567,6 +567,10 @@ mod tests {
 			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
 		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
+		// The Zero claim closes at its own constraint point, as wide as the ZERO set. Its value is
+		// zero at any point: a satisfied ZERO constraint array vanishes identically, so its
+		// multilinear extension is the zero polynomial.
+		let r_x_zero = random_scalars::<B128>(&mut rng, cs.log_zero_constraints().unwrap_or(0));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The hidden witness folded over instances (one FoldedWord per committed word), and the
@@ -597,7 +601,7 @@ mod tests {
 			OperatorData {
 				evals: vec![B128::ZERO],
 				r_zhat_prime: r_z,
-				r_x_prime: Vec::new(),
+				r_x_prime: r_x_zero.clone(),
 			},
 			OperatorData {
 				evals: bitand_evals.to_vec(),
@@ -621,7 +625,7 @@ mod tests {
 
 		// Verify against the single-instance shift verifier.
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_zero = VerifierOperatorData::new(Vec::new(), [B128::ZERO]);
+		let verifier_zero = VerifierOperatorData::new(r_x_zero, [B128::ZERO]);
 		let verifier_bitand = VerifierOperatorData::new(r_x, bitand_evals);
 		let verifier_intmul = VerifierOperatorData::new(Vec::new(), intmul_evals);
 		let verifier_bmul = VerifierOperatorData::new(Vec::new(), [B128::ZERO; 6]);
@@ -748,11 +752,12 @@ mod tests {
 			},
 			B128::random(&mut rng),
 		);
+		// The ZERO set has its own constraint point, as wide as the set itself.
 		let prepared_zero = PreparedOperatorData::new(
 			OperatorData {
-				evals: Vec::new(),
+				evals: vec![B128::ZERO],
 				r_zhat_prime: r_z,
-				r_x_prime: Vec::new(),
+				r_x_prime: random_scalars::<B128>(&mut rng, cs.log_zero_constraints().unwrap_or(0)),
 			},
 			B128::random(&mut rng),
 		);

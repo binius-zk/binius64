@@ -305,15 +305,14 @@ fn test_prove_verify_zero_imul_constraints() {
 /// constraints from `band` gates.
 ///
 /// Gate fusion is off: it inlines a linear definition into the gate that consumes it, which would
-/// leave no linear constraint for the option to lower. The remaining passes are off so the counts
-/// are exactly what the gates emit.
+/// leave no linear constraint to lower. The remaining passes are off so the counts are exactly what
+/// the gates emit.
 fn zero_constraint_circuit(
 	n_xor: usize,
 	n_rotr: usize,
 	n_and: usize,
 ) -> (ConstraintSystem, ValueVec) {
 	let builder = CircuitBuilder::with_opts(Options {
-		enable_zero_constraints: true,
 		enable_gate_fusion: false,
 		enable_common_subexpression_elimination: false,
 		enable_dead_code_elimination: false,
