@@ -44,11 +44,14 @@ use super::{
 /// The driving prover, not the evaluator, holds the round claim and reduces the round polynomial
 /// against the verifier challenge.
 ///
-/// The accumulator is a flat slice of [`Self::degree`] wide (unreduced)
-/// [`WideMul::Output`](WideMul::Output) slots. The driving prover owns the buffer, sizes it from
-/// [`Self::degree`], and sums the workers' slices slot-wise, so evaluators implement neither
-/// allocation nor merging — only the write pass and the interpolation. The slot layout within an
-/// evaluator's run is private to that evaluator.
+/// The driving prover owns the accumulator and sizes it from the degree.
+/// - Accumulation writes wide, unreduced slots, so a per-chunk sum costs no reduction.
+/// - The prover sums the workers' slices slot-wise, then reduces once per round.
+/// - Interpolation reads the reduced slots.
+///
+/// An evaluator implements neither the allocation nor the merging.
+/// It only writes its own slots and interpolates them.
+/// The slot layout within one evaluator's run is private to it.
 ///
 /// Evaluators are stateless across rounds: they hold no round claim and never fold. The prover
 /// passes the round claim into [`Self::interpolate`] and recovers it back out of the emitted round
@@ -78,34 +81,30 @@ pub trait SumcheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + S
 	/// on the first chunk and carried across the worker's chunks.
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]);
 
-	/// Interpolates this round's polynomial from the slot-wise summed accumulator slice and the
-	/// round claim.
+	/// Interpolates this round's polynomial from the accumulator and the round claim.
 	///
-	/// `accum` is this evaluator's run of [`Self::degree`] slots, summed across all workers, and
-	/// `claim` is the prover's round claim for this evaluator. `ctx` carries the round's scalar
-	/// state: the remaining-variable count and, for an eq-weighted evaluator, its tracker's
-	/// coordinate and equality prefix.
-	fn interpolate(
-		&self,
-		ctx: &RoundContext<'_, P>,
-		accum: &[<P as WideMul>::Output],
-		claim: F,
-	) -> RoundCoeffs<F>;
+	/// # Arguments
+	///
+	/// * `ctx` - This round's scalar state: the unbound-variable count, and a registered tracker's
+	///   equality coordinate and prefix.
+	/// * `accum` - This evaluator's slots, summed across every worker and reduced.
+	/// * `claim` - This evaluator's round claim.
+	fn interpolate(&self, ctx: &RoundContext<'_, P>, accum: &[P], claim: F) -> RoundCoeffs<F>;
 }
 
 /// Per-round-polynomial logic for one MLE-check claim over store columns.
 ///
-/// This is the MLE-check counterpart of [`SumcheckRoundEvaluator`], emitting the prime
-/// (eq-factored) round polynomials of the MLE-check protocol. It differs in two ways, both because
-/// every claim of a [`SharedMleCheckProver`] shares one evaluation point whose eq-indicator tracker
-/// the prover — not the evaluator — owns:
-/// - [`Self::accumulate`] receives the round's eq-indicator chunk `eq_ind` as a separate argument,
-///   rather than the evaluator looking it up on the chunk by a stored tracker id.
-/// - [`Self::interpolate`] receives the round's eq coordinate `alpha`.
+/// This is the MLE-check counterpart of [`SumcheckRoundEvaluator`].
+/// It emits the prime, equality-factored round polynomials of the MLE-check protocol.
 ///
-/// So the evaluator stores no eq tracker id and holds no copy of the point. Everything else matches
-/// [`SumcheckRoundEvaluator`]: stateless across rounds, degree-sized accumulator slots owned by the
-/// prover, one virtual [`Self::accumulate`] entry per chunk.
+/// Every claim of one such prover shares a single evaluation point.
+/// The prover, not the evaluator, owns that point's equality indicator.
+/// Two arguments follow from that:
+/// - Accumulation receives the round's equality-indicator chunk.
+/// - Interpolation receives the round's equality coordinate.
+///
+/// So the evaluator stores no tracker identifier and no copy of the point.
+/// The accumulator contract is the one above: wide slots in, reduced slots out.
 #[auto_impl(Box)]
 pub trait MleCheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 	/// The number of accumulator slots this evaluator's claim uses. See
@@ -124,14 +123,11 @@ pub trait MleCheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + S
 		accum: &mut [<P as WideMul>::Output],
 	);
 
-	/// Interpolates this round's prime polynomial from the accumulator, round claim, and round
-	/// coordinate `alpha`.
+	/// Interpolates this round's prime polynomial from the accumulator and the round claim.
 	///
-	/// As [`SumcheckRoundEvaluator::interpolate`], but the round coordinate is passed in as `alpha`
-	/// rather than read from a tracker; `ctx` supplies only the remaining-variable count. Unlike
-	/// the sumcheck trait, `accum` is already reduced to `P` — the driving
-	/// [`SharedMleCheckProver`] reduces the wide accumulators in its `map` pass so the eq-weighted
-	/// `reduce` can operate on `P`.
+	/// As [`SumcheckRoundEvaluator::interpolate`], with one difference.
+	/// The round's equality coordinate arrives as an argument rather than from a tracker.
+	/// So `ctx` supplies only the unbound-variable count.
 	fn interpolate(
 		&self,
 		ctx: &RoundContext<'_, P>,
@@ -348,6 +344,10 @@ where
 			Some(challenge) => store.map_reduce_with_fold(chunk_vars, challenge, map, reduce),
 			None => store.map_reduce(chunk_vars, map, reduce),
 		};
+
+		// The workers' wide sums are complete, so every slot is reduced once for the whole round.
+		// Interpolation runs on reduced values.
+		let accum = accum.into_iter().map(P::reduce).collect::<Vec<P>>();
 
 		// Each evaluator takes its current round claim (held in `round_states`) and produces its
 		// round polynomial against this round's view of the store; the prover then records those

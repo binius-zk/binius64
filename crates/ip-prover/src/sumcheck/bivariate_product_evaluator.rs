@@ -8,7 +8,7 @@ use itertools::izip;
 
 use super::{
 	mle_store::{ColId, EvaluationChunk, MleStore, RoundContext},
-	round_evals::WideRoundEvals2,
+	round_evals::{RoundEvals2, WideRoundEvals2},
 	round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 };
 
@@ -89,25 +89,19 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
 		accum[1] += evals.y_inf;
 	}
 
-	fn interpolate(
-		&self,
-		ctx: &RoundContext<'_, P>,
-		accum: &[<P as WideMul>::Output],
-		claim: F,
-	) -> RoundCoeffs<F> {
+	fn interpolate(&self, ctx: &RoundContext<'_, P>, accum: &[P], claim: F) -> RoundCoeffs<F> {
 		// The store has not yet folded this round, so its remaining-variable count is this round's.
 		let n_vars_remaining = ctx.n_vars();
 		assert!(n_vars_remaining > 0);
 
-		let evals = WideRoundEvals2 {
-			y_1: accum[0].clone(),
-			y_inf: accum[1].clone(),
-		};
-		// `claim` is this round's sum; recover the missing evaluation at 0 from it.
-		evals
-			.reduce::<P>()
-			.sum_scalars(n_vars_remaining)
-			.interpolate(claim)
+		// `claim` is this round's sum.
+		// The evaluation at 0, which was never sampled, is recovered from it.
+		RoundEvals2 {
+			y_1: accum[0],
+			y_inf: accum[1],
+		}
+		.sum_scalars(n_vars_remaining)
+		.interpolate(claim)
 	}
 }
 
