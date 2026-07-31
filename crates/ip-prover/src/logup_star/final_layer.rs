@@ -120,7 +120,14 @@ where
 	// Y_0, Y_1 are already store columns (the fractional numerator halves), so only the table
 	// halves T_0, T_1 are pushed as new columns. Only Y_0 is needed here, to form e_0; e_1 follows
 	// as e - e_0.
-	let [y_0, _y_1] = split_halves(alloc, pushforward);
+	//
+	// Neither pushforward half needs to be owned:
+	//
+	//     Y_0 -> read once, by the inner product with T_0
+	//     Y_1 -> never read
+	//
+	// Borrowing them keeps 2^m field elements out of the allocator.
+	let (y_0, _y_1) = pushforward.split_half_ref();
 	let [t_0, t_1] = split_halves(alloc, table.to_ref());
 
 	// e_0 is the first half's product sum.
