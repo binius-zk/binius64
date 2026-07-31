@@ -145,11 +145,45 @@ pub trait MleCheckRoundEvaluator<A: Allocator, F: Field, P: PackedField<Scalar =
 	) -> RoundCoeffs<F>;
 }
 
-/// Maximum log2 chunk size of the parallel round pass.
+/// Largest round the pass walks in one sequential leaf.
 ///
-/// Chunked accumulation keeps the equality-indicator chunk resident in L1 cache while all
-/// evaluators read it, mirroring the chunking of the pre-store quadratic prover.
+/// - The equality-indicator chunk of a round this size stays in L1 while every evaluator reads it.
+/// - A caller outside the pool parks and wakes to dispatch one leaf.
+/// - So splitting a round this small costs more than walking it.
 const MAX_CHUNK_VARS: usize = 12;
+
+/// Leaf size of a round pass that is split across the pool.
+///
+/// - Well below [`MAX_CHUNK_VARS`], so a split round becomes many small leaves.
+/// - Work-stealing can then even out cores that retire a leaf at different speeds.
+/// - Roughly one leaf per core would leave it nothing to steal.
+///
+/// Tuned on an Apple M1 Pro, whose 8 performance and 2 efficiency cores make that imbalance large.
+const PAR_CHUNK_VARS: usize = 8;
+
+/// Chunk size of one round's read pass over the halved hypercube.
+///
+/// The two constants answer separate questions.
+/// [`MAX_CHUNK_VARS`] decides whether to split the round at all.
+/// [`PAR_CHUNK_VARS`] decides how finely, once it is split.
+///
+/// ```text
+///     halved = n_vars_remaining - 1           a round reads a halved hypercube
+///
+///     halved <= MAX_CHUNK_VARS  ->  chunk = halved           one leaf, no bisection
+///     halved >  MAX_CHUNK_VARS  ->  chunk = PAR_CHUNK_VARS   2^(halved - chunk) leaves
+/// ```
+///
+/// Both constants are floored at the packing width, so a leaf never narrows below one packed word.
+fn chunk_vars_for<P: PackedField>(n_vars_remaining: usize) -> usize {
+	let halved = n_vars_remaining - 1;
+	let sequential_cap = MAX_CHUNK_VARS.max(P::LOG_WIDTH);
+	if halved <= sequential_cap {
+		halved
+	} else {
+		PAR_CHUNK_VARS.max(P::LOG_WIDTH)
+	}
+}
 
 /// Prefix sums of a group of evaluators' accumulator-slot counts.
 ///
@@ -275,12 +309,12 @@ where
 		let n_vars_remaining = self.n_vars();
 		assert!(n_vars_remaining > 0);
 
-		// One parallel pass over the halved hypercube feeds every evaluator, so shared columns
-		// and eq-indicator chunks are read once per round while they are cache-resident.
+		// One pass over the halved hypercube feeds every evaluator.
+		// Shared columns and eq-indicator chunks are read once per round, while cache-resident.
 		//
 		// TODO: dynamically choose chunk size based on the number of columns and P byte-size,
 		// based on estimated L1 cache size.
-		let chunk_vars = (n_vars_remaining - 1).min(MAX_CHUNK_VARS.max(P::LOG_WIDTH));
+		let chunk_vars = chunk_vars_for::<P>(n_vars_remaining);
 
 		// Each evaluator owns a contiguous run of `degree` wide slots in one flat per-worker
 		// buffer; `offsets` holds the run boundaries as a prefix sum, so `offsets[i]..offsets[i +
@@ -508,9 +542,9 @@ where
 		let n_vars_remaining = self.n_vars();
 		assert!(n_vars_remaining > 0);
 
-		// One parallel pass over the halved hypercube feeds every evaluator; see
+		// One pass over the halved hypercube feeds every evaluator; see
 		// [`SharedSumcheckProver::execute`].
-		let chunk_vars = (n_vars_remaining - 1).min(MAX_CHUNK_VARS.max(P::LOG_WIDTH));
+		let chunk_vars = chunk_vars_for::<P>(n_vars_remaining);
 		let offsets = accum_offsets(self.evaluators.iter().map(|evaluator| evaluator.degree()));
 		let total_slots = *offsets
 			.last()
