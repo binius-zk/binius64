@@ -17,9 +17,9 @@ use itertools::izip;
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
-		batch::batch_prove_mle_and_write_evals,
+		batch::batch_prove_mle_with_coeff_and_write_evals,
 		common::{MleCheckProver, SumcheckProver},
-		frac_add_mle,
+		frac_add_mle::{self, FracAddFusedEvaluator},
 		mle_store::{ColId, MleStore},
 		round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 	},
@@ -218,6 +218,51 @@ where
 		)
 	}
 
+	/// Pops the last layer as a prover carrying the two fractional claims batched into one.
+	///
+	/// Same reduction as [`Self::layer_prover`], in one pass over the four columns instead of two.
+	/// The numerator's pass and the denominator's pass read the same denominator halves.
+	/// They read the same equality indicator too.
+	/// A fused evaluator loads both once.
+	///
+	/// The caller must sample `batch_coeff` from the channel before calling this.
+	/// It must then drive the returned prover with a driver that does not sample another one.
+	/// The round polynomials and reduced column evaluations match [`Self::layer_prover`]'s.
+	/// So the transcript is unchanged.
+	#[allow(clippy::type_complexity)]
+	fn fused_layer_prover(
+		mut self,
+		claim: FracEvalClaim<F>,
+		batch_coeff: F,
+	) -> (Option<Self>, LayerProver<'a, A, F, P>) {
+		let (num_claim, den_claim) = claim;
+		assert_eq!(
+			num_claim.point, den_claim.point,
+			"fractional claims must share the evaluation point"
+		);
+
+		let alloc = self.alloc;
+		let (num, den) = self.layers.pop().expect("layers is non-empty");
+
+		let remaining = if self.layers.is_empty() {
+			None
+		} else {
+			Some(self)
+		};
+
+		// The store owns the two popped buffers and shares each between its halves.
+		// The two-evaluator path does the same; only the evaluator group differs.
+		let mut store = MleStore::new(num.log_len() - 1, alloc);
+		let [num_0, num_1] = store.push_split_half(num);
+		let [den_0, den_1] = store.push_split_half(den);
+		let evaluator = FracAddFusedEvaluator::new([num_0, num_1, den_0, den_1], batch_coeff);
+
+		// One claim, batched the way the verifier batches the two it holds.
+		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>); 1] =
+			[(num_claim.eval + batch_coeff * den_claim.eval, Box::new(evaluator))];
+		(remaining, SharedMleCheckProver::new(store, claims_with_evaluators, num_claim.point))
+	}
+
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
 	///
 	/// This consumes the prover and runs sumcheck reductions from the smallest layer back to
@@ -278,10 +323,18 @@ where
 			let prover = prover_opt
 				.take()
 				.expect("precondition: n_layers <= self.n_layers()");
-			let (remaining, sumcheck_prover, _) = prover.layer_prover(claim);
+			// The fused evaluator emits the already-batched round polynomial.
+			// So it needs the batching coefficient at construction.
+			// Sampling it here matches the transcript position the batched driver draws it from.
+			let batch_coeff = channel.sample();
+			let (remaining, sumcheck_prover) = prover.fused_layer_prover(claim, batch_coeff);
 			prover_opt = remaining;
 
-			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel);
+			let output = batch_prove_mle_with_coeff_and_write_evals(
+				vec![sumcheck_prover],
+				batch_coeff,
+				channel,
+			);
 
 			let mut multilinear_evals = output.multilinear_evals;
 			let evals = multilinear_evals.pop().expect("batch contains one prover");

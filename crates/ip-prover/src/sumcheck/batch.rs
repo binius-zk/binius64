@@ -141,7 +141,7 @@ where
 /// agree on the same evaluation point, so the batched protocol can fold every prover with the
 /// same per-round challenge and reduce all evaluation claims via a single batching coefficient.
 pub fn batch_prove_mle<F, MleCheckProver_>(
-	mut provers: Vec<MleCheckProver_>,
+	provers: Vec<MleCheckProver_>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchSumcheckOutput<F>
 where
@@ -172,6 +172,30 @@ where
 	);
 	// Random linear-combination coefficient for batching multiple eval claims.
 	let batch_coeff = channel.sample();
+
+	batch_prove_mle_with_coeff(provers, batch_coeff, channel)
+}
+
+/// Prove a batched MLE-check whose batching coefficient the caller has already sampled.
+///
+/// This is [`batch_prove_mle`] with the coefficient supplied rather than drawn.
+/// A caller needs that when it must know the coefficient before building its provers.
+/// An evaluator that emits one already-batched round polynomial is such a caller.
+///
+/// The coefficient must come from the same channel immediately before this call.
+/// Then the transcript is the one [`batch_prove_mle`] would have produced.
+pub(crate) fn batch_prove_mle_with_coeff<F, MleCheckProver_>(
+	mut provers: Vec<MleCheckProver_>,
+	batch_coeff: F,
+	channel: &mut impl IPProverChannel<F>,
+) -> BatchSumcheckOutput<F>
+where
+	F: Field,
+	MleCheckProver_: MleCheckProver<F>,
+{
+	let n_vars = provers
+		.first()
+		.map_or(0, |prover| SumcheckProver::n_vars(prover));
 
 	let mut challenges = Vec::with_capacity(n_vars);
 	for _ in 0..n_vars {
@@ -222,6 +246,27 @@ where
 	MleCheckProver_: MleCheckProver<F>,
 {
 	let output = batch_prove_mle(provers, channel);
+
+	for evals in &output.multilinear_evals {
+		// Preserve per-prover ordering when emitting evaluation claims.
+		channel.send_many(evals);
+	}
+	output
+}
+
+/// [`batch_prove_mle_and_write_evals`] with the batching coefficient supplied by the caller.
+///
+/// See [`batch_prove_mle_with_coeff`] for when a caller needs the coefficient up front.
+pub(crate) fn batch_prove_mle_with_coeff_and_write_evals<F, MleCheckProver_>(
+	provers: Vec<MleCheckProver_>,
+	batch_coeff: F,
+	channel: &mut impl IPProverChannel<F>,
+) -> BatchSumcheckOutput<F>
+where
+	F: Field,
+	MleCheckProver_: MleCheckProver<F>,
+{
+	let output = batch_prove_mle_with_coeff(provers, batch_coeff, channel);
 
 	for evals in &output.multilinear_evals {
 		// Preserve per-prover ordering when emitting evaluation claims.
