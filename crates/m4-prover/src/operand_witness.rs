@@ -18,7 +18,7 @@ use std::{iter, mem::MaybeUninit, ptr};
 use binius_compute::{Allocator, VecLike};
 use binius_core::{
 	ValueIndex,
-	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex},
+	constraint_system::{Operand, ShiftedValueIndex},
 	word::Word,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -176,22 +176,6 @@ pub fn build_operation_witness<'a, A: Allocator>(
 	out
 }
 
-/// Writes `shift(src[i])` into `out_chunk[i]` for every `i`, initializing each cell.
-///
-/// `shift` is a concrete per-variant closure bound once by the caller's match on
-/// [`ShiftVariant`], so each call site monomorphizes to a loop with the shift operation inlined,
-/// rather than branching on the variant every iteration.
-#[inline]
-fn write_shifted_words(
-	out_chunk: &mut [MaybeUninit<Word>],
-	src: &[Word],
-	shift: impl Fn(Word) -> Word,
-) {
-	for (out_i, &src_i) in iter::zip(out_chunk, src) {
-		out_i.write(shift(src_i));
-	}
-}
-
 /// Writes one shifted value into every element of `out_chunk`, initializing it.
 ///
 /// This is the first term of an operand's accumulation: it initializes the cell rather than
@@ -231,6 +215,8 @@ fn write_shifted_values(
 		let index = value_index.0 as usize - witness_offset.0 as usize;
 		let src = &table_words[(index << log_instances)..((index + 1) << log_instances)];
 
+		// Invariant: shifting by zero returns the word untouched, whichever variant is named.
+		// So one copy covers every variant, and the shifting path below never sees a zero amount.
 		if amount == 0 {
 			// Safety:
 			// * out_chunk.len() == src.len()
@@ -243,29 +229,8 @@ fn write_shifted_values(
 				)
 			};
 		} else {
-			match shift_variant {
-				ShiftVariant::Sll => write_shifted_words(out_chunk, src, |w| w << amount),
-				ShiftVariant::Slr => write_shifted_words(out_chunk, src, |w| w >> amount),
-				ShiftVariant::Sar => write_shifted_words(out_chunk, src, |w| w.sar(amount)),
-				ShiftVariant::Rotr => write_shifted_words(out_chunk, src, |w| w.rotr(amount)),
-				ShiftVariant::Sll32 => write_shifted_words(out_chunk, src, |w| w.sll32(amount)),
-				ShiftVariant::Srl32 => write_shifted_words(out_chunk, src, |w| w.srl32(amount)),
-				ShiftVariant::Sra32 => write_shifted_words(out_chunk, src, |w| w.sra32(amount)),
-				ShiftVariant::Rotr32 => write_shifted_words(out_chunk, src, |w| w.rotr32(amount)),
-			}
+			shift_variant.write_shifted(out_chunk, src, amount);
 		}
-	}
-}
-
-/// XORs `shift(src[i])` into `out_chunk[i]` for every `i`.
-///
-/// `shift` is a concrete per-variant closure bound once by the caller's match on
-/// [`ShiftVariant`], so each call site monomorphizes to a loop with the shift operation inlined,
-/// rather than branching on the variant every iteration.
-#[inline]
-fn xor_shifted_words(out_chunk: &mut [Word], src: &[Word], shift: impl Fn(Word) -> Word) {
-	for (out_i, &src_i) in iter::zip(out_chunk, src) {
-		*out_i = *out_i ^ shift(src_i);
 	}
 }
 
@@ -307,21 +272,14 @@ fn accum_shifted_values(
 		let index = value_index.0 as usize - witness_offset.0 as usize;
 		let src = &table_words[(index << log_instances)..((index + 1) << log_instances)];
 
+		// Invariant: shifting by zero returns the word untouched, whichever variant is named.
+		// So one plain XOR covers every variant, and the path below never sees a zero amount.
 		if amount == 0 {
 			for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
 				*out_i = *out_i ^ src_i;
 			}
 		} else {
-			match shift_variant {
-				ShiftVariant::Sll => xor_shifted_words(out_chunk, src, |w| w << amount),
-				ShiftVariant::Slr => xor_shifted_words(out_chunk, src, |w| w >> amount),
-				ShiftVariant::Sar => xor_shifted_words(out_chunk, src, |w| w.sar(amount)),
-				ShiftVariant::Rotr => xor_shifted_words(out_chunk, src, |w| w.rotr(amount)),
-				ShiftVariant::Sll32 => xor_shifted_words(out_chunk, src, |w| w.sll32(amount)),
-				ShiftVariant::Srl32 => xor_shifted_words(out_chunk, src, |w| w.srl32(amount)),
-				ShiftVariant::Sra32 => xor_shifted_words(out_chunk, src, |w| w.sra32(amount)),
-				ShiftVariant::Rotr32 => xor_shifted_words(out_chunk, src, |w| w.rotr32(amount)),
-			}
+			shift_variant.xor_shifted(out_chunk, src, amount);
 		}
 	}
 }
@@ -330,7 +288,7 @@ fn accum_shifted_values(
 mod tests {
 	use assert_matches::assert_matches;
 	use binius_compute::{BufferPool, GlobalAllocator};
-	use binius_core::constraint_system::{AndConstraint, ValueVec};
+	use binius_core::constraint_system::{AndConstraint, ShiftVariant, ValueVec};
 	use binius_field::{AESTowerField8b as B8, PackedBinaryGhash1x128b};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
@@ -757,6 +715,64 @@ mod tests {
 		}
 	}
 
+	// One drawn shift term: which of the circuit's four wires to read, and how to shift it.
+	// The amount stays in `1..max_amount`, so every draw really shifts and stays in range.
+	fn any_shift_term() -> impl Strategy<Value = (usize, ShiftVariant, u8)> {
+		(0usize..4, prop::sample::select(ShiftVariant::ALL.to_vec())).prop_flat_map(
+			|(wire, shift_variant)| {
+				(1..shift_variant.max_amount())
+					.prop_map(move |amount| (wire, shift_variant, amount as u8))
+			},
+		)
+	}
+
+	proptest! {
+		// Invariant: every batch row equals the single-instance reference, for all eight shifts.
+		//
+		// The compiler emits only unshifted operands, so the fixed fixtures reach three shifts.
+		// Drawing the shift covers the other five: rotate, and the four half-word forms.
+		//
+		// Fixture state: 4 instances, 1 constraint.
+		//
+		//     operand A: 1..4 drawn terms  → always initializes its column
+		//     operand B: 0..4 drawn terms  → may be empty, pinning that column at zero
+		#[test]
+		fn shifted_operands_match_the_reference_for_every_variant(
+			inputs in prop::collection::vec((any::<u64>(), any::<u64>(), any::<u64>()), 4),
+			a_terms in prop::collection::vec(any_shift_term(), 1..4),
+			b_terms in prop::collection::vec(any_shift_term(), 0..4),
+		) {
+			let c = and_circuit();
+			let table = populate_table(&c, &inputs);
+
+			// A drawn wire slot in 0..4 names one of the circuit's four witness words.
+			let wires = [c.x, c.y, c.w, c.z].map(|wire| c.circuit.witness_index(wire));
+			// An operand is the XOR of its terms, so a term list becomes one operand directly.
+			let to_operand = |terms: &[(usize, ShiftVariant, u8)]| -> Operand {
+				terms
+					.iter()
+					.map(|&(wire, shift_variant, amount)| ShiftedValueIndex {
+						value_index: wires[wire],
+						shift_variant,
+						amount,
+					})
+					.collect()
+			};
+
+			// The third operand is never evaluated by the builder, so it stays empty.
+			// The fixture therefore need not satisfy the AND relation to exercise the shifts.
+			let and_constraints =
+				vec![AndConstraint([to_operand(&a_terms), to_operand(&b_terms), Operand::new()])];
+
+			let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
+
+			// Both columns match the shift-aware value-vec evaluator on the same constraints.
+			let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
+			prop_assert_eq!(&*a, &a_ref[..]);
+			prop_assert_eq!(&*b, &b_ref[..]);
+		}
+	}
+
 	proptest! {
 		// Invariant: every batch row equals the single-instance reference for that instance.
 		//
@@ -839,10 +855,7 @@ mod tests {
 		let shifted = and_constraints
 			.iter()
 			.flat_map(|con| [con.a(), con.b()])
-			.any(|op| {
-				op.iter()
-					.any(|sv| sv.shift_variant != ShiftVariant::Sll || sv.amount != 0)
-			});
+			.any(|op| op.iter().any(|sv| sv.amount != 0));
 		assert!(shifted, "fixture must contain a shifted operand");
 
 		let [a, b] =

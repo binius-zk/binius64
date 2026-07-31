@@ -41,6 +41,13 @@ use super::{
 	},
 };
 
+/// Hand-written vector kernel for the block compression, used in place of the lane loops below.
+///
+/// Kept private so it stays an implementation detail of this module.
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+#[path = "blake3_neon.rs"]
+mod neon;
+
 /// Blake3 domain-separation flag marking the first block of a chunk.
 const CHUNK_START: u32 = 1 << 0;
 
@@ -139,6 +146,29 @@ fn load_block_words<const N: usize>(block: &[[u8; BLOCK_LEN]; N]) -> [[u32; N]; 
 /// Only the input chaining value and the message differ per lane.
 #[inline(always)]
 fn compress_block<const N: usize>(
+	cv: &mut [[u32; N]; 8],
+	block: &[[u32; N]; 16],
+	counter: u64,
+	block_len: u32,
+	flags: u32,
+) {
+	// On aarch64 the hand-written vector kernel holds the same state in registers.
+	// Lane counts it does not cover fall through to the lane loops.
+	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+	if neon::handles_lanes(N) {
+		neon::compress_block(cv, block, counter, block_len, flags);
+		return;
+	}
+
+	compress_block_portable(cv, block, counter, block_len, flags);
+}
+
+/// Compresses one 64-byte block across all `N` lanes with plain lane loops.
+///
+/// Every target without a hand-written kernel runs this, and it is the reference the vector
+/// kernels are tested against.
+#[inline(always)]
+fn compress_block_portable<const N: usize>(
 	cv: &mut [[u32; N]; 8],
 	block: &[[u32; N]; 16],
 	counter: u64,
@@ -520,6 +550,92 @@ mod tests {
 			check_parallel_compression::<4>(&pairs);
 			check_parallel_compression::<8>(&pairs);
 			check_parallel_compression::<16>(&pairs);
+		}
+	}
+
+	/// Compresses one block through both cores and pins the vector words to the lane-loop words.
+	///
+	/// # Arguments
+	///
+	/// * `rng` - source of the random chaining value and message.
+	/// * `counter` - chunk counter to place in the state.
+	/// * `block_len` - message byte count to place in the state.
+	/// * `flags` - domain-separation flags to place in the state.
+	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+	fn check_neon_core<const N: usize>(rng: &mut StdRng, counter: u64, block_len: u32, flags: u32) {
+		use rand::RngExt;
+
+		// Every lane gets its own random words.
+		// Sharing a value across lanes would hide a kernel that reads the wrong vector.
+		let cv_in: [[u32; N]; 8] = array::from_fn(|_| array::from_fn(|_| rng.random()));
+		let block: [[u32; N]; 16] = array::from_fn(|_| array::from_fn(|_| rng.random()));
+
+		// Reference: the lane loops every target without a vector kernel runs.
+		let mut want = cv_in;
+		compress_block_portable(&mut want, &block, counter, block_len, flags);
+
+		// Candidate: the vector kernel, started from the same chaining value.
+		let mut got = cv_in;
+		super::neon::compress_block(&mut got, &block, counter, block_len, flags);
+
+		// Compression is bit-exact, so the two must agree on all 8 words of all N lanes.
+		assert_eq!(got, want, "vector kernel diverged from the lane loops at {N} lanes");
+	}
+
+	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+	#[test]
+	fn test_neon_core_matches_portable() {
+		let mut rng = StdRng::seed_from_u64(11);
+
+		// The last four state words are the ones a kernel is most likely to place wrongly.
+		// So cover the combinations a real chunk produces, plus the extremes of each field.
+		//
+		//     (counter, block_len, flags)
+		let cases = [
+			// Interior block of a multi-block chunk: no flags, full 64 bytes.
+			(0u64, 64u32, 0u32),
+			// First block of a chunk.
+			(0, 64, CHUNK_START),
+			// Last block of a chunk, and the last of the whole tree.
+			(0, 64, CHUNK_END | ROOT),
+			// A chunk that is one block long, so it carries every flag at once.
+			(0, 64, CHUNK_START | CHUNK_END | ROOT),
+			// A one-byte message: the block is almost entirely zero padding.
+			(0, 1, CHUNK_START | CHUNK_END | ROOT),
+			// The empty message, the shortest input Blake3 accepts.
+			(0, 0, CHUNK_START | CHUNK_END | ROOT),
+			// Both counter halves set, which catches a kernel that drops the high half.
+			(u64::MAX, 64, CHUNK_END),
+			// A counter whose low half is zero, which catches the two halves being swapped.
+			(1 << 32, 63, CHUNK_START),
+		];
+
+		// Check every lane count the kernel claims, from one vector group up to four.
+		for (counter, block_len, flags) in cases {
+			check_neon_core::<4>(&mut rng, counter, block_len, flags);
+			check_neon_core::<8>(&mut rng, counter, block_len, flags);
+			check_neon_core::<12>(&mut rng, counter, block_len, flags);
+			check_neon_core::<16>(&mut rng, counter, block_len, flags);
+		}
+	}
+
+	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+	proptest! {
+		#[test]
+		fn neon_core_matches_portable_proptest(
+			seed in any::<u64>(),
+			counter in any::<u64>(),
+			// A block never carries more than the 64 bytes it holds.
+			block_len in 0..=64u32,
+			// Blake3 defines flags in the low byte only.
+			flags in any::<u8>(),
+		) {
+			// The fixed cases above pin the boundaries; this sweeps arbitrary state at every width.
+			let mut rng = StdRng::seed_from_u64(seed);
+			check_neon_core::<4>(&mut rng, counter, block_len, flags as u32);
+			check_neon_core::<8>(&mut rng, counter, block_len, flags as u32);
+			check_neon_core::<12>(&mut rng, counter, block_len, flags as u32);
+			check_neon_core::<16>(&mut rng, counter, block_len, flags as u32);
 		}
 	}
 
