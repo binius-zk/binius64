@@ -191,47 +191,38 @@ fn accum_offsets(degrees: impl IntoIterator<Item = usize>) -> Vec<usize> {
 		.collect()
 }
 
-/// A [`SumcheckProver`] over a shared [`MleStore`] and a list of [`SumcheckRoundEvaluator`]s, one
-/// per claim.
+/// The state a group of claims shares, whichever protocol drives them.
 ///
-/// Each round makes one parallel pass over the store's column chunks, feeding every evaluator,
-/// and lists the round polynomials in evaluator registration order. [`Self::fold`] folds each
-/// shared column and eq tracker once. [`Self::finish`] emits each store column's evaluation once,
-/// computed a single time by the store no matter how many claims read the column.
-pub struct SharedSumcheckProver<'a, A: Allocator, P: PackedField, Evaluator> {
+/// One store of columns, one evaluator per claim, and each claim's position in the round cycle.
+/// Each prover below is this, plus the round pass its protocol needs.
+struct EvaluatorGroup<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>, Evaluator> {
 	store: MleStore<'a, A, P>,
 	evaluators: Vec<Evaluator>,
-	/// The claim ↔ round-coeffs state machine, one entry per evaluator (parallel to `evaluators`).
+	/// Each claim's position in the claim-to-coefficients cycle, parallel to the evaluators.
 	///
-	/// Holds each evaluator's current round claim before its round polynomial is produced, and the
-	/// produced round coefficients afterwards. The prover — not the evaluator — advances this
-	/// state: [`SumcheckProver::execute`] hands the claim to
-	/// [`SumcheckRoundEvaluator::interpolate`] and stores the resulting coefficients;
-	/// [`SumcheckProver::fold`] reduces them against the challenge back to a claim.
-	round_states: Vec<RoundState<RoundCoeffs<P::Scalar>, P::Scalar>>,
-	/// A fold challenge whose store fold has been deferred so the next [`SumcheckProver::execute`]
-	/// can fuse it into that round's read pass (see [`MleStore::map_reduce_with_fold`]). Only the
-	/// store's column and eq fold waits here; the round claims advance eagerly in
-	/// [`SumcheckProver::fold`].
-	buffered_challenge: Option<P::Scalar>,
+	/// A claim is held directly until its round polynomial is produced.
+	/// The coefficients are held afterwards, until the fold reduces them back to a claim.
+	round_states: Vec<RoundState<RoundCoeffs<F>, F>>,
+	/// A fold challenge whose store fold waits for the next round's read pass.
+	///
+	/// Deferring it lets the columns be touched once per round instead of twice.
+	/// Only the store's fold waits here, as the round claims advance as soon as the challenge
+	/// lands.
+	buffered_challenge: Option<F>,
 }
 
-impl<'a, A, F, P, Evaluator> SharedSumcheckProver<'a, A, P, Evaluator>
+impl<'a, A, F, P, Evaluator> EvaluatorGroup<'a, A, F, P, Evaluator>
 where
 	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Evaluator: SumcheckRoundEvaluator<F, P>,
 {
-	/// Creates a prover from a store and the evaluators reading its columns, each paired with its
-	/// initial claim — one `(claim, evaluator)` per claim.
-	///
-	/// Taking an [`IntoIterator`] lets callers pass an array of pairs directly, rather than two
-	/// parallel `Vec`s; the pairs are unzipped into the evaluators and their initial round states.
-	pub fn new(
+	/// Creates a group from a store and the evaluators reading it, each with its initial claim.
+	fn new(
 		store: MleStore<'a, A, P>,
 		claims_with_evaluators: impl IntoIterator<Item = (F, Evaluator)>,
 	) -> Self {
+		// Unzipping lets a caller pass an array of pairs rather than two parallel vectors.
 		let (round_states, evaluators) = claims_with_evaluators
 			.into_iter()
 			.map(|(claim, evaluator)| (RoundState::Claim(claim), evaluator))
@@ -244,9 +235,141 @@ where
 		}
 	}
 
+	/// Returns the number of variables still to bind.
+	///
+	/// A buffered challenge is a fold the store has not seen yet.
+	/// So the count sits one below the store's until the next round applies it.
+	const fn n_vars(&self) -> usize {
+		self.store.n_vars() - self.buffered_challenge.is_some() as usize
+	}
+
+	/// Returns the number of claims in the group.
+	const fn n_claims(&self) -> usize {
+		self.evaluators.len()
+	}
+
+	/// Adds one more claim, reading the same store, after the existing ones.
+	fn push_claim(&mut self, claim: F, evaluator: Evaluator) {
+		self.evaluators.push(evaluator);
+		self.round_states.push(RoundState::Claim(claim));
+	}
+
+	/// Returns the claim each of this round's polynomials must satisfy.
+	///
+	/// A claim held directly is returned as is.
+	/// One already turned into coefficients is read back out by `recover`, which differs per
+	/// protocol.
+	fn round_claims(&self, recover: impl Fn(&RoundCoeffs<F>) -> F) -> Vec<F> {
+		self.round_states
+			.iter()
+			.map(|state| match state {
+				RoundState::Claim(claim) => *claim,
+				RoundState::Coeffs(coeffs) => recover(coeffs),
+			})
+			.collect()
+	}
+
+	/// Interpolates every claim's round polynomial, then records it for the coming fold.
+	///
+	/// # Arguments
+	///
+	/// * `offsets` - Prefix sums bounding each evaluator's run of accumulator slots.
+	/// * `accum` - Every evaluator's slots, summed across workers and reduced.
+	/// * `interpolate` - The protocol's call into one evaluator.
+	fn interpolate_round(
+		&mut self,
+		offsets: &[usize],
+		accum: &[P],
+		interpolate: impl Fn(&Evaluator, &RoundContext<'_, P>, &[P], F) -> RoundCoeffs<F>,
+	) -> Vec<RoundCoeffs<F>> {
+		// The store has not folded this round, so its view carries this round's coordinates.
+		let ctx = self.store.round_context();
+		let round_coeffs: Vec<RoundCoeffs<F>> =
+			iter::zip(iter::zip(&self.evaluators, &self.round_states), offsets.windows(2))
+				.map(|((evaluator, state), window)| {
+					let claim = *state.claim();
+					interpolate(evaluator, &ctx, &accum[window[0]..window[1]], claim)
+				})
+				.collect();
+		// The coefficients become the round state the coming fold reduces.
+		for (state, coeffs) in iter::zip(&mut self.round_states, &round_coeffs) {
+			*state = RoundState::Coeffs(coeffs.clone());
+		}
+		round_coeffs
+	}
+
+	/// Reduces every round polynomial against the challenge, forming the next round's claims.
+	///
+	/// The store's own fold is deferred to the next round's read pass.
+	fn fold(&mut self, challenge: F) {
+		for state in &mut self.round_states {
+			let claim = state.coeffs().evaluate(&challenge);
+			*state = RoundState::Claim(claim);
+		}
+		debug_assert!(
+			self.buffered_challenge.is_none(),
+			"fold called twice without an intervening execute"
+		);
+		self.buffered_challenge = Some(challenge);
+	}
+
+	/// Applies any deferred fold, then emits every column's evaluation in push order.
+	///
+	/// The store owns each column once, so each evaluation is computed once however many claims
+	/// read that column.
+	fn finish(mut self) -> Vec<F> {
+		if let Some(challenge) = self.buffered_challenge.take() {
+			self.store.fold(challenge);
+		}
+		self.store.final_evals()
+	}
+
+	/// Rebuilds the group with every evaluator replaced, carrying the store and claims across.
+	fn map_evaluators<New>(
+		self,
+		wrap: impl FnMut(Evaluator) -> New,
+	) -> EvaluatorGroup<'a, A, F, P, New> {
+		EvaluatorGroup {
+			store: self.store,
+			evaluators: self.evaluators.into_iter().map(wrap).collect(),
+			round_states: self.round_states,
+			buffered_challenge: self.buffered_challenge,
+		}
+	}
+}
+
+/// A [`SumcheckProver`] over a shared [`MleStore`] and a list of [`SumcheckRoundEvaluator`]s, one
+/// per claim.
+///
+/// Each round makes one parallel pass over the store's column chunks, feeding every evaluator,
+/// and lists the round polynomials in evaluator registration order. [`Self::fold`] folds each
+/// shared column and eq tracker once. [`Self::finish`] emits each store column's evaluation once,
+/// computed a single time by the store no matter how many claims read the column.
+pub struct SharedSumcheckProver<'a, A: Allocator, P: PackedField, Evaluator> {
+	group: EvaluatorGroup<'a, A, P::Scalar, P, Evaluator>,
+}
+
+impl<'a, A, F, P, Evaluator> SharedSumcheckProver<'a, A, P, Evaluator>
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+	Evaluator: SumcheckRoundEvaluator<F, P>,
+{
+	/// Creates a prover from a store and the evaluators reading its columns, each paired with its
+	/// initial claim — one `(claim, evaluator)` per claim.
+	pub fn new(
+		store: MleStore<'a, A, P>,
+		claims_with_evaluators: impl IntoIterator<Item = (F, Evaluator)>,
+	) -> Self {
+		Self {
+			group: EvaluatorGroup::new(store, claims_with_evaluators),
+		}
+	}
+
 	/// Returns a shared reference to the underlying column store.
 	pub const fn store(&self) -> &MleStore<'a, A, P> {
-		&self.store
+		&self.group.store
 	}
 
 	/// Pushes an owned column onto the store, returning its id.
@@ -255,7 +378,7 @@ where
 	/// reads: the logUp* final layer pushes the table halves this way before adding its product
 	/// evaluators. See [`MleStore::push_owned`].
 	pub fn push_owned_column(&mut self, column: FieldVec<P, A>) -> ColId {
-		self.store.push_owned(column)
+		self.group.store.push_owned(column)
 	}
 
 	/// Adds one more evaluator — a claim reading the shared store, with its initial claim — to the
@@ -263,8 +386,7 @@ where
 	///
 	/// Its round polynomial is appended after the existing evaluators' in [`Self::execute`].
 	pub fn add_evaluator(&mut self, claim: F, evaluator: Evaluator) {
-		self.evaluators.push(evaluator);
-		self.round_states.push(RoundState::Claim(claim));
+		self.group.push_claim(claim, evaluator);
 	}
 }
 
@@ -276,29 +398,21 @@ where
 	Evaluator: SumcheckRoundEvaluator<F, P>,
 {
 	fn n_vars(&self) -> usize {
-		// A buffered challenge is a fold that has not yet reached the store, so the logical
-		// remaining-variable count is one below the store's until the next execute applies it.
-		self.store.n_vars() - self.buffered_challenge.is_some() as usize
+		self.group.n_vars()
 	}
 
 	fn n_claims(&self) -> usize {
-		self.evaluators.len()
+		self.group.n_claims()
 	}
 
 	fn round_claim(&self) -> Vec<F> {
-		// The claim is held directly before this round's polynomial is produced, and afterwards
-		// recovered from that (regular sumcheck) polynomial as its sum over the endpoints {0, 1}.
-		self.round_states
-			.iter()
-			.map(|state| match state {
-				RoundState::Claim(claim) => *claim,
-				RoundState::Coeffs(coeffs) => coeffs.sum_over_endpoints(),
-			})
-			.collect()
+		// A regular sumcheck polynomial carries its claim as the sum over the endpoints 0 and 1.
+		self.group
+			.round_claims(|coeffs| coeffs.sum_over_endpoints())
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		let n_vars_remaining = self.n_vars();
+		let n_vars_remaining = self.group.n_vars();
 		assert!(n_vars_remaining > 0);
 
 		// One pass over the halved hypercube feeds every evaluator.
@@ -311,16 +425,22 @@ where
 		// Each evaluator owns a contiguous run of `degree` wide slots in one flat per-worker
 		// buffer; `offsets` holds the run boundaries as a prefix sum, so `offsets[i]..offsets[i +
 		// 1]` is evaluator `i`'s slice.
-		let offsets = accum_offsets(self.evaluators.iter().map(|evaluator| evaluator.degree()));
+		let offsets = accum_offsets(
+			self.group
+				.evaluators
+				.iter()
+				.map(|evaluator| evaluator.degree()),
+		);
 		let total_slots = *offsets
 			.last()
 			.expect("offsets has one entry per evaluator, plus one");
 
 		// The store prepares one `EvaluationChunk` per chunk of the halved hypercube — the split
 		// column halves and eq-indicator expansions each evaluator reads.
-		let buffered_challenge = self.buffered_challenge.take();
-		let evaluators = &self.evaluators;
-		let store = &mut self.store;
+		let group = &mut self.group;
+		let buffered_challenge = group.buffered_challenge.take();
+		let evaluators = &group.evaluators;
+		let store = &mut group.store;
 		let map = |chunk: EvaluationChunk<'_, P>| {
 			let mut accum = vec![Default::default(); total_slots];
 			for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
@@ -349,47 +469,18 @@ where
 		// Interpolation runs on reduced values.
 		let accum = accum.into_iter().map(P::reduce).collect::<Vec<P>>();
 
-		// Each evaluator takes its current round claim (held in `round_states`) and produces its
-		// round polynomial against this round's view of the store; the prover then records those
-		// coefficients as the round state for the coming fold.
-		let ctx = self.store.round_context();
-		let round_coeffs: Vec<RoundCoeffs<F>> =
-			iter::zip(iter::zip(&self.evaluators, &self.round_states), offsets.windows(2))
-				.map(|((evaluator, state), window)| {
-					let claim = *state.claim();
-					evaluator.interpolate(&ctx, &accum[window[0]..window[1]], claim)
-				})
-				.collect();
-		for (state, coeffs) in iter::zip(&mut self.round_states, &round_coeffs) {
-			*state = RoundState::Coeffs(coeffs.clone());
-		}
-		round_coeffs
+		self.group
+			.interpolate_round(&offsets, &accum, |evaluator, ctx, slots, claim| {
+				evaluator.interpolate(ctx, slots, claim)
+			})
 	}
 
 	fn fold(&mut self, challenge: F) {
-		// Reduce each evaluator's round polynomial against the challenge to form its next claim.
-		// The store's column and eq fold is deferred: the challenge is buffered so the next
-		// execute can fuse it into that round's read pass.
-		for state in &mut self.round_states {
-			let claim = state.coeffs().evaluate(&challenge);
-			*state = RoundState::Claim(claim);
-		}
-		debug_assert!(
-			self.buffered_challenge.is_none(),
-			"fold called twice without an intervening execute"
-		);
-		self.buffered_challenge = Some(challenge);
+		self.group.fold(challenge);
 	}
 
-	fn finish(mut self) -> Vec<F> {
-		// The last round's fold is still buffered; apply it to the store before reading
-		// evaluations.
-		if let Some(challenge) = self.buffered_challenge.take() {
-			self.store.fold(challenge);
-		}
-		// The store owns each column once and computes its evaluation a single time, no matter how
-		// many claims read it; emit every column's evaluation in store order.
-		self.store.final_evals()
+	fn finish(self) -> Vec<F> {
+		self.group.finish()
 	}
 }
 
@@ -401,18 +492,12 @@ where
 /// and hands the round's eq chunk and coordinate to the evaluators, which therefore store no
 /// tracker id.
 pub struct SharedMleCheckProver<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>, Evaluator> {
-	store: MleStore<'a, A, P>,
-	evaluators: Vec<Evaluator>,
-	/// The claim ↔ round-coeffs state machine, one entry per evaluator; see the field of the same
-	/// name on [`SharedSumcheckProver`].
-	round_states: Vec<RoundState<RoundCoeffs<F>, F>>,
-	/// A fold challenge whose store fold is deferred; see the field of the same name on
-	/// [`SharedSumcheckProver`].
-	buffered_challenge: Option<F>,
-	/// The shared evaluation point of every claim. The prover keeps no eq-indicator tracker: each
-	/// round it expands only a `chunk_vars`-wide prefix of this point as the per-chunk eq
-	/// indicator and folds the higher coordinates through the eq-weighted `reduce` (see
-	/// [`Self::execute`]).
+	group: EvaluatorGroup<'a, A, F, P, Evaluator>,
+	/// The evaluation point every claim shares.
+	///
+	/// No eq-indicator tracker is registered for it.
+	/// Each round expands only a chunk-wide prefix of this point and folds the higher coordinates
+	/// through the eq-weighted reduction.
 	eval_point: Vec<F>,
 }
 
@@ -437,15 +522,8 @@ where
 			store.n_vars(),
 			"evaluation point length must equal the store's number of variables"
 		);
-		let (round_states, evaluators) = claims_with_evaluators
-			.into_iter()
-			.map(|(claim, evaluator)| (RoundState::Claim(claim), evaluator))
-			.unzip();
 		Self {
-			store,
-			evaluators,
-			round_states,
-			buffered_challenge: None,
+			group: EvaluatorGroup::new(store, claims_with_evaluators),
 			eval_point,
 		}
 	}
@@ -467,34 +545,22 @@ where
 		Evaluator: 'a,
 	{
 		let Self {
-			mut store,
-			evaluators,
-			round_states,
-			buffered_challenge: _,
+			mut group,
 			eval_point,
 		} = self;
 		// The plain sumcheck prover this converts to has no eq machinery, so its wrappers read the
 		// eq indicator from a store tracker. This prover kept none, so register one here for the
 		// shared point.
-		let eq_tracker = store.register_eq_tracker(&eval_point);
+		let eq_tracker = group.store.register_eq_tracker(&eval_point);
 		// Wrap each MLE-check evaluator so it emits sumcheck round polynomials, handing it the
-		// shared eq tracker the store folds. Conversion happens before proving starts, so no fold
-		// challenge is buffered yet, and — since no variable has been folded — the equality
-		// prefix is one and each wrapper's sumcheck claim equals the inner MLE-check claim it
-		// carries over unchanged.
-		let evaluators = evaluators
-			.into_iter()
-			.map(|evaluator| {
-				Box::new(MleToSumCheckEvaluator::new(evaluator, eq_tracker))
-					as Box<dyn SumcheckRoundEvaluator<F, P> + 'a>
-			})
-			.collect();
-		SharedSumcheckProver {
-			store,
-			evaluators,
-			round_states,
-			buffered_challenge: None,
-		}
+		// shared eq tracker the store folds. Conversion happens before proving starts, so — since
+		// no variable has been folded — the equality prefix is one and each wrapper's sumcheck
+		// claim equals the inner MLE-check claim it carries over unchanged.
+		let group = group.map_evaluators(|evaluator| {
+			Box::new(MleToSumCheckEvaluator::new(evaluator, eq_tracker))
+				as Box<dyn SumcheckRoundEvaluator<F, P> + 'a>
+		});
+		SharedSumcheckProver { group }
 	}
 }
 
@@ -506,42 +572,37 @@ where
 	Evaluator: MleCheckRoundEvaluator<F, P>,
 {
 	fn n_vars(&self) -> usize {
-		// A buffered challenge is a fold that has not yet reached the store, so the logical
-		// remaining-variable count is one below the store's until the next execute applies it.
-		self.store.n_vars() - self.buffered_challenge.is_some() as usize
+		self.group.n_vars()
 	}
 
 	fn n_claims(&self) -> usize {
-		self.evaluators.len()
+		self.group.n_claims()
 	}
 
 	fn round_claim(&self) -> Vec<F> {
-		// Before a round's polynomial is produced, the claim is held directly.
-		// Afterwards it is recovered from the prime polynomial as the eq-lerp of its endpoints.
-		// The lerp coordinate is the highest remaining coordinate of the shared point.
-		// It is read only in the post-execute state.
-		// That state is gone once every variable is folded.
-		// This method therefore stays valid to call at zero remaining variables.
-		self.round_states
-			.iter()
-			.map(|state| match state {
-				RoundState::Claim(claim) => *claim,
-				RoundState::Coeffs(coeffs) => {
-					let alpha = self.eval_point[self.n_vars() - 1];
-					coeffs.lerp_over_endpoints(alpha)
-				}
-			})
-			.collect()
+		// A prime polynomial carries its claim as the eq-weighted blend of its endpoints.
+		// The blending coordinate is the highest of the point's coordinates still unbound.
+		// It is read only where coefficients are held, and that state is gone once every variable
+		// is bound, so this stays valid to call at zero remaining variables.
+		self.group.round_claims(|coeffs| {
+			let alpha = self.eval_point[self.group.n_vars() - 1];
+			coeffs.lerp_over_endpoints(alpha)
+		})
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		let n_vars_remaining = self.n_vars();
+		let n_vars_remaining = self.group.n_vars();
 		assert!(n_vars_remaining > 0);
 
 		// One pass over the halved hypercube feeds every evaluator; see
 		// [`SharedSumcheckProver::execute`].
 		let chunk_vars = chunk_vars_for::<P>(n_vars_remaining);
-		let offsets = accum_offsets(self.evaluators.iter().map(|evaluator| evaluator.degree()));
+		let offsets = accum_offsets(
+			self.group
+				.evaluators
+				.iter()
+				.map(|evaluator| evaluator.degree()),
+		);
 		let total_slots = *offsets
 			.last()
 			.expect("offsets has one entry per evaluator, plus one");
@@ -553,10 +614,11 @@ where
 		let alpha = self.eval_point[n_vars_remaining - 1];
 		let eq_chunk = eq_ind_partial_eval::<P>(&self.eval_point[..chunk_vars]);
 
-		let buffered_challenge = self.buffered_challenge.take();
-		let evaluators = &self.evaluators;
 		let eval_point = &self.eval_point;
-		let store = &mut self.store;
+		let group = &mut self.group;
+		let buffered_challenge = group.buffered_challenge.take();
+		let evaluators = &group.evaluators;
+		let store = &mut group.store;
 		let map = |chunk: EvaluationChunk<'_, P>| {
 			let mut accum = vec![Default::default(); total_slots];
 			for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
@@ -580,42 +642,18 @@ where
 			None => store.map_reduce(chunk_vars, map, reduce),
 		};
 
-		// Each evaluator interpolates its prime round polynomial from its (reduced) accumulator,
-		// its claim, and the round coordinate; the prover then records the coefficients for the
-		// fold.
-		let ctx = self.store.round_context();
-		let round_coeffs: Vec<RoundCoeffs<F>> =
-			iter::zip(iter::zip(&self.evaluators, &self.round_states), offsets.windows(2))
-				.map(|((evaluator, state), window)| {
-					let claim = *state.claim();
-					evaluator.interpolate(&ctx, &accum[window[0]..window[1]], claim, alpha)
-				})
-				.collect();
-		for (state, coeffs) in iter::zip(&mut self.round_states, &round_coeffs) {
-			*state = RoundState::Coeffs(coeffs.clone());
-		}
-		round_coeffs
+		self.group
+			.interpolate_round(&offsets, &accum, |evaluator, ctx, slots, claim| {
+				evaluator.interpolate(ctx, slots, claim, alpha)
+			})
 	}
 
 	fn fold(&mut self, challenge: F) {
-		// Reduce each evaluator's prime round polynomial against the challenge to form its next
-		// claim; the store's column and eq fold is deferred to the next execute.
-		for state in &mut self.round_states {
-			let claim = state.coeffs().evaluate(&challenge);
-			*state = RoundState::Claim(claim);
-		}
-		debug_assert!(
-			self.buffered_challenge.is_none(),
-			"fold called twice without an intervening execute"
-		);
-		self.buffered_challenge = Some(challenge);
+		self.group.fold(challenge);
 	}
 
-	fn finish(mut self) -> Vec<F> {
-		if let Some(challenge) = self.buffered_challenge.take() {
-			self.store.fold(challenge);
-		}
-		self.store.final_evals()
+	fn finish(self) -> Vec<F> {
+		self.group.finish()
 	}
 }
 
@@ -627,7 +665,7 @@ where
 	Evaluator: MleCheckRoundEvaluator<F, P>,
 {
 	fn eval_point(&self) -> &[F] {
-		&self.eval_point[..self.n_vars()]
+		&self.eval_point[..self.group.n_vars()]
 	}
 }
 
