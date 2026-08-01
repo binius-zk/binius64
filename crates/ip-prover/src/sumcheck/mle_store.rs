@@ -4,7 +4,7 @@
 //!
 //! An [`MleStore`] owns the equal-length multilinear columns that a group of
 //! [round evaluators](super::round_evaluator) reads, along with the deduplicated
-//! [`Gruen32`] equality-indicator trackers for MLE-check evaluation points. Columns enter the
+//! equality-indicator trackers for MLE-check evaluation points. Columns enter the
 //! store either borrowed ([`MleStore::push`]) or owned ([`MleStore::push_owned`]) and are
 //! addressed by the returned [`ColId`], so several evaluators can read — and the store can fold —
 //! one shared column exactly once per challenge.
@@ -31,7 +31,7 @@ use binius_math::{
 use binius_utils::rayon;
 use itertools::izip;
 
-use super::gruen32::Gruen32;
+use super::eq_tracker::EqTracker;
 
 /// Identifier of a column held by an [`MleStore`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +82,7 @@ pub struct MleStore<'a, A: Allocator, P: PackedField> {
 	/// Number of logical columns, counting each [`Column::SplitHalf`] entry as two. This is the
 	/// number of assigned [`ColId`]s and the length of the [`Self::final_evals`] output.
 	n_cols: usize,
-	eq_trackers: Vec<Gruen32<P>>,
+	eq_trackers: Vec<EqTracker<P>>,
 	/// Allocator the owned/promoted columns are drawn from; borrowed for `'a`.
 	alloc: &'a A,
 }
@@ -179,7 +179,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			.iter()
 			.position(|tracker| &tracker.eval_point()[..self.n_vars] == eval_point);
 		let index = existing.unwrap_or_else(|| {
-			self.eq_trackers.push(Gruen32::new(eval_point));
+			self.eq_trackers.push(EqTracker::new(eval_point));
 			self.eq_trackers.len() - 1
 		});
 		EqId(index)
@@ -190,7 +190,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 	/// The expansion has `n_vars() - 1` variables: the tracker keeps the indicator folded on the
 	/// variable currently being bound.
 	pub fn eq_expansion(&self, id: EqId) -> &FieldBuffer<P> {
-		self.eq_trackers[id.0].eq_expansion()
+		self.eq_trackers[id.0].expansion()
 	}
 
 	/// Returns the equality-indicator expansion of every registered tracker, in [`EqId`] order.
@@ -201,7 +201,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 	pub fn eq_expansions(&self) -> Vec<&FieldBuffer<P>> {
 		self.eq_trackers
 			.iter()
-			.map(|tracker| tracker.eq_expansion())
+			.map(|tracker| tracker.expansion())
 			.collect()
 	}
 
@@ -443,7 +443,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			.eq_trackers
 			.iter_mut()
 			.map(|tracker| {
-				let data = tracker.eq_expansion_mut().as_mut();
+				let data = tracker.expansion_mut().as_mut();
 				debug_assert_eq!(data.len(), 1 << (n_vars - P::LOG_WIDTH));
 
 				let (seg_0, seg_1) = data.split_at_mut(1 << (n_vars - 1 - P::LOG_WIDTH));
@@ -662,7 +662,7 @@ impl<'a, P: PackedField> PreFoldEvaluationChunk<'a, P> {
 /// The store has not folded this round yet, so every value here is the current round's.
 pub struct RoundContext<'a, P: PackedField> {
 	n_vars: usize,
-	eq_trackers: &'a [Gruen32<P>],
+	eq_trackers: &'a [EqTracker<P>],
 }
 
 impl<F: Field, P: PackedField<Scalar = F>> RoundContext<'_, P> {

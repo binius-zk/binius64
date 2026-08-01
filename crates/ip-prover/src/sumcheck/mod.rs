@@ -6,7 +6,7 @@ pub mod bivariate_product_evaluator;
 pub mod bivariate_product_mle;
 pub mod common;
 mod drive;
-pub mod gruen32;
+pub mod eq_tracker;
 pub mod mle_store;
 mod mle_to_sumcheck;
 pub mod multilinear_eval;

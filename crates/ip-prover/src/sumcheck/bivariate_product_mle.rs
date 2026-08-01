@@ -46,8 +46,8 @@ use crate::sumcheck::common::MleCheckProver;
 ///   interpolated
 ///
 /// After computing the round polynomial for $P'(x)$ in monomial form, one can simply multiply by
-/// (2) and (1) in polynomial form. For more details, see [`Gruen32`]('gruen32::Gruen32') struct and
-/// [Gruen24] Section 3.2.
+/// (2) and (1) in polynomial form. For more details, see the
+/// [equality trackers](crate::sumcheck::eq_tracker) and [Gruen24] Section 3.2.
 ///
 /// Note 1: as evident from the definition, this prover binds variables in high-to-low index order.
 ///
