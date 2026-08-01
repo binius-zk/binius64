@@ -14,9 +14,12 @@ use super::{
 /// MLE-check round evaluator for one quadratic composition over N store columns.
 ///
 /// This is the store-backed successor of the quadratic MLE-check prover: it evaluates the
-/// composition in one pass per round, using the Gruen32-style degree-2 interpolation trick. Batch
+/// composition in one pass per round, using the degree-2 interpolation of [Gruen24] section 3.2.
+/// Batch
 /// several quadratic MLE checks by registering one evaluator per claim on a shared store; they read
 /// the shared columns from the same round pass.
+///
+/// [Gruen24]: <https://eprint.iacr.org/2024/108>
 ///
 /// The evaluator emits the prime (eq-factored) round polynomial of the MLE-check protocol. Wrap it
 /// in [`MleToSumCheckEvaluator`](super::MleToSumCheckEvaluator) to emit a regular sumcheck round

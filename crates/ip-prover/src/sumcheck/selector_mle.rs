@@ -9,7 +9,7 @@ use itertools::izip;
 
 use super::{
 	common::SumcheckProver,
-	gruen32::Gruen32,
+	eq_tracker::ChunkedEqTracker,
 	round_evals::{RoundEvals2, WideRoundEvals2},
 	round_state::RoundState,
 	switchover::BinarySwitchover,
@@ -36,7 +36,7 @@ pub struct Claim<F: Field> {
 pub struct SelectorMlecheckProver<'b, P: PackedField, B: Bitwise> {
 	last_coeffs_or_sums: RoundState<Vec<RoundCoeffs<P::Scalar>>, Vec<P::Scalar>>,
 	selected: FieldBuffer<P>,
-	gruen32s: Vec<Gruen32<P>>,
+	eq_trackers: Vec<ChunkedEqTracker<P>>,
 	weights: Vec<P::Scalar>,
 	switchover: BinarySwitchover<'b, P, B>,
 }
@@ -77,9 +77,9 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProve
 		);
 
 		const MAX_CHUNK_VARS: usize = 8;
-		let (gruen32s, sums) = claims
+		let (eq_trackers, sums) = claims
 			.into_par_iter()
-			.map(|Claim { point, value }| (Gruen32::new_with_suffix(MAX_CHUNK_VARS, &point), value))
+			.map(|Claim { point, value }| (ChunkedEqTracker::new(MAX_CHUNK_VARS, &point), value))
 			.collect::<(Vec<_>, Vec<_>)>();
 
 		let switchover = BinarySwitchover::new(sums.len(), switchover.min(n_vars), bitmasks);
@@ -88,7 +88,7 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProve
 		Self {
 			last_coeffs_or_sums,
 			selected,
-			gruen32s,
+			eq_trackers,
 			weights,
 			switchover,
 		}
@@ -115,8 +115,10 @@ where
 			RoundState::Claim(sums) => sums.clone(),
 			// This prover has a separate evaluation point per claim, so each round polynomial is
 			// interpolated against its own coordinate.
-			RoundState::Coeffs(coeffs) => izip!(coeffs, &self.gruen32s)
-				.map(|(coeffs, gruen32)| coeffs.lerp_over_endpoints(gruen32.next_coordinate()))
+			RoundState::Coeffs(coeffs) => izip!(coeffs, &self.eq_trackers)
+				.map(|(coeffs, eq_tracker)| {
+					coeffs.lerp_over_endpoints(eq_tracker.next_coordinate())
+				})
 				.collect(),
 		};
 		// Combine the per-claim values into the single weighted claim `Σ_i weights[i] · m_i`.
@@ -133,14 +135,14 @@ where
 		// composition on its own pass, but that would require reading the entirety of eq field
 		// buffer on each pass, which will evict the latter from the cache. By doing chunked
 		// compute, we reasonably hope that eq chunk always stays in L1 cache. We can also
-		// leverage the outer product representation of the eq indicator in the Gruen32 struct.
+		// leverage the outer product representation of the eq indicator.
 		//
 		// We also do switchover there, which by definition requires small scratchpads to hold
 		// large field partial evaluations of the transparent multilinears.
 		let chunk_vars = self
-			.gruen32s
+			.eq_trackers
 			.first()
-			.map(|gruen32| gruen32.chunk_eq_expansion().log_len())
+			.map(|eq_tracker| eq_tracker.chunk().log_len())
 			.unwrap_or_default();
 		let chunk_count = 1 << (self.n_vars() - 1 - chunk_vars);
 
@@ -160,11 +162,11 @@ where
 					let selected_0_chunk = selected_0.chunk(chunk_vars, chunk_index);
 					let selected_1_chunk = selected_1.chunk(chunk_vars, chunk_index);
 
-					for (bit_offset, (round_evals, gruen32)) in
-						izip!(&mut packed_prime_evals, &self.gruen32s).enumerate()
+					for (bit_offset, (round_evals, eq_tracker)) in
+						izip!(&mut packed_prime_evals, &self.eq_trackers).enumerate()
 					{
-						let eq_chunk = gruen32.chunk_eq_expansion();
-						let eq_suffix_eval = gruen32.suffix_eq_expansion().get(chunk_index);
+						let eq_chunk = eq_tracker.chunk();
+						let eq_suffix_eval = eq_tracker.suffix().get(chunk_index);
 
 						let selector_0_chunk = self.switchover.get_chunk(
 							&mut binary_chunk_0,
@@ -220,9 +222,9 @@ where
 			);
 
 		// This prover has multiple evaluation points and cannot implement MleCheckProver.
-		let (prime_coeffs, round_coeffs) = izip!(&self.gruen32s, sums, packed_prime_evals)
-			.map(|(gruen32, &sum, packed_prime_evals)| {
-				gruen32.interpolate2(sum, packed_prime_evals.sum_scalars(self.n_vars() - 1))
+		let (prime_coeffs, round_coeffs) = izip!(&self.eq_trackers, sums, packed_prime_evals)
+			.map(|(eq_tracker, &sum, packed_prime_evals)| {
+				eq_tracker.interpolate2(sum, packed_prime_evals.sum_scalars(self.n_vars() - 1))
 			})
 			.unzip::<_, _, Vec<_>, Vec<_>>();
 
@@ -246,9 +248,9 @@ where
 			.map(|coeffs| coeffs.evaluate(&challenge))
 			.collect();
 
-		self.gruen32s
+		self.eq_trackers
 			.par_iter_mut()
-			.for_each(|gruen32| gruen32.fold(challenge));
+			.for_each(|eq_tracker| eq_tracker.fold(challenge));
 
 		self.switchover.fold(challenge);
 		fold_highest_var_inplace(&mut self.selected, challenge);
@@ -259,7 +261,7 @@ where
 	fn finish(self) -> Vec<F> {
 		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
-		let mut multilinear_evals = Vec::with_capacity(self.gruen32s.len() + 1);
+		let mut multilinear_evals = Vec::with_capacity(self.eq_trackers.len() + 1);
 
 		for selector in self.switchover.finalize() {
 			debug_assert_eq!(selector.log_len(), 0);
