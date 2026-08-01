@@ -1,8 +1,8 @@
 hashsign circuit
 --
 Gates & Instructions
-├─ Number of gates: 413,082
-└─ Number of evaluation instructions: 413,730
+├─ Number of gates: 409,566
+└─ Number of evaluation instructions: 410,214
 
 Constraints
 ├─ ZERO constraints: 110,514 used (84.3% of 2^17)
@@ -28,5 +28,5 @@ Value Vector
 │  └─ Internal: 253,173
 ├─ Total Committed: 255,133 used (97.3% of 2^18)
 │  [▓▓▓▓▓▓▓▓▓░] spare: 7,011
-└─ Scratch (uncommitted): 308,394 (peak live: 595)
+└─ Scratch (uncommitted): 304,878 (peak live: 595)
 

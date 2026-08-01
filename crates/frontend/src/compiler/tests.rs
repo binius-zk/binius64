@@ -89,6 +89,99 @@ fn test_algebraic_fold_bxor_self_is_zero_in_witness() {
 	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
 }
 
+#[test]
+fn test_constant_arithmetic_folds_to_a_constant_wire() {
+	// A gate whose operands are all known needs no gate at all.
+	// The builder computes the result and hands back the interned constant for that value.
+	//
+	// Invariant: the folded wire is the wire that value would intern to on its own.
+	//
+	// Fixture state:
+	//
+	//     a   = 0x0123456789abcdef
+	//     b   = 0xfedcba9876543210
+	//     cin = 0
+	let a = Word(0x0123_4567_89ab_cdef);
+	let b = Word(0xfedc_ba98_7654_3210);
+	let builder = CircuitBuilder::new();
+	let a_wire = builder.add_constant(a);
+	let b_wire = builder.add_constant(b);
+	let zero_wire = builder.add_constant(Word::ZERO);
+
+	// One shift of each family, since all of them route through the same fold.
+	// Left and right drop the bits they push out.
+	// The arithmetic one keeps the sign bit.
+	// The rotation keeps every bit.
+	assert_eq!(builder.shl(a_wire, 8), builder.add_constant(a << 8));
+	assert_eq!(builder.shr(a_wire, 8), builder.add_constant(a >> 8));
+	assert_eq!(builder.sar(a_wire, 8), builder.add_constant(a.sar(8)));
+	assert_eq!(builder.rotr(a_wire, 8), builder.add_constant(a.rotr(8)));
+
+	// The carry-chain gates fold both outputs, not just the sum.
+	// A wrong carry word would leave the sum right, so it is asserted separately.
+	let (sum, cout) = builder.iadd_cin_cout(a_wire, b_wire, zero_wire);
+	let (want_sum, want_cout) = a.iadd_cin_cout(b, Word::ZERO);
+	assert_eq!(sum, builder.add_constant(want_sum));
+	assert_eq!(cout, builder.add_constant(want_cout));
+
+	// The subtraction folds its borrow word on the same footing.
+	let (diff, bout) = builder.isub_bin_bout(a_wire, b_wire, zero_wire);
+	let (want_diff, want_bout) = a.isub_bin_bout(b, Word::ZERO);
+	assert_eq!(diff, builder.add_constant(want_diff));
+	assert_eq!(bout, builder.add_constant(want_bout));
+
+	// The half-wise addition adds the two 32-bit lanes independently.
+	// A carry out of the low lane must not leak into the high one.
+	assert_eq!(builder.iadd_32(a_wire, b_wire), builder.add_constant(a.iadd_cout_32(b).0));
+}
+
+#[test]
+fn test_constant_chain_costs_no_constraints() {
+	// A message-schedule round of a hash mixes a word with rotations and shifts of itself, then
+	// folds the result in with a carry-chain addition:
+	//
+	//     s = rotr(k, 1) ^ rotr(k, 8) ^ shr(k, 7)
+	//     w = k + s
+	//
+	// Over a padding block every input to that is fixed at build time.
+	// So the whole round is known before proving starts.
+	//
+	// Invariant: a chain of gates on constants leaves the constraint system carrying nothing.
+	//
+	// Fixture state: one constant word, and one public output to observe the result through.
+	let k = Word(0x8000_0000_0000_0000);
+	let builder = CircuitBuilder::new();
+	let k_wire = builder.add_constant(k);
+	let zero_wire = builder.add_constant(Word::ZERO);
+
+	let mixed = builder.bxor(
+		builder.bxor(builder.rotr(k_wire, 1), builder.rotr(k_wire, 8)),
+		builder.shr(k_wire, 7),
+	);
+	let (folded, _carry) = builder.iadd_cin_cout(k_wire, mixed, zero_wire);
+
+	// Asserting against a public output keeps the dead-code pass from deleting the chain.
+	// Without it the counts below would pass for the wrong reason.
+	let out = builder.add_inout();
+	builder.assert_eq("folded", folded, out);
+
+	let circuit = builder.build();
+	let stat = crate::CircuitStat::collect(&circuit);
+
+	// The equality assertion is the one thing left.
+	// The four gates of the chain cost nothing.
+	assert_eq!(stat.n_and_constraints, 1);
+	assert_eq!(stat.n_zero_constraints, 0);
+
+	// Cheap is only correct if the value survived.
+	// Recompute it the long way and check the circuit accepts it.
+	let mixed_val = k.rotr(1) ^ k.rotr(8) ^ (k >> 7);
+	let mut w = circuit.new_witness_filler();
+	w[out] = k.iadd_cin_cout(mixed_val, Word::ZERO).0;
+	circuit.populate_wire_witness(&mut w).unwrap();
+	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+}
+
 /// Builds `assert_eq(x ^ y, z)`.
 ///
 /// Gate fusion is off so that the `bxor` gate keeps its own linear constraint instead of being

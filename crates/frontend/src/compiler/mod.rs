@@ -720,8 +720,14 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint, 1 linear constraint.
+	/// 1 AND constraint and 1 linear constraint, or none when both operands are constant.
 	pub fn iadd_32(&self, a: Wire, b: Wire) -> Wire {
+		// Invariant: a sum of two constants is itself known at build time.
+		// So the gate, and both constraints it would emit, fall away.
+		if let (Some(x), Some(y)) = (self.const_of(a), self.const_of(b)) {
+			let (sum, _cout) = x.iadd_cout_32(y);
+			return self.add_constant(sum);
+		}
 		let sum = self.add_internal();
 		let cout = self.add_internal();
 		let mut graph = self.graph_mut();
@@ -741,8 +747,16 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint, 1 linear constraint.
+	/// 1 AND constraint and 1 linear constraint, or none when every operand is constant.
 	pub fn iadd32_cin_cout(&self, a: Wire, b: Wire, cin: Wire) -> (Wire, Wire) {
+		// Invariant: both 32-bit halves of a constant addition are known at build time.
+		// The carry word is too, so both outputs fold.
+		if let (Some(x), Some(y), Some(c)) =
+			(self.const_of(a), self.const_of(b), self.const_of(cin))
+		{
+			let (sum, cout) = x.iadd32_cin_cout(y, c);
+			return (self.add_constant(sum), self.add_constant(cout));
+		}
 		let sum = self.add_internal();
 		let cout = self.add_internal();
 		let mut graph = self.graph_mut();
@@ -763,7 +777,18 @@ impl CircuitBuilder {
 	///
 	/// - 1 AND constraint,
 	/// - 1 linear constraint.
+	///
+	/// Both fall away when every operand is constant.
 	pub fn iadd_cin_cout(&self, a: Wire, b: Wire, cin: Wire) -> (Wire, Wire) {
+		// Invariant: a sum of constants is known at build time, carry word included.
+		// The carry in travels in the most significant bit.
+		// Witness evaluation reads it from there, so the fold must read it the same way.
+		if let (Some(x), Some(y), Some(c)) =
+			(self.const_of(a), self.const_of(b), self.const_of(cin))
+		{
+			let (sum, cout) = x.iadd_cin_cout(y, c >> 63);
+			return (self.add_constant(sum), self.add_constant(cout));
+		}
 		let sum = self.add_internal();
 		let cout = self.add_internal();
 		let mut graph = self.graph_mut();
@@ -784,7 +809,18 @@ impl CircuitBuilder {
 	///
 	/// - 1 AND constraint,
 	/// - 1 linear constraint.
+	///
+	/// Both fall away when every operand is constant.
 	pub fn isub_bin_bout(&self, a: Wire, b: Wire, bin: Wire) -> (Wire, Wire) {
+		// Invariant: a difference of constants is known at build time, borrow word included.
+		// The borrow in travels in the most significant bit.
+		// Witness evaluation reads it from there, so the fold must read it the same way.
+		if let (Some(x), Some(y), Some(bo)) =
+			(self.const_of(a), self.const_of(b), self.const_of(bin))
+		{
+			let (diff, bout) = x.isub_bin_bout(y, bo >> 63);
+			return (self.add_constant(diff), self.add_constant(bout));
+		}
 		let diff = self.add_internal();
 		let bout = self.add_internal();
 		let mut graph = self.graph_mut();
@@ -797,6 +833,14 @@ impl CircuitBuilder {
 	/// The variant and amount are carried as the gate's two immediates.
 	/// The caller enforces the amount range and any identity fast-paths.
 	fn emit_shift(&self, variant: ShiftVariant, x: Wire, n: u32) -> Wire {
+		// Invariant: shifting a constant yields a constant, for every variant and amount.
+		// So the gate and its constraint fall away.
+		//
+		// Why: the fold applies the very operation witness evaluation would have applied.
+		// That is what keeps a circuit that folded equal to one that did not.
+		if let Some(v) = self.const_of(x) {
+			return self.add_constant(variant.apply(v, n as usize));
+		}
 		let z = self.add_internal();
 		let mut graph = self.graph_mut();
 		graph.emit_gate_generic(
@@ -823,7 +867,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint (0 if n = 0).
+	/// 1 AND constraint, or none when the amount is zero or the operand is constant.
 	pub fn rotl32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "rotate amount n={n} out of range");
 		if n == 0 {
@@ -845,7 +889,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint (0 if n = 0).
+	/// 1 AND constraint, or none when the amount is zero or the operand is constant.
 	pub fn rotr32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "rotate amount n={n} out of range");
 		if n == 0 {
@@ -867,7 +911,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint (0 if n = 0).
+	/// 1 AND constraint, or none when the amount is zero or the operand is constant.
 	pub fn rotl(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 64, "rotate amount n={n} out of range");
 		if n == 0 {
@@ -889,7 +933,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint (0 if n = 0).
+	/// 1 AND constraint, or none when the amount is zero or the operand is constant.
 	pub fn rotr(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 64, "rotate amount n={n} out of range");
 		if n == 0 {
@@ -944,7 +988,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint, or none when the operand is constant.
 	pub fn shl(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
 		self.emit_shift(ShiftVariant::Sll, a, n)
@@ -958,7 +1002,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint, or none when the operand is constant.
 	pub fn shr(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
 		self.emit_shift(ShiftVariant::Slr, a, n)
@@ -972,7 +1016,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint, or none when the operand is constant.
 	pub fn sar(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
 		self.emit_shift(ShiftVariant::Sar, a, n)
