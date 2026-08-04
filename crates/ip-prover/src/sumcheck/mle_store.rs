@@ -538,45 +538,39 @@ impl<'a, P: PackedField> PreFoldColumnChunk<'a, P> {
 		}
 	}
 
-	/// Folds the segments and returns the folded output slice.
-	fn fold(self, challenge_broadcast: &P) -> &'a [P] {
+	/// Combines the two segments with `combine` and returns the output slice.
+	///
+	/// The in-place form reads its low half out of the destination it overwrites.
+	/// The out-of-place form reads both halves from the borrowed source.
+	fn fold_with(self, combine: impl Fn(P, P) -> P) -> &'a [P] {
 		match self {
 			Self::InPlace { seg_0, seg_1 } => {
 				for (out, &hi) in iter::zip(&mut *seg_0, seg_1) {
-					*out = extrapolate_line_packed(*out, hi, *challenge_broadcast);
+					*out = combine(*out, hi);
 				}
 				seg_0
 			}
 			Self::OutOfPlace { dst, seg_0, seg_1 } => {
 				for (out, &lo, &hi) in izip!(&mut *dst, seg_0, seg_1) {
-					*out = extrapolate_line_packed(lo, hi, *challenge_broadcast);
+					*out = combine(lo, hi);
 				}
 				dst
 			}
 		}
 	}
 
-	/// Contracts the eq expansion by summing its halves, and returns the folded output slice.
+	/// Folds a column half, interpolating its two segments on the round's variable.
+	fn fold(self, challenge_broadcast: &P) -> &'a [P] {
+		self.fold_with(|lo, hi| extrapolate_line_packed(lo, hi, *challenge_broadcast))
+	}
+
+	/// Contracts an eq expansion by summing its two segments.
 	///
-	/// Eq-indicator folding sums the two halves (the [Gruen24] technique's part (3)), rather than
-	/// interpolating them as [`Self::fold`] does for columns.
+	/// Summing marginalises the bound variable out, which is part (3) of the [Gruen24] split.
 	///
 	/// [Gruen24]: <https://eprint.iacr.org/2024/108>
 	fn fold_eq(self) -> &'a [P] {
-		match self {
-			Self::InPlace { seg_0, seg_1 } => {
-				for (out, &hi) in iter::zip(&mut *seg_0, seg_1) {
-					*out += hi;
-				}
-				seg_0
-			}
-			Self::OutOfPlace { dst, seg_0, seg_1 } => {
-				for (out, &lo, &hi) in izip!(&mut *dst, seg_0, seg_1) {
-					*out = lo + hi;
-				}
-				dst
-			}
-		}
+		self.fold_with(|lo, hi| lo + hi)
 	}
 }
 
