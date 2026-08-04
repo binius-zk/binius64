@@ -334,7 +334,7 @@ mod tests {
 		protocols::shift::{build_key_collection, monster::build_h_parts},
 	};
 	use binius_transcript::ProverTranscript;
-	use binius_utils::checked_arithmetics::{checked_log_2, log2_ceil_usize};
+	use binius_utils::checked_arithmetics::log2_ceil_usize;
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
@@ -439,7 +439,10 @@ mod tests {
 			let layout = table.layout();
 			let offset = layout.offset_witness;
 			let n_committed = layout.combined_len() - offset;
-			let log_committed = checked_log_2(n_committed);
+			// The hidden segment holds one word per witness and internal value, with no padding
+			// up to a power of two. Only the public segment is padded that way. So the word axis
+			// spans the next power of two and the positions past the real words read as zero.
+			let log_committed = log2_ceil_usize(n_committed);
 
 			// The instance-fold point, and a fresh point over the (bit, word) axes.
 			let r_rho = random_scalars::<B128>(&mut rng, log_instances);
@@ -455,12 +458,18 @@ mod tests {
 			// evaluate the resulting (word, instance) multilinear over the word and instance axes.
 			let bit_tensor = eq_ind_partial_eval_scalars::<B128>(r_bit);
 
-			// Gather the committed words of every instance, instance-major: index = rho *
-			// n_committed + w. Each instance is reconstructed independently of the fold under test.
-			let mut committed = Vec::with_capacity(n_instances * n_committed);
+			// Gather the committed words of every instance, instance-major:
+			//
+			//     index = rho * 2^log_committed + w
+			//
+			// The stride is the padded word axis, so an instance that does not fill it leaves
+			// zeros behind. Each instance is reconstructed independently of the fold under test.
+			let stride = 1usize << log_committed;
+			let mut committed = vec![Word::ZERO; n_instances * stride];
 			for rho in 0..n_instances {
 				let vv = table.instance_value_vec(rho, constants);
-				committed.extend_from_slice(&vv.combined_witness()[offset..]);
+				let words = &vv.combined_witness()[offset..];
+				committed[rho * stride..][..words.len()].copy_from_slice(words);
 			}
 			let folded_words = fold_words::<B128, P, _>(&GlobalAllocator, &committed, &bit_tensor);
 
@@ -531,11 +540,14 @@ mod tests {
 	// `r_y`.
 	fn evaluate_folded_witness(folded: &[FoldedWord<B128>], r_j: &[B128], r_y: &[B128]) -> B128 {
 		let r_j_tensor = eq_ind_partial_eval::<B128>(r_j);
-		let per_word: Vec<B128> = folded
-			.iter()
-			.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied()))
-			.collect();
 		let r_y_tensor = eq_ind_partial_eval::<B128>(r_y);
+
+		// The word axis spans a power of two, which the committed segment need not fill.
+		// The positions past the real words contribute nothing, so they stay zero.
+		let mut per_word = vec![B128::ZERO; r_y_tensor.as_ref().len()];
+		for (word, out) in iter::zip(folded, &mut per_word) {
+			*out = inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied());
+		}
 		inner_product(per_word.iter().copied(), r_y_tensor.as_ref().iter().copied())
 	}
 
