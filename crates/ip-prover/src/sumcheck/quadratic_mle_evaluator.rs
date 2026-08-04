@@ -205,7 +205,7 @@ mod tests {
 	use std::{array, iter};
 
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Random, arch::OptimalPackedB128, field::FieldOps};
+	use binius_field::{arch::OptimalPackedB128, field::FieldOps};
 	use binius_ip::mlecheck;
 	use binius_math::{
 		FieldBuffer,
@@ -217,7 +217,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::{common::SumcheckProver, prove_single_mlecheck};
+	use crate::sumcheck::prove_single_mlecheck;
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
@@ -320,43 +320,5 @@ mod tests {
 			|[a, b, c, d]| (a + b) * (c + d),
 			|[a, b, c, d]| (a + b) * (c + d),
 		);
-	}
-
-	#[test]
-	fn test_round_claim_lerp_recovery() {
-		type P = OptimalPackedB128;
-		type F = <P as FieldOps>::Scalar;
-
-		let n_vars = 8;
-		let mut rng = StdRng::seed_from_u64(0);
-		let alloc = GlobalAllocator;
-
-		let multilinears: [_; 2] = array::from_fn(|_| random_field_buffer::<P>(&mut rng, n_vars));
-		let composition = |[a, b]: [P; 2]| a * b;
-		let composite_vals = (0..1 << n_vars.saturating_sub(P::LOG_WIDTH))
-			.map(|i| composition(array::from_fn(|j| multilinears[j].as_ref()[i])))
-			.collect_vec();
-		let composite_vals = FieldBuffer::new(n_vars, composite_vals);
-		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate(&composite_vals, &eval_point);
-
-		let mut prover = quadratic_mlecheck_prover(
-			&alloc,
-			multilinears,
-			composition,
-			composition,
-			eval_point,
-			eval_claim,
-		);
-
-		let mut expected = vec![eval_claim];
-		for _ in 0..n_vars {
-			assert_eq!(prover.round_claim(), expected, "claim before execute");
-			let round = prover.execute();
-			assert_eq!(prover.round_claim(), expected, "claim recovered from coeffs");
-			let challenge = F::random(&mut rng);
-			expected = round.iter().map(|r| r.evaluate(&challenge)).collect();
-			prover.fold(challenge);
-		}
 	}
 }

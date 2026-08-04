@@ -31,11 +31,6 @@ pub trait SumcheckProver<F: Field> {
 	/// variable with a concrete challenge.
 	fn n_vars(&self) -> usize;
 
-	/// Returns the number of claims (composite polynomials) being proved.
-	///
-	/// This is the expected length of the Vec returned by [`Self::execute`].
-	fn n_claims(&self) -> usize;
-
 	/// Computes the prover messages for this round as a univariate polynomial.
 	///
 	/// If [`Self::fold`] has already been called on the prover with the values $r_0$, ...,
@@ -49,22 +44,8 @@ pub trait SumcheckProver<F: Field> {
 	/// For high-to-low evaluation order the variables are specified in reverse order (starting with
 	/// the highest indexed one) and hypercube sums are performed over the lower indexed variables.
 	///
-	/// The returned Vec must have length equal to [`Self::n_claims`].
+	/// One entry per claim the prover carries.
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>>;
-
-	/// Returns the claimed sums for the current round, one per claim.
-	///
-	/// The returned Vec has length equal to [`Self::n_claims`]. For claim $i$, this is the value
-	/// $s_i$ that the round polynomial $R_i$ returned by [`Self::execute`] satisfies via the
-	/// sumcheck identity $s_i = R_i(0) + R_i(1)$.
-	///
-	/// This may be called either before [`Self::execute`] (when the prover holds the claim sums
-	/// directly) or after it (when the prover holds the round coefficients, in which case the value
-	/// is recovered from them). A regular sumcheck prover recovers it as $R_i(0) + R_i(1)$ (see
-	/// [`RoundCoeffs::sum_over_endpoints`]), while an MLE-check prover (see [`MleCheckProver`])
-	/// recovers it as $(1 - \alpha) R_i(0) + \alpha R_i(1)$ with $\alpha$ the round's coordinate
-	/// (see [`RoundCoeffs::lerp_over_endpoints`]).
-	fn round_claim(&self) -> Vec<F>;
 
 	/// Folds the sumcheck multilinears with a new verifier challenge.
 	fn fold(&mut self, challenge: F);
@@ -84,16 +65,8 @@ where
 		either::for_both!(self, inner => inner.n_vars())
 	}
 
-	fn n_claims(&self) -> usize {
-		either::for_both!(self, inner => inner.n_claims())
-	}
-
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		either::for_both!(self, inner => inner.execute())
-	}
-
-	fn round_claim(&self) -> Vec<F> {
-		either::for_both!(self, inner => inner.round_claim())
 	}
 
 	fn fold(&mut self, challenge: F) {
