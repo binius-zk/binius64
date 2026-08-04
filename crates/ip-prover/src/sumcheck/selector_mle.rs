@@ -105,26 +105,6 @@ where
 		self.selected.log_len()
 	}
 
-	fn n_claims(&self) -> usize {
-		// The per-selector claims are combined into a single weighted claim.
-		1
-	}
-
-	fn round_claim(&self) -> Vec<F> {
-		let per_claim: Vec<F> = match &self.last_coeffs_or_sums {
-			RoundState::Claim(sums) => sums.clone(),
-			// This prover has a separate evaluation point per claim, so each round polynomial is
-			// interpolated against its own coordinate.
-			RoundState::Coeffs(coeffs) => izip!(coeffs, &self.eq_trackers)
-				.map(|(coeffs, eq_tracker)| {
-					coeffs.lerp_over_endpoints(eq_tracker.next_coordinate())
-				})
-				.collect(),
-		};
-		// Combine the per-claim values into the single weighted claim `Σ_i weights[i] · m_i`.
-		vec![izip!(per_claim, &self.weights).map(|(m, &w)| m * w).sum()]
-	}
-
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		let sums = self.last_coeffs_or_sums.claim();
 
@@ -280,7 +260,7 @@ where
 mod tests {
 	use std::iter::repeat_with;
 
-	use binius_field::{FieldOps, Random};
+	use binius_field::FieldOps;
 	use binius_ip::sumcheck::verify;
 	use binius_math::{
 		multilinear::{eq::eq_ind, evaluate::evaluate as multilinear_evaluate},
@@ -420,50 +400,5 @@ mod tests {
 			expected_eval, sumcheck_output.eval,
 			"reduced sumcheck claim must match the composition evaluated at the challenge point"
 		);
-	}
-
-	// `round_claim` must return the same value before and after `execute()`. This prover has a
-	// distinct evaluation point per claim, so it exercises the per-claim coordinate path.
-	#[test]
-	fn test_round_claim_per_claim_coordinate() {
-		let mut rng = StdRng::seed_from_u64(1);
-		let n_vars = 6;
-		let selector_count = 3;
-
-		let selector_mask = (1u16 << selector_count) - 1;
-		let bitmasks = repeat_with(|| rng.random::<u16>() & selector_mask)
-			.take(1 << n_vars)
-			.collect_vec();
-		let selected_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
-		let selected = FieldBuffer::<P>::from_values(&selected_scalars);
-
-		let claims = (0..selector_count)
-			.map(|i| {
-				let selector_scalars = bitmasks
-					.iter()
-					.map(|b| if (b >> i) & 1 == 1 { F::ONE } else { F::ZERO })
-					.collect_vec();
-				// The composition is `selected * selector + (1 - selector)`.
-				let masked = izip!(&selected_scalars, &selector_scalars)
-					.map(|(&selected, &selector)| selected * selector + (F::ONE - selector))
-					.collect_vec();
-				let masked = FieldBuffer::<P>::from_values(&masked);
-				let point = random_scalars::<F>(&mut rng, n_vars);
-				let value = multilinear_evaluate(&masked, &point);
-				Claim { point, value }
-			})
-			.collect_vec();
-
-		let weights = random_scalars::<F>(&mut rng, selector_count);
-		let mut prover = SelectorMlecheckProver::new(selected, claims, &bitmasks, weights, 0);
-
-		for _ in 0..n_vars {
-			// The claim recovered from the round coefficients (post-execute, via lerp against each
-			// claim's coordinate) must equal the stored claim (pre-execute).
-			let before = prover.round_claim();
-			let _ = prover.execute();
-			assert_eq!(prover.round_claim(), before, "claim recovered from coeffs");
-			prover.fold(F::random(&mut rng));
-		}
 	}
 }

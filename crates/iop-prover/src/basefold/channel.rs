@@ -345,7 +345,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 				store,
 				[(sum_prime, BivariateProductEvaluator::new([message_col, transparent_col]))],
 			);
-			PaddedSumcheckDecorator::new(inner, max_n - n_i)
+			PaddedSumcheckDecorator::new(inner, max_n - n_i, vec![sum_prime])
 		})
 		.collect::<Vec<_>>();
 

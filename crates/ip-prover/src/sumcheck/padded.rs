@@ -38,16 +38,28 @@ pub struct PaddedSumcheckDecorator<F: Field, Inner> {
 	round: usize,
 	/// $\prod_{k < \min(\text{round}, n_\text{extra})} \text{eq}(0, r_k)$.
 	eq_prefix: F,
+	/// The inner prover's claimed sums, one per claim.
+	///
+	/// A padding round emits its polynomial from these and leaves the inner prover untouched.
+	/// They are read only during the padding rounds, where the inner claims cannot have moved.
+	claims: Vec<F>,
 }
 
 impl<F: Field, Inner: SumcheckProver<F>> PaddedSumcheckDecorator<F, Inner> {
 	/// Wraps `inner`, padding its claim with `n_extra_vars` extra (highest-indexed) variables.
-	pub const fn new(inner: Inner, n_extra_vars: usize) -> Self {
+	///
+	/// # Arguments
+	///
+	/// * `inner` - The prover whose variable count is being raised.
+	/// * `n_extra_vars` - How many padding variables to prepend.
+	/// * `claims` - The inner prover's claimed sums, one per claim.
+	pub const fn new(inner: Inner, n_extra_vars: usize, claims: Vec<F>) -> Self {
 		Self {
 			inner,
 			n_extra_vars,
 			round: 0,
 			eq_prefix: F::ONE,
+			claims,
 		}
 	}
 
@@ -62,28 +74,16 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 		self.inner.n_vars() + self.n_extra_vars.saturating_sub(self.round)
 	}
 
-	fn n_claims(&self) -> usize {
-		self.inner.n_claims()
-	}
-
-	fn round_claim(&self) -> Vec<F> {
-		// In the padding phase the inner prover is untouched, so its round claim is the original
-		// sum `s`; in the inner phase `eq_prefix` is the full padding product. Either way the
-		// padded round claim is the inner round claim scaled by `eq_prefix`.
-		self.inner
-			.round_claim()
-			.into_iter()
-			.map(|claim| claim * self.eq_prefix)
-			.collect()
-	}
-
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		if self.in_padding_phase() {
 			// R_i(X) = (s * eq_prefix) * eq(0, X), with eq(0, X) = 1 - X. The inner prover is not
 			// touched during padding rounds.
-			self.round_claim()
-				.into_iter()
-				.map(|claim| RoundCoeffs(vec![claim, -claim]))
+			self.claims
+				.iter()
+				.map(|&claim| {
+					let scaled = claim * self.eq_prefix;
+					RoundCoeffs(vec![scaled, -scaled])
+				})
 				.collect()
 		} else {
 			self.inner
@@ -166,7 +166,7 @@ mod tests {
 		// A parallel bare inner prover, driven only on the inner-phase challenges, to compare round
 		// polynomials against.
 		let (mut bare_inner, _) = make_inner(&mut StdRng::seed_from_u64(0), &alloc, n_vars);
-		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
+		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum]);
 
 		let challenges = (0..n_vars + n_extra_vars)
 			.map(|_| F::random(&mut rng))
@@ -200,26 +200,31 @@ mod tests {
 		assert_eq!(padded.n_vars(), 0);
 	}
 
-	/// `round_claim()` called before `execute()` must equal `R(0) + R(1)` of each returned round
-	/// polynomial.
 	#[test]
-	fn test_round_claim_invariant() {
+	fn test_round_polynomials_preserve_the_claim() {
+		// Invariant: every round polynomial sums over its endpoints to the running claim.
+		//
+		// This is the identity the verifier checks each round.
+		// Tracking the claim here independently, as the verifier does, keeps the check honest.
 		let mut rng = StdRng::seed_from_u64(1);
 		let n_vars = 5;
 		let n_extra_vars = 2;
 		let alloc = GlobalAllocator;
 
-		let (inner, _) = make_inner(&mut rng, &alloc, n_vars);
-		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
+		let (inner, sum) = make_inner(&mut rng, &alloc, n_vars);
+		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum]);
 
+		// The running claim starts at the inner prover's sum, before any padding is applied.
+		let mut running = sum;
 		for _ in 0..n_vars + n_extra_vars {
-			let claims = padded.round_claim();
 			let round_coeffs = padded.execute();
-			assert_eq!(claims.len(), round_coeffs.len());
-			for (claim, coeffs) in claims.iter().zip(&round_coeffs) {
-				assert_eq!(*claim, coeffs.sum_over_endpoints());
-			}
-			padded.fold(F::random(&mut rng));
+			assert_eq!(round_coeffs.len(), 1);
+			assert_eq!(running, round_coeffs[0].sum_over_endpoints());
+
+			// The next round's claim is this polynomial at the challenge.
+			let challenge = F::random(&mut rng);
+			running = round_coeffs[0].evaluate(&challenge);
+			padded.fold(challenge);
 		}
 	}
 
@@ -237,7 +242,7 @@ mod tests {
 		let b = random_field_buffer::<P>(&mut rng, n_vars);
 		let sum = inner_product_par(&a, &b);
 		let inner = bivariate_product_prover(&alloc, [a.clone(), b.clone()], sum);
-		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
+		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum]);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove_single(padded, &mut prover_transcript);
@@ -288,7 +293,7 @@ mod tests {
 		let alloc = GlobalAllocator;
 
 		let (inner, sum) = make_inner(&mut rng, &alloc, n_vars);
-		let padded = PaddedSumcheckDecorator::new(inner, 0);
+		let padded = PaddedSumcheckDecorator::new(inner, 0, vec![sum]);
 		assert_eq!(padded.n_vars(), n_vars);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

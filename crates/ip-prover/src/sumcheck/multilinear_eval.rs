@@ -190,9 +190,6 @@ mod tests {
 			assert_eq!(quadratic_round[0].0.pop(), Some(F::ZERO));
 			assert_eq!(eval_round[0], quadratic_round[0]);
 
-			// `round_claim` must agree across both provers and be stable across execute.
-			assert_eq!(eval_prover.round_claim(), quadratic_prover.round_claim());
-
 			let challenge = F::random(&mut rng);
 			eval_prover.fold(challenge);
 			quadratic_prover.fold(challenge);
@@ -233,31 +230,5 @@ mod tests {
 		let mut reduced_point = sumcheck_output.challenges;
 		reduced_point.reverse();
 		assert_eq!(evaluate(&witness, &reduced_point), multilinear_evals[0]);
-	}
-
-	// `round_claim` must return the same value before and after `execute` (lerp recovery), and the
-	// post-fold claim must equal the round polynomial evaluated at the challenge.
-	#[test]
-	fn test_round_claim_invariant() {
-		let mut rng = StdRng::seed_from_u64(2);
-		let n_vars = 6;
-		let alloc = GlobalAllocator;
-
-		let witness = random_field_buffer::<P>(&mut rng, n_vars);
-		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate(&witness, &eval_point);
-
-		let mut prover = multilinear_eval_prover(&alloc, witness, &eval_point, eval_claim);
-		assert_eq!(prover.round_claim(), vec![eval_claim]);
-
-		for _ in 0..n_vars {
-			let before = prover.round_claim();
-			let round = prover.execute();
-			assert_eq!(prover.round_claim(), before);
-			let challenge = F::random(&mut rng);
-			let expected_next = round[0].evaluate(&challenge);
-			prover.fold(challenge);
-			assert_eq!(prover.round_claim(), vec![expected_next]);
-		}
 	}
 }

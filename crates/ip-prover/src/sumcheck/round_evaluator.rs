@@ -243,30 +243,10 @@ where
 		self.store.n_vars() - self.buffered_challenge.is_some() as usize
 	}
 
-	/// Returns the number of claims in the group.
-	const fn n_claims(&self) -> usize {
-		self.evaluators.len()
-	}
-
 	/// Adds one more claim, reading the same store, after the existing ones.
 	fn push_claim(&mut self, claim: F, evaluator: Evaluator) {
 		self.evaluators.push(evaluator);
 		self.round_states.push(RoundState::Claim(claim));
-	}
-
-	/// Returns the claim each of this round's polynomials must satisfy.
-	///
-	/// A claim held directly is returned as is.
-	/// One already turned into coefficients is read back out by `recover`, which differs per
-	/// protocol.
-	fn round_claims(&self, recover: impl Fn(&RoundCoeffs<F>) -> F) -> Vec<F> {
-		self.round_states
-			.iter()
-			.map(|state| match state {
-				RoundState::Claim(claim) => *claim,
-				RoundState::Coeffs(coeffs) => recover(coeffs),
-			})
-			.collect()
 	}
 
 	/// Interpolates every claim's round polynomial, then records it for the coming fold.
@@ -399,16 +379,6 @@ where
 {
 	fn n_vars(&self) -> usize {
 		self.group.n_vars()
-	}
-
-	fn n_claims(&self) -> usize {
-		self.group.n_claims()
-	}
-
-	fn round_claim(&self) -> Vec<F> {
-		// A regular sumcheck polynomial carries its claim as the sum over the endpoints 0 and 1.
-		self.group
-			.round_claims(|coeffs| coeffs.sum_over_endpoints())
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
@@ -573,21 +543,6 @@ where
 {
 	fn n_vars(&self) -> usize {
 		self.group.n_vars()
-	}
-
-	fn n_claims(&self) -> usize {
-		self.group.n_claims()
-	}
-
-	fn round_claim(&self) -> Vec<F> {
-		// A prime polynomial carries its claim as the eq-weighted blend of its endpoints.
-		// The blending coordinate is the highest of the point's coordinates still unbound.
-		// It is read only where coefficients are held, and that state is gone once every variable
-		// is bound, so this stays valid to call at zero remaining variables.
-		self.group.round_claims(|coeffs| {
-			let alpha = self.eval_point[self.group.n_vars() - 1];
-			coeffs.lerp_over_endpoints(alpha)
-		})
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {

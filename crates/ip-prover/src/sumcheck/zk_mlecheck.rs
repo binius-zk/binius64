@@ -267,21 +267,6 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		self.n_vars_remaining
 	}
 
-	fn n_claims(&self) -> usize {
-		1
-	}
-
-	fn round_claim(&self) -> Vec<F> {
-		let claim = match &self.last_coeffs_or_claim {
-			RoundState::Claim(claim) => *claim,
-			RoundState::Coeffs(coeffs) => {
-				let alpha = self.eval_point[self.n_vars_remaining - 1];
-				coeffs.lerp_over_endpoints(alpha)
-			}
-		};
-		vec![claim]
-	}
-
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		self.last_coeffs_or_claim.claim();
 
@@ -361,8 +346,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckPr
 ///
 /// # Arguments
 ///
-/// * `main_prover` - The MLE-check prover for the main polynomial. Must have exactly one claim
-///   (i.e., `n_claims() == 1`).
+/// * `main_prover` - The MLE-check prover for the main polynomial. Must carry exactly one claim.
 /// * `mask` - The mask polynomial.
 /// * `channel` - The channel for sending prover messages and sampling challenges
 ///
@@ -373,19 +357,12 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckPr
 ///
 /// # Panics
 ///
-/// Panics if `main_prover.n_claims() != 1`.
+/// Panics if the main prover emits more than one round polynomial.
 pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 	mut main_prover: impl MleCheckProver<F>,
 	mask: Mask<P, Data>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> ProveZKOutput<F> {
-	assert_eq!(
-		main_prover.n_claims(),
-		1,
-		"prove requires main_prover to have exactly 1 claim, but it has {}",
-		main_prover.n_claims()
-	);
-
 	let n_vars = main_prover.n_vars();
 	let eval_point = main_prover.eval_point().to_vec();
 
@@ -403,7 +380,13 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 	for _ in 0..n_vars {
 		// Execute both provers
 		let mut main_round_coeffs_vec = main_prover.execute();
-		let main_round_coeffs = main_round_coeffs_vec.pop().expect("n_claims == 1");
+		assert_eq!(
+			main_round_coeffs_vec.len(),
+			1,
+			"prove requires a main prover with one claim, but it emitted {}",
+			main_round_coeffs_vec.len()
+		);
+		let main_round_coeffs = main_round_coeffs_vec.pop().expect("length checked above");
 
 		let mut mask_round_coeffs_vec = mask_prover.execute();
 		let mask_round_coeffs = mask_round_coeffs_vec
