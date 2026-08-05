@@ -7,8 +7,10 @@
 
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
+use binius_math::{inner_product::inner_product, multilinear::eq::eq_ind_partial_eval};
+use binius_verifier::config::B128;
 
-use crate::ValueTable;
+use crate::{ValueTable, witness::FoldedWord};
 
 /// The CRC-64/GO-ISO generator polynomial, in reflected form.
 ///
@@ -120,4 +122,52 @@ pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]])
 		}
 	})
 	.unwrap()
+}
+
+/// Evaluates an instance-folded witness at the oblong point `(r_j, r_y)`.
+///
+/// Contract each word's folded bits against the `r_j` tensor.
+/// Then contract the resulting per-word multilinear at `r_y`.
+///
+/// The instance fold and the shift reduction are both checked against this.
+pub fn evaluate_folded_witness(folded: &[FoldedWord<B128>], r_j: &[B128], r_y: &[B128]) -> B128 {
+	let r_j_tensor = eq_ind_partial_eval::<B128>(r_j);
+	let per_word: Vec<B128> = folded
+		.iter()
+		.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied()))
+		.collect();
+	let r_y_tensor = eq_ind_partial_eval::<B128>(r_y);
+	inner_product(per_word.iter().copied(), r_y_tensor.as_ref().iter().copied())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn circuit_matches_reference() {
+		let c = crc64_circuit();
+
+		// A handful of fixed inputs, checked against the standalone reference implementation.
+		let cases: [[u64; N_INPUT_WORDS]; 3] = [
+			[0, 0, 0, 0],
+			[1, 2, 3, 4],
+			[
+				0x0123456789abcdef,
+				0xfedcba9876543210,
+				0xdeadbeefcafebabe,
+				0x00ff00ff00ff00ff,
+			],
+		];
+
+		for words in cases {
+			let mut filler = c.circuit.new_witness_filler();
+			for (wire, &w) in c.input.iter().zip(&words) {
+				filler[*wire] = Word(w);
+			}
+			c.circuit.populate_wire_witness(&mut filler).unwrap();
+
+			assert_eq!(filler[c.output], Word(crc64_iso_reference(&words)));
+		}
+	}
 }

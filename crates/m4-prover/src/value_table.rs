@@ -329,8 +329,12 @@ mod tests {
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use proptest::prelude::*;
+	use rand::prelude::*;
 
 	use super::*;
+	use crate::test_utils::{
+		N_INPUT_WORDS, crc64_circuit, crc64_iso_reference, populate_crc64_witness,
+	};
 
 	// A circuit that computes several derived words from two witness inputs and a constant, with no
 	// inout wires. Every observable output is force-committed so dead-code elimination keeps it.
@@ -581,6 +585,45 @@ mod tests {
 			w[a] = Word(1);
 			w[b] = Word(1);
 		});
+	}
+
+	// A large batch of independent random instances populates to the documented shape.
+	// Each instance reconstructs to a witness that satisfies the circuit.
+	// Its output word is the reference CRC of that instance's own inputs.
+	#[test]
+	fn populate_batch_of_random_instances() {
+		let c = crc64_circuit();
+
+		// A batch of 2^10 instances, each with an independent random message.
+		let log_instances = 10;
+		let n_instances = 1usize << log_instances;
+
+		// Sample every instance's inputs up front so the fill closure is a pure lookup and the
+		// reference check below sees the same words.
+		let mut rng = StdRng::seed_from_u64(0);
+		let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
+			.map(|_| std::array::from_fn(|_| rng.random()))
+			.collect();
+
+		let table = populate_crc64_witness(&c, &inputs);
+		let constants = &c.circuit.constraint_system().constants;
+
+		// Shape: 2^10 instances, one hidden-word row per committed word.
+		let n_hidden_words = c.circuit.value_vec_layout().n_hidden_words;
+		assert_eq!(table.log_instances(), log_instances);
+		assert_eq!(table.n_instances(), n_instances);
+		assert_eq!(table.n_hidden_words(), n_hidden_words);
+		assert_eq!(table.as_words().len(), n_hidden_words * n_instances);
+
+		// Spot-check a few instances: each reconstructs to a valid single-instance witness whose
+		// output word is the reference CRC of its inputs.
+		let output_index = c.circuit.witness_index(c.output);
+		for i in [0, 1, 42, n_instances - 1] {
+			let vv = table.instance_value_vec(i, constants);
+			verify_constraints(c.circuit.constraint_system(), &vv)
+				.unwrap_or_else(|e| panic!("instance {i} failed verification: {e}"));
+			assert_eq!(vv[output_index], Word(crc64_iso_reference(&inputs[i])));
+		}
 	}
 
 	#[test]
