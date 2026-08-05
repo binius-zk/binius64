@@ -504,11 +504,16 @@ impl<F: Field, P: PackedField<Scalar = F>, C> BatchBrakedownFolder<P, C> {
 		let later_challenges = &challenges[max_early + log_n_oracles..];
 		let outer_tensor = eq_ind_partial_eval::<F>(outer_challenges);
 
-		let mut combined_codeword = FieldBuffer::zeros(self.log_code_len);
+		// The combined codeword is the largest buffer of the fold phase.
+		// It starts uninitialized, and the first oracle writes it rather than adding into it.
+		// Adding to zero is a copy, so a zeroed buffer would cost a fill of the whole buffer.
+		// It would also cost a read of everything that fill had just written.
+		let code_len = 1 << self.log_code_len;
+		let mut values = Vec::<F>::with_capacity(code_len);
 		let mut oracles = Vec::with_capacity(self.folders.len());
-		// TODO: Special cases when outer_challenges.len() = 0 or 1 for computational efficiency (to
-		// reduce # of scaling muls)
-		for (folder, &scalar) in iter::zip(self.folders, outer_tensor.as_ref()) {
+
+		for (index, (folder, &scalar)) in iter::zip(self.folders, outer_tensor.as_ref()).enumerate()
+		{
 			let ProxTestFolder {
 				log_early_batch_size,
 				log_later_batch_size,
@@ -529,31 +534,50 @@ impl<F: Field, P: PackedField<Scalar = F>, C> BatchBrakedownFolder<P, C> {
 			// Fold the outer-challenge tensor value into the inner folding tensor so that every
 			// folded entry comes out already scaled by `scalar`. This replaces one scaling mul per
 			// (lifted) output entry with a single pass over the `2^log_batch_size`-element tensor.
+			// A single oracle carries no outer challenges, so its entry is one.
+			// The pass is then a multiply by one at every element, and is skipped.
 			let mut tensor = eq_ind_partial_eval::<P>(&fold_challenges);
-			let scalar_broadcast = P::broadcast(scalar);
-			for packed in tensor.as_mut() {
-				*packed *= scalar_broadcast;
+			if scalar != F::ONE {
+				let scalar_broadcast = P::broadcast(scalar);
+				for packed in tensor.as_mut() {
+					*packed *= scalar_broadcast;
+				}
 			}
 
 			// Fold each `2^log_batch_size`-element interleaved chunk into a single scaled value via
-			// an inner product with the (pre-scaled) tensor, accumulating it directly into the
-			// folded entry's `2^log_lift` contiguous copies in the combined codeword (the
-			// Reed-Solomon codeword duplication identity: `combined[j] += folded[j >> log_lift]`).
+			// an inner product with the (pre-scaled) tensor, landing it directly in the folded
+			// entry's `2^log_lift` contiguous copies in the combined codeword (the Reed-Solomon
+			// codeword duplication identity: `combined[j] += folded[j >> log_lift]`).
 			// No temporary buffer; `1 << log_lift` is `1` when there is no lifting.
-			combined_codeword
-				.as_mut()
-				.par_chunks_mut(1 << log_lift)
-				.zip(codeword.chunks_par(log_batch_size))
-				.for_each(|(copies, chunk)| {
-					let value = inner_product_buffers(&chunk, &tensor);
-					for acc in copies {
-						*acc += value;
-					}
-				});
+			if index == 0 {
+				values.spare_capacity_mut()[..code_len]
+					.par_chunks_mut(1 << log_lift)
+					.zip(codeword.chunks_par(log_batch_size))
+					.for_each(|(copies, chunk)| {
+						let value = inner_product_buffers(&chunk, &tensor);
+						for acc in copies {
+							acc.write(value);
+						}
+					});
+				// SAFETY: the chunks partition the slots, and each writes all of its own.
+				// So the loop above wrote every one of the `code_len` slots.
+				unsafe { values.set_len(code_len) };
+			} else {
+				values
+					.par_chunks_mut(1 << log_lift)
+					.zip(codeword.chunks_par(log_batch_size))
+					.for_each(|(copies, chunk)| {
+						let value = inner_product_buffers(&chunk, &tensor);
+						for acc in copies {
+							*acc += value;
+						}
+					});
+			}
 
 			oracles.push(BrakedownOracleProver::new(codeword, commitment, log_lift));
 		}
 
+		let combined_codeword = FieldBuffer::new(self.log_code_len, values);
 		(combined_codeword, BatchBrakedownOracleProver::new(oracles))
 	}
 }
