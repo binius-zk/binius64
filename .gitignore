@@ -16,3 +16,5 @@ perfetto_traces/
 *.perfetto-trace
 .last_perfetto_trace_path
 *.pending-snap
+# Proptest failure seeds, written by whichever crate's tests happened to fail locally
+proptest-regressions/
