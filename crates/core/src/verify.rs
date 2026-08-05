@@ -4,6 +4,8 @@
 //! [constraint system][`crate::constraint_system::ConstraintSystem`] is satisfied with the given
 //! [value vector][`ValueVec`].
 
+use binius_field::BinaryField128bGhash as B128;
+
 use crate::{
 	constraint_system::{
 		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, ValueIndex, ValueVec,
@@ -68,29 +70,11 @@ pub fn verify_imul_constraint(
 	}
 }
 
-/// Multiplies two elements of the GHASH field: `GF(2^128)` with reduction polynomial
-/// `X^128 + X^7 + X^2 + X + 1`, bit `i` carrying the coefficient of `X^i`.
-///
-/// Shift-and-add over `u128` — an independent restatement of the gate semantics for checking,
-/// not a call into the field crate's multiplier.
-fn ghash_mul(a: u128, b: u128) -> u128 {
-	let mut acc = 0u128;
-	let mut shifted = a;
-	for i in 0..128 {
-		if (b >> i) & 1 == 1 {
-			acc ^= shifted;
-		}
-		let overflow = shifted >> 127;
-		shifted <<= 1;
-		if overflow == 1 {
-			shifted ^= 0x87;
-		}
-	}
-	acc
-}
-
 /// Verifies that a BMUL constraint is satisfied: A * B = C in the GHASH field, each element
 /// carried by a `(lo, hi)` pair of words.
+///
+/// The product is taken in [`B128`], the same field implementation the proving system uses, so
+/// this check cannot drift from the arithmetic it is meant to mirror.
 pub fn verify_bmul_constraint(
 	witness: &ValueVec,
 	constraint: &BmulConstraint,
@@ -102,11 +86,13 @@ pub fn verify_bmul_constraint(
 	let Word(c_lo) = witness.eval_operand(constraint.c_lo());
 	let Word(c_hi) = witness.eval_operand(constraint.c_hi());
 
+	// Each element is the low word in bits 0..64 and the high word in bits 64..128, with bit `i`
+	// carrying the coefficient of `X^i`.
 	let a = (a_lo as u128) | ((a_hi as u128) << 64);
 	let b = (b_lo as u128) | ((b_hi as u128) << 64);
 	let c = (c_lo as u128) | ((c_hi as u128) << 64);
 
-	let expected = ghash_mul(a, b);
+	let expected = u128::from(B128::new(a) * B128::new(b));
 	if c != expected {
 		Err(format!(
 			"BMUL constraint failed: {a:032x} * {b:032x} = {c:032x} (expected {expected:032x})",
@@ -154,20 +140,11 @@ mod tests {
 	use super::*;
 	use crate::constraint_system::ShiftedValueIndex;
 
-	/// Products pinned against `BinaryField128bGhash`: `X = 2`, coefficients ascend with bit
-	/// index, and `X^127 * X` wraps to the reduction polynomial.
-	#[test]
-	fn ghash_mul_matches_field_arithmetic() {
-		assert_eq!(ghash_mul(1, 0x0123_4567), 0x0123_4567);
-		assert_eq!(ghash_mul(2, 2), 4);
-		assert_eq!(ghash_mul(1 << 63, 2), 1 << 64);
-		assert_eq!(ghash_mul(1 << 127, 2), 0x87);
-		// Computed with `BinaryField128bGhash`.
-		assert_eq!(
-			ghash_mul(0x0123456789abcdef_fedcba9876543210, 0x0f1e2d3c4b5a6978_8796a5b4c3d2e1f0),
-			0x7f2984f784967f5a_7b881bf2b700d768
-		);
-	}
+	/// A GHASH-field triple `A * B = C`, hard-coded so the BMUL cases below do not lean on the
+	/// same multiply the verifier runs.
+	const A: u128 = 0x0123456789abcdef_fedcba9876543210;
+	const B: u128 = 0x0f1e2d3c4b5a6978_8796a5b4c3d2e1f0;
+	const A_TIMES_B: u128 = 0x7f2984f784967f5a_7b881bf2b700d768;
 
 	/// A shape whose six inout words carry one BMUL constraint's operands directly.
 	///
@@ -201,17 +178,13 @@ mod tests {
 
 	#[test]
 	fn bmul_constraint_accepts_correct_product() {
-		let a = 0x0123456789abcdef_fedcba9876543210;
-		let b = 0x0f1e2d3c4b5a6978_8796a5b4c3d2e1f0;
-		let witness = one_bmul_witness(a, b, ghash_mul(a, b));
+		let witness = one_bmul_witness(A, B, A_TIMES_B);
 		assert!(verify_constraints(&one_bmul_system(), &witness).is_ok());
 	}
 
 	#[test]
 	fn bmul_constraint_rejects_wrong_product() {
-		let a = 0x0123456789abcdef_fedcba9876543210;
-		let b = 0x0f1e2d3c4b5a6978_8796a5b4c3d2e1f0;
-		let witness = one_bmul_witness(a, b, ghash_mul(a, b) ^ 1);
+		let witness = one_bmul_witness(A, B, A_TIMES_B ^ 1);
 		let err = verify_constraints(&one_bmul_system(), &witness).unwrap_err();
 		assert!(err.contains("BMUL constraint 0 failed"), "{err}");
 	}
