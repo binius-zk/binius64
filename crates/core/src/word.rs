@@ -44,63 +44,7 @@ impl Word {
 	///
 	/// This is a canonical representation of true.
 	pub const MSB_ONE: Word = Word(0x8000000000000000);
-}
 
-impl fmt::Debug for Word {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "Word({:#018x})", self.0)
-	}
-}
-
-impl BitAnd for Word {
-	type Output = Self;
-
-	fn bitand(self, rhs: Self) -> Self::Output {
-		Word(self.0 & rhs.0)
-	}
-}
-
-impl BitOr for Word {
-	type Output = Self;
-
-	fn bitor(self, rhs: Self) -> Self::Output {
-		Word(self.0 | rhs.0)
-	}
-}
-
-impl BitXor for Word {
-	type Output = Self;
-
-	fn bitxor(self, rhs: Self) -> Self::Output {
-		Word(self.0 ^ rhs.0)
-	}
-}
-
-impl Shl<u32> for Word {
-	type Output = Self;
-
-	fn shl(self, rhs: u32) -> Self::Output {
-		Word(self.0 << rhs)
-	}
-}
-
-impl Shr<u32> for Word {
-	type Output = Self;
-
-	fn shr(self, rhs: u32) -> Self::Output {
-		Word(self.0 >> rhs)
-	}
-}
-
-impl Not for Word {
-	type Output = Self;
-
-	fn not(self) -> Self::Output {
-		Word(!self.0)
-	}
-}
-
-impl Word {
 	/// Creates a new `Word` from a 64-bit unsigned integer.
 	pub const fn from_u64(value: u64) -> Word {
 		Word(value)
@@ -357,6 +301,60 @@ impl Word {
 	/// Returns true if the MSB is 0, false otherwise.
 	pub const fn is_msb_false(self) -> bool {
 		!self.is_msb_true()
+	}
+}
+
+impl fmt::Debug for Word {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "Word({:#018x})", self.0)
+	}
+}
+
+impl BitAnd for Word {
+	type Output = Self;
+
+	fn bitand(self, rhs: Self) -> Self::Output {
+		Word(self.0 & rhs.0)
+	}
+}
+
+impl BitOr for Word {
+	type Output = Self;
+
+	fn bitor(self, rhs: Self) -> Self::Output {
+		Word(self.0 | rhs.0)
+	}
+}
+
+impl BitXor for Word {
+	type Output = Self;
+
+	fn bitxor(self, rhs: Self) -> Self::Output {
+		Word(self.0 ^ rhs.0)
+	}
+}
+
+impl Shl<u32> for Word {
+	type Output = Self;
+
+	fn shl(self, rhs: u32) -> Self::Output {
+		Word(self.0 << rhs)
+	}
+}
+
+impl Shr<u32> for Word {
+	type Output = Self;
+
+	fn shr(self, rhs: u32) -> Self::Output {
+		Word(self.0 >> rhs)
+	}
+}
+
+impl Not for Word {
+	type Output = Self;
+
+	fn not(self) -> Self::Output {
+		Word(!self.0)
 	}
 }
 

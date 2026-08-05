@@ -81,9 +81,7 @@ impl ConstraintSystem {
 	///
 	/// [`Self::validate_shape`] rejects any system whose public segment is shorter than this.
 	pub const MIN_WORDS_PER_SEGMENT: usize = 2;
-}
 
-impl ConstraintSystem {
 	/// Returns the number of constants.
 	pub const fn n_const(&self) -> usize {
 		self.constants.len()

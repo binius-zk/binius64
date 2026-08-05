@@ -224,52 +224,7 @@ where
 			values,
 		)
 	}
-}
 
-/// Folds a coset of a codeword into a single value with the given folding challenges.
-///
-/// This implements the fold operation from Definition 4.6 of [DP24], reading twiddle factors from
-/// the domain context. `log_len` is the base-2 log of the length of the codeword the coset belongs
-/// to; the twiddle layer is absolute within the full NTT domain and decreases with each challenge.
-///
-/// [DP24]: <https://eprint.iacr.org/2024/504>
-pub fn fold_coset<F, DC>(
-	domain_context: &DC,
-	mut log_len: usize,
-	chunk_index: usize,
-	challenges: &[F],
-	mut values: Vec<F>,
-) -> F
-where
-	F: BinaryField,
-	DC: DomainContext<Field = F>,
-{
-	let mut log_size = challenges.len();
-	for &challenge in challenges {
-		for index_offset in 0..1 << (log_size - 1) {
-			// Perform the inverse additive NTT butterfly, then extrapolate the resulting line at
-			// the folding challenge.
-			let mut u = values[index_offset << 1];
-			let mut v = values[(index_offset << 1) | 1];
-			let twiddle =
-				domain_context.twiddle(log_len - 1, (chunk_index << (log_size - 1)) | index_offset);
-			v += u;
-			u += v * twiddle;
-			values[index_offset] = extrapolate_line(u, v, challenge);
-		}
-
-		log_len -= 1;
-		log_size -= 1;
-	}
-
-	values[0]
-}
-
-impl<F, C, DC> FRIOracle<F, C, DC>
-where
-	F: BinaryField,
-	DC: DomainContext<Field = F>,
-{
 	/// Opens queried locations on the base codeword, reducing claims about it to the virtual
 	/// oracle.
 	///
@@ -321,6 +276,45 @@ where
 			})
 			.collect()
 	}
+}
+
+/// Folds a coset of a codeword into a single value with the given folding challenges.
+///
+/// This implements the fold operation from Definition 4.6 of [DP24], reading twiddle factors from
+/// the domain context. `log_len` is the base-2 log of the length of the codeword the coset belongs
+/// to; the twiddle layer is absolute within the full NTT domain and decreases with each challenge.
+///
+/// [DP24]: <https://eprint.iacr.org/2024/504>
+pub fn fold_coset<F, DC>(
+	domain_context: &DC,
+	mut log_len: usize,
+	chunk_index: usize,
+	challenges: &[F],
+	mut values: Vec<F>,
+) -> F
+where
+	F: BinaryField,
+	DC: DomainContext<Field = F>,
+{
+	let mut log_size = challenges.len();
+	for &challenge in challenges {
+		for index_offset in 0..1 << (log_size - 1) {
+			// Perform the inverse additive NTT butterfly, then extrapolate the resulting line at
+			// the folding challenge.
+			let mut u = values[index_offset << 1];
+			let mut v = values[(index_offset << 1) | 1];
+			let twiddle =
+				domain_context.twiddle(log_len - 1, (chunk_index << (log_size - 1)) | index_offset);
+			v += u;
+			u += v * twiddle;
+			values[index_offset] = extrapolate_line(u, v, challenge);
+		}
+
+		log_len -= 1;
+		log_size -= 1;
+	}
+
+	values[0]
 }
 
 impl<F, C, DC> ProxTestOracle<F> for FRIOracle<F, C, DC>
