@@ -2,9 +2,8 @@
 
 use std::{borrow::Borrow, cmp::min};
 
-use binius_transcript::BufMut;
 use binius_utils::{SerializationError, SerializeBytes};
-use bytes::buf::UninitSlice;
+use bytes::{BufMut, buf::UninitSlice};
 use digest::{
 	Digest, Output,
 	block_api::{Block, BlockSizeUser},
