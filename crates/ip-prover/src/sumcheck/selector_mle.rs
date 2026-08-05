@@ -196,10 +196,11 @@ where
 				},
 			)
 			.map(|(evals, _, _)| evals)
-			.reduce(
-				|| vec![RoundEvals2::<P>::default(); sums.len()],
-				|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + &r).collect(),
-			);
+			// A merge seeded with a partial that already exists never touches a buffer of zeros.
+			// An identity would allocate and zero one accumulator per merge, then add all of it.
+			.reduce_with(|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + &r).collect())
+			// An empty hypercube yields no partials at all, and its round evals are zero.
+			.unwrap_or_else(|| vec![RoundEvals2::<P>::default(); sums.len()]);
 
 		// This prover has multiple evaluation points and cannot implement MleCheckProver.
 		let (prime_coeffs, round_coeffs) = izip!(&self.eq_trackers, sums, packed_prime_evals)

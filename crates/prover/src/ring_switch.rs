@@ -153,15 +153,16 @@ where
 				acc
 			},
 		)
-		.reduce(
-			|| FieldBuffer::zeros(log_scalar_bit_width),
-			|mut lhs, rhs| {
-				for (lhs_i, &rhs_i) in izip!(lhs.as_mut(), rhs.as_ref()) {
-					*lhs_i += rhs_i;
-				}
-				lhs
-			},
-		)
+		// A merge seeded with a partial that already exists never touches a buffer of zeros.
+		// An identity would allocate and zero one accumulator per merge, then add all of it.
+		.reduce_with(|mut lhs, rhs| {
+			for (lhs_i, &rhs_i) in izip!(lhs.as_mut(), rhs.as_ref()) {
+				*lhs_i += rhs_i;
+			}
+			lhs
+		})
+		// An empty matrix yields no partials at all, and folds to zero.
+		.unwrap_or_else(|| FieldBuffer::zeros(log_scalar_bit_width))
 }
 
 /// Builds the ring-switching equality indicator directly from the tensor's two factors.

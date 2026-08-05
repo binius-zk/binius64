@@ -293,15 +293,16 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 				multilinears
 			},
 		)
-		.reduce(
-			|| zeroed_vec::<P>(acc_size).into_boxed_slice(),
-			|mut acc, local| {
-				izip!(acc.iter_mut(), local.iter()).for_each(|(acc, local)| {
-					*acc += *local;
-				});
-				acc
-			},
-		);
+		// A merge seeded with a partial that already exists never touches a buffer of zeros.
+		// An identity would allocate and zero one accumulator per merge, then add all of it.
+		.reduce_with(|mut acc, local| {
+			izip!(acc.iter_mut(), local.iter()).for_each(|(acc, local)| {
+				*acc += *local;
+			});
+			acc
+		})
+		// An empty word list yields no partials at all, and its parts are zero.
+		.unwrap_or_else(|| zeroed_vec::<P>(acc_size).into_boxed_slice());
 
 	build_multilinear_parts(alloc, &multilinears)
 }
