@@ -6,7 +6,6 @@
 
 pub mod bitwise;
 pub mod checked_arithmetics;
-pub mod env;
 pub mod iter;
 #[cfg(feature = "platform-diagnostics")]
 pub mod platform_diagnostics;
