@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 //! Hosts error definitions for the core crate.
 
-use crate::ConstraintSystem;
+use crate::{ConstraintSystem, constraint_system::ConstraintKind};
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
@@ -22,36 +22,36 @@ pub enum ConstraintSystemError {
 		hidden_len: usize,
 	},
 	#[error(
-		"{constraint_type} #{constraint_index} uses non canonical shift in its {operand_name} operand"
+		"{constraint_kind} #{constraint_index} uses non canonical shift in its {operand_name} operand"
 	)]
 	NonCanonicalShift {
-		constraint_type: &'static str,
+		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
 	},
 	#[error(
-		"{constraint_type} #{constraint_index} refers to padding in its {operand_name} operand"
+		"{constraint_kind} #{constraint_index} refers to padding in its {operand_name} operand"
 	)]
 	PaddingValueIndex {
-		constraint_type: &'static str,
+		constraint_kind: ConstraintKind,
 		operand_name: &'static str,
 		constraint_index: usize,
 	},
 	#[error(
-		"{constraint_type} #{constraint_index} uses shift amount n={shift_amount}>={max_amount} in {operand_name} operand"
+		"{constraint_kind} #{constraint_index} uses shift amount n={shift_amount}>={max_amount} in {operand_name} operand"
 	)]
 	ShiftAmountTooLarge {
-		constraint_type: &'static str,
+		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
 		shift_amount: usize,
 		max_amount: usize,
 	},
 	#[error(
-		"{constraint_type} #{constraint_index} refers to out-of-range value index in {operand_name} operand (index {value_index} >= total length {total_len})"
+		"{constraint_kind} #{constraint_index} refers to out-of-range value index in {operand_name} operand (index {value_index} >= total length {total_len})"
 	)]
 	OutOfRangeValueIndex {
-		constraint_type: &'static str,
+		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
 		value_index: u32,

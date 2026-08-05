@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use std::array;
+use std::{array, fmt};
 
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
@@ -30,6 +30,34 @@ const AND_ARITY: usize = 3;
 const IMUL_ARITY: usize = 4;
 /// Number of operands of a [`BmulConstraint`].
 const BMUL_ARITY: usize = 6;
+
+/// The kind of a constraint of a [`ConstraintSystem`](super::ConstraintSystem).
+///
+/// Each variant identifies one of the constraint types the system holds, and its [`fmt::Display`]
+/// impl gives the lowercase name used in diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstraintKind {
+	/// A [`ZeroConstraint`].
+	Zero,
+	/// An [`AndConstraint`].
+	And,
+	/// An [`ImulConstraint`].
+	Imul,
+	/// A [`BmulConstraint`].
+	Bmul,
+}
+
+impl fmt::Display for ConstraintKind {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		let name = match self {
+			Self::Zero => "zero",
+			Self::And => "and",
+			Self::Imul => "imul",
+			Self::Bmul => "bmul",
+		};
+		f.write_str(name)
+	}
+}
 
 /// Serializes the operands of a constraint in storage order.
 fn serialize_operands(
@@ -67,6 +95,8 @@ pub struct ZeroConstraint(pub [Operand; ZERO_ARITY]);
 impl ZeroConstraint {
 	/// Number of operands.
 	pub const ARITY: usize = ZERO_ARITY;
+	/// Kind of this constraint.
+	pub const KIND: ConstraintKind = ConstraintKind::Zero;
 	/// Names of the operands, in storage order.
 	pub const OPERAND_NAMES: [&'static str; ZERO_ARITY] = ["val"];
 
@@ -119,6 +149,8 @@ pub struct AndConstraint(pub [Operand; AND_ARITY]);
 impl AndConstraint {
 	/// Number of operands.
 	pub const ARITY: usize = AND_ARITY;
+	/// Kind of this constraint.
+	pub const KIND: ConstraintKind = ConstraintKind::And;
 	/// Names of the operands, in storage order.
 	pub const OPERAND_NAMES: [&'static str; AND_ARITY] = ["a", "b", "c"];
 
@@ -197,6 +229,8 @@ pub struct ImulConstraint(pub [Operand; IMUL_ARITY]);
 impl ImulConstraint {
 	/// Number of operands.
 	pub const ARITY: usize = IMUL_ARITY;
+	/// Kind of this constraint.
+	pub const KIND: ConstraintKind = ConstraintKind::Imul;
 	/// Names of the operands, in storage order.
 	pub const OPERAND_NAMES: [&'static str; IMUL_ARITY] = ["a", "b", "lo", "hi"];
 
@@ -259,6 +293,8 @@ pub struct BmulConstraint(pub [Operand; BMUL_ARITY]);
 impl BmulConstraint {
 	/// Number of operands.
 	pub const ARITY: usize = BMUL_ARITY;
+	/// Kind of this constraint.
+	pub const KIND: ConstraintKind = ConstraintKind::Bmul;
 	/// Names of the operands, in storage order.
 	pub const OPERAND_NAMES: [&'static str; BMUL_ARITY] =
 		["a_lo", "a_hi", "b_lo", "b_hi", "c_lo", "c_hi"];
