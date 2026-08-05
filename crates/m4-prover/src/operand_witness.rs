@@ -5,7 +5,7 @@
 //!
 //! Every AND, IMUL, and BMUL constraint is projected to its fixed-arity operand columns (`[A, B]`
 //! for AND, `[A, B, LO, HI]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
-//! column per operand, stacked over every instance in the batch. [`build_operation_witness`] is the
+//! column per operand, stacked over every instance in the batch. [`build_operand_column`] is the
 //! shared arity-generic core: it projects one operand per constraint into one column.
 //! [`build_operation_columns`] wraps it for any constraint type that exposes a fixed-arity operand
 //! array, building the leading `N_COLS` columns of the array in parallel: the four IntMul columns,
@@ -27,7 +27,7 @@ use crate::ValueTable;
 
 /// Builds the leading `N_COLS` operand columns of a batched fixed-arity operation.
 ///
-/// This is the constraint-generic entry point to `build_operation_witness`: it projects every
+/// This is the constraint-generic entry point to `build_operand_column`: it projects every
 /// constraint to its operand array and builds one column per operand position, all in parallel.
 /// The columns follow the constraint type's storage order, so column `i` holds operand `i` of
 /// every constraint.
@@ -61,7 +61,7 @@ where
 	(0..N_COLS)
 		.into_par_iter()
 		.map(|op_idx| {
-			build_operation_witness(
+			build_operand_column(
 				table,
 				constants,
 				constraints
@@ -75,7 +75,7 @@ where
 		.unwrap_or_else(|_| unreachable!("source iterator has N_COLS elements"))
 }
 
-/// Builds the operand-column witness of a batched fixed-arity operation over every instance.
+/// Builds one operand column of a batched fixed-arity operation, over every instance.
 ///
 /// This is the arity-generic core shared by every per-operation witness: BitAnd projects each
 /// constraint to its three operands `[A, B, C]`; IntMul projects to its four `[A, B, LO, HI]`.
@@ -108,7 +108,7 @@ where
 ///   Their count need not be a power of two; the constraint axis is zero-padded up to one, and a
 ///   zero row satisfies every constraint type.
 /// - `alloc`: the allocator backing the returned column.
-pub fn build_operation_witness<'a, A: Allocator>(
+pub fn build_operand_column<'a, A: Allocator>(
 	table: &ValueTable,
 	constants: &[Word],
 	operands: impl IndexedParallelIterator<Item = &'a Operand>,
