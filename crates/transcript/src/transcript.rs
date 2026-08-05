@@ -52,9 +52,7 @@ impl<Challenger_: Challenger> VerifierTranscript<Challenger_> {
 			options,
 		}
 	}
-}
 
-impl<Challenger_: Challenger> VerifierTranscript<Challenger_> {
 	pub fn finalize(self) -> Result<(), Error> {
 		if self.combined.buffer.has_remaining() {
 			return Err(Error::TranscriptNotEmpty {
@@ -224,24 +222,7 @@ impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 			options,
 		}
 	}
-}
 
-impl<Challenger_: Default + Challenger> ProverTranscript<Challenger_> {
-	pub fn into_verifier(self) -> VerifierTranscript<Challenger_> {
-		let options = self.options;
-		let transcript = self.finalize();
-
-		VerifierTranscript::with_opts(Challenger_::default(), transcript, options)
-	}
-}
-
-impl<Challenger_: Default + Challenger> Default for ProverTranscript<Challenger_> {
-	fn default() -> Self {
-		Self::new(Challenger_::default())
-	}
-}
-
-impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 	pub fn finalize(self) -> Vec<u8> {
 		let transcript = self.combined.buffer.to_vec();
 
@@ -323,6 +304,21 @@ impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 			buffer: &mut self.combined,
 			options: self.options,
 		}
+	}
+}
+
+impl<Challenger_: Default + Challenger> ProverTranscript<Challenger_> {
+	pub fn into_verifier(self) -> VerifierTranscript<Challenger_> {
+		let options = self.options;
+		let transcript = self.finalize();
+
+		VerifierTranscript::with_opts(Challenger_::default(), transcript, options)
+	}
+}
+
+impl<Challenger_: Default + Challenger> Default for ProverTranscript<Challenger_> {
+	fn default() -> Self {
+		Self::new(Challenger_::default())
 	}
 }
 

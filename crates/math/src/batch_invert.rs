@@ -127,6 +127,14 @@ impl<P: PackedField> BatchInversion<P> {
 			}
 		}
 	}
+
+	fn batch_invert_nonzero(&mut self, elements: &mut [P]) {
+		batch_invert_nonzero_with_scratchpad(
+			elements,
+			&mut self.scratchpad,
+			self.scalar_inverter.as_deref_mut(),
+		);
+	}
 }
 
 fn min_scratchpad_size(mut n: usize) -> usize {
@@ -138,16 +146,6 @@ fn min_scratchpad_size(mut n: usize) -> usize {
 		size += n;
 	}
 	size
-}
-
-impl<P: PackedField> BatchInversion<P> {
-	fn batch_invert_nonzero(&mut self, elements: &mut [P]) {
-		batch_invert_nonzero_with_scratchpad(
-			elements,
-			&mut self.scratchpad,
-			self.scalar_inverter.as_deref_mut(),
-		);
-	}
 }
 
 fn batch_invert_nonzero_with_scratchpad<P: PackedField>(

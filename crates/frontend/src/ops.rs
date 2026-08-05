@@ -73,6 +73,9 @@ fn smul64(builder: &CircuitBuilder, a: Wire, b: Wire) -> (Wire, Wire) {
 	(hi, lo)
 }
 
+// The builder's own API lives in `compiler`; this block deliberately keeps the word operations in
+// their own module rather than growing that one.
+#[allow(clippy::multiple_inherent_impl)]
 impl CircuitBuilder {
 	/// 64-bit unsigned integer addition, returning the sum and carry-out.
 	///

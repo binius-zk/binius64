@@ -114,6 +114,17 @@ impl<P: PackedField> FieldBuffer<P> {
 		let values = zeroed_vec(packed_len);
 		Self { log_len, values }
 	}
+
+	/// A single-scalar buffer (`log_len` 0) holding `value` in lane 0, with backing-`Vec` capacity
+	/// reserved for `log_capacity` variables.
+	///
+	/// The backing `Vec` reserves `1 << log_capacity.saturating_sub(P::LOG_WIDTH)` packed words, so
+	/// growing the buffer up to `log_capacity` variables never reallocates.
+	pub fn scalar_with_capacity(value: P::Scalar, log_capacity: usize) -> Self {
+		let mut values = Vec::with_capacity(1 << log_capacity.saturating_sub(P::LOG_WIDTH));
+		values.push(P::from_scalars([value]));
+		Self { log_len: 0, values }
+	}
 }
 
 impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
@@ -172,18 +183,6 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	}
 }
 
-impl<P: PackedField> FieldBuffer<P, Vec<P>> {
-	/// A single-scalar buffer (`log_len` 0) holding `value` in lane 0, with backing-`Vec` capacity
-	/// reserved for `log_capacity` variables.
-	///
-	/// The backing `Vec` reserves `1 << log_capacity.saturating_sub(P::LOG_WIDTH)` packed words, so
-	/// growing the buffer up to `log_capacity` variables never reallocates.
-	pub fn scalar_with_capacity(value: P::Scalar, log_capacity: usize) -> Self {
-		let mut values = Vec::with_capacity(1 << log_capacity.saturating_sub(P::LOG_WIDTH));
-		values.push(P::from_scalars([value]));
-		Self { log_len: 0, values }
-	}
-}
 #[allow(clippy::len_without_is_empty)]
 impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// Create a new FieldBuffer from a slice of packed values.
