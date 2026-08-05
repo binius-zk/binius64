@@ -12,7 +12,7 @@ use binius_math::{
 	},
 	test_utils::random_field_buffer,
 };
-use binius_utils::{env::boolean_env_flag_set, rayon::ThreadPoolBuilder};
+use binius_utils::rayon::ThreadPoolBuilder;
 use criterion::{
 	BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
 	measurement::WallTime,
@@ -226,11 +226,23 @@ const fn num_muls(log_d: usize, skip_early: usize, skip_late: usize) -> u64 {
 	num_rounds as u64 * muls_per_round
 }
 
+/// Returns whether `flag` is set in the environment to an affirmative value.
+///
+/// Matching ignores surrounding whitespace and ASCII case, so `On` and `TRUE` both count.
+fn env_flag_set(flag: &str) -> bool {
+	std::env::var(flag).is_ok_and(|val| {
+		let val = val.trim();
+		["1", "on", "true", "yes"]
+			.iter()
+			.any(|affirmative| val.eq_ignore_ascii_case(affirmative))
+	})
+}
+
 /// Determine the throughput variant based on an environment variable.
 fn determine_throughput_variant() -> ThroughputVariant {
 	const VAR_NAME: &str = "NTT_MUL_THROUGHPUT";
 
-	if boolean_env_flag_set(VAR_NAME) {
+	if env_flag_set(VAR_NAME) {
 		println!("{VAR_NAME} is activated - using *multiplication* throughput");
 		ThroughputVariant::Multiplication
 	} else {
