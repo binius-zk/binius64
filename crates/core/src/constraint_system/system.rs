@@ -11,8 +11,8 @@ use bytes::{Buf, BufMut};
 #[cfg(doc)]
 use super::ValueVec;
 use super::{
-	AndConstraint, BmulConstraint, ImulConstraint, Operand, ShiftVariant, ValueIndex,
-	ZeroConstraint,
+	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ShiftVariant,
+	ValueIndex, ZeroConstraint,
 };
 use crate::{error::ConstraintSystemError, word::Word};
 
@@ -185,27 +185,42 @@ impl ConstraintSystem {
 
 		self.validate_shape()?;
 
-		for (i, zero) in self.zero_constraints.iter().enumerate() {
-			for (operand, name) in iter::zip(&zero.0, ZeroConstraint::OPERAND_NAMES) {
-				self.validate_operand(operand, "zero", i, name)?;
-			}
-		}
-		for (i, and) in self.and_constraints.iter().enumerate() {
-			for (operand, name) in iter::zip(&and.0, AndConstraint::OPERAND_NAMES) {
-				self.validate_operand(operand, "and", i, name)?;
-			}
-		}
-		for (i, imul) in self.imul_constraints.iter().enumerate() {
-			for (operand, name) in iter::zip(&imul.0, ImulConstraint::OPERAND_NAMES) {
-				self.validate_operand(operand, "imul", i, name)?;
-			}
-		}
-		for (i, bmul) in self.bmul_constraints.iter().enumerate() {
-			for (operand, name) in iter::zip(&bmul.0, BmulConstraint::OPERAND_NAMES) {
-				self.validate_operand(operand, "bmul", i, name)?;
-			}
-		}
+		self.validate_constraints(
+			&self.zero_constraints,
+			ZeroConstraint::KIND,
+			ZeroConstraint::OPERAND_NAMES,
+		)?;
+		self.validate_constraints(
+			&self.and_constraints,
+			AndConstraint::KIND,
+			AndConstraint::OPERAND_NAMES,
+		)?;
+		self.validate_constraints(
+			&self.imul_constraints,
+			ImulConstraint::KIND,
+			ImulConstraint::OPERAND_NAMES,
+		)?;
+		self.validate_constraints(
+			&self.bmul_constraints,
+			BmulConstraint::KIND,
+			BmulConstraint::OPERAND_NAMES,
+		)?;
 
+		Ok(())
+	}
+
+	/// Checks every operand of every constraint of one kind, in storage order.
+	fn validate_constraints<C: AsRef<[Operand; ARITY]>, const ARITY: usize>(
+		&self,
+		constraints: &[C],
+		constraint_kind: ConstraintKind,
+		operand_names: [&'static str; ARITY],
+	) -> Result<(), ConstraintSystemError> {
+		for (i, constraint) in constraints.iter().enumerate() {
+			for (operand, name) in iter::zip(constraint.as_ref(), operand_names) {
+				self.validate_operand(operand, constraint_kind, i, name)?;
+			}
+		}
 		Ok(())
 	}
 
@@ -213,7 +228,7 @@ impl ConstraintSystem {
 	fn validate_operand(
 		&self,
 		operand: &Operand,
-		constraint_type: &'static str,
+		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
 	) -> Result<(), ConstraintSystemError> {
@@ -221,7 +236,7 @@ impl ConstraintSystem {
 			// check canonicity. SLL is the canonical form of the operand.
 			if term.amount == 0 && term.shift_variant != ShiftVariant::Sll {
 				return Err(ConstraintSystemError::NonCanonicalShift {
-					constraint_type,
+					constraint_kind,
 					constraint_index,
 					operand_name,
 				});
@@ -230,7 +245,7 @@ impl ConstraintSystem {
 			let max_amount = term.shift_variant.max_amount();
 			if usize::from(term.amount) >= max_amount {
 				return Err(ConstraintSystemError::ShiftAmountTooLarge {
-					constraint_type,
+					constraint_kind,
 					constraint_index,
 					operand_name,
 					shift_amount: term.amount as usize,
@@ -240,7 +255,7 @@ impl ConstraintSystem {
 			// Check if the value index is out of bounds.
 			if term.value_index.0 as usize >= self.value_vec_len() {
 				return Err(ConstraintSystemError::OutOfRangeValueIndex {
-					constraint_type,
+					constraint_kind,
 					constraint_index,
 					operand_name,
 					value_index: term.value_index.0,
@@ -250,7 +265,7 @@ impl ConstraintSystem {
 			// No value should refer to padding.
 			if self.is_padding(term.value_index) {
 				return Err(ConstraintSystemError::PaddingValueIndex {
-					constraint_type,
+					constraint_kind,
 					constraint_index,
 					operand_name,
 				});
@@ -689,9 +704,9 @@ mod tests {
 
 		match result.unwrap_err() {
 			ConstraintSystemError::PaddingValueIndex {
-				constraint_type, ..
+				constraint_kind, ..
 			} => {
-				assert_eq!(constraint_type, "and");
+				assert_eq!(constraint_kind, ConstraintKind::And);
 			}
 			other => panic!("Expected PaddingValueIndex error, got: {:?}", other),
 		}
@@ -748,13 +763,13 @@ mod tests {
 
 		match cs.validate().unwrap_err() {
 			ConstraintSystemError::OutOfRangeValueIndex {
-				constraint_type,
+				constraint_kind,
 				operand_name,
 				value_index,
 				total_len,
 				..
 			} => {
-				assert_eq!(constraint_type, "zero");
+				assert_eq!(constraint_kind, ConstraintKind::Zero);
 				assert_eq!(operand_name, "val");
 				assert_eq!(value_index, 100);
 				assert_eq!(total_len, 16);
@@ -798,13 +813,13 @@ mod tests {
 
 		match result.unwrap_err() {
 			ConstraintSystemError::OutOfRangeValueIndex {
-				constraint_type,
+				constraint_kind,
 				operand_name,
 				value_index,
 				total_len,
 				..
 			} => {
-				assert_eq!(constraint_type, "and");
+				assert_eq!(constraint_kind, ConstraintKind::And);
 				assert_eq!(operand_name, "b");
 				assert_eq!(value_index, 16);
 				assert_eq!(total_len, 16);
@@ -830,13 +845,13 @@ mod tests {
 
 		match result.unwrap_err() {
 			ConstraintSystemError::OutOfRangeValueIndex {
-				constraint_type,
+				constraint_kind,
 				operand_name,
 				value_index,
 				total_len,
 				..
 			} => {
-				assert_eq!(constraint_type, "imul");
+				assert_eq!(constraint_kind, ConstraintKind::Imul);
 				assert_eq!(operand_name, "hi");
 				assert_eq!(value_index, 100);
 				assert_eq!(total_len, 16);
@@ -864,13 +879,13 @@ mod tests {
 
 		match result.unwrap_err() {
 			ConstraintSystemError::OutOfRangeValueIndex {
-				constraint_type,
+				constraint_kind,
 				operand_name,
 				value_index,
 				total_len,
 				..
 			} => {
-				assert_eq!(constraint_type, "bmul");
+				assert_eq!(constraint_kind, ConstraintKind::Bmul);
 				assert_eq!(operand_name, "c_hi");
 				assert_eq!(value_index, 100);
 				assert_eq!(total_len, 16);
@@ -927,13 +942,13 @@ mod tests {
 
 		match cs.validate().unwrap_err() {
 			ConstraintSystemError::ShiftAmountTooLarge {
-				constraint_type,
+				constraint_kind,
 				constraint_index,
 				operand_name,
 				shift_amount,
 				max_amount,
 			} => {
-				assert_eq!(constraint_type, "and");
+				assert_eq!(constraint_kind, ConstraintKind::And);
 				assert_eq!(constraint_index, 0);
 				assert_eq!(operand_name, "a");
 				assert_eq!(shift_amount, 32);
