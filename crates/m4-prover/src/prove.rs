@@ -43,6 +43,7 @@ use binius_verifier::{
 
 use crate::{
 	ValueTable,
+	operator_claims::OperatorClaims,
 	shift::prove as prove_shift,
 	witness::{FoldedWitness, OperandColumns},
 };
@@ -230,7 +231,7 @@ impl IOPProver {
 		//
 		// The re-randomization runs whenever IntMul or BinMul is present: BitAnd always enters,
 		// plus each present multiplication operation, all unified onto one shared `r_rho`.
-		let (r_rho, bitand_data, intmul_data, binmul_data) = if mul.is_some() || bmul.is_some() {
+		let (r_rho, claims) = if mul.is_some() || bmul.is_some() {
 			// Every present operation enters the re-randomization as operand columns with their
 			// oblong claims at their own instance point.
 			// BitAnd is already oblong.
@@ -248,27 +249,22 @@ impl IOPProver {
 					Operation::from_binmul(columns, output.clone(), &lagrange, log_instances)
 				}),
 			}
-			.prove::<P, _>(&lagrange, z_challenge, channel, alloc)
+			.prove::<P, _>(zero_data, &lagrange, z_challenge, channel, alloc)
 		} else {
 			// Neither IMUL nor BMUL constraints: the AND-check instance point is used directly.
 			// The IntMul and BinMul claims are zero claims at an empty point, contributing nothing
 			// to the shift.
 			(
 				r_rho_and.to_vec(),
-				OperatorData {
-					evals: vec![a_eval, b_eval, c_eval],
-					r_zhat_prime: z_challenge,
-					r_x_prime: r_x_and.to_vec(),
-				},
-				OperatorData {
-					evals: vec![B128::ZERO; INTMUL_ARITY],
-					r_zhat_prime: z_challenge,
-					r_x_prime: Vec::new(),
-				},
-				OperatorData {
-					evals: vec![B128::ZERO; BINMUL_ARITY],
-					r_zhat_prime: z_challenge,
-					r_x_prime: Vec::new(),
+				OperatorClaims {
+					zero: zero_data,
+					bitand: OperatorData {
+						evals: vec![a_eval, b_eval, c_eval],
+						r_zhat_prime: z_challenge,
+						r_x_prime: r_x_and.to_vec(),
+					},
+					intmul: OperatorData::zero_claim(INTMUL_ARITY, z_challenge),
+					binmul: OperatorData::zero_claim(BINMUL_ARITY, z_challenge),
 				},
 			)
 		};
@@ -302,10 +298,7 @@ impl IOPProver {
 				&self.key_collection,
 				&public_words,
 				&folded_witness,
-				zero_data,
-				bitand_data,
-				intmul_data,
-				binmul_data,
+				claims,
 				&shift_domain,
 				channel,
 				alloc,
@@ -595,21 +588,30 @@ impl<A: Allocator> RerandomizedOperations<'_, A> {
 	/// - A batched sumcheck transports every claim to one shared instance point.
 	/// - The reduced evaluations there are the operand claims the shift consumes.
 	///
-	/// The operands are pushed in the order [BitAnd | IntMul (if present) | BinMul (if present)],
-	/// so the reduced evaluations split back into contiguous per-operation segments in that same
-	/// order. An absent operation reduces to a zero claim at an empty point.
+	/// The operands are pushed in the order [BitAnd | IntMul (if present) | BinMul (if present)].
+	/// The reduced evaluations therefore split back into per-operation segments in that same order.
+	/// An absent operation reduces to a zero claim at an empty point.
+	///
+	/// The Zero reduction closes at its own constraint point, so it takes no part in this.
+	/// Its claim passes straight through into the returned bundle.
+	///
+	/// # Arguments
+	///
+	/// - `zero`: the Zero reduction's claim, carried into the result unchanged.
+	/// - `lagrange`: the Lagrange weights at the shared univariate challenge.
+	/// - `z_challenge`: that univariate challenge, carried by every returned claim.
 	///
 	/// # Returns
 	///
-	/// The shared instance point, the BitAnd operand data, the IntMul operand data, and the BinMul
-	/// operand data.
+	/// The shared instance point, and the operand claims of every operation at that point.
 	fn prove<'alloc, P, Channel>(
 		self,
+		zero: OperatorData<B128>,
 		lagrange: &[B128],
 		z_challenge: B128,
 		channel: &mut Channel,
 		alloc: &'alloc A,
-	) -> (Vec<B128>, OperatorData<B128>, OperatorData<B128>, OperatorData<B128>)
+	) -> (Vec<B128>, OperatorClaims<B128>)
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P, A>,
@@ -646,7 +648,7 @@ impl<A: Allocator> RerandomizedOperations<'_, A> {
 
 		// The reduced evaluations split back into contiguous per-operation segments, in push order.
 		let mut offset = 0;
-		let bitand_data = OperatorData {
+		let bitand = OperatorData {
 			evals: reduced[offset..offset + BITAND_ARITY].to_vec(),
 			r_zhat_prime: z_challenge,
 			r_x_prime: self.bitand.r_x,
@@ -654,7 +656,7 @@ impl<A: Allocator> RerandomizedOperations<'_, A> {
 		offset += BITAND_ARITY;
 
 		// IntMul: the next INTMUL_ARITY reduced evaluations when present, else a zero claim.
-		let intmul_data = match self.intmul {
+		let intmul = match self.intmul {
 			Some(intmul) => {
 				let data = OperatorData {
 					evals: reduced[offset..offset + INTMUL_ARITY].to_vec(),
@@ -664,32 +666,32 @@ impl<A: Allocator> RerandomizedOperations<'_, A> {
 				offset += INTMUL_ARITY;
 				data
 			}
-			None => OperatorData {
-				evals: vec![B128::ZERO; INTMUL_ARITY],
-				r_zhat_prime: z_challenge,
-				r_x_prime: Vec::new(),
-			},
+			None => OperatorData::zero_claim(INTMUL_ARITY, z_challenge),
 		};
 
 		// BinMul: the final BINMUL_ARITY reduced evaluations when present, else a zero claim.
-		let binmul_data = match self.binmul {
+		let binmul = match self.binmul {
 			Some(binmul) => OperatorData {
 				evals: reduced[offset..offset + BINMUL_ARITY].to_vec(),
 				r_zhat_prime: z_challenge,
 				r_x_prime: binmul.r_x,
 			},
-			None => OperatorData {
-				evals: vec![B128::ZERO; BINMUL_ARITY],
-				r_zhat_prime: z_challenge,
-				r_x_prime: Vec::new(),
-			},
+			None => OperatorData::zero_claim(BINMUL_ARITY, z_challenge),
 		};
 
 		// `batch_prove` returns binding-order challenges; reverse to variable-indexed to match
 		// the verifier's `r_rho`.
 		let mut r_rho = output.challenges;
 		r_rho.reverse();
-		(r_rho, bitand_data, intmul_data, binmul_data)
+		(
+			r_rho,
+			OperatorClaims {
+				zero,
+				bitand,
+				intmul,
+				binmul,
+			},
+		)
 	}
 }
 

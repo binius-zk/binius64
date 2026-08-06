@@ -23,7 +23,13 @@ use binius_utils::{SerializeBytes, rayon::prelude::*};
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
-	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput, zero},
+	protocols::{
+		binmul::BinMulOutput,
+		bitand::AndCheckOutput,
+		intmul::IntMulOutput,
+		shift::{BINMUL_ARITY, INTMUL_ARITY},
+		zero,
+	},
 };
 use digest::Output;
 
@@ -233,11 +239,7 @@ impl IOPProver {
 					r_x_prime: eval_point,
 				}
 			}
-			None => OperatorData {
-				evals: vec![B128::ZERO; 4],
-				r_zhat_prime: bitand_claim.r_zhat_prime,
-				r_x_prime: Vec::new(),
-			},
+			None => OperatorData::zero_claim(INTMUL_ARITY, bitand_claim.r_zhat_prime),
 		};
 
 		// Build `OperatorData` for BinMul using the same shared `r_zhat_prime` challenge,
@@ -271,11 +273,7 @@ impl IOPProver {
 					r_x_prime: eval_point,
 				}
 			}
-			None => OperatorData {
-				evals: vec![B128::ZERO; 6],
-				r_zhat_prime: bitand_claim.r_zhat_prime,
-				r_x_prime: Vec::new(),
-			},
+			None => OperatorData::zero_claim(BINMUL_ARITY, bitand_claim.r_zhat_prime),
 		};
 
 		// [phase] Zero Reduction - linear constraint reduction
