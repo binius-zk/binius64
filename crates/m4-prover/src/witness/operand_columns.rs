@@ -1,285 +1,461 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-//! The batched operand-column witnesses built from a populated batch value table.
-//!
-//! Every AND, IMUL, and BMUL constraint is projected to its fixed-arity operand columns (`[A, B]`
-//! for AND, `[A, B, LO, HI]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
-//! column per operand, stacked over every instance in the batch. [`build_operand_column`] is the
-//! shared arity-generic core: it projects one operand per constraint into one column.
-//! [`build_operation_columns`] wraps it for any constraint type that exposes a fixed-arity operand
-//! array, building the leading `N_COLS` columns of the array in parallel: the four IntMul columns,
-//! the six BinMul columns, or the two AND columns. For AND the check's `C` column is never
-//! materialized, since the reduction ([`binius_prover::and_reduction::prove`]) derives `C = A & B`
-//! on the fly, so only its leading two columns are built.
+//! The batched operand columns of one operation, built from a populated batch value table.
 
 use std::{iter, mem::MaybeUninit, ptr};
 
 use binius_compute::{Allocator, VecLike};
 use binius_core::{
 	ValueIndex,
-	constraint_system::{Operand, ShiftedValueIndex},
+	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_field::{Field, PackedField};
+use binius_math::{FieldBuffer, FieldVec};
+use binius_prover::fold_word::fold_words;
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
+};
+use binius_verifier::config::B128;
 
 use crate::ValueTable;
 
-/// Builds the leading `N_COLS` operand columns of a batched fixed-arity operation.
+/// The operand columns of one batched fixed-arity operation.
 ///
-/// This is the constraint-generic entry point to `build_operand_column`: it projects every
-/// constraint to its operand array and builds one column per operand position, all in parallel.
-/// The columns follow the constraint type's storage order, so column `i` holds operand `i` of
-/// every constraint.
+/// # Overview
 ///
-/// `N_COLS` may be smaller than `ARITY`, in which case the trailing operands are never evaluated.
-/// BitAnd uses that to skip its `C` operand: the reduction derives `C = A & B` instead.
+/// Each operation projects every constraint to a fixed array of operands:
 ///
-/// # Arguments
+/// ```text
+/// AND     [A, B]
+/// IMUL    [A, B, LO, HI]
+/// BMUL    [A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]
+/// ```
 ///
-/// - `table`: the wire-major batch witness holding every instance's hidden words.
-/// - `constants`: the circuit's constant words, shared by every instance.
-/// - `constraints`: the per-instance constraints, shared by every instance. Their count need not be
-///   a power of two; the columns are zero-padded up to one.
-/// - `alloc`: the allocator backing the returned columns.
+/// One column holds one operand position, evaluated on every instance of the batch.
 ///
-/// # Panics
+/// # Layout
 ///
-/// Panics if `N_COLS` exceeds `ARITY`.
-pub fn build_operation_columns<C, A, const ARITY: usize, const N_COLS: usize>(
-	table: &ValueTable,
-	constants: &[Word],
-	constraints: &[C],
-	alloc: &A,
-) -> [A::Vec<Word>; N_COLS]
-where
-	C: AsRef<[Operand; ARITY]> + Sync,
-	A: Allocator,
-{
-	assert!(N_COLS <= ARITY, "N_COLS must not exceed the constraint arity");
-
-	(0..N_COLS)
-		.into_par_iter()
-		.map(|op_idx| {
-			build_operand_column(
-				table,
-				constants,
-				constraints
-					.par_iter()
-					.map(move |constraint| &constraint.as_ref()[op_idx]),
-				alloc,
-			)
-		})
-		.collect::<Vec<_>>()
-		.try_into()
-		.unwrap_or_else(|_| unreachable!("source iterator has N_COLS elements"))
-}
-
-/// Builds one operand column of a batched fixed-arity operation, over every instance.
-///
-/// This is the arity-generic core shared by every per-operation witness: BitAnd projects each
-/// constraint to its three operands `[A, B, C]`; IntMul projects to its four `[A, B, LO, HI]`.
-/// Every constraint contributes one row per instance to each operand column, laid out
-/// constraint-major:
+/// Every column is constraint-major, so one constraint's instances are contiguous:
 ///
 /// ```text
 /// row = local_constraint * n_instances + instance
 /// ```
 ///
-/// An operand is a XOR of shifted committed values:
+/// The constraint count need not be a power of two.
 ///
-/// ```text
-/// operand(instance) = XOR_t shift_t( value(index_t, instance) )
-/// ```
-///
-/// A value index splits by the witness offset:
-/// - below it: a public word, the same constant in every instance.
-/// - at or above it: a hidden word read from the table.
-///
-/// One index's hidden words across all instances form one contiguous row of the buffer.
-/// So a term streams that row, XOR-ing its shifted words into the column, which lands exactly on
-/// one constraint's contiguous instance block, matching the constraint-major output layout.
-///
-/// # Arguments
-///
-/// - `table`: the wire-major batch witness holding every instance's hidden words.
-/// - `constants`: the circuit's constant words, shared by every instance.
-/// - `operands`: one operand per constraint, in order; the returned column follows that same order.
-///   Their count need not be a power of two; the constraint axis is zero-padded up to one, and a
-///   zero row satisfies every constraint type.
-/// - `alloc`: the allocator backing the returned column.
-pub fn build_operand_column<'a, A: Allocator>(
-	table: &ValueTable,
-	constants: &[Word],
-	operands: impl IndexedParallelIterator<Item = &'a Operand>,
-	alloc: &A,
-) -> A::Vec<Word> {
-	// Rows per instance, and total rows across the batch. The constraint axis is rounded up to a
-	// power of two, so the columns end in `(n_padded - n_constraints) << log_instances` zero rows.
-	let n_constraints = operands.len();
-	let log_constraints = log2_ceil_usize(n_constraints);
-	let log_instances = table.log_instances();
-
-	let table_words = table.as_words();
-	let witness_offset = ValueIndex(table.layout().offset_witness as u32);
-
-	let total = 1 << (log_instances + log_constraints);
-	let mut out = alloc.alloc::<Word>(total);
-	// The allocator may hand back more capacity than requested, so bound the spare slice to the row
-	// count before splitting it into the constraint rows and the zero padding.
-	let (constraint_rows, padding_rows) =
-		out.spare_capacity_mut()[..total].split_at_mut(n_constraints << log_instances);
-	// Zeroing a `MaybeUninit<Word>` initializes it to `Word::ZERO`: `Word` is `repr(transparent)`
-	// over `u64`, whose all-zero bit pattern is zero.
-	bytemuck::fill_zeroes(padding_rows);
-
-	operands
-		.zip(constraint_rows.par_chunks_mut(1 << log_instances))
-		.for_each(|(operand, out_chunk)| {
-			let mut shifted_indices_iter = operand.iter();
-
-			if let Some(shifted_index_0) = shifted_indices_iter.next() {
-				write_shifted_values(
-					out_chunk,
-					shifted_index_0,
-					constants,
-					table_words,
-					witness_offset,
-					log_instances,
-				);
-
-				// out_chunk is fully initialized in the block above.
-				let out_chunk = unsafe { out_chunk.assume_init_mut() };
-
-				for shifted_index in shifted_indices_iter {
-					accum_shifted_values(
-						out_chunk,
-						shifted_index,
-						constants,
-						table_words,
-						witness_offset,
-						log_instances,
-					);
-				}
-			} else {
-				// When the operand is empty, write 0 words to the stripe.
-				// Safety: out_chunk is a valid slice of Word, writing zero bytes writes zero words.
-				unsafe { ptr::write_bytes(out_chunk.as_mut_ptr(), 0, out_chunk.len()) };
-			}
-		});
-
-	// SAFETY: the constraint stripes partition `[0, n_constraints << log_instances)` and each
-	// writes its whole range — the operand's first term initializes every cell, later terms XOR in
-	// place, and an empty operand zeroes the stripe. The remaining `[n_constraints <<
-	// log_instances, total)` was zeroed above. So all `total` elements are initialized.
-	unsafe { out.set_len(total) };
-	out
+/// - The columns are zero-padded up to the next one.
+/// - A zero row satisfies every operation, so the padding needs no further handling.
+pub struct OperandColumns<A: Allocator, const ARITY: usize> {
+	/// One column per operand position, in the constraint type's storage order.
+	columns: [A::Vec<Word>; ARITY],
+	/// The base-2 logarithm of the instance count, which is the stride of the constraint axis.
+	log_instances: usize,
 }
 
-/// Writes one shifted value into every element of `out_chunk`, initializing it.
-///
-/// This is the first term of an operand's accumulation: it initializes the cell rather than
-/// XOR-ing into it, so the caller need not zero `out_chunk` first. Use [`accum_shifted_values`]
-/// for every subsequent term.
-///
-/// # Arguments
-///
-/// - `out_chunk`: the uninitialized output cells to write, one per instance in this stripe.
-/// - `shifted_index`: the shifted value index to write.
-/// - `constants`: the circuit's constant words, shared by every instance.
-/// - `table_words`: the wire-major batch witness's hidden words.
-/// - `witness_offset`: the value index at which hidden words begin; public words lie below it.
-/// - `log_instances`: the base-2 logarithm of the instance count, i.e. one hidden row's stride.
-fn write_shifted_values(
-	out_chunk: &mut [MaybeUninit<Word>],
-	shifted_index: &ShiftedValueIndex,
-	constants: &[Word],
-	table_words: &[Word],
-	witness_offset: ValueIndex,
-	log_instances: usize,
-) {
-	let ShiftedValueIndex {
-		value_index,
-		shift_variant,
-		amount: shift_amount,
-	} = *shifted_index;
-	let amount = shift_amount as u32;
-
-	if value_index < witness_offset {
-		let constant = constants[value_index.0 as usize];
-		let shifted_constant = shift_variant.apply(constant, shift_amount as usize);
-		for out_i in &mut *out_chunk {
-			out_i.write(shifted_constant);
+impl<A: Allocator, const ARITY: usize> OperandColumns<A, ARITY> {
+	/// Builds the leading columns of an operation, one per operand position.
+	///
+	/// # Overview
+	///
+	/// Every constraint is projected to its operand array.
+	///
+	/// One column is then built per operand position, all of them in parallel.
+	///
+	/// Fewer columns than the constraint arity may be built, leaving trailing operands unread.
+	///
+	/// The AND check uses that to skip its third operand, which its reduction derives instead.
+	///
+	/// # Arguments
+	///
+	/// - `table`: the wire-major batch witness holding every instance's hidden words.
+	/// - `constants`: the circuit's constant words, shared by every instance.
+	/// - `constraints`: the per-instance constraints, shared by every instance.
+	/// - `alloc`: the allocator backing the columns.
+	///
+	/// # Panics
+	///
+	/// Panics if more columns are requested than the constraints carry operands.
+	pub fn build<C, const CONSTRAINT_ARITY: usize>(
+		table: &ValueTable,
+		constants: &[Word],
+		constraints: &[C],
+		alloc: &A,
+	) -> Self
+	where
+		C: AsRef<[Operand; CONSTRAINT_ARITY]> + Sync,
+	{
+		const {
+			assert!(
+				ARITY <= CONSTRAINT_ARITY,
+				"cannot build more columns than the constraint arity"
+			);
 		}
-	} else {
-		let index = value_index.0 as usize - witness_offset.0 as usize;
-		let src = &table_words[(index << log_instances)..((index + 1) << log_instances)];
 
-		// Invariant: shifting by zero returns the word untouched, whichever variant is named.
-		// So one copy covers every variant, and the shifting path below never sees a zero amount.
-		if amount == 0 {
-			// Safety:
-			// * out_chunk.len() == src.len()
-			// * MaybeUninit<Word> has the same memory repr as Word
-			unsafe {
-				ptr::copy_nonoverlapping(
-					src.as_ptr(),
-					out_chunk.as_mut_ptr() as *mut Word,
-					out_chunk.len(),
+		// A term reads from the same banks for every column, so resolve them once.
+		let values = ValueWords::new(table, constants);
+
+		// The operand positions are independent, so build one column per position in parallel.
+		let columns = (0..ARITY)
+			.into_par_iter()
+			.map(|op_idx| {
+				// Project every constraint to the operand sitting at this position.
+				values.build_column(
+					constraints
+						.par_iter()
+						.map(move |constraint| &constraint.as_ref()[op_idx]),
+					alloc,
 				)
-			};
-		} else {
-			shift_variant.write_shifted(out_chunk, src, amount);
+			})
+			.collect::<Vec<_>>()
+			.try_into()
+			.unwrap_or_else(|_| unreachable!("the source iterator has ARITY elements"));
+
+		Self {
+			columns,
+			log_instances: table.log_instances(),
+		}
+	}
+
+	/// The columns as plain word slices, dropping whichever allocator produced them.
+	pub fn as_slices(&self) -> [&[Word]; ARITY] {
+		self.columns.each_ref().map(|column| &**column)
+	}
+
+	/// Folds one column over its bit and constraint axes, leaving the instance axis.
+	///
+	/// # Overview
+	///
+	/// A column is constraint-major, so collapsing its two other axes leaves one per instance:
+	///
+	/// ```text
+	/// M[rho] = sum_{local, j} lagrange[j] * r_x_tensor[local] * bit_j(column[local * K + rho])
+	/// ```
+	///
+	/// - The Lagrange weights fold each word over its bit axis at the shared univariate challenge.
+	/// - The constraint tensor folds the constraint axis, and is shared across the operands.
+	///
+	/// Evaluating the result at the operation's instance point gives that operand's oblong claim.
+	///
+	/// A sumcheck can then transport that claim to a point shared with the other operations.
+	///
+	/// # Panics
+	///
+	/// Panics if the constraint tensor does not cover the column's padded constraint axis.
+	pub fn rho_multilinear<P>(
+		&self,
+		operand: usize,
+		lagrange: &[B128],
+		r_x_tensor: &[B128],
+		alloc: &A,
+	) -> FieldVec<P, A>
+	where
+		P: PackedField<Scalar = B128>,
+	{
+		let column = &self.columns[operand];
+
+		// Invariant: the tensor carries one weight per padded constraint row.
+		assert_eq!(
+			r_x_tensor.len() << self.log_instances,
+			column.len(),
+			"the constraint tensor must cover the padded constraint axis"
+		);
+
+		// Fold each word's bits at the univariate challenge, giving one scalar per row.
+		// Scalars keep the row indexing flat for the constraint fold below.
+		let folded_rows = fold_words::<B128, B128, _>(alloc, column, lagrange);
+		let folded_rows = folded_rows.as_ref();
+
+		// One packed element per parallel task, each lane holding one instance.
+		// Lanes past the instance count are the multilinear's zero padding.
+		let n_instances = 1usize << self.log_instances;
+		let packed_len = 1usize << self.log_instances.saturating_sub(P::LOG_WIDTH);
+		let mut packed = alloc.alloc::<P>(packed_len);
+		packed
+			.spare_capacity_mut()
+			.par_iter_mut()
+			.enumerate()
+			.for_each(|(packed_index, slot)| {
+				slot.write(P::from_scalars((0..P::WIDTH).map(|lane| {
+					let instance = (packed_index << P::LOG_WIDTH) | lane;
+					if instance < n_instances {
+						// Constraint `local` of this instance sits at row `local * K + rho`.
+						// So the constraint axis is the strided one.
+						r_x_tensor
+							.iter()
+							.enumerate()
+							.map(|(local, &weight)| {
+								weight * folded_rows[local * n_instances + instance]
+							})
+							.sum()
+					} else {
+						B128::ZERO
+					}
+				})));
+			});
+		// SAFETY: the parallel loop writes every packed slot exactly once.
+		unsafe { packed.set_len(packed_len) };
+
+		FieldBuffer::new(self.log_instances, packed)
+	}
+}
+
+impl<A: Allocator> OperandColumns<A, 2> {
+	/// Appends the AND check's third column, derived word-by-word from the first two.
+	///
+	/// # Overview
+	///
+	/// The check itself stores only its two input operands.
+	///
+	/// On a satisfying witness the third is their conjunction.
+	/// Deriving it is therefore cheaper than building it from the constraints.
+	///
+	/// Only the re-randomization reads it, so it is materialized on that path alone.
+	///
+	/// # Performance
+	///
+	/// One conjunction per row is a single instruction.
+	///
+	/// The cost is streaming three word columns, two read and one written.
+	pub fn with_derived_and(self, alloc: &A) -> OperandColumns<A, 3> {
+		let Self {
+			columns: [a, b],
+			log_instances,
+		} = self;
+
+		// The parallel zip stops at the shortest of its three sides.
+		// Equal input lengths are therefore what make the output fully written.
+		debug_assert_eq!(a.len(), b.len());
+		let n_rows = a.len();
+
+		let mut c = alloc.alloc::<Word>(n_rows);
+		(&a[..], &b[..], c.spare_capacity_mut())
+			.into_par_iter()
+			.with_min_task_bytes::<[Word; 3]>()
+			.for_each(|(&a_i, &b_i, out)| {
+				out.write(a_i & b_i);
+			});
+		// SAFETY: the loop above writes each of the `n_rows` entries exactly once.
+		unsafe { c.set_len(n_rows) };
+
+		OperandColumns {
+			columns: [a, b, c],
+			log_instances,
 		}
 	}
 }
 
-/// XORs one shifted value into every element of `out_chunk`.
+/// The batch's value words, addressed the way an operand term addresses them.
 ///
-/// Use this for every term of an operand's accumulation after the first; see
-/// [`write_shifted_values`] for the first term, which initializes `out_chunk` instead.
+/// # Overview
 ///
-/// # Arguments
+/// A value index splits at the witness offset:
 ///
-/// - `out_chunk`: the initialized output cells to accumulate into, one per instance in this stripe.
-/// - `shifted_index`: the shifted value index to accumulate.
-/// - `constants`: the circuit's constant words, shared by every instance.
-/// - `table_words`: the wire-major batch witness's hidden words.
-/// - `witness_offset`: the value index at which hidden words begin; public words lie below it.
-/// - `log_instances`: the base-2 logarithm of the instance count, i.e. one hidden row's stride.
-fn accum_shifted_values(
-	out_chunk: &mut [Word],
-	shifted_index: &ShiftedValueIndex,
-	constants: &[Word],
-	table_words: &[Word],
+/// - below it, a public word: the same constant in every instance;
+/// - at or above it, a hidden word: one per instance, read from the table.
+///
+/// Both banks are carried here, together with the offset that separates them.
+///
+/// So a term resolves without its caller re-deriving that split at each use.
+#[derive(Clone, Copy)]
+struct ValueWords<'a> {
+	/// The circuit's constant words, shared by every instance.
+	constants: &'a [Word],
+	/// Every instance's hidden words, wire-major.
+	hidden: &'a [Word],
+	/// The value index at which hidden words begin.
 	witness_offset: ValueIndex,
+	/// The base-2 logarithm of the instance count, which is one hidden row's stride.
 	log_instances: usize,
-) {
-	let ShiftedValueIndex {
-		value_index,
-		shift_variant,
-		amount: shift_amount,
-	} = *shifted_index;
-	let amount = shift_amount as u32;
+}
 
-	if value_index < witness_offset {
-		let constant = constants[value_index.0 as usize];
-		let shifted_constant = shift_variant.apply(constant, shift_amount as usize);
-		for out_i in &mut *out_chunk {
-			*out_i = *out_i ^ shifted_constant;
+/// The words one operand term contributes, one per instance of the batch.
+enum TermWords<'a> {
+	/// One already-shifted constant, repeated across every instance.
+	Splat(Word),
+	/// One hidden row, taken as it is.
+	Plain(&'a [Word]),
+	/// One hidden row, shifted as it is streamed.
+	Shifted {
+		/// The unshifted row, one word per instance.
+		row: &'a [Word],
+		/// Which shift to apply to each word.
+		variant: ShiftVariant,
+		/// How far to shift, always non-zero.
+		amount: u32,
+	},
+}
+
+impl<'a> ValueWords<'a> {
+	/// Borrows a populated table and its circuit's constants as one addressable value space.
+	fn new(table: &'a ValueTable, constants: &'a [Word]) -> Self {
+		Self {
+			constants,
+			hidden: table.as_words(),
+			witness_offset: ValueIndex(table.layout().offset_witness as u32),
+			log_instances: table.log_instances(),
 		}
-	} else {
-		let index = value_index.0 as usize - witness_offset.0 as usize;
-		let src = &table_words[(index << log_instances)..((index + 1) << log_instances)];
+	}
+
+	/// Builds one operand column of a batched operation, over every instance.
+	///
+	/// # Overview
+	///
+	/// Every constraint contributes one row per instance, laid out constraint-major:
+	///
+	/// ```text
+	/// row = local_constraint * n_instances + instance
+	/// ```
+	///
+	/// So one constraint's instances land on one contiguous stripe of the column.
+	///
+	/// The stripes are independent, so they are evaluated in parallel, one task each.
+	///
+	/// # Arguments
+	///
+	/// - `operands`: one operand per constraint, in the order the column follows.
+	/// - `alloc`: the allocator backing the column.
+	///
+	/// # Returns
+	///
+	/// The column, its constraint axis zero-padded up to a power of two.
+	fn build_column<A: Allocator>(
+		&self,
+		operands: impl IndexedParallelIterator<Item = &'a Operand>,
+		alloc: &A,
+	) -> A::Vec<Word> {
+		// The constraint axis is rounded up to a power of two.
+		// The column therefore ends in `(n_padded - n_constraints) << log_instances` zero rows.
+		let n_constraints = operands.len();
+		let total = 1 << (self.log_instances + log2_ceil_usize(n_constraints));
+
+		let mut out = alloc.alloc::<Word>(total);
+		// The allocator may hand back more capacity than asked for.
+		// Bound the spare slice to the row count before splitting off the padding.
+		let (constraint_rows, padding_rows) =
+			out.spare_capacity_mut()[..total].split_at_mut(n_constraints << self.log_instances);
+
+		// Zeroing a `MaybeUninit<Word>` initializes it.
+		// `Word` is `repr(transparent)` over `u64`, whose all-zero bit pattern is zero.
+		bytemuck::fill_zeroes(padding_rows);
+
+		// One stripe per constraint, each holding that constraint's instances.
+		operands
+			.zip(constraint_rows.par_chunks_mut(1 << self.log_instances))
+			.for_each(|(operand, stripe)| self.write_operand(stripe, operand));
+
+		// SAFETY: the stripes partition `[0, n_constraints << log_instances)`.
+		// Each is written in full, and everything past them was zeroed above.
+		// So all `total` elements are initialized.
+		unsafe { out.set_len(total) };
+		out
+	}
+
+	/// Writes one operand into a stripe, initializing every cell.
+	///
+	/// # Overview
+	///
+	/// An operand is a XOR of shifted values:
+	///
+	/// ```text
+	/// operand(instance) = XOR_t shift_t( value(index_t, instance) )
+	/// ```
+	///
+	/// The first term initializes the stripe, so it never has to be zeroed first.
+	///
+	/// Every later term accumulates into it.
+	fn write_operand(&self, out: &mut [MaybeUninit<Word>], operand: &Operand) {
+		let mut terms = operand.iter();
+
+		let Some(first) = terms.next() else {
+			// An empty operand contributes zero to every instance.
+			bytemuck::fill_zeroes(out);
+			return;
+		};
+
+		self.write_term(out, first);
+
+		// SAFETY: the write above set every cell of the stripe.
+		let out = unsafe { out.assume_init_mut() };
+		for term in terms {
+			self.accumulate_term(out, term);
+		}
+	}
+
+	/// Writes one term into every cell of a stripe, initializing it.
+	fn write_term(&self, out: &mut [MaybeUninit<Word>], term: &ShiftedValueIndex) {
+		match self.term_words(term) {
+			TermWords::Splat(word) => {
+				for cell in out {
+					cell.write(word);
+				}
+			}
+			// SAFETY:
+			// * the row holds one word per instance, so it is exactly as long as the stripe;
+			// * `MaybeUninit<Word>` has the same memory representation as `Word`.
+			TermWords::Plain(row) => unsafe {
+				ptr::copy_nonoverlapping(row.as_ptr(), out.as_mut_ptr() as *mut Word, out.len())
+			},
+			TermWords::Shifted {
+				row,
+				variant,
+				amount,
+			} => variant.write_shifted(out, row, amount),
+		}
+	}
+
+	/// XORs one term into every cell of an initialized stripe.
+	fn accumulate_term(&self, out: &mut [Word], term: &ShiftedValueIndex) {
+		match self.term_words(term) {
+			TermWords::Splat(word) => {
+				for cell in out {
+					*cell = *cell ^ word;
+				}
+			}
+			TermWords::Plain(row) => {
+				for (cell, &word) in iter::zip(out, row) {
+					*cell = *cell ^ word;
+				}
+			}
+			TermWords::Shifted {
+				row,
+				variant,
+				amount,
+			} => variant.xor_shifted(out, row, amount),
+		}
+	}
+
+	/// Resolves one term to the words it contributes.
+	fn term_words(&self, term: &ShiftedValueIndex) -> TermWords<'a> {
+		let &ShiftedValueIndex {
+			value_index,
+			shift_variant: variant,
+			amount,
+		} = term;
+
+		// A public index names one constant, shifted once and shared by every instance.
+		if value_index < self.witness_offset {
+			let constant = self.constants[value_index.0 as usize];
+			return TermWords::Splat(variant.apply(constant, amount as usize));
+		}
+
+		// A hidden index names one wire, whose instances are one contiguous row.
+		let row_index = (value_index.0 - self.witness_offset.0) as usize;
+		let row = &self.hidden
+			[(row_index << self.log_instances)..((row_index + 1) << self.log_instances)];
 
 		// Invariant: shifting by zero returns the word untouched, whichever variant is named.
-		// So one plain XOR covers every variant, and the path below never sees a zero amount.
-		if amount == 0 {
-			for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
-				*out_i = *out_i ^ src_i;
-			}
-		} else {
-			shift_variant.xor_shifted(out_chunk, src, amount);
+		// So the unshifted case covers every variant.
+		// The shifted case then never sees a zero amount.
+		match u32::from(amount) {
+			0 => TermWords::Plain(row),
+			amount => TermWords::Shifted {
+				row,
+				variant,
+				amount,
+			},
 		}
 	}
 }
@@ -289,7 +465,7 @@ mod tests {
 	use assert_matches::assert_matches;
 	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_core::constraint_system::{AndConstraint, ShiftVariant, ValueVec};
-	use binius_field::{AESTowerField8b as B8, PackedBinaryGhash1x128b};
+	use binius_field::{AESTowerField8b as B8, PackedBinaryGhash1x128b, Random};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
 	use binius_math::{
@@ -306,12 +482,123 @@ mod tests {
 		verify_bitand_reduction,
 	};
 	use proptest::prelude::*;
+	use rand::prelude::*;
 
 	use super::*;
 
 	/// A width-1 packed field keeps one scalar per element, so the SIMD sumcheck rounds stay
 	/// simple.
 	type P = PackedBinaryGhash1x128b;
+
+	// Four instances of the AND circuit, with distinct satisfying inputs.
+	//
+	// Shared by the tests that only need columns to fold, not a particular fixture.
+	fn four_instance_and_table() -> (AndCircuit, ValueTable) {
+		let c = and_circuit();
+		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
+		(c, table)
+	}
+
+	#[test]
+	fn with_derived_and_appends_the_conjunction() {
+		// Invariant: the third column is the word-by-word conjunction of the first two.
+		// The two inputs pass through untouched.
+		//
+		// Fixture state: 4 instances, the AND circuit's own constraints.
+		let (c, table) = four_instance_and_table();
+		let and_constraints = table_constraints(&c);
+		let columns =
+			OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
+
+		// Snapshot the inputs, since deriving the third column consumes the value.
+		let [a_before, b_before] = columns.as_slices().map(<[Word]>::to_vec);
+
+		let derived = columns.with_derived_and(&GlobalAllocator);
+		let [a, b, c_column] = derived.as_slices();
+
+		// The two input columns are carried over unchanged.
+		assert_eq!(a, &a_before[..]);
+		assert_eq!(b, &b_before[..]);
+
+		// Every row of the third column is the conjunction of the other two.
+		let expected: Vec<Word> = iter::zip(a, b).map(|(&a_i, &b_i)| a_i & b_i).collect();
+		assert_eq!(c_column, &expected[..]);
+
+		// Sanity: the fixture leaves at least one non-zero row, so the check is not vacuous.
+		assert!(c_column.iter().any(|&word| word != Word::ZERO));
+	}
+
+	#[test]
+	fn rho_multilinear_matches_the_direct_triple_sum() {
+		// Invariant: folding the bit and constraint axes leaves one element per instance.
+		//
+		//     M[rho] = sum_{local, j} lagrange[j] * tensor[local] * bit_j(column[local*K + rho])
+		//
+		// Fixture state: 4 instances, random weights on both folded axes.
+		let (c, table) = four_instance_and_table();
+		let and_constraints = table_constraints(&c);
+		let columns = OperandColumns::<_, 2>::build(
+			&table,
+			constants(&c),
+			&and_constraints,
+			&GlobalAllocator,
+		);
+
+		let n_instances = table.n_instances();
+		let n_padded = columns.as_slices()[0].len() / n_instances;
+
+		// Independent weights per axis, so a swapped index cannot pass by coincidence.
+		let mut rng = StdRng::seed_from_u64(0);
+		let lagrange: Vec<B128> = (0..Word::BITS).map(|_| B128::random(&mut rng)).collect();
+		let r_x_tensor: Vec<B128> = (0..n_padded).map(|_| B128::random(&mut rng)).collect();
+
+		for operand in 0..2 {
+			let column = columns.as_slices()[operand];
+			let folded =
+				columns.rho_multilinear::<P>(operand, &lagrange, &r_x_tensor, &GlobalAllocator);
+			let got: Vec<B128> = folded.iter_scalars().collect();
+
+			// One element per instance, each the triple sum over that instance's column entries.
+			assert_eq!(got.len(), n_instances);
+			for (rho, &value) in got.iter().enumerate() {
+				let mut expected = B128::ZERO;
+				for (local, &weight) in r_x_tensor.iter().enumerate() {
+					let word = column[local * n_instances + rho];
+					for (j, &basis) in lagrange.iter().enumerate() {
+						// A set bit contributes both of its axis weights.
+						if (word.0 >> j) & 1 == 1 {
+							expected += weight * basis;
+						}
+					}
+				}
+				assert_eq!(value, expected, "operand {operand}, instance {rho}");
+			}
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "the constraint tensor must cover the padded constraint axis")]
+	fn rho_multilinear_rejects_a_tensor_of_the_wrong_width() {
+		let (c, table) = four_instance_and_table();
+		let and_constraints = table_constraints(&c);
+		let columns = OperandColumns::<_, 2>::build(
+			&table,
+			constants(&c),
+			&and_constraints,
+			&GlobalAllocator,
+		);
+
+		// Mutation: one weight short of the padded constraint axis.
+		//
+		//     rows in the column:  n_padded * n_instances
+		//     weights supplied:    n_padded - 1
+		//
+		// The fold indexes the column by the tensor, so a short one would drop constraint rows.
+		let n_padded = columns.as_slices()[0].len() / table.n_instances();
+		let lagrange = vec![B128::ZERO; Word::BITS];
+		let short = vec![B128::ZERO; n_padded - 1];
+		let _ = columns.rho_multilinear::<P>(0, &lagrange, &short, &GlobalAllocator);
+	}
 
 	// The univariate-skip domain the AND-check runs over: one dimension above the 64-bit word.
 	fn message_domain() -> BinarySubspace<B8> {
@@ -417,8 +704,8 @@ mod tests {
 
 	// The reference for one instance: the core operand evaluator on its reconstructed value vec.
 	// This is exactly what the single-instance BitAnd witness builder computes.
-	// Only the `A` and `B` columns exist.
-	// The batch witness derives `C = A & B` rather than storing it.
+	//
+	// Only the first two columns exist; the third is derived rather than stored.
 	fn reference_rows(and_constraints: &[AndConstraint], vv: &ValueVec) -> (Vec<Word>, Vec<Word>) {
 		let mut a = Vec::new();
 		let mut b = Vec::new();
@@ -466,8 +753,9 @@ mod tests {
 		let table = populate_table(&c, &inputs);
 
 		let and_constraints = &table_constraints(&c);
-		let [a, b] =
-			build_operation_columns(&table, constants(&c), and_constraints, &GlobalAllocator);
+		let columns =
+			OperandColumns::build(&table, constants(&c), and_constraints, &GlobalAllocator);
+		let [a, b] = columns.as_slices();
 
 		// Shape: K * n_and rows, with K = 4.
 		let n_and = and_constraints.len();
@@ -518,9 +806,8 @@ mod tests {
 		.unwrap()
 	}
 
-	// The arity-4 IntMul witness lays out its four operand columns [A, B, LO, HI] constraint-major,
-	// each row matching the single-instance operand evaluator. This is the batched IntMul witness
-	// the reduction will consume once the IntMul check is wired in.
+	// The four IntMul columns are laid out constraint-major, in the order [A, B, LO, HI].
+	// Every row matches what the single-instance operand evaluator produces.
 	#[test]
 	fn intmul_operand_columns_match_the_single_instance_reference() {
 		let c = mul_circuit();
@@ -541,8 +828,8 @@ mod tests {
 		let imul_constraints = &cs.imul_constraints;
 		assert!(!imul_constraints.is_empty(), "the circuit must emit an IMUL constraint");
 
-		let [a, b, lo, hi] =
-			build_operation_columns(&table, constants, imul_constraints, &GlobalAllocator);
+		let columns = OperandColumns::build(&table, constants, imul_constraints, &GlobalAllocator);
+		let [a, b, lo, hi] = columns.as_slices();
 
 		// Shape: K * n_imul rows, with K = 4.
 		let n_imul = imul_constraints.len();
@@ -612,8 +899,8 @@ mod tests {
 		.unwrap()
 	}
 
-	// The arity-6 BinMul witness lays out its six operand columns [a_lo, a_hi, b_lo, b_hi, c_lo,
-	// c_hi] constraint-major, each row matching the single-instance operand evaluator.
+	// The six BinMul columns are laid out constraint-major, in operand order.
+	// Every row matches what the single-instance operand evaluator produces.
 	#[test]
 	fn binmul_operand_columns_match_the_single_instance_reference() {
 		let c = binmul_circuit();
@@ -639,8 +926,8 @@ mod tests {
 		let bmul_constraints = &cs.bmul_constraints;
 		assert!(!bmul_constraints.is_empty(), "the circuit must emit a BMUL constraint");
 
-		let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] =
-			build_operation_columns(&table, constants, bmul_constraints, &GlobalAllocator);
+		let columns = OperandColumns::build(&table, constants, bmul_constraints, &GlobalAllocator);
+		let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = columns.as_slices();
 
 		// Shape: K * n_binmul rows, with K = 4.
 		let n_binmul = bmul_constraints.len();
@@ -672,8 +959,9 @@ mod tests {
 		// Fixture state: log_instances = 0 → exactly one instance (K = 1).
 		let table = populate_table(&c, &[(0xABCD, 0x0F0F, 0x55)]);
 		let and_constraints = table_constraints(&c);
-		let [a, b] =
-			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let columns =
+			OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let [a, b] = columns.as_slices();
 
 		// The degenerate batch reproduces the single-instance BitAnd columns exactly.
 		let vv = table.instance_value_vec(0, constants(&c));
@@ -693,12 +981,14 @@ mod tests {
 		// Invariant: the constraint axis is rounded up to a power of two, so 3 constraints yield 4
 		// constraint stripes, the last of which is all zeros.
 		//
-		// The three constraints all repeat one whose `A` and `B` are non-zero on every instance, so
-		// every leading stripe carries non-zero words. Asserting that pins the split point: a
-		// column zeroed past the wrong offset fails here rather than slipping through the
-		// trailing-zero check.
+		// All three constraints repeat one whose `A` and `B` are non-zero on every instance.
+		// Every leading stripe therefore carries non-zero words.
+		//
+		// Asserting that pins the split point.
+		// A column zeroed past the wrong offset fails here, rather than passing the zero check.
 		let constraints = vec![all_nonzero_constraint(&c, &table); 3];
-		let [a, b] = build_operation_columns(&table, constants(&c), &constraints, &GlobalAllocator);
+		let columns = OperandColumns::build(&table, constants(&c), &constraints, &GlobalAllocator);
+		let [a, b] = columns.as_slices();
 
 		for col in [&a, &b] {
 			assert_eq!(col.len(), 4 * n_instances);
@@ -764,12 +1054,14 @@ mod tests {
 			let and_constraints =
 				vec![AndConstraint([to_operand(&a_terms), to_operand(&b_terms), Operand::new()])];
 
-			let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
+			let columns =
+				OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
+			let [a, b] = columns.as_slices();
 
 			// Both columns match the shift-aware value-vec evaluator on the same constraints.
 			let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
-			prop_assert_eq!(&*a, &a_ref[..]);
-			prop_assert_eq!(&*b, &b_ref[..]);
+			prop_assert_eq!(a, &a_ref[..]);
+			prop_assert_eq!(b, &b_ref[..]);
 		}
 	}
 
@@ -791,11 +1083,12 @@ mod tests {
 
 			let pool = BufferPool::new();
 			let and_constraints = table_constraints(&c);
-			let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints, &&pool);
+			let columns = OperandColumns::build(&table, constants(&c), &and_constraints, &&pool);
+			let [a, b] = columns.as_slices();
 
 			let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
-			prop_assert_eq!(&*a, &a_ref[..]);
-			prop_assert_eq!(&*b, &b_ref[..]);
+			prop_assert_eq!(a, &a_ref[..]);
+			prop_assert_eq!(b, &b_ref[..]);
 		}
 	}
 
@@ -812,8 +1105,9 @@ mod tests {
 			.collect();
 		let table = populate_table(&c, &inputs);
 		let and_constraints = table_constraints(&c);
-		let [a, b] =
-			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let columns =
+			OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let [a, b] = columns.as_slices();
 
 		// Every instance's contribution equals its independent single-instance reference.
 		// This includes instances at or beyond STRIPE_WIDTH, which only the second stripe produces.
@@ -831,12 +1125,12 @@ mod tests {
 			populate_table(&c, &[(1, 3, 7), (0xF0F0, 0x0FF0, 0xAA), (5, 6, 9), (0xFFFF, 1, 2)]);
 
 		// Hand-craft constraints that carry real shifts on hidden operands.
-		// The circuit compiler emits unshifted operands here, so the shifted branch of the
-		// accumulator would otherwise go untested by this module.
 		//
-		// The `c` operand is deliberately unrelated to `a & b`.
-		// The batch witness builder never evaluates a constraint's `c` operand.
-		// So this fixture need not satisfy the AND relation to exercise the shift handling.
+		// The circuit compiler emits only unshifted operands here.
+		// The shifted branch would otherwise go untested by this module.
+		//
+		// The third operand is deliberately unrelated to the conjunction of the first two.
+		// The builder never evaluates it, so the fixture need not satisfy the AND relation.
 		let x = c.circuit.witness_index(c.x);
 		let y = c.circuit.witness_index(c.y);
 		let z = c.circuit.witness_index(c.z);
@@ -858,8 +1152,9 @@ mod tests {
 			.any(|op| op.iter().any(|sv| sv.amount != 0));
 		assert!(shifted, "fixture must contain a shifted operand");
 
-		let [a, b] =
-			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let columns =
+			OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let [a, b] = columns.as_slices();
 
 		// `a` and `b` equal the shift-aware value-vec reference for the same constraints.
 		let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
@@ -876,8 +1171,9 @@ mod tests {
 		// So every coordinate is pinned and no large-field challenge is drawn.
 		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
 		let and_constraints = table_constraints(&c);
-		let [a, b] =
-			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let columns =
+			OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let [a, b] = columns.as_slices();
 		let log_total = checked_log_2(a.len());
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
@@ -912,8 +1208,9 @@ mod tests {
 			.collect();
 		let table = populate_table(&c, &inputs);
 		let and_constraints = table_constraints(&c);
-		let [a, b] =
-			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let columns =
+			OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
+		let [a, b] = columns.as_slices();
 		let log_total = checked_log_2(a.len());
 
 		// Produce a faithful proof.
@@ -962,21 +1259,21 @@ mod tests {
 			let c = and_circuit();
 			let table = populate_table(&c, &inputs);
 			let and_constraints = table_constraints(&c);
-			let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
+			let columns =
+				OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
+			let [a, b] = columns.as_slices();
 
-			// Keep the columns so the claimed evals can be checked against them.
-			// The witness stores no C column.
-			// Materialize the same derived `a & b` words the reduction folds.
-			// The claimed C evaluation is then pinned to that exact column.
-			let a_cols = a.clone();
-			let b_cols = b.clone();
-			let c_cols: Vec<Word> = iter::zip(&a, &b)
+			// The columns outlive the reduction, so the claimed evals can be checked against them.
+			//
+			// No third column is stored, and the reduction folds the conjunction of the first two.
+			// Materialize that same derived column, so the third claim is pinned to it.
+			let c_cols: Vec<Word> = iter::zip(a, b)
 				.map(|(&a, &b)| a & b)
 				.collect();
 			let log_total = checked_log_2(a.len());
 
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let prove_output = and_reduction::prove::<_, B128, P, _, _>([a, b], &mut prover_transcript, &GlobalAllocator);
+			let prove_output = and_reduction::prove::<_, B128, P, _, _>(columns.as_slices(), &mut prover_transcript, &GlobalAllocator);
 
 			let mut verifier_transcript = prover_transcript.into_verifier();
 			let verify_output =
@@ -994,8 +1291,8 @@ mod tests {
 				z_challenge,
 				eval_point,
 			} = verify_output;
-			prop_assert_eq!(fold_eval_column(&a_cols, z_challenge, &eval_point), a_eval);
-			prop_assert_eq!(fold_eval_column(&b_cols, z_challenge, &eval_point), b_eval);
+			prop_assert_eq!(fold_eval_column(a, z_challenge, &eval_point), a_eval);
+			prop_assert_eq!(fold_eval_column(b, z_challenge, &eval_point), b_eval);
 			prop_assert_eq!(fold_eval_column(&c_cols, z_challenge, &eval_point), c_eval);
 		}
 	}
