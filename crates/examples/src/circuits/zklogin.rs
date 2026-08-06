@@ -667,7 +667,6 @@ impl ExampleCircuit for ZkLoginExample {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 
 	use super::*;
 
@@ -691,7 +690,7 @@ mod tests {
 
 		circuit.populate_wire_witness(&mut w).unwrap();
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]

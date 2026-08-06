@@ -253,7 +253,6 @@ fn next_block(rng: &mut StdRng) -> [u8; 64] {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 	use binius_frontend::CircuitBuilder;
 
 	use super::*;
@@ -271,7 +270,10 @@ mod tests {
 			.populate_witness(Instance { seed: Some(7) }, &mut filler)
 			.unwrap();
 		circuit.populate_wire_witness(&mut filler).unwrap();
-		verify_constraints(circuit.constraint_system(), &filler.into_value_vec()).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&filler.into_value_vec())
+			.unwrap();
 	}
 
 	#[test]

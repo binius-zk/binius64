@@ -108,7 +108,6 @@ impl SubsetSum {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 
 	use super::*;
 
@@ -128,7 +127,7 @@ mod tests {
 
 		// check
 		let constraint_system = circuit.constraint_system();
-		verify_constraints(constraint_system, &filler.into_value_vec()).unwrap();
+		constraint_system.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	/// Checks that it fails with an invalid solution.

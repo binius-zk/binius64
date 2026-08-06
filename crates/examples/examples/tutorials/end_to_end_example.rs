@@ -8,7 +8,7 @@
 //! Guide: https://www.binius.xyz/building/
 
 use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
-use binius_core::{verify::verify_constraints, word::Word};
+use binius_core::word::Word;
 use binius_frontend::CircuitBuilder;
 use binius_hash::StdHashSuite;
 use binius_prover::{OptimalPackedB128, Prover};
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let cs = circuit.constraint_system();
 	let witness_vec = witness.into_value_vec();
-	verify_constraints(cs, &witness_vec)?;
+	cs.verify(&witness_vec)?;
 
 	println!("✓ the wire values you populated satisfy the circuit's constraints");
 

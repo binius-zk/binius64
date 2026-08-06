@@ -137,7 +137,7 @@ pub fn compress_pubkey(builder: &CircuitBuilder, x: &BigUint, y: &BigUint) -> Ve
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 	use bitcoin::{PublicKey, hashes::Hash};
 	use rand::prelude::*;
 
@@ -217,7 +217,10 @@ mod tests {
 		}
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
 	}
 
 	// Utility: verify the circuit's scalar_mul + compression against a given private/public pair
@@ -276,7 +279,10 @@ mod tests {
 		}
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
 	}
 
 	fn test_compress_helper(x_bytes: [u8; 32], y_bytes: [u8; 32], prefix: u8) {
@@ -404,7 +410,10 @@ mod tests {
 		}
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
 	}
 
 	#[test]

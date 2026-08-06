@@ -7,7 +7,7 @@
 //!
 //! Guide: https://www.binius.xyz/building/
 
-use binius_core::{verify::verify_constraints, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, stat::CircuitStat};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Phase 3: Constraint Verification
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.into_value_vec())?;
+	cs.verify(&w.into_value_vec())?;
 
 	println!("✓ Proof verified: Someone knows a value that ANDs with 0xFF00 to produce 0x1200");
 	let stat = CircuitStat::collect(&circuit);

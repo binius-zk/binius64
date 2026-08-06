@@ -6,7 +6,6 @@ use std::collections::HashSet;
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
 	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
-	verify::verify_constraints,
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
@@ -358,7 +357,7 @@ fn zero_constraint_circuit(
 		"the fixture must emit a ZERO constraint with a shifted operand"
 	);
 	let witness = w.into_value_vec();
-	verify_constraints(&cs, &witness).unwrap();
+	cs.verify(&witness).unwrap();
 	(cs, witness)
 }
 
@@ -418,7 +417,7 @@ fn test_prove_verify_rejects_violated_zero_constraint() {
 	words[victim.0 as usize] = words[victim.0 as usize] ^ Word::ONE;
 	let corrupted =
 		ValueVec::new_from_data(&words[..cs.n_public_words()], &words[cs.n_public_words()..]);
-	assert!(verify_constraints(&cs, &corrupted).is_err());
+	assert!(cs.verify(&corrupted).is_err());
 
 	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
 	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone()).unwrap();

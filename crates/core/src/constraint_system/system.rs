@@ -8,13 +8,14 @@ use binius_utils::{
 };
 use bytes::{Buf, BufMut};
 
-#[cfg(doc)]
-use super::ValueVec;
 use super::{
 	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ShiftVariant,
-	ValueIndex, ZeroConstraint,
+	ValueIndex, ValueVec, ZeroConstraint,
 };
-use crate::{error::ConstraintSystemError, word::Word};
+use crate::{
+	error::{ConstraintSystemError, VerificationError},
+	word::Word,
+};
 
 /// The ConstraintSystem is the core data structure in Binius64 that defines the computational
 /// constraints to be proven in zero-knowledge. It represents a system of equations over 64-bit
@@ -203,6 +204,76 @@ impl ConstraintSystem {
 			BmulConstraint::KIND,
 			BmulConstraint::OPERAND_NAMES,
 		)?;
+
+		Ok(())
+	}
+
+	/// Checks that a value vector satisfies this constraint system.
+	///
+	/// Specifically checks that:
+	///
+	/// - the value vector shape is [valid][`Self::validate_shape`].
+	/// - the value vector opens the declared constants to their declared words.
+	/// - every constraint holds, in kind order: zero, then AND, then IMUL, then BMUL.
+	///
+	/// Operands are evaluated one word at a time, directly off the value vector.
+	/// That makes this the reference the prover's packed evaluation is checked against.
+	///
+	/// # Errors
+	///
+	/// Reports the first failure found, in the order listed above.
+	/// A reported constraint position counts within that constraint's own kind.
+	pub fn verify(&self, values: &ValueVec) -> Result<(), VerificationError> {
+		self.validate_shape()?;
+
+		// Constraints read constants through the value vector.
+		// A vector opening one to the wrong word satisfies a different system than declared.
+		for (index, &constant) in self.constants.iter().enumerate() {
+			let value_index = index as u32;
+			let actual = values[ValueIndex(value_index)];
+			if actual != constant {
+				return Err(VerificationError::ConstantMismatch {
+					value_index,
+					expected: constant.as_u64(),
+					actual: actual.as_u64(),
+				});
+			}
+		}
+
+		// Each kind is numbered from zero, so a position is only meaningful with its kind.
+		// The violation carries that kind, which is what the reported message prints.
+		for (constraint_index, constraint) in self.zero_constraints.iter().enumerate() {
+			constraint
+				.verify(values)
+				.map_err(|source| VerificationError::Unsatisfied {
+					constraint_index,
+					source,
+				})?;
+		}
+		for (constraint_index, constraint) in self.and_constraints.iter().enumerate() {
+			constraint
+				.verify(values)
+				.map_err(|source| VerificationError::Unsatisfied {
+					constraint_index,
+					source,
+				})?;
+		}
+		for (constraint_index, constraint) in self.imul_constraints.iter().enumerate() {
+			constraint
+				.verify(values)
+				.map_err(|source| VerificationError::Unsatisfied {
+					constraint_index,
+					source,
+				})?;
+		}
+		for (constraint_index, constraint) in self.bmul_constraints.iter().enumerate() {
+			constraint
+				.verify(values)
+				.map_err(|source| VerificationError::Unsatisfied {
+					constraint_index,
+					source,
+				})?;
+		}
 
 		Ok(())
 	}
@@ -413,7 +484,10 @@ impl DeserializeBytes for ConstraintSystem {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::constraint_system::{ShiftedValueIndex, ValueVec, ValuesData};
+	use crate::{
+		constraint_system::{ShiftedValueIndex, ValueVec, ValuesData},
+		error::ConstraintViolation,
+	};
 
 	/// A shape with one padding word after the constants and two after the inout values, so the
 	/// public segment is 8 words, followed by a hidden segment of 6 values and 2 padding words.
@@ -993,5 +1067,117 @@ mod tests {
 		let reconstructed = ValueVec::new_from_data(&pub2, &non_pub2);
 
 		assert_eq!(reconstructed.combined_witness(), values.combined_witness());
+	}
+
+	/// A system whose only constraints are `n` zero constraints, each reading one hidden word.
+	///
+	///     [ _ _ _ _ _ _ _ _ ][ v_0 .. v_(n-1) ... ]
+	///       0 ...        7     8 ...
+	fn zero_constraint_system(n: usize) -> ConstraintSystem {
+		ConstraintSystem {
+			constants: vec![],
+			n_const_pad: 8,
+			n_inout: 0,
+			n_inout_pad: 0,
+			n_private: 8,
+			n_private_pad: 0,
+			zero_constraints: (0..n)
+				.map(|i| ZeroConstraint::plain([ValueIndex(8 + i as u32)]))
+				.collect(),
+			and_constraints: vec![],
+			imul_constraints: vec![],
+			bmul_constraints: vec![],
+		}
+	}
+
+	#[test]
+	fn verify_accepts_a_value_vector_satisfying_every_constraint() {
+		let cs = zero_constraint_system(3);
+		let values = ValueVec::new_from_data(&[Word::ZERO; 8], &[Word::ZERO; 8]);
+
+		assert!(cs.verify(&values).is_ok());
+	}
+
+	#[test]
+	fn verify_reports_the_index_of_the_first_unsatisfied_constraint() {
+		// Constraints 0 and 2 hold; only constraint 1 reads a nonzero word.
+		let cs = zero_constraint_system(3);
+		let mut private = [Word::ZERO; 8];
+		private[1] = Word::from_u64(0xabc);
+		let values = ValueVec::new_from_data(&[Word::ZERO; 8], &private);
+
+		let err = cs.verify(&values).unwrap_err();
+
+		// The message names the kind, the position and the failing arithmetic.
+		// Printing the error alone is therefore enough to locate the constraint.
+		assert_eq!(err.to_string(), "zero #1 is unsatisfied: 0000000000000abc != 0");
+
+		match err {
+			VerificationError::Unsatisfied {
+				constraint_index,
+				source,
+			} => {
+				assert_eq!(constraint_index, 1);
+				assert_eq!(source.kind(), ConstraintKind::Zero);
+				match source {
+					ConstraintViolation::Zero { val } => assert_eq!(val, 0xabc),
+					other => panic!("wrong violation: {other:?}"),
+				}
+			}
+			other => panic!("wrong error: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn verify_rejects_a_value_vector_that_opens_a_constant_to_the_wrong_word() {
+		// The vector opens the third constant to a different word than the system declares.
+		// Constraints read constants through the vector, so this is a different system.
+		let cs = ConstraintSystem {
+			zero_constraints: vec![],
+			..test_shape()
+		};
+		let mut public = [Word::ZERO; 8];
+		public[0] = Word::from_u64(1);
+		public[1] = Word::from_u64(42);
+		public[2] = Word::from_u64(0xBAADF00D);
+		let values = ValueVec::new_from_data(&public, &[Word::ZERO; 8]);
+
+		match cs.verify(&values).unwrap_err() {
+			VerificationError::ConstantMismatch {
+				value_index,
+				expected,
+				actual,
+			} => {
+				assert_eq!(value_index, 2);
+				assert_eq!(expected, 0xDEADBEEF);
+				assert_eq!(actual, 0xBAADF00D);
+			}
+			other => panic!("wrong error: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn verify_rejects_a_malformed_shape_before_reading_any_constraint() {
+		// A public segment of 3 words is not a power of two, so the shape check rejects it.
+		// The zero constraint would also fail, which is what proves the shape is checked first.
+		let cs = ConstraintSystem {
+			constants: vec![Word::ONE],
+			n_const_pad: 0,
+			n_inout: 2,
+			n_inout_pad: 0,
+			n_private: 8,
+			n_private_pad: 0,
+			zero_constraints: vec![ZeroConstraint::plain([ValueIndex(0)])],
+			and_constraints: vec![],
+			imul_constraints: vec![],
+			bmul_constraints: vec![],
+		};
+		let values =
+			ValueVec::new_from_data(&[Word::ONE, Word::ZERO, Word::ZERO], &[Word::ZERO; 8]);
+
+		match cs.verify(&values).unwrap_err() {
+			VerificationError::MalformedSystem(ConstraintSystemError::PublicInputPowerOfTwo) => {}
+			other => panic!("wrong error: {other:?}"),
+		}
 	}
 }

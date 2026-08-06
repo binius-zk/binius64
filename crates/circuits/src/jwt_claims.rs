@@ -219,7 +219,6 @@ impl JwtClaims {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 	use binius_frontend::CircuitBuilder;
 
 	use super::{Attribute, JwtClaims, Wire};
@@ -256,7 +255,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -311,7 +310,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -426,7 +425,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -462,7 +461,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -508,7 +507,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -554,6 +553,6 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 }

@@ -325,7 +325,6 @@ impl IndexMut<Wire> for BatchWitnessFiller<'_, '_> {
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_core::verify::verify_constraints;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use proptest::prelude::*;
@@ -407,7 +406,9 @@ mod tests {
 
 		for i in 0..table.n_instances() {
 			let vv = table.instance_value_vec(i, constants);
-			verify_constraints(c.circuit.constraint_system(), &vv)
+			c.circuit
+				.constraint_system()
+				.verify(&vv)
 				.unwrap_or_else(|e| panic!("instance {i} failed verification: {e}"));
 		}
 	}
@@ -620,7 +621,9 @@ mod tests {
 		let output_index = c.circuit.witness_index(c.output);
 		for i in [0, 1, 42, n_instances - 1] {
 			let vv = table.instance_value_vec(i, constants);
-			verify_constraints(c.circuit.constraint_system(), &vv)
+			c.circuit
+				.constraint_system()
+				.verify(&vv)
 				.unwrap_or_else(|e| panic!("instance {i} failed verification: {e}"));
 			assert_eq!(vv[output_index], Word(crc64_iso_reference(&inputs[i])));
 		}

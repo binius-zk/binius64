@@ -2,7 +2,7 @@
 // Copyright 2025 Irreducible Inc.
 use std::iter::repeat_with;
 
-use binius_core::{verify::verify_constraints, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, WitnessFiller};
 use num_integer::Integer;
 use proptest::prelude::*;
@@ -97,7 +97,7 @@ fn test_textbook_mul_single_case() {
 	}
 
 	// Verify all constraints are satisfied
-	verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+	cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn test_prime_field() {
 	let mut w = cs.new_witness_filler();
 
 	cs.populate_wire_witness(&mut w).unwrap();
-	verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+	cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn test_prime_field_div() {
 	let mut w = cs.new_witness_filler();
 
 	cs.populate_wire_witness(&mut w).unwrap();
-	verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+	cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 }
 
 proptest! {
@@ -306,7 +306,7 @@ proptest! {
 			);
 		}
 
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -344,7 +344,7 @@ proptest! {
 			"Multiplication failed: {a_big} * {b_big} = {result_big} (expected {expected})"
 		);
 
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -373,7 +373,7 @@ proptest! {
 			"Squaring failed: {a_big}^2 = {result_big} (expected {expected})"
 		);
 
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -410,7 +410,7 @@ proptest! {
 		let eq_flag_big = from_u64_limbs(&a_vals) == from_u64_limbs(&b_vals);
 		assert!(eq_flag_big == (eq_flag_wire >> 63 == Word::ONE));
 
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -436,7 +436,7 @@ proptest! {
 
 		assert_eq!(square_big, mul_big, "square(a) != mul(a,a): {square_big} != {mul_big}");
 
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -457,7 +457,7 @@ proptest! {
 		}
 
 		cs.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -516,7 +516,7 @@ proptest! {
 		b.populate_limbs(&mut w, &b_vals);
 
 		cs.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -568,7 +568,7 @@ proptest! {
 			"ModReduce failed: {a_big} != {quotient_big} * {modulus_big} + {remainder_big}"
 		);
 
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -656,6 +656,6 @@ proptest! {
 
 		cs.populate_wire_witness(&mut w).unwrap();
 
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 }

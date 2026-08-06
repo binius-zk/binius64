@@ -64,7 +64,7 @@ pub fn emit_eval_bytecode(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 	use rand::prelude::*;
 
 	use crate::compiler::CircuitBuilder;
@@ -120,7 +120,7 @@ mod tests {
 
 			// Verify constraints
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -155,7 +155,7 @@ mod tests {
 
 			// Verify constraints
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 }

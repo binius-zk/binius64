@@ -98,7 +98,7 @@ pub fn emit_eval_bytecode(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 	use rand::prelude::*;
 
 	use crate::compiler::CircuitBuilder;
@@ -127,7 +127,7 @@ mod tests {
 
 			// Verify constraints pass for non-zero values
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -154,7 +154,7 @@ mod tests {
 
 			// Verify constraints pass
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -165,7 +165,7 @@ mod tests {
 		// Soundness regression: a malicious prover claims `x ≠ 0` while actually planting
 		// `x = 0` and the aux carry-out `cout = 0`. Before the `MSB(cout) = 1` constraint
 		// (`sar(cout, 63) ∧ all_one = all_one`) was added, only the carry-defining AND was
-		// emitted, and `x = 0, cout = 0` satisfies it, so `verify_constraints` wrongly accepted
+		// emitted, and `x = 0, cout = 0` satisfies it, so constraint verification wrongly accepted
 		// this forged witness.
 		//
 		// The existing `test_assert_non_zero_fails_on_zero` only exercises the prover-side
@@ -188,10 +188,10 @@ mod tests {
 
 		// The carry-out constraint is satisfied by the all-zero witness, but the AND
 		// `sar(cout, 63) ∧ all_one = all_one` constraint (`MSB(cout) = 1`) must reject it.
-		let result = verify_constraints(cs, w.value_vec());
+		let result = cs.verify(w.value_vec());
 		assert!(
 			result.is_err(),
-			"verify_constraints must reject the forged x = 0 witness, got: {result:?}"
+			"constraint verification must reject the forged x = 0 witness, got: {result:?}"
 		);
 	}
 

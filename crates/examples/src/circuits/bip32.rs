@@ -326,7 +326,6 @@ fn sha256_digest_words(digest: &[u8; 32]) -> [u64; 8] {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 	use binius_frontend::CircuitBuilder;
 
 	use super::*;
@@ -384,7 +383,9 @@ mod tests {
 		circuit
 			.populate_wire_witness(&mut w)
 			.expect("witness population");
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
 			.expect("constraints satisfied");
 	}
 
@@ -455,7 +456,9 @@ mod tests {
 		circuit
 			.populate_wire_witness(&mut w)
 			.expect("witness population");
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
 			.expect("constraints satisfied");
 	}
 }

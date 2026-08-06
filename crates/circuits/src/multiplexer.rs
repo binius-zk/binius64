@@ -177,7 +177,7 @@ const fn log2_ceil_usize(n: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 
 	use super::*;
 
@@ -210,7 +210,9 @@ mod tests {
 			circuit
 				.populate_wire_witness(&mut w)
 				.unwrap_or_else(|e| panic!("n={n} n_out={n_out} shift={sh}: {e}"));
-			verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+			circuit
+				.constraint_system()
+				.verify(&w.into_value_vec())
 				.unwrap_or_else(|e| panic!("n={n} n_out={n_out} shift={sh}: {e}"));
 		}
 	}
@@ -283,7 +285,7 @@ mod tests {
 
 			// Verify constraints
 			let cs = built.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -430,7 +432,7 @@ mod tests {
 
 			// Verify constraints
 			let cs = built.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 

@@ -105,7 +105,7 @@ pub fn circuit_xmss(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 	use rand::prelude::*;
 	use rstest::rstest;
 
@@ -270,7 +270,7 @@ mod tests {
 				.map_err(|e| format!("Wire population failed: {:?}", e))?;
 
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec())
+			cs.verify(&w.into_value_vec())
 				.map_err(|e| format!("Constraint verification failed: {:?}", e))?;
 
 			Ok(())

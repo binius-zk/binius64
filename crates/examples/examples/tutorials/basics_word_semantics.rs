@@ -7,7 +7,6 @@
 //!
 //! Guide: https://www.binius.xyz/building/
 
-use binius_core::verify::verify_constraints;
 use binius_frontend::CircuitBuilder;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Verify
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &witness.into_value_vec())?;
+	cs.verify(&witness.into_value_vec())?;
 
 	println!("✓ Example 2: Word operations demonstration");
 	println!("  XOR result: 0x{:016X}", val1);
