@@ -248,7 +248,7 @@ mod tests {
 	use crate::{
 		ValueTable,
 		test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness},
-		witness::build_operation_columns,
+		witness::OperandColumns,
 	};
 
 	// The oblong evaluation of each bitand operand column A, B, C at the shift challenges.
@@ -266,7 +266,8 @@ mod tests {
 		r_x: &[B128],
 		r_rho: &[B128],
 	) -> [B128; 3] {
-		let [a, b] = build_operation_columns(table, constants, and_constraints, &GlobalAllocator);
+		let columns = OperandColumns::build(table, constants, and_constraints, &GlobalAllocator);
+		let [a, b] = columns.as_slices();
 		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, &r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
@@ -276,8 +277,8 @@ mod tests {
 		// The batch witness stores only the `A` and `B` columns.
 		// The reduction reads `C` as the word-by-word AND of the two.
 		// Materialize that same derived column so its evaluation matches the reduction's claim.
-		let c_column: Vec<Word> = iter::zip(&a, &b).map(|(&a, &b)| a & b).collect();
-		[operand_eval(&a), operand_eval(&b), operand_eval(&c_column)]
+		let c_column: Vec<Word> = iter::zip(a, b).map(|(&a, &b)| a & b).collect();
+		[operand_eval(a), operand_eval(b), operand_eval(&c_column)]
 	}
 
 	// Folds a contiguous run of value-vector words over the instance axis, one FoldedWord per word.

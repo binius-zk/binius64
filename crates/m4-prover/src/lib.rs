@@ -12,4 +12,4 @@ mod witness;
 
 pub use prove::{IOPProver, Prover};
 pub use value_table::{BatchWitnessFiller, ValueTable};
-pub use witness::build_operation_columns;
+pub use witness::OperandColumns;

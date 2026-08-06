@@ -2,7 +2,7 @@
 //! Benchmark for assembling a batched per-operation witness — the operand-column layout an
 //! operation reduction consumes.
 //!
-//! Currently covers the BitAnd operation via [`build_operation_columns`]; the IntMul
+//! Currently covers the BitAnd operation's two columns; the IntMul
 //! equivalent will be added alongside its protocol. Uses the Keccak-f1600 permutation circuit
 //! (see the `keccak_witness_gen` bench) as a realistic, AND-heavy constraint system: the circuit
 //! applies one permutation to a 25-word state, the state words are witness inputs and the permuted
@@ -12,10 +12,10 @@
 use std::array;
 
 use binius_circuits::keccak::permutation::keccak_f1600;
-use binius_compute::{BufferPool, PoolVec};
+use binius_compute::BufferPool;
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
-use binius_m4_prover::{ValueTable, build_operation_columns};
+use binius_m4_prover::{OperandColumns, ValueTable};
 use criterion::{Criterion, criterion_group, criterion_main};
 
 /// The base-2 logarithm of the instance count: 2^13 = 8192 instances.
@@ -84,8 +84,8 @@ fn bench_assemble_operation_witness(c: &mut Criterion) {
 
 	let mut group = c.benchmark_group("assemble_operation_witness");
 	group.bench_function("bitand_keccak_f1600", |b| {
-		b.iter(|| -> [PoolVec<'_, Word>; 2] {
-			build_operation_columns(&table, &constants, &and_constraints, &alloc)
+		b.iter(|| -> OperandColumns<&BufferPool, 2> {
+			OperandColumns::<_, 2>::build(&table, &constants, &and_constraints, &alloc)
 		});
 	});
 

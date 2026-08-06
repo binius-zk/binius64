@@ -1,8 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::ops::Deref;
-
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
@@ -32,7 +30,6 @@ use binius_prover::{
 	ring_switch::{self, RingSwitchOutput},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::rayon::{prelude::*, task_size::IndexedParallelIteratorExt};
 use binius_verifier::{
 	config::B128,
 	protocols::{
@@ -47,7 +44,7 @@ use binius_verifier::{
 use crate::{
 	ValueTable,
 	shift::prove as prove_shift,
-	witness::{FoldedWitness, build_operation_columns, operand_rho_multilinear},
+	witness::{FoldedWitness, OperandColumns},
 };
 
 /// The multithreaded additive NTT used to encode the committed codeword.
@@ -154,14 +151,13 @@ impl IOPProver {
 		let mul = (!cs.imul_constraints.is_empty()).then(|| {
 			let columns = {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
-				build_operation_columns(table, &cs.constants, &cs.imul_constraints, alloc)
+				OperandColumns::build(table, &cs.constants, &cs.imul_constraints, alloc)
 			};
-			// `build_operation_columns` rounds the constraint axis up to a power of two and
-			// zero-fills the tail, and the table holds `2^log_instances` instances, so every column
-			// has the power-of-two length the IntMul witness requires.
-			let output =
-				intmul::prove::<_, _, P, _>(columns.each_ref().map(|c| &c[..]), channel, alloc)
-					.expect("the operand columns are equal-length and power-of-two length");
+			// The constraint axis is rounded up to a power of two and zero-filled, and the table
+			// holds `2^log_instances` instances, so every column has the power-of-two length the
+			// IntMul witness requires.
+			let output = intmul::prove::<_, _, P, _>(columns.as_slices(), channel, alloc)
+				.expect("the operand columns are equal-length and power-of-two length");
 			(columns, output)
 		});
 
@@ -181,10 +177,9 @@ impl IOPProver {
 		let bmul = (!cs.bmul_constraints.is_empty()).then(|| {
 			let columns = {
 				let _scope = tracing::debug_span!("Assemble BinMul witness").entered();
-				build_operation_columns(table, &cs.constants, &cs.bmul_constraints, alloc)
+				OperandColumns::build(table, &cs.constants, &cs.bmul_constraints, alloc)
 			};
-			let output =
-				binmul::prove::<_, B128, P, _>(columns.each_ref().map(|c| &c[..]), channel, alloc);
+			let output = binmul::prove::<_, B128, P, _>(columns.as_slices(), channel, alloc);
 			(columns, output)
 		});
 
@@ -203,36 +198,18 @@ impl IOPProver {
 		) = {
 			let _scope = tracing::debug_span!("BitAnd check").entered();
 
-			let [a, b] = {
+			let columns = {
 				let _scope = tracing::debug_span!("Assemble BitAnd witness").entered();
-				build_operation_columns(table, &cs.constants, &cs.and_constraints, alloc)
+				OperandColumns::build(table, &cs.constants, &cs.and_constraints, alloc)
 			};
-			// Reduce over borrowed columns so the owned `a`/`b` can be moved into `and_columns`
-			// afterward, avoiding a full clone. Nothing touches the channel between the reduction
-			// and building `and_columns`, so the transcript is unchanged.
-			let output = and_reduction::prove::<_, B128, P, _, _>([&a[..], &b[..]], channel, alloc);
-			let and_columns = (mul.is_some() || bmul.is_some()).then(|| {
-				// The re-randomization re-reads the three BitAnd operand columns.
-				// Only `A` and `B` are stored.
-				// On a satisfying witness `C = A & B` holds word-by-word.
-				// So `C` is materialized here, on this multiplication-only path.
-				// The multizip truncates to the shortest of its three sides, so `set_len(n_rows)`
-				// below is sound only because the two source columns have equal length.
-				debug_assert_eq!(a.len(), b.len());
-				let n_rows = a.len();
-				let mut c_column = alloc.alloc::<Word>(n_rows);
-				// One conjunction per item is a single instruction.
-				// The cost is streaming three word columns, two read and one written.
-				(&a[..], &b[..], c_column.spare_capacity_mut())
-					.into_par_iter()
-					.with_min_task_bytes::<[Word; 3]>()
-					.for_each(|(&a_i, &b_i, out)| {
-						out.write(a_i & b_i);
-					});
-				// Safety: every entry of `c_column` is written exactly once in the loop above.
-				unsafe { c_column.set_len(n_rows) };
-				[a, b, c_column]
-			});
+			// Reduce over borrowed columns so the owned ones can be reused below without a clone.
+			// Nothing touches the channel between the reduction and the derivation, so the
+			// transcript is unchanged.
+			let output =
+				and_reduction::prove::<_, B128, P, _, _>(columns.as_slices(), channel, alloc);
+			// The re-randomization re-reads all three columns, so derive the third only there.
+			let and_columns =
+				(mul.is_some() || bmul.is_some()).then(|| columns.with_derived_and(alloc));
 			(and_columns, output)
 		};
 
@@ -271,7 +248,7 @@ impl IOPProver {
 					Operation::from_binmul(columns, output.clone(), &lagrange, log_instances)
 				}),
 			}
-			.prove::<P, _, _>(&lagrange, z_challenge, channel, alloc)
+			.prove::<P, _>(&lagrange, z_challenge, channel, alloc)
 		} else {
 			// Neither IMUL nor BMUL constraints: the AND-check instance point is used directly.
 			// The IntMul and BinMul claims are zero claims at an empty point, contributing nothing
@@ -450,9 +427,9 @@ where
 /// The AND-check and the IntMul check both reduce to this shape.
 /// The re-randomization folds each column into its instance-axis multilinear.
 /// It then transports the claims to the instance point shared by both operations.
-struct Operation<'a, const ARITY: usize> {
-	/// The operand columns, constraint-major, one per operand.
-	columns: [&'a [Word]; ARITY],
+struct Operation<'a, A: Allocator, const ARITY: usize> {
+	/// The operand columns of this operation, constraint-major, one per operand.
+	columns: &'a OperandColumns<A, ARITY>,
 	/// The oblong operand claim per operand: its multilinear-eval claim at the instance point.
 	operand_claims: [B128; ARITY],
 	/// The constraint-index point the operands are claimed at.
@@ -461,19 +438,17 @@ struct Operation<'a, const ARITY: usize> {
 	r_rho: Vec<B128>,
 }
 
-impl<'a, const ARITY: usize> Operation<'a, ARITY> {
+impl<'a, A: Allocator, const ARITY: usize> Operation<'a, A, ARITY> {
 	/// The operand columns with their claims at the constraint point `r_x` and instance point
 	/// `r_rho`.
-	///
-	/// The columns are borrowed as plain word slices, dropping whichever allocator produced them.
-	fn new<D: Deref<Target = [Word]>>(
-		columns: &'a [D; ARITY],
+	fn new(
+		columns: &'a OperandColumns<A, ARITY>,
 		operand_claims: [B128; ARITY],
 		r_x: &[B128],
 		r_rho: &[B128],
 	) -> Self {
 		Self {
-			columns: columns.each_ref().map(|column| &**column),
+			columns,
 			operand_claims,
 			r_x: r_x.to_vec(),
 			r_rho: r_rho.to_vec(),
@@ -486,7 +461,7 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 	/// So the store expands that indicator once, not once per operand.
 	/// Each operand's instance-axis multilinear becomes a store column.
 	/// Its evaluator is an identity-composition quadratic MLE-check: a multilinear evaluation.
-	fn push_to<'alloc, A, P>(
+	fn push_to<'alloc, P>(
 		&self,
 		lagrange: &[B128],
 		store: &mut MleStore<'alloc, A, P>,
@@ -494,7 +469,6 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 		claims: &mut Vec<B128>,
 		alloc: &'alloc A,
 	) where
-		A: Allocator,
 		P: PackedField<Scalar = B128>,
 	{
 		// The wrappers run under a plain sumcheck prover, so each holds this operation's shared eq
@@ -502,12 +476,12 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 		let eq_tracker = store.register_eq_tracker(&self.r_rho);
 		// The constraint tensor is the same for every operand of this operation, so expand it once.
 		let r_x_tensor = eq_ind_partial_eval_scalars::<B128>(&self.r_x);
-		for (&column, &claim) in self.columns.iter().zip(&self.operand_claims) {
-			let col = store.push_owned(operand_rho_multilinear::<A, P>(
-				alloc,
-				column,
+		for (operand, &claim) in self.operand_claims.iter().enumerate() {
+			let col = store.push_owned(self.columns.rho_multilinear::<P>(
+				operand,
 				lagrange,
 				&r_x_tensor,
+				alloc,
 			));
 			let evaluator = QuadraticMleEvaluator::new(
 				[col],
@@ -521,14 +495,14 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 	}
 }
 
-impl<'a> Operation<'a, INTMUL_ARITY> {
+impl<'a, A: Allocator> Operation<'a, A, INTMUL_ARITY> {
 	/// Builds the IntMul operation by collapsing its per-bit operand claims to oblong claims.
 	///
 	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
 	/// This gives the oblong form the BitAnd claims already have.
 	/// The IntMul row point splits into an instance part (low) and a constraint part (high).
-	fn from_intmul<D: Deref<Target = [Word]>>(
-		columns: &'a [D; INTMUL_ARITY],
+	fn from_intmul(
+		columns: &'a OperandColumns<A, INTMUL_ARITY>,
 		intmul_output: IntMulOutput<B128>,
 		lagrange: &[B128],
 		log_instances: usize,
@@ -557,14 +531,14 @@ impl<'a> Operation<'a, INTMUL_ARITY> {
 	}
 }
 
-impl<'a> Operation<'a, BINMUL_ARITY> {
+impl<'a, A: Allocator> Operation<'a, A, BINMUL_ARITY> {
 	/// Builds the BinMul operation by collapsing its per-bit operand claims to oblong claims.
 	///
 	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
 	/// This gives the oblong form the BitAnd claims already have.
 	/// The BinMul row point splits into an instance part (low) and a constraint part (high).
-	fn from_binmul<D: Deref<Target = [Word]>>(
-		columns: &'a [D; BINMUL_ARITY],
+	fn from_binmul(
+		columns: &'a OperandColumns<A, BINMUL_ARITY>,
 		binmul_output: BinMulOutput<B128>,
 		lagrange: &[B128],
 		log_instances: usize,
@@ -601,16 +575,16 @@ impl<'a> Operation<'a, BINMUL_ARITY> {
 ///
 /// BitAnd is always present. IntMul and BinMul enter only when the circuit carries their
 /// constraints; an absent operation reduces to a zero claim contributing nothing to the shift.
-struct RerandomizedOperations<'a> {
+struct RerandomizedOperations<'a, A: Allocator> {
 	/// The BitAnd operation, at the AND-check instance point.
-	bitand: Operation<'a, BITAND_ARITY>,
+	bitand: Operation<'a, A, BITAND_ARITY>,
 	/// The IntMul operation, at the IntMul instance point, when the circuit has IMUL constraints.
-	intmul: Option<Operation<'a, INTMUL_ARITY>>,
+	intmul: Option<Operation<'a, A, INTMUL_ARITY>>,
 	/// The BinMul operation, at the BinMul instance point, when the circuit has BMUL constraints.
-	binmul: Option<Operation<'a, BINMUL_ARITY>>,
+	binmul: Option<Operation<'a, A, BINMUL_ARITY>>,
 }
 
-impl RerandomizedOperations<'_> {
+impl<A: Allocator> RerandomizedOperations<'_, A> {
 	/// Re-randomizes every present operation's instance point to one shared point.
 	///
 	/// Each operation reduces to operand claims at its own instance point.
@@ -629,7 +603,7 @@ impl RerandomizedOperations<'_> {
 	///
 	/// The shared instance point, the BitAnd operand data, the IntMul operand data, and the BinMul
 	/// operand data.
-	fn prove<'alloc, P, Channel, A>(
+	fn prove<'alloc, P, Channel>(
 		self,
 		lagrange: &[B128],
 		z_challenge: B128,
@@ -639,7 +613,6 @@ impl RerandomizedOperations<'_> {
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P, A>,
-		A: Allocator,
 	{
 		let _scope = tracing::debug_span!("Re-randomize instances").entered();
 
