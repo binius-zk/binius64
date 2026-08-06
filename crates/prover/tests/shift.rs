@@ -288,12 +288,12 @@ fn test_shift_prove_and_verify() {
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
 		let prover_bitand_data = OperatorData {
-			evals: bitand_evals.to_vec(),
+			evals: bitand_evals,
 			r_zhat_prime,
 			r_x_prime: r_x_prime_bitand.clone(),
 		};
 		let prover_intmul_data = OperatorData {
-			evals: intmul_evals.to_vec(),
+			evals: intmul_evals,
 			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul.clone(),
 		};
@@ -304,17 +304,13 @@ fn test_shift_prove_and_verify() {
 			.map(F::new)
 			.collect::<Vec<_>>();
 		let prover_zero_data = OperatorData {
-			evals: vec![F::ZERO],
+			evals: [F::ZERO],
 			r_zhat_prime,
 			r_x_prime: r_x_prime_zero.clone(),
 		};
 		// These circuits have no BMUL constraints, so the BinMul claim is the zero claim at an
 		// empty point (the prover's skipped-case `None` branch).
-		let prover_binmul_data = OperatorData {
-			evals: vec![F::ZERO; 6],
-			r_zhat_prime,
-			r_x_prime: Vec::new(),
-		};
+		let prover_binmul_data = OperatorData::zero_claim(r_zhat_prime);
 
 		let prover_output = prove::<F, P, _, _>(
 			&key_collection,

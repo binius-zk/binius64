@@ -243,9 +243,7 @@ mod tests {
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
 		config::{B128, StdChallenger},
-		protocols::shift::{
-			BINMUL_ARITY, INTMUL_ARITY, OperatorData as VerifierOperatorData, check_eval, verify,
-		},
+		protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
 	};
 	use rand::prelude::*;
 
@@ -373,17 +371,17 @@ mod tests {
 			&folded_witness,
 			OperatorClaims {
 				zero: OperatorData {
-					evals: vec![B128::ZERO],
+					evals: [B128::ZERO],
 					r_zhat_prime: r_z,
 					r_x_prime: r_x_zero.clone(),
 				},
 				bitand: OperatorData {
-					evals: bitand_evals.to_vec(),
+					evals: bitand_evals,
 					r_zhat_prime: r_z,
 					r_x_prime: r_x.clone(),
 				},
-				intmul: OperatorData::zero_claim(INTMUL_ARITY, r_z),
-				binmul: OperatorData::zero_claim(BINMUL_ARITY, r_z),
+				intmul: OperatorData::zero_claim(r_z),
+				binmul: OperatorData::zero_claim(r_z),
 			},
 			&domain_subspace,
 			&mut prover_transcript,
@@ -493,21 +491,21 @@ mod tests {
 		let hidden_folded = fold_words_over_instances(&table, constants, &r_rho, offset..combined);
 
 		// Prepare the operator data: lambda batches the three operand claims. The circuit has no
-		// IMUL or BMUL constraints, so those two claims carry no operands at all.
+		// IMUL or BMUL constraints, so those two are zero claims at an empty point.
 		// The ZERO set has its own constraint point, as wide as the set itself.
 		let claims = OperatorClaims {
 			zero: OperatorData {
-				evals: vec![B128::ZERO],
+				evals: [B128::ZERO],
 				r_zhat_prime: r_z,
 				r_x_prime: random_scalars::<B128>(&mut rng, cs.log_zero_constraints().unwrap_or(0)),
 			},
 			bitand: OperatorData {
-				evals: bitand_evals.to_vec(),
+				evals: bitand_evals,
 				r_zhat_prime: r_z,
 				r_x_prime: r_x,
 			},
-			intmul: OperatorData::zero_claim(0, r_z),
-			binmul: OperatorData::zero_claim(0, r_z),
+			intmul: OperatorData::zero_claim(r_z),
+			binmul: OperatorData::zero_claim(r_z),
 		};
 		let prepared = claims.prepare(|| B128::random(&mut rng));
 

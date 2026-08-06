@@ -36,7 +36,7 @@ use binius_verifier::{
 		binmul::BinMulOutput,
 		bitand::AndCheckOutput,
 		intmul::IntMulOutput,
-		shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY},
+		shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY},
 		zero,
 	},
 };
@@ -222,7 +222,7 @@ impl IOPProver {
 		// `IOPVerifier::verify` for why it skips the re-randomization below.
 		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
 		let zero_data = OperatorData {
-			evals: vec![B128::ZERO],
+			evals: [B128::ZERO],
 			r_zhat_prime: z_challenge,
 			r_x_prime: zero::reduction_point(r_x_and, log_n_zero, || channel.sample()),
 		};
@@ -259,12 +259,12 @@ impl IOPProver {
 				OperatorClaims {
 					zero: zero_data,
 					bitand: OperatorData {
-						evals: vec![a_eval, b_eval, c_eval],
+						evals: [a_eval, b_eval, c_eval],
 						r_zhat_prime: z_challenge,
 						r_x_prime: r_x_and.to_vec(),
 					},
-					intmul: OperatorData::zero_claim(INTMUL_ARITY, z_challenge),
-					binmul: OperatorData::zero_claim(BINMUL_ARITY, z_challenge),
+					intmul: OperatorData::zero_claim(z_challenge),
+					binmul: OperatorData::zero_claim(z_challenge),
 				},
 			)
 		};
@@ -606,7 +606,7 @@ impl<A: Allocator> RerandomizedOperations<'_, A> {
 	/// The shared instance point, and the operand claims of every operation at that point.
 	fn prove<'alloc, P, Channel>(
 		self,
-		zero: OperatorData<B128>,
+		zero: OperatorData<B128, ZERO_ARITY>,
 		lagrange: &[B128],
 		z_challenge: B128,
 		channel: &mut Channel,
@@ -646,37 +646,37 @@ impl<A: Allocator> RerandomizedOperations<'_, A> {
 		let output = batch_prove_and_write_evals(vec![shared], channel);
 		let reduced = &output.multilinear_evals[0];
 
-		// The reduced evaluations split back into contiguous per-operation segments, in push order.
-		let mut offset = 0;
+		// The reduced evaluations split back into per-operation chunks, in push order.
+		// Each chunk is as wide as its operation's arity, so the split is driven by the types.
+		let (bitand_evals, reduced) = split_evals(reduced);
 		let bitand = OperatorData {
-			evals: reduced[offset..offset + BITAND_ARITY].to_vec(),
+			evals: bitand_evals,
 			r_zhat_prime: z_challenge,
 			r_x_prime: self.bitand.r_x,
 		};
-		offset += BITAND_ARITY;
 
-		// IntMul: the next INTMUL_ARITY reduced evaluations when present, else a zero claim.
-		let intmul = match self.intmul {
+		// IntMul: the next chunk when present, else a zero claim that leaves the rest untouched.
+		let (intmul, reduced) = match self.intmul {
 			Some(intmul) => {
+				let (evals, reduced) = split_evals(reduced);
 				let data = OperatorData {
-					evals: reduced[offset..offset + INTMUL_ARITY].to_vec(),
+					evals,
 					r_zhat_prime: z_challenge,
 					r_x_prime: intmul.r_x,
 				};
-				offset += INTMUL_ARITY;
-				data
+				(data, reduced)
 			}
-			None => OperatorData::zero_claim(INTMUL_ARITY, z_challenge),
+			None => (OperatorData::zero_claim(z_challenge), reduced),
 		};
 
-		// BinMul: the final BINMUL_ARITY reduced evaluations when present, else a zero claim.
+		// BinMul: the final chunk when present, else a zero claim.
 		let binmul = match self.binmul {
 			Some(binmul) => OperatorData {
-				evals: reduced[offset..offset + BINMUL_ARITY].to_vec(),
+				evals: split_evals(reduced).0,
 				r_zhat_prime: z_challenge,
 				r_x_prime: binmul.r_x,
 			},
-			None => OperatorData::zero_claim(BINMUL_ARITY, z_challenge),
+			None => OperatorData::zero_claim(z_challenge),
 		};
 
 		// `batch_prove` returns binding-order challenges; reverse to variable-indexed to match
@@ -693,6 +693,20 @@ impl<A: Allocator> RerandomizedOperations<'_, A> {
 			},
 		)
 	}
+}
+
+/// Takes one operation's reduced evaluations off the front, and returns the rest.
+///
+/// The chunk width is the operation's arity, inferred from the claim it is about to fill.
+///
+/// # Panics
+///
+/// Panics if fewer than `ARITY` evaluations remain.
+fn split_evals<const ARITY: usize>(reduced: &[B128]) -> ([B128; ARITY], &[B128]) {
+	let (chunk, rest) = reduced
+		.split_first_chunk::<ARITY>()
+		.expect("the sumcheck returns one evaluation per pushed operand");
+	(*chunk, rest)
 }
 
 #[cfg(test)]

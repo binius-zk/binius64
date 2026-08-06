@@ -23,13 +23,7 @@ use binius_utils::{SerializeBytes, rayon::prelude::*};
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
-	protocols::{
-		binmul::BinMulOutput,
-		bitand::AndCheckOutput,
-		intmul::IntMulOutput,
-		shift::{BINMUL_ARITY, INTMUL_ARITY},
-		zero,
-	},
+	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput, zero},
 };
 use digest::Output;
 
@@ -200,7 +194,7 @@ impl IOPProver {
 				eval_point,
 			} = and_reduction::prove::<_, B128, P, _, _>(bitand_columns, &mut *channel, alloc);
 			OperatorData {
-				evals: vec![a_eval, b_eval, c_eval],
+				evals: [a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
 				r_x_prime: eval_point,
 			}
@@ -229,7 +223,7 @@ impl IOPProver {
 				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
 				OperatorData {
-					evals: vec![
+					evals: [
 						make_final_claim(a_evals),
 						make_final_claim(b_evals),
 						make_final_claim(c_lo_evals),
@@ -239,7 +233,7 @@ impl IOPProver {
 					r_x_prime: eval_point,
 				}
 			}
-			None => OperatorData::zero_claim(INTMUL_ARITY, bitand_claim.r_zhat_prime),
+			None => OperatorData::zero_claim(bitand_claim.r_zhat_prime),
 		};
 
 		// Build `OperatorData` for BinMul using the same shared `r_zhat_prime` challenge,
@@ -261,7 +255,7 @@ impl IOPProver {
 				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
 				OperatorData {
-					evals: vec![
+					evals: [
 						make_final_claim(a_lo_evals),
 						make_final_claim(a_hi_evals),
 						make_final_claim(b_lo_evals),
@@ -273,7 +267,7 @@ impl IOPProver {
 					r_x_prime: eval_point,
 				}
 			}
-			None => OperatorData::zero_claim(BINMUL_ARITY, bitand_claim.r_zhat_prime),
+			None => OperatorData::zero_claim(bitand_claim.r_zhat_prime),
 		};
 
 		// [phase] Zero Reduction - linear constraint reduction
@@ -282,7 +276,7 @@ impl IOPProver {
 		// `IOPVerifier::verify` for why it carries no message.
 		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
 		let zero_claim = OperatorData {
-			evals: vec![B128::ZERO],
+			evals: [B128::ZERO],
 			r_zhat_prime: bitand_claim.r_zhat_prime,
 			r_x_prime: zero::reduction_point(&bitand_claim.r_x_prime, log_n_zero, || {
 				channel.sample()
