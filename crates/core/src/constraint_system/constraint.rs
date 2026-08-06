@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use std::{array, fmt};
+use std::fmt;
 
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
@@ -21,15 +21,6 @@ use super::{ShiftedValueIndex, ValueIndex};
 /// vec![x >> 5, y << 5] = (x >> 5) ^ (y << 5)
 /// ```
 pub type Operand = Vec<ShiftedValueIndex>;
-
-/// Number of operands of a [`ZeroConstraint`].
-const ZERO_ARITY: usize = 1;
-/// Number of operands of an [`AndConstraint`].
-const AND_ARITY: usize = 3;
-/// Number of operands of an [`ImulConstraint`].
-const IMUL_ARITY: usize = 4;
-/// Number of operands of a [`BmulConstraint`].
-const BMUL_ARITY: usize = 6;
 
 /// The kind of a constraint of a [`ConstraintSystem`](super::ConstraintSystem).
 ///
@@ -59,28 +50,6 @@ impl fmt::Display for ConstraintKind {
 	}
 }
 
-/// Serializes the operands of a constraint in storage order.
-fn serialize_operands(
-	operands: &[Operand],
-	mut write_buf: impl BufMut,
-) -> Result<(), SerializationError> {
-	for operand in operands {
-		operand.serialize(&mut write_buf)?;
-	}
-	Ok(())
-}
-
-/// Deserializes the operands of a constraint of the given arity in storage order.
-fn deserialize_operands<const ARITY: usize>(
-	mut read_buf: impl Buf,
-) -> Result<[Operand; ARITY], SerializationError> {
-	let mut operands = array::from_fn::<_, ARITY, _>(|_| Operand::new());
-	for operand in &mut operands {
-		*operand = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
-	}
-	Ok(operands)
-}
-
 /// Zero constraint: `VAL = 0`.
 ///
 /// This constraint verifies that a single operand vanishes, where the operand is the XOR of
@@ -90,15 +59,15 @@ fn deserialize_operands<const ARITY: usize>(
 ///
 /// The operands are stored in the order given by [`ZeroConstraint::OPERAND_NAMES`].
 #[derive(Debug, Clone, Default)]
-pub struct ZeroConstraint(pub [Operand; ZERO_ARITY]);
+pub struct ZeroConstraint(pub [Operand; ZeroConstraint::ARITY]);
 
 impl ZeroConstraint {
 	/// Number of operands.
-	pub const ARITY: usize = ZERO_ARITY;
+	pub const ARITY: usize = 1;
 	/// Kind of this constraint.
 	pub const KIND: ConstraintKind = ConstraintKind::Zero;
 	/// Names of the operands, in storage order.
-	pub const OPERAND_NAMES: [&'static str; ZERO_ARITY] = ["val"];
+	pub const OPERAND_NAMES: [&'static str; Self::ARITY] = ["val"];
 
 	/// Creates a new Zero constraint from an XOR combination of the given unshifted values.
 	pub fn plain(val: impl IntoIterator<Item = ValueIndex>) -> ZeroConstraint {
@@ -116,15 +85,15 @@ impl ZeroConstraint {
 	}
 }
 
-impl AsRef<[Operand; ZERO_ARITY]> for ZeroConstraint {
-	fn as_ref(&self) -> &[Operand; ZERO_ARITY] {
+impl AsRef<[Operand; ZeroConstraint::ARITY]> for ZeroConstraint {
+	fn as_ref(&self) -> &[Operand; Self::ARITY] {
 		&self.0
 	}
 }
 
 impl SerializeBytes for ZeroConstraint {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-		serialize_operands(&self.0, write_buf)
+		self.0.serialize(write_buf)
 	}
 }
 
@@ -133,7 +102,7 @@ impl DeserializeBytes for ZeroConstraint {
 	where
 		Self: Sized,
 	{
-		Ok(ZeroConstraint(deserialize_operands(read_buf)?))
+		<[Operand; Self::ARITY]>::deserialize(read_buf).map(Self)
 	}
 }
 
@@ -144,15 +113,15 @@ impl DeserializeBytes for ZeroConstraint {
 ///
 /// The operands are stored in the order given by [`AndConstraint::OPERAND_NAMES`].
 #[derive(Debug, Clone, Default)]
-pub struct AndConstraint(pub [Operand; AND_ARITY]);
+pub struct AndConstraint(pub [Operand; AndConstraint::ARITY]);
 
 impl AndConstraint {
 	/// Number of operands.
-	pub const ARITY: usize = AND_ARITY;
+	pub const ARITY: usize = 3;
 	/// Kind of this constraint.
 	pub const KIND: ConstraintKind = ConstraintKind::And;
 	/// Names of the operands, in storage order.
-	pub const OPERAND_NAMES: [&'static str; AND_ARITY] = ["a", "b", "c"];
+	pub const OPERAND_NAMES: [&'static str; Self::ARITY] = ["a", "b", "c"];
 
 	/// Creates a new AND constraint from XOR combinations of the given unshifted values.
 	pub fn plain_abc(
@@ -196,15 +165,15 @@ impl AndConstraint {
 	}
 }
 
-impl AsRef<[Operand; AND_ARITY]> for AndConstraint {
-	fn as_ref(&self) -> &[Operand; AND_ARITY] {
+impl AsRef<[Operand; AndConstraint::ARITY]> for AndConstraint {
+	fn as_ref(&self) -> &[Operand; Self::ARITY] {
 		&self.0
 	}
 }
 
 impl SerializeBytes for AndConstraint {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-		serialize_operands(&self.0, write_buf)
+		self.0.serialize(write_buf)
 	}
 }
 
@@ -213,7 +182,7 @@ impl DeserializeBytes for AndConstraint {
 	where
 		Self: Sized,
 	{
-		Ok(AndConstraint(deserialize_operands(read_buf)?))
+		<[Operand; Self::ARITY]>::deserialize(read_buf).map(Self)
 	}
 }
 
@@ -224,15 +193,15 @@ impl DeserializeBytes for AndConstraint {
 ///
 /// The operands are stored in the order given by [`ImulConstraint::OPERAND_NAMES`].
 #[derive(Debug, Clone, Default)]
-pub struct ImulConstraint(pub [Operand; IMUL_ARITY]);
+pub struct ImulConstraint(pub [Operand; ImulConstraint::ARITY]);
 
 impl ImulConstraint {
 	/// Number of operands.
-	pub const ARITY: usize = IMUL_ARITY;
+	pub const ARITY: usize = 4;
 	/// Kind of this constraint.
 	pub const KIND: ConstraintKind = ConstraintKind::Imul;
 	/// Names of the operands, in storage order.
-	pub const OPERAND_NAMES: [&'static str; IMUL_ARITY] = ["a", "b", "lo", "hi"];
+	pub const OPERAND_NAMES: [&'static str; Self::ARITY] = ["a", "b", "lo", "hi"];
 
 	/// A operand.
 	pub const fn a(&self) -> &Operand {
@@ -259,15 +228,15 @@ impl ImulConstraint {
 	}
 }
 
-impl AsRef<[Operand; IMUL_ARITY]> for ImulConstraint {
-	fn as_ref(&self) -> &[Operand; IMUL_ARITY] {
+impl AsRef<[Operand; ImulConstraint::ARITY]> for ImulConstraint {
+	fn as_ref(&self) -> &[Operand; Self::ARITY] {
 		&self.0
 	}
 }
 
 impl SerializeBytes for ImulConstraint {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-		serialize_operands(&self.0, write_buf)
+		self.0.serialize(write_buf)
 	}
 }
 
@@ -276,7 +245,7 @@ impl DeserializeBytes for ImulConstraint {
 	where
 		Self: Sized,
 	{
-		Ok(ImulConstraint(deserialize_operands(read_buf)?))
+		<[Operand; Self::ARITY]>::deserialize(read_buf).map(Self)
 	}
 }
 
@@ -288,15 +257,15 @@ impl DeserializeBytes for ImulConstraint {
 ///
 /// The operands are stored in the order given by [`BmulConstraint::OPERAND_NAMES`].
 #[derive(Debug, Clone, Default)]
-pub struct BmulConstraint(pub [Operand; BMUL_ARITY]);
+pub struct BmulConstraint(pub [Operand; BmulConstraint::ARITY]);
 
 impl BmulConstraint {
 	/// Number of operands.
-	pub const ARITY: usize = BMUL_ARITY;
+	pub const ARITY: usize = 6;
 	/// Kind of this constraint.
 	pub const KIND: ConstraintKind = ConstraintKind::Bmul;
 	/// Names of the operands, in storage order.
-	pub const OPERAND_NAMES: [&'static str; BMUL_ARITY] =
+	pub const OPERAND_NAMES: [&'static str; Self::ARITY] =
 		["a_lo", "a_hi", "b_lo", "b_hi", "c_lo", "c_hi"];
 
 	/// Low word of the A operand.
@@ -330,15 +299,15 @@ impl BmulConstraint {
 	}
 }
 
-impl AsRef<[Operand; BMUL_ARITY]> for BmulConstraint {
-	fn as_ref(&self) -> &[Operand; BMUL_ARITY] {
+impl AsRef<[Operand; BmulConstraint::ARITY]> for BmulConstraint {
+	fn as_ref(&self) -> &[Operand; Self::ARITY] {
 		&self.0
 	}
 }
 
 impl SerializeBytes for BmulConstraint {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-		serialize_operands(&self.0, write_buf)
+		self.0.serialize(write_buf)
 	}
 }
 
@@ -347,7 +316,7 @@ impl DeserializeBytes for BmulConstraint {
 	where
 		Self: Sized,
 	{
-		Ok(BmulConstraint(deserialize_operands(read_buf)?))
+		<[Operand; Self::ARITY]>::deserialize(read_buf).map(Self)
 	}
 }
 
