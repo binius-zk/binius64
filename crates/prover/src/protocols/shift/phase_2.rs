@@ -28,7 +28,7 @@ use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
 use super::{
-	key_collection::KeyCollection, monster::build_monster_segments, prove::PreparedOperatorData,
+	claims::PreparedOperatorClaims, key_collection::KeyCollection, monster::build_monster_segments,
 };
 use crate::fold_word::fold_words;
 
@@ -42,31 +42,25 @@ use crate::fold_word::fold_words;
 /// 1. **Challenge Splitting**: Splits phase 1 challenges into `r_j` and `r_s` components
 /// 2. **Segment Folding**: Folds the public and hidden words using the `r_j` challenges
 /// 3. **Monster Multilinear Construction**: Builds the monster segments from the key collection and
-///    operator data
+///    the prepared claims
 /// 4. **Sumcheck Execution**: Runs the bivariate product sumcheck with a sparse first round over
 ///    the segment selector
 ///
 /// # Parameters
 /// - `key_collection`: Prover's key collection representing the constraint system
 /// - `words`: The value vector words
-/// - `bitand_data`: Operator data for bit multiplication constraints
-/// - `intmul_data`: Operator data for integer multiplication constraints
-/// - `binmul_data`: Operator data for GHASH-field multiplication (BMUL) constraints
+/// - `prepared`: The prepared claim of each operation, indexed by the operation a key names
 /// - `phase_1_output`: Challenges and evaluation from the first phase
 /// - `channel`: The prover's channel
 ///
 /// # Returns
 /// Returns `SumcheckOutput` containing the combined challenges `[r_j, r_y]` and the witness
 /// evaluation, or an error if the protocol fails.
-#[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "prove_phase_2")]
 pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
-	zero_data: &PreparedOperatorData<F>,
-	bitand_data: &PreparedOperatorData<F>,
-	intmul_data: &PreparedOperatorData<F>,
-	binmul_data: &PreparedOperatorData<F>,
+	prepared: &PreparedOperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	phase_1_output: SumcheckOutput<F>,
 	channel: &mut Channel,
@@ -96,17 +90,8 @@ where
 	let public_folded = fold_words::<_, P, _>(alloc, public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<_, P, _>(alloc, hidden_words, r_j_tensor.as_ref());
 
-	let (public_monster, hidden_monster) = build_monster_segments(
-		alloc,
-		key_collection,
-		zero_data,
-		bitand_data,
-		intmul_data,
-		binmul_data,
-		domain_subspace,
-		&r_j,
-		&r_s,
-	);
+	let (public_monster, hidden_monster) =
+		build_monster_segments(alloc, key_collection, prepared, domain_subspace, &r_j, &r_s);
 
 	run_sumcheck(
 		&public_folded,

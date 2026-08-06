@@ -7,6 +7,7 @@ mod key_collection;
 // `monster`, `phase_1`, and `phase_2` are internal implementation, exposed (via `#[doc(hidden)]`
 // `pub mod`) only so the `shift_reduction` benchmark can time individual phase functions (see
 // `benches/shift_reduction.rs`). Not a stable API.
+mod claims;
 #[doc(hidden)]
 pub mod monster;
 #[doc(hidden)]
@@ -15,5 +16,6 @@ pub mod phase_1;
 pub mod phase_2;
 mod prove;
 
+pub use claims::{OperatorClaims, PreparedOperatorClaims};
 pub use key_collection::{KeyCollection, KeySegment, Operation, build_key_collection};
 pub use prove::{OperatorData, PreparedOperatorData, prove};

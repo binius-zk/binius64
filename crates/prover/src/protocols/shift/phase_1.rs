@@ -19,9 +19,9 @@ use itertools::izip;
 use tracing::instrument;
 
 use super::{
-	key_collection::{KeyCollection, KeySegment, Operation},
+	claims::PreparedOperatorClaims,
+	key_collection::{KeyCollection, KeySegment},
 	monster::build_h_parts,
-	prove::PreparedOperatorData,
 };
 
 // This is the number of variables in the g (and h) multilinears of phase 1.
@@ -31,14 +31,10 @@ const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 /// Proves the first phase of the shift reduction.
 /// Computes the g and h multilinears and performs the sumcheck.
 #[instrument(skip_all, name = "prover_phase_1")]
-#[allow(clippy::too_many_arguments)]
 pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
-	zero_data: &PreparedOperatorData<F>,
-	bitand_data: &PreparedOperatorData<F>,
-	intmul_data: &PreparedOperatorData<F>,
-	binmul_data: &PreparedOperatorData<F>,
+	prepared: &PreparedOperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,
@@ -52,24 +48,10 @@ where
 	// Build the g parts for the public and hidden segments separately, then sum them. The public
 	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
 	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-	let mut g_parts = build_g_parts::<_, P, _>(
-		alloc,
-		public_words,
-		&key_collection.public,
-		zero_data,
-		bitand_data,
-		intmul_data,
-		binmul_data,
-	);
-	let hidden_g_parts = build_g_parts::<_, P, _>(
-		alloc,
-		hidden_words,
-		&key_collection.hidden,
-		zero_data,
-		bitand_data,
-		intmul_data,
-		binmul_data,
-	);
+	let mut g_parts =
+		build_g_parts::<_, P, _>(alloc, public_words, &key_collection.public, prepared);
+	let hidden_g_parts =
+		build_g_parts::<_, P, _>(alloc, hidden_words, &key_collection.hidden, prepared);
 	for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
 		for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
 			*slot += *add;
@@ -77,7 +59,7 @@ where
 	}
 
 	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
-	let h_parts = build_h_parts(alloc, domain_subspace, bitand_data.r_zhat_prime);
+	let h_parts = build_h_parts(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
 
 	run_phase_1_sumcheck(g_parts, h_parts, channel, alloc)
 }
@@ -207,10 +189,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	words: &[Word],
 	segment: &KeySegment,
-	zero_operator_data: &PreparedOperatorData<F>,
-	bitand_operator_data: &PreparedOperatorData<F>,
-	intmul_operator_data: &PreparedOperatorData<F>,
-	binmul_operator_data: &PreparedOperatorData<F>,
+	prepared: &PreparedOperatorClaims<F>,
 ) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
 	let acc_size: usize = SHIFT_VARIANT_COUNT << (LOG_LEN.saturating_sub(P::LOG_WIDTH));
 
@@ -237,12 +216,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 				let keys = &segment.keys[*start as usize..*end as usize];
 
 				for key in keys {
-					let operator_data = match key.operation {
-						Operation::Zero => zero_operator_data,
-						Operation::BitwiseAnd => bitand_operator_data,
-						Operation::IntegerMul => intmul_operator_data,
-						Operation::BinMul => binmul_operator_data,
-					};
+					let operator_data = &prepared[key.operation];
 
 					let acc = key.accumulate(
 						&segment.constraint_indices,

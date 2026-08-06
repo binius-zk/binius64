@@ -19,8 +19,8 @@ use tracing::instrument;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
+	claims::PreparedOperatorClaims,
 	key_collection::{KeyCollection, KeySegment, Operation},
-	prove::PreparedOperatorData,
 };
 
 /// Constructs the three "h" multilinear polynomials for shift operations at a
@@ -140,14 +140,10 @@ where
 /// hidden piece over `log_witness_words` variables (the hidden words at the base, zeros above).
 /// The sparse first sumcheck round consumes them without materializing the combined buffer.
 #[instrument(skip_all, name = "build_monster_segments")]
-#[allow(clippy::too_many_arguments)]
 pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	key_collection: &KeyCollection,
-	zero_operator_data: &PreparedOperatorData<F>,
-	bitand_operator_data: &PreparedOperatorData<F>,
-	intmul_operator_data: &PreparedOperatorData<F>,
-	binmul_operator_data: &PreparedOperatorData<F>,
+	prepared: &PreparedOperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	r_j: &[F],
 	r_s: &[F],
@@ -157,10 +153,10 @@ where
 {
 	// Compute h evaluations
 	let [zero_h_ops, bitand_h_ops, intmul_h_ops, binmul_h_ops] = [
-		zero_operator_data.r_zhat_prime,
-		bitand_operator_data.r_zhat_prime,
-		intmul_operator_data.r_zhat_prime,
-		binmul_operator_data.r_zhat_prime,
+		prepared.zero.r_zhat_prime,
+		prepared.bitand.r_zhat_prime,
+		prepared.intmul.r_zhat_prime,
+		prepared.binmul.r_zhat_prime,
 	]
 	.map(|r_zhat_prime| {
 		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
@@ -190,23 +186,23 @@ where
 		}
 	};
 
-	populate_scalars(&mut zero_scalars, ZERO_ARITY, &zero_operator_data.lambda_powers, &zero_h_ops);
+	populate_scalars(&mut zero_scalars, ZERO_ARITY, &prepared.zero.lambda_powers, &zero_h_ops);
 	populate_scalars(
 		&mut bitand_scalars,
 		BITAND_ARITY,
-		&bitand_operator_data.lambda_powers,
+		&prepared.bitand.lambda_powers,
 		&bitand_h_ops,
 	);
 	populate_scalars(
 		&mut intmul_scalars,
 		INTMUL_ARITY,
-		&intmul_operator_data.lambda_powers,
+		&prepared.intmul.lambda_powers,
 		&intmul_h_ops,
 	);
 	populate_scalars(
 		&mut binmul_scalars,
 		BINMUL_ARITY,
-		&binmul_operator_data.lambda_powers,
+		&prepared.binmul.lambda_powers,
 		&binmul_h_ops,
 	);
 
@@ -217,16 +213,17 @@ where
 			.word_keys(index)
 			.iter()
 			.map(|key| {
-				let (operator_data, scalars, arity) = match key.operation {
-					Operation::Zero => (zero_operator_data, &zero_scalars, ZERO_ARITY),
-					Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars, BITAND_ARITY),
-					Operation::IntegerMul => (intmul_operator_data, &intmul_scalars, INTMUL_ARITY),
-					Operation::BinMul => (binmul_operator_data, &binmul_scalars, BINMUL_ARITY),
+				// The scalar table is per operation, and its stride is that operation's arity.
+				let (scalars, arity) = match key.operation {
+					Operation::Zero => (&zero_scalars, ZERO_ARITY),
+					Operation::BitwiseAnd => (&bitand_scalars, BITAND_ARITY),
+					Operation::IntegerMul => (&intmul_scalars, INTMUL_ARITY),
+					Operation::BinMul => (&binmul_scalars, BINMUL_ARITY),
 				};
 				let base = key.id as usize * arity;
 				key.accumulate_wide(
 					&segment.constraint_indices,
-					operator_data.r_x_prime_tensor.as_ref(),
+					prepared[key.operation].r_x_prime_tensor.as_ref(),
 					&scalars[base..base + arity],
 				)
 			})
