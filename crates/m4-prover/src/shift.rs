@@ -540,7 +540,7 @@ mod tests {
 			.sum();
 
 		// The lambda-powers scaling of the batched AND-check evals, plus the empty intmul claim.
-		let expected = prepared.bitand.batched_eval() + prepared.intmul.batched_eval();
+		let expected = prepared.bitand.batched_eval + prepared.intmul.batched_eval;
 		assert_eq!(inner_product, expected);
 	}
 }

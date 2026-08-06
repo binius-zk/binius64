@@ -70,15 +70,29 @@ impl<F: Field, const ARITY: usize> OperatorData<F, ARITY> {
 ///
 /// The arity is erased here, unlike in [`OperatorData`].
 /// Both phases pick an operation at run time, from a shift key, so all four must share a type.
+///
+/// The individual operand claims do not survive that erasure, because nothing downstream reads
+/// them one at a time — only their batched combination, which is a single scalar.
 #[derive(Debug, Clone)]
 pub struct PreparedOperatorData<F: Field> {
-	/// The claimed evaluation of each operand column, in the operation's operand order.
-	pub evals: Vec<F>,
+	/// The operand claims collapsed into one value by the batching coefficient.
+	///
+	/// Operand `i` is weighted by the `i`-th power, and the powers start at the first:
+	///
+	/// ```text
+	/// batched_eval = sum_i evals[i] * lambda^(i + 1)
+	/// ```
+	///
+	/// So this already carries a random factor unique to its operation.
+	/// Two operations' batched values can therefore be summed with no further scaling.
+	pub batched_eval: F,
 	/// The univariate challenge folding the bit axis, shared by every operation.
 	pub r_zhat_prime: F,
 	/// The equality-indicator tensor of the constraint point, one weight per constraint.
 	pub r_x_prime_tensor: FieldBuffer<F>,
 	/// The batching coefficient's powers, one per operand, starting at the first power.
+	///
+	/// A shift key names the operand it acts on, so these stay indexable at run time.
 	pub lambda_powers: Vec<F>,
 }
 
@@ -96,27 +110,13 @@ impl<F: Field> PreparedOperatorData<F> {
 			r_x_prime,
 		} = operator_data;
 		let r_x_prime_tensor = eq_ind_partial_eval::<F>(&r_x_prime);
-		let lambda_powers = powers(lambda).skip(1).take(ARITY).collect();
+		let lambda_powers: Vec<F> = powers(lambda).skip(1).take(ARITY).collect();
 		Self {
-			evals: evals.to_vec(),
+			batched_eval: inner_product(evals, lambda_powers.iter().copied()),
 			r_zhat_prime,
 			r_x_prime_tensor,
 			lambda_powers,
 		}
-	}
-
-	/// The operand claims collapsed into one value by the batching coefficient.
-	///
-	/// Operand `i` is weighted by the `i`-th power, and the powers start at the first:
-	///
-	/// ```text
-	/// batched = sum_i evals[i] * lambda^(i + 1)
-	/// ```
-	///
-	/// So the result already carries a random factor unique to this operation.
-	/// Two operations' batched values can therefore be summed with no further scaling.
-	pub fn batched_eval(&self) -> F {
-		inner_product(self.evals.iter().copied(), self.lambda_powers.iter().copied())
 	}
 }
 
