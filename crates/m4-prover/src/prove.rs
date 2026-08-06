@@ -17,7 +17,7 @@ use binius_ip_prover::sumcheck::{
 };
 use binius_m4_verifier::{IOPVerifier, Verifier};
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec,
+	BinarySubspace,
 	inner_product::inner_product,
 	multilinear::eq::eq_ind_partial_eval_scalars,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
@@ -25,7 +25,6 @@ use binius_math::{
 };
 use binius_prover::{
 	and_reduction,
-	fold_word::fold_words,
 	protocols::{
 		binmul, intmul,
 		shift::{KeyCollection, OperatorData, build_key_collection},
@@ -33,10 +32,7 @@ use binius_prover::{
 	ring_switch::{self, RingSwitchOutput},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{
-	checked_arithmetics::checked_log_2,
-	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
-};
+use binius_utils::rayon::{prelude::*, task_size::IndexedParallelIteratorExt};
 use binius_verifier::{
 	config::B128,
 	protocols::{
@@ -50,8 +46,8 @@ use binius_verifier::{
 
 use crate::{
 	ValueTable,
-	operand_witness::build_operation_columns,
-	shift::{fold_instances, prove as prove_shift},
+	shift::prove as prove_shift,
+	witness::{build_operation_columns, fold_instances, operand_rho_multilinear},
 };
 
 /// The multithreaded additive NTT used to encode the committed codeword.
@@ -163,8 +159,9 @@ impl IOPProver {
 			// `build_operation_columns` rounds the constraint axis up to a power of two and
 			// zero-fills the tail, and the table holds `2^log_instances` instances, so every column
 			// has the power-of-two length the IntMul witness requires.
-			let output = intmul::prove::<_, _, P, _>(column_slices(&columns), channel, alloc)
-				.expect("the operand columns are equal-length and power-of-two length");
+			let output =
+				intmul::prove::<_, _, P, _>(columns.each_ref().map(|c| &c[..]), channel, alloc)
+					.expect("the operand columns are equal-length and power-of-two length");
 			(columns, output)
 		});
 
@@ -186,7 +183,8 @@ impl IOPProver {
 				let _scope = tracing::debug_span!("Assemble BinMul witness").entered();
 				build_operation_columns(table, &cs.constants, &cs.bmul_constraints, alloc)
 			};
-			let output = binmul::prove::<_, B128, P, _>(column_slices(&columns), channel, alloc);
+			let output =
+				binmul::prove::<_, B128, P, _>(columns.each_ref().map(|c| &c[..]), channel, alloc);
 			(columns, output)
 		});
 
@@ -265,27 +263,12 @@ impl IOPProver {
 				.expect("AND columns are retained whenever there are IMUL or BMUL constraints");
 			let log_instances = table.log_instances();
 			RerandomizedOperations {
-				bitand: Operation::new(
-					column_slices(&and_columns),
-					[a_eval, b_eval, c_eval],
-					r_x_and,
-					r_rho_and,
-				),
+				bitand: Operation::new(&and_columns, [a_eval, b_eval, c_eval], r_x_and, r_rho_and),
 				intmul: mul.as_ref().map(|(columns, output)| {
-					Operation::from_intmul(
-						column_slices(columns),
-						output.clone(),
-						&lagrange,
-						log_instances,
-					)
+					Operation::from_intmul(columns, output.clone(), &lagrange, log_instances)
 				}),
 				binmul: bmul.as_ref().map(|(columns, output)| {
-					Operation::from_binmul(
-						column_slices(columns),
-						output.clone(),
-						&lagrange,
-						log_instances,
-					)
+					Operation::from_binmul(columns, output.clone(), &lagrange, log_instances)
 				}),
 			}
 			.prove::<P, _, _>(&lagrange, z_challenge, channel, alloc)
@@ -462,17 +445,6 @@ where
 	}
 }
 
-/// Borrows an operation's allocator-backed operand columns as plain word slices.
-///
-/// The reductions and [`Operation`] read the columns without caring which allocator produced them,
-/// so this drops the buffer type at the seam rather than propagating it through their signatures.
-fn column_slices<Data, const N: usize>(columns: &[Data; N]) -> [&[Word]; N]
-where
-	Data: Deref<Target = [Word]>,
-{
-	columns.each_ref().map(|column| &**column)
-}
-
 /// One operation's operand columns, oblong claims, and the points they are claimed at.
 ///
 /// The AND-check and the IntMul check both reduce to this shape.
@@ -492,14 +464,16 @@ struct Operation<'a, const ARITY: usize> {
 impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 	/// The operand columns with their claims at the constraint point `r_x` and instance point
 	/// `r_rho`.
-	fn new(
-		columns: [&'a [Word]; ARITY],
+	///
+	/// The columns are borrowed as plain word slices, dropping whichever allocator produced them.
+	fn new<D: Deref<Target = [Word]>>(
+		columns: &'a [D; ARITY],
 		operand_claims: [B128; ARITY],
 		r_x: &[B128],
 		r_rho: &[B128],
 	) -> Self {
 		Self {
-			columns,
+			columns: columns.each_ref().map(|column| &**column),
 			operand_claims,
 			r_x: r_x.to_vec(),
 			r_rho: r_rho.to_vec(),
@@ -553,8 +527,8 @@ impl<'a> Operation<'a, INTMUL_ARITY> {
 	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
 	/// This gives the oblong form the BitAnd claims already have.
 	/// The IntMul row point splits into an instance part (low) and a constraint part (high).
-	fn from_intmul(
-		columns: [&'a [Word]; INTMUL_ARITY],
+	fn from_intmul<D: Deref<Target = [Word]>>(
+		columns: &'a [D; INTMUL_ARITY],
 		intmul_output: IntMulOutput<B128>,
 		lagrange: &[B128],
 		log_instances: usize,
@@ -589,8 +563,8 @@ impl<'a> Operation<'a, BINMUL_ARITY> {
 	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
 	/// This gives the oblong form the BitAnd claims already have.
 	/// The BinMul row point splits into an instance part (low) and a constraint part (high).
-	fn from_binmul(
-		columns: [&'a [Word]; BINMUL_ARITY],
+	fn from_binmul<D: Deref<Target = [Word]>>(
+		columns: &'a [D; BINMUL_ARITY],
 		binmul_output: BinMulOutput<B128>,
 		lagrange: &[B128],
 		log_instances: usize,
@@ -744,78 +718,6 @@ impl RerandomizedOperations<'_> {
 		r_rho.reverse();
 		(r_rho, bitand_data, intmul_data, binmul_data)
 	}
-}
-
-/// Builds the instance-axis multilinear of one operand column, folded over its bit and constraint
-/// axes.
-///
-/// The operand column is constraint-major: `row = local_constraint * n_instances + instance`.
-/// Folding collapses the two other axes and leaves one field element per instance:
-///
-/// ```text
-/// M[rho] = sum_{local, j} lagrange[j] * r_x_tensor[local] * bit_j(column[local * K + rho])
-/// ```
-///
-/// - The Lagrange weights fold each 64-bit word over its bit axis at the shared univariate
-///   challenge.
-/// - The constraint tensor `r_x_tensor` folds the constraint axis; the caller expands it once per
-///   operation and shares it across the operands.
-///
-/// Its evaluation at the operation's instance point equals that operation's oblong operand claim.
-/// So the re-randomization sumcheck can transport that claim to a shared instance point.
-fn operand_rho_multilinear<A, P>(
-	alloc: &A,
-	column: &[Word],
-	lagrange: &[B128],
-	r_x_tensor: &[B128],
-) -> FieldVec<P, A>
-where
-	A: Allocator,
-	P: PackedField<Scalar = B128>,
-{
-	// Fold each word's bits at the univariate challenge: one scalar per row, laid out
-	// constraint-major.
-	// Folding into scalars keeps the row indexing flat for the constraint fold.
-	let folded_rows = fold_words::<B128, B128, _>(alloc, column, lagrange);
-	let folded_rows = folded_rows.as_ref();
-
-	// Produce the packed instance-axis multilinear directly into the allocator's buffer, one packed
-	// element per parallel task.
-	// Each element's lanes are the constraint folds of consecutive instances.
-	// Lanes past the instance count are the multilinear's zero padding.
-	//
-	// The constraint axis is the high, strided axis: constraint `local` of instance `rho` sits at
-	// row `local * n_instances + rho`.
-	let n_constraints = r_x_tensor.len();
-	let n_instances = folded_rows.len() / n_constraints;
-	let log_instances = checked_log_2(n_instances);
-	let log_packed = log_instances.saturating_sub(P::LOG_WIDTH);
-	let packed_len = 1usize << log_packed;
-	let mut packed = alloc.alloc::<P>(packed_len);
-	packed
-		.spare_capacity_mut()
-		.par_iter_mut()
-		.enumerate()
-		.for_each(|(packed_index, slot)| {
-			slot.write(P::from_scalars((0..P::WIDTH).map(|lane| {
-				let instance = (packed_index << P::LOG_WIDTH) | lane;
-				if instance < n_instances {
-					r_x_tensor
-						.iter()
-						.enumerate()
-						.map(|(local, &weight)| {
-							weight * folded_rows[local * n_instances + instance]
-						})
-						.sum()
-				} else {
-					B128::ZERO
-				}
-			})));
-		});
-	// Safety: every packed slot is written exactly once by the parallel loop above.
-	unsafe { packed.set_len(packed_len) };
-
-	FieldBuffer::new(log_instances, packed)
 }
 
 #[cfg(test)]
