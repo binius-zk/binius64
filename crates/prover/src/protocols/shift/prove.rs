@@ -8,29 +8,40 @@ use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
 };
+use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
 
 use super::{key_collection::KeyCollection, phase_1::prove_phase_1, phase_2::prove_phase_2};
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
 ///
-/// An operation constrains several operands at once: AND has three, IMUL four, BMUL six.
+/// An operation constrains a fixed number of operands at once, its arity:
+///
+/// ```text
+/// ZERO 1   AND 3   IMUL 4   BMUL 6
+/// ```
+///
 /// Each operand is one column of the witness, and each column carries one evaluation claim.
+///
+/// The arity is a type parameter, so no two operations share a type.
+/// Two operations' claims therefore cannot be passed in each other's place.
+///
+/// This mirrors [`binius_verifier::protocols::shift::OperatorData`], which is already arity-typed.
 ///
 /// Every operand of an operation is claimed at the same point.
 /// So the point is stored once here rather than once per operand.
 ///
 /// That point is oblong: a univariate coordinate over the bit axis, then the constraint index.
 #[derive(Debug, Clone)]
-pub struct OperatorData<F: Field> {
+pub struct OperatorData<F: Field, const ARITY: usize> {
 	/// The claimed evaluation of each operand column, in the operation's operand order.
-	pub evals: Vec<F>,
+	pub evals: [F; ARITY],
 	/// The univariate challenge folding the bit axis, shared by every operation.
 	pub r_zhat_prime: F,
 	/// The multilinear challenge over the constraint index.
 	pub r_x_prime: Vec<F>,
 }
 
-impl<F: Field> OperatorData<F> {
+impl<F: Field, const ARITY: usize> OperatorData<F, ARITY> {
 	/// The claim of an operation the constraint system does not use.
 	///
 	/// Every operand evaluates to zero, at the empty constraint point.
@@ -40,11 +51,10 @@ impl<F: Field> OperatorData<F> {
 	///
 	/// # Arguments
 	///
-	/// - `arity`: the operation's operand count, which fixes how many zero evaluations it carries.
 	/// - `r_zhat_prime`: the univariate challenge, shared by every operation.
-	pub fn zero_claim(arity: usize, r_zhat_prime: F) -> Self {
+	pub const fn zero_claim(r_zhat_prime: F) -> Self {
 		Self {
-			evals: vec![F::ZERO; arity],
+			evals: [F::ZERO; ARITY],
 			r_zhat_prime,
 			r_x_prime: Vec::new(),
 		}
@@ -57,15 +67,32 @@ impl<F: Field> OperatorData<F> {
 ///
 /// - the constraint point, expanded into its equality-indicator tensor;
 /// - the batching coefficient, expanded into its powers, one per operand.
+///
+/// The arity is erased here, unlike in [`OperatorData`].
+/// Both phases pick an operation at run time, from a shift key, so all four must share a type.
+///
+/// The individual operand claims do not survive that erasure, because nothing downstream reads
+/// them one at a time — only their batched combination, which is a single scalar.
 #[derive(Debug, Clone)]
 pub struct PreparedOperatorData<F: Field> {
-	/// The claimed evaluation of each operand column, in the operation's operand order.
-	pub evals: Vec<F>,
+	/// The operand claims collapsed into one value by the batching coefficient.
+	///
+	/// Operand `i` is weighted by the `i`-th power, and the powers start at the first:
+	///
+	/// ```text
+	/// batched_eval = sum_i evals[i] * lambda^(i + 1)
+	/// ```
+	///
+	/// So this already carries a random factor unique to its operation.
+	/// Two operations' batched values can therefore be summed with no further scaling.
+	pub batched_eval: F,
 	/// The univariate challenge folding the bit axis, shared by every operation.
 	pub r_zhat_prime: F,
 	/// The equality-indicator tensor of the constraint point, one weight per constraint.
 	pub r_x_prime_tensor: FieldBuffer<F>,
 	/// The batching coefficient's powers, one per operand, starting at the first power.
+	///
+	/// A shift key names the operand it acts on, so these stay indexable at run time.
 	pub lambda_powers: Vec<F>,
 }
 
@@ -76,34 +103,20 @@ impl<F: Field> PreparedOperatorData<F> {
 	///
 	/// - `operator_data`: the operand claims, and the point they are claimed at.
 	/// - `lambda`: the batching coefficient for this operation.
-	pub fn new(operator_data: OperatorData<F>, lambda: F) -> Self {
+	pub fn new<const ARITY: usize>(operator_data: OperatorData<F, ARITY>, lambda: F) -> Self {
 		let OperatorData {
 			evals,
 			r_zhat_prime,
 			r_x_prime,
 		} = operator_data;
 		let r_x_prime_tensor = eq_ind_partial_eval::<F>(&r_x_prime);
-		let lambda_powers = powers(lambda).skip(1).take(evals.len()).collect();
+		let lambda_powers: Vec<F> = powers(lambda).skip(1).take(ARITY).collect();
 		Self {
-			evals,
+			batched_eval: inner_product(evals, lambda_powers.iter().copied()),
 			r_zhat_prime,
 			r_x_prime_tensor,
 			lambda_powers,
 		}
-	}
-
-	/// The operand claims collapsed into one value by the batching coefficient.
-	///
-	/// Operand `i` is weighted by the `i`-th power, and the powers start at the first:
-	///
-	/// ```text
-	/// batched = sum_i evals[i] * lambda^(i + 1)
-	/// ```
-	///
-	/// So the result already carries a random factor unique to this operation.
-	/// Two operations' batched values can therefore be summed with no further scaling.
-	pub fn batched_eval(&self) -> F {
-		inner_product(self.evals.iter().copied(), self.lambda_powers.iter().copied())
 	}
 }
 
@@ -121,10 +134,13 @@ impl<F: Field> PreparedOperatorData<F> {
 /// # Parameters
 /// - `key_collection`: Prover's key collection representing the constraint system
 /// - `words`: The witness words (must have power-of-2 length)
+/// - `zero_data`: Operator data for the linear (ZERO) constraints
 /// - `bitand_data`: Operator data for bit multiplication (AND) constraints
 /// - `intmul_data`: Operator data for integer multiplication (IMUL) constraints
 /// - `binmul_data`: Operator data for GHASH-field multiplication (BMUL) constraints
 /// - `transcript`: The prover's transcript for interactive protocol
+///
+/// Each of the four carries its own arity, so no two can be passed in the other's place.
 ///
 /// # Returns
 /// Returns `SumcheckOutput` containing the final challenges and witness evaluation,
@@ -136,10 +152,10 @@ impl<F: Field> PreparedOperatorData<F> {
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
-	zero_data: OperatorData<F>,
-	bitand_data: OperatorData<F>,
-	intmul_data: OperatorData<F>,
-	binmul_data: OperatorData<F>,
+	zero_data: OperatorData<F, ZERO_ARITY>,
+	bitand_data: OperatorData<F, BITAND_ARITY>,
+	intmul_data: OperatorData<F, INTMUL_ARITY>,
+	binmul_data: OperatorData<F, BINMUL_ARITY>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,

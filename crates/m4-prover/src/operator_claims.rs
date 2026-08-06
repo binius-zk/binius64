@@ -7,34 +7,34 @@
 //! Each family arrives with its own operand evaluation claim.
 //! Those four claims then travel together through both phases of the reduction.
 //!
-//! Passed as four positional arguments, two same-typed neighbours are interchangeable.
-//! The compiler accepts either order, so a swap yields a wrong proof instead of an error.
+//! Passed as four positional arguments, they are easy to hand over in the wrong order.
+//! Bundling them names each claim where it is built.
 //!
-//! Bundled instead, each claim is named where it is built.
-//! It is then reached by indexing on [`Operation`] where it is read.
+//! Each claim also carries its operation's arity in its type, so no two share one.
+//! Putting a BMUL claim in the IMUL field is a type error, not a wrong proof.
+//!
+//! The batched form erases that arity, because a shift key picks its operation at run time.
+//! There the operation is named by indexing instead: `prepared[key.operation]`.
 
 use std::ops::Index;
 
 use binius_field::Field;
 use binius_prover::protocols::shift::{Operation, OperatorData, PreparedOperatorData};
+use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
 
 /// The operand evaluation claim of every operation, as the shift reduction receives them.
 ///
-/// A shift key names the operation it belongs to, so its claim is reached by indexing:
-///
-/// ```text
-/// claims[key.operation]
-/// ```
+/// The four fields have four distinct types, one per arity, so none can stand in for another.
 #[derive(Debug, Clone)]
 pub struct OperatorClaims<F: Field> {
 	/// The claim for the ZERO constraints, `VAL == 0`.
-	pub zero: OperatorData<F>,
+	pub zero: OperatorData<F, ZERO_ARITY>,
 	/// The claim for the AND constraints, `A & B ^ C == 0`.
-	pub bitand: OperatorData<F>,
+	pub bitand: OperatorData<F, BITAND_ARITY>,
 	/// The claim for the IMUL constraints, `A * B == (HI << 64) | LO`.
-	pub intmul: OperatorData<F>,
+	pub intmul: OperatorData<F, INTMUL_ARITY>,
 	/// The claim for the BMUL constraints, `A * B == C` in the GHASH field.
-	pub binmul: OperatorData<F>,
+	pub binmul: OperatorData<F, BINMUL_ARITY>,
 }
 
 impl<F: Field> OperatorClaims<F> {
@@ -50,6 +50,8 @@ impl<F: Field> OperatorClaims<F> {
 	/// The coefficients are drawn in the order `[Zero, BitwiseAnd, IntegerMul, BinMul]`.
 	/// The verifier draws in that same order, so this sequence is protocol, not detail.
 	///
+	/// The arities are erased on the way out, since both proving phases dispatch on a shift key.
+	///
 	/// # Arguments
 	///
 	/// - `sample`: draws the next batching coefficient from the transcript.
@@ -59,19 +61,6 @@ impl<F: Field> OperatorClaims<F> {
 			bitand: PreparedOperatorData::new(self.bitand, sample()),
 			intmul: PreparedOperatorData::new(self.intmul, sample()),
 			binmul: PreparedOperatorData::new(self.binmul, sample()),
-		}
-	}
-}
-
-impl<F: Field> Index<Operation> for OperatorClaims<F> {
-	type Output = OperatorData<F>;
-
-	fn index(&self, operation: Operation) -> &OperatorData<F> {
-		match operation {
-			Operation::Zero => &self.zero,
-			Operation::BitwiseAnd => &self.bitand,
-			Operation::IntegerMul => &self.intmul,
-			Operation::BinMul => &self.binmul,
 		}
 	}
 }
@@ -111,26 +100,28 @@ mod tests {
 
 	use super::*;
 
-	// One claim per operation, each tagged by a distinct operand count.
-	// A mis-wired index arm therefore returns a count no assertion accepts.
-	fn claims_tagged_by_arity() -> OperatorClaims<B128> {
+	// A zero claim per operation, each at the arity its field's type fixes.
+	fn zero_claims() -> OperatorClaims<B128> {
 		OperatorClaims {
-			zero: OperatorData::zero_claim(1, B128::ZERO),
-			bitand: OperatorData::zero_claim(2, B128::ZERO),
-			intmul: OperatorData::zero_claim(3, B128::ZERO),
-			binmul: OperatorData::zero_claim(4, B128::ZERO),
+			zero: OperatorData::zero_claim(B128::ZERO),
+			bitand: OperatorData::zero_claim(B128::ZERO),
+			intmul: OperatorData::zero_claim(B128::ZERO),
+			binmul: OperatorData::zero_claim(B128::ZERO),
 		}
 	}
 
 	#[test]
-	fn each_operation_indexes_its_own_claim() {
-		// Invariant: an operation indexes its own claim, never a neighbour's.
-		let claims = claims_tagged_by_arity();
+	fn prepare_carries_each_operations_arity_into_the_erased_form() {
+		// Invariant: erasing the arity keeps it as a length, one lambda power per operand.
+		//
+		// The four arities are 1, 3, 4 and 6, all distinct.
+		// So a claim reached through the wrong index arm shows up as the wrong count.
+		let prepared = zero_claims().prepare(|| B128::ONE);
 
-		assert_eq!(claims[Operation::Zero].evals.len(), 1);
-		assert_eq!(claims[Operation::BitwiseAnd].evals.len(), 2);
-		assert_eq!(claims[Operation::IntegerMul].evals.len(), 3);
-		assert_eq!(claims[Operation::BinMul].evals.len(), 4);
+		assert_eq!(prepared[Operation::Zero].lambda_powers.len(), ZERO_ARITY);
+		assert_eq!(prepared[Operation::BitwiseAnd].lambda_powers.len(), BITAND_ARITY);
+		assert_eq!(prepared[Operation::IntegerMul].lambda_powers.len(), INTMUL_ARITY);
+		assert_eq!(prepared[Operation::BinMul].lambda_powers.len(), BINMUL_ARITY);
 	}
 
 	#[test]
@@ -140,7 +131,7 @@ mod tests {
 		//
 		// This stand-in transcript hands out 1, 2, 3, 4, so a coefficient names its draw position.
 		let mut draws = 0u128;
-		let prepared = claims_tagged_by_arity().prepare(|| {
+		let prepared = zero_claims().prepare(|| {
 			draws += 1;
 			B128::new(draws)
 		});

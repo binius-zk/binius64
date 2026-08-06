@@ -21,7 +21,7 @@ use binius_prover::{
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{OperatorData as VerifierOperatorData, verify},
+	protocols::shift::{BINMUL_ARITY, OperatorData as VerifierOperatorData, ZERO_ARITY, verify},
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sha2::{Digest, Sha256 as Sha256Hasher};
@@ -124,12 +124,12 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			let alloc = &pool;
 			b.iter(|| {
 				let prover_bitand_data = OperatorData {
-					evals: bitand_evals.to_vec(),
+					evals: bitand_evals,
 					r_zhat_prime,
 					r_x_prime: r_x_prime_bitand.clone(),
 				};
 				let prover_intmul_data = OperatorData {
-					evals: intmul_evals.to_vec(),
+					evals: intmul_evals,
 					r_zhat_prime,
 					r_x_prime: r_x_prime_intmul.clone(),
 				};
@@ -139,18 +139,10 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				prove::<F, P, _, _>(
 					&key_collection,
 					value_vec.combined_witness(),
-					OperatorData {
-						evals: vec![F::ZERO],
-						r_zhat_prime,
-						r_x_prime: Vec::new(),
-					},
+					OperatorData::zero_claim(r_zhat_prime),
 					prover_bitand_data,
 					prover_intmul_data,
-					OperatorData {
-						evals: vec![F::ZERO; 6],
-						r_zhat_prime,
-						r_x_prime: Vec::new(),
-					},
+					OperatorData::zero_claim(r_zhat_prime),
 					&subspace,
 					&mut prover_transcript,
 					&alloc,
@@ -160,12 +152,12 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		// Pre-run the prover to get the transcript for verifier benchmarking
 		let prover_bitand_data = OperatorData {
-			evals: bitand_evals.to_vec(),
+			evals: bitand_evals,
 			r_zhat_prime,
 			r_x_prime: r_x_prime_bitand.clone(),
 		};
 		let prover_intmul_data = OperatorData {
-			evals: intmul_evals.to_vec(),
+			evals: intmul_evals,
 			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul.clone(),
 		};
@@ -175,18 +167,10 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
-			OperatorData {
-				evals: vec![F::ZERO],
-				r_zhat_prime,
-				r_x_prime: Vec::new(),
-			},
+			OperatorData::zero_claim(r_zhat_prime),
 			prover_bitand_data,
 			prover_intmul_data,
-			OperatorData {
-				evals: vec![F::ZERO; 6],
-				r_zhat_prime,
-				r_x_prime: Vec::new(),
-			},
+			OperatorData::zero_claim(r_zhat_prime),
 			&subspace,
 			&mut prover_transcript,
 			&&BufferPool::new(),
@@ -253,7 +237,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// random lambda (rather than one drawn from a transcript) yields realistic-magnitude data.
 	let prepared_bitand = PreparedOperatorData::new(
 		OperatorData {
-			evals: bitand_evals.to_vec(),
+			evals: bitand_evals,
 			r_zhat_prime,
 			r_x_prime: r_x_prime_bitand,
 		},
@@ -261,7 +245,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	);
 	let prepared_intmul = PreparedOperatorData::new(
 		OperatorData {
-			evals: intmul_evals.to_vec(),
+			evals: intmul_evals,
 			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul,
 		},
@@ -270,21 +254,13 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// SHA256 has no ZERO constraints, so the Zero operator is the zero claim at an empty point,
 	// matching the real prover.
 	let prepared_zero = PreparedOperatorData::new(
-		OperatorData {
-			evals: vec![F::ZERO],
-			r_zhat_prime,
-			r_x_prime: Vec::new(),
-		},
+		OperatorData::<F, ZERO_ARITY>::zero_claim(r_zhat_prime),
 		F::random(&mut rng),
 	);
 	// SHA256 has no BMUL constraints, so the BinMul operator is the zero claim at an empty point,
 	// matching the real prover (`prove.rs` `None` branch).
 	let prepared_bmul = PreparedOperatorData::new(
-		OperatorData {
-			evals: vec![F::ZERO; 6],
-			r_zhat_prime,
-			r_x_prime: Vec::new(),
-		},
+		OperatorData::<F, BINMUL_ARITY>::zero_claim(r_zhat_prime),
 		F::random(&mut rng),
 	);
 

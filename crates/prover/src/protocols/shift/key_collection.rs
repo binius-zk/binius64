@@ -588,7 +588,7 @@ mod tests {
 			range: 0..constraint_indices.len() as u32,
 		};
 		let operator_data = PreparedOperatorData {
-			evals: vec![],
+			batched_eval: F::ZERO,
 			r_zhat_prime: F::ZERO,
 			r_x_prime_tensor: FieldBuffer::from_values(&[
 				f(2),
