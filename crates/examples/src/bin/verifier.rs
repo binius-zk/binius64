@@ -80,7 +80,7 @@ fn main() -> Result<()> {
 
 	// Verify
 	verifier
-		.verify(public.as_slice(), &mut verifier_transcript)
+		.verify(&public, &mut verifier_transcript)
 		.context("Verification failed")?;
 	verifier_transcript
 		.finalize()

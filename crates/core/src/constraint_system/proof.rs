@@ -299,11 +299,8 @@ mod tests {
 		let mut buf = Vec::new();
 		proof.serialize(&mut buf).unwrap();
 
-		let test_data_path = std::path::Path::new("verifier/core/test_data/proof_v1.bin");
-
-		if let Some(parent) = test_data_path.parent() {
-			std::fs::create_dir_all(parent).unwrap();
-		}
+		// Relative to the crate root, which is where `cargo test` runs.
+		let test_data_path = std::path::Path::new("test_data/proof_v1.bin");
 
 		std::fs::write(test_data_path, &buf).unwrap();
 

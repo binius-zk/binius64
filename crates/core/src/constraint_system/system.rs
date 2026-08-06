@@ -413,7 +413,7 @@ impl DeserializeBytes for ConstraintSystem {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::constraint_system::{ShiftedValueIndex, ValueVec, ValuesData};
+	use crate::constraint_system::{ShiftedValueIndex, ValueVec, ValuesData, ValuesRef};
 
 	/// A shape with one padding word after the constants and two after the inout values, so the
 	/// public segment is 8 words, followed by a hidden segment of 6 values and 2 padding words.
@@ -969,18 +969,19 @@ mod tests {
 			.collect::<Vec<_>>();
 		let values = ValueVec::new_from_data(&public, &private);
 
-		// Split into public and non-public witnesses and serialize all artifacts
-		let public_data = ValuesData::from(values.public());
-		let non_public_data = ValuesData::from(values.non_public());
-
+		// Serialize all three artifacts: the shape, then each segment on its own.
 		let mut buf_cs = Vec::new();
 		cs.serialize(&mut buf_cs).unwrap();
 
 		let mut buf_pub = Vec::new();
-		public_data.serialize(&mut buf_pub).unwrap();
+		ValuesRef::new(values.public())
+			.serialize(&mut buf_pub)
+			.unwrap();
 
 		let mut buf_non_pub = Vec::new();
-		non_public_data.serialize(&mut buf_non_pub).unwrap();
+		ValuesRef::new(values.non_public())
+			.serialize(&mut buf_non_pub)
+			.unwrap();
 
 		// Deserialize everything back
 		let cs2 = ConstraintSystem::deserialize(&mut buf_cs.as_slice()).unwrap();

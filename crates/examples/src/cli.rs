@@ -3,7 +3,7 @@
 use std::{fs, path::Path};
 
 use anyhow::Result;
-use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
+use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData, ValuesRef};
 use binius_frontend::{CircuitBuilder, CircuitStat};
 use binius_hash::{Blake3HashSuite, StdHashSuite, binary_merkle_tree::HashSuite};
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
@@ -15,8 +15,12 @@ use crate::{
 	prove_verify, setup, setup_verifier, setup_zk, setup_zk_verifier,
 };
 
-/// Serialize a value implementing `SerializeBytes` and write it to the given path.
-fn write_serialized<T: SerializeBytes>(value: &T, path: &str) -> Result<()> {
+/// Write raw bytes to the given path, creating the parent directory if it is missing.
+///
+/// Naming an output under a directory that does not exist yet is the common case here.
+/// So the directory is created rather than reported as an error.
+fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
+	// A bare filename has an empty parent, which needs no directory created.
 	if let Some(parent) = Path::new(path).parent()
 		&& !parent.as_os_str().is_empty()
 	{
@@ -24,11 +28,15 @@ fn write_serialized<T: SerializeBytes>(value: &T, path: &str) -> Result<()> {
 			anyhow::anyhow!("Failed to create directory '{}': {}", parent.display(), e)
 		})?;
 	}
+	fs::write(path, bytes)
+		.map_err(|e| anyhow::anyhow!("Failed to write serialized data to '{}': {}", path, e))
+}
+
+/// Serialize a value implementing `SerializeBytes` and write it to the given path.
+fn write_serialized<T: SerializeBytes>(value: &T, path: &str) -> Result<()> {
 	let mut buf: Vec<u8> = Vec::new();
 	value.serialize(&mut buf)?;
-	fs::write(path, &buf)
-		.map_err(|e| anyhow::anyhow!("Failed to write serialized data to '{}': {}", path, e))?;
-	Ok(())
+	write_file(path, &buf)
 }
 
 /// Deserialize a value implementing `DeserializeBytes` from the given path.
@@ -808,14 +816,12 @@ where
 		}
 
 		if let Some(path) = pub_witness_path.as_deref() {
-			let data = ValuesData::from(witness.public());
-			write_serialized(&data, path)?;
+			write_serialized(&ValuesRef::new(witness.public()), path)?;
 			tracing::info!("Public witness saved to '{}'", path);
 		}
 
 		if let Some(path) = non_pub_data_path.as_deref() {
-			let data = ValuesData::from(witness.non_public());
-			write_serialized(&data, path)?;
+			write_serialized(&ValuesRef::new(witness.non_public()), path)?;
 			tracing::info!("Non-public witness saved to '{}'", path);
 		}
 
