@@ -30,7 +30,12 @@ where
 	UOut: UnderlierType,
 {
 	pub fn new(cols: &[UOut]) -> Self {
-		assert!(LOG_BITS_PER_BYTE <= UIn::LOG_BITS);
+		const {
+			assert!(
+				LOG_BITS_PER_BYTE <= UIn::LOG_BITS,
+				"the underlier must be at least a byte wide"
+			);
+		}
 		assert_eq!(cols.len(), UIn::BITS);
 
 		let lookup = cols

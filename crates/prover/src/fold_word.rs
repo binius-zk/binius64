@@ -636,7 +636,9 @@ pub(crate) fn fold_row_group<F, PB, const N_TABLES: usize>(
 	PB::Underlier: Divisible<u8>,
 {
 	// One byte of a row per table is what makes the nesting below line up with the columns.
-	debug_assert_eq!(PB::WIDTH, BITS_PER_BYTE * N_TABLES);
+	const {
+		assert!(PB::WIDTH == BITS_PER_BYTE * N_TABLES, "the row width must be one byte per table");
+	}
 
 	// The transpose consumes its input, so work on a copy and leave the caller's rows intact.
 	let mut group = *rows;
@@ -666,16 +668,20 @@ pub(crate) fn fold_row_group<F, PB, const N_TABLES: usize>(
 ///
 /// # Preconditions
 ///
+/// All three are checked at compile time, so a violating instantiation fails to build:
+///
 /// * The array length must be a power of two.
 /// * `LOG_N` must not exceed the base-2 log of the array length.
 /// * `LOG_N` must not exceed the base-2 log of the packed width.
 pub(crate) fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usize>(
 	elems: &mut [P; S],
 ) {
-	let log_size = checked_log_2(S);
+	const {
+		assert!(LOG_N <= P::LOG_WIDTH, "LOG_N must not exceed the packed width");
+		assert!(LOG_N <= checked_log_2(S), "LOG_N must not exceed the array length");
+	}
 
-	assert!(LOG_N <= P::LOG_WIDTH);
-	assert!(LOG_N <= log_size);
+	let log_size = checked_log_2(S);
 
 	// Elements per block that stays contiguous through the butterfly.
 	let log_w = log_size - LOG_N;

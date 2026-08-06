@@ -478,7 +478,9 @@ where
 	C: IOPVerifierChannel<F>,
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
-	assert!(2 * Word::BITS <= F::N_BITS);
+	const {
+		assert!(2 * Word::BITS <= F::N_BITS, "F must be wide enough to hold a 128-bit product");
+	}
 
 	let initial_eval_point = channel.sample_many(n_vars);
 

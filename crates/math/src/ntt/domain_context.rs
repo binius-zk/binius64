@@ -180,7 +180,9 @@ impl TraceOneElement for binius_field::BinaryField128bGhash {
 ///   **not** work with $\mathbb{F}_{2^3}$, but it works with $\mathbb{F}_{2^4}$.
 /// - `num_basis_elements` must be nonzero
 fn gao_mateer_basis<F: BinaryField + TraceOneElement>(num_basis_elements: usize) -> Vec<F> {
-	assert!(F::N_BITS.is_power_of_two());
+	const {
+		assert!(F::N_BITS.is_power_of_two(), "the field degree over F_2 must be a power of two");
+	}
 
 	// this is beta_(F::N_BITS - 1)
 	// e.g. for a 128-bit field, this is beta_127

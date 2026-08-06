@@ -90,10 +90,15 @@ impl<const N: usize> From<SmallU<N>> for M128 {
 
 impl From<M128> for u128 {
 	fn from(value: M128) -> Self {
+		const {
+			assert!(
+				align_of::<u128>() == 16,
+				"the store below needs a 16-byte aligned destination"
+			);
+		}
 		let mut result = 0u128;
 		unsafe {
-			// Safety: u128 is 16-byte aligned
-			assert_eq!(align_of::<u128>(), 16);
+			// Safety: u128 is 16-byte aligned, as the const assertion above checks.
 			_mm_store_si128(&raw mut result as *mut __m128i, value.0)
 		};
 		result

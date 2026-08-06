@@ -129,7 +129,9 @@ where
 		c_lo: &'a [Word],
 		c_hi: &'a [Word],
 	) -> Result<Self, Error> {
-		assert!(2 * Word::BITS <= F::N_BITS);
+		const {
+			assert!(2 * Word::BITS <= F::N_BITS, "F must be wide enough to hold a 128-bit product");
+		}
 
 		// Statement should be of pow-2 length.
 		let Some(n_vars) = strict_log_2(a.len()) else {

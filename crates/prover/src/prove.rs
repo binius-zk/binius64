@@ -572,7 +572,9 @@ where
 	C: AsRef<[Operand; ARITY]> + Sync,
 	A: Allocator,
 {
-	assert!(N_COLS <= ARITY, "N_COLS must not exceed the constraint arity");
+	const {
+		assert!(N_COLS <= ARITY, "N_COLS must not exceed the constraint arity");
+	}
 
 	let n_constraints = constraints.len();
 	let n_rows = n_constraints.next_power_of_two();

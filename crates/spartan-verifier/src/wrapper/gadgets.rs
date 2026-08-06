@@ -24,7 +24,8 @@ use binius_spartan_frontend::circuit_builder::CircuitBuilder;
 /// # Panics
 ///
 /// * If `inputs.len() != <B::Field as ExtensionField<FSub>>::DEGREE`
-/// * If `B::Field::CHARACTERISTIC != 2`
+///
+/// Instantiating this with a `B::Field` of characteristic other than 2 fails to compile.
 pub fn square_transpose<B: CircuitBuilder, FSub: Field>(
 	builder: &mut B,
 	inputs: &[B::Wire],
@@ -32,11 +33,12 @@ pub fn square_transpose<B: CircuitBuilder, FSub: Field>(
 where
 	B::Field: ExtensionField<FSub>,
 {
-	assert_eq!(
-		B::Field::CHARACTERISTIC,
-		2,
-		"square_transpose gadget is only implemented for characteristic 2"
-	);
+	const {
+		assert!(
+			B::Field::CHARACTERISTIC == 2,
+			"square_transpose gadget is only implemented for characteristic 2"
+		);
+	}
 
 	let degree = <B::Field as ExtensionField<FSub>>::DEGREE;
 	assert_eq!(inputs.len(), degree);
