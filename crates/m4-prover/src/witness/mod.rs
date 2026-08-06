@@ -5,7 +5,7 @@
 //! The table stores raw words, wire-major; no reduction reads it in that form.
 //!
 //! - [`build_operation_columns`] — one word column per operand, for the operation checks.
-//! - [`fold_instances`] — the witness with its instance axis collapsed, for the shift.
+//! - [`FoldedWitness`] — the witness with its instance axis collapsed, for the shift.
 //! - [`operand_rho_multilinear`] — one column reduced to one element per instance.
 //!
 //! A word column is constraint-major, so one constraint's instances are contiguous:
@@ -18,6 +18,6 @@ mod instance_fold;
 mod operand_columns;
 mod operand_rho;
 
-pub use instance_fold::{FoldedWord, fold_instances};
+pub use instance_fold::{FoldedWitness, FoldedWord};
 pub use operand_columns::build_operation_columns;
 pub use operand_rho::operand_rho_multilinear;
