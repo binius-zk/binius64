@@ -214,10 +214,12 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 ) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
 	let acc_size: usize = SHIFT_VARIANT_COUNT << (LOG_LEN.saturating_sub(P::LOG_WIDTH));
 
-	assert!(
-		P::WIDTH <= 8,
-		"the optimizations below work only when the width of `P` is less than 8 (which is true for all packed 128b fields we use for now)"
-	);
+	const {
+		assert!(
+			P::WIDTH <= 8,
+			"the optimizations below work only when the width of `P` is less than 8 (which is true for all packed 128b fields we use for now)"
+		);
+	}
 
 	// Map from a u8 with `P::WIDTH` meaningful bits to the lane mask selecting exactly those lanes,
 	// precomputed once and reused across every accumulator below.
@@ -317,10 +319,12 @@ fn build_multilinear_parts<P: PackedField, A: Allocator>(
 	alloc: &A,
 	multilinears: &[P],
 ) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
-	assert!(
-		P::LOG_WIDTH < LOG_LEN,
-		"P::WIDTH is not supposed to exceed 8, so this statement must hold"
-	);
+	const {
+		assert!(
+			P::LOG_WIDTH < LOG_LEN,
+			"P::WIDTH is not supposed to exceed 8, so this statement must hold"
+		);
+	}
 
 	multilinears
 		.chunks(1 << (LOG_LEN - P::LOG_WIDTH))
