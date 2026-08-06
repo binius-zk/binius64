@@ -4,15 +4,12 @@
 
 use std::{array, iter};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product,
-	multilinear::eq::eq_ind_partial_eval,
-};
+use binius_math::{BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
@@ -22,10 +19,9 @@ use binius_prover::{
 		phase_2::run_sumcheck,
 	},
 };
-use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
-use crate::witness::FoldedWord;
+use crate::witness::{FoldedWitness, FoldedWord};
 
 /// The number of variables in each "g" (and "h") multilinear of phase 1: one 6-bit shift-amount
 /// axis and one 6-bit bit-position axis.
@@ -34,22 +30,21 @@ const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 /// Proves the batched shift-reduction, reducing the bitand and intmul evaluation claims to a single
 /// multilinear claim on the batched witness.
 ///
-/// This mirrors the single-instance shift reduction, but the hidden witness enters already folded
-/// over the instance axis: `folded_witness` holds one [`FoldedWord`] per hidden (committed) word,
-/// the oblong representation produced by [`fold_instances`](crate::witness::fold_instances). The
-/// public words are constants shared
-/// by every instance, so they are passed unfolded as raw words.
+/// This mirrors the single-instance shift reduction, with one difference.
+/// The hidden witness enters already folded over the instance axis, as a [`FoldedWitness`].
+/// The public words are constants shared by every instance, so they are passed as raw words.
 ///
-/// The two phases call the single-instance prover's own subroutines. Phase 1 builds the hidden g
-/// parts with [`build_g_parts_from_folded_words`] and the public g parts with the single-instance
-/// `build_g_parts`, then sums them. Phase 2 derives the hidden folded segment as a partial
-/// evaluation of `folded_witness` along the bit (`r_j`) axis, folds the public segment the same
-/// way, and reuses `build_monster_segments` and `run_sumcheck` unchanged.
+/// The two phases call the single-instance prover's own subroutines.
+/// Phase 1 builds the hidden g parts with [`build_g_parts_from_folded_words`].
+/// It builds the public g parts with the single-instance `build_g_parts`, then sums the two.
+/// Phase 2 contracts the hidden witness along the bit (`r_j`) axis with
+/// [`FoldedWitness::fold_bits`], folds the public segment the same way, and reuses
+/// `build_monster_segments` and `run_sumcheck` unchanged.
 ///
 /// # Parameters
 /// - `key_collection`: the prover's key collection for the constraint system.
 /// - `public_words`: the public (constant) words, shared by every instance.
-/// - `folded_witness`: the hidden witness, folded over the instance axis, one word per entry.
+/// - `folded_witness`: the hidden witness, folded over the instance axis.
 /// - `zero_data`: operator data for the zero (ZERO) constraints.
 /// - `bitand_data`: operator data for the bitand (AND) constraints.
 /// - `intmul_data`: operator data for the intmul (IMUL) constraints.
@@ -62,7 +57,7 @@ const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
-	folded_witness: &[FoldedWord<F>],
+	folded_witness: &FoldedWitness<F, A>,
 	zero_data: OperatorData<F>,
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
@@ -103,7 +98,7 @@ where
 	);
 	let hidden_g_parts = build_g_parts_from_folded_words(
 		alloc,
-		folded_witness,
+		folded_witness.words(),
 		&key_collection.hidden,
 		&prepared_zero,
 		&prepared_bitand,
@@ -127,21 +122,10 @@ where
 	let r_j = r_jr_s;
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
-	// The witness folded at `r_j`, per segment. The public fold is a raw-word fold; the hidden fold
-	// is a partial evaluation of `folded_witness` along the bit axis, contracting each word's
-	// folded bits against the `r_j` tensor. The committed word count need not be a power of two, so
-	// the scalars are zero-padded up to the next one, mirroring `fold_words`'s own padding of the
-	// public segment.
+	// The witness folded at `r_j`, per segment.
+	// The public fold is a raw-word fold; the hidden fold contracts the already-oblong bits.
 	let public_folded = fold_words::<F, P, _>(alloc, public_words, r_j_tensor.as_ref());
-	let padded_len = 1 << log2_ceil_usize(folded_witness.len());
-	let mut hidden_scalars = alloc.alloc::<F>(padded_len);
-	hidden_scalars.extend(
-		folded_witness
-			.iter()
-			.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied())),
-	);
-	hidden_scalars.resize(padded_len, F::ZERO);
-	let hidden_folded = FieldBuffer::<P, _>::from_values_in(alloc, &hidden_scalars);
+	let hidden_folded = folded_witness.fold_bits::<P>(r_j_tensor.as_ref(), alloc);
 
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		alloc,
@@ -263,10 +247,8 @@ mod tests {
 	use super::*;
 	use crate::{
 		ValueTable,
-		test_utils::{
-			N_INPUT_WORDS, crc64_circuit, evaluate_folded_witness, populate_crc64_witness,
-		},
-		witness::{build_operation_columns, fold_instances},
+		test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness},
+		witness::build_operation_columns,
 	};
 
 	// The oblong evaluation of each bitand operand column A, B, C at the shift challenges.
@@ -359,7 +341,8 @@ mod tests {
 
 		// The hidden witness folded over instances (one FoldedWord per committed word), and the
 		// public constants.
-		let folded_witness = fold_instances::<B128, _>(&table, &r_rho, &GlobalAllocator);
+		let folded_witness =
+			FoldedWitness::<B128, _>::fold_instances(&table, &r_rho, &GlobalAllocator);
 		let _offset = table.layout().offset_witness;
 		let public_words = &cs.constants;
 
@@ -440,9 +423,8 @@ mod tests {
 		// The witness evaluation equals the instance-folded witness evaluated at the point, with
 		// the segment's zero-padding contributing the (1 - r) factors above the folded length.
 		let r_y = verifier_output.r_y();
-		let log_folded = log2_ceil_usize(folded_witness.len());
-		let base =
-			evaluate_folded_witness(&folded_witness, verifier_output.r_j(), &r_y[..log_folded]);
+		let log_folded = folded_witness.log_padded_words();
+		let base = folded_witness.evaluate(verifier_output.r_j(), &r_y[..log_folded]);
 		let expected_eval = r_y[log_folded..]
 			.iter()
 			.fold(base, |acc, &r_y_i| acc * (B128::ONE - r_y_i));

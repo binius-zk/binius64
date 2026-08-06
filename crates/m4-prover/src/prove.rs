@@ -47,7 +47,7 @@ use binius_verifier::{
 use crate::{
 	ValueTable,
 	shift::prove as prove_shift,
-	witness::{build_operation_columns, fold_instances, operand_rho_multilinear},
+	witness::{FoldedWitness, build_operation_columns, operand_rho_multilinear},
 };
 
 /// The multithreaded additive NTT used to encode the committed codeword.
@@ -299,7 +299,7 @@ impl IOPProver {
 		// Fold the committed witness over the instance axis at the shared point.
 		let folded_witness = {
 			let _scope = tracing::debug_span!("Fold instances").entered();
-			fold_instances::<B128, _>(table, &r_rho, alloc)
+			FoldedWitness::<B128, _>::fold_instances(table, &r_rho, alloc)
 		};
 
 		// The public segment is the shared constants, padded with zeros to the layout's
