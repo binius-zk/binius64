@@ -6,7 +6,7 @@ use std::{array, borrow::Cow, hint::assert_unchecked, iter, ops::BitXor};
 use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, Divisible, Field, PackedBinaryField64x1b, PackedField, UnderlierType, WideMul,
+	BinaryField, Divisible, PackedBinaryField64x1b, PackedField, UnderlierType, WideMul,
 	WithUnderlier,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
@@ -41,7 +41,8 @@ const LOG_BITS_PER_BYTE: usize = BITS_PER_BYTE.ilog2() as usize;
 /// vector of field elements.
 ///
 /// Returns a buffer where element `i` is the inner product of the bits of word `i` in `words`
-/// (mapping bit 0 to [`Field::ZERO`] and bit 1 to [`Field::ONE`]) and the values in `vec`.
+/// (mapping bit 0 to [`Field::ZERO`](binius_field::Field::ZERO) and bit 1 to
+/// [`Field::ONE`](binius_field::Field::ONE)) and the values in `vec`.
 ///
 /// This implementation uses the [Method of Four Russians] to optimize the computation by
 /// precomputing a small lookup table and looking up into it using bitwise chunks of the words.
@@ -60,57 +61,6 @@ where
 	A: Allocator,
 {
 	BitAxisFolder::new(vec).fold(alloc, words)
-}
-
-fn fold_words_with_transform<F, P, T, A>(
-	alloc: &A,
-	transform: &T,
-	words: &[Word],
-) -> FieldBuffer<P, A::Vec<P>>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-	T: Transformation<u64, F>,
-	A: Allocator,
-{
-	// `words` need not have a power-of-two length; the high words up to the next power of two are
-	// treated as zero, so the remaining slots after the last real word are zero-filled by resize.
-	let log_n = log2_ceil_usize(words.len());
-	let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
-
-	let mut values = alloc.alloc::<P>(capacity);
-
-	let chunk_size = P::WIDTH;
-	let n_chunks = words.len() / chunk_size;
-	let (words_aligned, words_remaining) = words.split_at(n_chunks * chunk_size);
-
-	let values_aligned = &mut values.spare_capacity_mut()[..n_chunks];
-	let word_chunks = words_aligned.par_chunks_exact(P::WIDTH);
-	assert_eq!(values_aligned.len(), word_chunks.len());
-
-	(values_aligned, word_chunks)
-		.into_par_iter()
-		.for_each(|(out, word_chunk)| {
-			// Safety:
-			// - words_aligned has length that is a multiple of P::WIDTH
-			// - words_aligned is split into P::WIDTH chunks
-			unsafe { assert_unchecked(word_chunk.len() == P::WIDTH) };
-			out.write(P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0))));
-		});
-
-	unsafe { values.set_len(n_chunks) };
-
-	if !words_remaining.is_empty() {
-		values.push(P::from_scalars(
-			words_remaining
-				.iter()
-				.map(|&word| transform.transform(&word.0)),
-		));
-	}
-
-	values.resize(capacity, P::default());
-
-	FieldBuffer::new(log_n, values)
 }
 
 /// A [`u64`]-specialized bytewise lookup transformation, folding a word's bits against a fixed
@@ -168,119 +118,6 @@ impl<UOut: UnderlierType> LinearTransformationFactory<u64, UOut>
 	}
 }
 
-/// Folds two operand word-lists and their word-by-word bitwise AND in one pass.
-///
-/// # Overview
-///
-/// The BitAnd zerocheck folds three columns of the constraint `A & B = C`.
-/// On a satisfying witness the third column equals the AND of the first two.
-/// So this fold reads only the two stored columns and derives the third in registers:
-///
-/// ```text
-///     stream A ──┬──> fold ──> folded A
-///     stream B ──┼──> fold ──> folded B
-///                └──> A & B ──> fold ──> folded C   (no third input stream)
-/// ```
-///
-/// Each output equals [`fold_words_with_transform`] on the corresponding word-list.
-///
-/// # Performance
-///
-/// - Two input streams instead of three.
-/// - Two register ANDs per word pair replace one memory stream.
-/// - The bytewise lookup tables stay hot across all three outputs.
-///
-/// # Preconditions
-///
-/// * The two word-lists have equal length.
-fn fold_bitand_operands_with_transform<F, P, T, A>(
-	alloc: &A,
-	transform: &T,
-	a_words: &[Word],
-	b_words: &[Word],
-) -> [FieldBuffer<P, A::Vec<P>>; 3]
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-	T: Transformation<u64, F>,
-	A: Allocator,
-{
-	assert_eq!(a_words.len(), b_words.len());
-
-	// Padding contract, mirrored from the single-column fold:
-	// the high words up to the next power of two read as zero.
-	// `0 & 0 = 0`, so the derived column stays consistent over that padding.
-	let log_n = log2_ceil_usize(a_words.len());
-	let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
-
-	// One output buffer per folded column, filled through spare capacity.
-	let mut a_values = alloc.alloc::<P>(capacity);
-	let mut b_values = alloc.alloc::<P>(capacity);
-	let mut c_values = alloc.alloc::<P>(capacity);
-
-	// Phase 1: partition the inputs into full packed-width chunks and a short tail.
-	//
-	//     words:  [ chunk 0 | chunk 1 | ... | chunk n-1 | tail (< P::WIDTH) ]
-	let n_chunks = a_words.len() / P::WIDTH;
-	let (a_aligned, a_remaining) = a_words.split_at(n_chunks * P::WIDTH);
-	let (b_aligned, b_remaining) = b_words.split_at(n_chunks * P::WIDTH);
-
-	let a_out = &mut a_values.spare_capacity_mut()[..n_chunks];
-	let b_out = &mut b_values.spare_capacity_mut()[..n_chunks];
-	let c_out = &mut c_values.spare_capacity_mut()[..n_chunks];
-
-	// Phase 2: fold the aligned chunks in parallel.
-	// Each task owns one chunk of both inputs and writes one packed element per output.
-	(
-		a_out,
-		b_out,
-		c_out,
-		a_aligned.par_chunks_exact(P::WIDTH),
-		b_aligned.par_chunks_exact(P::WIDTH),
-	)
-		.into_par_iter()
-		.for_each(|(a_i, b_i, c_i, a_chunk, b_chunk)| {
-			// Safety:
-			// - both aligned slices have length n_chunks * P::WIDTH
-			// - both are split into P::WIDTH chunks
-			unsafe {
-				assert_unchecked(a_chunk.len() == P::WIDTH);
-				assert_unchecked(b_chunk.len() == P::WIDTH);
-			}
-			// Fold each stored column by bytewise table lookup.
-			a_i.write(P::from_scalars(a_chunk.iter().map(|&word| transform.transform(&word.0))));
-			b_i.write(P::from_scalars(b_chunk.iter().map(|&word| transform.transform(&word.0))));
-			// Derive the third column in registers, then fold it the same way.
-			c_i.write(P::from_scalars(
-				iter::zip(a_chunk, b_chunk).map(|(&a, &b)| transform.transform(&(a & b).0)),
-			));
-		});
-
-	// Safety: every one of the n_chunks slots of each vector is initialized above.
-	unsafe {
-		a_values.set_len(n_chunks);
-		b_values.set_len(n_chunks);
-		c_values.set_len(n_chunks);
-	}
-
-	// Phase 3: fold the short tail into one final packed element per output.
-	if !a_remaining.is_empty() {
-		a_values
-			.push(P::from_scalars(a_remaining.iter().map(|&word| transform.transform(&word.0))));
-		b_values
-			.push(P::from_scalars(b_remaining.iter().map(|&word| transform.transform(&word.0))));
-		c_values.push(P::from_scalars(
-			iter::zip(a_remaining, b_remaining).map(|(&a, &b)| transform.transform(&(a & b).0)),
-		));
-	}
-
-	// Phase 4: zero-pad each output up to the power-of-two capacity.
-	[a_values, b_values, c_values].map(|mut values| {
-		values.resize(capacity, P::default());
-		FieldBuffer::new(log_n, values)
-	})
-}
-
 /// The concrete transform [`BitAxisFolder`] folds each word through: the [`u64`]-specialized
 /// bytewise lookup, wrapped to output field elements of `F`.
 type BitAxisTransform<F> = OutputWrappingTransformation<
@@ -318,10 +155,63 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		P: PackedField<Scalar = F>,
 		A: Allocator,
 	{
-		fold_words_with_transform(alloc, &self.transform, words)
+		// `words` need not have a power-of-two length; the high words up to the next power of two
+		// are treated as zero, so the slots after the last real word are zero-filled by resize.
+		let log_n = log2_ceil_usize(words.len());
+		let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
+
+		let mut values = alloc.alloc::<P>(capacity);
+
+		let n_chunks = words.len() / P::WIDTH;
+		let (words_aligned, words_remaining) = words.split_at(n_chunks * P::WIDTH);
+
+		let values_aligned = &mut values.spare_capacity_mut()[..n_chunks];
+		let word_chunks = words_aligned.par_chunks_exact(P::WIDTH);
+		assert_eq!(values_aligned.len(), word_chunks.len());
+
+		(values_aligned, word_chunks)
+			.into_par_iter()
+			.for_each(|(out, word_chunk)| {
+				// Safety:
+				// - words_aligned has length that is a multiple of P::WIDTH
+				// - words_aligned is split into P::WIDTH chunks
+				unsafe { assert_unchecked(word_chunk.len() == P::WIDTH) };
+				out.write(P::from_scalars(
+					word_chunk
+						.iter()
+						.map(|&word| self.transform.transform(&word.0)),
+				));
+			});
+
+		// Safety: every one of the n_chunks slots is initialized above.
+		unsafe { values.set_len(n_chunks) };
+
+		if !words_remaining.is_empty() {
+			values.push(P::from_scalars(
+				words_remaining
+					.iter()
+					.map(|&word| self.transform.transform(&word.0)),
+			));
+		}
+
+		values.resize(capacity, P::default());
+
+		FieldBuffer::new(log_n, values)
 	}
 
 	/// Folds the two stored BitAnd operand columns and their derived AND column in one pass.
+	///
+	/// # Overview
+	///
+	/// The BitAnd zerocheck folds three columns of the constraint `A & B = C`.
+	/// On a satisfying witness the third column equals the AND of the first two.
+	/// So this fold reads only the two stored columns and derives the third in registers:
+	///
+	/// ```text
+	///     stream A ──┬──> fold ──> folded A
+	///     stream B ──┼──> fold ──> folded B
+	///                └──> A & B ──> fold ──> folded C   (no third input stream)
+	/// ```
 	///
 	/// # Returns
 	///
@@ -332,20 +222,115 @@ impl<F: BinaryField> BitAxisFolder<F> {
 	///
 	/// The AND column is derived in registers and never written to memory.
 	///
+	/// # Performance
+	///
+	/// - Two input streams instead of three.
+	/// - Two register ANDs per word pair replace one memory stream.
+	/// - The bytewise lookup tables stay hot across all three outputs.
+	///
 	/// # Preconditions
 	///
 	/// * The two word-lists have equal length.
 	pub fn fold_bitand_operands<P, A>(
 		&self,
 		alloc: &A,
-		a: &[Word],
-		b: &[Word],
+		a_words: &[Word],
+		b_words: &[Word],
 	) -> [FieldBuffer<P, A::Vec<P>>; 3]
 	where
 		P: PackedField<Scalar = F>,
 		A: Allocator,
 	{
-		fold_bitand_operands_with_transform(alloc, &self.transform, a, b)
+		assert_eq!(a_words.len(), b_words.len());
+
+		// Padding contract, mirrored from the single-column fold:
+		// the high words up to the next power of two read as zero.
+		// `0 & 0 = 0`, so the derived column stays consistent over that padding.
+		let log_n = log2_ceil_usize(a_words.len());
+		let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
+
+		// One output buffer per folded column, filled through spare capacity.
+		let mut a_values = alloc.alloc::<P>(capacity);
+		let mut b_values = alloc.alloc::<P>(capacity);
+		let mut c_values = alloc.alloc::<P>(capacity);
+
+		// Phase 1: partition the inputs into full packed-width chunks and a short tail.
+		//
+		//     words:  [ chunk 0 | chunk 1 | ... | chunk n-1 | tail (< P::WIDTH) ]
+		let n_chunks = a_words.len() / P::WIDTH;
+		let (a_aligned, a_remaining) = a_words.split_at(n_chunks * P::WIDTH);
+		let (b_aligned, b_remaining) = b_words.split_at(n_chunks * P::WIDTH);
+
+		let a_out = &mut a_values.spare_capacity_mut()[..n_chunks];
+		let b_out = &mut b_values.spare_capacity_mut()[..n_chunks];
+		let c_out = &mut c_values.spare_capacity_mut()[..n_chunks];
+
+		// Phase 2: fold the aligned chunks in parallel.
+		// Each task owns one chunk of both inputs and writes one packed element per output.
+		(
+			a_out,
+			b_out,
+			c_out,
+			a_aligned.par_chunks_exact(P::WIDTH),
+			b_aligned.par_chunks_exact(P::WIDTH),
+		)
+			.into_par_iter()
+			.for_each(|(a_i, b_i, c_i, a_chunk, b_chunk)| {
+				// Safety:
+				// - both aligned slices have length n_chunks * P::WIDTH
+				// - both are split into P::WIDTH chunks
+				unsafe {
+					assert_unchecked(a_chunk.len() == P::WIDTH);
+					assert_unchecked(b_chunk.len() == P::WIDTH);
+				}
+				// Fold each stored column by bytewise table lookup.
+				a_i.write(P::from_scalars(
+					a_chunk
+						.iter()
+						.map(|&word| self.transform.transform(&word.0)),
+				));
+				b_i.write(P::from_scalars(
+					b_chunk
+						.iter()
+						.map(|&word| self.transform.transform(&word.0)),
+				));
+				// Derive the third column in registers, then fold it the same way.
+				c_i.write(P::from_scalars(
+					iter::zip(a_chunk, b_chunk)
+						.map(|(&a, &b)| self.transform.transform(&(a & b).0)),
+				));
+			});
+
+		// Safety: every one of the n_chunks slots of each vector is initialized above.
+		unsafe {
+			a_values.set_len(n_chunks);
+			b_values.set_len(n_chunks);
+			c_values.set_len(n_chunks);
+		}
+
+		// Phase 3: fold the short tail into one final packed element per output.
+		if !a_remaining.is_empty() {
+			a_values.push(P::from_scalars(
+				a_remaining
+					.iter()
+					.map(|&word| self.transform.transform(&word.0)),
+			));
+			b_values.push(P::from_scalars(
+				b_remaining
+					.iter()
+					.map(|&word| self.transform.transform(&word.0)),
+			));
+			c_values.push(P::from_scalars(
+				iter::zip(a_remaining, b_remaining)
+					.map(|(&a, &b)| self.transform.transform(&(a & b).0)),
+			));
+		}
+
+		// Phase 4: zero-pad each output up to the power-of-two capacity.
+		[a_values, b_values, c_values].map(|mut values| {
+			values.resize(capacity, P::default());
+			FieldBuffer::new(log_n, values)
+		})
 	}
 }
 
@@ -745,7 +730,7 @@ pub(crate) fn duplicate_to_fixed_chunks<const N: usize>(words: &[Word]) -> Cow<'
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{PackedBinaryField128x1b, arch::OptimalPackedB128};
+	use binius_field::{Field, PackedBinaryField128x1b, arch::OptimalPackedB128};
 	use binius_math::test_utils::{random_field_buffer, random_scalars};
 	use binius_utils::checked_arithmetics::checked_log_2;
 	use binius_verifier::config::B128;
