@@ -13,7 +13,7 @@ use binius_math::{BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		KeyCollection, KeySegment,
+		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims,
 		monster::{build_h_parts, build_monster_segments},
 		phase_1::{build_g_parts, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
@@ -21,10 +21,7 @@ use binius_prover::{
 };
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
-use crate::{
-	operator_claims::{OperatorClaims, PreparedOperatorClaims},
-	witness::{FoldedWitness, FoldedWord},
-};
+use crate::witness::{FoldedWitness, FoldedWord};
 
 /// The number of variables in each "g" (and "h") multilinear of phase 1: one 6-bit shift-amount
 /// axis and one 6-bit bit-position axis.
@@ -79,15 +76,8 @@ where
 	// constants shared by every instance, so the single-instance builder folds them directly from
 	// their bits; the hidden words are already folded over instances. This scalar path drives the
 	// single-instance phase-1 sumcheck.
-	let mut g_parts = build_g_parts::<F, F, _>(
-		alloc,
-		public_words,
-		&key_collection.public,
-		&prepared.zero,
-		&prepared.bitand,
-		&prepared.intmul,
-		&prepared.binmul,
-	);
+	let mut g_parts =
+		build_g_parts::<F, F, _>(alloc, public_words, &key_collection.public, &prepared);
 	let hidden_g_parts = build_g_parts_from_folded_words(
 		alloc,
 		folded_witness.words(),
@@ -119,10 +109,7 @@ where
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		alloc,
 		key_collection,
-		&prepared.zero,
-		&prepared.bitand,
-		&prepared.intmul,
-		&prepared.binmul,
+		&prepared,
 		domain_subspace,
 		&r_j,
 		&r_s,
@@ -516,10 +503,7 @@ mod tests {
 			&GlobalAllocator,
 			public_words,
 			&key_collection.public,
-			&prepared.zero,
-			&prepared.bitand,
-			&prepared.intmul,
-			&prepared.binmul,
+			&prepared,
 		);
 		let hidden_g_parts = build_g_parts_from_folded_words(
 			&GlobalAllocator,

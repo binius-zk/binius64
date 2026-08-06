@@ -25,7 +25,7 @@ use binius_prover::{
 	and_reduction,
 	protocols::{
 		binmul, intmul,
-		shift::{KeyCollection, OperatorData, build_key_collection},
+		shift::{KeyCollection, OperatorClaims, OperatorData, build_key_collection},
 	},
 	ring_switch::{self, RingSwitchOutput},
 };
@@ -43,7 +43,6 @@ use binius_verifier::{
 
 use crate::{
 	ValueTable,
-	operator_claims::OperatorClaims,
 	shift::prove as prove_shift,
 	witness::{FoldedWitness, OperandColumns},
 };

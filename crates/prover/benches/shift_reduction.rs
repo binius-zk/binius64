@@ -11,7 +11,7 @@ use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		OperatorData, PreparedOperatorData, build_key_collection,
+		OperatorClaims, OperatorData, build_key_collection,
 		monster::{build_h_parts, build_monster_segments},
 		phase_1::{build_g_parts, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
@@ -21,7 +21,7 @@ use binius_prover::{
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{BINMUL_ARITY, OperatorData as VerifierOperatorData, ZERO_ARITY, verify},
+	protocols::shift::{OperatorData as VerifierOperatorData, verify},
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sha2::{Digest, Sha256 as Sha256Hasher};
@@ -139,10 +139,12 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				prove::<F, P, _, _>(
 					&key_collection,
 					value_vec.combined_witness(),
-					OperatorData::zero_claim(r_zhat_prime),
-					prover_bitand_data,
-					prover_intmul_data,
-					OperatorData::zero_claim(r_zhat_prime),
+					OperatorClaims {
+						zero: OperatorData::zero_claim(r_zhat_prime),
+						bitand: prover_bitand_data,
+						intmul: prover_intmul_data,
+						binmul: OperatorData::zero_claim(r_zhat_prime),
+					},
 					&subspace,
 					&mut prover_transcript,
 					&alloc,
@@ -167,10 +169,12 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
-			OperatorData::zero_claim(r_zhat_prime),
-			prover_bitand_data,
-			prover_intmul_data,
-			OperatorData::zero_claim(r_zhat_prime),
+			OperatorClaims {
+				zero: OperatorData::zero_claim(r_zhat_prime),
+				bitand: prover_bitand_data,
+				intmul: prover_intmul_data,
+				binmul: OperatorData::zero_claim(r_zhat_prime),
+			},
 			&subspace,
 			&mut prover_transcript,
 			&&BufferPool::new(),
@@ -235,34 +239,23 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
 	// random lambda (rather than one drawn from a transcript) yields realistic-magnitude data.
-	let prepared_bitand = PreparedOperatorData::new(
-		OperatorData {
+	// SHA256 has no ZERO or BMUL constraints, so those two are zero claims at an empty point,
+	// matching the real prover (`prove.rs` `None` branch).
+	let prepared = OperatorClaims {
+		zero: OperatorData::zero_claim(r_zhat_prime),
+		bitand: OperatorData {
 			evals: bitand_evals,
 			r_zhat_prime,
 			r_x_prime: r_x_prime_bitand,
 		},
-		F::random(&mut rng),
-	);
-	let prepared_intmul = PreparedOperatorData::new(
-		OperatorData {
+		intmul: OperatorData {
 			evals: intmul_evals,
 			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul,
 		},
-		F::random(&mut rng),
-	);
-	// SHA256 has no ZERO constraints, so the Zero operator is the zero claim at an empty point,
-	// matching the real prover.
-	let prepared_zero = PreparedOperatorData::new(
-		OperatorData::<F, ZERO_ARITY>::zero_claim(r_zhat_prime),
-		F::random(&mut rng),
-	);
-	// SHA256 has no BMUL constraints, so the BinMul operator is the zero claim at an empty point,
-	// matching the real prover (`prove.rs` `None` branch).
-	let prepared_bmul = PreparedOperatorData::new(
-		OperatorData::<F, BINMUL_ARITY>::zero_claim(r_zhat_prime),
-		F::random(&mut rng),
-	);
+		binmul: OperatorData::zero_claim(r_zhat_prime),
+	}
+	.prepare(|| F::random(&mut rng));
 
 	// The phases are sequential and stateful: each consumes the previous one's outputs. Rather than
 	// re-deriving predecessors inside each phase's per-iteration setup, advance the protocol once
@@ -277,19 +270,13 @@ fn bench_shift_phases(c: &mut Criterion) {
 			&GlobalAllocator,
 			public_words,
 			&key_collection.public,
-			&prepared_zero,
-			&prepared_bitand,
-			&prepared_intmul,
-			&prepared_bmul,
+			&prepared,
 		);
 		let hidden_g_parts = build_g_parts::<F, P, _>(
 			&GlobalAllocator,
 			hidden_words,
 			&key_collection.hidden,
-			&prepared_zero,
-			&prepared_bitand,
-			&prepared_intmul,
-			&prepared_bmul,
+			&prepared,
 		);
 		for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
 			for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
@@ -301,7 +288,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	let g_parts = build_combined_g_parts();
 	let h_parts =
-		build_h_parts::<F, P, _>(&GlobalAllocator, &subspace, prepared_bitand.r_zhat_prime);
+		build_h_parts::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime);
 	let SumcheckOutput {
 		challenges: mut r_jr_s,
 		eval: gamma,
@@ -324,10 +311,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		&GlobalAllocator,
 		&key_collection,
-		&prepared_zero,
-		&prepared_bitand,
-		&prepared_intmul,
-		&prepared_bmul,
+		&prepared,
 		&subspace,
 		&r_j,
 		&r_s,
@@ -343,7 +327,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	});
 	group.bench_function("phase1_build_h_parts", |b| {
 		b.iter(|| {
-			build_h_parts::<F, P, _>(&GlobalAllocator, &subspace, prepared_bitand.r_zhat_prime)
+			build_h_parts::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime)
 		});
 	});
 	group.bench_function("phase1_run_sumcheck", |b| {
@@ -364,10 +348,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			build_monster_segments::<F, P, _>(
 				&GlobalAllocator,
 				&key_collection,
-				&prepared_zero,
-				&prepared_bitand,
-				&prepared_intmul,
-				&prepared_bmul,
+				&prepared,
 				&subspace,
 				&r_j,
 				&r_s,

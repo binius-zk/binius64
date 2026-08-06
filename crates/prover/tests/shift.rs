@@ -18,7 +18,7 @@ use binius_math::{
 };
 use binius_prover::{
 	fold_word::fold_words,
-	protocols::shift::{OperatorData, build_key_collection, prove},
+	protocols::shift::{OperatorClaims, OperatorData, build_key_collection, prove},
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -315,10 +315,12 @@ fn test_shift_prove_and_verify() {
 		let prover_output = prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
-			prover_zero_data.clone(),
-			prover_bitand_data.clone(),
-			prover_intmul_data.clone(),
-			prover_binmul_data.clone(),
+			OperatorClaims {
+				zero: prover_zero_data.clone(),
+				bitand: prover_bitand_data.clone(),
+				intmul: prover_intmul_data.clone(),
+				binmul: prover_binmul_data.clone(),
+			},
 			&subspace,
 			&mut prover_transcript,
 			&GlobalAllocator,

@@ -8,9 +8,11 @@ use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
 };
-use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
 
-use super::{key_collection::KeyCollection, phase_1::prove_phase_1, phase_2::prove_phase_2};
+use super::{
+	claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
+	phase_2::prove_phase_2,
+};
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
 ///
@@ -120,42 +122,29 @@ impl<F: Field> PreparedOperatorData<F> {
 	}
 }
 
-/// Proves the shift protocol reduction using a two-phase approach.
+/// Proves the shift protocol reduction, collapsing every operation's claims into one.
 ///
-/// This function orchestrates the complete shift protocol proof, reducing bitand and intmul
-/// evaluation claims to a single multilinear claim on the witness. The protocol consists
-/// of two sequential sumcheck phases that progressively reduce the complexity of the claims.
+/// The result is a single multilinear evaluation claim on the witness.
 ///
-/// # Protocol Overview
-/// 1. **Lambda Sampling**: Samples random coefficients for batching operator claims
-/// 2. **Phase 1**: Proves batched operator claims over shift variants and operand positions
-/// 3. **Phase 2**: Reduces to witness evaluation using monster multilinear polynomial
+/// Two sumcheck phases run in sequence:
+///
+/// 1. phase 1 proves the batched claims over the shift variants and operand positions;
+/// 2. phase 2 reduces those to a witness evaluation, against the monster multilinear.
 ///
 /// # Parameters
-/// - `key_collection`: Prover's key collection representing the constraint system
-/// - `words`: The witness words (must have power-of-2 length)
-/// - `zero_data`: Operator data for the linear (ZERO) constraints
-/// - `bitand_data`: Operator data for bit multiplication (AND) constraints
-/// - `intmul_data`: Operator data for integer multiplication (IMUL) constraints
-/// - `binmul_data`: Operator data for GHASH-field multiplication (BMUL) constraints
-/// - `transcript`: The prover's transcript for interactive protocol
-///
-/// Each of the four carries its own arity, so no two can be passed in the other's place.
+/// - `key_collection`: the prover's key collection for the constraint system.
+/// - `words`: the witness words, which must have a power-of-two length.
+/// - `claims`: the operand evaluation claim of each operation.
+/// - `domain_subspace`: the univariate evaluation domain.
+/// - `channel`: the prover channel driving the interactive protocol.
+/// - `alloc`: the allocator backing the reduction's intermediate buffers.
 ///
 /// # Returns
-/// Returns `SumcheckOutput` containing the final challenges and witness evaluation,
-/// or an error if the proof generation fails.
-///
-/// # Requirements
-/// - `words` must have power-of-2 length for efficient multilinear operations
-#[allow(clippy::too_many_arguments)]
+/// The `SumcheckOutput` with the final challenges and the witness evaluation.
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
-	zero_data: OperatorData<F, ZERO_ARITY>,
-	bitand_data: OperatorData<F, BITAND_ARITY>,
-	intmul_data: OperatorData<F, INTMUL_ARITY>,
-	binmul_data: OperatorData<F, BINMUL_ARITY>,
+	claims: OperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,
@@ -166,52 +155,32 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	// Sample lambdas, one for each operator.
-	let zero_lambda = channel.sample();
-	let bitand_lambda = channel.sample();
-	let intmul_lambda = channel.sample();
-	let binmul_lambda = channel.sample();
+	// One batching coefficient per operation, expanded along with its constraint point.
+	// SOUNDNESS: `prepare` draws in the order the verifier draws in; do not reorder it.
+	let prepared = {
+		let _scope = tracing::debug_span!("Expand tensor queries").entered();
+		claims.prepare(|| channel.sample())
+	};
 
-	// Create prepared operator data with sampled lambdas
-	let expand_scope = tracing::debug_span!("Expand tensor queries").entered();
-	let prepared_zero_data = PreparedOperatorData::new(zero_data, zero_lambda);
-	let prepared_bitand_data = PreparedOperatorData::new(bitand_data, bitand_lambda);
-	let prepared_intmul_data = PreparedOperatorData::new(intmul_data, intmul_lambda);
-	let prepared_binmul_data = PreparedOperatorData::new(binmul_data, binmul_lambda);
-	drop(expand_scope);
-
-	// Prove the first phase, receiving a `SumcheckOutput`
-	// with challenges made of `r_j` and `r_s`,
-	// and eval equal to `gamma` (see paper).
+	// Phase 1 outputs challenges `r_j || r_s`, and `gamma` as its evaluation (see paper).
 	let phase_1_output = prove_phase_1::<_, P, _, _>(
 		key_collection,
 		words,
-		&prepared_zero_data,
-		&prepared_bitand_data,
-		&prepared_intmul_data,
-		&prepared_binmul_data,
+		&prepared,
 		domain_subspace,
 		channel,
 		alloc,
 	);
 
-	// Prove the second phase, receiving a `SumcheckOutput`
-	// with challenges `r_y` and eval the evaluation of
-	// the witness at oblong point had by univariate
-	// variable `r_j` and multilinear variable `r_y`.
-	let SumcheckOutput { challenges, eval } = prove_phase_2::<_, P, _, _>(
+	// Phase 2 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
+	// the univariate variable `r_j` and the multilinear variable `r_y`.
+	prove_phase_2::<_, P, _, _>(
 		key_collection,
 		words,
-		&prepared_zero_data,
-		&prepared_bitand_data,
-		&prepared_intmul_data,
-		&prepared_binmul_data,
+		&prepared,
 		domain_subspace,
 		phase_1_output,
 		channel,
 		alloc,
-	);
-
-	// Return evaluation claim on the witness.
-	SumcheckOutput { challenges, eval }
+	)
 }

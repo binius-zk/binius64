@@ -33,7 +33,8 @@ use crate::{
 	protocols::{
 		binmul, intmul,
 		shift::{
-			KeyCollection, OperatorData, build_key_collection, prove as prove_shift_reduction,
+			KeyCollection, OperatorClaims, OperatorData, build_key_collection,
+			prove as prove_shift_reduction,
 		},
 	},
 	ring_switch,
@@ -296,10 +297,12 @@ impl IOPProver {
 		} = prove_shift_reduction::<_, P, _, _>(
 			&self.key_collection,
 			witness.combined_witness(),
-			zero_claim,
-			bitand_claim,
-			intmul_claim,
-			binmul_claim,
+			OperatorClaims {
+				zero: zero_claim,
+				bitand: bitand_claim,
+				intmul: intmul_claim,
+				binmul: binmul_claim,
+			},
 			&subspace,
 			&mut *channel,
 			alloc,

@@ -19,8 +19,9 @@
 use std::ops::Index;
 
 use binius_field::Field;
-use binius_prover::protocols::shift::{Operation, OperatorData, PreparedOperatorData};
 use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
+
+use super::{Operation, OperatorData, PreparedOperatorData};
 
 /// The operand evaluation claim of every operation, as the shift reduction receives them.
 ///

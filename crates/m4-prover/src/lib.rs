@@ -3,7 +3,6 @@
 
 //! Witness table and prover for the data-parallel Binius64 M4 proof system.
 
-mod operator_claims;
 mod prove;
 mod shift;
 #[cfg(test)]
