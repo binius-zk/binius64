@@ -11,38 +11,71 @@ use binius_math::{
 
 use super::{key_collection::KeyCollection, phase_1::prove_phase_1, phase_2::prove_phase_2};
 
-/// Holds the prover data for an operator.
+/// One operation's operand evaluation claims, with the point they are claimed at.
 ///
-/// Contains evaluation claims and challenge points for an operation.
+/// An operation constrains several operands at once: AND has three, IMUL four, BMUL six.
+/// Each operand is one column of the witness, and each column carries one evaluation claim.
 ///
-/// Each operator (AND/IMUL) has multiple operand positions, each with an oblong evaluation claim.
-/// The `evals` field stores these claim evaluations. The evaluation points consist of:
-/// - `r_zhat_prime`: univariate challenge point (pre-populated)
-/// - `r_x_prime`: multilinear challenge point (pre-populated)
+/// Every operand of an operation is claimed at the same point.
+/// So the point is stored once here rather than once per operand.
+///
+/// That point is oblong: a univariate coordinate over the bit axis, then the constraint index.
 #[derive(Debug, Clone)]
 pub struct OperatorData<F: Field> {
+	/// The claimed evaluation of each operand column, in the operation's operand order.
 	pub evals: Vec<F>,
+	/// The univariate challenge folding the bit axis, shared by every operation.
 	pub r_zhat_prime: F,
+	/// The multilinear challenge over the constraint index.
 	pub r_x_prime: Vec<F>,
 }
 
-/// Prepared operator data for proving.
+impl<F: Field> OperatorData<F> {
+	/// The claim of an operation the constraint system does not use.
+	///
+	/// Every operand evaluates to zero, at the empty constraint point.
+	///
+	/// That operation's constraint set is empty.
+	/// So the shift finds no key naming it, and the claim contributes nothing to the batch.
+	///
+	/// # Arguments
+	///
+	/// - `arity`: the operation's operand count, which fixes how many zero evaluations it carries.
+	/// - `r_zhat_prime`: the univariate challenge, shared by every operation.
+	pub fn zero_claim(arity: usize, r_zhat_prime: F) -> Self {
+		Self {
+			evals: vec![F::ZERO; arity],
+			r_zhat_prime,
+			r_x_prime: Vec::new(),
+		}
+	}
+}
+
+/// One operation's claims, with the expansions both proving phases need precomputed.
 ///
-/// Contains evaluation claims, challenge points, and precomputed values needed during proving:
-/// - `evals`: evaluation claims for each operand position
-/// - `r_zhat_prime`: univariate challenge point
-/// - `r_x_prime_tensor`: tensor expansion of r_x_prime for efficient proving
-/// - `lambda`: sampled random value for operand weighting
+/// Every shift key of the operation reads the same two expansions, so each is built once here:
+///
+/// - the constraint point, expanded into its equality-indicator tensor;
+/// - the batching coefficient, expanded into its powers, one per operand.
 #[derive(Debug, Clone)]
 pub struct PreparedOperatorData<F: Field> {
+	/// The claimed evaluation of each operand column, in the operation's operand order.
 	pub evals: Vec<F>,
+	/// The univariate challenge folding the bit axis, shared by every operation.
 	pub r_zhat_prime: F,
+	/// The equality-indicator tensor of the constraint point, one weight per constraint.
 	pub r_x_prime_tensor: FieldBuffer<F>,
+	/// The batching coefficient's powers, one per operand, starting at the first power.
 	pub lambda_powers: Vec<F>,
 }
 
 impl<F: Field> PreparedOperatorData<F> {
-	/// Creates a new prepared operator data from operator data and lambda.
+	/// Expands one operation's claims against the batching coefficient drawn for it.
+	///
+	/// # Arguments
+	///
+	/// - `operator_data`: the operand claims, and the point they are claimed at.
+	/// - `lambda`: the batching coefficient for this operation.
 	pub fn new(operator_data: OperatorData<F>, lambda: F) -> Self {
 		let OperatorData {
 			evals,
@@ -59,11 +92,16 @@ impl<F: Field> PreparedOperatorData<F> {
 		}
 	}
 
-	/// Returns the batched evaluation of the oblong evaluation claims.
-	/// Since the univariate evaluation of the evals at lambda is
-	/// further multiplied by lambda, the batched evaluation claims
-	/// for different operators can soundly be added without further
-	/// random scaling.
+	/// The operand claims collapsed into one value by the batching coefficient.
+	///
+	/// Operand `i` is weighted by the `i`-th power, and the powers start at the first:
+	///
+	/// ```text
+	/// batched = sum_i evals[i] * lambda^(i + 1)
+	/// ```
+	///
+	/// So the result already carries a random factor unique to this operation.
+	/// Two operations' batched values can therefore be summed with no further scaling.
 	pub fn batched_eval(&self) -> F {
 		inner_product(self.evals.iter().copied(), self.lambda_powers.iter().copied())
 	}
