@@ -7,7 +7,6 @@
 //! Guide: https://www.binius.xyz/building/
 
 use binius_circuits::bignum::BigUintDivideHint;
-use binius_core::verify::verify_constraints;
 use binius_frontend::CircuitBuilder;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Verify constraints
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &witness.into_value_vec())?;
+	cs.verify(&witness.into_value_vec())?;
 
 	println!("✓ Example 3: Non-deterministic modulo verification");
 	println!("  Verified: 100 = 83 × 1 + 17");

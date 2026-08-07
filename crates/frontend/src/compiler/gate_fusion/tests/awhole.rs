@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use binius_core::{ConstraintSystem, verify::verify_constraints, word::Word};
+use binius_core::{ConstraintSystem, word::Word};
 
 use crate::compiler::{CircuitBuilder, Options, gate_fusion::commit_set::MAX_DEPTH};
 
@@ -22,7 +22,7 @@ fn test_force_commit_non_linear_output_without_inout() {
 	w[y] = Word(0xFF00_FF00_FF00_FF00);
 	circuit.populate_wire_witness(&mut w).unwrap();
 	assert_eq!(w[and_out], Word(0xF0F0_F0F0_F0F0_F0F0 & 0xFF00_FF00_FF00_FF00));
-	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+	circuit.constraint_system().verify(&w.value_vec).unwrap();
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn test_bmul_gate_end_to_end() {
 
 	assert_eq!(w[c_lo], Word(0x87));
 	assert_eq!(w[c_hi], Word::ZERO);
-	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+	circuit.constraint_system().verify(&w.value_vec).unwrap();
 }
 
 /// Returns a string that represents the given constraint system in a textual form.
@@ -956,5 +956,5 @@ fn test_chained_shifts_beyond_the_word_width_evaluate() {
 	assert_eq!(w[out], Word::ZERO);
 
 	// The committed break carries its own Zero constraint, so check the constraints agree too.
-	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+	circuit.constraint_system().verify(&w.value_vec).unwrap();
 }

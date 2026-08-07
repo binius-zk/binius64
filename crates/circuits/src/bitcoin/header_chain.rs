@@ -148,7 +148,6 @@ fn target(builder: &CircuitBuilder, bits: Wire) -> BigUint {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 	use hex_literal::hex;
 
 	use super::*;
@@ -182,7 +181,7 @@ mod tests {
 
 		// check
 		let constraint_system = circuit.constraint_system();
-		verify_constraints(constraint_system, &filler.into_value_vec()).unwrap();
+		constraint_system.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -230,6 +229,6 @@ mod tests {
 
 		// check
 		let constraint_system = circuit.constraint_system();
-		verify_constraints(constraint_system, &filler.into_value_vec()).unwrap();
+		constraint_system.verify(&filler.into_value_vec()).unwrap();
 	}
 }

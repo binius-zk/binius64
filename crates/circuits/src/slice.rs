@@ -163,7 +163,6 @@ pub fn slice(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 
 	use super::{CircuitBuilder, Wire, Word, assert_slice_eq, slice};
 
@@ -218,7 +217,7 @@ mod tests {
 
 		circuit.populate_wire_witness(&mut filler).unwrap();
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	/// Run a failure-case test: expect `populate_wire_witness` to error.

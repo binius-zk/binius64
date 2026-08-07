@@ -323,7 +323,7 @@ pub fn grind_nonce(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 	use rand::prelude::*;
 
 	use super::*;
@@ -415,6 +415,6 @@ mod tests {
 		// Every hash is BLAKE3, derived from the inputs, so the evaluator fills all digests here.
 		circuit.populate_wire_witness(&mut w).unwrap();
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 }

@@ -361,7 +361,6 @@ pub fn ripemd160_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: us
 mod tests {
 	use std::{array, iter, iter::repeat_with};
 
-	use binius_core::verify::verify_constraints;
 	use rand::prelude::*;
 	use ripemd::Digest;
 
@@ -412,7 +411,7 @@ mod tests {
 		}
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]

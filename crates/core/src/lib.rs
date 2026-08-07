@@ -7,9 +7,8 @@
 
 pub mod constraint_system;
 pub mod error;
-pub mod verify;
 pub mod word;
 
 pub use constraint_system::*;
-pub use error::ConstraintSystemError;
+pub use error::{ConstraintSystemError, ConstraintViolation, VerificationError};
 pub use word::Word;

@@ -116,7 +116,6 @@ pub fn keccak256(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 	use binius_frontend::CircuitBuilder;
 	use rand::prelude::*;
 	use rstest::rstest;
@@ -183,7 +182,7 @@ mod tests {
 		}
 
 		circuit.populate_wire_witness(&mut witness).unwrap();
-		verify_constraints(cs, &witness.into_value_vec())
+		cs.verify(&witness.into_value_vec())
 			.expect("Circuit constraints should be satisfied");
 	}
 

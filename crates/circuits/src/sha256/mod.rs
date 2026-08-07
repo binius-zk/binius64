@@ -353,7 +353,7 @@ pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
 mod tests {
 	use std::array;
 
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use hex_literal::hex;
 	use sha2::Digest;
@@ -395,7 +395,7 @@ mod tests {
 		}
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -512,7 +512,7 @@ mod tests {
 		}
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]

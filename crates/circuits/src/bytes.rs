@@ -124,7 +124,7 @@ pub fn swap_bytes(builder: &CircuitBuilder, input: Wire) -> Wire {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -143,7 +143,10 @@ mod tests {
 		w[output] = Word(expected);
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
 	}
 
 	/// Helper function to test swap_bytes_32 circuit with given input and expected output
@@ -160,7 +163,10 @@ mod tests {
 		w[output] = Word(expected);
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
 	}
 
 	proptest! {

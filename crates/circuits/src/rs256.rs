@@ -416,7 +416,6 @@ impl RsaIntermediates {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 	use hex_literal::hex;
 	use num_bigint::BigUint;
 	use rand::{TryRng, prelude::*};
@@ -492,7 +491,7 @@ mod tests {
 		populate_circuit(&circuit, &mut w, &signature_bytes, &message_bytes, &modulus_bytes);
 
 		cs.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+		cs.constraint_system().verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]

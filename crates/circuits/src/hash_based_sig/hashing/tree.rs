@@ -83,7 +83,7 @@ pub fn hash_tree_node(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -130,7 +130,10 @@ mod tests {
 		w.pack_bytes_le(&out, &reference);
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
 		reference
 	}
 

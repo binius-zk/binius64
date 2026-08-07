@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use binius_circuits::{bytes, popcount};
-use binius_core::{verify::verify_constraints, word::Word};
+use binius_core::word::Word;
 use binius_frontend::CircuitBuilder;
 
 fn main() -> Result<()> {
@@ -68,7 +68,8 @@ fn demo_byte_swapping() -> Result<()> {
 	circuit.populate_wire_witness(&mut w)?;
 
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+	cs.verify(&w.into_value_vec())
+		.map_err(|e| anyhow::anyhow!(e))?;
 
 	println!("✓ Byte swapping verified");
 	println!("  Input:            0x{:016X}", 0x0123456789ABCDEFu64);
@@ -115,7 +116,8 @@ fn demo_popcount() -> Result<()> {
 		circuit.populate_wire_witness(&mut w)?;
 
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+		cs.verify(&w.into_value_vec())
+			.map_err(|e| anyhow::anyhow!(e))?;
 
 		println!("✓ Popcount(0x{:016X}) = {} bits", input_val, expected_count);
 
@@ -165,7 +167,8 @@ fn demo_combined() -> Result<()> {
 	circuit.populate_wire_witness(&mut w)?;
 
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+	cs.verify(&w.into_value_vec())
+		.map_err(|e| anyhow::anyhow!(e))?;
 
 	println!("✓ Combined gadgets:");
 	println!("  Input:        0x{:016X}", test_val);

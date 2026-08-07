@@ -4,7 +4,6 @@ use std::collections::HashSet;
 
 use binius_core::{
 	constraint_system::{ShiftedValueIndex, ValueIndex},
-	verify::verify_constraints,
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;
@@ -86,7 +85,7 @@ fn test_algebraic_fold_bxor_self_is_zero_in_witness() {
 	circuit.populate_wire_witness(&mut w).unwrap();
 
 	assert_eq!(w[zero], Word::ZERO);
-	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+	circuit.constraint_system().verify(&w.value_vec).unwrap();
 }
 
 /// Builds `assert_eq(x ^ y, z)`.
@@ -126,7 +125,7 @@ fn test_linear_constraints_lower_to_zero_constraints() {
 	filler[y] = Word(0x0fed_cba9_8765_4321);
 	filler[z] = Word(0x1234_5678_9abc_def0 ^ 0x0fed_cba9_8765_4321);
 	zero_circuit.populate_wire_witness(&mut filler).unwrap();
-	verify_constraints(cs, &filler.value_vec).unwrap();
+	cs.verify(&filler.value_vec).unwrap();
 }
 
 /// Builds `((x << 32) >> 32) & y == z` with gate fusion left on.
@@ -165,7 +164,7 @@ fn test_zero_constraints_reach_a_fused_committed_lin_def() {
 	filler[y] = Word(0x0fed_cba9_8765_4321);
 	filler[z] = Word(0x9abc_def0 & 0x0fed_cba9_8765_4321);
 	zero_circuit.populate_wire_witness(&mut filler).unwrap();
-	verify_constraints(zero_cs, &filler.value_vec).unwrap();
+	zero_cs.verify(&filler.value_vec).unwrap();
 }
 
 #[test]
@@ -290,7 +289,7 @@ fn prop_check_icmp_ult(a: u64, b: u64, expected_result: Word) {
 	assert_eq!(w[result_wire] >> 63, expected_result >> 63);
 
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.value_vec).unwrap();
+	cs.verify(&w.value_vec).unwrap();
 }
 
 fn prop_check_icmp_eq(a: u64, b: u64, expected_result: Word) {
@@ -306,7 +305,7 @@ fn prop_check_icmp_eq(a: u64, b: u64, expected_result: Word) {
 	assert_eq!(w[result_wire] >> 63, expected_result >> 63);
 
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.value_vec).unwrap();
+	cs.verify(&w.value_vec).unwrap();
 }
 
 proptest! {
@@ -344,7 +343,7 @@ proptest! {
 		assert_eq!(w[cout2_wire], Word(expected_cout2));
 
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.value_vec).unwrap();
+		cs.verify(&w.value_vec).unwrap();
 	}
 
 	#[test]
@@ -379,7 +378,7 @@ proptest! {
 			assert!(result.is_ok());
 			// And constraints should verify
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.value_vec).unwrap();
+			cs.verify(&w.value_vec).unwrap();
 		} else {
 			// When values are not equal, witness population should fail
 			assert!(result.is_err());
@@ -424,7 +423,7 @@ fn test_bxor_linear_constraint() {
 
 	// Verify constraints are satisfied
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.value_vec).unwrap();
+	cs.verify(&w.value_vec).unwrap();
 }
 
 #[test]
@@ -459,7 +458,7 @@ fn test_shift_operations_with_linear_constraints() {
 
 	// Verify constraints are satisfied
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.value_vec).unwrap();
+	cs.verify(&w.value_vec).unwrap();
 }
 
 #[test]
@@ -498,7 +497,7 @@ fn test_32bit_half_shift_operations() {
 	assert_ne!(w[rotr32_result], Word(input.rotate_right(4)));
 
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.value_vec).unwrap();
+	cs.verify(&w.value_vec).unwrap();
 }
 
 #[test]
@@ -530,7 +529,7 @@ fn test_rotr_operation_expansion() {
 
 	// Verify constraints are satisfied
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.value_vec).unwrap();
+	cs.verify(&w.value_vec).unwrap();
 }
 
 #[test]
@@ -567,7 +566,7 @@ fn test_multiple_xor_operations() {
 
 	// Verify constraints are satisfied
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.value_vec).unwrap();
+	cs.verify(&w.value_vec).unwrap();
 }
 
 #[test]
@@ -631,7 +630,7 @@ fn test_linear_constraint_conversion_to_zero() {
 	assert_eq!(w[final_result], Word(w[combined1].0 ^ w[combined2].0));
 
 	// Verify all constraints are satisfied
-	verify_constraints(cs, &w.value_vec).unwrap();
+	cs.verify(&w.value_vec).unwrap();
 }
 
 proptest! {
@@ -664,7 +663,7 @@ proptest! {
 
 		// Verify constraints are satisfied
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.value_vec).unwrap();
+		cs.verify(&w.value_vec).unwrap();
 	}
 
 	#[test]
@@ -688,7 +687,7 @@ proptest! {
 
 		// Verify constraints are satisfied
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.value_vec).unwrap();
+		cs.verify(&w.value_vec).unwrap();
 	}
 }
 
@@ -833,8 +832,14 @@ fn test_scratch_pooling_preserves_the_committed_witness() {
 		);
 
 		// Both assignments must still satisfy every constraint, not merely match each other.
-		verify_constraints(unpooled.constraint_system(), &w_unpooled.value_vec).unwrap();
-		verify_constraints(pooled.constraint_system(), &w_pooled.value_vec).unwrap();
+		unpooled
+			.constraint_system()
+			.verify(&w_unpooled.value_vec)
+			.unwrap();
+		pooled
+			.constraint_system()
+			.verify(&w_pooled.value_vec)
+			.unwrap();
 	}
 }
 

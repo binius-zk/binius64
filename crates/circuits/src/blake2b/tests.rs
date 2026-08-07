@@ -7,7 +7,6 @@
 
 #[cfg(test)]
 mod blake2b_tests {
-	use binius_core::verify::verify_constraints;
 	use binius_frontend::CircuitBuilder;
 	use rand::prelude::*;
 
@@ -150,7 +149,7 @@ mod blake2b_tests {
 		});
 
 		// Verify constraints
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 
 		circuit_hash
 	}

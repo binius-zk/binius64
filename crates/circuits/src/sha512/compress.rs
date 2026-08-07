@@ -267,7 +267,7 @@ fn small_sigma_1(b: &CircuitBuilder, x: Wire) -> Wire {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 	use binius_frontend::{CircuitBuilder, Wire};
 
 	use super::{State, compress, pack_message_block};
@@ -313,7 +313,7 @@ mod tests {
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -352,7 +352,7 @@ mod tests {
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -382,6 +382,6 @@ mod tests {
 			pack_message_block(&mut w, m, [0; 128]);
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 }

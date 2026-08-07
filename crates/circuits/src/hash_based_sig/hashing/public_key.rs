@@ -73,7 +73,7 @@ pub fn hash_public_key(param: &[u8], epoch: u64, pk_hashes: &[[u8; 32]]) -> [u8;
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -107,7 +107,10 @@ mod tests {
 		w.pack_bytes_le(&out, &reference);
 
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
 		reference
 	}
 
