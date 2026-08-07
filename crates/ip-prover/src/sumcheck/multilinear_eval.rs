@@ -8,7 +8,7 @@ use binius_math::{FieldSlice, FieldVec};
 
 use super::{
 	mle_store::{ColId, EvaluationChunk, MleStore, RoundContext},
-	round_evals::RoundEvals1,
+	round_evals::RoundEvals,
 	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
 
@@ -59,7 +59,7 @@ where
 		for (idx, &eq_i) in eq_ind.as_ref().iter().enumerate() {
 			y_1 += P::wide_mul(col.hi.as_ref()[idx], eq_i);
 		}
-		accum[0] += y_1;
+		RoundEvals([y_1]).add_to(accum);
 	}
 
 	fn interpolate(
@@ -78,7 +78,7 @@ where
 		// Sum its lanes, then interpolate.
 		// `claim` is this round's prime evaluation.
 		// `alpha` is the eq coordinate that ties it to the point.
-		RoundEvals1 { y_1: accum[0] }
+		RoundEvals::<P, 1>::from_slots(accum)
 			.sum_scalars(n_vars_remaining)
 			.interpolate_eq(claim, alpha)
 	}

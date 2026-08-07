@@ -7,7 +7,7 @@ use binius_math::FieldSlice;
 use crate::sumcheck::{
 	mle_store::{ColId, ColumnChunk, EvaluationChunk, RoundContext},
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
-	round_evals::RoundEvals2,
+	round_evals::RoundEvals,
 	round_evaluator::MleCheckRoundEvaluator,
 };
 
@@ -57,7 +57,7 @@ where
 /// The sums `den_a.lo + den_a.hi` and `den_b.lo + den_b.hi` are then formed once, not twice.
 ///
 /// It emits one round polynomial, already batched, rather than one per claim.
-/// That is exact, because [`RoundEvals2::interpolate_eq`] is affine in its claim and evaluations:
+/// That is exact, because [`RoundEvals::interpolate_eq`] is affine in its claim and evaluations:
 ///
 /// ```text
 ///     interp(c_num + z*c_den, y_num + z*y_den) = interp(c_num, y_num) + z*interp(c_den, y_den)
@@ -138,10 +138,10 @@ where
 			den_y_inf += P::wide_mul(da * db, eq_i);
 		}
 
-		accum[0] += num_y_1;
-		accum[1] += num_y_inf;
-		accum[2] += den_y_1;
-		accum[3] += den_y_inf;
+		// The run holds the two claims back to back: numerator first, then denominator.
+		let (numerator, denominator) = accum.split_at_mut(2);
+		RoundEvals([num_y_1, num_y_inf]).add_to(numerator);
+		RoundEvals([den_y_1, den_y_inf]).add_to(denominator);
 	}
 
 	fn interpolate(
@@ -156,16 +156,9 @@ where
 		assert!(n_vars_remaining > 0);
 
 		// Sum each claim's packed lanes into scalars.
-		let numerator = RoundEvals2 {
-			y_1: accum[0],
-			y_inf: accum[1],
-		}
-		.sum_scalars(n_vars_remaining);
-		let denominator = RoundEvals2 {
-			y_1: accum[2],
-			y_inf: accum[3],
-		}
-		.sum_scalars(n_vars_remaining);
+		let (num_slots, den_slots) = accum.split_at(2);
+		let numerator = RoundEvals::<P, 2>::from_slots(num_slots).sum_scalars(n_vars_remaining);
+		let denominator = RoundEvals::<P, 2>::from_slots(den_slots).sum_scalars(n_vars_remaining);
 
 		// Batch the sampled evaluations, then interpolate once against the batched claim.
 		// That order is equivalent to interpolating each claim and batching the polynomials.
