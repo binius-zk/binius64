@@ -9,7 +9,7 @@ use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::prodcheck::ProdcheckProver;
 use binius_math::{FieldVec, field_buffer::FieldBuffer};
 use binius_utils::{
-	checked_arithmetics::{checked_log_2, strict_log_2},
+	checked_arithmetics::log2_ceil_usize,
 	rayon::{
 		prelude::*,
 		task_size::{IndexedParallelIteratorExt, WorkPerItem},
@@ -122,6 +122,13 @@ where
 	/// Constructs a new integer multiplication witness from the statement.
 	///
 	/// The GKR prodcheck provers draw their layer buffers from `alloc`.
+	///
+	/// The four columns must have equal length, but need not have a power-of-two one: the reduction
+	/// runs over the constraint axis of `2^ceil(log2(n))` rows, and the rows past the columns' end
+	/// read as `Word::ZERO`. Every buffer built here still spans that whole axis, and each derives
+	/// its own value for a padding row rather than being handed one. In the product-check trees
+	/// that value is the multiplicative **identity**, not zero: a zero exponent word indexes row 0
+	/// of a power table, which holds `base^0 = 1`. So no tree's product moves.
 	pub fn new(
 		alloc: &'alloc A,
 		a: &'a [Word],
@@ -131,15 +138,10 @@ where
 	) -> Result<Self, Error> {
 		assert!(2 * Word::BITS <= F::N_BITS);
 
-		// Statement should be of pow-2 length.
-		let Some(n_vars) = strict_log_2(a.len()) else {
-			return Err(Error::ExponentsPowerOfTwoLengthRequired);
-		};
-
 		// All statement slices should be of same length.
-		if [a, b, c_lo, c_hi]
+		if [b, c_lo, c_hi]
 			.iter()
-			.any(|exponents| exponents.len() != 1 << n_vars)
+			.any(|exponents| exponents.len() != a.len())
 		{
 			return Err(Error::ExponentLengthMismatch);
 		}
@@ -331,13 +333,18 @@ where
 {
 	assert_eq!(tables.len(), N_LIMBS);
 
-	let n_vars = checked_log_2(exponents.len());
+	// `exponents` need not fill the constraint axis. Its rows past the end are `Word::ZERO`, which
+	// indexes row 0 of every table — and that row holds `base^0 = 1`. So a padding row contributes
+	// the multiplicative identity to the product check, leaving each tree's product unchanged.
+	let n_vars = log2_ceil_usize(exponents.len());
+	let n_padding = (1 << n_vars) - exponents.len();
 	let scalars = (0..N_LIMBS)
 		.flat_map(|limb| {
 			let table = &tables[limb];
 			exponents
 				.iter()
 				.map(move |&word| table.get(limb_index(word, limb)))
+				.chain(iter::repeat_n(table.get(0), n_padding))
 		})
 		.collect::<Vec<_>>();
 
@@ -374,7 +381,12 @@ where
 	let mut out = FieldBuffer::zeros_in(alloc, n_vars + Word::LOG_BITS);
 	let n_elems = 1 << n_vars;
 
-	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
+	// Rows past the columns' end are `Word::ZERO`: every bit is clear, so each of their leaves is
+	// `F::ONE` — the identity the product check needs from a padding row.
+	let padding = iter::repeat_n(Word::ZERO, n_elems - exponents.len());
+	let exponents = exponents.iter().copied().chain(padding);
+
+	for (i, (mut base, exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
 		for z in 0..Word::BITS {
 			// Branchless select of `base` when bit `z` is set, else `F::ONE`: on the selected lane
 			// `mask` is all-ones so `select` keeps `base - 1` and the `+ 1` restores `base`; on the
@@ -416,9 +428,16 @@ where
 			.expect("dimensions match capacity");
 
 		let ones = P::broadcast(F::ONE);
-		(strided.par_iter_cols(), bases.as_ref(), exponents.par_chunks(P::WIDTH))
+		(strided.par_iter_cols(), bases.as_ref())
 			.into_par_iter()
-			.for_each(|(mut col, packed_base, exp_chunk)| {
+			.enumerate()
+			.for_each(|(packed_index, (mut col, packed_base))| {
+				// The columns' rows this packed element covers. Rows past their end are absent, and
+				// `make_mask` reads a lane it is not given as clear, so those lanes' leaves are all
+				// `F::ONE` — the identity the product check needs from a padding row.
+				let start = (packed_index * P::WIDTH).min(exponents.len());
+				let exp_chunk = &exponents[start..(start + P::WIDTH).min(exponents.len())];
+
 				// Keep base as packed element for efficient squaring
 				let mut packed_base = *packed_base;
 
@@ -469,25 +488,38 @@ where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	let n_vars = checked_log_2(exponents.len());
-	let p_width = P::WIDTH.min(1 << n_vars);
+	let n_vars = log2_ceil_usize(exponents.len());
 	let packed_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
+
+	// Select `elements[1]` if bit `bit_offset` of the word is set, else `elements[0]`. A row past
+	// the columns' end is `Word::ZERO`, whose bits are all clear, so it selects `elements[0]`.
+	let select = |&word: &Word| elements[word.extract_bit(bit_offset) as usize];
+	let padding = elements[0];
+
 	let mut values = alloc.alloc::<P>(packed_len);
-	values.extend((0..packed_len).map(|i| {
-		let scalars = (0..p_width).map(|j| {
-			let index = i << P::LOG_WIDTH | j;
-			// Select `elements[1]` if bit `bit_offset` of `exponents[index]` is set, else
-			// `elements[0]`.
-			unsafe {
-				// Safety:
-				// - `index` is guaranteed to be in-bounds
-				// - `elements` has two values
-				let is_set = exponents.get_unchecked(index).extract_bit(bit_offset);
-				*elements.get_unchecked(is_set as usize)
-			}
-		});
-		P::from_scalars(scalars)
-	}));
+
+	// The packed elements `exponents` fills whole. Rounding down to a multiple of `P::WIDTH` keeps
+	// every lane of this loop in range, so it packs without a per-lane bounds check.
+	let mut chunks = exponents.chunks_exact(P::WIDTH);
+	values.extend(
+		chunks
+			.by_ref()
+			.map(|chunk| P::from_scalars(chunk.iter().map(select))),
+	);
+
+	// The columns' trailing words share a packed element with the start of the padding.
+	let tail = chunks.remainder();
+	if !tail.is_empty() {
+		values.push(P::from_scalars(
+			tail.iter()
+				.map(select)
+				.chain(iter::repeat(padding))
+				.take(P::WIDTH),
+		));
+	}
+
+	// The rest of the constraint axis is padding.
+	values.resize(packed_len, P::broadcast(padding));
 
 	FieldBuffer::new(n_vars, values)
 }

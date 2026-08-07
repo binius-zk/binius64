@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::marker::PhantomData;
+use std::{iter, marker::PhantomData};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -49,15 +49,22 @@ use crate::fold_word::{fold_across_words, fold_words};
 /// Proves the integer multiplication (IntMul) reduction over the four operand columns.
 ///
 /// The four `columns` are the multiplicand `a`, the multiplicand `b`, and the product's low and
-/// high words, in the order `[a, b, lo, hi]`, each of power-of-two length. This builds the
-/// [`Witness`], drives an [`IntMulProver`], and reduces the multiplication relation to per-bit
-/// evaluation claims on the four columns at a common point. See [`IntMulProver::prove`] for the
-/// protocol description and [`IntMulOutput`] for the output shape.
+/// high words, in the order `[a, b, lo, hi]`, all of equal length. This builds the [`Witness`],
+/// drives an [`IntMulProver`], and reduces the multiplication relation to per-bit evaluation claims
+/// on the four columns at a common point. See [`IntMulProver::prove`] for the protocol description
+/// and [`IntMulOutput`] for the output shape.
+///
+/// # Padding
+///
+/// The columns' length need not be a power of two. The reduction runs over the constraint axis of
+/// `2^ceil(log2(n))` rows, with the rows past the columns' end read as `Word::ZERO`; a zero row
+/// satisfies `0 * 0 = 0 || 0`, so no claim moves. The padding is never materialized as words:
+/// every buffer built from the columns spans the whole axis and derives its own padding value,
+/// which is the multiplicative identity in the product-check trees and zero elsewhere.
 ///
 /// # Errors
 ///
-/// Returns an error when the operand columns do not have a power-of-two length or their lengths
-/// disagree.
+/// Returns an error when the operand columns' lengths disagree.
 pub fn prove<A, F, P, Channel>(
 	columns: [&[Word]; 4],
 	channel: &mut Channel,
@@ -254,9 +261,14 @@ where
 			.into_par_iter()
 			.map(|j| {
 				let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
+				// The columns' padding rows are `Word::ZERO`, whose every limb index is 0 — the
+				// shared table's row 0. So a padding row looks up `base^0 = 1`, as it does in the
+				// product-check trees.
+				let n_padding = (1 << n_vars) - exponents[tree].len();
 				exponents[tree]
 					.iter()
 					.map(|&word| limb_index(word, limb))
+					.chain(iter::repeat_n(0, n_padding))
 					.collect::<Vec<_>>()
 			})
 			.collect::<Vec<_>>();
@@ -347,7 +359,7 @@ where
 		// Fold the 2^k b bit-columns by the recombination tensor into a single field multilinear
 		// B(x) = sum_i eq(r_I^b, i) * b(i, x), then re-randomize its claim B(r_2) = b_recomb from
 		// `b_eval_point` (r_2) to the shared point via a single-claim MLE-eval check.
-		assert_eq!(b_exponents.len(), 1 << n_vars);
+		assert!(b_exponents.len() <= 1 << n_vars);
 		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
 		let b_folded = fold_words::<_, P, _>(alloc, b_exponents, &b_tensor);
 		let b_sumcheck_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
@@ -473,7 +485,7 @@ where
 				.iter()
 				.all(|point| point.len() == n_vars)
 		);
-		assert_eq!(b_exponents.len(), 1 << n_vars);
+		assert!(b_exponents.len() <= 1 << n_vars);
 
 		let selector_claims = izip!(twisted_eval_points, twisted_evals)
 			.map(|(point, &value)| Claim {
@@ -493,11 +505,19 @@ where
 		// `SelectorMlecheckProver` reads the exponent bits through the `Bitwise` bitmask
 		// abstraction, which is implemented for the primitive integer types. `Word` is
 		// `repr(transparent)` over `u64`, so reinterpret the slice in place.
-		let b_bitmasks: &[u64] = bytemuck::cast_slice(b_exponents);
+		// `SelectorMlecheckProver` requires one bitmask per row of the constraint axis
+		// (`crates/ip-prover/src/sumcheck/selector_mle.rs:73`), so this is the one place the
+		// reduction still needs the columns' padding rows as words. A padding row is `Word::ZERO`,
+		// so its bitmask is zero.
+		//
+		// TODO(BINIUS-391): relax `SelectorMlecheckProver` and `BinarySwitchover` to read a missing
+		// row's bitmask as zero, and drop this copy.
+		let mut b_bitmasks = bytemuck::cast_slice::<_, u64>(b_exponents).to_vec();
+		b_bitmasks.resize(1 << n_vars, 0);
 		let selector_prover = SelectorMlecheckProver::new(
 			selector,
 			selector_claims,
-			b_bitmasks,
+			&b_bitmasks,
 			eq_weights,
 			self.switchover,
 		);
@@ -601,9 +621,13 @@ where
 			(0..N_LIMBS)
 				.map(|limb| {
 					let table = &tables[twists[tree * N_LIMBS + limb] / LIMB_BITS];
+					// As in `limb_leaves`, the columns' padding rows are `Word::ZERO`, which
+					// indexes row 0 of the table — `base^0 = 1`.
+					let n_padding = (1 << n_vars) - exponents[tree].len();
 					let column_scalars = exponents[tree]
 						.iter()
 						.map(|&word| table.get(limb_index(word, limb)))
+						.chain(iter::repeat_n(table.get(0), n_padding))
 						.collect::<Vec<_>>();
 					let column = FieldBuffer::<P>::from_values(&column_scalars);
 					inner_product_buffers(&column, &x_tensor)
