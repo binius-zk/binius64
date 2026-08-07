@@ -4,7 +4,7 @@ use std::iter::repeat_with;
 use binius_compute::{BufferPool, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{Field, Random};
-use binius_ip_prover::sumcheck::{common::SumcheckProver, quadratic_mlecheck_prover};
+use binius_ip_prover::sumcheck::{common::MleCheckProver, quadratic_mlecheck_prover};
 use binius_math::{
 	BinarySubspace,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},

@@ -17,9 +17,7 @@ use itertools::izip;
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, bivariate_product_mle,
-		common::{MleCheckProver, SumcheckProver},
-		prove_single_mlecheck,
+		ProveSingleOutput, bivariate_product_mle, common::MleCheckProver, prove_single_mlecheck,
 	},
 };
 

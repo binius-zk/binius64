@@ -145,7 +145,7 @@ mod tests {
 
 	use super::*;
 	use crate::sumcheck::{
-		common::SumcheckProver, prove_single_mlecheck,
+		common::MleCheckProver, prove_single_mlecheck,
 		quadratic_mle_evaluator::quadratic_mlecheck_prover,
 	};
 
