@@ -27,9 +27,11 @@ use crate::compiler::{
 /// Zeros travel: clearing a zero leaves zero, and packing zero into a lane leaves zero. So one
 /// sweep is not enough, and the sweeps repeat until one changes nothing.
 ///
-/// Each sweep rebuilds the use-def index first. Forwarding to an ordinary wire grows that wire's
+/// Each sweep rebuilds the reader index first. Forwarding to an ordinary wire grows that wire's
 /// set of readers, which a stale index would not list, and a later sweep forwarding that same
 /// wire would then miss those readers.
+///
+/// Only the reader half is rebuilt. This pass follows readers, never definitions.
 pub fn zero_propagation(
 	graph: &mut GateGraph,
 	force_committed: &EntitySet<Wire>,
@@ -43,7 +45,7 @@ pub fn zero_propagation(
 
 	let mut total_rewritten = 0;
 	loop {
-		graph.rebuild_use_def_chains(hint_registry);
+		graph.rebuild_wire_uses(hint_registry);
 
 		// Gathered before any rewriting, since reading the graph and mutating it cannot overlap.
 		let mut forwardings = Vec::new();
