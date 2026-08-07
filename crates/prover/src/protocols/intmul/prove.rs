@@ -220,7 +220,7 @@ where
 			a_exponents,
 			c_lo_exponents,
 			c_hi_exponents,
-			&tables[0],
+			tables[0].to_ref(),
 		)
 	}
 
@@ -238,7 +238,7 @@ where
 		a_exponents: &[Word],
 		c_lo_exponents: &[Word],
 		c_hi_exponents: &[Word],
-		table: &FieldBuffer<P>,
+		table: FieldSlice<P>,
 	) -> IntMulOutput<F> {
 		let alloc = self.alloc;
 		let n_vars = b_eval_point.len();
@@ -577,7 +577,7 @@ where
 		(gpow_c_lo_eval, c_lo_prover): (F, ProdcheckProver<'alloc, A, P>),
 		(gpow_c_hi_eval, c_hi_prover): (F, ProdcheckProver<'alloc, A, P>),
 		exponents: [&[Word]; 3],
-		tables: &[FieldBuffer<P>],
+		tables: &[FieldVec<P, A>],
 	) -> Phase4Output<F> {
 		let n_vars = eval_point.len();
 

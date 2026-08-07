@@ -309,7 +309,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 					witness.a_exponents,
 					witness.c_lo_exponents,
 					witness.c_hi_exponents,
-					&witness.tables[0],
+					witness.tables[0].to_ref(),
 				)
 			},
 			BatchSize::SmallInput,

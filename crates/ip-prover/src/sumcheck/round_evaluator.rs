@@ -26,7 +26,7 @@ use auto_impl::auto_impl;
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldSlice, FieldVec, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{FieldSlice, multilinear::eq::eq_ind_partial_eval};
 
 use super::{
 	MleToSumCheckEvaluator,
@@ -352,13 +352,13 @@ where
 		&self.group.store
 	}
 
-	/// Pushes an owned column onto the store, returning its id.
+	/// Pushes a borrowed column onto the store, returning its id.
 	///
-	/// Lets a caller extend the shared store with a fresh column that a later-added evaluator
-	/// reads: the logUp* final layer pushes the table halves this way before adding its product
-	/// evaluators. See [`MleStore::push_owned`].
-	pub fn push_owned_column(&mut self, column: FieldVec<P, A>) -> ColId {
-		self.group.store.push_owned(column)
+	/// Lets a caller extend the shared store with a column that a later-added evaluator reads: the
+	/// logUp* final layer pushes the table halves this way before adding its product evaluators.
+	/// The column is not copied. See [`MleStore::push`].
+	pub fn push_column(&mut self, column: FieldSlice<'a, P>) -> ColId {
+		self.group.store.push(column)
 	}
 
 	/// Adds one more evaluator — a claim reading the shared store, with its initial claim — to the

@@ -64,7 +64,7 @@ pub struct Looker<'a, F> {
 
 pub fn prove<A, F, P>(
 	alloc: &A,
-	table: &FieldBuffer<P>,
+	table: FieldSlice<P>,
 	lookers: &[Looker<'_, F>],
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
@@ -148,7 +148,7 @@ where
 )]
 pub fn prove_reduction<A, F, P>(
 	alloc: &A,
-	table: &FieldBuffer<P>,
+	table: FieldSlice<P>,
 	lookers: &[Looker<'_, F>],
 	eval_claim: F,
 	numerators: Vec<FieldVec<P, A>>,
@@ -369,8 +369,12 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim,
 		};
-		let prover_out =
-			prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut prover_transcript);
+		let prover_out = prove::<GlobalAllocator, F, P>(
+			&alloc,
+			table.to_ref(),
+			&[looker],
+			&mut prover_transcript,
+		);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let looker_claim = logup_star::LookerClaim {
@@ -452,7 +456,7 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim: wrong_claim,
 		};
-		prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut prover_transcript);
+		prove::<GlobalAllocator, F, P>(&alloc, table.to_ref(), &[looker], &mut prover_transcript);
 
 		// The product-check inconsistency must surface as a verification failure.
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -503,8 +507,12 @@ mod tests {
 				eval_claim: *eval_claim,
 			})
 			.collect::<Vec<_>>();
-		let prover_out =
-			prove::<GlobalAllocator, F, P>(&alloc, &table, &prover_lookers, &mut prover_transcript);
+		let prover_out = prove::<GlobalAllocator, F, P>(
+			&alloc,
+			table.to_ref(),
+			&prover_lookers,
+			&mut prover_transcript,
+		);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let looker_claims = lookers
@@ -551,7 +559,7 @@ mod tests {
 			eval_point: &[],
 			eval_claim: F::ZERO,
 		};
-		let _ = prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut transcript);
+		let _ = prove::<GlobalAllocator, F, P>(&alloc, table.to_ref(), &[looker], &mut transcript);
 	}
 
 	#[test]
@@ -569,7 +577,7 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim: F::ZERO,
 		};
-		let _ = prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut transcript);
+		let _ = prove::<GlobalAllocator, F, P>(&alloc, table.to_ref(), &[looker], &mut transcript);
 	}
 
 	#[test]
@@ -588,6 +596,6 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim: F::ZERO,
 		};
-		let _ = prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut transcript);
+		let _ = prove::<GlobalAllocator, F, P>(&alloc, table.to_ref(), &[looker], &mut transcript);
 	}
 }

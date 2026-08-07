@@ -17,7 +17,7 @@ use binius_field::{BinaryField, Divisible, PackedField};
 pub use binius_ip_prover::logup_star::Looker;
 use binius_ip_prover::logup_star::{self as reduction, witness};
 use binius_math::{
-	FieldBuffer, multilinear::eq::eq_ind_partial_eval_in, univariate::evaluate_univariate,
+	FieldSlice, multilinear::eq::eq_ind_partial_eval_in, univariate::evaluate_univariate,
 };
 
 use crate::channel::IOPProverChannel;
@@ -64,7 +64,7 @@ pub struct LogupProof<F> {
 	fields(n_lookers = lookers.len(), table_n_vars = table.log_len())
 )]
 pub fn prove<F, P, Channel, A>(
-	table: &FieldBuffer<P>,
+	table: FieldSlice<P>,
 	lookers: &[Looker<'_, F>],
 	channel: &mut Channel,
 	alloc: &A,
@@ -209,7 +209,7 @@ mod tests {
 			eval_claim,
 		};
 		let prover_proof =
-			prove::<F, P, _, _>(&table, &[looker], &mut prover_channel, &GlobalAllocator);
+			prove::<F, P, _, _>(table.to_ref(), &[looker], &mut prover_channel, &GlobalAllocator);
 
 		prover_channel.finish();
 
@@ -295,7 +295,7 @@ mod tests {
 			},
 		];
 		let prover_proof =
-			prove::<F, P, _, _>(&table, &lookers, &mut prover_channel, &GlobalAllocator);
+			prove::<F, P, _, _>(table.to_ref(), &lookers, &mut prover_channel, &GlobalAllocator);
 		prover_channel.finish();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -347,7 +347,7 @@ mod tests {
 			eval_claim: wrong_claim,
 		};
 		let _prover_proof =
-			prove::<F, P, _, _>(&table, &[looker], &mut prover_channel, &GlobalAllocator);
+			prove::<F, P, _, _>(table.to_ref(), &[looker], &mut prover_channel, &GlobalAllocator);
 		prover_channel.finish();
 
 		// The reduction's product check must surface the inconsistency as a verification failure.
@@ -417,7 +417,8 @@ mod tests {
 			eval_claim,
 		};
 		let alloc = GlobalAllocator;
-		let prover_proof = prove::<F, BP, _, _>(&table, &[looker], &mut prover_channel, &alloc);
+		let prover_proof =
+			prove::<F, BP, _, _>(table.to_ref(), &[looker], &mut prover_channel, &alloc);
 		prover_channel.finish(&alloc);
 
 		// Verify: receive Y, run the reduction, open the pushforward through the real FRI check.
