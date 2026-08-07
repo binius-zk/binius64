@@ -7,7 +7,10 @@ use std::mem::MaybeUninit;
 
 use binius_utils::{
 	FixedSizeSerializeBytes, SerializeBytes,
-	rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
+	rayon::{
+		iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
 };
 use bytemuck::{bytes_of_mut, must_cast};
 use digest::Digest;
@@ -152,6 +155,7 @@ impl ParallelPseudoCompression<Output<Sha256>, 2> for ParallelSha256Compression 
 		input_groups
 			.par_chunks_exact(8)
 			.zip(out_groups.par_chunks_exact_mut(4))
+			.with_min_task(WorkPerItem::HashCompression)
 			.for_each(|(pairs, out4)| {
 				// Pack each sibling pair into one 64-byte message block: left child then right.
 				let mut blocks = [[0u8; 64]; 4];
@@ -211,6 +215,8 @@ impl ParallelDigest for ParallelSha256Digest {
 		source: impl IndexedParallelIterator<Item = I>,
 		out: &mut [MaybeUninit<Output<Sha256>>],
 	) {
+		let source = source.with_min_task(WorkPerItem::HashCompression);
+
 		// On aarch64 with the SHA extension, hash four leaves at once with the interleaved kernel.
 		// It needs full groups of four, which every power-of-two leaf count of at least four meets.
 		#[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]

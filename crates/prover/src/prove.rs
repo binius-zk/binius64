@@ -19,7 +19,10 @@ use binius_math::{
 	univariate::lagrange_evals,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{SerializeBytes, rayon::prelude::*};
+use binius_utils::{
+	SerializeBytes,
+	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
+};
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
@@ -518,6 +521,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>, A: Allocator>(
 		padded_witness_elems.spare_capacity_mut()[..n_aligned_elems].par_iter_mut(),
 	)
 		.into_par_iter()
+		.with_min_task_bytes::<P>()
 		.for_each(|(word_pairs, out)| {
 			out.write(P::from_scalars(
 				word_pairs
