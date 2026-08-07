@@ -7,16 +7,20 @@ use bytes::{Buf, BufMut};
 
 use crate::word::Word;
 
-/// One segment of a value vector, decoded from its versioned on-disk form.
+/// A run of value-vector words, decoded from its versioned on-disk form.
 ///
-/// A value vector splits in two, and each half becomes a file of its own:
+/// The words of one proving job travel as two files, holding what the circuit itself does not fix:
 ///
 /// ```text
-///     segment     | holds                        | who reads it
+///     file        | holds                        | who reads it
 ///     ------------+------------------------------+------------------
-///     public      | constants, inputs, outputs   | prover, verifier
+///     inout       | inputs and outputs           | prover, verifier
 ///     non-public  | witness and internal values  | prover only
 /// ```
+///
+/// Neither file holds the circuit's constants, nor the padding between sections. Both of those
+/// are the same for every instance, so they stay in the constraint system and are put back by
+/// [`ConstraintSystem::public_segment`](super::ConstraintSystem::public_segment).
 ///
 /// Those two files plus the circuit's constraint system are all another host needs.
 /// From the three it rebuilds the witness and proves against it.

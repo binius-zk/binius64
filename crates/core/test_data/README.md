@@ -64,7 +64,7 @@ The binary format uses little-endian encoding and follows this structure:
 
 ### ValuesData Format
 1. **Version header** (4 bytes): `u32` serialization version
-2. **Data**: Vector of `Word` values holding one segment of a value vector
+2. **Data**: Vector of `Word` values holding a run of value-vector words — the inout values of one instance, or the whole non-public segment
 
 ### Proof Format
 1. **Version header** (4 bytes): `u32` serialization version

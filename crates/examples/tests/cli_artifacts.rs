@@ -2,7 +2,7 @@
 //! End-to-end check of the artifact files that carry a proving job between hosts.
 //!
 //! ```text
-//!     circuit  -> cs.bin, public.bin, non_public.bin
+//!     circuit  -> cs.bin, inout.bin, non_public.bin
 //!     prover   -> proof.bin
 //!     verifier -> accept or reject
 //! ```
@@ -16,16 +16,19 @@ use std::{
 	process::Command,
 };
 
-use binius_core::{constraint_system::ValuesRef, word::Word};
-use binius_frontend::CircuitBuilder;
+use binius_core::{
+	constraint_system::{ValueVec, ValuesRef},
+	word::Word,
+};
+use binius_frontend::{Circuit, CircuitBuilder};
 use binius_utils::serialization::SerializeBytes;
 
 // Where each artifact of one proving job lives on disk.
 struct Artifacts {
-	// Circuit shape: constraints and section sizes.
+	// Circuit shape: constraints, constants and section sizes.
 	cs: PathBuf,
-	// Public segment: constants, inputs and outputs. The verifier reads this one.
-	public: PathBuf,
+	// Public inout values: this instance's inputs and outputs. The verifier reads this one.
+	inout: PathBuf,
 	// Non-public segment: witness and internal values. The prover alone reads this one.
 	non_public: PathBuf,
 	// Proof transcript, written by the prover and read by the verifier.
@@ -46,7 +49,7 @@ fn write_serialized<T: SerializeBytes>(value: &T, path: &Path) {
 	fs::write(path, &buf).unwrap();
 }
 
-// Compiles a one-gate circuit and writes the three files a prover needs.
+// Compiles a one-gate circuit and fills its value vector.
 //
 // The circuit proves knowledge of a value that masks to a public output:
 //
@@ -55,7 +58,7 @@ fn write_serialized<T: SerializeBytes>(value: &T, path: &Path) {
 //
 // One hidden wire and one public wire is the smallest shape with both segments non-empty.
 // That is the least the artifact files have to carry.
-fn write_artifacts(dir: &Path) -> Artifacts {
+fn build_circuit() -> (Circuit, ValueVec) {
 	let builder = CircuitBuilder::new();
 	let mask = builder.add_constant_64(0xFF00);
 	let secret = builder.add_witness();
@@ -71,17 +74,26 @@ fn write_artifacts(dir: &Path) -> Artifacts {
 	circuit.populate_wire_witness(&mut filler).unwrap();
 	let values = filler.into_value_vec();
 
+	(circuit, values)
+}
+
+// Writes the three files a prover needs.
+fn write_artifacts(dir: &Path) -> Artifacts {
+	let (circuit, values) = build_circuit();
+
 	let artifacts = Artifacts {
 		cs: dir.join("cs.bin"),
-		public: dir.join("public.bin"),
+		inout: dir.join("inout.bin"),
 		non_public: dir.join("non_public.bin"),
 		proof: dir.join("proof.bin"),
 	};
 
-	write_serialized(circuit.constraint_system(), &artifacts.cs);
+	let cs = circuit.constraint_system();
+	write_serialized(cs, &artifacts.cs);
 
-	// Each segment carries its own version tag, so each becomes a file of its own.
-	write_serialized(&ValuesRef::new(values.public()), &artifacts.public);
+	// Each run of words carries its own version tag, so each becomes a file of its own. The mask
+	// constant is in neither of them: it rides along in the constraint system.
+	write_serialized(&ValuesRef::new(cs.inout_values(values.public())), &artifacts.inout);
 	write_serialized(&ValuesRef::new(values.non_public()), &artifacts.non_public);
 
 	artifacts
@@ -93,7 +105,7 @@ fn run_prover(artifacts: &Artifacts) -> std::process::Output {
 		.arg("--cs-path")
 		.arg(&artifacts.cs)
 		.arg("--pub-witness-path")
-		.arg(&artifacts.public)
+		.arg(&artifacts.inout)
 		.arg("--non-pub-data-path")
 		.arg(&artifacts.non_public)
 		.arg("--proof-path")
@@ -108,7 +120,7 @@ fn run_verifier(artifacts: &Artifacts) -> std::process::Output {
 		.arg("--cs-path")
 		.arg(&artifacts.cs)
 		.arg("--pub-witness-path")
-		.arg(&artifacts.public)
+		.arg(&artifacts.inout)
 		.arg("--proof-path")
 		.arg(&artifacts.proof)
 		.output()
@@ -128,7 +140,7 @@ fn saved_artifacts_prove_and_verify_across_processes() {
 	assert!(out.status.success(), "prover failed: {}", String::from_utf8_lossy(&out.stderr));
 	assert!(artifacts.proof.is_file(), "prover wrote no proof");
 
-	// Another reads the shape, the public segment and that proof, and accepts.
+	// Another reads the shape, the inout values and that proof, and accepts.
 	let out = run_verifier(&artifacts);
 	assert!(out.status.success(), "verifier failed: {}", String::from_utf8_lossy(&out.stderr));
 
@@ -137,7 +149,7 @@ fn saved_artifacts_prove_and_verify_across_processes() {
 
 #[test]
 fn verifier_rejects_a_public_segment_from_another_format_version() {
-	// Invariant: a segment file written to an unknown layout stops the verifier.
+	// Invariant: a values file written to an unknown layout stops the verifier.
 	//
 	// Fixture state: valid artifacts and a valid proof.
 	// So the version tag is the only thing left between the verifier and acceptance.
@@ -149,12 +161,12 @@ fn verifier_rejects_a_public_segment_from_another_format_version() {
 
 	// Mutation: raise the leading version tag by one, leaving every word intact.
 	//
-	//     public.bin:  [ 2 | n | word_0 .. ]
-	//     expected:      1
+	//     inout.bin:  [ 2 | n | word_0 .. ]
+	//     expected:     1
 	//     -> reject before a single word is read
-	let mut bytes = fs::read(&artifacts.public).unwrap();
+	let mut bytes = fs::read(&artifacts.inout).unwrap();
 	bytes[0] = bytes[0].wrapping_add(1);
-	fs::write(&artifacts.public, &bytes).unwrap();
+	fs::write(&artifacts.inout, &bytes).unwrap();
 
 	let out = run_verifier(&artifacts);
 	assert!(!out.status.success(), "verifier accepted an unknown layout");
@@ -162,6 +174,35 @@ fn verifier_rejects_a_public_segment_from_another_format_version() {
 	// The failure names the version tag, not a downstream symptom of the wrong words.
 	let stderr = String::from_utf8_lossy(&out.stderr);
 	assert!(stderr.contains("ValuesData::version"), "expected a version error, got: {stderr}");
+
+	fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn verifier_rejects_a_whole_public_segment_in_place_of_the_inout_values() {
+	// Invariant: the file carries the inout values alone, and a longer run is not silently taken
+	// as one. This is what keeps the constants a property of the circuit rather than the instance.
+	//
+	// Fixture state: valid artifacts and a valid proof, with the inout file then replaced by the
+	// whole public segment — constants, padding and all.
+	//
+	//     inout.bin was:  [ output ]
+	//     inout.bin now:  [ 0xFF00 | pad | output | pad ]
+	let dir = scratch_dir("whole-segment");
+	let artifacts = write_artifacts(&dir);
+
+	let out = run_prover(&artifacts);
+	assert!(out.status.success(), "prover failed: {}", String::from_utf8_lossy(&out.stderr));
+
+	let (_circuit, values) = build_circuit();
+	write_serialized(&ValuesRef::new(values.public()), &artifacts.inout);
+
+	let out = run_verifier(&artifacts);
+	assert!(!out.status.success(), "verifier accepted a whole public segment");
+
+	// The failure names the length, so the mistake is legible without reading the bytes.
+	let stderr = String::from_utf8_lossy(&out.stderr);
+	assert!(stderr.contains("inout values must be"), "expected a length error, got: {stderr}");
 
 	fs::remove_dir_all(&dir).unwrap();
 }

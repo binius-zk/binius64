@@ -182,14 +182,14 @@ enum Commands {
 		params: CommandArgs,
 	},
 
-	/// Save constraint system, public witness, non-public data, and key collection to files if
-	/// paths are provided
+	/// Save constraint system, public inout values, non-public data, and key collection to files
+	/// if paths are provided
 	Save {
 		/// Output path for the constraint system binary
 		#[arg(long = "cs-path")]
 		cs_path: Option<String>,
 
-		/// Output path for the public witness binary
+		/// Output path for the public inout values binary
 		#[arg(long = "pub-witness-path")]
 		pub_witness_path: Option<String>,
 
@@ -217,7 +217,7 @@ enum Commands {
 		#[arg(long = "cs-path", required = true)]
 		cs_path: String,
 
-		/// Input path for the public witness binary
+		/// Input path for the public inout values binary
 		#[arg(long = "pub-witness-path", required = true)]
 		pub_witness_path: String,
 
@@ -408,7 +408,7 @@ where
 
 	fn build_save_subcommand() -> Command {
 		let mut cmd = Command::new("save").about(
-			"Save constraint system, public witness, non-public data, and key collection to files if paths are provided",
+			"Save constraint system, public inout values, non-public data, and key collection to files if paths are provided",
 		);
 		cmd = cmd
 			.arg(
@@ -421,7 +421,7 @@ where
 				Arg::new("pub_witness_path")
 					.long("pub-witness-path")
 					.value_name("PATH")
-					.help("Output path for the public witness binary"),
+					.help("Output path for the public inout values binary"),
 			)
 			.arg(
 				Arg::new("non_pub_data_path")
@@ -454,7 +454,7 @@ where
 				Arg::new("pub_witness_path")
 					.long("pub-witness-path")
 					.value_name("PATH")
-					.help("Input path for the public witness binary")
+					.help("Input path for the public inout values binary")
 					.required(true),
 			)
 			.arg(
@@ -816,8 +816,9 @@ where
 		}
 
 		if let Some(path) = pub_witness_path.as_deref() {
-			write_serialized(&ValuesRef::new(witness.public()), path)?;
-			tracing::info!("Public witness saved to '{}'", path);
+			// Only the inout values: the constants and the padding are already in the shape above.
+			write_serialized(&ValuesRef::new(cs.inout_values(witness.public())), path)?;
+			tracing::info!("Public inout values saved to '{}'", path);
 		}
 
 		if let Some(path) = non_pub_data_path.as_deref() {
@@ -876,14 +877,15 @@ where
 
 		// Load witness data
 		let witness_load_scope = tracing::info_span!("Loading witness data").entered();
-		let pub_witness_data: ValuesData = read_deserialized(pub_witness_path)?;
-		tracing::info!("Public witness loaded from '{}'", pub_witness_path);
+		let inout: ValuesData = read_deserialized(pub_witness_path)?;
+		tracing::info!("Public inout values loaded from '{}'", pub_witness_path);
 
 		let non_pub_data: ValuesData = read_deserialized(non_pub_data_path)?;
 		tracing::info!("Non-public data loaded from '{}'", non_pub_data_path);
 
-		// Reconstruct the full witness from its two segments
-		let witness = ValueVec::new_from_data(&pub_witness_data, &non_pub_data);
+		// The public segment is the constants and padding from the shape, around these inout
+		// values.
+		let witness = ValueVec::new_from_data(&cs.public_segment(&inout)?, &non_pub_data);
 		drop(witness_load_scope);
 
 		match hash_suite {

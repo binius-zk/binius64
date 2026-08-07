@@ -23,7 +23,7 @@ struct Args {
 	#[arg(long = "cs-path")]
 	cs_path: PathBuf,
 
-	/// Path to the public values (ValuesData) binary
+	/// Path to the public inout values (ValuesData) binary
 	#[arg(long = "pub-witness-path")]
 	pub_witness_path: PathBuf,
 
@@ -51,11 +51,11 @@ fn main() -> Result<()> {
 	let cs = ConstraintSystem::deserialize(&mut cs_bytes.as_slice())
 		.context("Failed to deserialize ConstraintSystem")?;
 
-	// Read and deserialize public values
-	let pub_bytes = fs::read(&args.pub_witness_path).with_context(|| {
-		format!("Failed to read public values from {}", args.pub_witness_path.display())
+	// Read and deserialize the public inout values
+	let inout_bytes = fs::read(&args.pub_witness_path).with_context(|| {
+		format!("Failed to read public inout values from {}", args.pub_witness_path.display())
 	})?;
-	let public = ValuesData::deserialize(&mut pub_bytes.as_slice())
+	let inout = ValuesData::deserialize(&mut inout_bytes.as_slice())
 		.context("Failed to deserialize public ValuesData")?;
 
 	// Read and deserialize non-public values
@@ -65,7 +65,11 @@ fn main() -> Result<()> {
 	let non_public = ValuesData::deserialize(&mut non_pub_bytes.as_slice())
 		.context("Failed to deserialize non-public ValuesData")?;
 
-	// Reconstruct the full ValueVec
+	// Reconstruct the full ValueVec. The constants and the padding come from the shape, so the
+	// inout values are all the public segment needs from the file.
+	let public = cs
+		.public_segment(&inout)
+		.context("Public inout values do not fit the constraint system")?;
 	let witness = ValueVec::new_from_data(&public, &non_public);
 
 	// Setup prover (verifier is not used here)
