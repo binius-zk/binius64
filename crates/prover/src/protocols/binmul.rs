@@ -1,5 +1,7 @@
 // Copyright 2026 The Binius Developers
 
+use std::iter;
+
 use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
@@ -37,22 +39,23 @@ where
 	let n_vars = log2_ceil_usize(lo.len());
 	let packed_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
 	let elem =
-		|index: usize| F::from((lo[index].as_u64() as u128) | ((hi[index].as_u64() as u128) << 64));
+		|(&lo, &hi): (&Word, &Word)| F::from((lo.as_u64() as u128) | ((hi.as_u64() as u128) << 64));
 
 	let mut values = alloc.alloc::<P>(packed_len);
 
-	// The packed elements the columns fill whole. Rounding down to a multiple of `P::WIDTH` keeps
-	// every lane of this loop in range, so it packs without a per-lane bounds check.
-	let n_full = lo.len() / P::WIDTH;
+	// The packed elements the columns fill whole. `chunks_exact` stops at the last of them, so
+	// every lane this loop packs is a real row.
+	let (lo_chunks, hi_chunks) = (lo.chunks_exact(P::WIDTH), hi.chunks_exact(P::WIDTH));
+	let (lo_tail, hi_tail) = (lo_chunks.remainder(), hi_chunks.remainder());
 	values.extend(
-		(0..n_full).map(|i| P::from_scalars((0..P::WIDTH).map(|j| elem(i * P::WIDTH + j)))),
+		iter::zip(lo_chunks, hi_chunks)
+			.map(|(lo_chunk, hi_chunk)| P::from_scalars(iter::zip(lo_chunk, hi_chunk).map(elem))),
 	);
 
 	// The columns' trailing words share one packed element with the start of the padding. The lanes
 	// `from_scalars` is not given default to zero, which is exactly that padding.
-	let remainder = lo.len() - n_full * P::WIDTH;
-	if remainder > 0 {
-		values.push(P::from_scalars((0..remainder).map(|j| elem(n_full * P::WIDTH + j))));
+	if !lo_tail.is_empty() {
+		values.push(P::from_scalars(iter::zip(lo_tail, hi_tail).map(elem)));
 	}
 
 	// The rest of the hypercube is zero padding. A zero row satisfies `0 * 0 = 0`, so it
