@@ -3,7 +3,9 @@
 
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
+use binius_math::{
+	FieldBuffer, field_buffer::BufferData, multilinear::fold::fold_highest_var_inplace,
+};
 use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
 use itertools::izip;
 
@@ -33,15 +35,17 @@ pub struct Claim<F: Field> {
 /// switchover. See `BinarySwitchover` for more in-depth explanation of the mechanism. Also note
 /// that the need to expand the equality indicator for each multilinear still results in some
 /// blowup.
-pub struct SelectorMlecheckProver<'b, P: PackedField, B: Bitwise> {
+pub struct SelectorMlecheckProver<'b, P: PackedField, B: Bitwise, Data: BufferData<P> = Vec<P>> {
 	last_coeffs_or_sums: RoundState<Vec<RoundCoeffs<P::Scalar>>, Vec<P::Scalar>>,
-	selected: FieldBuffer<P>,
+	selected: FieldBuffer<P, Data>,
 	eq_trackers: Vec<ChunkedEqTracker<P>>,
 	weights: Vec<P::Scalar>,
 	switchover: BinarySwitchover<'b, P, B>,
 }
 
-impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProver<'b, P, B> {
+impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise, Data: BufferData<P>>
+	SelectorMlecheckProver<'b, P, B, Data>
+{
 	/// Constructs a prover, given `bitmasks` as representation of 1-bit columns, `selected` being
 	/// the shared large field multilinear, individual `claims` per selector, `weights` to combine
 	/// the per-selector round polynomials into one (one weight per claim), and `switchover` as the
@@ -51,7 +55,7 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProve
 	/// per-selector claims. Supplying the equality-indicator tensor `eq_k(γ, ·)` as the weights
 	/// batches the claims with `eq_k(γ, i)`.
 	pub fn new(
-		selected: FieldBuffer<P>,
+		selected: FieldBuffer<P, Data>,
 		claims: Vec<Claim<F>>,
 		bitmasks: &'b [B],
 		weights: Vec<F>,
@@ -95,11 +99,12 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProve
 	}
 }
 
-impl<'b, F, P, B> SumcheckProver<F> for SelectorMlecheckProver<'b, P, B>
+impl<'b, F, P, B, Data> SumcheckProver<F> for SelectorMlecheckProver<'b, P, B, Data>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 	B: Bitwise,
+	Data: BufferData<P>,
 {
 	fn n_vars(&self) -> usize {
 		self.selected.log_len()
@@ -126,6 +131,10 @@ where
 			.unwrap_or_default();
 		let chunk_count = 1 << (self.n_vars() - 1 - chunk_vars);
 
+		// The fold below reads both halves concurrently from many rayon tasks.
+		// Borrowed halves cross that boundary for any backing store the buffer is built on.
+		let (selected_0, selected_1) = self.selected.split_half_ref();
+
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
 			.fold(
@@ -137,8 +146,6 @@ where
 					)
 				},
 				|(mut packed_prime_evals, mut binary_chunk_0, mut binary_chunk_1), chunk_index| {
-					let (selected_0, selected_1) = self.selected.split_half_ref();
-
 					let selected_0_chunk = selected_0.chunk(chunk_vars, chunk_index);
 					let selected_1_chunk = selected_1.chunk(chunk_vars, chunk_index);
 

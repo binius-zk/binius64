@@ -460,7 +460,7 @@ where
 		&mut self,
 		twisted_eval_points: &[Vec<F>],
 		twisted_evals: &[F],
-		selector: FieldBuffer<P>,
+		selector: FieldVec<P, A>,
 		b_exponents: &[Word],
 		c_lo_hi_roots: [FieldVec<P, A>; 2],
 		c_eval_point: &[F],

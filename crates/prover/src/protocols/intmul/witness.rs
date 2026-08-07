@@ -7,7 +7,10 @@ use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::prodcheck::ProdcheckProver;
-use binius_math::{FieldVec, field_buffer::FieldBuffer};
+use binius_math::{
+	FieldVec,
+	field_buffer::{FieldBuffer, FieldSlice},
+};
 use binius_utils::{
 	checked_arithmetics::{checked_log_2, strict_log_2},
 	rayon::{
@@ -54,7 +57,7 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// Prodcheck prover for the `a` exponentiation tree (leaf layer retained).
 	pub a_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the `a` tree (product of all leaves element-wise); the `b` variable base.
-	pub a_root: FieldBuffer<P>,
+	pub a_root: FieldVec<P, A>,
 	/// The exponents for `b` (needed for phase 5).
 	#[getset(skip)]
 	pub b_exponents: &'a [Word],
@@ -64,7 +67,7 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// The prover for the prodcheck reduction on b_leaves.
 	pub b_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the b tree (product of all leaves element-wise).
-	pub b_root: FieldBuffer<P>,
+	pub b_root: FieldVec<P, A>,
 	/// The exponents for `c_lo` (needed for the phase 5 lookup indices, parity zerocheck on
 	/// `c_lo_0`, and the raw per-bit output evaluations).
 	#[getset(skip)]
@@ -174,7 +177,6 @@ where
 			tracing::debug_span!("Compute fixed-base prodcheck layers").entered();
 		let a_leaves = limb_leaves::<A, F, P>(alloc, &tables[..N_LIMBS], a);
 		let (a_prodcheck, a_root) = ProdcheckProver::new(LOG_N_LIMBS, alloc, a_leaves);
-		let a_root = unpool::<A, P>(a_root);
 
 		let c_lo_leaves = limb_leaves::<A, F, P>(alloc, &tables[..N_LIMBS], c_lo);
 		let (c_lo_prodcheck, c_lo_root) = ProdcheckProver::new(LOG_N_LIMBS, alloc, c_lo_leaves);
@@ -186,7 +188,7 @@ where
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
 		let variable_base_tree_scope =
 			tracing::debug_span!("Compute variable-base prodcheck layers").entered();
-		let b_leaves = compute_b_leaves(alloc, &a_root, b);
+		let b_leaves = compute_b_leaves(alloc, a_root.to_ref(), b);
 		// The prodcheck prover folds its leaf layer in place, and phase 1 reads the leaves again
 		// afterwards, so the prover gets a clone.
 		let (b_prodcheck, b_root) = ProdcheckProver::new(
@@ -194,7 +196,6 @@ where
 			alloc,
 			FieldBuffer::clone_from_slice(alloc, b_leaves.to_ref()),
 		);
-		let b_root = unpool::<A, P>(b_root);
 		drop(variable_base_tree_scope);
 
 		Ok(Self {
@@ -214,17 +215,6 @@ where
 			tables,
 		})
 	}
-}
-
-/// Copies a pooled tree root into a plain `Vec`-backed buffer.
-///
-/// The root fields are consumed by the phase provers as ordinary `FieldBuffer`s; the pooled block
-/// cannot be handed out as a `Vec` directly (its allocation is over-aligned for the free list), so
-/// it is copied out and the pooled block recycled.
-// Takes `src` by value so the pooled block returns to the free list here, not at the caller.
-#[allow(clippy::needless_pass_by_value)]
-fn unpool<A: Allocator, P: PackedField>(src: FieldVec<P, A>) -> FieldBuffer<P> {
-	FieldBuffer::new(src.log_len(), src.as_ref().to_vec())
 }
 
 /// Number of packed columns filled as one independent group before chaining to the next block.
@@ -357,7 +347,7 @@ where
 #[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
 pub fn compute_b_leaves<A, F, P>(
 	alloc: &A,
-	bases: &FieldBuffer<P>,
+	bases: FieldSlice<'_, P>,
 	exponents: &[Word],
 ) -> FieldVec<P, A>
 where
@@ -394,7 +384,7 @@ where
 /// Parallel implementation of compute_b_leaves for when bases is large enough to parallelize.
 fn compute_b_leaves_parallel<A, F, P>(
 	alloc: &A,
-	bases: &FieldBuffer<P>,
+	bases: FieldSlice<'_, P>,
 	exponents: &[Word],
 ) -> FieldVec<P, A>
 where
@@ -508,7 +498,7 @@ mod tests {
 		// (`c_lo_root * c_hi_root`); this equality is what lets the prover reuse `b_root` in place
 		// of a separately stored `c_root`.
 		let c_root = buffer_bivariate_product(witness.c_lo_root(), witness.c_hi_root());
-		assert_eq!(witness.b_root(), &c_root);
+		assert_eq!(witness.b_root().to_ref(), c_root.to_ref());
 	}
 
 	#[test]
@@ -588,7 +578,7 @@ mod tests {
 				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 
-			let leaves = compute_b_leaves::<_, F, P>(&GlobalAllocator, &bases, &exponents);
+			let leaves = compute_b_leaves::<_, F, P>(&GlobalAllocator, bases.to_ref(), &exponents);
 
 			for (i, &base0) in base_scalars.iter().enumerate() {
 				let mut base = base0;
