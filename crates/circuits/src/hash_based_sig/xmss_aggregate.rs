@@ -125,7 +125,7 @@ impl<'a> MultiSigBuilder<'a> {
 mod tests {
 	use std::error::Error;
 
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 	use rand::prelude::*;
 	use rstest::rstest;
 
@@ -303,7 +303,7 @@ mod tests {
 			circuit.populate_wire_witness(&mut w)?;
 
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec())?;
+			cs.verify(&w.into_value_vec())?;
 
 			Ok(())
 		}

@@ -309,7 +309,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 					witness.a_exponents,
 					witness.c_lo_exponents,
 					witness.c_hi_exponents,
-					&witness.tables[0],
+					witness.tables[0].to_ref(),
 				)
 			},
 			BatchSize::SmallInput,
@@ -339,7 +339,9 @@ fn bench_intmul_components(c: &mut Criterion) {
 	// Computing the leaves of the variable-base exponentiation tree (`a` root as base, `b` as
 	// exponents).
 	group.bench_function("b_leaves", |bencher| {
-		bencher.iter(|| compute_b_leaves::<_, F, P>(&alloc, &witness.a_root, witness.b_exponents));
+		bencher.iter(|| {
+			compute_b_leaves::<_, F, P>(&alloc, witness.a_root.to_ref(), witness.b_exponents)
+		});
 	});
 
 	// Computing a product tree over the leaves.

@@ -7,9 +7,12 @@ use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::prodcheck::ProdcheckProver;
-use binius_math::{FieldVec, field_buffer::FieldBuffer};
+use binius_math::{
+	FieldVec,
+	field_buffer::{FieldBuffer, FieldSlice},
+};
 use binius_utils::{
-	checked_arithmetics::{checked_log_2, strict_log_2},
+	checked_arithmetics::log2_ceil_usize,
 	rayon::{
 		prelude::*,
 		task_size::{IndexedParallelIteratorExt, WorkPerItem},
@@ -54,7 +57,7 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// Prodcheck prover for the `a` exponentiation tree (leaf layer retained).
 	pub a_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the `a` tree (product of all leaves element-wise); the `b` variable base.
-	pub a_root: FieldBuffer<P>,
+	pub a_root: FieldVec<P, A>,
 	/// The exponents for `b` (needed for phase 5).
 	#[getset(skip)]
 	pub b_exponents: &'a [Word],
@@ -64,7 +67,7 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// The prover for the prodcheck reduction on b_leaves.
 	pub b_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the b tree (product of all leaves element-wise).
-	pub b_root: FieldBuffer<P>,
+	pub b_root: FieldVec<P, A>,
 	/// The exponents for `c_lo` (needed for the phase 5 lookup indices, parity zerocheck on
 	/// `c_lo_0`, and the raw per-bit output evaluations).
 	#[getset(skip)]
@@ -84,7 +87,7 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// The 2·N_LIMBS twisted power tables: `tables[s][i] = (G^{2^{ws}})^i`. Limb column `(t, l)`
 	/// is a gather from table `s(t, l)`; `tables[0]` is the shared table read by the Phase 5
 	/// logup* lookup.
-	pub tables: Vec<FieldBuffer<P>>,
+	pub tables: Vec<FieldVec<P, A>>,
 }
 
 // A manual `Clone` impl (rather than `#[derive(Clone)]`) so the bound lands on the pooled buffer
@@ -122,6 +125,13 @@ where
 	/// Constructs a new integer multiplication witness from the statement.
 	///
 	/// The GKR prodcheck provers draw their layer buffers from `alloc`.
+	///
+	/// The four columns must have equal length, but need not have a power-of-two one: the reduction
+	/// runs over the constraint axis of `2^ceil(log2(n))` rows, and the rows past the columns' end
+	/// read as `Word::ZERO`. Every buffer built here still spans that whole axis, and each derives
+	/// its own value for a padding row rather than being handed one. In the product-check trees
+	/// that value is the multiplicative **identity**, not zero: a zero exponent word indexes row 0
+	/// of a power table, which holds `base^0 = 1`. So no tree's product moves.
 	pub fn new(
 		alloc: &'alloc A,
 		a: &'a [Word],
@@ -129,17 +139,14 @@ where
 		c_lo: &'a [Word],
 		c_hi: &'a [Word],
 	) -> Result<Self, Error> {
-		assert!(2 * Word::BITS <= F::N_BITS);
-
-		// Statement should be of pow-2 length.
-		let Some(n_vars) = strict_log_2(a.len()) else {
-			return Err(Error::ExponentsPowerOfTwoLengthRequired);
-		};
+		const {
+			assert!(2 * Word::BITS <= F::N_BITS, "F must be wide enough to hold a 128-bit product");
+		}
 
 		// All statement slices should be of same length.
-		if [a, b, c_lo, c_hi]
+		if [b, c_lo, c_hi]
 			.iter()
-			.any(|exponents| exponents.len() != 1 << n_vars)
+			.any(|exponents| exponents.len() != a.len())
 		{
 			return Err(Error::ExponentLengthMismatch);
 		}
@@ -157,7 +164,7 @@ where
 		// Allocate the table buffers up front on this thread, so the parallel region only fills
 		// them — no allocator traffic inside the rayon closures.
 		let packed_len = 1 << LIMB_BITS.saturating_sub(P::LOG_WIDTH);
-		let buffers = iter::repeat_with(|| Vec::<P>::with_capacity(packed_len))
+		let buffers = iter::repeat_with(|| alloc.alloc::<P>(packed_len))
 			.take(bases.len())
 			.collect::<Vec<_>>();
 		let tables = (bases, buffers)
@@ -172,7 +179,6 @@ where
 			tracing::debug_span!("Compute fixed-base prodcheck layers").entered();
 		let a_leaves = limb_leaves::<A, F, P>(alloc, &tables[..N_LIMBS], a);
 		let (a_prodcheck, a_root) = ProdcheckProver::new(LOG_N_LIMBS, alloc, a_leaves);
-		let a_root = unpool::<A, P>(a_root);
 
 		let c_lo_leaves = limb_leaves::<A, F, P>(alloc, &tables[..N_LIMBS], c_lo);
 		let (c_lo_prodcheck, c_lo_root) = ProdcheckProver::new(LOG_N_LIMBS, alloc, c_lo_leaves);
@@ -184,7 +190,7 @@ where
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
 		let variable_base_tree_scope =
 			tracing::debug_span!("Compute variable-base prodcheck layers").entered();
-		let b_leaves = compute_b_leaves(alloc, &a_root, b);
+		let b_leaves = compute_b_leaves(alloc, a_root.to_ref(), b);
 		// The prodcheck prover folds its leaf layer in place, and phase 1 reads the leaves again
 		// afterwards, so the prover gets a clone.
 		let (b_prodcheck, b_root) = ProdcheckProver::new(
@@ -192,7 +198,6 @@ where
 			alloc,
 			FieldBuffer::clone_from_slice(alloc, b_leaves.to_ref()),
 		);
-		let b_root = unpool::<A, P>(b_root);
 		drop(variable_base_tree_scope);
 
 		Ok(Self {
@@ -212,17 +217,6 @@ where
 			tables,
 		})
 	}
-}
-
-/// Copies a pooled tree root into a plain `Vec`-backed buffer.
-///
-/// The root fields are consumed by the phase provers as ordinary `FieldBuffer`s; the pooled block
-/// cannot be handed out as a `Vec` directly (its allocation is over-aligned for the free list), so
-/// it is copied out and the pooled block recycled.
-// Takes `src` by value so the pooled block returns to the free list here, not at the caller.
-#[allow(clippy::needless_pass_by_value)]
-fn unpool<A: Allocator, P: PackedField>(src: FieldVec<P, A>) -> FieldBuffer<P> {
-	FieldBuffer::new(src.log_len(), src.as_ref().to_vec())
 }
 
 /// Number of packed columns filled as one independent group before chaining to the next block.
@@ -257,22 +251,22 @@ where
 /// Fill `buffer` with the power table of `base` and wrap it as a [`FieldBuffer`] of `2^log_size`
 /// rows: row `i` holds `base^i`.
 ///
-/// The caller supplies the backing `Vec`, so its allocation can be hoisted out of a hot or parallel
-/// region; `buffer` is cleared and refilled here without reallocating.
+/// The caller supplies the backing buffer, so its allocation can be hoisted out of a hot or
+/// parallel region; `buffer` is cleared and refilled here without reallocating.
 ///
 /// # Preconditions
 ///
-/// * `buffer.capacity()` must equal `1 << log_size.saturating_sub(P::LOG_WIDTH)`.
-fn power_table_into<F, P>(log_size: usize, base: F, mut buffer: Vec<P>) -> FieldBuffer<P>
+/// * `buffer.capacity()` must be at least `1 << log_size.saturating_sub(P::LOG_WIDTH)`.
+fn power_table_into<F, P, V>(log_size: usize, base: F, mut buffer: V) -> FieldBuffer<P, V>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	V: VecLike<P>,
 {
 	let packed_len = 1 << log_size.saturating_sub(P::LOG_WIDTH);
-	assert_eq!(
-		buffer.capacity(),
-		packed_len,
-		"precondition: buffer capacity must match the packed table length"
+	assert!(
+		buffer.capacity() >= packed_len,
+		"precondition: buffer capacity must cover the packed table length"
 	);
 	buffer.clear();
 
@@ -323,7 +317,7 @@ pub(super) const fn limb_index(word: Word, limb: usize) -> usize {
 /// corresponding word. The columns are concatenated into one `(n_vars + LOG_N_LIMBS)`-variate
 /// buffer with the limb index in the high bits, so the prodcheck's node reductions pair column `z`
 /// with column `z + N_LIMBS/2`.
-fn limb_leaves<A, F, P>(alloc: &A, tables: &[FieldBuffer<P>], exponents: &[Word]) -> FieldVec<P, A>
+fn limb_leaves<A, F, P>(alloc: &A, tables: &[FieldVec<P, A>], exponents: &[Word]) -> FieldVec<P, A>
 where
 	A: Allocator,
 	F: Field,
@@ -331,13 +325,18 @@ where
 {
 	assert_eq!(tables.len(), N_LIMBS);
 
-	let n_vars = checked_log_2(exponents.len());
+	// `exponents` need not fill the constraint axis. Its rows past the end are `Word::ZERO`, which
+	// indexes row 0 of every table — and that row holds `base^0 = 1`. So a padding row contributes
+	// the multiplicative identity to the product check, leaving each tree's product unchanged.
+	let n_vars = log2_ceil_usize(exponents.len());
+	let n_padding = (1 << n_vars) - exponents.len();
 	let scalars = (0..N_LIMBS)
 		.flat_map(|limb| {
 			let table = &tables[limb];
 			exponents
 				.iter()
 				.map(move |&word| table.get(limb_index(word, limb)))
+				.chain(iter::repeat_n(table.get(0), n_padding))
 		})
 		.collect::<Vec<_>>();
 
@@ -355,7 +354,7 @@ where
 #[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
 pub fn compute_b_leaves<A, F, P>(
 	alloc: &A,
-	bases: &FieldBuffer<P>,
+	bases: FieldSlice<'_, P>,
 	exponents: &[Word],
 ) -> FieldVec<P, A>
 where
@@ -374,7 +373,12 @@ where
 	let mut out = FieldBuffer::zeros_in(alloc, n_vars + Word::LOG_BITS);
 	let n_elems = 1 << n_vars;
 
-	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
+	// Rows past the columns' end are `Word::ZERO`: every bit is clear, so each of their leaves is
+	// `F::ONE` — the identity the product check needs from a padding row.
+	let padding = iter::repeat_n(Word::ZERO, n_elems - exponents.len());
+	let exponents = exponents.iter().copied().chain(padding);
+
+	for (i, (mut base, exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
 		for z in 0..Word::BITS {
 			// Branchless select of `base` when bit `z` is set, else `F::ONE`: on the selected lane
 			// `mask` is all-ones so `select` keeps `base - 1` and the `+ 1` restores `base`; on the
@@ -392,7 +396,7 @@ where
 /// Parallel implementation of compute_b_leaves for when bases is large enough to parallelize.
 fn compute_b_leaves_parallel<A, F, P>(
 	alloc: &A,
-	bases: &FieldBuffer<P>,
+	bases: FieldSlice<'_, P>,
 	exponents: &[Word],
 ) -> FieldVec<P, A>
 where
@@ -416,9 +420,16 @@ where
 			.expect("dimensions match capacity");
 
 		let ones = P::broadcast(F::ONE);
-		(strided.par_iter_cols(), bases.as_ref(), exponents.par_chunks(P::WIDTH))
+		(strided.par_iter_cols(), bases.as_ref())
 			.into_par_iter()
-			.for_each(|(mut col, packed_base, exp_chunk)| {
+			.enumerate()
+			.for_each(|(packed_index, (mut col, packed_base))| {
+				// The columns' rows this packed element covers. Rows past their end are absent, and
+				// `make_mask` reads a lane it is not given as clear, so those lanes' leaves are all
+				// `F::ONE` — the identity the product check needs from a padding row.
+				let start = (packed_index * P::WIDTH).min(exponents.len());
+				let exp_chunk = &exponents[start..(start + P::WIDTH).min(exponents.len())];
+
 				// Keep base as packed element for efficient squaring
 				let mut packed_base = *packed_base;
 
@@ -469,25 +480,38 @@ where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	let n_vars = checked_log_2(exponents.len());
-	let p_width = P::WIDTH.min(1 << n_vars);
+	let n_vars = log2_ceil_usize(exponents.len());
 	let packed_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
+
+	// Select `elements[1]` if bit `bit_offset` of the word is set, else `elements[0]`. A row past
+	// the columns' end is `Word::ZERO`, whose bits are all clear, so it selects `elements[0]`.
+	let select = |&word: &Word| elements[word.extract_bit(bit_offset) as usize];
+	let padding = elements[0];
+
 	let mut values = alloc.alloc::<P>(packed_len);
-	values.extend((0..packed_len).map(|i| {
-		let scalars = (0..p_width).map(|j| {
-			let index = i << P::LOG_WIDTH | j;
-			// Select `elements[1]` if bit `bit_offset` of `exponents[index]` is set, else
-			// `elements[0]`.
-			unsafe {
-				// Safety:
-				// - `index` is guaranteed to be in-bounds
-				// - `elements` has two values
-				let is_set = exponents.get_unchecked(index).extract_bit(bit_offset);
-				*elements.get_unchecked(is_set as usize)
-			}
-		});
-		P::from_scalars(scalars)
-	}));
+
+	// The packed elements `exponents` fills whole. Rounding down to a multiple of `P::WIDTH` keeps
+	// every lane of this loop in range, so it packs without a per-lane bounds check.
+	let mut chunks = exponents.chunks_exact(P::WIDTH);
+	values.extend(
+		chunks
+			.by_ref()
+			.map(|chunk| P::from_scalars(chunk.iter().map(select))),
+	);
+
+	// The columns' trailing words share a packed element with the start of the padding.
+	let tail = chunks.remainder();
+	if !tail.is_empty() {
+		values.push(P::from_scalars(
+			tail.iter()
+				.map(select)
+				.chain(iter::repeat(padding))
+				.take(P::WIDTH),
+		));
+	}
+
+	// The rest of the constraint axis is padding.
+	values.resize(packed_len, P::broadcast(padding));
 
 	FieldBuffer::new(n_vars, values)
 }
@@ -506,7 +530,7 @@ mod tests {
 		// (`c_lo_root * c_hi_root`); this equality is what lets the prover reuse `b_root` in place
 		// of a separately stored `c_root`.
 		let c_root = buffer_bivariate_product(witness.c_lo_root(), witness.c_hi_root());
-		assert_eq!(witness.b_root(), &c_root);
+		assert_eq!(witness.b_root().to_ref(), c_root.to_ref());
 	}
 
 	#[test]
@@ -586,7 +610,7 @@ mod tests {
 				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 
-			let leaves = compute_b_leaves::<_, F, P>(&GlobalAllocator, &bases, &exponents);
+			let leaves = compute_b_leaves::<_, F, P>(&GlobalAllocator, bases.to_ref(), &exponents);
 
 			for (i, &base0) in base_scalars.iter().enumerate() {
 				let mut base = base0;

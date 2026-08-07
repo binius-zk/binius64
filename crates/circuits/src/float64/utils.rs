@@ -470,7 +470,7 @@ pub fn fp64_pack_finite_or_inf(
 
 #[cfg(test)]
 pub mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 	use proptest::bool;
 
 	use super::*;
@@ -631,7 +631,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -660,7 +660,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -691,7 +691,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -724,7 +724,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -766,7 +766,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -801,7 +801,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -833,7 +833,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -888,7 +888,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -930,7 +930,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 
@@ -984,7 +984,7 @@ pub mod tests {
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec()).unwrap();
+			cs.verify(&w.into_value_vec()).unwrap();
 		}
 	}
 }

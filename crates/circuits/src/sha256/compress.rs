@@ -438,7 +438,7 @@ fn small_sigma_1(b: &CircuitBuilder, x: Wire) -> Wire {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 	use binius_frontend::{CircuitBuilder, Wire};
 
 	use super::{
@@ -493,7 +493,7 @@ mod tests {
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -533,7 +533,7 @@ mod tests {
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -565,7 +565,7 @@ mod tests {
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	fn pack2x(lo: u32, hi: u32) -> u64 {
@@ -601,7 +601,7 @@ mod tests {
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	/// The single-block padding of the message "abc": `"abc" || 0x80 || 0*` with the 24-bit length
@@ -704,7 +704,7 @@ mod tests {
 
 		// Witness generation runs the hint; constraint checking then verifies every gate.
 		circuit.populate_wire_witness(&mut w).unwrap();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	/// Packs 64 message bytes into 16 big-endian 32-bit schedule words.

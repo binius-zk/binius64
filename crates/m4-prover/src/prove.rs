@@ -33,9 +33,7 @@ use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_verifier::{
 	config::B128,
 	protocols::{
-		binmul::BinMulOutput,
 		bitand::AndCheckOutput,
-		intmul::IntMulOutput,
 		shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY},
 		zero,
 	},
@@ -241,11 +239,31 @@ impl IOPProver {
 			let log_instances = table.log_instances();
 			RerandomizedOperations {
 				bitand: Operation::new(&and_columns, [a_eval, b_eval, c_eval], r_x_and, r_rho_and),
-				intmul: mul.as_ref().map(|(columns, output)| {
-					Operation::from_intmul(columns, output.clone(), &lagrange, log_instances)
+				// The operand order of each mapping is the order the columns were built in.
+				intmul: mul.as_ref().map(|(columns, out)| {
+					Operation::from_mul_check(
+						columns,
+						&out.eval_point,
+						[&out.a_evals, &out.b_evals, &out.c_lo_evals, &out.c_hi_evals],
+						&lagrange,
+						log_instances,
+					)
 				}),
-				binmul: bmul.as_ref().map(|(columns, output)| {
-					Operation::from_binmul(columns, output.clone(), &lagrange, log_instances)
+				binmul: bmul.as_ref().map(|(columns, out)| {
+					Operation::from_mul_check(
+						columns,
+						&out.eval_point,
+						[
+							&out.a_lo_evals,
+							&out.a_hi_evals,
+							&out.b_lo_evals,
+							&out.b_hi_evals,
+							&out.c_lo_evals,
+							&out.c_hi_evals,
+						],
+						&lagrange,
+						log_instances,
+					)
 				}),
 			}
 			.prove::<P, _>(zero_data, &lagrange, z_challenge, channel, alloc)
@@ -485,81 +503,26 @@ impl<'a, A: Allocator, const ARITY: usize> Operation<'a, A, ARITY> {
 			claims.push(claim);
 		}
 	}
-}
 
-impl<'a, A: Allocator> Operation<'a, A, INTMUL_ARITY> {
-	/// Builds the IntMul operation by collapsing its per-bit operand claims to oblong claims.
+	/// Builds a multiplication operation by collapsing its per-bit operand claims.
 	///
-	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
-	/// This gives the oblong form the BitAnd claims already have.
-	/// The IntMul row point splits into an instance part (low) and a constraint part (high).
-	fn from_intmul(
-		columns: &'a OperandColumns<A, INTMUL_ARITY>,
-		intmul_output: IntMulOutput<B128>,
+	/// IntMul and BinMul both close with one claim per bit of each operand.
+	/// The Lagrange weights fold those into one claim per operand, at the univariate challenge.
+	///
+	/// That is the oblong form the BitAnd claims already arrive in.
+	///
+	/// The row point splits at the instance count: instances low, constraints high.
+	fn from_mul_check(
+		columns: &'a OperandColumns<A, ARITY>,
+		eval_point: &[B128],
+		per_bit_evals: [&[B128]; ARITY],
 		lagrange: &[B128],
 		log_instances: usize,
 	) -> Self {
-		let IntMulOutput {
-			eval_point: r_out_mul,
-			a_evals,
-			b_evals,
-			c_lo_evals,
-			c_hi_evals,
-		} = intmul_output;
-		let oblong =
-			|evals: &[B128]| inner_product(evals.iter().copied(), lagrange.iter().copied());
-		let (r_rho, r_x) = r_out_mul.split_at(log_instances);
-		Self::new(
-			columns,
-			[
-				oblong(&a_evals),
-				oblong(&b_evals),
-				oblong(&c_lo_evals),
-				oblong(&c_hi_evals),
-			],
-			r_x,
-			r_rho,
-		)
-	}
-}
-
-impl<'a, A: Allocator> Operation<'a, A, BINMUL_ARITY> {
-	/// Builds the BinMul operation by collapsing its per-bit operand claims to oblong claims.
-	///
-	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
-	/// This gives the oblong form the BitAnd claims already have.
-	/// The BinMul row point splits into an instance part (low) and a constraint part (high).
-	fn from_binmul(
-		columns: &'a OperandColumns<A, BINMUL_ARITY>,
-		binmul_output: BinMulOutput<B128>,
-		lagrange: &[B128],
-		log_instances: usize,
-	) -> Self {
-		let BinMulOutput {
-			eval_point: r_out_binmul,
-			a_lo_evals,
-			a_hi_evals,
-			b_lo_evals,
-			b_hi_evals,
-			c_lo_evals,
-			c_hi_evals,
-		} = binmul_output;
-		let oblong =
-			|evals: &[B128]| inner_product(evals.iter().copied(), lagrange.iter().copied());
-		let (r_rho, r_x) = r_out_binmul.split_at(log_instances);
-		Self::new(
-			columns,
-			[
-				oblong(&a_lo_evals),
-				oblong(&a_hi_evals),
-				oblong(&b_lo_evals),
-				oblong(&b_hi_evals),
-				oblong(&c_lo_evals),
-				oblong(&c_hi_evals),
-			],
-			r_x,
-			r_rho,
-		)
+		let (r_rho, r_x) = eval_point.split_at(log_instances);
+		let operand_claims = per_bit_evals
+			.map(|evals| inner_product(evals.iter().copied(), lagrange.iter().copied()));
+		Self::new(columns, operand_claims, r_x, r_rho)
 	}
 }
 

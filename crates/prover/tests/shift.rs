@@ -5,7 +5,6 @@ use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
 use binius_compute::GlobalAllocator;
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, ValueVec},
-	verify::verify_constraints,
 	word::Word,
 };
 use binius_field::{AESTowerField8b, BinaryField};
@@ -226,7 +225,7 @@ fn test_shift_prove_and_verify() {
 
 	for (cs, value_vec) in constraint_systems_to_test.into_iter() {
 		// Validate constraints using frontend verifier first
-		if let Err(e) = verify_constraints(&cs, &value_vec) {
+		if let Err(e) = cs.verify(&value_vec) {
 			panic!("Circuit failed constraint validation: {e}");
 		}
 

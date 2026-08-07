@@ -154,13 +154,8 @@ where
 ///
 /// `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`] variables, one per shift variant.
 ///
-/// A key's id splits into the variant and the shift amount:
-///
-/// ```text
-/// id = (variant << Word::LOG_BITS) | amount
-/// ```
-///
-/// The variant picks the multilinear, and the amount picks the run of bit slots within it:
+/// The segment's dense shift encoding decodes a key's shift index into the variant and the shift
+/// amount. The variant picks the multilinear, and the amount picks the run of bit slots within it:
 ///
 /// ```text
 /// g[variant][amount * Word::BITS + bit] += folded_bit * acc(key)
@@ -195,11 +190,12 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 				&operator_data.lambda_powers,
 			);
 
-			// The key id is `(variant << Word::LOG_BITS) | amount`, so its variant selects the
-			// multilinear and its shift amount the bit slots within that multilinear.
-			let variant = key.id as usize >> Word::LOG_BITS;
-			let amount_base = (key.id as usize & (Word::BITS - 1)) * Word::BITS;
-			let slots = &mut multilinears[variant].as_mut()[amount_base..amount_base + Word::BITS];
+			// The key's shift variant selects the multilinear, and its shift amount the bit slots
+			// within that multilinear.
+			let (variant, amount) = segment.dense_shift_enc.decode(key.dense_shift_idx as usize);
+			let amount_base = amount as usize * Word::BITS;
+			let slots =
+				&mut multilinears[variant as usize].as_mut()[amount_base..amount_base + Word::BITS];
 
 			// Scatter the accumulator across this key's bit slots, scaling each by the folded bit.
 			for (slot, &folded_bit) in iter::zip(slots, word) {

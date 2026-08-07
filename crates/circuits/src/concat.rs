@@ -192,7 +192,6 @@ fn assert_const_slice_eq(
 #[cfg(test)]
 mod tests {
 	use anyhow::{Result, anyhow};
-	use binius_core::verify::verify_constraints;
 
 	use super::*;
 
@@ -231,8 +230,8 @@ mod tests {
 		bytes.truncate(total_len);
 
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec())
-			.map_err(|msg| anyhow!("verify_constraints: {msg}"))?;
+		cs.verify(&filler.into_value_vec())
+			.map_err(|err| anyhow!("constraint verification failed: {err}"))?;
 
 		Ok(bytes)
 	}
@@ -324,7 +323,7 @@ mod tests {
 	#[test]
 	fn mutated_output_fails_constraints() {
 		// Build and populate a valid concatenation, then mutate one of the hint-produced output
-		// data wires. `verify_constraints` should reject because the slice extraction no longer
+		// data wires. Constraint verification should reject because the slice extraction no longer
 		// matches the inputs.
 		let b = CircuitBuilder::new();
 		let inputs = vec![ByteVec::new_inout(&b, 1), ByteVec::new_inout(&b, 1)];
@@ -342,7 +341,7 @@ mod tests {
 		filler[output.data[0]] = Word(filler[output.data[0]].as_u64() ^ 1);
 
 		let cs = circuit.constraint_system();
-		assert!(verify_constraints(cs, &filler.into_value_vec()).is_err());
+		assert!(cs.verify(&filler.into_value_vec()).is_err());
 	}
 
 	/// A concat input for [`run_concat_mixed`]: either a constant-length term (built with
@@ -408,8 +407,8 @@ mod tests {
 		bytes.truncate(total_len);
 
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec())
-			.map_err(|msg| anyhow!("verify_constraints: {msg}"))?;
+		cs.verify(&filler.into_value_vec())
+			.map_err(|err| anyhow!("constraint verification failed: {err}"))?;
 
 		Ok(bytes)
 	}
@@ -499,7 +498,7 @@ mod tests {
 		filler[output.data[0]] = Word(filler[output.data[0]].as_u64() ^ 1);
 
 		let cs = circuit.constraint_system();
-		assert!(verify_constraints(cs, &filler.into_value_vec()).is_err());
+		assert!(cs.verify(&filler.into_value_vec()).is_err());
 	}
 
 	#[test]

@@ -1,9 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, ops::Range};
+use std::{array, iter, ops::Range};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip::sumcheck::{SumcheckOutput, common::RoundCoeffs};
@@ -20,7 +20,7 @@ use tracing::instrument;
 
 use super::{
 	claims::PreparedOperatorClaims,
-	key_collection::{KeyCollection, KeySegment},
+	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment},
 	monster::build_h_parts,
 };
 
@@ -161,9 +161,8 @@ pub fn run_phase_1_sumcheck<
 /// segment.
 ///
 /// This builds the g multilinear polynomials used in phase 1 of the shift protocol, over the words
-/// of a single value-vector segment (public or hidden). For each operation (BITAND and INTMUL) it
-/// constructs three multilinear polynomials corresponding to the three shift variants (SLL, SRL,
-/// SRA).
+/// of a single value-vector segment (public or hidden). It constructs one multilinear polynomial
+/// per shift variant.
 ///
 /// The value vector's public and hidden words participate through their own [`KeySegment`], so a
 /// caller builds each segment's parts with the matching words and sums the two results.
@@ -176,9 +175,14 @@ pub fn run_phase_1_sumcheck<
 /// 4. **Word Expansion**: Expand each witness word bitwise to populate the g multilinears
 /// 5. **Lambda Weighting**: Apply lambda powers to weight different operand positions
 ///
+/// The accumulator holds one row of `Word::BITS` scalars per shift the segment uses, addressed by
+/// the keys' dense shift index. A scatter through the segment's encoding then spreads those rows
+/// over the full `(shift variant, shift amount)` space of the returned parts.
+///
 /// # Returns
 ///
-/// An array of multilinear extensions of each shift variant part.
+/// An array of multilinear extensions of each shift variant part. Within a part, the rows of
+/// `Word::BITS` scalars run in order of shift amount.
 ///
 /// # Usage
 ///
@@ -191,12 +195,16 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 	segment: &KeySegment,
 	prepared: &PreparedOperatorClaims<F>,
 ) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
-	let acc_size: usize = SHIFT_VARIANT_COUNT << (LOG_LEN.saturating_sub(P::LOG_WIDTH));
+	// One row of `Word::BITS` scalars per shift the segment uses.
+	let row_len = Word::BITS >> P::LOG_WIDTH;
+	let acc_size = segment.dense_shift_enc.len() * row_len;
 
-	assert!(
-		P::WIDTH <= 8,
-		"the optimizations below work only when the width of `P` is less than 8 (which is true for all packed 128b fields we use for now)"
-	);
+	const {
+		assert!(
+			P::WIDTH <= 8,
+			"the optimizations below work only when the width of `P` is less than 8 (which is true for all packed 128b fields we use for now)"
+		);
+	}
 
 	// Map from a u8 with `P::WIDTH` meaningful bits to the lane mask selecting exactly those lanes,
 	// precomputed once and reused across every accumulator below.
@@ -231,8 +239,12 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 					//         values[start + i] += acc;
 					//     }
 					// }
-					let start = key.id as usize * (Word::BITS >> P::LOG_WIDTH);
-					let values = &mut multilinears[start..start + (Word::BITS >> P::LOG_WIDTH)];
+					debug_assert!(
+						(key.dense_shift_idx as usize) < segment.dense_shift_enc.len(),
+						"a key indexes the dense shift encoding of its own segment"
+					);
+					let start = key.dense_shift_idx as usize * row_len;
+					let values = &mut multilinears[start..start + row_len];
 					let values_per_byte = Word::BYTES >> P::LOG_WIDTH;
 					let mut remaining_word = word.0;
 					let mut byte_index = 0;
@@ -278,33 +290,39 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 		// An empty word list yields no partials at all, and its parts are zero.
 		.unwrap_or_else(|| zeroed_vec::<P>(acc_size).into_boxed_slice());
 
-	build_multilinear_parts(alloc, &multilinears)
+	scatter_multilinear_parts(alloc, &multilinears, &segment.dense_shift_enc)
 }
 
-/// Builds the multilinear parts for a single operation by combining its operand multilinears.
+/// Spreads the rows of a dense phase-1 accumulator over the multilinear parts of every shift
+/// variant.
 ///
-/// Takes the raw multilinears for all operands and shift variants of an operation,
-/// applies lambda weighting to each operand, and combines them into parts.
-/// Each operand of index `i` gets weighted by λ^(i+1).
-#[instrument(skip_all, name = "build_multilinear_parts")]
-fn build_multilinear_parts<P: PackedField, A: Allocator>(
+/// The accumulator holds the rows of `Word::BITS` scalars the segment's keys accumulate into, one
+/// per shift the segment uses and in dense shift index order. Each row lands in the part of its
+/// shift variant, at the offset its shift amount names; every row the segment does not use stays
+/// zero.
+#[instrument(skip_all, name = "scatter_multilinear_parts")]
+fn scatter_multilinear_parts<P: PackedField, A: Allocator>(
 	alloc: &A,
 	multilinears: &[P],
+	dense_shift_enc: &DenseShiftEncoding,
 ) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
-	assert!(
-		P::LOG_WIDTH < LOG_LEN,
-		"P::WIDTH is not supposed to exceed 8, so this statement must hold"
-	);
+	const {
+		assert!(
+			P::LOG_WIDTH <= Word::LOG_BITS,
+			"P::WIDTH is not supposed to exceed 8, so this statement must hold"
+		);
+	}
 
-	multilinears
-		.chunks(1 << (LOG_LEN - P::LOG_WIDTH))
-		.map(|chunk| {
-			// Build each part straight into the allocator's buffer rather than into a `Vec` copy.
-			let mut data = alloc.alloc::<P>(chunk.len());
-			data.extend_from_slice(chunk);
-			FieldBuffer::new(LOG_LEN, data)
-		})
-		.collect::<Vec<_>>()
-		.try_into()
-		.unwrap_or_else(|_| panic!("chunk has SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN"))
+	// A row is a whole number of packed elements, so it copies into a part at row alignment.
+	let row_len = Word::BITS >> P::LOG_WIDTH;
+	let mut parts =
+		array::from_fn::<_, SHIFT_VARIANT_COUNT, _>(|_| FieldBuffer::zeros_in(alloc, LOG_LEN));
+	for ((variant, amount), row) in iter::zip(dense_shift_enc.iter(), multilinears.chunks(row_len))
+	{
+		// Dense indices are distinct, so no two rows land in the same place and each destination
+		// is still zero.
+		parts[variant as usize].as_mut()[amount as usize * row_len..][..row_len]
+			.copy_from_slice(row);
+	}
+	parts
 }

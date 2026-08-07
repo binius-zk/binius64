@@ -325,7 +325,6 @@ pub(crate) fn extract_const_range(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 
 	use super::{ByteVec, CircuitBuilder, Word};
 
@@ -356,7 +355,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -387,7 +386,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -419,7 +418,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -451,7 +450,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -477,7 +476,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -511,7 +510,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -584,7 +583,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -646,7 +645,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -708,7 +707,7 @@ mod tests {
 
 		circuit.populate_wire_witness(&mut filler).unwrap();
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+		cs.verify(&filler.into_value_vec()).unwrap();
 	}
 
 	#[test]

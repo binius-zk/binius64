@@ -83,7 +83,7 @@ pub fn circuit_merkle_path(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 
 	use super::*;
 	use crate::hash_based_sig::hashing::hash_tree_node;
@@ -128,7 +128,9 @@ mod tests {
 		circuit
 			.populate_wire_witness(&mut w)
 			.map_err(|e| format!("populate: {e:?}"))?;
-		verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
 			.map_err(|e| format!("verify: {e:?}"))
 	}
 

@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 use binius_circuits::multiplexer::{multi_wire_multiplex, single_wire_multiplex};
-use binius_core::{verify::verify_constraints, word::Word};
+use binius_core::word::Word;
 use binius_frontend::CircuitBuilder;
 
 fn main() -> Result<()> {
@@ -57,7 +57,8 @@ fn demo_conditional_selection() -> Result<()> {
 
 	circuit.populate_wire_witness(&mut w)?;
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+	cs.verify(&w.into_value_vec())
+		.map_err(|e| anyhow::anyhow!(e))?;
 
 	println!("✓ Selected path A (a + 100) when condition true");
 
@@ -84,7 +85,8 @@ fn demo_conditional_selection() -> Result<()> {
 
 	circuit2.populate_wire_witness(&mut w2)?;
 	let cs2 = circuit2.constraint_system();
-	verify_constraints(cs2, &w2.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+	cs2.verify(&w2.into_value_vec())
+		.map_err(|e| anyhow::anyhow!(e))?;
 
 	println!("✓ Selected path B (b * 2) when condition false\n");
 
@@ -126,7 +128,8 @@ fn demo_array_access() -> Result<()> {
 
 	circuit.populate_wire_witness(&mut w)?;
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+	cs.verify(&w.into_value_vec())
+		.map_err(|e| anyhow::anyhow!(e))?;
 
 	println!("✓ Selected array[2] = 30 using multiplexer");
 
@@ -160,7 +163,8 @@ fn demo_array_access() -> Result<()> {
 
 	circuit.populate_wire_witness(&mut w)?;
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+	cs.verify(&w.into_value_vec())
+		.map_err(|e| anyhow::anyhow!(e))?;
 
 	println!("✓ Selected green color group using multi-wire multiplexer\n");
 
@@ -208,7 +212,8 @@ fn demo_early_exit() -> Result<()> {
 
 	circuit.populate_wire_witness(&mut w)?;
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+	cs.verify(&w.into_value_vec())
+		.map_err(|e| anyhow::anyhow!(e))?;
 
 	println!("✓ Sum until zero: [10, 20, 0, 30] = 30\n");
 
@@ -252,7 +257,8 @@ fn demo_variable_length() -> Result<()> {
 
 	circuit.populate_wire_witness(&mut w)?;
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &w.into_value_vec()).map_err(|e| anyhow::anyhow!(e))?;
+	cs.verify(&w.into_value_vec())
+		.map_err(|e| anyhow::anyhow!(e))?;
 
 	println!("✓ Variable-length sum: [10,20,30,40,50,60,70,80] with len=3 = 60\n");
 

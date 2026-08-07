@@ -70,7 +70,9 @@ pub fn powers<F: FieldOps>(val: F) -> impl Iterator<Item = F> {
 pub fn expand_subset_sums_array<P: PackedField, const N: usize, const N_EXP2: usize>(
 	elems: [P; N],
 ) -> [P; N_EXP2] {
-	assert_eq!(N_EXP2, 1 << N);
+	const {
+		assert!(N_EXP2 == 1 << N, "N_EXP2 must equal 2^N");
+	}
 
 	let mut expanded = [P::zero(); N_EXP2];
 	for (i, elem_i) in elems.into_iter().enumerate() {
@@ -95,7 +97,9 @@ pub fn expand_subset_sums_array<P: PackedField, const N: usize, const N_EXP2: us
 pub fn expand_subset_xors<U: UnderlierType, const N: usize, const N_EXP2: usize>(
 	elems: [U; N],
 ) -> [U; N_EXP2] {
-	assert_eq!(N_EXP2, 1 << N);
+	const {
+		assert!(N_EXP2 == 1 << N, "N_EXP2 must equal 2^N");
+	}
 
 	let mut expanded = [U::ZERO; N_EXP2];
 	for (i, elem_i) in elems.into_iter().enumerate() {

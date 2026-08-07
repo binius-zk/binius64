@@ -94,7 +94,7 @@ pub fn hmac_sha512_fixed(
 mod tests {
 	use std::{array, iter::repeat_with};
 
-	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_core::word::Word;
 	use hmac::{Hmac, KeyInit, Mac};
 	use rand::prelude::*;
 	use sha2::Sha512;
@@ -181,7 +181,7 @@ mod tests {
 
 			// Verify constraints
 			let cs = circuit.constraint_system();
-			verify_constraints(cs, &witness.into_value_vec())
+			cs.verify(&witness.into_value_vec())
 				.expect("Circuit constraints should be satisfied with random data");
 		}
 	}

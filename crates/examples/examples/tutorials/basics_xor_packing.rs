@@ -6,7 +6,7 @@
 //!
 //! Guide: https://www.binius.xyz/building/
 
-use binius_core::{verify::verify_constraints, word::Word};
+use binius_core::word::Word;
 use binius_frontend::CircuitBuilder;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	circuit_naive.populate_wire_witness(&mut witness_naive)?;
 
 	let cs_naive = circuit_naive.constraint_system();
-	verify_constraints(cs_naive, &witness_naive.into_value_vec())?;
+	cs_naive.verify(&witness_naive.into_value_vec())?;
 
 	println!("  Used {} AND constraints (for XOR operations)", cs_naive.n_and_constraints());
 
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let result_val = witness_opt[out_opt].0;
 
 	let cs_opt = circuit_opt.constraint_system();
-	verify_constraints(cs_opt, &witness_opt.into_value_vec())?;
+	cs_opt.verify(&witness_opt.into_value_vec())?;
 
 	println!("  Used {} AND constraint (all XORs packed)", cs_opt.n_and_constraints());
 

@@ -119,7 +119,7 @@ pub fn extract_coordinates(hash: &[u8], dimension: usize, resolution_bits: usize
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 	use binius_frontend::{CircuitBuilder, Wire};
 
 	use super::*;
@@ -182,7 +182,7 @@ mod tests {
 		}
 
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
 	#[test]
@@ -227,6 +227,6 @@ mod tests {
 		assert_eq!(w[coordinates[2]], Word::from_u64(3));
 
 		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+		cs.verify(&w.into_value_vec()).unwrap();
 	}
 }

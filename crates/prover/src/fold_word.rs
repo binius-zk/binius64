@@ -435,9 +435,12 @@ fn accumulate_word_chunk<F: BinaryField>(
 /// suffix: the prefix tensor expansion is folded into each chunk of `CHUNK_SIZE` words by lookup,
 /// and the suffix tensor expansion scales each chunk's contribution before the chunks are summed.
 ///
+/// A list shorter than the word axis reads its missing high rows as zero, exactly as
+/// [`WordFolder::fold`] does.
+///
 /// ## Preconditions
 ///
-/// * `words.len() == 1 << point.len()`
+/// * `words.len() <= 1 << point.len()`
 ///
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
 pub fn fold_across_words<F, P>(words: &[Word], point: &[F]) -> [F; Word::BITS]
@@ -445,19 +448,18 @@ where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 {
-	assert_eq!(words.len(), 1 << point.len());
+	assert!(words.len() <= 1 << point.len());
 
 	// Build the point tables, then fold the one word-list over its chunks in parallel.
 	// A single list can span many chunks (up to 2^20 words in the benchmark).
 	// Parallelizing over the chunk axis is what keeps a lone fold fast.
 	let folder = WordFolder::<F>::new(point);
-	let chunks = duplicate_to_fixed_chunks::<CHUNK_SIZE>(words);
-	debug_assert_eq!(chunks.len(), folder.suffix_weights.as_ref().len());
+	let (chunks, tail) = words.as_chunks::<CHUNK_SIZE>();
 
-	// Each chunk contributes to every bit position, scaled by that chunk's suffix weight.
-	// Summing the per-chunk accumulators contracts the word axis.
-	chunks
-		.as_ref()
+	// Each chunk contributes to every bit position, scaled by that chunk's suffix weight. Summing
+	// the per-chunk accumulators contracts the word axis. Weights past the list's end pair with
+	// absent rows, so the zip drops them.
+	let folded_chunks = chunks
 		.par_iter()
 		.zip(folder.suffix_weights.as_ref().par_iter())
 		.map(|(chunk, &suffix_weight)| {
@@ -473,7 +475,24 @@ where
 				}
 				lhs
 			},
-		)
+		);
+
+	// The chunk the list ends in, completed with its zero rows.
+	if tail.is_empty() {
+		return folded_chunks;
+	}
+
+	let mut chunk = [Word::ZERO; CHUNK_SIZE];
+	chunk[..tail.len()].copy_from_slice(tail);
+
+	let mut folded = folded_chunks;
+	accumulate_word_chunk(
+		&chunk,
+		&folder.lookups,
+		folder.suffix_weights.get(chunks.len()),
+		&mut folded,
+	);
+	folded
 }
 
 /// A reusable [Method of Four Russians] folder over a fixed evaluation point.
@@ -495,14 +514,16 @@ pub struct WordFolder<F: BinaryField> {
 	lookups: [[F; 1 << BITS_PER_BYTE]; Word::BYTES],
 	/// One weight per chunk of `CHUNK_SIZE` words, from the suffix expansion.
 	suffix_weights: FieldBuffer<F>,
-	/// The exact word-list length each [`fold`](Self::fold) consumes: `2^point.len()`.
+	/// The word axis's length, which each [`fold`](Self::fold) call's list fits in:
+	/// `2^point.len()`.
 	n_words: usize,
 }
 
 impl<F: BinaryField> WordFolder<F> {
 	/// Builds the folding tables for `point`.
 	///
-	/// Each later [`fold`](Self::fold) call folds a `2^point.len()`-word list against this point.
+	/// Each later [`fold`](Self::fold) call folds a list of at most `2^point.len()` words against
+	/// this point.
 	pub fn new(point: &[F]) -> Self {
 		// The point splits into a prefix indexing words within a chunk and a suffix indexing
 		// chunks.
@@ -540,19 +561,35 @@ impl<F: BinaryField> WordFolder<F> {
 	/// This runs sequentially over the list's chunks.
 	/// A caller folding many lists against one point should parallelize across the lists instead.
 	///
+	/// A list shorter than the word axis reads its missing high rows as zero: an absent row's
+	/// weight multiplies nothing, so it contributes nothing to any bit position. Chunks lying
+	/// entirely past the list's end are therefore never visited at all.
+	///
 	/// ## Preconditions
 	///
-	/// * `words.len() == 1 << point.len()`
+	/// * `words.len() <= 1 << point.len()`
 	pub fn fold(&self, words: &[Word]) -> [F; Word::BITS] {
-		assert_eq!(words.len(), self.n_words, "words.len() must equal 2^point.len()");
+		assert!(words.len() <= self.n_words, "words.len() must not exceed 2^point.len()");
 
-		let chunks = duplicate_to_fixed_chunks::<CHUNK_SIZE>(words);
-		debug_assert_eq!(chunks.len(), self.suffix_weights.as_ref().len());
-
-		// Accumulate each chunk's contribution, scaled by that chunk's suffix weight.
+		let (chunks, tail) = words.as_chunks::<CHUNK_SIZE>();
 		let mut folded = [F::ZERO; Word::BITS];
-		for (chunk, &suffix_weight) in iter::zip(chunks.as_ref(), self.suffix_weights.as_ref()) {
+
+		// Accumulate each chunk's contribution, scaled by that chunk's suffix weight. Weights past
+		// the list's end pair with absent rows, so the zip drops them.
+		for (chunk, &suffix_weight) in iter::zip(chunks, self.suffix_weights.as_ref()) {
 			accumulate_word_chunk(chunk, &self.lookups, suffix_weight, &mut folded);
+		}
+
+		// The chunk the list ends in, completed with its zero rows.
+		if !tail.is_empty() {
+			let mut chunk = [Word::ZERO; CHUNK_SIZE];
+			chunk[..tail.len()].copy_from_slice(tail);
+			accumulate_word_chunk(
+				&chunk,
+				&self.lookups,
+				self.suffix_weights.get(chunks.len()),
+				&mut folded,
+			);
 		}
 
 		folded
@@ -636,7 +673,9 @@ pub(crate) fn fold_row_group<F, PB, const N_TABLES: usize>(
 	PB::Underlier: Divisible<u8>,
 {
 	// One byte of a row per table is what makes the nesting below line up with the columns.
-	debug_assert_eq!(PB::WIDTH, BITS_PER_BYTE * N_TABLES);
+	const {
+		assert!(PB::WIDTH == BITS_PER_BYTE * N_TABLES, "the row width must be one byte per table");
+	}
 
 	// The transpose consumes its input, so work on a copy and leave the caller's rows intact.
 	let mut group = *rows;
@@ -666,16 +705,20 @@ pub(crate) fn fold_row_group<F, PB, const N_TABLES: usize>(
 ///
 /// # Preconditions
 ///
+/// All three are checked at compile time, so a violating instantiation fails to build:
+///
 /// * The array length must be a power of two.
 /// * `LOG_N` must not exceed the base-2 log of the array length.
 /// * `LOG_N` must not exceed the base-2 log of the packed width.
 pub(crate) fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usize>(
 	elems: &mut [P; S],
 ) {
-	let log_size = checked_log_2(S);
+	const {
+		assert!(LOG_N <= P::LOG_WIDTH, "LOG_N must not exceed the packed width");
+		assert!(LOG_N <= checked_log_2(S), "LOG_N must not exceed the array length");
+	}
 
-	assert!(LOG_N <= P::LOG_WIDTH);
-	assert!(LOG_N <= log_size);
+	let log_size = checked_log_2(S);
 
 	// Elements per block that stays contiguous through the butterfly.
 	let log_w = log_size - LOG_N;
@@ -991,6 +1034,49 @@ mod tests {
 			let result_naive = naive_fold_across_words(&words, &point);
 
 			assert_eq!(result_optimized, result_naive, "mismatch at log_n = {log_n}");
+		}
+	}
+
+	// A word list shorter than the word axis folds as the same list zero-padded up to it, through
+	// both the sequential folder and the parallel `fold_across_words`.
+	//
+	// The naive reference is only defined on a full axis, so it is the padded side here; the point
+	// of the test is that the short side reaches the same value without materializing the padding.
+	#[test]
+	fn word_folder_folds_a_short_list_as_if_zero_padded() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// (log_rows, n_words) covering: a sub-chunk list in a one-chunk axis, a non-power-of-two
+		// list straddling the chunk boundary, a list filling whole chunks of a wider axis, a list
+		// short of a whole chunk in a wider axis, and the empty list.
+		for (log_rows, n_words) in [
+			(LOG_CHUNK_SIZE, 1),
+			(LOG_CHUNK_SIZE, 40),
+			(LOG_CHUNK_SIZE + 2, 2 * CHUNK_SIZE),
+			(LOG_CHUNK_SIZE + 2, 2 * CHUNK_SIZE + 5),
+			(LOG_CHUNK_SIZE, 0),
+		] {
+			let words = (0..n_words)
+				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.collect::<Vec<_>>();
+			let point = random_scalars::<B128>(&mut rng, log_rows);
+
+			let mut padded = words.clone();
+			padded.resize(1 << log_rows, Word::ZERO);
+
+			let expected = naive_fold_across_words(&padded, &point);
+
+			let folder = WordFolder::new(&point);
+			assert_eq!(
+				folder.fold(&words),
+				expected,
+				"short WordFolder::fold differs at log_rows = {log_rows}, n_words = {n_words}"
+			);
+			assert_eq!(
+				fold_across_words::<_, OptimalPackedB128>(&words, &point),
+				expected,
+				"short fold_across_words differs at log_rows = {log_rows}, n_words = {n_words}"
+			);
 		}
 	}
 

@@ -55,8 +55,8 @@ impl ValueVecLayout {
 	/// Returns the constraint system shape this layout realizes.
 	///
 	/// The returned system has no constraints; the caller fills them in.
-	pub fn constraint_system_shape(&self, constants: Vec<Word>) -> ConstraintSystem {
-		assert_eq!(constants.len(), self.n_const);
+	pub const fn constraint_system_shape(&self, constants: Vec<Word>) -> ConstraintSystem {
+		assert!(constants.len() == self.n_const, "constants must match the layout's n_const");
 		ConstraintSystem {
 			constants,
 			n_const_pad: self.offset_inout - self.n_const,

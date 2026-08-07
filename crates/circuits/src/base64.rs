@@ -305,7 +305,6 @@ fn compute_expected_base64_char(builder: &CircuitBuilder, six_bit_val: Wire) -> 
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
 	use binius_frontend::CircuitBuilder;
 
 	use super::{Base64UrlSafe, Wire};
@@ -378,7 +377,7 @@ mod tests {
 
 		// Verify constraints
 		let cs = compiled.constraint_system();
-		verify_constraints(cs, &witness.into_value_vec())?;
+		cs.verify(&witness.into_value_vec())?;
 
 		Ok(())
 	}

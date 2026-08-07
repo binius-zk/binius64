@@ -1,6 +1,5 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_core::verify::verify_constraints;
 use binius_frontend::CircuitBuilder;
 use blake2::{Blake2s256, Digest};
 use rand::prelude::*;
@@ -52,5 +51,6 @@ fn test_blake2s_circuit(#[case] message_len_bytes: usize, #[case] max_message_le
 
 	// Verify all constraints are satisfied
 	let cs = circuit.constraint_system();
-	verify_constraints(cs, &witness.into_value_vec()).expect("All constraints should be satisfied");
+	cs.verify(&witness.into_value_vec())
+		.expect("All constraints should be satisfied");
 }

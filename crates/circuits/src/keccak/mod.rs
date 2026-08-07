@@ -160,7 +160,7 @@ pub fn keccak256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; N
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{Word, verify::verify_constraints};
+	use binius_core::Word;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use rand::prelude::*;
 	use rstest::rstest;
@@ -209,7 +209,7 @@ mod tests {
 		circuit
 			.populate_wire_witness(&mut witness)
 			.expect("Circuit should accept valid witness");
-		verify_constraints(cs, &witness.into_value_vec())
+		cs.verify(&witness.into_value_vec())
 			.expect("All constraints should be satisfied");
 	}
 

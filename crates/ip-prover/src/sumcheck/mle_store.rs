@@ -256,6 +256,30 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 		self.n_vars -= 1;
 	}
 
+	/// Returns the borrowed view of one logical column, addressed by its [`ColId`].
+	///
+	/// The slice spans the column's `2^n_vars()` live scalars, so it tracks the store's folding.
+	pub fn column(&self, id: ColId) -> FieldSlice<'_, P> {
+		// A split-half entry carries two logical columns, so walk the physical entries counting
+		// down the logical index rather than indexing `columns` directly.
+		let mut index = id.index();
+		for column in &self.columns {
+			match column {
+				Column::Borrowed(slice) if index == 0 => return slice.to_ref(),
+				Column::Owned(buffer) if index == 0 => return buffer.to_ref(),
+				Column::SplitHalf(buffer) if index < 2 => {
+					// The buffer holds the two columns as its low and high halves; each column is
+					// the front `2^n_vars` scalars of one half, so read it as that half's chunk 0.
+					let half_start = index << (buffer.log_len() - 1 - self.n_vars);
+					return buffer.chunk(self.n_vars, half_start);
+				}
+				Column::SplitHalf(_) => index -= 2,
+				_ => index -= 1,
+			}
+		}
+		panic!("column id {} is out of range for a store of {} columns", id.index(), self.n_cols);
+	}
+
 	/// Expands the store into one borrowed slice per logical column, in [`ColId`] order.
 	///
 	/// A split-half entry expands into the front `2^n_vars` scalars of its low and high
@@ -820,6 +844,39 @@ mod tests {
 			}
 		}
 		acc
+	}
+
+	// `column` and `column_slices` walk the entries independently, so pin them to each other over
+	// every entry kind and over the folds that shrink a split-half column inside its parent buffer.
+	#[test]
+	fn column_matches_column_slices() {
+		type P = Packed128b;
+		type F = <P as FieldOps>::Scalar;
+
+		let n_vars = 5;
+		let mut rng = StdRng::seed_from_u64(2);
+		let alloc = GlobalAllocator;
+
+		// A split-half entry sits between single-column entries, so the walk has to skip two
+		// logical columns in one step to reach the last id.
+		let borrowed = random_field_buffer::<P>(&mut rng, n_vars);
+		let mut store = MleStore::<GlobalAllocator, P>::new(n_vars, &alloc);
+		let mut col_ids = vec![store.push(borrowed.to_ref())];
+		col_ids.push(store.push_owned(random_field_buffer::<P>(&mut rng, n_vars)));
+		col_ids.extend(store.push_split_half(random_field_buffer::<P>(&mut rng, n_vars + 1)));
+		col_ids.push(store.push_owned(random_field_buffer::<P>(&mut rng, n_vars)));
+
+		let challenges = random_scalars::<F>(&mut rng, n_vars);
+		for (round, &challenge) in challenges.iter().enumerate() {
+			for (&id, expected) in iter::zip(&col_ids, store.column_slices()) {
+				let got = store.column(id);
+				assert_eq!(got.log_len(), expected.log_len(), "length mismatch in round {round}");
+				for i in 0..expected.len() {
+					assert_eq!(got.get(i), expected.get(i), "scalar {i} mismatch in round {round}");
+				}
+			}
+			store.fold(challenge);
+		}
 	}
 
 	#[test]
