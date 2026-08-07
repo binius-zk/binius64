@@ -18,10 +18,7 @@ use binius_math::{
 	univariate::evaluate_univariate,
 };
 
-use super::{
-	common::{MleCheckProver, SumcheckProver},
-	round_state::RoundState,
-};
+use super::{common::MleCheckProver, round_state::RoundState};
 use crate::channel::IPProverChannel;
 
 /// Output of the ZK MLE-check proving protocol.
@@ -260,7 +257,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>
 	}
 }
 
-impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckProver<F>
+impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckProver<F>
 	for MleCheckMaskProver<F, P, Data>
 {
 	fn n_vars(&self) -> usize {
@@ -319,11 +316,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		// (since g(r_0, ..., r_{n-1}) = sum_i g_i(r_i))
 		vec![self.prefix_sum]
 	}
-}
 
-impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckProver<F>
-	for MleCheckMaskProver<F, P, Data>
-{
 	fn eval_point(&self) -> &[F] {
 		// Return remaining coordinates (high-to-low means we return the first n_vars_remaining
 		// elements)

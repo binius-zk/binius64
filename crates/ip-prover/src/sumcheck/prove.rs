@@ -10,7 +10,7 @@ use binius_field::Field;
 
 use super::{
 	common::{MleCheckProver, SumcheckProver},
-	drive::{self, RoundProofKind},
+	drive::{self, MleCheckRounds, SumcheckRounds},
 };
 use crate::channel::IPProverChannel;
 
@@ -49,7 +49,7 @@ pub fn prove_single<F: Field>(
 	prover: impl SumcheckProver<F>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> ProveSingleOutput<F> {
-	drive::single(RoundProofKind::Sumcheck, prover, channel)
+	drive::single(SumcheckRounds(prover), channel)
 }
 
 /// Executes the MLE-check proving protocol for a single multivariate polynomial.
@@ -59,7 +59,7 @@ pub fn prove_single_mlecheck<F: Field>(
 	prover: impl MleCheckProver<F>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> ProveSingleOutput<F> {
-	drive::single(RoundProofKind::MleCheck, prover, channel)
+	drive::single(MleCheckRounds(prover), channel)
 }
 
 /// Output of the sumcheck proving protocol for a single multivariate polynomial.
