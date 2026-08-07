@@ -69,14 +69,16 @@ pub fn live_gates(
 
 	// Propagate liveness backward along def→use edges.
 	// A live gate needs its inputs, so each input wire and the gate defining it are also live.
+	//
+	// Reborrowed shared, now that the rebuild above is the last mutation.
+	// The live set and worklist are locals, so an input slice can stay borrowed while they grow.
+	let graph: &GateGraph = graph;
 	while let Some(gate) = work.pop() {
-		// Copy the inputs out first, ending the graph borrow before the set is mutated.
-		let inputs = graph
+		for &input in graph
 			.gate_data(gate)
 			.gate_param_with_registry(hint_registry)
 			.inputs
-			.to_vec();
-		for input in inputs {
+		{
 			if let Some(def) = graph.wire_def[input]
 				&& live.insert(def)
 			{
