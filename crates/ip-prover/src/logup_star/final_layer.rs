@@ -72,15 +72,16 @@ pub struct FinalLayerOutput<F> {
 /// * `eval_claim` - The product claim `e = <T, Y>`.
 /// * `table_prover` - The table-side fractional-addition prover, holding only its leaf layer.
 /// * `layer1` - The layer-1 numerator and denominator claims, sharing the point `Z`.
-/// * `pushforward` - The pushforward `Y` over the `m`-variable cube.
 /// * `table` - The table `T` over the `m`-variable cube.
 /// * `channel` - The prover channel.
+///
+/// The pushforward `Y` is not passed: it is the table circuit's leaf numerator, so `table_prover`
+/// already carries it.
 #[tracing::instrument(skip_all, level = "debug", name = "logup* final layer")]
 pub fn prove_final_layer<'a, A, F, P>(
 	eval_claim: F,
 	table_prover: FracAddCheckProver<'a, A, P>,
 	layer1: FracEvalClaim<F>,
-	pushforward: FieldSlice<P>,
 	table: FieldSlice<'a, P>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> FinalLayerOutput<F>
@@ -117,19 +118,18 @@ where
 	//
 	// Y_0, Y_1 are already store columns (the fractional numerator halves), so only the table
 	// halves T_0, T_1 are pushed as new columns. Only Y_0 is needed here, to form e_0; e_1 follows
-	// as e - e_0.
+	// as e - e_0; the inner product below reads Y_0 back from the store.
 	//
-	// Both splits borrow, so neither the pushforward nor the table is copied. The pushforward
-	// halves are read exactly once, by the inner product below (Y_1 not at all); the table halves
-	// live on as borrowed store columns, which the store's first fold contracts into half-size
-	// buffers of its own. That keeps 2^m field elements per multilinear out of the allocator.
-	let (y_0, _y_1) = pushforward.split_half_ref();
+	// The table split borrows, so the table is not copied: its halves live on as borrowed store
+	// columns, which the store's first fold contracts into half-size buffers of its own. That keeps
+	// 2^m field elements out of the allocator.
 	let (t_0, t_1) = table.split_half_ref();
 
 	// e_0 is the first half's product sum.
 	// Only e_0 is sent, since the verifier recovers e_1 = e - e_0.
 	//
 	//     e_0 = sum_{x'} (Y_0 * T_0)(x'),   e_1 = e - e_0 = sum_{x'} (Y_1 * T_1)(x')
+	let y_0 = prover.store().column(y_0_col);
 	let e_0 = inner_product_par(&y_0, &t_0);
 	channel.send_one(e_0);
 	let e_1 = eval_claim - e_0;

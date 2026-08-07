@@ -275,7 +275,7 @@ where
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-	} = prove_final_layer(eval_claim, table_leaf_prover, layer1, pushforward, table, channel);
+	} = prove_final_layer(eval_claim, table_leaf_prover, layer1, table, channel);
 
 	LogupOutput {
 		table_eval_point,
