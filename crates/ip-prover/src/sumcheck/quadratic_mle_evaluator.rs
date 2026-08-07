@@ -7,7 +7,7 @@ use binius_math::{FieldSlice, FieldVec};
 
 use super::{
 	mle_store::{ColId, ColumnChunk, EvaluationChunk, MleStore, RoundContext},
-	round_evals::RoundEvals2,
+	round_evals::RoundEvals,
 	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
 
@@ -148,7 +148,6 @@ where
 		// corresponds to x=0, the high half to x=1.
 		let cols: [&ColumnChunk<'_, P>; N] = self.cols.map(|id| chunk.col(id));
 
-		// The evaluator's run holds `y_1` in slot 0 and `y_inf` in slot 1.
 		let mut y_1 = <P as WideMul>::Output::default();
 		let mut y_inf = <P as WideMul>::Output::default();
 		for (idx, &eq_i) in eq_ind.as_ref().iter().enumerate() {
@@ -173,8 +172,7 @@ where
 			y_inf += P::wide_mul((self.infinity_composition)(evals_inf), eq_i);
 		}
 
-		accum[0] += y_1;
-		accum[1] += y_inf;
+		RoundEvals([y_1, y_inf]).add_to(accum);
 	}
 
 	fn interpolate(
@@ -191,12 +189,9 @@ where
 		// `accum` is already reduced (the prover's `map` pass reduced the wide accumulators). Sum
 		// the packed lanes into scalars, then interpolate. `claim` is this round's prime eval;
 		// `alpha`, this round's eq coordinate, ties it to the point.
-		RoundEvals2 {
-			y_1: accum[0],
-			y_inf: accum[1],
-		}
-		.sum_scalars(n_vars_remaining)
-		.interpolate_eq(claim, alpha)
+		RoundEvals::<P, 2>::from_slots(accum)
+			.sum_scalars(n_vars_remaining)
+			.interpolate_eq(claim, alpha)
 	}
 }
 

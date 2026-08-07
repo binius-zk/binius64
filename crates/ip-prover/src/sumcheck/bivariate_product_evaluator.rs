@@ -8,7 +8,7 @@ use itertools::izip;
 
 use super::{
 	mle_store::{ColId, EvaluationChunk, MleStore, RoundContext},
-	round_evals::{RoundEvals2, WideRoundEvals2},
+	round_evals::RoundEvals,
 	round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 };
 
@@ -70,7 +70,8 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
 		//
 		// The per-point products are accumulated in unreduced (wide) form and reduced a single
 		// time in interpolate, amortizing the GF(2^128) reduction over the whole sum.
-		let mut evals = WideRoundEvals2::<<P as WideMul>::Output>::default();
+		let mut y_1 = <P as WideMul>::Output::default();
+		let mut y_inf = <P as WideMul>::Output::default();
 		for (&a_0_i, &a_1_i, &b_0_i, &b_1_i) in
 			izip!(a.lo.as_ref(), a.hi.as_ref(), b.lo.as_ref(), b.hi.as_ref())
 		{
@@ -78,15 +79,11 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
 			let a_inf_i = a_0_i + a_1_i;
 			let b_inf_i = b_0_i + b_1_i;
 
-			evals += WideRoundEvals2 {
-				y_1: P::wide_mul(a_1_i, b_1_i),
-				y_inf: P::wide_mul(a_inf_i, b_inf_i),
-			};
+			y_1 += P::wide_mul(a_1_i, b_1_i);
+			y_inf += P::wide_mul(a_inf_i, b_inf_i);
 		}
 
-		// The evaluator's single-claim run holds `y_1` in slot 0 and `y_inf` in slot 1.
-		accum[0] += evals.y_1;
-		accum[1] += evals.y_inf;
+		RoundEvals([y_1, y_inf]).add_to(accum);
 	}
 
 	fn interpolate(&self, ctx: &RoundContext<'_, P>, accum: &[P], claim: F) -> RoundCoeffs<F> {
@@ -96,12 +93,9 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
 
 		// `claim` is this round's sum.
 		// The evaluation at 0, which was never sampled, is recovered from it.
-		RoundEvals2 {
-			y_1: accum[0],
-			y_inf: accum[1],
-		}
-		.sum_scalars(n_vars_remaining)
-		.interpolate(claim)
+		RoundEvals::<P, 2>::from_slots(accum)
+			.sum_scalars(n_vars_remaining)
+			.interpolate(claim)
 	}
 }
 
