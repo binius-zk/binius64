@@ -141,7 +141,7 @@ fn structure_of(graph: &GateGraph, gate: Gate, hint_registry: &HintRegistry) -> 
 			.chain(param.inputs)
 			.copied()
 			.collect(),
-		immediates: data.immediates.clone(),
+		immediates: data.immediates.to_vec(),
 		dimensions: data.dimensions.clone(),
 	}
 }
