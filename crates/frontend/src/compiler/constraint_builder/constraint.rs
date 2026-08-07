@@ -157,7 +157,7 @@ mod tests {
 	fn bmul_builder_lands_all_six_operands() {
 		// Build (a_lo, a_hi) * (b_lo, b_hi) = (c_lo, c_hi) and check each of the six operands
 		// reaches the produced BmulConstraint, including a shifted term in c_hi.
-		let mut wire_mapping = SecondaryMap::new();
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex(u32::MAX));
 		let wires: Vec<Wire> = (0..7).map(Wire::new).collect();
 		for (i, w) in wires.iter().enumerate() {
 			wire_mapping[*w] = ValueIndex(i as u32);
