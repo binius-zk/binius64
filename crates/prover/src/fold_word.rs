@@ -739,37 +739,6 @@ pub(crate) fn square_transpose_const_size<P: PackedField, const LOG_N: usize, co
 	}
 }
 
-/// View the words as a slice of fixed-length arrays.
-///
-/// If the number of words is less than N, then repeat it into an N-length array. Repeating
-/// corresponds to variable padding over the boolean hypercube.
-///
-/// ## Preconditions
-///
-/// * `words` must be a power of two
-/// * `N` must be a power of two
-pub(crate) fn duplicate_to_fixed_chunks<const N: usize>(words: &[Word]) -> Cow<'_, [[Word; N]]> {
-	assert!(words.len().is_power_of_two());
-	assert!(N.is_power_of_two());
-
-	let (chunks, leftover) = words.as_chunks::<N>();
-
-	assert!(
-		chunks.is_empty() || leftover.is_empty(),
-		"words.len() and N are both powers of two; either words.len() is divisible by N or less than it"
-	);
-
-	if chunks.is_empty() {
-		let mut repeated = [Word::ZERO; N];
-		for chunk in repeated.chunks_mut(words.len()) {
-			chunk.copy_from_slice(words);
-		}
-		Cow::Owned(vec![repeated])
-	} else {
-		Cow::Borrowed(chunks)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
