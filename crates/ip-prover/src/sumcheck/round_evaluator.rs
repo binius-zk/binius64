@@ -3,7 +3,8 @@
 //! Round evaluators over a shared [`MleStore`] and the provers that drive them.
 //!
 //! A round evaluator holds the per-round-polynomial logic for one composite claim over store
-//! columns. Evaluators hold [`ColId`]s and receive column data by argument; they hold no mutable
+//! columns. Evaluators hold [`ColId`](super::mle_store::ColId)s and receive column data by
+//! argument; they hold no mutable
 //! per-round state — they neither fold nor track the round claim. The driving prover owns the
 //! `RoundState` machine (the claim ↔ coeffs alternation) for each evaluator, and the store folds
 //! the columns (see the [`mle_store`](super::mle_store) module documentation).
@@ -31,7 +32,7 @@ use binius_math::{FieldSlice, multilinear::eq::eq_ind_partial_eval};
 use super::{
 	MleToSumCheckEvaluator,
 	common::{MleCheckProver, SumcheckProver},
-	mle_store::{ColId, EvaluationChunk, MleStore, RoundContext},
+	mle_store::{EvaluationChunk, MleStore, RoundContext},
 	round_state::RoundState,
 };
 
@@ -75,7 +76,8 @@ pub trait SumcheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + S
 	/// Accumulates one chunk of the halved hypercube into `accum`.
 	///
 	/// The driving prover prepares `chunk` — the split, per-chunk column halves and eq-indicator
-	/// expansions — so the evaluator only reads its columns by [`ColId`] and eq trackers by
+	/// expansions — so the evaluator only reads its columns by [`ColId`](super::mle_store::ColId)
+	/// and eq trackers by
 	/// [`EqId`](super::mle_store::EqId). `accum` is this evaluator's run of [`Self::degree`] wide
 	/// slots, zero-initialized
 	/// on the first chunk and carried across the worker's chunks.
@@ -352,13 +354,12 @@ where
 		&self.group.store
 	}
 
-	/// Pushes a borrowed column onto the store, returning its id.
+	/// Returns an exclusive reference to the underlying column store.
 	///
-	/// Lets a caller extend the shared store with a column that a later-added evaluator reads: the
-	/// logUp* final layer pushes the table halves this way before adding its product evaluators.
-	/// The column is not copied. See [`MleStore::push`].
-	pub fn push_column(&mut self, column: FieldSlice<'a, P>) -> ColId {
-		self.group.store.push(column)
+	/// Lets a caller extend the shared store with columns that a later-added evaluator reads: the
+	/// logUp* final layer pushes the table halves onto it before adding its product evaluators.
+	pub const fn store_mut(&mut self) -> &mut MleStore<'a, A, P> {
+		&mut self.group.store
 	}
 
 	/// Adds one more evaluator — a claim reading the shared store, with its initial claim — to the

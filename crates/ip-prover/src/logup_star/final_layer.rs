@@ -137,8 +137,8 @@ where
 	// S_3a, S_3b: each half is a bivariate product over the shared Y column and the pushed T
 	// column. The table halves are borrowed, so the store's first fold is the only place a table
 	// column is written, at half the table's size.
-	let t_0_col = prover.push_column(t_0);
-	let t_1_col = prover.push_column(t_1);
+	let t_0_col = prover.store_mut().push(t_0);
+	let t_1_col = prover.store_mut().push(t_1);
 	let product_0 = BivariateProductEvaluator::new([y_0_col, t_0_col]);
 	prover.add_evaluator(e_0, Box::new(product_0) as Box<dyn SumcheckRoundEvaluator<F, P> + 'a>);
 	let product_1 = BivariateProductEvaluator::new([y_1_col, t_1_col]);
