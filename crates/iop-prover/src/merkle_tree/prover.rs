@@ -5,14 +5,14 @@ use std::sync::Mutex;
 
 use binius_field::Field;
 use binius_hash::binary_merkle_tree::{self, BinaryMerkleTree, HashSuite};
-use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment, MerkleTreeScheme};
+use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::iter::IndexedParallelIterator;
 use digest::Output;
 use getset::Getters;
 use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
-use super::MerkleTreeProver;
+use super::{MerkleTreeProver, ProverDigest};
 
 #[derive(Getters)]
 pub struct BinaryMerkleTreeProver<T, H: HashSuite> {
@@ -88,12 +88,11 @@ where
 		}
 	}
 
-	#[allow(clippy::type_complexity)]
 	fn commit_iterated<ParIter>(
 		&self,
 		leaves: ParIter,
 		n_items_per_input: usize,
-	) -> (Commitment<<Self::Scheme as MerkleTreeScheme<F>>::Digest>, Self::Committed)
+	) -> (Commitment<ProverDigest<F, Self>>, Self::Committed)
 	where
 		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 	{
