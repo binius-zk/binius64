@@ -258,7 +258,7 @@ mod tests {
 	#[test]
 	fn rotr_zero_folds_to_plain_via_linear() {
 		// A rotr-by-0 term must lower to a plain value index; a rotr-by-n>0 must stay native.
-		let mut wire_mapping = SecondaryMap::new();
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex(u32::MAX));
 		let wire_a = Wire::new(0);
 		let wire_b = Wire::new(1);
 		let wire_c = Wire::new(2);
@@ -328,7 +328,7 @@ mod tests {
 	#[test]
 	fn rotr_folds_inside_and_operand() {
 		// The same rotr(0)->plain and rotr(n)->native folding must hold inside an AND operand.
-		let mut wire_mapping = SecondaryMap::new();
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex(u32::MAX));
 		let wire_a = Wire::new(0);
 		let wire_b = Wire::new(1);
 		let wire_c = Wire::new(2);

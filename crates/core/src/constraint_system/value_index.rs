@@ -3,20 +3,9 @@ use binius_utils::serialization::{DeserializeBytes, SerializationError, Serializ
 use bytes::{Buf, BufMut};
 
 /// A type safe wrapper over an index into the [`ValueVec`](super::ValueVec).
+#[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ValueIndex(pub u32);
-
-impl ValueIndex {
-	/// The value index that is not considered to be valid.
-	pub const INVALID: ValueIndex = ValueIndex(u32::MAX);
-}
-
-/// The most sensible default for a value index is invalid.
-impl Default for ValueIndex {
-	fn default() -> Self {
-		Self::INVALID
-	}
-}
 
 impl SerializeBytes for ValueIndex {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {

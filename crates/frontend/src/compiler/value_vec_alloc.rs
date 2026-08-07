@@ -80,7 +80,8 @@ impl Alloc {
 		//
 		// So we create a mapping between a `Wire` to the final `ValueIndex`.
 
-		let mut wire_mapping = SecondaryMap::new();
+		// An unmapped wire keeps a fill value that `ConstraintSystem::validate` rejects.
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex(u32::MAX));
 
 		let n_const = self.w_const.len();
 		let n_inout = self.w_inout.len();
