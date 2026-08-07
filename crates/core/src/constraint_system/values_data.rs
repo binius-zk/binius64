@@ -1,227 +1,211 @@
 // Copyright 2025 Irreducible Inc.
-use std::borrow::Cow;
+// Copyright 2026 The Binius Developers
+use std::ops::Deref;
 
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
 use crate::word::Word;
 
-/// Values data for zero-knowledge proofs (either public witness or non-public part - private inputs
-/// and internal values).
+/// A run of value-vector words, decoded from its versioned on-disk form.
 ///
-/// It uses `Cow<[Word]>` to avoid unnecessary clones while supporting
-/// both borrowed and owned data.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValuesData<'a> {
-	data: Cow<'a, [Word]>,
-}
+/// The words of one proving job travel as two files, holding what the circuit itself does not fix:
+///
+/// ```text
+///     file        | holds                        | who reads it
+///     ------------+------------------------------+------------------
+///     inout       | inputs and outputs           | prover, verifier
+///     non-public  | witness and internal values  | prover only
+/// ```
+///
+/// Neither file holds the circuit's constants, nor the padding between sections. Both of those
+/// are the same for every instance, so they stay in the constraint system and are put back by
+/// [`ConstraintSystem::public_segment`](super::ConstraintSystem::public_segment).
+///
+/// Those two files plus the circuit's constraint system are all another host needs.
+/// From the three it rebuilds the witness and proves against it.
+///
+/// This is the owned end of the format, the one decoding produces.
+/// It owns its words because the byte buffer they came from need not outlive the call.
+/// Writing starts from the borrowed counterpart below, which copies nothing.
+#[derive(Clone, Debug)]
+pub struct ValuesData(Vec<Word>);
 
-impl<'a> ValuesData<'a> {
-	/// Serialization format version for compatibility checking
+impl ValuesData {
+	/// Version of the byte layout, written ahead of the words in both directions.
+	///
+	/// # Why this exists
+	///
+	/// An older layout would decode into plausible but wrong words.
+	/// A wrong witness proves nothing, so the mismatch has to surface here.
+	/// Bumping this on any layout change turns silent corruption into a hard error.
 	pub const SERIALIZATION_VERSION: u32 = 1;
+}
 
-	/// Create a new ValuesData from borrowed data
-	pub const fn borrowed(data: &'a [Word]) -> Self {
-		Self {
-			data: Cow::Borrowed(data),
-		}
-	}
+impl Deref for ValuesData {
+	type Target = [Word];
 
-	/// Create a new ValuesData from owned data
-	pub const fn owned(data: Vec<Word>) -> Self {
-		Self {
-			data: Cow::Owned(data),
-		}
-	}
-
-	/// Get the values data as a slice
-	pub fn as_slice(&self) -> &[Word] {
-		&self.data
-	}
-
-	/// Get the number of words in the values data
-	pub fn len(&self) -> usize {
-		self.data.len()
-	}
-
-	/// Check if the witness is empty
-	pub fn is_empty(&self) -> bool {
-		self.data.is_empty()
-	}
-
-	/// Convert to owned data, consuming self
-	pub fn into_owned(self) -> Vec<Word> {
-		self.data.into_owned()
-	}
-
-	/// Convert to owned version of ValuesData
-	pub fn to_owned(&self) -> ValuesData<'static> {
-		ValuesData {
-			data: Cow::Owned(self.data.to_vec()),
-		}
+	fn deref(&self) -> &[Word] {
+		// A segment is read-only once decoded, so it is handed out as a plain word slice.
+		&self.0
 	}
 }
 
-impl<'a> SerializeBytes for ValuesData<'a> {
-	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
-		Self::SERIALIZATION_VERSION.serialize(&mut write_buf)?;
-
-		self.data.as_ref().serialize(write_buf)
-	}
-}
-
-impl DeserializeBytes for ValuesData<'static> {
-	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError>
-	where
-		Self: Sized,
-	{
+impl DeserializeBytes for ValuesData {
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
+		// A mismatched tag means the words that follow were written to another layout.
 		let version = u32::deserialize(&mut read_buf)?;
 		if version != Self::SERIALIZATION_VERSION {
 			return Err(SerializationError::InvalidConstruction {
-				name: "Witness::version",
+				name: "ValuesData::version",
 			});
 		}
 
-		let data = Vec::<Word>::deserialize(read_buf)?;
-
-		Ok(ValuesData::owned(data))
+		// The word count leads the words, so a short buffer fails instead of truncating.
+		Ok(Self(Vec::deserialize(read_buf)?))
 	}
 }
 
-impl<'a> From<&'a [Word]> for ValuesData<'a> {
-	fn from(data: &'a [Word]) -> Self {
-		ValuesData::borrowed(data)
+/// A segment of a value vector borrowed straight from a witness, ready to write.
+///
+/// This is the borrowed end of the format.
+/// It relates to the owned counterpart above as a string slice relates to an owned string.
+///
+/// Borrowing is what keeps writing cheap.
+/// A witness segment runs to tens of megabytes, and none of it is copied to reach the buffer.
+pub struct ValuesRef<'a>(&'a [Word]);
+
+impl<'a> ValuesRef<'a> {
+	/// Wraps one segment of a value vector for writing.
+	pub const fn new(words: &'a [Word]) -> Self {
+		Self(words)
 	}
 }
 
-impl From<Vec<Word>> for ValuesData<'static> {
-	fn from(data: Vec<Word>) -> Self {
-		ValuesData::owned(data)
-	}
-}
+impl SerializeBytes for ValuesRef<'_> {
+	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
+		// The tag leads the bytes, so a reader can reject the layout before decoding any word.
+		ValuesData::SERIALIZATION_VERSION.serialize(&mut write_buf)?;
 
-impl<'a> AsRef<[Word]> for ValuesData<'a> {
-	fn as_ref(&self) -> &[Word] {
-		self.as_slice()
-	}
-}
-
-impl<'a> std::ops::Deref for ValuesData<'a> {
-	type Target = [Word];
-
-	fn deref(&self) -> &Self::Target {
-		self.as_slice()
-	}
-}
-
-impl<'a> From<ValuesData<'a>> for Vec<Word> {
-	fn from(value: ValuesData<'a>) -> Self {
-		value.into_owned()
+		// Then a word count, then that many little-endian words.
+		self.0.serialize(write_buf)
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::{fs, path::Path};
+
+	use proptest::{collection, prelude::any, prop_assert_eq, proptest};
+
 	use super::*;
 
-	#[test]
-	fn test_witness_serialization_round_trip_owned() {
-		let data = vec![
+	// The four words held by the committed reference file.
+	fn reference_words() -> [Word; 4] {
+		[
 			Word::from_u64(1),
 			Word::from_u64(42),
-			Word::from_u64(0xDEADBEEF),
-			Word::from_u64(0x1234567890ABCDEF),
-		];
-		let witness = ValuesData::owned(data.clone());
+			Word::from_u64(0xDEAD_BEEF),
+			Word::from_u64(0x1234_5678_90AB_CDEF),
+		]
+	}
 
-		let mut buf = Vec::new();
-		witness.serialize(&mut buf).unwrap();
+	proptest! {
+		#[test]
+		fn round_trip_preserves_words(words in collection::vec(any::<u64>(), 0..64usize)) {
+			// Invariant: the words read back are the words written, in order.
+			//
+			// Fixture state: 0 to 63 arbitrary words, so the empty segment is covered too.
+			let words: Vec<Word> = words.into_iter().map(Word).collect();
 
-		let deserialized = ValuesData::deserialize(&mut buf.as_slice()).unwrap();
-		assert_eq!(witness, deserialized);
-		assert_eq!(deserialized.as_slice(), data.as_slice());
+			// Writing borrows the slice, reading returns an owned segment:
+			//
+			//     words in --write--> [ 1 | n | word_0 .. word_n-1 ] --read--> words out
+			let mut buf = Vec::new();
+			ValuesRef::new(&words).serialize(&mut buf).unwrap();
+			let read = ValuesData::deserialize(buf.as_slice()).unwrap();
+
+			prop_assert_eq!(&*read, &words[..]);
+		}
 	}
 
 	#[test]
-	fn test_witness_serialization_round_trip_borrowed() {
-		let data = vec![Word::from_u64(123), Word::from_u64(456)];
-		let witness = ValuesData::borrowed(&data);
-
+	fn deserialize_rejects_version_mismatch() {
+		// Invariant: a segment written to an unknown layout is rejected, never decoded.
+		//
+		// Fixture state: one word, tagged one version past the current one.
+		//
+		//     on disk:  [ 2 | 1 | word_0 ]
+		//     expected:   1
+		//     -> reject without reading word_0
 		let mut buf = Vec::new();
-		witness.serialize(&mut buf).unwrap();
+		(ValuesData::SERIALIZATION_VERSION + 1)
+			.serialize(&mut buf)
+			.unwrap();
+		vec![Word::ONE].serialize(&mut buf).unwrap();
 
-		let deserialized = ValuesData::deserialize(&mut buf.as_slice()).unwrap();
-		assert_eq!(witness, deserialized);
-		assert_eq!(deserialized.as_slice(), data.as_slice());
-	}
-
-	#[test]
-	fn test_witness_version_mismatch() {
-		let mut buf = Vec::new();
-		999u32.serialize(&mut buf).unwrap(); // Wrong version
-		vec![Word::from_u64(1)].serialize(&mut buf).unwrap(); // Some data
-
-		let result = ValuesData::deserialize(&mut buf.as_slice());
-		assert!(result.is_err());
-		match result.unwrap_err() {
+		match ValuesData::deserialize(buf.as_slice()).unwrap_err() {
 			SerializationError::InvalidConstruction { name } => {
-				assert_eq!(name, "Witness::version");
+				assert_eq!(name, "ValuesData::version");
 			}
-			_ => panic!("Expected version mismatch error"),
+			other => panic!("Expected InvalidConstruction, got: {other:?}"),
 		}
 	}
 
-	/// Helper function to create or update the reference binary file for Witness version
-	/// compatibility testing.
 	#[test]
-	#[ignore] // Use `cargo test -- --ignored create_witness_reference_binary` to run this
-	fn create_witness_reference_binary_file() {
-		let data = vec![
-			Word::from_u64(1),
-			Word::from_u64(42),
-			Word::from_u64(0xDEADBEEF),
-			Word::from_u64(0x1234567890ABCDEF),
-		];
-		let witness = ValuesData::owned(data);
-
+	fn deserialize_rejects_truncated_segment() {
+		// Invariant: a file cut short fails, rather than yielding a shorter segment.
+		//
+		// Fixture state: two words written, then one byte dropped.
+		//
+		//     written:  [ 1 | 2 | word_0 | word_1 ]   4 + 4 + 8 + 8 = 24 bytes
+		//     on disk:  same, minus one byte          23 bytes
+		//     -> the count promises 16 bytes of words, 15 remain
 		let mut buf = Vec::new();
-		witness.serialize(&mut buf).unwrap();
+		ValuesRef::new(&[Word::ONE, Word::ALL_ONE])
+			.serialize(&mut buf)
+			.unwrap();
+		buf.truncate(buf.len() - 1);
 
-		let test_data_path = std::path::Path::new("verifier/core/test_data/witness_v1.bin");
-
-		if let Some(parent) = test_data_path.parent() {
-			std::fs::create_dir_all(parent).unwrap();
+		match ValuesData::deserialize(buf.as_slice()).unwrap_err() {
+			SerializationError::NotEnoughBytes => {}
+			other => panic!("Expected NotEnoughBytes, got: {other:?}"),
 		}
-
-		std::fs::write(test_data_path, &buf).unwrap();
-
-		println!("Created Witness reference binary file at: {:?}", test_data_path);
-		println!("Binary data length: {} bytes", buf.len());
 	}
 
-	/// Test deserialization from a reference binary file to ensure Witness version
-	/// compatibility. This test will fail if breaking changes are made without incrementing the
-	/// version.
 	#[test]
-	fn test_witness_deserialize_from_reference_binary_file() {
-		let binary_data = include_bytes!("../../test_data/witness_v1.bin");
+	fn reference_binary_deserializes_at_current_version() {
+		// Invariant: the committed file still decodes to the words it was written from.
+		//
+		// This is what forces a layout change to bump the version tag.
+		// Change the bytes without touching the tag, and the words stop matching.
+		let bytes = include_bytes!("../../test_data/values_data_v1.bin");
 
-		let deserialized = ValuesData::deserialize(&mut binary_data.as_slice()).unwrap();
-
-		assert_eq!(deserialized.len(), 4);
-		assert_eq!(deserialized.as_slice()[0].as_u64(), 1);
-		assert_eq!(deserialized.as_slice()[1].as_u64(), 42);
-		assert_eq!(deserialized.as_slice()[2].as_u64(), 0xDEADBEEF);
-		assert_eq!(deserialized.as_slice()[3].as_u64(), 0x1234567890ABCDEF);
-
-		// Verify that the version is what we expect
-		// This is implicitly checked during deserialization, but we can also verify
-		// the file starts with the correct version bytes
-		let version_bytes = &binary_data[0..4]; // First 4 bytes should be version
-		let expected_version_bytes = 1u32.to_le_bytes(); // Version 1 in little-endian
+		// The tag occupies the leading four bytes, little-endian.
 		assert_eq!(
-			version_bytes, expected_version_bytes,
-			"WitnessData binary file version mismatch. If you made breaking changes, increment WitnessData::SERIALIZATION_VERSION"
+			&bytes[..4],
+			&ValuesData::SERIALIZATION_VERSION.to_le_bytes(),
+			"reference file version mismatch: regenerate it with the ignored test below"
 		);
+
+		let read = ValuesData::deserialize(bytes.as_slice()).unwrap();
+		assert_eq!(&*read, &reference_words()[..]);
+	}
+
+	// Regenerates the reference file after an intentional layout change.
+	// Run: `cargo test -p binius-core -- --ignored create_values_data_reference_binary`.
+	#[test]
+	#[ignore]
+	fn create_values_data_reference_binary_file() {
+		let mut buf = Vec::new();
+		ValuesRef::new(&reference_words())
+			.serialize(&mut buf)
+			.unwrap();
+
+		// Relative to the crate root, which is the working directory of a test run.
+		let path = Path::new("test_data/values_data_v1.bin");
+		fs::write(path, &buf).unwrap();
+
+		println!("Wrote {} bytes to {}", buf.len(), path.display());
 	}
 }

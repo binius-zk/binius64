@@ -424,6 +424,43 @@ impl ConstraintSystem {
 	pub const fn value_vec_len(&self) -> usize {
 		self.n_public_words() + self.n_hidden_words()
 	}
+
+	/// Picks the inout values out of the public segment of a [`ValueVec`].
+	///
+	/// The inout values are the only part of that segment an instance chooses; the constants and
+	/// the padding around them are fixed by this system. [`Self::public_segment`] is the inverse.
+	///
+	/// # Panics
+	///
+	/// If `public` is shorter than the public segment of this system.
+	pub fn inout_values<'a>(&self, public: &'a [Word]) -> &'a [Word] {
+		&public[self.offset_inout()..self.offset_inout() + self.n_inout]
+	}
+
+	/// Rebuilds the public segment of a [`ValueVec`] from the inout values of one instance.
+	///
+	/// Everything else in the segment already lives here, so the instance need not carry it:
+	///
+	/// ```text
+	///     [ constants | const pad | inout | inout pad ]
+	///       from self   zeros       given   zeros
+	/// ```
+	pub fn public_segment(&self, inout: &[Word]) -> Result<Vec<Word>, ConstraintSystemError> {
+		if inout.len() != self.n_inout {
+			return Err(ConstraintSystemError::IncorrectInoutLength {
+				expected: self.n_inout,
+				actual: inout.len(),
+			});
+		}
+
+		// Each `resize` grows to the start of the next section, zero-filling the padding between.
+		let mut public = Vec::with_capacity(self.n_public_words());
+		public.extend_from_slice(&self.constants);
+		public.resize(self.offset_inout(), Word::ZERO);
+		public.extend_from_slice(inout);
+		public.resize(self.n_public_words(), Word::ZERO);
+		Ok(public)
+	}
 }
 
 impl SerializeBytes for ConstraintSystem {
@@ -485,7 +522,7 @@ impl DeserializeBytes for ConstraintSystem {
 mod tests {
 	use super::*;
 	use crate::{
-		constraint_system::{ShiftedValueIndex, ValueVec, ValuesData},
+		constraint_system::{ShiftedValueIndex, ValueVec, ValuesData, ValuesRef},
 		error::ConstraintViolation,
 	};
 
@@ -1031,40 +1068,88 @@ mod tests {
 	}
 
 	#[test]
+	fn public_segment_round_trips_through_its_inout_values() {
+		// Invariant: dropping everything but the inout values loses nothing.
+		//
+		// Fixture state: the test shape, whose public segment is
+		//
+		//     [ 1 42 0xDEADBEEF _ | i0 i1 _ _ ]
+		let cs = test_shape();
+		let inout = [Word::from_u64(0x1111), Word::from_u64(0x2222)];
+
+		let public = cs.public_segment(&inout).unwrap();
+		assert_eq!(
+			public,
+			[
+				Word::from_u64(1),
+				Word::from_u64(42),
+				Word::from_u64(0xDEADBEEF),
+				Word::ZERO,
+				Word::from_u64(0x1111),
+				Word::from_u64(0x2222),
+				Word::ZERO,
+				Word::ZERO,
+			]
+		);
+		assert_eq!(cs.inout_values(&public), &inout);
+	}
+
+	#[test]
+	fn public_segment_rejects_the_wrong_number_of_inout_values() {
+		// Invariant: a segment is only rebuilt from inout values that fit the shape.
+		//
+		// Fixture state: the test shape, which declares two inout values, given one.
+		let cs = test_shape();
+
+		match cs.public_segment(&[Word::ONE]).unwrap_err() {
+			ConstraintSystemError::IncorrectInoutLength { expected, actual } => {
+				assert_eq!(expected, 2);
+				assert_eq!(actual, 1);
+			}
+			other => panic!("Expected IncorrectInoutLength, got: {other:?}"),
+		}
+	}
+
+	#[test]
 	fn test_roundtrip_cs_and_witnesses_reconstruct_valuevec() {
 		let cs = test_shape();
 
-		// Build a value vector and fill every word with a deterministic pattern.
-		let public = (0..cs.n_public_words())
+		// Build a value vector: the constants and padding the shape fixes, an instance's inout
+		// values, and a deterministic pattern for the hidden segment.
+		let inout = (0..cs.n_inout)
 			.map(|i| Word::from_u64(0xA5A5_5A5A ^ (i as u64 * 0x9E37_79B9)))
 			.collect::<Vec<_>>();
+		let public = cs.public_segment(&inout).unwrap();
 		let private = (0..cs.n_hidden_words())
 			.map(|i| Word::from_u64(0x5A5A_A5A5 ^ (i as u64 * 0x9E37_79B9)))
 			.collect::<Vec<_>>();
 		let values = ValueVec::new_from_data(&public, &private);
 
-		// Split into public and non-public witnesses and serialize all artifacts
-		let public_data = ValuesData::from(values.public());
-		let non_public_data = ValuesData::from(values.non_public());
-
+		// Serialize all three artifacts. The public one carries the inout values alone, because
+		// the constants and the padding around them are already in the constraint system.
 		let mut buf_cs = Vec::new();
 		cs.serialize(&mut buf_cs).unwrap();
 
-		let mut buf_pub = Vec::new();
-		public_data.serialize(&mut buf_pub).unwrap();
+		let mut buf_inout = Vec::new();
+		ValuesRef::new(cs.inout_values(values.public()))
+			.serialize(&mut buf_inout)
+			.unwrap();
 
 		let mut buf_non_pub = Vec::new();
-		non_public_data.serialize(&mut buf_non_pub).unwrap();
+		ValuesRef::new(values.non_public())
+			.serialize(&mut buf_non_pub)
+			.unwrap();
 
 		// Deserialize everything back
 		let cs2 = ConstraintSystem::deserialize(&mut buf_cs.as_slice()).unwrap();
-		let pub2 = ValuesData::deserialize(&mut buf_pub.as_slice()).unwrap();
+		let inout2 = ValuesData::deserialize(&mut buf_inout.as_slice()).unwrap();
 		let non_pub2 = ValuesData::deserialize(&mut buf_non_pub.as_slice()).unwrap();
-		assert_eq!(cs2.n_public_words(), pub2.len());
+		assert_eq!(cs2.n_inout, inout2.len());
 		assert_eq!(cs2.n_hidden_words(), non_pub2.len());
 
 		// Reconstruct ValueVec from deserialized pieces
-		let reconstructed = ValueVec::new_from_data(&pub2, &non_pub2);
+		let reconstructed =
+			ValueVec::new_from_data(&cs2.public_segment(&inout2).unwrap(), &non_pub2);
 
 		assert_eq!(reconstructed.combined_witness(), values.combined_witness());
 	}

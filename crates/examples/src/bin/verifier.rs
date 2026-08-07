@@ -12,18 +12,18 @@ use binius_verifier::{
 };
 use clap::Parser;
 
-/// Verifier CLI: load CS, public witness and proof, then verify.
+/// Verifier CLI: load CS, public inout values and proof, then verify.
 #[derive(Debug, Parser)]
 #[command(
 	name = "verifier",
-	about = "Verify a proof from a constraint system, public witness, and proof binary"
+	about = "Verify a proof from a constraint system, public inout values, and proof binary"
 )]
 struct Args {
 	/// Path to the constraint system binary
 	#[arg(long = "cs-path")]
 	cs_path: PathBuf,
 
-	/// Path to the public values (ValuesData) binary
+	/// Path to the public inout values (ValuesData) binary
 	#[arg(long = "pub-witness-path")]
 	pub_witness_path: PathBuf,
 
@@ -47,12 +47,16 @@ fn main() -> Result<()> {
 	let cs = ConstraintSystem::deserialize(&mut cs_bytes.as_slice())
 		.context("Failed to deserialize ConstraintSystem")?;
 
-	// Read and deserialize public values
-	let pub_bytes = fs::read(&args.pub_witness_path).with_context(|| {
-		format!("Failed to read public values from {}", args.pub_witness_path.display())
+	// Read and deserialize the public inout values, then rebuild the segment the protocol wants.
+	// The constants and the padding around them come from the constraint system, not the file.
+	let inout_bytes = fs::read(&args.pub_witness_path).with_context(|| {
+		format!("Failed to read public inout values from {}", args.pub_witness_path.display())
 	})?;
-	let public = ValuesData::deserialize(&mut pub_bytes.as_slice())
+	let inout = ValuesData::deserialize(&mut inout_bytes.as_slice())
 		.context("Failed to deserialize public ValuesData")?;
+	let public = cs
+		.public_segment(&inout)
+		.context("Public inout values do not fit the constraint system")?;
 
 	// Read and deserialize proof
 	let proof_bytes = fs::read(&args.proof_path)
@@ -80,7 +84,7 @@ fn main() -> Result<()> {
 
 	// Verify
 	verifier
-		.verify(public.as_slice(), &mut verifier_transcript)
+		.verify(&public, &mut verifier_transcript)
 		.context("Verification failed")?;
 	verifier_transcript
 		.finalize()

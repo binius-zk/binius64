@@ -21,6 +21,8 @@ pub enum ConstraintSystemError {
 		public_len: usize,
 		hidden_len: usize,
 	},
+	#[error("the inout values must be {expected} words, got: {actual}")]
+	IncorrectInoutLength { expected: usize, actual: usize },
 	#[error(
 		"{constraint_kind} #{constraint_index} uses non canonical shift in its {operand_name} operand"
 	)]
