@@ -326,7 +326,7 @@ impl IndexMut<Wire> for BatchWitnessFiller<'_, '_> {
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::PackedBinaryGhash1x128b;
-	use binius_frontend::{CircuitBuilder, Wire};
+	use binius_frontend::{AssertionFailure, CircuitBuilder, Wire};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
@@ -510,10 +510,13 @@ mod tests {
 
 		let err = result.expect_err("instance 2 violates a == b");
 		assert_eq!(err.instance, 2);
-		assert_eq!(err.source.total_count, 1);
+		assert_eq!(err.source.total, 1);
 		assert_eq!(
-			err.source.messages,
-			vec![".a_eq_b: Word(0x0000000000000002) != Word(0x0000000000000063)".to_string()]
+			err.source.failures,
+			vec![AssertionFailure {
+				path: ".a_eq_b".to_string(),
+				detail: "Word(0x0000000000000002) != Word(0x0000000000000063)".to_string(),
+			}]
 		);
 	}
 
@@ -535,10 +538,13 @@ mod tests {
 
 		let err = result.expect_err("instance 5 violates a == b");
 		assert_eq!(err.instance, 5);
-		assert_eq!(err.source.total_count, 1);
+		assert_eq!(err.source.total, 1);
 		assert_eq!(
-			err.source.messages,
-			vec![".a_eq_b: Word(0x0000000000000005) != Word(0x0000000000000063)".to_string()]
+			err.source.failures,
+			vec![AssertionFailure {
+				path: ".a_eq_b".to_string(),
+				detail: "Word(0x0000000000000005) != Word(0x0000000000000063)".to_string(),
+			}]
 		);
 	}
 
@@ -562,13 +568,13 @@ mod tests {
 			.expect_err("instances fail");
 
 		assert!(parallel.instance == 5 || parallel.instance == 7);
-		assert_eq!(parallel.source.total_count, 1);
+		assert_eq!(parallel.source.total, 1);
 		assert_eq!(
-			parallel.source.messages,
-			vec![format!(
-				".a_eq_b: Word(0x{0:016x}) != Word(0x0000000000000063)",
-				parallel.instance
-			)]
+			parallel.source.failures,
+			vec![AssertionFailure {
+				path: ".a_eq_b".to_string(),
+				detail: format!("Word(0x{0:016x}) != Word(0x0000000000000063)", parallel.instance),
+			}]
 		);
 	}
 
