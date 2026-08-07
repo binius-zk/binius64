@@ -20,8 +20,19 @@ use tracing::instrument;
 use super::{
 	SHIFT_VARIANT_COUNT,
 	claims::PreparedOperatorClaims,
-	key_collection::{KeyCollection, KeySegment, Operation},
+	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment, Operation},
 };
+
+/// The phase-2 scalar weights of one key segment, one table per operation.
+///
+/// A table holds the `arity` weights of each shift the segment uses, in dense shift index order,
+/// so a key's weights are the chunk at `key.dense_shift_idx * arity`.
+struct ScalarTables<F> {
+	zero: Vec<F>,
+	bitand: Vec<F>,
+	intmul: Vec<F>,
+	binmul: Vec<F>,
+}
 
 /// Constructs the three "h" multilinear polynomials for shift operations at a
 /// univariate challenge point. See the paper for definition of h polynomials.
@@ -127,11 +138,12 @@ where
 ///
 /// For each word w, computes:
 /// ```text
-/// ∑_{key ∈ keys[w]} key.accumulate(constraint_indices, tensor, scalars[key.id])
+/// ∑_{key ∈ keys[w]} key.accumulate(constraint_indices, tensor, scalars[key.dense_shift_idx])
 /// ```
-/// where `scalars[key.id]` is the contiguous per-operand chunk encoding
+/// where `scalars[key.dense_shift_idx]` is the contiguous per-operand chunk encoding
 /// `λ^(operand_idx+1) × h_op[shift_variant] × r_s_tensor[shift_amount]` for operand index
-/// `operand_idx` and `shift_variant` in {SLL, SRL, SRA} and `shift_amount` in [0, Word::BITS).
+/// `operand_idx`, and `(shift_variant, shift_amount)` the pair the key's segment decodes its dense
+/// shift index to.
 ///
 /// # Usage
 ///
@@ -165,62 +177,60 @@ where
 
 	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
 
-	// Allocate and populate the scalars, laid out with the operand index innermost so that the
-	// `arity` weights for one `key.id` (= `op * Word::BITS + s`) form a contiguous chunk that
-	// [`Key::accumulate`] can index directly by operand index.
-	let mut zero_scalars = vec![F::ZERO; ZERO_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
-	let mut bitand_scalars = vec![F::ZERO; BITAND_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
-	let mut intmul_scalars = vec![F::ZERO; INTMUL_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
-	let mut binmul_scalars = vec![F::ZERO; BINMUL_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
-
-	let populate_scalars = |scalars: &mut [F], arity: usize, lambda_powers: &[F], h_ops: &[F]| {
-		for op in 0..SHIFT_VARIANT_COUNT {
-			for s in 0..Word::BITS {
-				let key_id = op * Word::BITS + s;
-				let op_s_scalar = h_ops[op] * r_s_tensor.as_ref()[s];
+	// The scalars of one operation, laid out with the operand index innermost so that the `arity`
+	// weights for one `key.dense_shift_idx` form a contiguous chunk that [`Key::accumulate_wide`]
+	// can index directly by operand index.
+	let build_scalars =
+		|arity: usize, lambda_powers: &[F], h_ops: &[F], dense_shift_enc: &DenseShiftEncoding| {
+			let mut scalars = vec![F::ZERO; arity * dense_shift_enc.len()];
+			for (dense_shift_idx, (variant, amount)) in dense_shift_enc.iter().enumerate() {
+				let shift_scalar = h_ops[variant as usize] * r_s_tensor.as_ref()[amount as usize];
 				for operand_idx in 0..arity {
-					scalars[key_id * arity + operand_idx] =
-						lambda_powers[operand_idx] * op_s_scalar;
+					scalars[dense_shift_idx * arity + operand_idx] =
+						lambda_powers[operand_idx] * shift_scalar;
 				}
 			}
-		}
-	};
+			scalars
+		};
 
-	populate_scalars(&mut zero_scalars, ZERO_ARITY, &prepared.zero.lambda_powers, &zero_h_ops);
-	populate_scalars(
-		&mut bitand_scalars,
-		BITAND_ARITY,
-		&prepared.bitand.lambda_powers,
-		&bitand_h_ops,
-	);
-	populate_scalars(
-		&mut intmul_scalars,
-		INTMUL_ARITY,
-		&prepared.intmul.lambda_powers,
-		&intmul_h_ops,
-	);
-	populate_scalars(
-		&mut binmul_scalars,
-		BINMUL_ARITY,
-		&prepared.binmul.lambda_powers,
-		&binmul_h_ops,
-	);
+	// Each segment has its own dense shift encoding, so it has its own scalar tables.
+	let build_scalar_tables = |dense_shift_enc: &DenseShiftEncoding| ScalarTables {
+		zero: build_scalars(ZERO_ARITY, &prepared.zero.lambda_powers, &zero_h_ops, dense_shift_enc),
+		bitand: build_scalars(
+			BITAND_ARITY,
+			&prepared.bitand.lambda_powers,
+			&bitand_h_ops,
+			dense_shift_enc,
+		),
+		intmul: build_scalars(
+			INTMUL_ARITY,
+			&prepared.intmul.lambda_powers,
+			&intmul_h_ops,
+			dense_shift_enc,
+		),
+		binmul: build_scalars(
+			BINMUL_ARITY,
+			&prepared.binmul.lambda_powers,
+			&binmul_h_ops,
+			dense_shift_enc,
+		),
+	};
 
 	// The scalar for one word of a segment: the accumulated contribution of all its keys. The
 	// per-key wide accumulations are summed unreduced and reduced once at the end.
-	let word_scalar = |segment: &KeySegment, index: usize| {
+	let word_scalar = |segment: &KeySegment, tables: &ScalarTables<F>, index: usize| {
 		let wide = segment
 			.word_keys(index)
 			.iter()
 			.map(|key| {
 				// The scalar table is per operation, and its stride is that operation's arity.
 				let (scalars, arity) = match key.operation {
-					Operation::Zero => (&zero_scalars, ZERO_ARITY),
-					Operation::BitwiseAnd => (&bitand_scalars, BITAND_ARITY),
-					Operation::IntegerMul => (&intmul_scalars, INTMUL_ARITY),
-					Operation::BinMul => (&binmul_scalars, BINMUL_ARITY),
+					Operation::Zero => (&tables.zero, ZERO_ARITY),
+					Operation::BitwiseAnd => (&tables.bitand, BITAND_ARITY),
+					Operation::IntegerMul => (&tables.intmul, INTMUL_ARITY),
+					Operation::BinMul => (&tables.binmul, BINMUL_ARITY),
 				};
-				let base = key.id as usize * arity;
+				let base = key.dense_shift_idx as usize * arity;
 				key.accumulate_wide(
 					&segment.constraint_indices,
 					prepared[key.operation].r_x_prime_tensor.as_ref(),
@@ -234,6 +244,7 @@ where
 	// Each segment sits at the base of its buffer: the public piece fills its power-of-two
 	// length exactly, the hidden piece is zero-padded up to the hidden segment length.
 	let build_segment = |segment: &KeySegment, log_len: usize| {
+		let tables = build_scalar_tables(&segment.dense_shift_enc);
 		let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		let n_words = segment.n_words();
 		// Full packed elements: each maps exactly `P::WIDTH` words, so `from_scalars` sees a
@@ -248,14 +259,16 @@ where
 			.enumerate()
 			.for_each(|(chunk_index, slot)| {
 				let start = chunk_index * P::WIDTH;
-				slot.write(P::from_scalars((0..P::WIDTH).map(|i| word_scalar(segment, start + i))));
+				slot.write(P::from_scalars(
+					(0..P::WIDTH).map(|i| word_scalar(segment, &tables, start + i)),
+				));
 			});
 		// Safety: the parallel loop above initialized every one of the `n_full` slots.
 		unsafe { values.set_len(n_full) };
 		if !n_words.is_multiple_of(P::WIDTH) {
 			let start = n_full * P::WIDTH;
 			values.push(P::from_scalars(
-				(start..n_words).map(|word_index| word_scalar(segment, word_index)),
+				(start..n_words).map(|word_index| word_scalar(segment, &tables, word_index)),
 			));
 		}
 		values.resize(capacity, P::default());

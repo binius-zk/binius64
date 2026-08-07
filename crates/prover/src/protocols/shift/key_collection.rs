@@ -13,9 +13,24 @@ use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
 	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
 };
+use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 use bytes::{Buf, BufMut};
 
 use super::PreparedOperatorData;
+
+/// The number of shifts a key could name, over which [`shift_index`] is dense.
+const SHIFT_PAIR_COUNT: usize = SHIFT_VARIANT_COUNT * Word::BITS;
+
+/// Places a shift in the full space of `SHIFT_PAIR_COUNT` shifts, for the tables that build and
+/// invert a [`DenseShiftEncoding`].
+///
+/// # Panics
+///
+/// Panics if the shift amount is not below `Word::BITS`.
+fn shift_index((variant, amount): (ShiftVariant, u8)) -> usize {
+	assert!((amount as usize) < Word::BITS, "shift amount {amount} out of range");
+	variant as usize * Word::BITS + amount as usize
+}
 
 /// Represents the type of operations handled by the shift protocol.
 ///
@@ -40,16 +55,79 @@ pub enum Operation {
 	BinMul,
 }
 
-/// A `Key` specifies an operation, an identifier for a 2D matrix, and a range of constraint
-/// indices.
+/// A dense re-encoding of the shifts occurring in a key segment.
 ///
-/// The matrix encodes constraint information with respect exactly one operand of that operation,
-/// one shift variant, and one shift amount. Every `Key` corresponds to a unique word (not
-/// referenced) in the `Key`. The `range` specifies a range within a list of constraint indices,
-/// those constraint indices in which the word participates with respect to the key. If constraint
-/// index `i` is among the values within the range, that means the word participates in constraint
-/// `i` of operation `operation` as part of the operand encoded in the `id`, with the word shifted
-/// with the shift variant and amount also encoded in the `id`.
+/// A key names one of `SHIFT_PAIR_COUNT` shifts, of which a constraint system typically uses a few
+/// dozen. Encoding the shifts a segment does use as a contiguous range lets the prover size its
+/// per-shift tables by the shifts actually used rather than by the whole space.
+#[derive(Debug, Clone, Default)]
+pub struct DenseShiftEncoding {
+	/// The shift each dense index encodes, ordered by variant and then by amount.
+	shifts: Vec<(ShiftVariant, u8)>,
+}
+
+impl DenseShiftEncoding {
+	/// Builds the encoding of the shifts in an iterator, which need be neither sorted nor distinct.
+	///
+	/// # Panics
+	///
+	/// Panics if any shift amount is not below `Word::BITS`.
+	fn new(shifts: impl IntoIterator<Item = (ShiftVariant, u8)>) -> Self {
+		let mut used = [None; SHIFT_PAIR_COUNT];
+		for shift in shifts {
+			used[shift_index(shift)] = Some(shift);
+		}
+		Self {
+			shifts: used.into_iter().flatten().collect(),
+		}
+	}
+
+	/// The number of distinct shifts the segment uses.
+	pub const fn len(&self) -> usize {
+		self.shifts.len()
+	}
+
+	/// Whether the segment uses no shifted values at all.
+	pub const fn is_empty(&self) -> bool {
+		self.shifts.is_empty()
+	}
+
+	/// The shift a dense index encodes.
+	///
+	/// # Panics
+	///
+	/// Panics if the dense index is not below [`Self::len`].
+	#[inline]
+	pub fn decode(&self, dense_idx: usize) -> (ShiftVariant, u8) {
+		self.shifts[dense_idx]
+	}
+
+	/// The shifts the segment uses, in dense index order.
+	pub fn iter(&self) -> impl Iterator<Item = (ShiftVariant, u8)> + '_ {
+		self.shifts.iter().copied()
+	}
+
+	/// The dense index of every shift, for lookup while the keys are built.
+	///
+	/// The entries of the shifts the segment does not use are meaningless.
+	fn inverse(&self) -> [u16; SHIFT_PAIR_COUNT] {
+		let mut inverse = [0u16; SHIFT_PAIR_COUNT];
+		for (dense_idx, &shift) in self.shifts.iter().enumerate() {
+			inverse[shift_index(shift)] = dense_idx as u16;
+		}
+		inverse
+	}
+}
+
+/// A `Key` specifies an operation, a shift, and a range of constraint indices.
+///
+/// The key identifies a 2D matrix of constraint information: the constraints of one operation in
+/// which one witness word participates, shifted by one shift variant and one shift amount. Every
+/// `Key` corresponds to a unique word (not referenced in the `Key`). The `range` specifies a range
+/// within a list of constraint indices, those constraint indices in which the word participates
+/// with respect to the key. If constraint index `i` is among the values within the range, that
+/// means the word participates in constraint `i` of operation `operation`, as the operand that
+/// constraint index names, shifted by the variant and amount the key's shift index encodes.
 ///
 /// # Relationship to Formal Specification
 ///
@@ -60,30 +138,26 @@ pub enum Operation {
 ///
 /// # Structure
 ///
-/// - **Operation**: Constraint type (AND or IMUL)
-/// - **ID**: Packed encoding of operand index, shift variant, and shift amount
+/// - **Operation**: Constraint type (ZERO, AND, IMUL or BMUL)
+/// - **Dense shift index**: The shift variant and shift amount, as encoded by the segment
 /// - **Range**: Constraint indices where this shifted word appears
 ///
-/// # ID Encoding
+/// # Shift index encoding
 ///
-/// The `id` packs three values:
-/// - Operand index (which operand in the constraint)
-/// - Shift variant (logical left, logical right, arithmetic right)
-/// - Shift amount (0 to `Word::BITS-1` bits)
-///
-/// This ordering places shift information (fundamental to Binius64) in lower bits,
-/// with operation and operand data in higher bits. Future operations can simply extend
-/// the `id` range with higher bits without breaking the semantic meaning of lower bits.
+/// The shift index is an index into the [`DenseShiftEncoding`] of the [`KeySegment`] holding the
+/// key, which decodes it back to the shift variant and shift amount. Keys index the shifts their
+/// segment actually uses rather than the whole shift space, so a table the prover builds per shift
+/// is proportional to the former.
 ///
 /// # Performance Considerations
 ///
-/// The operation remains separate from `id` for cleaner code organization with no
-/// performance cost. During proving, only the operation needs extraction while
-/// the packed operand index, shift variant, and shift amount remain undifferentiated.
+/// The operation remains separate from the shift index for cleaner code organization with no
+/// performance cost. During proving, only the operation needs extraction; the shift index is used
+/// as it stands.
 #[derive(Debug, Clone)]
 pub struct Key {
 	pub operation: Operation,
-	pub id: u16,
+	pub dense_shift_idx: u16,
 	pub range: Range<u32>,
 }
 
@@ -193,6 +267,7 @@ impl Key {
 /// - **key_ranges**: For every word of the segment there is a range of keys within the `keys`
 ///   vector
 /// - **constraint_indices**: Flattened list of constraint indices referenced by the keys
+/// - **dense_shift_enc**: The `(shift variant, shift amount)` pairs the segment's keys name
 ///
 /// # Organization
 ///
@@ -205,6 +280,7 @@ pub struct KeySegment {
 	pub keys: Vec<Key>,
 	pub key_ranges: Vec<Range<u32>>,
 	pub constraint_indices: Vec<ConstraintIndex>,
+	pub dense_shift_enc: DenseShiftEncoding,
 }
 
 impl KeySegment {
@@ -258,7 +334,8 @@ impl KeyCollection {
 /// rather than a range that indexes into the flattened `constraint_indices` vector.
 /// During construction, these indices are later flattened to create the final `Key`.
 struct BuilderKey {
-	pub id: u16,
+	/// The `(shift variant, shift amount)` of the shifted value the key references.
+	pub shift: (ShiftVariant, u8),
 	pub operation: Operation,
 	pub constraint_indices: Vec<ConstraintIndex>,
 }
@@ -288,32 +365,21 @@ fn update_with_operand(
 		{
 			// Access and update the builder keys corresponding to the word index (`value_index.0`)
 			let builder_keys = &mut builder_key_lists[value_index.0 as usize];
-			// Encode (shift_variant, shift_amount) into a single ID
-			let shift_variant_val: u16 = match shift_variant {
-				ShiftVariant::Sll => 0,
-				ShiftVariant::Slr => 1,
-				ShiftVariant::Sar => 2,
-				ShiftVariant::Rotr => 3,
-				ShiftVariant::Sll32 => 4,
-				ShiftVariant::Srl32 => 5,
-				ShiftVariant::Sra32 => 6,
-				ShiftVariant::Rotr32 => 7,
-			};
-			let id = (shift_variant_val << Word::LOG_BITS) + *amount as u16;
+			let shift = (*shift_variant, *amount);
 
-			// Find existing builder key or create a new one for this (operation, id) pair
+			// Find existing builder key or create a new one for this (operation, shift) pair
 			let constraint_index = ConstraintIndex {
 				operand_index: operand_index as u8,
 				constraint_index: constraint_idx as u32,
 			};
 			if let Some(builder_key) = builder_keys
 				.iter_mut()
-				.find(|key| key.id == id && key.operation == operation)
+				.find(|key| key.shift == shift && key.operation == operation)
 			{
 				builder_key.constraint_indices.push(constraint_index);
 			} else {
 				builder_keys.push(BuilderKey {
-					id,
+					shift,
 					operation,
 					constraint_indices: vec![constraint_index],
 				});
@@ -367,8 +433,16 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 	}
 }
 
-/// Computes all three fields of a [`KeySegment`] from the builder keys lists of its words.
+/// Computes all fields of a [`KeySegment`] from the builder keys lists of its words.
 fn build_key_segment(builder_key_lists: Vec<Vec<BuilderKey>>) -> KeySegment {
+	let dense_shift_enc = DenseShiftEncoding::new(
+		builder_key_lists
+			.iter()
+			.flatten()
+			.map(|builder_key| builder_key.shift),
+	);
+	let dense_shift_idx = dense_shift_enc.inverse();
+
 	let key_ranges = builder_key_lists
 		.iter()
 		.scan(0u32, |offset, builder_keys| {
@@ -383,7 +457,7 @@ fn build_key_segment(builder_key_lists: Vec<Vec<BuilderKey>>) -> KeySegment {
 
 	for builder_key in builder_key_lists.into_iter().flatten() {
 		let BuilderKey {
-			id,
+			shift,
 			operation,
 			constraint_indices: mut builder_constraint_indices,
 		} = builder_key;
@@ -395,7 +469,7 @@ fn build_key_segment(builder_key_lists: Vec<Vec<BuilderKey>>) -> KeySegment {
 		constraint_indices.extend(builder_constraint_indices);
 		let end = constraint_indices.len() as u32;
 		keys.push(Key {
-			id,
+			dense_shift_idx: dense_shift_idx[shift_index(shift)],
 			operation,
 			range: start..end,
 		});
@@ -405,6 +479,7 @@ fn build_key_segment(builder_key_lists: Vec<Vec<BuilderKey>>) -> KeySegment {
 		keys,
 		key_ranges,
 		constraint_indices,
+		dense_shift_enc,
 	}
 }
 
@@ -441,7 +516,7 @@ impl DeserializeBytes for Operation {
 impl SerializeBytes for Key {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.operation.serialize(&mut write_buf)?;
-		self.id.serialize(&mut write_buf)?;
+		self.dense_shift_idx.serialize(&mut write_buf)?;
 		self.range.start.serialize(&mut write_buf)?;
 		self.range.end.serialize(write_buf)
 	}
@@ -450,12 +525,12 @@ impl SerializeBytes for Key {
 impl DeserializeBytes for Key {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
 		let operation = Operation::deserialize(&mut read_buf)?;
-		let id = u16::deserialize(&mut read_buf)?;
+		let dense_shift_idx = u16::deserialize(&mut read_buf)?;
 		let start = u32::deserialize(&mut read_buf)?;
 		let end = u32::deserialize(&mut read_buf)?;
 		Ok(Key {
 			operation,
-			id,
+			dense_shift_idx,
 			range: start..end,
 		})
 	}
@@ -479,6 +554,46 @@ impl DeserializeBytes for ConstraintIndex {
 	}
 }
 
+impl SerializeBytes for DenseShiftEncoding {
+	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
+		(self.shifts.len() as u32).serialize(&mut write_buf)?;
+		for (variant, amount) in &self.shifts {
+			variant.serialize(&mut write_buf)?;
+			amount.serialize(&mut write_buf)?;
+		}
+		Ok(())
+	}
+}
+
+impl DeserializeBytes for DenseShiftEncoding {
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
+		let len = u32::deserialize(&mut read_buf)? as usize;
+		let mut shifts = Vec::with_capacity(len);
+		for _ in 0..len {
+			let variant = ShiftVariant::deserialize(&mut read_buf)?;
+			let amount = u8::deserialize(&mut read_buf)?;
+			shifts.push((variant, amount));
+		}
+
+		// A dense index is only meaningful against a list of distinct shifts, which the ordering
+		// this writes them in also gives.
+		let amounts_in_range = shifts
+			.iter()
+			.all(|&(_, amount)| (amount as usize) < Word::BITS);
+		if !amounts_in_range
+			|| !shifts
+				.windows(2)
+				.all(|shifts| shift_index(shifts[0]) < shift_index(shifts[1]))
+		{
+			return Err(SerializationError::InvalidConstruction {
+				name: "DenseShiftEncoding::shifts",
+			});
+		}
+
+		Ok(DenseShiftEncoding { shifts })
+	}
+}
+
 impl SerializeBytes for KeySegment {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.keys.serialize(&mut write_buf)?;
@@ -490,7 +605,8 @@ impl SerializeBytes for KeySegment {
 			range.end.serialize(&mut write_buf)?;
 		}
 
-		self.constraint_indices.serialize(write_buf)
+		self.constraint_indices.serialize(&mut write_buf)?;
+		self.dense_shift_enc.serialize(write_buf)
 	}
 }
 
@@ -508,19 +624,21 @@ impl DeserializeBytes for KeySegment {
 		}
 
 		let constraint_indices = Vec::<ConstraintIndex>::deserialize(&mut read_buf)?;
+		let dense_shift_enc = DenseShiftEncoding::deserialize(&mut read_buf)?;
 
 		Ok(KeySegment {
 			keys,
 			key_ranges,
 			constraint_indices,
+			dense_shift_enc,
 		})
 	}
 }
 
 impl SerializeBytes for KeyCollection {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
-		// Version for forward compatibility; version 2 introduced the public/non-public split.
-		const VERSION: u32 = 2;
+		// Version for forward compatibility; version 3 introduced the dense shift encoding.
+		const VERSION: u32 = 3;
 		VERSION.serialize(&mut write_buf)?;
 
 		self.public.serialize(&mut write_buf)?;
@@ -530,7 +648,7 @@ impl SerializeBytes for KeyCollection {
 
 impl DeserializeBytes for KeyCollection {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
-		const VERSION: u32 = 2;
+		const VERSION: u32 = 3;
 		let version = u32::deserialize(&mut read_buf)?;
 		if version != VERSION {
 			return Err(SerializationError::InvalidConstruction {
@@ -547,6 +665,7 @@ impl DeserializeBytes for KeyCollection {
 
 #[cfg(test)]
 mod tests {
+	use binius_core::constraint_system::{AndConstraint, ValueIndex};
 	use binius_field::{BinaryField128bGhash, Field};
 	use binius_math::FieldBuffer;
 
@@ -556,6 +675,145 @@ mod tests {
 
 	fn f(value: u128) -> F {
 		F::new(value)
+	}
+
+	/// A constraint system with a handful of distinct shifts, differing between the two segments.
+	///
+	/// The public segment references `(Sll, 0)` and `(Slr, 3)`; the hidden one references
+	/// `(Sll, 0)`, `(Sar, 7)` and `(Rotr, 1)`.
+	fn shifted_constraint_system() -> ConstraintSystem {
+		let public = ValueIndex(1);
+		let hidden = ValueIndex(5);
+		ConstraintSystem {
+			constants: vec![Word::ZERO; 4],
+			n_const_pad: 0,
+			n_inout: 0,
+			n_inout_pad: 0,
+			n_private: 4,
+			n_private_pad: 0,
+			zero_constraints: Vec::new(),
+			and_constraints: vec![AndConstraint([
+				vec![
+					ShiftedValueIndex::plain(public),
+					ShiftedValueIndex::srl(public, 3),
+				],
+				vec![ShiftedValueIndex::sar(hidden, 7)],
+				vec![
+					ShiftedValueIndex::rotr(hidden, 1),
+					ShiftedValueIndex::plain(hidden),
+				],
+			])],
+			imul_constraints: Vec::new(),
+			bmul_constraints: Vec::new(),
+		}
+	}
+
+	#[test]
+	fn dense_shift_encoding_covers_the_pairs_its_segment_uses() {
+		let key_collection = build_key_collection(&shifted_constraint_system());
+
+		let public_pairs = key_collection
+			.public
+			.dense_shift_enc
+			.iter()
+			.collect::<Vec<_>>();
+		assert_eq!(public_pairs, [(ShiftVariant::Sll, 0), (ShiftVariant::Slr, 3)]);
+
+		let hidden_pairs = key_collection
+			.hidden
+			.dense_shift_enc
+			.iter()
+			.collect::<Vec<_>>();
+		assert_eq!(
+			hidden_pairs,
+			[
+				(ShiftVariant::Sll, 0),
+				(ShiftVariant::Sar, 7),
+				(ShiftVariant::Rotr, 1),
+			]
+		);
+
+		// The point of the encoding: a segment names far fewer pairs than the space holds.
+		assert!(key_collection.hidden.dense_shift_enc.len() < SHIFT_PAIR_COUNT);
+	}
+
+	#[test]
+	fn keys_index_their_segments_dense_encoding() {
+		let key_collection = build_key_collection(&shifted_constraint_system());
+
+		// The shifts a word's keys name, as its own segment's encoding decodes them.
+		let word_pairs = |segment: &KeySegment, word: usize| {
+			let mut pairs = segment
+				.word_keys(word)
+				.iter()
+				.map(|key| segment.dense_shift_enc.decode(key.dense_shift_idx as usize))
+				.collect::<Vec<_>>();
+			pairs.sort();
+			pairs
+		};
+
+		// Value index 1 is the second public word; value index 5 the second hidden one.
+		assert_eq!(
+			word_pairs(&key_collection.public, 1),
+			[(ShiftVariant::Sll, 0), (ShiftVariant::Slr, 3)]
+		);
+		assert_eq!(
+			word_pairs(&key_collection.hidden, 1),
+			[
+				(ShiftVariant::Sll, 0),
+				(ShiftVariant::Sar, 7),
+				(ShiftVariant::Rotr, 1),
+			]
+		);
+	}
+
+	#[test]
+	fn dense_shift_encoding_survives_serialization() {
+		let key_collection = build_key_collection(&shifted_constraint_system());
+
+		let mut buf = Vec::new();
+		key_collection.serialize(&mut buf).unwrap();
+		let deserialized = KeyCollection::deserialize(buf.as_slice()).unwrap();
+
+		for (segment, deserialized) in [
+			(&key_collection.public, &deserialized.public),
+			(&key_collection.hidden, &deserialized.hidden),
+		] {
+			assert_eq!(
+				segment.dense_shift_enc.iter().collect::<Vec<_>>(),
+				deserialized.dense_shift_enc.iter().collect::<Vec<_>>()
+			);
+		}
+	}
+
+	#[test]
+	fn dense_shift_encoding_rejects_an_unordered_serialization() {
+		let encoding = DenseShiftEncoding {
+			shifts: vec![(ShiftVariant::Slr, 3), (ShiftVariant::Sll, 0)],
+		};
+
+		let mut buf = Vec::new();
+		encoding.serialize(&mut buf).unwrap();
+
+		assert!(matches!(
+			DenseShiftEncoding::deserialize(buf.as_slice()),
+			Err(SerializationError::InvalidConstruction { .. })
+		));
+	}
+
+	#[test]
+	fn dense_shift_encoding_rejects_an_out_of_range_shift_amount() {
+		let encoding = DenseShiftEncoding {
+			shifts: vec![(ShiftVariant::Sll, Word::BITS as u8)],
+		};
+
+		let mut buf = Vec::new();
+		encoding.serialize(&mut buf).unwrap();
+
+		assert!(matches!(
+			DenseShiftEncoding::deserialize(buf.as_slice()),
+			Err(SerializationError::InvalidConstruction { .. })
+		));
 	}
 
 	#[test]
@@ -584,7 +842,7 @@ mod tests {
 		];
 		let key = Key {
 			operation: Operation::BitwiseAnd,
-			id: 0,
+			dense_shift_idx: 0,
 			range: 0..constraint_indices.len() as u32,
 		};
 		let operator_data = PreparedOperatorData {
@@ -641,7 +899,7 @@ mod tests {
 		];
 		let non_contiguous_key = Key {
 			operation: Operation::BitwiseAnd,
-			id: 0,
+			dense_shift_idx: 0,
 			range: 0..non_contiguous_constraint_indices.len() as u32,
 		};
 		let non_contiguous_expected = non_contiguous_key
@@ -660,7 +918,7 @@ mod tests {
 
 		let empty_key = Key {
 			operation: Operation::BitwiseAnd,
-			id: 0,
+			dense_shift_idx: 0,
 			range: 0..0,
 		};
 		assert_eq!(

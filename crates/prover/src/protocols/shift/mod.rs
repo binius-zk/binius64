@@ -17,5 +17,7 @@ pub mod phase_2;
 mod prove;
 
 pub use claims::{OperatorClaims, PreparedOperatorClaims};
-pub use key_collection::{KeyCollection, KeySegment, Operation, build_key_collection};
+pub use key_collection::{
+	DenseShiftEncoding, KeyCollection, KeySegment, Operation, build_key_collection,
+};
 pub use prove::{OperatorData, PreparedOperatorData, prove};

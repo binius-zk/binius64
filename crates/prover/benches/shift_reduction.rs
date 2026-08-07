@@ -101,6 +101,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				.map(F::new)
 				.collect::<Vec<_>>()
 		};
+		// The circuit's digest assertions lower to ZERO constraints, so the Zero reduction runs
+		// over its own constraint point, as wide as the ZERO set.
+		let r_x_prime_zero = (0..cs.log_zero_constraints().unwrap_or(0) as u128)
+			.map(F::new)
+			.collect::<Vec<_>>();
 		// SHA256 has no IMUL constraints, so the IntMul operator is the zero claim (four zero evals
 		// at an empty point), exactly as the real prover/verifier synthesize it (`prove.rs` /
 		// `verify.rs` `None` branch). Its `r_x_prime` is therefore empty.
@@ -109,6 +114,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		// Sample univariate eval point — shared across bitand and intmul operators.
 		let r_zhat_prime = F::random(&mut rng);
 
+		let zero_evals = [F::random(&mut rng)];
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
 		let key_collection = build_key_collection(&cs);
@@ -123,6 +129,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			let pool = BufferPool::new();
 			let alloc = &pool;
 			b.iter(|| {
+				let prover_zero_data = OperatorData {
+					evals: zero_evals,
+					r_zhat_prime,
+					r_x_prime: r_x_prime_zero.clone(),
+				};
 				let prover_bitand_data = OperatorData {
 					evals: bitand_evals,
 					r_zhat_prime,
@@ -140,7 +151,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					&key_collection,
 					value_vec.combined_witness(),
 					OperatorClaims {
-						zero: OperatorData::zero_claim(r_zhat_prime),
+						zero: prover_zero_data,
 						bitand: prover_bitand_data,
 						intmul: prover_intmul_data,
 						binmul: OperatorData::zero_claim(r_zhat_prime),
@@ -153,6 +164,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		});
 
 		// Pre-run the prover to get the transcript for verifier benchmarking
+		let prover_zero_data = OperatorData {
+			evals: zero_evals,
+			r_zhat_prime,
+			r_x_prime: r_x_prime_zero.clone(),
+		};
 		let prover_bitand_data = OperatorData {
 			evals: bitand_evals,
 			r_zhat_prime,
@@ -170,7 +186,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			&key_collection,
 			value_vec.combined_witness(),
 			OperatorClaims {
-				zero: OperatorData::zero_claim(r_zhat_prime),
+				zero: prover_zero_data,
 				bitand: prover_bitand_data,
 				intmul: prover_intmul_data,
 				binmul: OperatorData::zero_claim(r_zhat_prime),
@@ -194,7 +210,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				verify(
 					&cs,
-					&VerifierOperatorData::new(Vec::new(), [F::ZERO]),
+					&VerifierOperatorData::new(r_x_prime_zero.clone(), zero_evals),
 					&verifier_bitand_data,
 					&verifier_intmul_data,
 					&verifier_binmul_data,
@@ -225,11 +241,17 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let r_x_prime_bitand = (0..cs.log_and_constraints().unwrap_or(0) as u128)
 		.map(F::new)
 		.collect::<Vec<_>>();
+	// The circuit's digest assertions lower to ZERO constraints, so the Zero reduction runs over
+	// its own constraint point, as wide as the ZERO set.
+	let r_x_prime_zero = (0..cs.log_zero_constraints().unwrap_or(0) as u128)
+		.map(F::new)
+		.collect::<Vec<_>>();
 	// SHA256 has no IMUL constraints, so the IntMul operator is the zero claim at an empty point,
 	// matching the real prover (`prove.rs` `None` branch).
 	let r_x_prime_intmul: Vec<F> = Vec::new();
 	// `r_zhat_prime` is shared across the bitand and intmul operators.
 	let r_zhat_prime = F::random(&mut rng);
+	let zero_evals = [F::random(&mut rng)];
 	let bitand_evals = [F::random(&mut rng); 3];
 	let intmul_evals = [F::ZERO; 4];
 
@@ -239,10 +261,14 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
 	// random lambda (rather than one drawn from a transcript) yields realistic-magnitude data.
-	// SHA256 has no ZERO or BMUL constraints, so those two are zero claims at an empty point,
-	// matching the real prover (`prove.rs` `None` branch).
+	// SHA256 has no BMUL constraints, so that one is a zero claim at an empty point, matching the
+	// real prover (`prove.rs` `None` branch).
 	let prepared = OperatorClaims {
-		zero: OperatorData::zero_claim(r_zhat_prime),
+		zero: OperatorData {
+			evals: zero_evals,
+			r_zhat_prime,
+			r_x_prime: r_x_prime_zero,
+		},
 		bitand: OperatorData {
 			evals: bitand_evals,
 			r_zhat_prime,
