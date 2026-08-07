@@ -87,7 +87,7 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// The 2·N_LIMBS twisted power tables: `tables[s][i] = (G^{2^{ws}})^i`. Limb column `(t, l)`
 	/// is a gather from table `s(t, l)`; `tables[0]` is the shared table read by the Phase 5
 	/// logup* lookup.
-	pub tables: Vec<FieldBuffer<P>>,
+	pub tables: Vec<FieldVec<P, A>>,
 }
 
 // A manual `Clone` impl (rather than `#[derive(Clone)]`) so the bound lands on the pooled buffer
@@ -164,7 +164,7 @@ where
 		// Allocate the table buffers up front on this thread, so the parallel region only fills
 		// them — no allocator traffic inside the rayon closures.
 		let packed_len = 1 << LIMB_BITS.saturating_sub(P::LOG_WIDTH);
-		let buffers = iter::repeat_with(|| Vec::<P>::with_capacity(packed_len))
+		let buffers = iter::repeat_with(|| alloc.alloc::<P>(packed_len))
 			.take(bases.len())
 			.collect::<Vec<_>>();
 		let tables = (bases, buffers)
@@ -251,22 +251,22 @@ where
 /// Fill `buffer` with the power table of `base` and wrap it as a [`FieldBuffer`] of `2^log_size`
 /// rows: row `i` holds `base^i`.
 ///
-/// The caller supplies the backing `Vec`, so its allocation can be hoisted out of a hot or parallel
-/// region; `buffer` is cleared and refilled here without reallocating.
+/// The caller supplies the backing buffer, so its allocation can be hoisted out of a hot or
+/// parallel region; `buffer` is cleared and refilled here without reallocating.
 ///
 /// # Preconditions
 ///
-/// * `buffer.capacity()` must equal `1 << log_size.saturating_sub(P::LOG_WIDTH)`.
-fn power_table_into<F, P>(log_size: usize, base: F, mut buffer: Vec<P>) -> FieldBuffer<P>
+/// * `buffer.capacity()` must be at least `1 << log_size.saturating_sub(P::LOG_WIDTH)`.
+fn power_table_into<F, P, V>(log_size: usize, base: F, mut buffer: V) -> FieldBuffer<P, V>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	V: VecLike<P>,
 {
 	let packed_len = 1 << log_size.saturating_sub(P::LOG_WIDTH);
-	assert_eq!(
-		buffer.capacity(),
-		packed_len,
-		"precondition: buffer capacity must match the packed table length"
+	assert!(
+		buffer.capacity() >= packed_len,
+		"precondition: buffer capacity must cover the packed table length"
 	);
 	buffer.clear();
 
@@ -317,7 +317,7 @@ pub(super) const fn limb_index(word: Word, limb: usize) -> usize {
 /// corresponding word. The columns are concatenated into one `(n_vars + LOG_N_LIMBS)`-variate
 /// buffer with the limb index in the high bits, so the prodcheck's node reductions pair column `z`
 /// with column `z + N_LIMBS/2`.
-fn limb_leaves<A, F, P>(alloc: &A, tables: &[FieldBuffer<P>], exponents: &[Word]) -> FieldVec<P, A>
+fn limb_leaves<A, F, P>(alloc: &A, tables: &[FieldVec<P, A>], exponents: &[Word]) -> FieldVec<P, A>
 where
 	A: Allocator,
 	F: Field,

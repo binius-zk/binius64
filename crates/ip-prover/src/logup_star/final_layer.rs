@@ -13,11 +13,9 @@
 //!
 //! This is the prover mirror of the verifier's final layer in [`binius_ip::logup_star`].
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
-use binius_math::{
-	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_par, line::extrapolate_line,
-};
+use binius_math::{FieldSlice, inner_product::inner_product_par, line::extrapolate_line};
 
 use crate::{
 	channel::IPProverChannel,
@@ -58,9 +56,10 @@ pub struct FinalLayerOutput<F> {
 ///
 /// The fractional prover popped for the leaf layer already owns the four columns `[Y_0, Y_1, D_0,
 /// D_1]`, and its numerator halves `Y_0, Y_1` are the pushforward halves the product claims read.
-/// So only the table halves `T_0, T_1` are pushed as new columns, and converting the fractional
-/// prover to a plain sumcheck (folding the `eq` factor into its round polynomials) lets all four
-/// claims batch as one shared-store sumcheck over `[Y_0, Y_1, D_0, D_1, T_0, T_1]`.
+/// So only the table halves `T_0, T_1` are pushed as new columns — borrowed from the caller's
+/// table — and converting the fractional prover to a plain sumcheck (folding the `eq` factor into
+/// its round polynomials) lets all four claims batch as one shared-store sumcheck over
+/// `[Y_0, Y_1, D_0, D_1, T_0, T_1]`.
 ///
 /// The split obeys `e_0 + e_1 = e`, so only `e_0` is sent.
 /// The verifier recovers `e_1 = e - e_0`.
@@ -73,16 +72,17 @@ pub struct FinalLayerOutput<F> {
 /// * `eval_claim` - The product claim `e = <T, Y>`.
 /// * `table_prover` - The table-side fractional-addition prover, holding only its leaf layer.
 /// * `layer1` - The layer-1 numerator and denominator claims, sharing the point `Z`.
-/// * `pushforward` - The pushforward `Y` over the `m`-variable cube.
 /// * `table` - The table `T` over the `m`-variable cube.
 /// * `channel` - The prover channel.
+///
+/// The pushforward `Y` is not passed: it is the table circuit's leaf numerator, so `table_prover`
+/// already carries it.
 #[tracing::instrument(skip_all, level = "debug", name = "logup* final layer")]
 pub fn prove_final_layer<'a, A, F, P>(
 	eval_claim: F,
 	table_prover: FracAddCheckProver<'a, A, P>,
 	layer1: FracEvalClaim<F>,
-	pushforward: FieldSlice<P>,
-	table: &FieldBuffer<P>,
+	table: FieldSlice<'a, P>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> FinalLayerOutput<F>
 where
@@ -92,7 +92,6 @@ where
 {
 	// Both layer-1 claims share the point Z.
 	debug_assert_eq!(layer1.0.point, layer1.1.point, "layer-1 claims must share the point");
-	let alloc = table_prover.alloc;
 
 	// S_1, S_2: the fractional-addition numerator/denominator, weighted by eq(.; Z).
 	//
@@ -119,29 +118,27 @@ where
 	//
 	// Y_0, Y_1 are already store columns (the fractional numerator halves), so only the table
 	// halves T_0, T_1 are pushed as new columns. Only Y_0 is needed here, to form e_0; e_1 follows
-	// as e - e_0.
+	// as e - e_0; the inner product below reads Y_0 back from the store.
 	//
-	// Neither pushforward half needs to be owned:
-	//
-	//     Y_0 -> read once, by the inner product with T_0
-	//     Y_1 -> never read
-	//
-	// Borrowing them keeps 2^m field elements out of the allocator.
-	let (y_0, _y_1) = pushforward.split_half_ref();
-	let [t_0, t_1] = split_halves(alloc, table.to_ref());
+	// The table split borrows, so the table is not copied: its halves live on as borrowed store
+	// columns, which the store's first fold contracts into half-size buffers of its own. That keeps
+	// 2^m field elements out of the allocator.
+	let (t_0, t_1) = table.split_half_ref();
 
 	// e_0 is the first half's product sum.
 	// Only e_0 is sent, since the verifier recovers e_1 = e - e_0.
 	//
 	//     e_0 = sum_{x'} (Y_0 * T_0)(x'),   e_1 = e - e_0 = sum_{x'} (Y_1 * T_1)(x')
+	let y_0 = prover.store().column(y_0_col);
 	let e_0 = inner_product_par(&y_0, &t_0);
 	channel.send_one(e_0);
 	let e_1 = eval_claim - e_0;
 
 	// S_3a, S_3b: each half is a bivariate product over the shared Y column and the pushed T
-	// column.
-	let t_0_col = prover.push_owned_column(t_0);
-	let t_1_col = prover.push_owned_column(t_1);
+	// column. The table halves are borrowed, so the store's first fold is the only place a table
+	// column is written, at half the table's size.
+	let t_0_col = prover.store_mut().push(t_0);
+	let t_1_col = prover.store_mut().push(t_1);
 	let product_0 = BivariateProductEvaluator::new([y_0_col, t_0_col]);
 	prover.add_evaluator(e_0, Box::new(product_0) as Box<dyn SumcheckRoundEvaluator<F, P> + 'a>);
 	let product_1 = BivariateProductEvaluator::new([y_1_col, t_1_col]);
@@ -178,25 +175,4 @@ where
 		table_eval_claim,
 		pushforward_eval_claim,
 	}
-}
-
-/// Split a multilinear on its highest variable into owned low and high halves.
-///
-/// The low half fixes the highest variable to 0, the high half to 1.
-fn split_halves<A: Allocator, P: PackedField>(
-	alloc: &A,
-	buffer: FieldSlice<P>,
-) -> [FieldVec<P, A>; 2] {
-	// split_half_ref borrows the two halves; copy each straight into an allocator buffer for the
-	// sub-provers, so the split is a single copy rather than a `Vec` build followed by a pooled
-	// copy.
-	let (low, high) = buffer.split_half_ref();
-	let mut low_data = alloc.alloc::<P>(low.as_ref().len());
-	low_data.extend_from_slice(low.as_ref());
-	let mut high_data = alloc.alloc::<P>(high.as_ref().len());
-	high_data.extend_from_slice(high.as_ref());
-	[
-		FieldBuffer::new(low.log_len(), low_data),
-		FieldBuffer::new(high.log_len(), high_data),
-	]
 }
