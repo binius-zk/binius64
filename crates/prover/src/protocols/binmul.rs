@@ -1,6 +1,8 @@
 // Copyright 2026 The Binius Developers
 
-use binius_compute::Allocator;
+use std::iter;
+
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::{
@@ -8,7 +10,7 @@ use binius_ip_prover::{
 	sumcheck::{ProveSingleOutput, prove_single_mlecheck, quadratic_mlecheck_prover},
 };
 use binius_math::{FieldVec, field_buffer::FieldBuffer};
-use binius_utils::checked_arithmetics::strict_log_2;
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 pub use binius_verifier::protocols::binmul::BinMulOutput;
 
 use crate::fold_word::WordFolder;
@@ -17,23 +19,48 @@ use crate::fold_word::WordFolder;
 ///
 /// The scalar at hypercube index `i` is the field element carried by the pair `(lo[i], hi[i])`:
 /// `lo[i]` supplies the low 64 bits and `hi[i]` the high 64 bits of the 128-bit value.
+///
+/// The columns need not have a power-of-two length. The table spans the whole `2^n_vars` hypercube
+/// regardless, and an index at or past the columns' end reads as the zero field element. The
+/// padding therefore lives in this buffer, which is allocated at the hypercube's size either way,
+/// rather than in a `Vec<Word>` the caller has to materialize.
+///
+/// # Preconditions
+///
+/// * The two columns have equal length.
 fn build_table<A, F, P>(alloc: &A, lo: &[Word], hi: &[Word]) -> FieldVec<P, A>
 where
 	A: Allocator,
 	F: BinaryField + From<u128>,
 	P: PackedField<Scalar = F>,
 {
-	let n_vars = strict_log_2(lo.len())
-		.expect("precondition: the operand columns have a power-of-two length");
-	let p_width = P::WIDTH.min(1 << n_vars);
+	assert_eq!(lo.len(), hi.len());
+
+	let n_vars = log2_ceil_usize(lo.len());
 	let packed_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
+	let elem =
+		|(&lo, &hi): (&Word, &Word)| F::from((lo.as_u64() as u128) | ((hi.as_u64() as u128) << 64));
+
 	let mut values = alloc.alloc::<P>(packed_len);
-	values.extend((0..packed_len).map(|i| {
-		P::from_scalars((0..p_width).map(|j| {
-			let index = i << P::LOG_WIDTH | j;
-			F::from((lo[index].as_u64() as u128) | ((hi[index].as_u64() as u128) << 64))
-		}))
-	}));
+
+	// The packed elements the columns fill whole. `chunks_exact` stops at the last of them, so
+	// every lane this loop packs is a real row.
+	let (lo_chunks, hi_chunks) = (lo.chunks_exact(P::WIDTH), hi.chunks_exact(P::WIDTH));
+	let (lo_tail, hi_tail) = (lo_chunks.remainder(), hi_chunks.remainder());
+	values.extend(
+		iter::zip(lo_chunks, hi_chunks)
+			.map(|(lo_chunk, hi_chunk)| P::from_scalars(iter::zip(lo_chunk, hi_chunk).map(elem))),
+	);
+
+	// The columns' trailing words share one packed element with the start of the padding. The lanes
+	// `from_scalars` is not given default to zero, which is exactly that padding.
+	if !lo_tail.is_empty() {
+		values.push(P::from_scalars(iter::zip(lo_tail, hi_tail).map(elem)));
+	}
+
+	// The rest of the hypercube is zero padding. A zero row satisfies `0 * 0 = 0`, so it
+	// contributes nothing to the zerocheck.
+	values.resize(packed_len, P::zero());
 
 	FieldBuffer::new(n_vars, values)
 }
@@ -46,8 +73,11 @@ where
 /// description and output shape.
 ///
 /// The six `columns` are the `(lo, hi)` word pairs of the two multiplicands and the product, in the
-/// order `[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]`, each of power-of-two length $2^\ell$ and all of
-/// equal length. The GHASH-field element for row $x$ is
+/// order `[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]`, all of equal length. That length need not be a
+/// power of two: the hypercube is $\mathbb{B}_\ell$ for $\ell = \lceil \log_2 n \rceil$, and a row
+/// at or past the columns' end reads as the zero field element. A zero row satisfies
+/// $0 \cdot 0 = 0$, so it contributes nothing to the zerocheck. The GHASH-field element for row $x$
+/// is
 /// $\langle\langle z_{\textsf{lo}}, z_{\textsf{hi}} \rangle\rangle = \sum_{i=0}^{63}
 /// z_{\textsf{lo},x,i} \cdot X^i + \sum_{i=0}^{63} z_{\textsf{hi},x,i} \cdot X^{64+i}$ for each of
 /// $z \in \{a, b, c\}$.
@@ -64,8 +94,7 @@ where
 {
 	let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = columns;
 
-	let n_vars = strict_log_2(a_lo.len())
-		.expect("precondition: the operand columns have a power-of-two length");
+	let n_vars = log2_ceil_usize(a_lo.len());
 	for column in [a_hi, b_lo, b_hi, c_lo, c_hi] {
 		assert_eq!(column.len(), a_lo.len());
 	}
@@ -132,7 +161,7 @@ mod tests {
 	use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
 	use binius_iop_prover::channel::naive::NaiveProverChannel;
 	use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
-	use binius_transcript::ProverTranscript;
+	use binius_transcript::{ProverTranscript, VerifierTranscript};
 	use binius_verifier::{
 		config::StdChallenger,
 		protocols::binmul::{BinMulOutput, verify},
@@ -140,7 +169,7 @@ mod tests {
 	use itertools::izip;
 	use rand::prelude::*;
 
-	use super::prove;
+	use super::{log2_ceil_usize, prove};
 
 	type F = BinaryField128bGhash;
 	type P = PackedBinaryGhash2x128b;
@@ -171,10 +200,9 @@ mod tests {
 		(Word::from_u64(value as u64), Word::from_u64((value >> 64) as u64))
 	}
 
-	/// Build a valid BinMul witness with `1 << log_n` random constraints `a * b = c`, where `c` is
-	/// computed with GHASH-field multiplication directly (an independent oracle).
-	fn random_witness(rng: &mut impl Rng, log_n: usize) -> WordColumns {
-		let n = 1 << log_n;
+	/// Build a valid BinMul witness with `n` random constraints `a * b = c`, where `c` is computed
+	/// with GHASH-field multiplication directly (an independent oracle).
+	fn random_witness(rng: &mut impl Rng, n: usize) -> WordColumns {
 		let mut a_lo = Vec::with_capacity(n);
 		let mut a_hi = Vec::with_capacity(n);
 		let mut b_lo = Vec::with_capacity(n);
@@ -207,7 +235,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		const LOG_N: usize = 5;
-		let (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) = random_witness(&mut rng, LOG_N);
+		let (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) = random_witness(&mut rng, 1 << LOG_N);
 
 		// BinMul commits no oracles.
 		let oracle_specs: [OracleSpec; 0] = [];
@@ -266,12 +294,74 @@ mod tests {
 		assert_eq!(prove_output, verify_output);
 	}
 
+	// A witness whose constraint count is not a power of two proves exactly as the same witness
+	// zero-padded up to one: byte-identical transcript, identical output claims, and the proof
+	// still verifies against the padded variable count the verifier derives from the constraint
+	// system.
+	//
+	// This is the guarantee that lets the M4 prover stop materializing the padding rows
+	// (BINIUS-388) without moving anything on the wire.
+	#[test]
+	fn unpadded_columns_prove_identically_to_padded_ones() {
+		let mut rng = StdRng::seed_from_u64(2);
+
+		// Constraint counts crossing the fold's 64-word chunk and the packed width: a single row, a
+		// sub-chunk count, a count straddling the chunk boundary, and a multi-chunk count.
+		for n in [1, 3, 65, 100] {
+			let columns = random_witness(&mut rng, n);
+			let n_vars = log2_ceil_usize(n);
+
+			// The same witness with explicit zero rows up to the hypercube's size. A zero row
+			// satisfies `0 * 0 = 0`, so the padded witness is equally valid.
+			let padded = {
+				let pad = |words: &Vec<Word>| {
+					let mut padded = words.clone();
+					padded.resize(1 << n_vars, Word::ZERO);
+					padded
+				};
+				let (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) = &columns;
+				(pad(a_lo), pad(a_hi), pad(b_lo), pad(b_hi), pad(c_lo), pad(c_hi))
+			};
+
+			// One proof per shape, each on a fresh transcript over the same challenger seed.
+			let run = |columns: &WordColumns| {
+				let (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) = columns;
+				let oracle_specs: [OracleSpec; 0] = [];
+				let mut transcript = ProverTranscript::<StdChallenger>::default();
+				let mut channel =
+					NaiveProverChannel::<F, _>::new(&mut transcript, oracle_specs.to_vec());
+				let output = prove::<_, F, P, _>(
+					[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi],
+					&mut channel,
+					&GlobalAllocator,
+				);
+				channel.finish();
+				(output, transcript.finalize())
+			};
+			let (unpadded_output, unpadded_proof) = run(&columns);
+			let (padded_output, padded_proof) = run(&padded);
+
+			assert_eq!(unpadded_output, padded_output, "claims differ at n = {n}");
+			assert_eq!(unpadded_proof, padded_proof, "transcript differs at n = {n}");
+
+			let oracle_specs: [OracleSpec; 0] = [];
+			let mut verifier_transcript =
+				VerifierTranscript::new(StdChallenger::default(), unpadded_proof);
+			let mut verifier_channel =
+				NaiveVerifierChannel::<F, _>::new(&mut verifier_transcript, &oracle_specs);
+			let verify_output = verify(n_vars, &mut verifier_channel).unwrap();
+			verifier_channel.finish();
+
+			assert_eq!(unpadded_output, verify_output, "verifier disagrees at n = {n}");
+		}
+	}
+
 	#[test]
 	fn verify_rejects_tampered_c() {
 		let mut rng = StdRng::seed_from_u64(1);
 
 		const LOG_N: usize = 5;
-		let (a_lo, a_hi, b_lo, b_hi, mut c_lo, c_hi) = random_witness(&mut rng, LOG_N);
+		let (a_lo, a_hi, b_lo, b_hi, mut c_lo, c_hi) = random_witness(&mut rng, 1 << LOG_N);
 
 		// Corrupt one c_lo word so the constraint no longer holds.
 		c_lo[3] = Word::from_u64(c_lo[3].as_u64() ^ 1);
