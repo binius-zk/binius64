@@ -290,8 +290,8 @@ impl CircuitBuilder {
 		// Gate fusion is what decides that.
 		// The rest exist purely during witness evaluation, so they form the scratch segment.
 		let mut scratch_wires = EntitySet::new();
-		for (wire, wire_data) in graph.wires.iter() {
-			if matches!(wire_data.kind, WireKind::Internal | WireKind::Scratch)
+		for (wire, kind) in graph.wires.iter() {
+			if matches!(kind, WireKind::Internal | WireKind::Scratch)
 				&& !constrained_wires.contains(wire)
 			{
 				scratch_wires.insert(wire);
@@ -317,9 +317,9 @@ impl CircuitBuilder {
 			constants,
 		} = {
 			let mut value_vec_alloc = value_vec_alloc::Alloc::new(scratch_alloc.n_slots());
-			for (wire, wire_data) in graph.wires.iter() {
-				match wire_data.kind {
-					WireKind::Constant(ref value) => {
+			for (wire, kind) in graph.wires.iter() {
+				match kind {
+					WireKind::Constant(value) => {
 						value_vec_alloc.add_constant(wire, *value);
 					}
 					WireKind::Inout => value_vec_alloc.add_inout(wire),
@@ -476,7 +476,7 @@ impl CircuitBuilder {
 	fn const_of(&self, wire: Wire) -> Option<Word> {
 		let shared = self.shared.borrow();
 		let shared = shared.as_ref().expect("CircuitBuilder used after build");
-		match shared.graph.wires[wire].kind {
+		match shared.graph.wires[wire] {
 			WireKind::Constant(word) => Some(word),
 			_ => None,
 		}

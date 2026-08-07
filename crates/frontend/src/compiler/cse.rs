@@ -80,8 +80,7 @@ pub fn dedup_gates(
 			.outputs
 			.iter()
 			.any(|&wire| {
-				matches!(graph.wire_data(wire).kind, WireKind::Inout)
-					|| force_committed.contains(wire)
+				matches!(graph.wire_kind(wire), WireKind::Inout) || force_committed.contains(wire)
 			});
 
 		// A gate producing an observable wire is never collapsed, though it can still be canonical.

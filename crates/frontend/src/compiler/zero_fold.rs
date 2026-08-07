@@ -70,7 +70,7 @@ pub fn zero_propagation(
 fn find_zero_constant(graph: &GateGraph) -> Option<Wire> {
 	graph
 		.iter_const_wires()
-		.find(|(_, data)| data.kind.const_value() == Some(Word::ZERO))
+		.find(|(_, kind)| kind.const_value() == Some(Word::ZERO))
 		.map(|(wire, _)| wire)
 }
 

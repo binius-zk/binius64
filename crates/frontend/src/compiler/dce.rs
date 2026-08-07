@@ -56,9 +56,8 @@ pub fn live_gates(
 
 	// Seed 2: gates that define an observable wire.
 	// Observable means a public input/output, or a wire the circuit author pinned as committed.
-	for (wire, wire_data) in graph.wires.iter() {
-		let observable =
-			matches!(wire_data.kind, WireKind::Inout) || force_committed.contains(wire);
+	for (wire, kind) in graph.wires.iter() {
+		let observable = matches!(kind, WireKind::Inout) || force_committed.contains(wire);
 		if observable
 			&& let Some(def) = graph.wire_def[wire]
 			&& live.insert(def)
