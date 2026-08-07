@@ -18,7 +18,7 @@ use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
 		batch::batch_prove_mle_with_coeff_and_write_evals,
-		common::{MleCheckProver, SumcheckProver},
+		common::MleCheckProver,
 		frac_add_mle::{self, FracAddFusedEvaluator},
 		mle_store::{ColId, MleStore},
 		round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
