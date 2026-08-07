@@ -3,87 +3,66 @@
 //! Verifying a Bitcoin header chain.
 
 use binius_core::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
+use binius_frontend::{CircuitBuilder, Wire};
 
 use crate::{
 	bignum::{self, BigUint},
-	bitcoin::double_sha256::DoubleSha256,
+	bitcoin::double_sha256::double_sha256,
 };
 
-/// Stores some intermediate wires of the circuit, so that they can later be populated with
-/// [`Self::populate_inner`].
-pub struct HeaderChain {
-	header_digests: Vec<DoubleSha256>,
+/// Returns `hash(headers[0])`, the digest of the latest block in the chain.
+///
+/// Asserts the following things:
+///
+/// - `previous_block_hash(headers[i]) = hash(headers[i+1])` (hash chain)
+/// - `hash(headers[i]) < target(headers[i])` (proof of work)
+///
+/// The digest of the head is returned rather than asserted, so the caller decides what to
+/// compare it against.
+///
+/// **IMPORTANT**: This does currently NOT assert that `target(headers[i])` is in any way
+/// related to `target(headers[i+1])`, like it must be in the Bitcoin protocol. In particular,
+/// this means that one can easily satisfy this circuit with a self-mined sequence of blocks
+/// which have low difficulty.
+///
+/// **Note**: It also doesn't check many other things about the block header, like that the
+/// constraints on the timestamps.
+///
+/// # Panics
+///
+/// If `headers` is empty.
+pub fn header_chain(
+	builder: &CircuitBuilder,
+	// latest block comes first
+	headers: &[[Wire; 10]],
+) -> [Wire; 4] {
+	let latest_digest = double_sha256(builder, &headers[0]);
+	assert_fulfills_target(builder, latest_digest, headers[0][9]);
+
+	for i in 1..headers.len() {
+		// hash equals the "previous block hash" in the newer block
+		let digest = double_sha256(builder, &headers[i]);
+		builder.assert_eq_v("hash chain", digest, previous_block_hash(builder, &headers[i - 1]));
+
+		// NOTE: One could save constraints by noting that the target only changes every 2016
+		// blocks.
+		assert_fulfills_target(builder, digest, headers[i][9]);
+
+		// bits of newer block is correctly computed from bits of older block
+		// FIXME TODO
+	}
+
+	latest_digest
 }
 
-impl HeaderChain {
-	/// Constructs a circuit that asserts the following things:
-	///
-	/// - `latest_digest == hash(headers[0])` (head)
-	/// - `previous_block_hash(headers[i]) = hash(headers[i+1])` (hash chain)
-	/// - `hash(headers[i]) < target(headers[i])` (proof of work)
-	///
-	/// **IMPORTANT**: This does currently NOT assert that `target(headers[i])` is in any way
-	/// related to `target(headers[i+1])`, like it must be in the Bitcoin protocol. In particular,
-	/// this means that one can easily satisfy this circuit with a self-mined sequence of blocks
-	/// which have low difficulty.
-	///
-	/// **Note**: It also doesn't check many other things about the block header, like that the
-	/// constraints on the timestamps.
-	pub fn construct_circuit(
-		builder: &CircuitBuilder,
-		// latest block comes first
-		headers: &[[Wire; 10]],
-		latest_digest: [Wire; 4],
-	) -> Self {
-		let mut header_digests = Vec::new();
-
-		// latest header
-		{
-			// hash equals `latest_digest`
-			header_digests.push(DoubleSha256::construct_circuit(
-				builder,
-				&headers[0],
-				latest_digest,
-			));
-
-			// hash is smaller than target (proof of work)
-			let target = target(builder, headers[0][9]);
-			let digest_as_uint = BigUint {
-				limbs: latest_digest.to_vec(),
-			};
-			let fulfills_target = bignum::biguint_lt(builder, &digest_as_uint, &target);
-			builder.assert_true("PoW fulfills target", fulfills_target);
-		}
-
-		// header chain
-		for i in 1..headers.len() {
-			// hash equals the "previous block hash" in the newer block
-			let digest = previous_block_hash(builder, &headers[i - 1]);
-			header_digests.push(DoubleSha256::construct_circuit(builder, &headers[i], digest));
-
-			// hash is smaller than target (proof of work)
-			// NOTE: One could save constraints by noting that the target only changes every 2016
-			// blocks.
-			let target = target(builder, headers[i][9]);
-			let digest_as_uint = BigUint {
-				limbs: digest.to_vec(),
-			};
-			let fulfills_target = bignum::biguint_lt(builder, &digest_as_uint, &target);
-			builder.assert_true("PoW fulfills target", fulfills_target);
-
-			// bits of newer block is correctly computed from bits of older block
-			// FIXME TODO
-		}
-
-		Self { header_digests }
-	}
-
-	pub fn populate_inner(&self, filler: &mut WitnessFiller, headers: &[&[u8]]) {
-		for (header_digest, header) in self.header_digests.iter().zip(headers) {
-			header_digest.populate_inner(filler, header);
-		}
-	}
+/// Asserts the proof of work: the digest, read as a 256-bit integer, is below the header's target.
+fn assert_fulfills_target(builder: &CircuitBuilder, digest: [Wire; 4], bits: Wire) {
+	let target = target(builder, bits);
+	let digest_as_uint = BigUint {
+		limbs: digest.to_vec(),
+	};
+	let fulfills_target = bignum::biguint_lt(builder, &digest_as_uint, &target);
+	builder.assert_true("PoW fulfills target", fulfills_target);
 }
 
 /// Extracts the previous block hash from a block header.
@@ -201,7 +180,7 @@ mod tests {
 				.take(3)
 				.collect();
 		let latest_digest: [Wire; 4] = std::array::from_fn(|_| builder.add_witness());
-		let header_chain = HeaderChain::construct_circuit(&builder, &headers, latest_digest);
+		builder.assert_eq_v("latest digest", header_chain(&builder, &headers), latest_digest);
 		let circuit = builder.build();
 
 		// populate witness
@@ -223,8 +202,6 @@ mod tests {
 			filler.pack_bytes_le(header, header_value);
 		}
 		filler.pack_bytes_le(&latest_digest, &latest_digest_value);
-		let headers_value_ref: Vec<&[u8]> = headers_value.iter().map(AsRef::as_ref).collect();
-		header_chain.populate_inner(&mut filler, &headers_value_ref);
 		circuit.populate_wire_witness(&mut filler).unwrap();
 
 		// check
