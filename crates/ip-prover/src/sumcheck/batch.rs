@@ -120,22 +120,6 @@ where
 	drive::batch(RoundProofKind::MleCheck, provers, channel)
 }
 
-/// Prove a batched MLE-check and write evaluation claims to the channel.
-///
-/// This is the MLE-check analog of [`batch_prove_and_write_evals`].
-pub fn batch_prove_mle_and_write_evals<F, MleCheckProver_>(
-	provers: Vec<MleCheckProver_>,
-	channel: &mut impl IPProverChannel<F>,
-) -> BatchSumcheckOutput<F>
-where
-	F: Field,
-	MleCheckProver_: MleCheckProver<F>,
-{
-	let output = batch_prove_mle(provers, channel);
-	output.send_evals(channel);
-	output
-}
-
 /// Prove a batched MLE-check whose batching coefficient the caller has already sampled.
 ///
 /// This is [`batch_prove_mle`] with the coefficient supplied rather than drawn.
@@ -156,7 +140,7 @@ where
 	drive::batch_with_coeff(RoundProofKind::MleCheck, provers, batch_coeff, channel)
 }
 
-/// [`batch_prove_mle_and_write_evals`] with the batching coefficient supplied by the caller.
+/// [`batch_prove_mle_with_coeff`], then the evaluation claims written to the channel.
 ///
 /// See [`batch_prove_mle_with_coeff`] for when a caller needs the coefficient up front.
 pub(crate) fn batch_prove_mle_with_coeff_and_write_evals<F, MleCheckProver_>(
