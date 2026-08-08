@@ -856,20 +856,13 @@ mod tests {
 		BinaryMerkleTreeScheme::new()
 	}
 
-	// Invariant: the size the arity search minimizes is the size a prover actually sends.
+	// Invariant: the size the arity search minimizes is the size a prover sends.
 	//
-	//     cost model    what `compute_layer_reduction_size` charges, and the search minimizes
+	//     cost model    what `compute_layer_reduction_size` charges
 	//     proof_size    the exact byte count
 	//
-	// Nothing compared the two, so they were free to disagree.
-	//
-	// The cost model omits the commitment digests, which do not vary with the arity choice.
-	// One input oracle carries `2 + fold_arities.len()` of them.
-	//
-	// Only the single-oracle case is pinned.
-	// `proof_size` charges one combined initial fold.
-	// A batch instead commits one tree per oracle, so the two still diverge for N > 1.
-	// That is a defect in `proof_size`, tracked separately.
+	// The cost model omits the commitment digests, which do not vary with the arity.
+	// A batch of N carries `N + 1 + fold_arities.len()` of them.
 	#[test]
 	fn optimizer_estimate_matches_exact_proof_size() {
 		let merkle_scheme = test_merkle_scheme();
@@ -880,33 +873,46 @@ mod tests {
 			domain_context: GaoMateerOnTheFly::<B128>::generate(24),
 		};
 
+		// Shapes that stress the layout: lifting, ZK mixed with flexible, non-power-of-two counts.
+		let batches: Vec<Vec<OracleSpec>> = vec![
+			vec![OracleSpec::new(16)],
+			vec![OracleSpec::new_zk(16)],
+			vec![OracleSpec::new(16), OracleSpec::new(16)],
+			vec![OracleSpec::new(16), OracleSpec::new(12)],
+			vec![OracleSpec::new_zk(11), OracleSpec::new(16)],
+			vec![
+				OracleSpec::new_zk(9),
+				OracleSpec::new_zk(11),
+				OracleSpec::new(16),
+			],
+			vec![
+				OracleSpec::new(20),
+				OracleSpec::new_zk(15),
+				OracleSpec::new(8),
+				OracleSpec::new_zk(4),
+			],
+		];
+
 		for log_inv_rate in [1, 2, 3] {
 			for n_test_queries in [32, 128, 232] {
-				for log_msg_len in [0, 1, 4, 8, 12, 16, 20] {
-					// A ZK oracle pins its batch size at 1; a non-ZK oracle takes a flexible one,
-					// so the two exercise different branches of the selection.
-					for oracle in [
-						OracleSpec::new(log_msg_len),
-						OracleSpec::new_zk(log_msg_len),
-					] {
-						let (params, estimate) = FRIParams::optimal_for_batch(
-							ntt.domain_context(),
-							&merkle_scheme,
-							std::slice::from_ref(&oracle),
-							log_inv_rate,
-							n_test_queries,
-						);
+				for oracles in &batches {
+					let (params, estimate) = FRIParams::optimal_for_batch(
+						ntt.domain_context(),
+						&merkle_scheme,
+						oracles,
+						log_inv_rate,
+						n_test_queries,
+					);
 
-						let digests = (2 + params.fold_arities().len()) * digest_size;
-						assert_eq!(
-							estimate + digests,
-							proof_size(&params, &merkle_scheme),
-							"log_msg_len={log_msg_len} is_zk={} log_inv_rate={log_inv_rate} \
-							 n_test_queries={n_test_queries} arities={:?}",
-							oracle.is_zk,
-							params.fold_arities(),
-						);
-					}
+					let digests = (oracles.len() + 1 + params.fold_arities().len()) * digest_size;
+					assert_eq!(
+						estimate + digests,
+						proof_size(&params, &merkle_scheme),
+						"n_oracles={} log_inv_rate={log_inv_rate} \
+						 n_test_queries={n_test_queries} arities={:?}",
+						oracles.len(),
+						params.fold_arities(),
+					);
 				}
 			}
 		}
@@ -1061,9 +1067,7 @@ mod tests {
 
 		// Pin the estimated proof size, to catch unintended changes in the optimizer.
 		//
-		// This sums one reduction per committed oracle.
-		// `size_estimation::proof_size` does not, so the two disagree for a batch.
-		// `optimizer_estimate_matches_exact_proof_size` pins them together for one oracle.
+		// `optimizer_estimate_matches_exact_proof_size` ties this to the exact byte count.
 		assert_eq!(proof_size, 188416);
 	}
 
