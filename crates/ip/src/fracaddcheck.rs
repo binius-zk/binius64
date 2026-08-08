@@ -6,7 +6,7 @@
 //! (a0 / b0) + (a1 / b1) = (a0 * b1 + a1 * b0) / (b0 * b1).
 
 use binius_field::Field;
-use binius_math::line::extrapolate_line;
+use binius_math::{line::extrapolate_line, multilinear::eq::eq_one_var};
 use binius_transcript::Error as TranscriptError;
 
 use crate::{
@@ -81,6 +81,61 @@ where
 		},
 		channel,
 	)
+}
+
+/// Reduces a leaf claim on a zero-fraction-padded witness to the claim on the witness itself.
+///
+/// A batched fractional-addition check over trees of unequal depths lifts each shallow tree to the
+/// batch's depth by filling `n_pad_vars` extra leaf positions with the zero fraction $0/1$, which
+/// leaves its fractional sum unchanged. [`verify`] is oblivious to that, so the claims it outputs
+/// for such a tree are claims on the padded witness
+///
+/// $$
+/// N'(X_\text{pad}, X_\text{real}) = N(X_\text{real}) \cdot \text{eq}(0^\nu; X_\text{pad}),
+/// \qquad
+/// D'(X_\text{pad}, X_\text{real}) = 1 + \bigl( D(X_\text{real}) - 1 \bigr) \cdot
+/// \text{eq}(0^\nu; X_\text{pad}),
+/// $$
+///
+/// whose padding variables are the lowest ones. This divides out their equality weight and drops
+/// them from the point, leaving the claims on $N$ and $D$.
+///
+/// # Arguments
+///
+/// * `fraction` - The claimed numerator and denominator evaluations of the padded witness.
+/// * `point` - The reduced evaluation point, with the batch's selector coordinates already
+///   stripped.
+/// * `n_pad_vars` - How much depth this tree was padded by: the batch's layer count less the tree's
+///   own.
+///
+/// # Preconditions
+/// * `point.len() >= n_pad_vars`
+///
+/// # Panics
+///
+/// Panics if the padding coordinates' equality weight is zero, which requires one of them to equal
+/// one. They are the verifier's own challenges, so no prover can induce this; it happens with
+/// probability at most $\nu / |K|$.
+pub fn unpad_leaf_claim<F: Field>(
+	fraction: (F, F),
+	point: &[F],
+	n_pad_vars: usize,
+) -> FracAddEvalClaim<F> {
+	assert!(point.len() >= n_pad_vars); // precondition
+
+	let pad_eq = point[..n_pad_vars]
+		.iter()
+		.map(|&coord| eq_one_var(F::ZERO, coord))
+		.product::<F>();
+	assert!(pad_eq != F::ZERO, "a padding coordinate equals one");
+	let pad_eq_inv = pad_eq.invert_or_zero();
+
+	let (num_eval, den_eval) = fraction;
+	FracAddEvalClaim {
+		num_eval: num_eval * pad_eq_inv,
+		den_eval: F::ONE + (den_eval - F::ONE) * pad_eq_inv,
+		point: point[n_pad_vars..].to_vec(),
+	}
 }
 
 #[derive(Debug, thiserror::Error)]
