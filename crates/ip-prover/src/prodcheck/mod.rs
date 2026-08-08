@@ -23,6 +23,8 @@ use crate::{
 	},
 };
 
+pub mod one_pad_mle;
+
 /// Witness-based prover for the product check protocol.
 ///
 /// This prover reduces the claim that a multilinear polynomial evaluates to a product over a
