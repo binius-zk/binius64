@@ -30,6 +30,8 @@ use crate::{
 /// Both claims share the same evaluation point, that of the layer they describe.
 pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 
+pub mod zero_pad_mle;
+
 pub use crate::sumcheck::frac_add_mle::LayerProver;
 
 /// A numerator/denominator pair of pooled column buffers.
