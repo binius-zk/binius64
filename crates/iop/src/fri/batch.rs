@@ -171,11 +171,14 @@ impl<F: BinaryField, C> ProxTestOracle<F> for BatchBrakedownOracle<F, C> {
 	}
 }
 
-/// A [ProxTestOracle] implementation for a FRI-style code proximity check.
+/// A single FRI reduction: one committed oracle, and the fold of each opened coset.
 ///
 /// Note that this is distinct from the full FRI query-phase verifier in the `verify` module. This
 /// one only verifies the openings of a single committed oracle and folds each opened coset into a
 /// single value using FRI folding.
+///
+/// Unlike a [`ProxTestOracle`], this reduces *claims* about the base codeword rather than opening
+/// the virtual oracle outright — see [`Self::reduce_queries`].
 pub struct FRIOracle<F, C, DC>
 where
 	DC: DomainContext<Field = F>,
@@ -205,6 +208,11 @@ where
 		}
 	}
 
+	/// The base-2 logarithm of the length of the virtual (folded) oracle.
+	const fn log_len(&self) -> usize {
+		self.depth
+	}
+
 	/// The base-2 log of the size of each coset opened from the committed oracle.
 	const fn coset_log_size(&self) -> usize {
 		self.challenges.len()
@@ -228,12 +236,15 @@ where
 	/// Opens queried locations on the base codeword, reducing claims about it to the virtual
 	/// oracle.
 	///
-	/// Whereas [`Self::open_queries`] indexes the virtual oracle, this indexes the base codeword:
-	/// each index lies in the range `0..2^(self.log_len() + self.coset_log_size())` and splits into
-	/// the high `self.log_len()` bits (the coset index into the committed oracle) and the low
-	/// `self.coset_log_size()` bits (the offset within the coset). For each query, the opened coset
-	/// value at that offset is checked against `claims[i]`, after which the coset is folded into
-	/// the virtual oracle value as in [`Self::open_queries`].
+	/// An index addresses the base codeword, and splits in two:
+	///
+	/// ```text
+	///     high log_len() bits          the coset index into the committed oracle
+	///     low coset_log_size() bits    the offset within that coset
+	/// ```
+	///
+	/// Each query checks the opened coset at its offset against the matching claim.
+	/// The coset then folds into the virtual oracle value.
 	///
 	/// ## Preconditions
 	/// `claims` must have the same length as `indices`, and the indices must lie in the range
@@ -315,33 +326,6 @@ where
 	}
 
 	values[0]
-}
-
-impl<F, C, DC> ProxTestOracle<F> for FRIOracle<F, C, DC>
-where
-	F: BinaryField,
-	DC: DomainContext<Field = F>,
-{
-	type Commitment = C;
-
-	fn log_len(&self) -> usize {
-		self.depth
-	}
-
-	fn open_queries<Channel>(
-		&self,
-		indices: &[usize],
-		channel: &mut Channel,
-	) -> Result<Vec<F>, Error>
-	where
-		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
-	{
-		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
-		let values = channel.recv_openings(&self.commitment, indices)?;
-		Ok(iter::zip(values.chunks(1 << self.coset_log_size()), indices)
-			.map(|(coset, &index)| self.fold_coset(index, coset.to_vec()))
-			.collect())
-	}
 }
 
 #[derive(Debug, thiserror::Error)]
