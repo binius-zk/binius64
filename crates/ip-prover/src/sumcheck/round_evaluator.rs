@@ -493,7 +493,7 @@ where
 	}
 }
 
-impl<A, F, P, Evaluator> SumcheckProver<F> for SharedMleCheckProver<'_, A, F, P, Evaluator>
+impl<A, F, P, Evaluator> MleCheckProver<F> for SharedMleCheckProver<'_, A, F, P, Evaluator>
 where
 	A: Allocator,
 	F: Field,
@@ -572,15 +572,7 @@ where
 	fn finish(self) -> Vec<F> {
 		self.group.finish()
 	}
-}
 
-impl<A, F, P, Evaluator> MleCheckProver<F> for SharedMleCheckProver<'_, A, F, P, Evaluator>
-where
-	A: Allocator,
-	F: Field,
-	P: PackedField<Scalar = F>,
-	Evaluator: MleCheckRoundEvaluator<F, P>,
-{
 	fn eval_point(&self) -> &[F] {
 		&self.eval_point[..self.group.n_vars()]
 	}

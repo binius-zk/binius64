@@ -186,7 +186,7 @@ mod tests {
 	use crate::sumcheck::{
 		MleToSumCheckEvaluator,
 		batch::batch_prove,
-		common::SumcheckProver,
+		common::{MleCheckProver, SumcheckProver},
 		mle_store::MleStore,
 		round_evaluator::{SharedMleCheckProver, SharedSumcheckProver, SumcheckRoundEvaluator},
 	};

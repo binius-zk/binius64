@@ -7,7 +7,7 @@ use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
 		common::{MleCheckProver, SumcheckProver},
-		drive::{self, RoundProofKind},
+		drive::{self, MleCheckRounds, SumcheckRounds},
 	},
 };
 
@@ -61,7 +61,7 @@ where
 	F: Field,
 	Prover: SumcheckProver<F>,
 {
-	drive::batch(RoundProofKind::Sumcheck, provers, channel)
+	drive::batch(provers.into_iter().map(SumcheckRounds), channel)
 }
 
 /// Prove a batched sumcheck protocol and write evaluation claims to the channel.
@@ -117,7 +117,7 @@ where
 		);
 	}
 
-	drive::batch(RoundProofKind::MleCheck, provers, channel)
+	drive::batch(provers.into_iter().map(MleCheckRounds), channel)
 }
 
 /// Prove a batched MLE-check whose batching coefficient the caller has already sampled.
@@ -137,7 +137,7 @@ where
 	F: Field,
 	MleCheckProver_: MleCheckProver<F>,
 {
-	drive::batch_with_coeff(RoundProofKind::MleCheck, provers, batch_coeff, channel)
+	drive::batch_with_coeff(provers.into_iter().map(MleCheckRounds).collect(), batch_coeff, channel)
 }
 
 /// [`batch_prove_mle_with_coeff`], then the evaluation claims written to the channel.

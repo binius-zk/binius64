@@ -20,10 +20,7 @@ use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldVec, multilinear::eq::eq_one_var};
 
-use crate::sumcheck::{
-	bivariate_product_mle,
-	common::{MleCheckProver, SumcheckProver},
-};
+use crate::sumcheck::{bivariate_product_mle, common::MleCheckProver};
 
 /// The one-padding selector $\textsf{sel}(s, v) = 1 + (v - 1) s$.
 ///
@@ -58,8 +55,8 @@ fn select<F: Field>(s: F, v: F) -> F {
 ///   $e$ is the equality weight of the padding coordinates still unbound and $E(X)$ that of the
 ///   ones already bound.
 ///
-/// [`SumcheckProver::finish`] returns the *padded* layer's child evaluations
-/// $\textsf{sel}(e^*, g_b)$, which is what the batch's selector rounds consume.
+/// Finishing returns the *padded* layer's child evaluations $\textsf{sel}(e^*, g_b)$, which is
+/// what the batch's selector rounds consume.
 pub struct OnePadMleCheckProver<F: Field, Inner> {
 	/// The padded claim point `[padding | real]`, low variables first.
 	eval_point: Vec<F>,
@@ -187,7 +184,7 @@ impl<F: Field, Inner: MleCheckProver<F>> OnePadMleCheckProver<F, Inner> {
 	}
 }
 
-impl<F: Field, Inner: MleCheckProver<F>> SumcheckProver<F> for OnePadMleCheckProver<F, Inner> {
+impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for OnePadMleCheckProver<F, Inner> {
 	fn n_vars(&self) -> usize {
 		self.eval_point.len() - self.round
 	}
@@ -252,9 +249,7 @@ impl<F: Field, Inner: MleCheckProver<F>> SumcheckProver<F> for OnePadMleCheckPro
 			Phase::Real(_) => panic!("finish requires every variable to be bound"),
 		}
 	}
-}
 
-impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for OnePadMleCheckProver<F, Inner> {
 	fn eval_point(&self) -> &[F] {
 		&self.eval_point[..self.n_vars()]
 	}
