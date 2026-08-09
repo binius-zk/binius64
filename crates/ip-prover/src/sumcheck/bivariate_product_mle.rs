@@ -5,11 +5,18 @@ use binius_field::{Field, PackedField};
 use binius_math::FieldVec;
 
 use super::{
-	mle_store::MleStore,
+	mle_store::{ColId, MleStore},
 	quadratic_mle_evaluator::{QuadraticMleEvaluator, quadratic_mlecheck_prover},
-	round_evaluator::SharedMleCheckProver,
+	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
 use crate::sumcheck::common::MleCheckProver;
+
+/// The prover [`new_split_half`] and [`new_one_padded`] return.
+///
+/// The evaluator is boxed so that the two constructors — whose compositions differ — produce one
+/// type, which is what lets a caller switch from one to the other partway through a reduction.
+pub type LayerProver<'a, A, F, P> =
+	SharedMleCheckProver<'a, A, F, P, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>>;
 
 /// Creates an [`MleCheckProver`] that reduces an evaluation claim on a multilinear extension
 /// of the product of two multilinears to evaluation claims on said multilinears.
@@ -89,13 +96,14 @@ where
 ///
 /// # Returns
 ///
-/// A prover whose reduction emits the low half's evaluation, then the high half's.
+/// A prover whose reduction emits the low half's evaluation, then the high half's, and the store
+/// column ids `[low, high]` of those two halves.
 pub fn new_split_half<'alloc, A, F, P>(
 	alloc: &'alloc A,
 	buffer: FieldVec<P, A>,
 	eval_point: Vec<F>,
 	eval_claim: F,
-) -> impl MleCheckProver<F> + 'alloc
+) -> (LayerProver<'alloc, A, F, P>, [ColId; 2])
 where
 	A: Allocator,
 	F: Field,
@@ -104,8 +112,56 @@ where
 	let mut store = MleStore::new(eval_point.len(), alloc);
 	// The store checks that the buffer has exactly one more variable than itself.
 	let cols = store.push_split_half(buffer);
-	let evaluator =
-		QuadraticMleEvaluator::new(cols, |[a, b]: [P; 2]| a * b, |[a, b]: [P; 2]| a * b);
+	let evaluator: Box<dyn MleCheckRoundEvaluator<F, P> + 'alloc> =
+		Box::new(QuadraticMleEvaluator::new(cols, |[a, b]: [P; 2]| a * b, |[a, b]: [P; 2]| a * b));
+	(SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point), cols)
+}
+
+/// Creates the [`LayerProver`] for the product of the *one-paddings* of two multilinears.
+///
+/// The one-padding selector $\textsf{sel}(s, v) = 1 + (v - 1) s$ interpolates between the constant
+/// one at $s = 0$ and $v$ at $s = 1$. This proves a claim on
+///
+/// $$
+/// \textsf{sel}(s, A) \cdot \textsf{sel}(s, B)
+/// $$
+///
+/// for the fixed selector value `pad_eq`, which is the padding coordinates' equality weight in a
+/// batched product check over trees of unequal depths — see [`crate::prodcheck::batch_prove`]. The
+/// selector rides in the composition rather than in the columns, so the reduction still emits the
+/// evaluations of $A$ and $B$ themselves.
+///
+/// Passing `pad_eq` of one recovers [`new`].
+///
+/// # Returns
+///
+/// A prover whose reduction emits the two multilinears' own evaluations, in the order given.
+pub fn new_one_padded<'alloc, A, F, P>(
+	alloc: &'alloc A,
+	multilinears: [FieldVec<P, A>; 2],
+	pad_eq: F,
+	eval_point: Vec<F>,
+	eval_claim: F,
+) -> LayerProver<'alloc, A, F, P>
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	// sel(pad_eq, v) = v * pad_eq + (1 - pad_eq), an affine map applied to each multilinear.
+	let scale = P::broadcast(pad_eq);
+	let shift = P::broadcast(F::ONE - pad_eq);
+	let select = move |v: P| v * scale + shift;
+
+	let mut store = MleStore::new(eval_point.len(), alloc);
+	let cols = multilinears.map(|col| store.push_owned(col));
+	let evaluator: Box<dyn MleCheckRoundEvaluator<F, P> + 'alloc> =
+		Box::new(QuadraticMleEvaluator::new(
+			cols,
+			move |[a, b]: [P; 2]| select(a) * select(b),
+			// The selector is affine, so the composition's quadratic term is the scaled product.
+			move |[a, b]: [P; 2]| (a * scale) * (b * scale),
+		));
 	SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point)
 }
 

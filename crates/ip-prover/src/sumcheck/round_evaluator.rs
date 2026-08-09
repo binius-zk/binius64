@@ -251,14 +251,19 @@ where
 		self.buffered_challenge = Some(challenge);
 	}
 
+	/// Applies any deferred fold, bringing the store's columns up to the claims' round.
+	fn flush_fold(&mut self) {
+		if let Some(challenge) = self.buffered_challenge.take() {
+			self.store.fold(challenge);
+		}
+	}
+
 	/// Applies any deferred fold, then emits every column's evaluation in push order.
 	///
 	/// The store owns each column once, so each evaluation is computed once however many claims
 	/// read that column.
 	fn finish(mut self) -> Vec<F> {
-		if let Some(challenge) = self.buffered_challenge.take() {
-			self.store.fold(challenge);
-		}
+		self.flush_fold();
 		self.store.final_evals()
 	}
 
@@ -455,6 +460,18 @@ where
 			group: EvaluatorGroup::new(store, claims_with_evaluators),
 			eval_point,
 		}
+	}
+
+	/// Returns the underlying column store, with any deferred fold applied first.
+	///
+	/// Lets a caller read the columns partway through the reduction, where they hold the
+	/// multilinears specialized at every challenge bound so far: the padded product-check layer
+	/// reads out its two children once their node variables are bound. Applying the deferred fold
+	/// is what makes the columns match the rounds already run, at the cost of the pass over them
+	/// that the next round would otherwise have fused in.
+	pub fn store(&mut self) -> &MleStore<'a, A, P> {
+		self.group.flush_fold();
+		&self.group.store
 	}
 
 	/// Converts this MLE-check prover into a plain [`SharedSumcheckProver`] by folding each claim's
