@@ -697,11 +697,8 @@ mod tests {
 		let hidden = ValueIndex::private(1);
 		ConstraintSystem {
 			constants: vec![Word::ZERO; 4],
-			n_const_pad: 0,
 			n_inout: 0,
-			n_inout_pad: 0,
 			n_private: 4,
-			n_private_pad: 0,
 			zero_constraints: Vec::new(),
 			and_constraints: vec![AndConstraint([
 				vec![

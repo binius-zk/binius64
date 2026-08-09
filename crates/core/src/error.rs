@@ -2,29 +2,12 @@
 // Copyright 2026 The Binius Developers
 //! Hosts error definitions for the core crate.
 
-use crate::{
-	ConstraintSystem,
-	constraint_system::{ConstraintKind, ValueSegment},
-};
+use crate::constraint_system::{ConstraintKind, ValueSegment};
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
 #[derive(Debug, thiserror::Error)]
 pub enum ConstraintSystemError {
-	#[error("the public input segment must have power of two length")]
-	PublicInputPowerOfTwo,
-	#[error(
-		"the public input segment must be at least {} words, got: {pub_input_size}",
-		ConstraintSystem::MIN_WORDS_PER_SEGMENT
-	)]
-	PublicInputTooShort { pub_input_size: usize },
-	#[error(
-		"the hidden segment must be at least as long as the public segment (public: {public_len}, hidden: {hidden_len})"
-	)]
-	HiddenSegmentTooShort {
-		public_len: usize,
-		hidden_len: usize,
-	},
 	#[error(
 		"{constraint_kind} #{constraint_index} uses non canonical shift in its {operand_name} operand"
 	)]
@@ -136,9 +119,6 @@ impl ConstraintViolation {
 /// Reason a value vector fails to satisfy a constraint system.
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationError {
-	/// The system's own shape is invalid, so no value vector can satisfy it.
-	#[error("the constraint system is malformed: {0}")]
-	MalformedSystem(#[from] ConstraintSystemError),
 	/// A word declared as a constant opens to something else in the value vector.
 	///
 	/// Constraints read constants through the value vector.

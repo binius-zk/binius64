@@ -28,9 +28,13 @@ use crate::{
 /// Each group of values is followed by padding, so the value vector runs
 ///
 /// ```text
-/// [ constants | const pad | inout | inout pad ][ private | private pad ]
-///  \------------- public segment -----------/  \----- hidden segment -/
+/// [ constants | inout | pad ][ private | pad ]
+///  \--- public segment ---/  \- hidden segment -/
 /// ```
+///
+/// Both segments are padded by the proving protocol rather than by the system: the public segment
+/// up to a power of two, and the hidden segment up to at least the public length. The system
+/// stores the value counts and derives the padded lengths from them.
 ///
 /// A constraint names a word by its [`ValueSegment`] and its position within that segment, so
 /// the padding is unaddressable: an index reaches only the values of its own segment, and where
@@ -56,16 +60,10 @@ pub struct ConstraintSystem {
 	/// Those constants will be going to be available for constraints in the value vector. Those
 	/// are known to both prover and verifier.
 	pub constants: Vec<Word>,
-	/// The number of padding words between the constants and the inout values.
-	pub n_const_pad: usize,
 	/// The number of input/output values, which are public but chosen per instance.
 	pub n_inout: usize,
-	/// The number of padding words between the inout values and the end of the public segment.
-	pub n_inout_pad: usize,
 	/// The number of private values, which only the prover knows.
 	pub n_private: usize,
-	/// The number of padding words between the private values and the end of the hidden segment.
-	pub n_private_pad: usize,
 	/// List of ZERO constraints that must be satisfied by the values vector.
 	pub zero_constraints: Vec<ZeroConstraint>,
 	/// List of AND constraints that must be satisfied by the values vector.
@@ -78,11 +76,12 @@ pub struct ConstraintSystem {
 
 impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
-	pub const SERIALIZATION_VERSION: u32 = 8;
+	pub const SERIALIZATION_VERSION: u32 = 9;
 
 	/// The minimum number of words in the public segment.
 	///
-	/// [`Self::validate_shape`] rejects any system whose public segment is shorter than this.
+	/// The public segment is padded up to at least this many words, so that
+	/// [`Self::log_public_words`] is never smaller than its logarithm.
 	pub const MIN_WORDS_PER_SEGMENT: usize = 2;
 
 	/// Returns the number of constants.
@@ -92,60 +91,52 @@ impl ConstraintSystem {
 
 	/// Returns the index of the first inout value.
 	pub const fn offset_inout(&self) -> usize {
-		self.n_const() + self.n_const_pad
+		self.n_const()
 	}
 
-	/// Returns the number of words in the public segment: the constants and inout values,
-	/// including padding up to the power-of-two segment length.
+	/// Returns the number of public values: the constants and the inout values.
+	pub const fn n_public_values(&self) -> usize {
+		self.n_const() + self.n_inout
+	}
+
+	/// Returns the number of words in the public segment, which the proving protocol pads to a
+	/// power of two of at least [`Self::MIN_WORDS_PER_SEGMENT`] words.
+	///
+	/// The padding is the protocol's, not the system's: no [`ValueIndex`] reaches a padding word,
+	/// and the words past [`Self::n_public_values`] are zero.
 	pub const fn n_public_words(&self) -> usize {
-		self.offset_inout() + self.n_inout + self.n_inout_pad
+		let n_values = if self.n_public_values() < Self::MIN_WORDS_PER_SEGMENT {
+			Self::MIN_WORDS_PER_SEGMENT
+		} else {
+			self.n_public_values()
+		};
+		n_values.next_power_of_two()
 	}
 
 	/// Returns the base-2 logarithm of the public segment length in words.
-	///
-	/// [`Self::validate_shape`] guarantees that the public segment length is a power of two.
 	pub const fn log_public_words(&self) -> usize {
 		self.n_public_words().trailing_zeros() as usize
 	}
 
-	/// Returns the number of words in the hidden segment: the private values and their padding.
+	/// Returns the number of words in the hidden segment.
+	///
+	/// The hidden segment holds the private values, padded up to the public segment length so
+	/// that [`Self::log_witness_words`] is at least [`Self::log_public_words`] — the shift
+	/// reduction addresses both halves with one set of word-index challenges.
 	pub const fn n_hidden_words(&self) -> usize {
-		self.n_private + self.n_private_pad
+		if self.n_private < self.n_public_words() {
+			self.n_public_words()
+		} else {
+			self.n_private
+		}
 	}
 
 	/// Returns the base-2 logarithm of the hidden segment length in words, rounded up to a
 	/// power of two.
 	///
-	/// [`Self::validate_shape`] guarantees this is at least [`Self::log_public_words`].
+	/// This is at least [`Self::log_public_words`].
 	pub const fn log_witness_words(&self) -> usize {
 		log2_ceil_usize(self.n_hidden_words())
-	}
-
-	/// Ensures that the value vector shape of this constraint system is well-formed.
-	///
-	/// Specifically checks that:
-	///
-	/// - the public segment (constants and inout values) is padded to the power of two.
-	/// - the public segment is not less than the minimum size.
-	/// - the hidden segment is at least as long as the public segment, so
-	///   [`Self::log_witness_words`] is at least [`Self::log_public_words`].
-	pub const fn validate_shape(&self) -> Result<(), ConstraintSystemError> {
-		let pub_input_size = self.n_public_words();
-		if !pub_input_size.is_power_of_two() {
-			return Err(ConstraintSystemError::PublicInputPowerOfTwo);
-		}
-		if pub_input_size < Self::MIN_WORDS_PER_SEGMENT {
-			return Err(ConstraintSystemError::PublicInputTooShort { pub_input_size });
-		}
-
-		if self.n_hidden_words() < pub_input_size {
-			return Err(ConstraintSystemError::HiddenSegmentTooShort {
-				public_len: pub_input_size,
-				hidden_len: self.n_hidden_words(),
-			});
-		}
-
-		Ok(())
 	}
 
 	/// Returns the number of values the given segment holds, excluding the padding after them.
@@ -189,15 +180,12 @@ impl ConstraintSystem {
 	///
 	/// Specifically checks that:
 	///
-	/// - the value vector shape is [valid][`Self::validate_shape`].
 	/// - every [shifted value index][super::ShiftedValueIndex] is canonical.
 	/// - referenced value indices are within their segment.
 	/// - constraints do not reference scratch values.
 	/// - shifts amounts are valid.
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
 		tracing::debug_span!("Validating constraint system");
-
-		self.validate_shape()?;
 
 		self.validate_constraints(
 			&self.zero_constraints,
@@ -227,7 +215,6 @@ impl ConstraintSystem {
 	///
 	/// Specifically checks that:
 	///
-	/// - the value vector shape is [valid][`Self::validate_shape`].
 	/// - the value vector opens the declared constants to their declared words.
 	/// - every constraint holds, in kind order: zero, then AND, then IMUL, then BMUL.
 	///
@@ -239,8 +226,6 @@ impl ConstraintSystem {
 	/// Reports the first failure found, in the order listed above.
 	/// A reported constraint position counts within that constraint's own kind.
 	pub fn verify(&self, values: &ValueVec) -> Result<(), VerificationError> {
-		self.validate_shape()?;
-
 		// Constraints read constants through the value vector.
 		// A vector opening one to the wrong word satisfies a different system than declared.
 		for (index, &constant) in self.constants.iter().enumerate() {
@@ -451,11 +436,8 @@ impl SerializeBytes for ConstraintSystem {
 		Self::SERIALIZATION_VERSION.serialize(&mut write_buf)?;
 
 		self.constants.serialize(&mut write_buf)?;
-		self.n_const_pad.serialize(&mut write_buf)?;
 		self.n_inout.serialize(&mut write_buf)?;
-		self.n_inout_pad.serialize(&mut write_buf)?;
 		self.n_private.serialize(&mut write_buf)?;
-		self.n_private_pad.serialize(&mut write_buf)?;
 		self.zero_constraints.serialize(&mut write_buf)?;
 		self.and_constraints.serialize(&mut write_buf)?;
 		self.imul_constraints.serialize(&mut write_buf)?;
@@ -476,11 +458,8 @@ impl DeserializeBytes for ConstraintSystem {
 		}
 
 		let constants = Vec::<Word>::deserialize(&mut read_buf)?;
-		let n_const_pad = usize::deserialize(&mut read_buf)?;
 		let n_inout = usize::deserialize(&mut read_buf)?;
-		let n_inout_pad = usize::deserialize(&mut read_buf)?;
 		let n_private = usize::deserialize(&mut read_buf)?;
-		let n_private_pad = usize::deserialize(&mut read_buf)?;
 		let zero_constraints = Vec::<ZeroConstraint>::deserialize(&mut read_buf)?;
 		let and_constraints = Vec::<AndConstraint>::deserialize(&mut read_buf)?;
 		let imul_constraints = Vec::<ImulConstraint>::deserialize(&mut read_buf)?;
@@ -488,11 +467,8 @@ impl DeserializeBytes for ConstraintSystem {
 
 		Ok(ConstraintSystem {
 			constants,
-			n_const_pad,
 			n_inout,
-			n_inout_pad,
 			n_private,
-			n_private_pad,
 			zero_constraints,
 			and_constraints,
 			imul_constraints,
@@ -521,11 +497,8 @@ mod tests {
 				Word::from_u64(42),
 				Word::from_u64(0xDEADBEEF),
 			],
-			n_const_pad: 1,
 			n_inout: 2,
-			n_inout_pad: 2,
 			n_private: 6,
-			n_private_pad: 2,
 			zero_constraints: vec![],
 			and_constraints: vec![],
 			imul_constraints: vec![],
@@ -580,15 +553,12 @@ mod tests {
 		let deserialized = ConstraintSystem::deserialize(&mut buf.as_slice()).unwrap();
 
 		// Check version
-		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 8);
+		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 9);
 
 		// Check the value vector shape
 		assert_eq!(original.constants, deserialized.constants);
-		assert_eq!(original.n_const_pad, deserialized.n_const_pad);
 		assert_eq!(original.n_inout, deserialized.n_inout);
-		assert_eq!(original.n_inout_pad, deserialized.n_inout_pad);
 		assert_eq!(original.n_private, deserialized.n_private);
-		assert_eq!(original.n_private_pad, deserialized.n_private_pad);
 
 		// Check zero_constraints
 		assert_eq!(original.zero_constraints.len(), deserialized.zero_constraints.len());
@@ -649,7 +619,7 @@ mod tests {
 		constraint_system.serialize(&mut buf).unwrap();
 
 		// Write to reference file.
-		let test_data_path = std::path::Path::new("test_data/constraint_system_v8.bin");
+		let test_data_path = std::path::Path::new("test_data/constraint_system_v9.bin");
 
 		// Create directory if it doesn't exist
 		if let Some(parent) = test_data_path.parent() {
@@ -666,18 +636,15 @@ mod tests {
 	/// This test will fail if breaking changes are made without incrementing the version.
 	#[test]
 	fn test_deserialize_from_reference_binary_file() {
-		// The v8 format packs a segment tag into every value index. Older files name words by
-		// their absolute position instead, so they are no longer compatible.
-		let binary_data = include_bytes!("../../test_data/constraint_system_v8.bin");
+		// The v9 format drops the padding counts, which are derived from the value counts now.
+		// Older files carry them as explicit fields, so they are no longer compatible.
+		let binary_data = include_bytes!("../../test_data/constraint_system_v9.bin");
 
 		let deserialized = ConstraintSystem::deserialize(&mut binary_data.as_slice()).unwrap();
 
 		assert_eq!(deserialized.n_const(), 3);
-		assert_eq!(deserialized.n_const_pad, 1);
 		assert_eq!(deserialized.n_inout, 2);
-		assert_eq!(deserialized.n_inout_pad, 2);
 		assert_eq!(deserialized.n_private, 6);
-		assert_eq!(deserialized.n_private_pad, 2);
 
 		assert_eq!(deserialized.constants[0].as_u64(), 1);
 		assert_eq!(deserialized.constants[1].as_u64(), 42);
@@ -692,7 +659,7 @@ mod tests {
 		// This is implicitly checked during deserialization, but we can also verify
 		// the file starts with the correct version bytes
 		let version_bytes = &binary_data[0..4]; // First 4 bytes should be version
-		let expected_version_bytes = 8u32.to_le_bytes(); // Version 8 in little-endian
+		let expected_version_bytes = 9u32.to_le_bytes(); // Version 9 in little-endian
 		assert_eq!(
 			version_bytes, expected_version_bytes,
 			"Binary file version mismatch. If you made breaking changes, increment ConstraintSystem::SERIALIZATION_VERSION"
@@ -701,42 +668,46 @@ mod tests {
 
 	#[test]
 	fn test_log_witness_words() {
-		let cs = |n_private: usize, n_private_pad: usize| ConstraintSystem {
+		let cs = |n_private: usize| ConstraintSystem {
 			n_private,
-			n_private_pad,
 			..test_shape()
 		};
-		// Typical: more hidden words than public words.
-		assert_eq!(cs(60, 4).log_witness_words(), 6);
-		// Exact power-of-two hidden count.
-		assert_eq!(cs(30, 2).log_witness_words(), 5);
+		// Typical: more private values than public words, rounded up to a power of two.
+		assert_eq!(cs(60).log_witness_words(), 6);
+		// Exact power-of-two private count.
+		assert_eq!(cs(32).log_witness_words(), 5);
 	}
 
 	#[test]
-	fn test_validate_shape_rejects_short_hidden_segment() {
-		// The hidden segment (4 words) is shorter than the public segment (8 words).
-		let cs = ConstraintSystem {
-			n_private: 4,
-			n_private_pad: 0,
-			..test_shape()
-		};
-		assert!(matches!(
-			cs.validate_shape(),
-			Err(ConstraintSystemError::HiddenSegmentTooShort {
-				public_len: 8,
-				hidden_len: 4,
-			})
-		));
-	}
+	fn segment_lengths_are_derived_from_the_value_counts() {
+		// Three constants and two inout values are five public words, padded to eight; six
+		// private values are fewer than that, so the hidden segment is padded to eight too.
+		let cs = test_shape();
+		assert_eq!(cs.n_public_values(), 5);
+		assert_eq!(cs.n_public_words(), 8);
+		assert_eq!(cs.log_public_words(), 3);
+		assert_eq!(cs.n_hidden_words(), 8);
+		assert_eq!(cs.log_witness_words(), 3);
+		assert_eq!(cs.value_vec_len(), 16);
 
-	#[test]
-	fn test_validate_shape_rejects_non_power_of_two_public_segment() {
-		// Nine public words: the segment must be padded to a power of two.
-		let cs = ConstraintSystem {
-			n_inout_pad: 3,
+		// A system with more private values than public words pads the hidden segment to the
+		// private count instead, and the two logarithms come apart.
+		let wide = ConstraintSystem {
+			n_private: 60,
 			..test_shape()
 		};
-		assert!(matches!(cs.validate_shape(), Err(ConstraintSystemError::PublicInputPowerOfTwo)));
+		assert_eq!(wide.n_public_words(), 8);
+		assert_eq!(wide.n_hidden_words(), 60);
+		assert_eq!(wide.log_witness_words(), 6);
+
+		// An empty system still meets the minimum segment size.
+		let empty = ConstraintSystem {
+			constants: vec![],
+			n_inout: 0,
+			n_private: 0,
+			..test_shape()
+		};
+		assert_eq!(empty.n_public_words(), ConstraintSystem::MIN_WORDS_PER_SEGMENT);
 	}
 
 	#[test]
@@ -1054,11 +1025,8 @@ mod tests {
 	fn zero_constraint_system(n: usize) -> ConstraintSystem {
 		ConstraintSystem {
 			constants: vec![],
-			n_const_pad: 8,
 			n_inout: 0,
-			n_inout_pad: 0,
 			n_private: 8,
-			n_private_pad: 0,
 			zero_constraints: (0..n)
 				.map(|i| ZeroConstraint::plain([ValueIndex::private(i as u32)]))
 				.collect(),
@@ -1130,30 +1098,6 @@ mod tests {
 				assert_eq!(expected, 0xDEADBEEF);
 				assert_eq!(actual, 0xBAADF00D);
 			}
-			other => panic!("wrong error: {other:?}"),
-		}
-	}
-
-	#[test]
-	fn verify_rejects_a_malformed_shape_before_reading_any_constraint() {
-		// A public segment of 3 words is not a power of two, so the shape check rejects it.
-		// The zero constraint would also fail, which is what proves the shape is checked first.
-		let cs = ConstraintSystem {
-			constants: vec![Word::ONE],
-			n_const_pad: 0,
-			n_inout: 2,
-			n_inout_pad: 0,
-			n_private: 8,
-			n_private_pad: 0,
-			zero_constraints: vec![ZeroConstraint::plain([ValueIndex::constant(0)])],
-			and_constraints: vec![],
-			imul_constraints: vec![],
-			bmul_constraints: vec![],
-		};
-		let values = cs.value_vec_from_data(&[Word::ONE, Word::ZERO, Word::ZERO], &[Word::ZERO; 8]);
-
-		match cs.verify(&values).unwrap_err() {
-			VerificationError::MalformedSystem(ConstraintSystemError::PublicInputPowerOfTwo) => {}
 			other => panic!("wrong error: {other:?}"),
 		}
 	}
