@@ -12,7 +12,10 @@ use binius_ip_prover::{
 	sumcheck::{bivariate_product_prover, common::SumcheckProver},
 };
 use binius_math::{BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product_buffers};
-use binius_utils::rayon::prelude::*;
+use binius_utils::rayon::{
+	prelude::*,
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+};
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 use bytemuck::zeroed_vec;
 use itertools::izip;
@@ -218,6 +221,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 	let multilinears = words
 		.par_iter()
 		.zip(segment.key_ranges.par_iter())
+		.with_min_task(WorkPerItem::FieldMuls)
 		.fold(
 			|| zeroed_vec::<P>(acc_size).into_boxed_slice(),
 			|mut multilinears, (word, Range { start, end })| {

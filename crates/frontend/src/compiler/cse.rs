@@ -25,6 +25,7 @@
 
 use cranelift_entity::EntitySet;
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use super::{
 	gate::opcode::Opcode,
@@ -80,8 +81,7 @@ pub fn dedup_gates(
 			.outputs
 			.iter()
 			.any(|&wire| {
-				matches!(graph.wire_data(wire).kind, WireKind::Inout)
-					|| force_committed.contains(wire)
+				matches!(graph.wire_kind(wire), WireKind::Inout) || force_committed.contains(wire)
 			});
 
 		// A gate producing an observable wire is never collapsed, though it can still be canonical.
@@ -120,13 +120,15 @@ pub fn dedup_gates(
 ///
 /// Output, auxiliary, and scratch wires are excluded.
 /// They are freshly allocated per gate, so including them would make identical gates differ.
+///
+/// One is built per gate, so each field is held inline at the arity the opcodes actually use.
 #[derive(PartialEq, Eq, Hash)]
 struct GateStructure {
 	opcode: Opcode,
 	/// The constant and input wires, in order, which is what the gate reads.
-	reads: Vec<Wire>,
-	immediates: Vec<u32>,
-	dimensions: Vec<usize>,
+	reads: SmallVec<[Wire; 4]>,
+	immediates: SmallVec<[u32; 2]>,
+	dimensions: SmallVec<[usize; 1]>,
 }
 
 /// Extracts the structural identity of a gate.
@@ -141,8 +143,8 @@ fn structure_of(graph: &GateGraph, gate: Gate, hint_registry: &HintRegistry) -> 
 			.chain(param.inputs)
 			.copied()
 			.collect(),
-		immediates: data.immediates.clone(),
-		dimensions: data.dimensions.clone(),
+		immediates: SmallVec::from_slice(&data.immediates),
+		dimensions: SmallVec::from_slice(&data.dimensions),
 	}
 }
 

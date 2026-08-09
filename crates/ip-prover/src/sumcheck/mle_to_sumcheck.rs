@@ -8,7 +8,6 @@ use binius_math::multilinear::eq::eq_one_var;
 use crate::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
 	mle_store::{EqId, EvaluationChunk, RoundContext},
-	round_evals::round_coeffs_by_eq,
 	round_evaluator::{MleCheckRoundEvaluator, SumcheckRoundEvaluator},
 };
 
@@ -57,7 +56,7 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 		let alpha = self.mlecheck_prover.eval_point()[self.n_vars() - 1];
 		round_coeffs_multi
 			.into_iter()
-			.map(|round_coeffs| round_coeffs_by_eq(&round_coeffs, alpha) * self.eq_prefix_eval)
+			.map(|round_coeffs| round_coeffs.mul_by_eq(alpha) * self.eq_prefix_eval)
 			.collect()
 	}
 
@@ -140,6 +139,6 @@ where
 		let round_coeffs = self.inner.interpolate(ctx, accum, inner_claim, alpha);
 
 		// Multiply the inner MLE-check round polynomial by (X - α) and the equality prefix.
-		round_coeffs_by_eq(&round_coeffs, alpha) * eq_prefix
+		round_coeffs.mul_by_eq(alpha) * eq_prefix
 	}
 }

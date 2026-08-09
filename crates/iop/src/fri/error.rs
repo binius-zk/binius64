@@ -40,12 +40,6 @@ impl From<batch::Error> for Error {
 pub enum VerificationError {
 	#[error("incorrect codeword folding in query round {query_round} at index {index}")]
 	IncorrectFold { query_round: usize, index: usize },
-	#[error("the size of the query proof is incorrect, expected {expected}")]
-	IncorrectQueryProofLength { expected: usize },
-	#[error(
-		"the number of values in round {round} of the query proof is incorrect, expected {coset_size}"
-	)]
-	IncorrectQueryProofValuesLength { round: usize, coset_size: usize },
 	#[error("The dimension-1 codeword must contain the same values")]
 	IncorrectDegree,
 	#[error("Merkle tree error: {0}")]
