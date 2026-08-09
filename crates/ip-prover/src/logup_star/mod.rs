@@ -25,8 +25,8 @@
 //! It holds reduced evaluation claims on `T`, on `Y`, and on the index multilinear.
 //! The caller verifies those three claims separately.
 
-mod final_layer;
 mod prove;
+mod pushforward;
 pub mod witness;
 
 pub use binius_ip::logup_star::LogupOutput;

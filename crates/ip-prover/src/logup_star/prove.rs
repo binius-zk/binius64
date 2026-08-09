@@ -9,7 +9,7 @@ use binius_math::{FieldBuffer, FieldSlice, FieldVec, univariate::evaluate_univar
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
-	final_layer::{FinalLayerOutput, prove_final_layer},
+	pushforward::{PushforwardOutput, prove_pushforward},
 	witness,
 };
 use crate::{
@@ -262,20 +262,26 @@ where
 		.collect::<Vec<_>>();
 	channel.send_many(&index_eval_claims);
 
-	// Table side: run the first m-1 GKR layers, stopping at the layer-1 claim over m-1 variables.
-	// The leaf layer is left on the prover, to be spliced into the batched final layer.
+	// Table side: run the GKR to its leaf, claiming the pushforward Y and the denominator D at a
+	// shared point. D is the public c - J, so only the Y claim carries forward.
 	let table_gkr_guard = tracing::debug_span!("Table-side GKR layers").entered();
-	let (table_remaining, layer1) =
-		table_prover.prove_layers(m - 1, root_claim(num_r, den_r), channel);
-	let table_leaf_prover = table_remaining.expect("m-1 < m layers leaves the leaf layer");
+	let (table_num_claim, _table_den_claim) = table_prover.prove(root_claim(num_r, den_r), channel);
 	drop(table_gkr_guard);
 
-	// Batched final layer: reduce the layer-1 claims and <T, Y> = e to one shared evaluation point.
-	let FinalLayerOutput {
+	// Reduce the leaf claim on Y and the product claim <T, Y> = e to one shared evaluation point.
+	let PushforwardOutput {
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-	} = prove_final_layer(eval_claim, table_leaf_prover, layer1, table, channel);
+	} = prove_pushforward(
+		alloc,
+		table,
+		pushforward,
+		eval_claim,
+		table_num_claim.eval,
+		&table_num_claim.point,
+		channel,
+	);
 
 	LogupOutput {
 		table_eval_point,
@@ -432,7 +438,7 @@ mod tests {
 
 	#[test]
 	fn test_prove_verify_single_table_variable() {
-		// m = 1 exercises the batched final layer with an empty layer-1 point.
+		// m = 1 exercises the table side with a single GKR layer and a one-variable reduction.
 		check_prove_verify(4, 1, 1);
 	}
 
