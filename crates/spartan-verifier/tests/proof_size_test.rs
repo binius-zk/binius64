@@ -66,13 +66,15 @@ fn test_ip_proof_size() {
 	let proof_size = channel.proof_size();
 
 	// Hardcoded expected value to detect proof size regressions.
-	// This measures IP-layer bytes (sumcheck rounds, oracle commitments, evaluations) plus the
-	// single combined FRI proof opening all oracles together. It is a slight underestimate because
-	// it does not account for some smaller BaseFold components (e.g. sumcheck coefficients within
-	// BaseFold, blinding elements for ZK).
+	// This measures IP-layer bytes (sumcheck rounds, oracle commitments, evaluations) plus the FRI
+	// proof opening the oracles. It is a slight underestimate because it does not account for some
+	// smaller BaseFold components (e.g. sumcheck coefficients within BaseFold, blinding elements
+	// for ZK).
 	//
 	// The power chain x^2..x^7 is public-derivable (x and y are inout), so those wires are now
 	// `Derived` and emit no mul constraints — only `assert_eq(x^7, y)` survives — shrinking the
 	// proof relative to the pre-derived-wire baseline of 46848.
-	assert_eq!(proof_size, 46784, "proof size regression");
+	//
+	// This circuit commits three oracles; FRI opens each against its own commitment.
+	assert_eq!(proof_size, 73600, "proof size regression");
 }
