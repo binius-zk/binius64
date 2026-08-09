@@ -67,6 +67,7 @@ impl ValueSegment {
 ///
 /// The packing also makes the derived [`Ord`] order the words by segment and then by index, which
 /// is the order they occupy in the value vector.
+#[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueIndex(u32);
 
@@ -118,16 +119,6 @@ impl ValueIndex {
 	/// The index within [`Self::segment`].
 	pub const fn index(self) -> u32 {
 		self.0 & Self::INDEX_MASK
-	}
-}
-
-/// Only exists because `SecondaryMap::new` fills unmapped keys with it.
-///
-/// The compiler assigns every wire an index before anything reads one, so no caller ever sees
-/// this value; it names the first constant purely because that word always exists.
-impl Default for ValueIndex {
-	fn default() -> Self {
-		Self::constant(0)
 	}
 }
 

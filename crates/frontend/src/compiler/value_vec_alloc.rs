@@ -76,7 +76,10 @@ impl Alloc {
 		//
 		// The witness and internal wires share the private segment, the witness wires first.
 
-		let mut wire_mapping = SecondaryMap::new();
+		// An unmapped wire keeps the fill value, which names the scratch segment.
+		// No constraint may reference that segment, so validation catches the gap rather than
+		// letting it alias a real word.
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex::scratch(0));
 
 		let n_const = self.w_const.len();
 		let n_inout = self.w_inout.len();

@@ -149,7 +149,7 @@ mod tests {
 	fn multi_term_xor_expression_lowers_each_term() {
 		// c = rotr(a, 0) ^ sll(b, 5) ^ rotr(a, 12) must lower to three operand terms:
 		// plain(a), native sll(b, 5), native rotr(a, 12).
-		let mut wire_mapping = SecondaryMap::new();
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex::scratch(0));
 		let wire_a = Wire::new(0);
 		let wire_b = Wire::new(1);
 		let wire_c = Wire::new(2);
