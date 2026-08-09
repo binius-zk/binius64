@@ -274,9 +274,15 @@ mod tests {
 
 			// The committed segment runs from the witness offset to the end of the value vector.
 			// Its length fixes the width of the word axis.
-			let layout = table.layout();
-			let offset = layout.offset_witness;
-			let n_committed = layout.combined_len() - offset;
+			// The committed rows can run past the private values into the protocol's zero padding,
+			// which these fixtures have none of.
+			let offset = table.layout().offset_witness();
+			let n_committed = table.n_hidden_words();
+			assert_eq!(
+				n_committed,
+				table.layout().combined_len() - offset,
+				"fixture must have no padding"
+			);
 			let log_committed = checked_log_2(n_committed);
 
 			// The instance-fold point, and a fresh point over the (bit, word) axes.

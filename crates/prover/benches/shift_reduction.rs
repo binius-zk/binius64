@@ -149,7 +149,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				prove::<F, P, _, _>(
 					&key_collection,
-					value_vec.combined_witness(),
+					value_vec.public(),
+					value_vec.non_public(),
 					OperatorClaims {
 						zero: prover_zero_data,
 						bitand: prover_bitand_data,
@@ -184,7 +185,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		prove::<F, P, _, _>(
 			&key_collection,
-			value_vec.combined_witness(),
+			value_vec.public(),
+			value_vec.non_public(),
 			OperatorClaims {
 				zero: prover_zero_data,
 				bitand: prover_bitand_data,
@@ -256,7 +258,10 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let intmul_evals = [F::ZERO; 4];
 
 	let key_collection = build_key_collection(&cs);
-	let words = value_vec.combined_witness();
+	// The phase functions take each segment as the circuit declares it: `build_g_parts` zips the
+	// words with their key ranges and `fold_words` pads each fold to `log2_ceil(len)` variables.
+	let public_words = value_vec.public();
+	let hidden_words = value_vec.non_public();
 	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
@@ -291,7 +296,6 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// `build_g_parts` runs per key segment; the full g parts are the sum of the public and hidden
 	// segment parts.
 	let build_combined_g_parts = || {
-		let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
 		let mut g_parts = build_g_parts::<F, P, _>(
 			&GlobalAllocator,
 			public_words,
@@ -331,7 +335,6 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let r_s = r_jr_s.split_off(Word::LOG_BITS);
 	let r_j = r_jr_s;
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
-	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
 	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(

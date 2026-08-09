@@ -76,27 +76,33 @@ impl DerefMut for AlignedWords {
 /// [`ConstraintSystem`](super::ConstraintSystem). It is the primary data structure for both
 /// constraint evaluation and polynomial commitment.
 ///
-/// The words are the public segment followed by the hidden segment, each of which holds padding
-/// between and after its sections. A vector built with [`Self::new`] carries the circuit's scratch
-/// tail past those two segments; one built with [`Self::new_from_data`] ends with them.
+/// The words are the public values followed by the private ones, stored back to back with no
+/// padding. A vector built with [`Self::new`] carries the circuit's scratch tail past them; one
+/// built with [`Self::new_from_data`] ends with the private values.
 ///
 /// The words live in a buffer that starts on a 16-byte boundary.
 /// That keeps the frequent bulk copies of the vector on the aligned SIMD `memcpy` path.
 ///
 /// # Addressing
 ///
-/// A [`ValueIndex`] names a word by its segment and its position within that segment, so the
-/// vector carries the offsets that place each segment in the flat buffer. The padding between
-/// sections is therefore unaddressable: no index resolves to it.
+/// A [`ValueIndex`] names a word by its segment and its position within that segment, and the
+/// vector stores the two counts that place each segment in the buffer.
+///
+/// These are *storage* positions, and they are deliberately not the positions the proving
+/// protocol reads a word at: the protocol pads the public segment to a power of two and the
+/// hidden segment to at least that width, so it addresses the same word further along. Its
+/// addresses come from
+/// [`ConstraintSystem::word_offset`](super::ConstraintSystem::word_offset) instead. Nothing needs
+/// both, because the prover pads each segment as it packs it into field elements.
 #[derive(Clone, Debug)]
 pub struct ValueVec {
-	/// The word the inout values start at, which is where the constants end.
-	offset_inout: usize,
-	/// The number of words in the public segment, which is also where the hidden segment starts.
-	n_public_words: usize,
-	/// The number of words in the hidden segment.
-	n_hidden_words: usize,
-	/// The committed words followed by the scratch tail, 16-byte aligned.
+	/// The number of constants, which is where the inout values start.
+	n_const: usize,
+	/// The number of public values, which is where the private ones start.
+	n_public_values: usize,
+	/// The number of private values.
+	n_private: usize,
+	/// The values followed by the scratch tail, 16-byte aligned.
 	data: AlignedWords,
 }
 
@@ -105,33 +111,32 @@ impl ValueVec {
 	/// including its scratch tail.
 	pub fn new(layout: &ValueVecLayout) -> ValueVec {
 		ValueVec {
-			offset_inout: layout.offset_inout,
-			n_public_words: layout.n_public_words(),
-			n_hidden_words: layout.n_hidden_words,
+			n_const: layout.n_const,
+			n_public_values: layout.offset_witness(),
+			n_private: layout.n_private(),
 			data: AlignedWords::zeroed(layout.combined_len() + layout.n_scratch),
 		}
 	}
 
-	/// Creates a value vector from the words of its public and hidden segments.
+	/// Creates a value vector from the words of its public and private values.
 	///
 	/// The vector has no scratch tail; scratch words only exist while a circuit is evaluated.
 	///
-	/// `offset_inout` places the inout values within the public segment, as
-	/// [`ConstraintSystem::offset_inout`](super::ConstraintSystem::offset_inout) reports it, and is
-	/// what resolves an [`InOut`](super::ValueSegment::InOut) index. Rebuilding a vector from
+	/// `n_const` splits the public words into the constants and the inout values, which is what
+	/// resolves an [`InOut`](super::ValueSegment::InOut) index. Rebuilding a vector from
 	/// serialized segments therefore needs the system describing them, so prefer
 	/// [`ConstraintSystem::value_vec_from_data`](super::ConstraintSystem::value_vec_from_data),
 	/// which passes it for you.
-	pub fn new_from_data(offset_inout: usize, public: &[Word], private: &[Word]) -> ValueVec {
-		// Fresh 16-byte-aligned buffer holding the public words followed by the hidden ones.
+	pub fn new_from_data(n_const: usize, public: &[Word], private: &[Word]) -> ValueVec {
+		// Fresh 16-byte-aligned buffer holding the public words followed by the private ones.
 		let mut data = AlignedWords::zeroed(public.len() + private.len());
 		data[..public.len()].copy_from_slice(public);
 		data[public.len()..].copy_from_slice(private);
 
 		ValueVec {
-			offset_inout,
-			n_public_words: public.len(),
-			n_hidden_words: private.len(),
+			n_const,
+			n_public_values: public.len(),
+			n_private: private.len(),
 			data,
 		}
 	}
@@ -163,26 +168,29 @@ impl ValueVec {
 	const fn word_offset(&self, index: ValueIndex) -> usize {
 		let segment_start = match index.segment() {
 			ValueSegment::Constant => 0,
-			ValueSegment::InOut => self.offset_inout,
-			ValueSegment::Private => self.n_public_words,
+			ValueSegment::InOut => self.n_const,
+			ValueSegment::Private => self.n_public_values,
 			ValueSegment::Scratch => self.size(),
 		};
 		segment_start + index.index() as usize
 	}
 
-	/// The total size of the public and committed portions of the vector (excluding scratch).
+	/// The number of values the vector holds, excluding scratch.
 	pub const fn size(&self) -> usize {
-		self.n_public_words + self.n_hidden_words
+		self.n_public_values + self.n_private
 	}
 
-	/// Returns the public portion of the values vector.
+	/// Returns the public values: the constants followed by the inout values.
+	///
+	/// These are the words as the circuit declares them, unpadded. The prover pads them up to the
+	/// public segment width as it packs them.
 	pub fn public(&self) -> &[Word] {
-		&self.data[..self.n_public_words]
+		&self.data[..self.n_public_values]
 	}
 
-	/// Return all non-public values without scratch space.
+	/// Returns the private values, unpadded and without scratch space.
 	pub fn non_public(&self) -> &[Word] {
-		&self.data[self.n_public_words..self.size()]
+		&self.data[self.n_public_values..self.size()]
 	}
 
 	/// Returns the combined values vector.
@@ -231,16 +239,13 @@ mod tests {
 			n_inout: 2,
 			n_witness: 2,
 			n_internal: 2,
-			offset_inout: 2,
-			offset_witness: 4,
-			n_hidden_words: 4,
 			n_scratch: 0,
 		};
 		let values = ValueVec::new(&layout);
 
 		let public = values.public();
 		let non_public = values.non_public();
-		let combined = ValueVec::new_from_data(layout.offset_inout, public, non_public);
+		let combined = ValueVec::new_from_data(layout.n_const, public, non_public);
 		assert_eq!(combined.combined_witness(), values.combined_witness());
 	}
 
@@ -299,38 +304,28 @@ mod tests {
 			let public: Vec<Word> = public.into_iter().map(Word).collect();
 			let private: Vec<Word> = (0..n_witness).map(|i| Word::from_u64(0xdead_0000 + i as u64)).collect();
 
-			// The public section is padded to a power of two.
-			// The witness section follows it, then the scratch tail.
+			// The sections sit back to back, then the scratch tail:
 			//
-			//     [0, offset_witness)                            -> public  (power of two)
-			//     [offset_witness, offset_witness + n_hidden_words) -> witness
+			//     [0, public.len())                            -> public
+			//     [public.len(), public.len() + private.len()) -> private
 			//     then the scratch tail
-			let offset_witness = public.len().next_power_of_two();
-			let n_hidden_words = private.len();
 			let layout = ValueVecLayout {
 				n_const: 0,
 				n_inout: public.len(),
 				n_witness: private.len(),
 				n_internal: 0,
-				offset_inout: 0,
-				offset_witness,
-				n_hidden_words,
 				n_scratch,
 			};
-
-			// The public input must fill its whole power-of-two section, so zero-pad it.
-			let mut public_padded = public;
-			public_padded.resize(offset_witness, Word::ZERO);
 
 			// A vector built from the layout carries the scratch tail; one built from its
 			// segments holds only those words.
 			let zeroed = ValueVec::new(&layout);
-			let vv = ValueVec::new_from_data(layout.offset_inout, &public_padded, &private);
+			let vv = ValueVec::new_from_data(layout.n_const, &public, &private);
 
 			// Alignment survives construction for any word count.
 			assert_16_byte_aligned(vv.combined_witness());
 			// Both sections read back byte-for-byte what went in.
-			prop_assert_eq!(vv.public(), &public_padded[..]);
+			prop_assert_eq!(vv.public(), &public[..]);
 			prop_assert_eq!(vv.non_public(), &private[..]);
 
 			// The scratch tail past the committed words is zeroed and addressable.

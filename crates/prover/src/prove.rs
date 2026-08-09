@@ -299,7 +299,8 @@ impl IOPProver {
 			eval: _,
 		} = prove_shift_reduction::<_, P, _, _>(
 			&self.key_collection,
-			witness.combined_witness(),
+			witness.public(),
+			witness.non_public(),
 			OperatorClaims {
 				zero: zero_claim,
 				bitand: bitand_claim,

@@ -77,7 +77,7 @@ where
 
 		// Symbolically execute the inner verifier to build the outer constraint system.
 		let dummy_public_words =
-			vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
+			vec![Word::from_u64(0); inner_iop_verifier.constraint_system().n_public_values()];
 
 		let outer_builder = {
 			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();

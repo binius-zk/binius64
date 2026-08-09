@@ -103,7 +103,7 @@ impl IOPVerifier {
 	/// `verify`, rather than duplicating it here.
 	pub fn oracle_specs(&self, is_zk: bool) -> Vec<OracleSpec> {
 		let mut channel = OracleSetupChannel::new(is_zk);
-		let public = vec![Word::ZERO; 1 << self.log_public_words()];
+		let public = vec![Word::ZERO; self.constraint_system.n_public_values()];
 		// The result is discarded: the setup channel performs no real verification (all `recv_*`
 		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle specs.
 		let _ = self.verify(&public, &mut channel);
@@ -119,16 +119,18 @@ impl IOPVerifier {
 		Channel: IOPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
-		// Check that the public input length is correct
-		if public.len() != 1 << self.log_public_words() {
+		// The caller passes the public values the circuit declares, unpadded: the constants
+		// followed by the inout values.
+		if public.len() != self.constraint_system.n_public_values() {
 			return Err(Error::IncorrectPublicInputLength {
-				expected: 1 << self.log_public_words(),
+				expected: self.constraint_system.n_public_values(),
 				actual: public.len(),
 			});
 		}
 
-		// Verifier observes the public input (includes it in Fiat-Shamir).
-		channel.observe_many(&encode_public(public));
+		// Verifier observes the public input (includes it in Fiat-Shamir). The prover packs the
+		// same words zero-padded up to the public segment width, so the encoding pads to match.
+		channel.observe_many(&encode_public(public, self.constraint_system.n_public_words()));
 
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -535,13 +537,17 @@ where
 }
 
 /// Encode public input words as B128 elements, for compliance with the IOP interface.
-fn encode_public(public: &[Word]) -> Vec<B128> {
-	let (word_pairs, remaining) = public.as_chunks::<2>();
-	assert!(
-		remaining.is_empty(),
-		"ValueVecLayout ensures the public section has a multiple of two number of words"
-	);
-	word_pairs
+fn encode_public(public: &[Word], n_public_words: usize) -> Vec<B128> {
+	// The public segment is a power of two words long and at least `MIN_WORDS_PER_SEGMENT`, so
+	// the zero-padded words always pair up.
+	debug_assert!(public.len() <= n_public_words);
+	debug_assert!(n_public_words.is_multiple_of(2));
+
+	let mut padded = public.to_vec();
+	padded.resize(n_public_words, Word::ZERO);
+	padded
+		.as_chunks::<2>()
+		.0
 		.iter()
 		.map(|[w0, w1]| B128::new(((w1.as_u64() as u128) << 64) | w0.as_u64() as u128))
 		.collect()

@@ -786,9 +786,6 @@ fn test_scratch_pooling_preserves_the_committed_witness() {
 	assert_eq!(unpooled_layout.n_inout, pooled_layout.n_inout);
 	assert_eq!(unpooled_layout.n_witness, pooled_layout.n_witness);
 	assert_eq!(unpooled_layout.n_internal, pooled_layout.n_internal);
-	assert_eq!(unpooled_layout.offset_inout, pooled_layout.offset_inout);
-	assert_eq!(unpooled_layout.offset_witness, pooled_layout.offset_witness);
-	assert_eq!(unpooled_layout.n_hidden_words, pooled_layout.n_hidden_words);
 	assert_eq!(unpooled.constraint_system().constants, pooled.constraint_system().constants);
 
 	// Flatten every operand of every constraint into one ordered list.
