@@ -6,7 +6,7 @@
 //!
 //! - the looker numerator `eq_r`, the equality indicator at the evaluation point,
 //! - the looker denominator `c - I`, with `I` the embedded index column,
-//! - the table denominator `c - J`, with `J` the embedded table positions,
+//! - the negated table denominator `J - c`, with `J` the embedded table positions,
 //! - the pushforward `Y = I_* eq_r`, the looker numerator scattered onto table positions.
 
 use std::iter;
@@ -262,18 +262,20 @@ where
 	FieldBuffer::new(log_len, packed)
 }
 
-/// Build the table denominator `c - J` over the `m`-variable table cube.
+/// Build the negated table denominator `J - c` over the `m`-variable table cube.
 ///
-/// Entry `j` is `c - iota(j)`, the logUp denominator for table position `j`.
+/// Entry `j` is `iota(j) - c`. The logUp denominator for table position `j` is `c - iota(j)`; the
+/// table's fraction enters the sum of every instance negated, and carrying that negation on the
+/// denominator rather than the numerator costs nothing here, where the entries are built anyway.
 pub fn table_denominator<A, F, P>(alloc: &A, c: F, table_n_vars: usize) -> FieldVec<P, A>
 where
 	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
-	// One denominator per table position: shift the challenge by the position's embedding.
+	// One denominator per table position: shift the position's embedding by the challenge.
 	let values = (0..1usize << table_n_vars)
-		.map(|j| c - embed_position::<F>(j))
+		.map(|j| embed_position::<F>(j) - c)
 		.collect::<Vec<_>>();
 	FieldBuffer::from_values_in(alloc, &values)
 }

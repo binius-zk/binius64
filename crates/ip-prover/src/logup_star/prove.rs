@@ -4,7 +4,7 @@
 
 use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, Field, PackedField};
-use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
+use binius_ip::{MultilinearEvalClaim, fracaddcheck::unpad_leaf_claim, logup_star::LogupOutput};
 use binius_math::{FieldBuffer, FieldSlice, FieldVec, univariate::evaluate_univariate};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
@@ -26,7 +26,10 @@ use crate::{
 /// sharing the table. The lookers batch by a random linear combination: a challenge `gamma`
 /// scales looker `j`'s equality-indicator numerator by `gamma^j`, and the pushforward is the
 /// gamma-weighted sum of the per-looker pushforwards, still with only `2^m` entries. The
-/// looked-up vectors are never committed.
+/// looked-up vectors are never committed. Every fractional-addition circuit — the lookers' over
+/// `n` variables and the table's over `m` — is an instance of one GKR of
+/// `ceil(log2(#lookers + 1)) + max(n, m)` layers, with the shallower side padded by zero
+/// fractions.
 /// See [Soukhanov25] for the construction.
 ///
 /// [Soukhanov25]: <https://eprint.iacr.org/2025/946>
@@ -162,22 +165,23 @@ where
 {
 	let m = table.log_len();
 	let n = lookers[0].eval_point.len();
-	let log_lookers = log2_ceil_usize(lookers.len());
+	// One batch instance per looker, plus the table.
+	let k = log2_ceil_usize(lookers.len() + 1);
 
 	// Sample the logUp challenge c that randomizes the logarithmic-derivative denominators.
 	// This is the prover's first transcript action, mirroring the verifier.
 	// A committing caller must absorb the I, T, and Y commitments into the transcript before this.
 	let c = channel.sample();
 
-	// Build the fractional-addition circuits, one per looker plus the table side.
-	// Constructing a circuit computes every layer and returns its single root fraction.
+	// Build the fractional-addition circuits, one per looker plus the table side. Constructing a
+	// circuit computes every layer and returns its single root fraction.
 	//
 	//     looker j: gamma^j * eq_{r_j}(i) / (c - I_j(i))   over n variables
 	//     table:    Y(v)                  / (c - v)         over m variables
 	let circuits_guard = tracing::debug_span!("Build fracadd circuits").entered();
 	// The circuits are independent, so they build in parallel across lookers.
 	// The collect preserves looker order, so circuit j keeps numerator gamma^j.
-	let (looker_provers, looker_roots): (Vec<_>, Vec<_>) = (lookers, numerators)
+	let (mut provers, mut roots): (Vec<_>, Vec<_>) = (lookers, numerators)
 		.into_par_iter()
 		.map(|(looker, numerator)| {
 			let den = witness::looker_denominator::<A, F, P>(alloc, c, looker.index);
@@ -185,6 +189,8 @@ where
 			(prover, (root.0.get(0), root.1.get(0)))
 		})
 		.unzip();
+	// The table's fraction enters the sum of every instance negated, which is what makes that sum's
+	// numerator vanish. The negation rides on the denominator, which is built here anyway.
 	let table_den = witness::table_denominator::<A, F, P>(alloc, c, m);
 	// The pushforward is borrowed — a committing caller keeps it for the oracle opening — so the
 	// table circuit's leaf layer, which it folds in place, is a clone drawn from `alloc`.
@@ -193,80 +199,84 @@ where
 		alloc,
 		(FieldBuffer::clone_from_slice(alloc, pushforward.to_ref()), table_den),
 	);
-	let num_r = table_root.0.get(0);
-	let den_r = table_root.1.get(0);
+	provers.push(table_prover);
+	roots.push((table_root.0.get(0), table_root.1.get(0)));
 
-	// Top circuit: interpolate the per-looker root fractions into a multilinear pair over the
-	// looker variables, padded with the zero fraction (numerators with 0, denominators with 1).
-	// Its root is the fractional sum of every looker circuit, so the looker side runs as one
-	// GKR circuit over n + log_lookers variables.
-	let mut root_nums = looker_roots
-		.iter()
-		.map(|&(num_j, _)| num_j)
-		.collect::<Vec<_>>();
-	let mut root_dens = looker_roots
-		.iter()
-		.map(|&(_, den_j)| den_j)
-		.collect::<Vec<_>>();
-	root_nums.resize(1 << log_lookers, F::ZERO);
-	root_dens.resize(1 << log_lookers, F::ONE);
-	let (top_prover, top_root) = FracAddCheckProver::new(
-		log_lookers,
-		alloc,
+	// Top circuit: interpolate every instance's root fraction into a multilinear pair over the k
+	// selector variables, padded with the zero fraction. Its own root is the fractional sum of all
+	// of them, and the table's denominator is already negated, so that sum is
+	//
+	//     sum_j num_j / den_j  -  num_r / den_r
+	//
+	// which is zero exactly when the logUp identity holds.
+	let (top_prover, (top_root_num, top_root_den)) = FracAddCheckProver::new(k, alloc, {
+		let (mut root_nums, mut root_dens): (Vec<_>, Vec<_>) = roots.iter().copied().unzip();
+		root_nums.resize(1 << k, F::ZERO);
+		root_dens.resize(1 << k, F::ONE);
 		(
 			FieldBuffer::<P, _>::from_values_in(alloc, &root_nums),
 			FieldBuffer::<P, _>::from_values_in(alloc, &root_dens),
-		),
-	);
-	let num_l = top_root.0.get(0);
-	let den_l = top_root.1.get(0);
+		)
+	});
+	let root_den = top_root_den.get(0);
 	drop(circuits_guard);
 
-	// The two root fractions; their equality is the logUp identity the verifier checks.
-	//
-	//     num_l / den_l = sum_j gamma^j sum_i eq_{r_j}(i) / (c - I_j(i))
-	//     num_r / den_r = sum_v Y(v) / (c - v)
-	channel.send_many(&[num_l, den_l, num_r, den_r]);
-
-	let looker_gkr_guard = tracing::debug_span!("Looker-side GKR").entered();
-	// Looker side, first phase: run the top circuit over the looker variables to completion,
-	// reducing its root to a claim on the interpolated root fractions at a selector point.
-	let (top_remaining, (top_num_claim, _top_den_claim)) =
-		top_prover.prove_layers(log_lookers, root_claim(num_l, den_l), channel);
-	debug_assert!(
-		top_remaining.is_none_or(|prover| prover.n_layers() == 0),
-		"the top circuit runs all log_lookers layers"
+	// A witness satisfying the lookup identity zeroes the root numerator, so it is not sent: the
+	// verifier supplies the zero itself, and a prover whose lookups do not match cannot make the
+	// rest of the GKR agree with it.
+	debug_assert_eq!(
+		top_root_num.get(0),
+		F::ZERO,
+		"the lookup identity must hold: the looker fractions must sum to the table's"
 	);
-	let selector_point = top_num_claim.point;
+	channel.send_one(root_den);
 
-	// Looker side, second phase: continue with the batched GKR over the per-looker circuits down
-	// to the leaf claims, seeded at the selector point. With no looker variables there are no
-	// layers to run: the roots are already the leaf fractions.
-	let batch_output = if n == 0 {
-		fracaddcheck::BatchProveOutput {
-			eval_point: selector_point,
-			fractions: looker_roots,
-		}
-	} else {
-		fracaddcheck::batch_prove(looker_provers, looker_roots, selector_point, Vec::new(), channel)
-	};
-	drop(looker_gkr_guard);
+	// One GKR over the whole thing: k layers of top circuit down to the per-instance roots, then
+	// max(n, m) more over the instances themselves. The looker trees have depth n and the table
+	// tree depth m, so the batch pads the shallower side up — the padding costs O(1) per round and
+	// the layer count depends only on that maximum.
+	let gkr_guard = tracing::debug_span!("Combined GKR").entered();
+	let (top_num_claim, _top_den_claim) = top_prover.prove(root_claim(F::ZERO, root_den), channel);
+	let selector_point = top_num_claim.point;
+	let fracaddcheck::BatchProveOutput {
+		eval_point,
+		fractions,
+	} = fracaddcheck::batch_prove_unequal_depths(provers, roots, selector_point, channel);
+	drop(gkr_guard);
+
+	// The leaf claims are on the padded witnesses; divide the padding back out to land on each
+	// circuit's own leaves. The node coordinates are the point past the selector ones.
+	let node_point = &eval_point[k..];
+	let n_layers = node_point.len();
+	let (table_fraction, looker_fractions) = fractions
+		.split_last()
+		.expect("the batch holds one tree per looker plus the table");
 
 	// The per-looker leaf denominators are c - I_j(content), so the index claims are their
-	// c-complements. Send them so the verifier can check they combine to the batched leaf.
-	let index_eval_point = batch_output.eval_point[log_lookers..].to_vec();
-	let index_eval_claims = batch_output
-		.fractions
+	// c-complements. The numerators are the transparent scaled equality indicators, which the
+	// verifier evaluates itself.
+	let looker_leaves = looker_fractions
 		.iter()
-		.map(|&(_num_leaf, den_leaf)| c - den_leaf)
+		.map(|&fraction| unpad_leaf_claim(fraction, node_point, n_layers - n))
 		.collect::<Vec<_>>();
-	channel.send_many(&index_eval_claims);
+	let index_eval_point = looker_leaves
+		.first()
+		.expect("at least one looker")
+		.point
+		.clone();
+	let index_eval_claims = looker_leaves
+		.iter()
+		.map(|leaf| c - leaf.den_eval)
+		.collect::<Vec<_>>();
 
-	// Table side: run the GKR to its leaf, claiming the pushforward Y and the denominator D at a
-	// shared point. D is the public c - J, so only the Y claim carries forward.
-	let table_gkr_guard = tracing::debug_span!("Table-side GKR layers").entered();
-	let (table_num_claim, _table_den_claim) = table_prover.prove(root_claim(num_r, den_r), channel);
-	drop(table_gkr_guard);
+	// The table leaf claims Y at the point past its own padding; its denominator is the public
+	// J - c, which the verifier checks itself.
+	let table_leaf = unpad_leaf_claim(*table_fraction, node_point, n_layers - m);
+
+	// Send the claims the verifier cannot derive: the index evaluations and Y's. Together with the
+	// transparent halves they rebuild the batch's leaf claim.
+	channel.send_many(&index_eval_claims);
+	channel.send_one(table_leaf.num_eval);
 
 	// Reduce the leaf claim on Y and the product claim <T, Y> = e to one shared evaluation point.
 	let PushforwardOutput {
@@ -278,8 +288,8 @@ where
 		table,
 		pushforward,
 		eval_claim,
-		table_num_claim.eval,
-		&table_num_claim.point,
+		table_leaf.num_eval,
+		&table_leaf.point,
 		channel,
 	);
 
@@ -292,9 +302,7 @@ where
 	}
 }
 
-/// The root claim of a fractional-addition circuit, over zero variables.
-///
-/// The circuit collapses to one fraction `num / den` at its root, evaluated at the empty point.
+/// The claim on a circuit's root, which is a single fraction over no variables.
 const fn root_claim<F: Field>(num: F, den: F) -> FracEvalClaim<F> {
 	(
 		MultilinearEvalClaim {
