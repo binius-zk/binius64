@@ -75,19 +75,10 @@ impl ValueIndex {
 	pub const INDEX_BITS: u32 = 30;
 
 	/// The number of values one segment can hold.
-	///
-	/// This is one short of the index space, because [`Self::INVALID`] reserves the last index.
-	pub const SEGMENT_CAPACITY: u32 = Self::INDEX_MASK;
+	pub const SEGMENT_CAPACITY: u32 = 1 << Self::INDEX_BITS;
 
 	/// The bits of the packed word holding the index.
-	const INDEX_MASK: u32 = (1 << Self::INDEX_BITS) - 1;
-
-	/// The value index that is not considered to be valid.
-	///
-	/// This is the last index of the scratch segment, whose words no constraint may reference
-	/// anyway. Reserving it keeps the all-ones word invalid, so a zeroed-then-defaulted map reads
-	/// back as unassigned.
-	pub const INVALID: ValueIndex = ValueIndex(u32::MAX);
+	const INDEX_MASK: u32 = Self::SEGMENT_CAPACITY - 1;
 
 	/// Creates an index naming the given word of the given segment.
 	///
@@ -141,19 +132,19 @@ impl ValueIndex {
 	}
 }
 
-/// The most sensible default for a value index is invalid.
+/// Only exists because `SecondaryMap::new` fills unmapped keys with it.
+///
+/// The compiler assigns every wire an index before anything reads one, so no caller ever sees
+/// this value; it names the first constant purely because that word always exists.
 impl Default for ValueIndex {
 	fn default() -> Self {
-		Self::INVALID
+		Self::constant(0)
 	}
 }
 
 /// Prints the segment and index rather than the packed word, which reads as a nonsense integer.
 impl std::fmt::Debug for ValueIndex {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		if *self == Self::INVALID {
-			return f.write_str("ValueIndex::INVALID");
-		}
 		write!(f, "ValueIndex({:?}, {})", self.segment(), self.index())
 	}
 }
@@ -203,15 +194,8 @@ mod tests {
 	}
 
 	#[test]
-	fn invalid_is_the_reserved_scratch_index() {
-		assert_eq!(ValueIndex::default(), ValueIndex::INVALID);
-		assert_eq!(ValueIndex::INVALID.segment(), ValueSegment::Scratch);
-		assert_eq!(ValueIndex::INVALID.index(), ValueIndex::SEGMENT_CAPACITY);
-	}
-
-	#[test]
 	#[should_panic(expected = "value index out of range")]
-	fn rejects_the_index_invalid_reserves() {
+	fn rejects_an_index_past_the_segment_capacity() {
 		ValueIndex::scratch(ValueIndex::SEGMENT_CAPACITY);
 	}
 
