@@ -18,7 +18,7 @@ mod tests;
 pub use assertion::MAX_ASSERTION_FAILURES;
 use batch::BatchExecutionContext;
 pub use batch::BatchPopulateError;
-use binius_core::{ValueVec, ValueVecLayout, ValueIndex, Word};
+use binius_core::{ValueIndex, ValueVec, ValueVecLayout, Word};
 use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;

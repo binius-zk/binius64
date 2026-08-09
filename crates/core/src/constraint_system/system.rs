@@ -9,8 +9,8 @@ use binius_utils::{
 use bytes::{Buf, BufMut};
 
 use super::{
-	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ShiftVariant, ValueVec,
-	ValueIndex, ValueSegment, ZeroConstraint,
+	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ShiftVariant,
+	ValueIndex, ValueSegment, ValueVec, ZeroConstraint,
 };
 use crate::{
 	error::{ConstraintSystemError, VerificationError},
@@ -161,25 +161,20 @@ impl ConstraintSystem {
 		}
 	}
 
-	/// Returns the word each segment starts at, indexed by [`ValueSegment`].
-	///
-	/// Scratch words are not part of a constraint system, so its segment starts where the value
-	/// vector ends; every scratch index therefore lands past the last word.
-	pub const fn segment_starts(&self) -> [usize; 4] {
-		[
-			0,
-			self.offset_inout(),
-			self.n_public_words(),
-			self.value_vec_len(),
-		]
-	}
-
 	/// Returns the position of the word a [`ValueIndex`] names within the value vector.
 	///
 	/// This is the address the proving protocol reads the word at: the public segment occupies
-	/// the low positions and the hidden segment follows it.
+	/// the low positions and the hidden segment follows it. Scratch words are not part of a
+	/// constraint system, so a scratch index lands past the last word — [`Self::validate`] rejects
+	/// any constraint naming one.
 	pub const fn word_offset(&self, index: ValueIndex) -> usize {
-		index.offset_within(self.segment_starts())
+		let segment_start = match index.segment() {
+			ValueSegment::Constant => 0,
+			ValueSegment::InOut => self.offset_inout(),
+			ValueSegment::Private => self.n_public_words(),
+			ValueSegment::Scratch => self.value_vec_len(),
+		};
+		segment_start + index.index() as usize
 	}
 
 	/// Builds a value vector from the words of this system's public and hidden segments.

@@ -119,17 +119,6 @@ impl ValueIndex {
 	pub const fn index(self) -> u32 {
 		self.0 & Self::INDEX_MASK
 	}
-
-	/// The flat position of this word, given the word each segment starts at.
-	///
-	/// This is the one place the segment-relative form is resolved back to an absolute position.
-	/// Its callers differ only in where they read the starts from: a
-	/// [`ValueVecLayout`](super::ValueVecLayout) knows them directly, while a
-	/// [`ConstraintSystem`](super::ConstraintSystem) derives them from its own section sizes.
-	#[inline]
-	pub const fn offset_within(self, segment_starts: [usize; 4]) -> usize {
-		segment_starts[self.segment() as usize] + self.index() as usize
-	}
 }
 
 /// Only exists because `SecondaryMap::new` fills unmapped keys with it.

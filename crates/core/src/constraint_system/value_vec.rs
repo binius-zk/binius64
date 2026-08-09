@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 use bytemuck::{Pod, Zeroable};
 
-use super::{ShiftedValueIndex, ValueVecLayout, ValueIndex};
+use super::{ShiftedValueIndex, ValueIndex, ValueSegment, ValueVecLayout};
 use crate::word::Word;
 
 /// A 16-byte-aligned pair of words, the storage block of the aligned word buffer.
@@ -90,8 +90,8 @@ impl DerefMut for AlignedWords {
 /// sections is therefore unaddressable: no index resolves to it.
 #[derive(Clone, Debug)]
 pub struct ValueVec {
-	/// The word each segment starts at, indexed by [`ValueSegment`](super::ValueSegment).
-	segment_starts: [usize; 4],
+	/// The word the inout values start at, which is where the constants end.
+	offset_inout: usize,
 	/// The number of words in the public segment, which is also where the hidden segment starts.
 	n_public_words: usize,
 	/// The number of words in the hidden segment.
@@ -105,7 +105,7 @@ impl ValueVec {
 	/// including its scratch tail.
 	pub fn new(layout: &ValueVecLayout) -> ValueVec {
 		ValueVec {
-			segment_starts: layout.segment_starts(),
+			offset_inout: layout.offset_inout,
 			n_public_words: layout.n_public_words(),
 			n_hidden_words: layout.n_hidden_words,
 			data: AlignedWords::zeroed(layout.combined_len() + layout.n_scratch),
@@ -129,8 +129,7 @@ impl ValueVec {
 		data[public.len()..].copy_from_slice(private);
 
 		ValueVec {
-			// The vector ends with the hidden segment, so the empty scratch segment starts there.
-			segment_starts: [0, offset_inout, public.len(), public.len() + private.len()],
+			offset_inout,
 			n_public_words: public.len(),
 			n_hidden_words: private.len(),
 			data,
@@ -157,9 +156,18 @@ impl ValueVec {
 	}
 
 	/// The flat position of the word a [`ValueIndex`] names.
+	///
+	/// A vector built by [`Self::new_from_data`] has no scratch tail, so a scratch index lands
+	/// past the last word and panics rather than reading a committed one.
 	#[inline]
 	const fn word_offset(&self, index: ValueIndex) -> usize {
-		index.offset_within(self.segment_starts)
+		let segment_start = match index.segment() {
+			ValueSegment::Constant => 0,
+			ValueSegment::InOut => self.offset_inout,
+			ValueSegment::Private => self.n_public_words,
+			ValueSegment::Scratch => self.size(),
+		};
+		segment_start + index.index() as usize
 	}
 
 	/// The total size of the public and committed portions of the vector (excluding scratch).

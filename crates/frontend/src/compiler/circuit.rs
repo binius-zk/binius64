@@ -6,7 +6,7 @@ use std::{
 };
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueVec, ValueVecLayout, ValueIndex},
+	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;

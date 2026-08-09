@@ -4,7 +4,7 @@ use std::{iter, mem::MaybeUninit};
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
-use super::{ValueVec, ValueIndex};
+use super::{ValueIndex, ValueVec};
 use crate::word::Word;
 
 /// A different variants of shifting a value.

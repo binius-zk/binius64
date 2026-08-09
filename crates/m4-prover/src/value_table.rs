@@ -4,7 +4,7 @@ use std::ops::{Index, IndexMut};
 
 use binius_compute::Allocator;
 use binius_core::{
-	constraint_system::{ValueVec, ValueVecLayout, ValueIndex},
+	constraint_system::{ValueIndex, ValueVec, ValueVecLayout},
 	word::Word,
 };
 use binius_field::PackedField;

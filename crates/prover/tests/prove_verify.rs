@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueVec, ValueIndex},
+	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};

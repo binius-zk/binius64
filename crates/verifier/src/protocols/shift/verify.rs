@@ -553,20 +553,14 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		} = self.operation_inputs(vals);
 		let cs = &self.constraint_system;
 
-		let zero =
-			OperationEvalFn::new(&cs.zero_constraints, cs.segment_starts()).call::<E>(&zero_input);
-		let bitand =
-			OperationEvalFn::new(&cs.and_constraints, cs.segment_starts()).call::<E>(&bitand_input);
+		let zero = OperationEvalFn::new(&cs.zero_constraints, cs).call::<E>(&zero_input);
+		let bitand = OperationEvalFn::new(&cs.and_constraints, cs).call::<E>(&bitand_input);
 		let intmul = match intmul_input {
-			Some(input) => {
-				OperationEvalFn::new(&cs.imul_constraints, cs.segment_starts()).call::<E>(&input)
-			}
+			Some(input) => OperationEvalFn::new(&cs.imul_constraints, cs).call::<E>(&input),
 			None => E::zero(),
 		};
 		let binmul = match binmul_input {
-			Some(input) => {
-				OperationEvalFn::new(&cs.bmul_constraints, cs.segment_starts()).call::<E>(&input)
-			}
+			Some(input) => OperationEvalFn::new(&cs.bmul_constraints, cs).call::<E>(&input),
 			None => E::zero(),
 		};
 
@@ -584,20 +578,14 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		} = self.operation_inputs(vals);
 		let cs = &self.constraint_system;
 
-		let zero = OperationEvalFn::new(&cs.zero_constraints, cs.segment_starts())
-			.call_native(&zero_input);
-		let bitand = OperationEvalFn::new(&cs.and_constraints, cs.segment_starts())
-			.call_native(&bitand_input);
+		let zero = OperationEvalFn::new(&cs.zero_constraints, cs).call_native(&zero_input);
+		let bitand = OperationEvalFn::new(&cs.and_constraints, cs).call_native(&bitand_input);
 		let intmul = match intmul_input {
-			Some(input) => {
-				OperationEvalFn::new(&cs.imul_constraints, cs.segment_starts()).call_native(&input)
-			}
+			Some(input) => OperationEvalFn::new(&cs.imul_constraints, cs).call_native(&input),
 			None => F::ZERO,
 		};
 		let binmul = match binmul_input {
-			Some(input) => {
-				OperationEvalFn::new(&cs.bmul_constraints, cs.segment_starts()).call_native(&input)
-			}
+			Some(input) => OperationEvalFn::new(&cs.bmul_constraints, cs).call_native(&input),
 			None => F::ZERO,
 		};
 

@@ -3,7 +3,10 @@
 
 use std::iter;
 
-use binius_core::{constraint_system::Operand, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, Operand},
+	word::Word,
+};
 use binius_field::{
 	BinaryField, FieldOps, WideMul,
 	util::{FieldFn, powers},
@@ -111,20 +114,17 @@ pub struct OperationEvalFn<'a, C, const ARITY: usize> {
 	/// The operation's constraints, each exposing its `ARITY` operands as an array in storage
 	/// order.
 	constraints: &'a [C],
-	/// The word each value-vector segment starts at, which places an operand term's
-	/// segment-relative index in the word-index tensor.
-	segment_starts: [usize; 4],
+	/// The system the constraints belong to, which places an operand term's segment-relative
+	/// index in the word-index tensor.
+	constraint_system: &'a ConstraintSystem,
 }
 
 impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 	/// Wraps an operation's constraints for monster-multilinear evaluation.
-	///
-	/// The segment starts come from the constraint system holding the constraints; they are what
-	/// resolve each operand term to its position in the word-index tensor.
-	pub const fn new(constraints: &'a [C], segment_starts: [usize; 4]) -> Self {
+	pub const fn new(constraints: &'a [C], constraint_system: &'a ConstraintSystem) -> Self {
 		Self {
 			constraints,
-			segment_starts,
+			constraint_system,
 		}
 	}
 
@@ -173,7 +173,7 @@ where
 					let variant = svi.shift_variant as usize;
 					let index = (variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
 					constraint_eval += operand_shift_scalars[index].clone()
-						* &r_y_tensor[svi.value_index.offset_within(self.segment_starts)];
+						* &r_y_tensor[self.constraint_system.word_offset(svi.value_index)];
 				}
 			}
 			eval += constraint_eval * r_x_prime_entry;
@@ -212,7 +212,7 @@ where
 						let index =
 							(variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
 						constraint_eval += operand_shift_scalars[index]
-							* r_y_tensor[svi.value_index.offset_within(self.segment_starts)];
+							* r_y_tensor[self.constraint_system.word_offset(svi.value_index)];
 					}
 				}
 				F::wide_mul(constraint_eval, r_x_prime_entry)
@@ -277,16 +277,33 @@ mod tests {
 
 	use super::*;
 
-	/// Builds `n_constraints` random arity-3 constraints (like `AndConstraint`), constraint-major:
-	/// one array of operands per constraint.
-	/// Segment starts placing the private segment at the front of a `n_words`-long value vector.
+	/// The number of public words in the systems below, the smallest a valid shape allows.
+	const N_PUBLIC_WORDS: usize = 2;
+
+	/// A constraint system whose value vector is `n_words` long, all of it private past the
+	/// minimum public segment.
 	///
-	/// The constraints below name private words only, so this makes a private index its own
-	/// position in the word-index tensor.
-	fn private_only_segment_starts(n_words: usize) -> [usize; 4] {
-		[0, 0, 0, n_words]
+	/// The constraints below name private words only, so a private index `i` sits at word
+	/// `N_PUBLIC_WORDS + i` of the word-index tensor.
+	fn private_only_system(n_words: usize) -> ConstraintSystem {
+		let cs = ConstraintSystem {
+			constants: Vec::new(),
+			n_const_pad: N_PUBLIC_WORDS,
+			n_inout: 0,
+			n_inout_pad: 0,
+			n_private: n_words - N_PUBLIC_WORDS,
+			n_private_pad: 0,
+			zero_constraints: Vec::new(),
+			and_constraints: Vec::new(),
+			imul_constraints: Vec::new(),
+			bmul_constraints: Vec::new(),
+		};
+		cs.validate_shape().expect("the shape is valid");
+		cs
 	}
 
+	/// Builds `n_constraints` random arity-3 constraints (like `AndConstraint`), constraint-major:
+	/// one array of operands per constraint.
 	fn random_and_constraints(
 		rng: &mut StdRng,
 		n_constraints: usize,
@@ -307,7 +324,9 @@ mod tests {
 				AndConstraint(std::array::from_fn(|_| {
 					(0..rng.random_range(0..=3))
 						.map(|_| ShiftedValueIndex {
-							value_index: ValueIndex::private(rng.random_range(0..n_words) as u32),
+							value_index: ValueIndex::private(
+								rng.random_range(0..n_words - N_PUBLIC_WORDS) as u32,
+							),
 							shift_variant: shift_variants[rng.random_range(0..SHIFT_VARIANT_COUNT)],
 							amount: rng.random_range(0..Word::BITS) as u8,
 						})
@@ -326,6 +345,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(3);
 
 		let n_words = 40usize;
+		let cs = private_only_system(n_words);
 		for n_constraints in [64usize, 37] {
 			let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
 
@@ -335,7 +355,7 @@ mod tests {
 				std::array::from_fn(|_| F::random(&mut rng));
 			let r_y_tensor = random_scalars::<F>(&mut rng, n_words);
 
-			let eval_fn = OperationEvalFn::new(&constraints, private_only_segment_starts(n_words));
+			let eval_fn = OperationEvalFn::new(&constraints, &cs);
 			let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, &r_y_tensor);
 			let generic = eval_fn.call::<F>(&input);
 			let native = eval_fn.call_native(&input);
@@ -355,6 +375,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(5);
 
 		let n_words = 40usize;
+		let cs = private_only_system(n_words);
 		let n_constraints = 21usize;
 		let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
 		let padded = constraints
@@ -374,14 +395,12 @@ mod tests {
 
 		let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, &r_y_tensor);
 		assert_eq!(
-			OperationEvalFn::new(&constraints, private_only_segment_starts(n_words))
-				.call::<F>(&input),
-			OperationEvalFn::new(&padded, private_only_segment_starts(n_words)).call::<F>(&input)
+			OperationEvalFn::new(&constraints, &cs).call::<F>(&input),
+			OperationEvalFn::new(&padded, &cs).call::<F>(&input)
 		);
 		assert_eq!(
-			OperationEvalFn::new(&constraints, private_only_segment_starts(n_words))
-				.call_native(&input),
-			OperationEvalFn::new(&padded, private_only_segment_starts(n_words)).call_native(&input)
+			OperationEvalFn::new(&constraints, &cs).call_native(&input),
+			OperationEvalFn::new(&padded, &cs).call_native(&input)
 		);
 	}
 

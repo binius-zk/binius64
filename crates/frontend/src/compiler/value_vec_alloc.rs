@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use binius_core::{ConstraintSystem, ValueVecLayout, ValueIndex, Word};
+use binius_core::{ConstraintSystem, ValueIndex, ValueVecLayout, Word};
 use cranelift_entity::SecondaryMap;
 
 use crate::compiler::Wire;

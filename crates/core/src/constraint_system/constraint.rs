@@ -6,7 +6,7 @@ use binius_field::BinaryField128bGhash as B128;
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
-use super::{ShiftedValueIndex, ValueVec, ValueIndex};
+use super::{ShiftedValueIndex, ValueIndex, ValueVec};
 use crate::{error::ConstraintViolation, word::Word};
 
 /// Operand type.
@@ -554,8 +554,7 @@ mod tests {
 		// Two terms reading equal words XOR to zero.
 		// The operand vanishes even though neither word is zero.
 		let values = values(&[0xfeed_face, 0xfeed_face]);
-		let constraint =
-			ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::constant(1)]);
+		let constraint = ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::constant(1)]);
 
 		assert!(constraint.verify(&values).is_ok());
 	}
@@ -563,8 +562,7 @@ mod tests {
 	#[test]
 	fn zero_constraint_rejects_operand_that_survives() {
 		let values = values(&[0xfeed_face, 0x0bad_cafe]);
-		let constraint =
-			ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::constant(1)]);
+		let constraint = ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::constant(1)]);
 
 		match constraint.verify(&values).unwrap_err() {
 			ConstraintViolation::Zero { val } => assert_eq!(val, 0xfeed_face ^ 0x0bad_cafe),

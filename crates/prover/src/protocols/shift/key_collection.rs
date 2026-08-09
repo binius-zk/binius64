@@ -353,7 +353,7 @@ fn update_with_operand(
 	operation: Operation,
 	operand_index: usize,
 	operand_values: impl Iterator<Item = impl AsRef<Operand>>,
-	segment_starts: [usize; 4],
+	cs: &ConstraintSystem,
 	builder_key_lists: &mut [Vec<BuilderKey>],
 ) {
 	for (constraint_idx, operand_value) in operand_values.enumerate() {
@@ -366,7 +366,7 @@ fn update_with_operand(
 		{
 			// The lists are indexed by word position, so resolve the term's segment-relative
 			// index against the segment starts.
-			let builder_keys = &mut builder_key_lists[value_index.offset_within(segment_starts)];
+			let builder_keys = &mut builder_key_lists[cs.word_offset(*value_index)];
 			let shift = (*shift_variant, *amount);
 
 			// Find existing builder key or create a new one for this (operation, shift) pair
@@ -398,7 +398,7 @@ fn update_with_operand(
 fn update_with_constraints<C, const ARITY: usize>(
 	operation: Operation,
 	constraints: &[C],
-	segment_starts: [usize; 4],
+	cs: &ConstraintSystem,
 	builder_key_lists: &mut [Vec<BuilderKey>],
 ) where
 	C: AsRef<[Operand; ARITY]>,
@@ -410,7 +410,7 @@ fn update_with_constraints<C, const ARITY: usize>(
 			constraints
 				.iter()
 				.map(|constraint| &constraint.as_ref()[operand_index]),
-			segment_starts,
+			cs,
 			builder_key_lists,
 		);
 	}
@@ -423,31 +423,15 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 		(0..cs.value_vec_len()).map(|_| Vec::new()).collect();
 
 	// Update the builder keys lists with respect to each operand of each operation.
-	let segment_starts = cs.segment_starts();
-	update_with_constraints(
-		Operation::Zero,
-		&cs.zero_constraints,
-		segment_starts,
-		&mut builder_key_lists,
-	);
-	update_with_constraints(
-		Operation::BitwiseAnd,
-		&cs.and_constraints,
-		segment_starts,
-		&mut builder_key_lists,
-	);
+	update_with_constraints(Operation::Zero, &cs.zero_constraints, cs, &mut builder_key_lists);
+	update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, cs, &mut builder_key_lists);
 	update_with_constraints(
 		Operation::IntegerMul,
 		&cs.imul_constraints,
-		segment_starts,
+		cs,
 		&mut builder_key_lists,
 	);
-	update_with_constraints(
-		Operation::BinMul,
-		&cs.bmul_constraints,
-		segment_starts,
-		&mut builder_key_lists,
-	);
+	update_with_constraints(Operation::BinMul, &cs.bmul_constraints, cs, &mut builder_key_lists);
 
 	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
 	// per half.
