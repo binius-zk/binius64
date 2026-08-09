@@ -105,15 +105,6 @@ where
 		self.layers.len()
 	}
 
-	/// Consumes the prover and returns its single remaining (widest) layer.
-	///
-	/// # Preconditions
-	/// * `self.n_layers() == 1`
-	pub fn into_final_layer(mut self) -> FieldVec<P, A> {
-		assert_eq!(self.layers.len(), 1, "precondition: exactly one remaining layer");
-		self.layers.pop().expect("layers has exactly one element")
-	}
-
 	/// Pops the widest remaining layer and returns it.
 	///
 	/// # Preconditions
@@ -213,17 +204,6 @@ pub struct BatchProveOutput<F> {
 	pub evals: Vec<F>,
 }
 
-/// Output of [`batch_prove_until_final_layer`].
-///
-/// After running `n_layers - 1` reduction layers, each prover retains its final (widest) layer.
-/// `provers` pairs each remaining prover with its reduced evaluation at `eval_point`.
-pub struct BatchProveUntilFinalLayerOutput<'a, A: Allocator, P: PackedField> {
-	/// The reduced evaluation point shared by all remaining provers.
-	pub eval_point: Vec<P::Scalar>,
-	/// Each remaining prover (with its final layer) paired with its reduced eval at `eval_point`.
-	pub provers: Vec<(P::Scalar, ProdcheckProver<'a, A, P>)>,
-}
-
 /// Runs a batched product check protocol for multiple independent prodcheck provers.
 ///
 /// This combines n provers, each for an $m$-variate multilinear, using multilinear interpolation
@@ -252,8 +232,7 @@ pub struct BatchProveUntilFinalLayerOutput<'a, A: Allocator, P: PackedField> {
 /// * `claimed_products.len() == provers.len()`.
 /// * `content_point.len() == witness.log_len() - n_layers` for each prover.
 ///
-/// This delegates to [`batch_prove_until_final_layer`] and then runs the final retained layer,
-/// returning the reduced per-input-prover evaluations at the reduced evaluation point. The
+/// Returns the reduced per-input-prover evaluations at the reduced evaluation point. The
 /// batched claim is checked by the ordinary `binius_ip::prodcheck::verify` recursion over
 /// `n_layers` layers (the eq(selector)-weighted combination of the returned evaluations), with
 /// the selector coordinates forming the first `k` coordinates of the claim point.
@@ -285,49 +264,10 @@ pub fn batch_prove<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	content_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchProveOutput<F> {
-	let n = provers.len();
-	let k = selector_point.len();
-
-	let BatchProveUntilFinalLayerOutput {
-		eval_point,
-		provers,
-	} = batch_prove_until_final_layer(
-		provers,
-		claimed_products,
-		selector_point,
-		content_point,
-		channel,
-	);
-
-	// Finish the retained final layer: run it exactly as an interior reduction layer does.
-	let (claimed_products, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
-	let (provers, evals, eval_point) =
-		batch_prove_layer(provers, claimed_products, &eval_point, k, channel);
-	debug_assert!(provers.is_empty(), "the final layer leaves no provers");
-	debug_assert_eq!(evals.len(), n);
-
-	BatchProveOutput { eval_point, evals }
-}
-
-/// Runs a batched product check up to (but not finishing) the final layer.
-///
-/// Runs `n_layers - 1` of the per-layer reductions, stopping one layer short so that each prover
-/// retains its final (widest) layer. The remaining provers are returned (each paired with its
-/// reduced eval at the shared reduced `eval_point`) rather than combined into a single claim, so
-/// the caller can finish the final layer itself — e.g. [`batch_prove`] runs it directly, or a
-/// caller splices the retained layers into another reduction.
-///
-/// Arguments and preconditions are as for [`batch_prove`].
-pub fn batch_prove_until_final_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
-	provers: Vec<ProdcheckProver<'a, A, P>>,
-	claimed_products: Vec<F>,
-	selector_point: Vec<F>,
-	content_point: Vec<F>,
-	channel: &mut impl IPProverChannel<F>,
-) -> BatchProveUntilFinalLayerOutput<'a, A, P> {
 	assert!(!provers.is_empty()); // precondition
 	assert_eq!(claimed_products.len(), provers.len()); // precondition
 
+	let n = provers.len();
 	let k = selector_point.len();
 	assert!(provers.len() <= (1 << k)); // precondition
 
@@ -340,22 +280,16 @@ pub fn batch_prove_until_final_layer<'a, A: Allocator, F: Field, P: PackedField<
 	// layer this seeds each layer prover with `claim{point: content_point, eval: claimed_product}`.
 	let eval_point = [selector_point, content_point].concat();
 
-	// Run `n_layers - 1` reductions, stopping one layer short so each prover retains its final
-	// (widest) layer for the caller to finish.
-	let (provers, claimed_products, eval_point) = (0..n_layers - 1).fold(
+	let (provers, evals, eval_point) = (0..n_layers).fold(
 		(provers, claimed_products, eval_point),
 		|(provers, claimed_products, eval_point), _| {
 			batch_prove_layer(provers, claimed_products, &eval_point, k, channel)
 		},
 	);
+	debug_assert!(provers.is_empty(), "the final layer leaves no provers");
+	debug_assert_eq!(evals.len(), n);
 
-	// Pair each remaining (single-layer) prover with its reduced eval at `eval_point`.
-	let provers = iter::zip(claimed_products, provers).collect();
-
-	BatchProveUntilFinalLayerOutput {
-		eval_point,
-		provers,
-	}
+	BatchProveOutput { eval_point, evals }
 }
 
 #[allow(clippy::type_complexity)]
@@ -545,8 +479,8 @@ pub struct BatchProveUnequalDepthsOutput<F, Prover> {
 ///
 /// # Returns
 ///
-/// Like [`batch_prove_until_final_layer`], this stops one layer short, returning each tree's
-/// reduced claim beside the prover for its final (widest) layer — the layer whose reduction
+/// This stops one layer short, returning each tree's reduced claim beside the prover for its
+/// final (widest) layer — the layer whose reduction
 /// dominates the cost, which a caller can therefore batch with other sumchecks. Running those
 /// provers and the selector rounds that follow finishes the check.
 ///

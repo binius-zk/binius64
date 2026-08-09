@@ -381,7 +381,7 @@ mod tests {
 	) {
 		let alloc = GlobalAllocator;
 		let n_vars = eval_point.len();
-		let (mut reference, _cols) =
+		let mut reference =
 			frac_add_mle::new_split_half(&alloc, padded_num, padded_den, eval_point, claims);
 
 		for round in 0..n_vars {
@@ -436,7 +436,7 @@ mod tests {
 
 				let prefixes = pad_eq_prefixes(&eval_point, pad_len);
 				let pad_eq_inv = prefixes[pad_len].invert_or_zero();
-				let (inner, _cols) = frac_add_mle::new_split_half(
+				let inner = frac_add_mle::new_split_half(
 					&alloc,
 					num,
 					den,

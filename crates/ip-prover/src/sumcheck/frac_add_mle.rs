@@ -34,10 +34,6 @@ pub type LayerProver<'a, A, F, P> =
 /// * `eval_point` - The shared point at which both claims are taken.
 /// * `claims` - The layer's claimed numerator and denominator evaluations, in that order.
 ///
-/// # Returns
-///
-/// The prover and its store's column ids `[num_0, num_1, den_0, den_1]`.
-///
 /// # Preconditions
 /// * `num.log_len() == den.log_len()`
 /// * `num.log_len() == eval_point.len() + 1`
@@ -47,7 +43,7 @@ pub fn new_split_half<'alloc, A, F, P>(
 	den: FieldVec<P, A>,
 	eval_point: Vec<F>,
 	claims: [F; 2],
-) -> (LayerProver<'alloc, A, F, P>, [ColId; 4])
+) -> LayerProver<'alloc, A, F, P>
 where
 	A: Allocator,
 	F: Field,
@@ -70,7 +66,7 @@ where
 		(num_claim, Box::new(num_evaluator)),
 		(den_claim, Box::new(den_evaluator)),
 	];
-	(SharedMleCheckProver::new(store, claims_with_evaluators, eval_point), cols)
+	SharedMleCheckProver::new(store, claims_with_evaluators, eval_point)
 }
 
 /// Creates the round evaluators for the fractional-addition claims required in logUp*.
