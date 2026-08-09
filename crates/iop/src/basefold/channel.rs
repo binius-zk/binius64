@@ -90,7 +90,9 @@ where
 	/// (in oracle-index order). Because the whole opening is deferred to this point, every oracle
 	/// is committed and there is a single sumcheck point, so the precomputed combined `FRIParams`
 	/// (`optimal_for_batch` over all oracle specs) serves the opening.
-	pub fn finish(self) -> Result<(), Error> {
+	///
+	/// Returns the Merkle channel, so a caller can still reach what it accumulated.
+	pub fn finish(self) -> Result<Channel, Error> {
 		let Self {
 			mut channel,
 			oracle_specs,
@@ -103,11 +105,17 @@ where
 		let n_remaining = oracle_specs.len() - next_oracle_index;
 		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
 
-		if queue.is_empty() {
-			return Ok(());
+		if !queue.is_empty() {
+			verify_batch_zk_basefold(
+				&mut channel,
+				oracle_specs,
+				fri_params,
+				&oracle_commitments,
+				queue,
+			)?;
 		}
 
-		verify_batch_zk_basefold(&mut channel, oracle_specs, fri_params, &oracle_commitments, queue)
+		Ok(channel)
 	}
 }
 
