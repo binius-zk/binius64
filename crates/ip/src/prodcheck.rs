@@ -17,7 +17,7 @@
 //! ; X) \text{eq}(z ; Z) p_{i+1}(z, 0, x) p_{i+1}(z, 1, x) $$
 
 use binius_field::Field;
-use binius_math::{line::extrapolate_line, multilinear::eq::eq_one_var};
+use binius_math::line::extrapolate_line;
 use binius_transcript::Error as TranscriptError;
 
 // Re-export MultilinearEvalClaim from crate root for backward compatibility
@@ -69,56 +69,6 @@ where
 		},
 		channel,
 	)
-}
-
-/// Reduces a leaf claim on a one-padded witness to the claim on the witness itself.
-///
-/// A batched product check over trees of unequal depths lifts each shallow tree to the batch's
-/// depth by filling `n_pad_vars` extra leaf positions with ones, which leaves its product
-/// unchanged. [`verify`] is oblivious to that, so the claim it outputs for such a tree is a claim
-/// on the padded witness
-///
-/// $$
-/// M'(X_\text{pad}, X_\text{real}) = 1 + \bigl( M(X_\text{real}) - 1 \bigr) \cdot
-/// \text{eq}(0^\nu; X_\text{pad}),
-/// $$
-///
-/// whose padding variables are the lowest ones. This divides out their equality weight and drops
-/// them from the point, leaving the claim on $M$.
-///
-/// # Arguments
-///
-/// * `eval` - The claimed evaluation of the padded witness.
-/// * `point` - The reduced evaluation point, with the batch's selector coordinates already
-///   stripped.
-/// * `n_pad_vars` - How much depth this tree was padded by: the batch's layer count less the tree's
-///   own.
-///
-/// # Preconditions
-/// * `point.len() >= n_pad_vars`
-///
-/// # Panics
-///
-/// Panics if the padding coordinates' equality weight is zero, which requires one of them to equal
-/// one. They are the verifier's own challenges, so no prover can induce this; it happens with
-/// probability at most $\nu / |K|$.
-pub fn unpad_leaf_claim<F: Field>(
-	eval: F,
-	point: &[F],
-	n_pad_vars: usize,
-) -> MultilinearEvalClaim<F> {
-	assert!(point.len() >= n_pad_vars); // precondition
-
-	let pad_eq = point[..n_pad_vars]
-		.iter()
-		.map(|&coord| eq_one_var(F::ZERO, coord))
-		.product::<F>();
-	assert!(pad_eq != F::ZERO, "a padding coordinate equals one");
-
-	MultilinearEvalClaim {
-		eval: F::ONE + (eval - F::ONE) * pad_eq.invert_or_zero(),
-		point: point[n_pad_vars..].to_vec(),
-	}
 }
 
 #[derive(Debug, thiserror::Error)]

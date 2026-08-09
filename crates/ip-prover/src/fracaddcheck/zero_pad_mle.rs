@@ -8,9 +8,10 @@
 //! fracadd checks of unequal depths pads each shallow tree up to the deepest one, so the batch's
 //! layer loop runs a single uniform schedule and the verifier never learns the individual depths.
 //!
-//! This is the fractional-addition analog of [`crate::prodcheck::one_pad_mle`]; the *Batched
-//! Product Checks of Unequal Depths* appendix of the Binius64 whitepaper derives the multiplicative
-//! case, whose one-padding is exactly the padding these denominators carry.
+//! This is the fractional-addition analog of the padding
+//! [`crate::prodcheck::batch_prove`] applies to shallow product trees; the *Batched Product Checks
+//! of Unequal Depths* appendix of the Binius64 whitepaper derives the multiplicative case, whose
+//! one-padding is exactly the padding these denominators carry.
 //!
 //! The point of this module is that the prover never materializes a padded layer:
 //! [`ZeroPadMleCheckProver`] wraps the unpadded layer's own MLE-check and corrects its messages at
