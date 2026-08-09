@@ -102,8 +102,8 @@
 //! This matches the index encoding used elsewhere in the Spartan verifier.
 
 mod error;
-mod final_layer;
 mod output;
+mod pushforward;
 mod verify;
 
 pub use self::{

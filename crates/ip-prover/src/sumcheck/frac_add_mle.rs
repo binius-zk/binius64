@@ -15,7 +15,7 @@ use crate::sumcheck::{
 /// The store-based MLE-check prover for one fractional-addition layer.
 ///
 /// It owns its four half-columns, so it is self-contained: a caller can drive it, batch it, or
-/// extend its store with more columns and evaluators (as the logUp* final layer does).
+/// extend its store with more columns and evaluators.
 pub type LayerProver<'a, A, F, P> =
 	SharedMleCheckProver<'a, A, F, P, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>>;
 

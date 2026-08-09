@@ -22,8 +22,10 @@ pub enum VerificationError {
 	IncorrectXEvaluation,
 	#[error("the index evaluations do not combine to the leaf denominator")]
 	IncorrectIndexEvaluation,
-	#[error("the batched final layer evaluation is incorrect")]
-	FinalLayerMismatch,
+	#[error("the table-side leaf denominator is not the transparent c - J")]
+	IncorrectTableDenominator,
+	#[error("the pushforward reduction evaluation is incorrect")]
+	PushforwardMismatch,
 	#[error("the proof is truncated or empty")]
 	TranscriptIsEmpty,
 }

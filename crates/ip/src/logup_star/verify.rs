@@ -12,8 +12,8 @@ use binius_math::{
 
 use super::{
 	error::{Error, VerificationError},
-	final_layer::{FinalLayer, verify_final_layer},
 	output::LogupOutput,
+	pushforward::{Pushforward, denominator_eval, verify_pushforward},
 };
 use crate::{
 	channel::IPVerifierChannel,
@@ -61,13 +61,11 @@ pub struct LookerClaim<'a, Elem> {
 ///     2. recv [num_L, den_L, num_R, den_R]         (root fractions of both GKR circuits)
 ///     3. looker-side GKR, k + n layers             (see fracaddcheck::verify)
 ///     4. recv per-looker index evaluations
-///     5. table-side GKR, first m-1 layers          (see fracaddcheck::verify)
-///     6. batched final layer:
-///        a. recv e_0                               (partial product sum <Y_0, T_0>)
-///        b. sample batch_coeff
-///        c. m-1 rounds of degree-3 sumcheck
-///        d. recv [Y_0, Y_1, T_0, T_1]              (leaf halves, split on the highest variable)
-///        e. sample r                               (final line-fold)
+///     5. table-side GKR, all m layers              (see fracaddcheck::verify)
+///     6. pushforward reduction:
+///        a. sample batch_coeff
+///        b. m rounds of degree-2 sumcheck
+///        c. recv [Y, T]                            (evaluations at the challenge point)
 /// ```
 ///
 /// The sumchecks are assumed to bind variables from the highest index to the lowest.
@@ -88,7 +86,8 @@ pub struct LookerClaim<'a, Elem> {
 /// - the two lookup sums disagree,
 /// - the batched `eq_r` evaluation is wrong,
 /// - the index evaluations do not combine to the batched leaf denominator,
-/// - the batched final layer is inconsistent.
+/// - the table-side leaf denominator is not the transparent `c - J`,
+/// - the pushforward reduction is inconsistent.
 pub fn verify_reduction<F, C>(
 	gamma: &C::Elem,
 	table_n_vars: usize,
@@ -182,18 +181,15 @@ where
 		.assert_zero(looker_den - expected_den)
 		.map_err(|_| VerificationError::IncorrectIndexEvaluation)?;
 
-	// Table side: run the first m-1 GKR layers, stopping at the layer-1 claim.
+	// Table side: run the full GKR down to the leaf claim on the pushforward and the denominator.
 	//
-	//     num_1(Z) = sum_{x' in B_{m-1}} eq(x'; Z) * (Y_0 * D_1 + Y_1 * D_0)(x')
-	//     den_1(Z) = sum_{x' in B_{m-1}} eq(x'; Z) * (D_0 * D_1)(x')
-	//
-	// where D = c - J is the table-side denominator and the halves split on the highest variable.
+	//     Y(z) and D(z), where D = c - J is the table-side denominator
 	let FracAddEvalClaim {
-		num_eval: layer1_num,
-		den_eval: layer1_den,
-		point: layer1_point,
+		num_eval: pushforward_eval,
+		den_eval: table_den_eval,
+		point: table_leaf_point,
 	} = fracaddcheck::verify::<F, C>(
-		m - 1,
+		m,
 		FracAddEvalClaim {
 			num_eval: num_r,
 			den_eval: den_r,
@@ -202,27 +198,24 @@ where
 		channel,
 	)?;
 
-	// Run the batched final layer.
-	// It reduces the layer-1 claims and the product claim <T, Y> = e to a single shared evaluation.
+	// The denominator is transparent, so the verifier evaluates it rather than trusting the leaf.
+	let expected_den = denominator_eval::<F, C::Elem>(&c, &table_leaf_point);
+	channel
+		.assert_zero(table_den_eval - expected_den)
+		.map_err(|_| VerificationError::IncorrectTableDenominator)?;
+
+	// Reduce the leaf claim on Y and the product claim <T, Y> = e to a single shared evaluation.
 	// The product check binds <T, Y> to the gamma-combination of the looker claims.
 	let claims = lookers
 		.iter()
 		.map(|looker| looker.eval_claim.clone())
 		.collect::<Vec<_>>();
 	let combined_eval_claim = evaluate_univariate(&claims, gamma);
-	let FinalLayer {
+	let Pushforward {
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-	} = verify_final_layer::<F, C>(
-		m,
-		&c,
-		combined_eval_claim,
-		layer1_num,
-		layer1_den,
-		&layer1_point,
-		channel,
-	)?;
+	} = verify_pushforward::<F, C>(combined_eval_claim, pushforward_eval, &table_leaf_point, channel)?;
 
 	Ok(LogupOutput {
 		table_eval_point,

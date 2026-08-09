@@ -461,9 +461,9 @@ where
 	/// equality factor into its emitted round polynomials — the [Gruen24] technique of
 	/// [`MleToSumCheckEvaluator`].
 	///
-	/// This lets the eq-weighted fractional claims batch in one evaluator group alongside plain
-	/// sumcheck claims over the same store: the logUp* final layer converts the popped table
-	/// layer's prover, then adds its product evaluators to it. The store and its columns carry over
+	/// This lets an eq-weighted claim batch in one evaluator group alongside plain sumcheck claims
+	/// over the same store: the logUp* pushforward reduction converts its evaluation claim on `Y`,
+	/// then adds the eq-free product evaluator to it. The store and its columns carry over
 	/// untouched; only the evaluators are wrapped, sharing this prover's eq tracker.
 	///
 	/// [Gruen24]: <https://eprint.iacr.org/2024/108>
