@@ -2,6 +2,7 @@
 use binius_core::word::Word;
 use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap, entity_impl};
 use rustc_hash::FxHashMap;
+use smallvec::{SmallVec, smallvec};
 
 use crate::compiler::{
 	gate::opcode::{Opcode, OpcodeShape},
@@ -98,7 +99,11 @@ pub struct GateData {
 	/// - Scratch
 	///
 	/// The number of input and output wires is specified by the opcode's shape.
-	pub wires: Vec<Wire>,
+	///
+	/// Five slots are held inline, which is every fixed-shape opcode but three.
+	/// Five is chosen over four because `SmallVec` rounds both to the same 32 bytes.
+	/// A wider gate spills to the heap exactly as a vector would.
+	pub wires: SmallVec<[Wire; 5]>,
 
 	/// The immediate parameters of this gate.
 	///
@@ -106,7 +111,10 @@ pub struct GateData {
 	/// byte indices, etc.
 	///
 	/// The length of the immediates is specified by the opcode's shape.
-	pub immediates: Vec<u32>,
+	///
+	/// Two inline slots cover every opcode: `Shift` declares two, `Hint` one, the rest none.
+	/// At that width a `SmallVec` is the same 24 bytes as a vector, so this is free.
+	pub immediates: SmallVec<[u32; 2]>,
 
 	/// The dimensions of this gate.
 	///
@@ -314,7 +322,7 @@ impl GateGraph {
 			"emit_gate_generic does not handle Opcode::Hint; use emit_hint_gate"
 		);
 		let shape = opcode.shape(dimensions);
-		let mut wires: Vec<Wire> = Vec::with_capacity(
+		let mut wires: SmallVec<[Wire; 5]> = SmallVec::with_capacity(
 			shape.const_in.len() + shape.n_in + shape.n_out + shape.n_aux + shape.n_scratch,
 		);
 		for c in shape.const_in {
@@ -333,7 +341,7 @@ impl GateGraph {
 			opcode,
 			wires,
 			dimensions: dimensions.to_vec(),
-			immediates: immediates.to_vec(),
+			immediates: SmallVec::from_slice(immediates),
 		};
 		// Inline validate_shape: non-hint shape doesn't need a registry.
 		let expected_wires =
@@ -359,14 +367,14 @@ impl GateGraph {
 		inputs: impl IntoIterator<Item = Wire>,
 		outputs: impl IntoIterator<Item = Wire>,
 	) -> Gate {
-		let mut wires: Vec<Wire> = Vec::new();
+		let mut wires: SmallVec<[Wire; 5]> = SmallVec::new();
 		wires.extend(inputs);
 		wires.extend(outputs);
 		let data = GateData {
 			opcode: Opcode::Hint,
 			wires,
 			dimensions: dimensions.to_vec(),
-			immediates: vec![hint_id],
+			immediates: smallvec![hint_id],
 		};
 		let gate = self.gates.push(data);
 		self.gate_origin[gate] = gate_origin;

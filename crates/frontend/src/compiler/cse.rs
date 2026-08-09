@@ -143,7 +143,7 @@ fn structure_of(graph: &GateGraph, gate: Gate, hint_registry: &HintRegistry) -> 
 			.chain(param.inputs)
 			.copied()
 			.collect(),
-		immediates: SmallVec::from_slice(&data.immediates),
+		immediates: data.immediates.clone(),
 		dimensions: SmallVec::from_slice(&data.dimensions),
 	}
 }
