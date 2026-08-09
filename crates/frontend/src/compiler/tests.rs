@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use binius_core::{
-	constraint_system::{Operand, ShiftedValueIndex, WitnessIndex, WitnessSegment},
+	constraint_system::{Operand, ShiftedValueIndex, ValueIndex, ValueSegment},
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;
@@ -115,7 +115,7 @@ fn test_linear_constraints_lower_to_zero_constraints() {
 
 	// The Zero constraint XORs the linear constraint's terms with its destination, and names no
 	// all-ones constant.
-	let all_one = WitnessIndex::constant(0);
+	let all_one = ValueIndex::constant(0);
 	let val = cs.zero_constraints[0].val();
 	assert_eq!(val.len(), 3);
 	assert!(val.iter().all(|svi| svi.value_index != all_one));
@@ -156,7 +156,7 @@ fn test_zero_constraints_reach_a_fused_committed_lin_def() {
 		zero_cs.zero_constraints[0]
 			.val()
 			.iter()
-			.all(|svi| svi.value_index != WitnessIndex::constant(0))
+			.all(|svi| svi.value_index != ValueIndex::constant(0))
 	);
 
 	let mut filler = zero_circuit.new_witness_filler();
@@ -968,7 +968,7 @@ fn test_zero_constant_not_in_binius64_operands() {
 			for term in operand {
 				let index = term.value_index;
 				assert!(
-					index.segment() != WitnessSegment::Constant
+					index.segment() != ValueSegment::Constant
 						|| !zero_const_indices.contains(&(index.index() as usize)),
 					"zero constant at {index:?} found in {kind} operand",
 				);

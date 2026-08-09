@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 use bytemuck::{Pod, Zeroable};
 
-use super::{ShiftedValueIndex, ValueVecLayout, WitnessIndex};
+use super::{ShiftedValueIndex, ValueVecLayout, ValueIndex};
 use crate::word::Word;
 
 /// A 16-byte-aligned pair of words, the storage block of the aligned word buffer.
@@ -85,12 +85,12 @@ impl DerefMut for AlignedWords {
 ///
 /// # Addressing
 ///
-/// A [`WitnessIndex`] names a word by its segment and its position within that segment, so the
+/// A [`ValueIndex`] names a word by its segment and its position within that segment, so the
 /// vector carries the offsets that place each segment in the flat buffer. The padding between
 /// sections is therefore unaddressable: no index resolves to it.
 #[derive(Clone, Debug)]
 pub struct ValueVec {
-	/// The word each segment starts at, indexed by [`WitnessSegment`](super::WitnessSegment).
+	/// The word each segment starts at, indexed by [`ValueSegment`](super::ValueSegment).
 	segment_starts: [usize; 4],
 	/// The number of words in the public segment, which is also where the hidden segment starts.
 	n_public_words: usize,
@@ -118,7 +118,7 @@ impl ValueVec {
 	///
 	/// `offset_inout` places the inout values within the public segment, as
 	/// [`ConstraintSystem::offset_inout`](super::ConstraintSystem::offset_inout) reports it, and is
-	/// what resolves an [`InOut`](super::WitnessSegment::InOut) index. Rebuilding a vector from
+	/// what resolves an [`InOut`](super::ValueSegment::InOut) index. Rebuilding a vector from
 	/// serialized segments therefore needs the system describing them, so prefer
 	/// [`ConstraintSystem::value_vec_from_data`](super::ConstraintSystem::value_vec_from_data),
 	/// which passes it for you.
@@ -142,7 +142,7 @@ impl ValueVec {
 	/// This is the view for the few readers that address whole segments rather than named values:
 	/// the evaluation form, whose bytecode holds one register per position, and the batch witness,
 	/// which copies a segment across including its padding. Everything else names words by
-	/// [`WitnessIndex`], which cannot reach a padding word.
+	/// [`ValueIndex`], which cannot reach a padding word.
 	#[inline]
 	pub fn word(&self, offset: u32) -> Word {
 		self.data[offset as usize]
@@ -156,9 +156,9 @@ impl ValueVec {
 		&mut self.data[offset as usize]
 	}
 
-	/// The flat position of the word a [`WitnessIndex`] names.
+	/// The flat position of the word a [`ValueIndex`] names.
 	#[inline]
-	const fn word_offset(&self, index: WitnessIndex) -> usize {
+	const fn word_offset(&self, index: ValueIndex) -> usize {
 		index.offset_within(self.segment_starts)
 	}
 
@@ -195,16 +195,16 @@ impl ValueVec {
 	}
 }
 
-impl Index<WitnessIndex> for ValueVec {
+impl Index<ValueIndex> for ValueVec {
 	type Output = Word;
 
-	fn index(&self, index: WitnessIndex) -> &Self::Output {
+	fn index(&self, index: ValueIndex) -> &Self::Output {
 		&self.data[self.word_offset(index)]
 	}
 }
 
-impl IndexMut<WitnessIndex> for ValueVec {
-	fn index_mut(&mut self, index: WitnessIndex) -> &mut Self::Output {
+impl IndexMut<ValueIndex> for ValueVec {
+	fn index_mut(&mut self, index: ValueIndex) -> &mut Self::Output {
 		let offset = self.word_offset(index);
 		&mut self.data[offset]
 	}
@@ -327,7 +327,7 @@ mod tests {
 
 			// The scratch tail past the committed words is zeroed and addressable.
 			for slot in 0..n_scratch {
-				prop_assert_eq!(zeroed[WitnessIndex::scratch(slot as u32)], Word::ZERO);
+				prop_assert_eq!(zeroed[ValueIndex::scratch(slot as u32)], Word::ZERO);
 			}
 		}
 	}

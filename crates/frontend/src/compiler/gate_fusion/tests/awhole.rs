@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use binius_core::{ConstraintSystem, WitnessIndex, WitnessSegment, word::Word};
+use binius_core::{ConstraintSystem, ValueIndex, ValueSegment, word::Word};
 
 use crate::compiler::{CircuitBuilder, Options, gate_fusion::commit_set::MAX_DEPTH};
 
@@ -137,11 +137,11 @@ fn format_operand(
 	}
 }
 
-/// Convert a WitnessIndex to a human-readable name, inlining constants
-fn format_value_name(index: WitnessIndex, cs: &ConstraintSystem) -> String {
+/// Convert a ValueIndex to a human-readable name, inlining constants
+fn format_value_name(index: ValueIndex, cs: &ConstraintSystem) -> String {
 	match index.segment() {
 		// Constants are inlined by value, so a snapshot reads the word rather than a slot number.
-		WitnessSegment::Constant => {
+		ValueSegment::Constant => {
 			let constant = cs.constants[index.index() as usize];
 			if constant.0 == u64::MAX {
 				"all-1".to_string()
@@ -149,10 +149,10 @@ fn format_value_name(index: WitnessIndex, cs: &ConstraintSystem) -> String {
 				format!("0x{:x}", constant.0)
 			}
 		}
-		WitnessSegment::InOut => format!("io[{}]", index.index()),
-		WitnessSegment::Private => format!("v[{}]", index.index()),
+		ValueSegment::InOut => format!("io[{}]", index.index()),
+		ValueSegment::Private => format!("v[{}]", index.index()),
 		// A constraint cannot name a scratch word, so this only shows up if one leaks.
-		WitnessSegment::Scratch => format!("s[{}]", index.index()),
+		ValueSegment::Scratch => format!("s[{}]", index.index()),
 	}
 }
 

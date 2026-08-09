@@ -265,7 +265,7 @@ fn operand_shift_scalar_table<E: FieldOps>(
 mod tests {
 	use binius_core::{
 		ShiftVariant,
-		constraint_system::{AndConstraint, ShiftedValueIndex, WitnessIndex},
+		constraint_system::{AndConstraint, ShiftedValueIndex, ValueIndex},
 	};
 	use binius_field::{BinaryField128bGhash, Field, Random};
 	use binius_math::{
@@ -307,7 +307,7 @@ mod tests {
 				AndConstraint(std::array::from_fn(|_| {
 					(0..rng.random_range(0..=3))
 						.map(|_| ShiftedValueIndex {
-							value_index: WitnessIndex::private(rng.random_range(0..n_words) as u32),
+							value_index: ValueIndex::private(rng.random_range(0..n_words) as u32),
 							shift_variant: shift_variants[rng.random_range(0..SHIFT_VARIANT_COUNT)],
 							amount: rng.random_range(0..Word::BITS) as u8,
 						})

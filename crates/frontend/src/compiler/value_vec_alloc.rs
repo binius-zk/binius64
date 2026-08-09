@@ -1,12 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use binius_core::{ConstraintSystem, ValueVecLayout, WitnessIndex, Word};
+use binius_core::{ConstraintSystem, ValueVecLayout, ValueIndex, Word};
 use cranelift_entity::SecondaryMap;
 
 use crate::compiler::Wire;
 
 pub struct Assignment {
-	pub wire_mapping: SecondaryMap<Wire, WitnessIndex>,
+	pub wire_mapping: SecondaryMap<Wire, ValueIndex>,
 	pub value_vec_layout: ValueVecLayout,
 	pub constants: Vec<Word>,
 }
@@ -89,11 +89,11 @@ impl Alloc {
 		// So it is the first constant here and lands at constant index 0.
 		let mut constants = Vec::with_capacity(n_const);
 		for (index, (wire, value)) in self.w_const.into_iter().enumerate() {
-			wire_mapping[wire] = WitnessIndex::constant(index as u32);
+			wire_mapping[wire] = ValueIndex::constant(index as u32);
 			constants.push(value);
 		}
 		for (index, wire) in self.w_inout.into_iter().enumerate() {
-			wire_mapping[wire] = WitnessIndex::inout(index as u32);
+			wire_mapping[wire] = ValueIndex::inout(index as u32);
 		}
 		for (index, wire) in self
 			.w_witness
@@ -101,14 +101,14 @@ impl Alloc {
 			.chain(self.w_internal)
 			.enumerate()
 		{
-			wire_mapping[wire] = WitnessIndex::private(index as u32);
+			wire_mapping[wire] = ValueIndex::private(index as u32);
 		}
 
 		// Each uncommitted value lands at its own slot within the scratch segment.
 		// Two values given the same slot share one index.
 		// That is sound only because their lifetimes do not overlap.
 		for (wire, slot) in self.w_scratch {
-			wire_mapping[wire] = WitnessIndex::scratch(slot);
+			wire_mapping[wire] = ValueIndex::scratch(slot);
 		}
 
 		// The layout places the segments in the value vector. The public section holds the
@@ -187,21 +187,21 @@ mod tests {
 		let mapping = &assignment.wire_mapping;
 
 		// Each segment is numbered from zero, in the order its wires were added.
-		assert_eq!(mapping[const1], WitnessIndex::constant(0));
-		assert_eq!(mapping[const2], WitnessIndex::constant(1));
-		assert_eq!(mapping[const3], WitnessIndex::constant(2));
-		assert_eq!(mapping[inout1], WitnessIndex::inout(0));
-		assert_eq!(mapping[inout2], WitnessIndex::inout(1));
+		assert_eq!(mapping[const1], ValueIndex::constant(0));
+		assert_eq!(mapping[const2], ValueIndex::constant(1));
+		assert_eq!(mapping[const3], ValueIndex::constant(2));
+		assert_eq!(mapping[inout1], ValueIndex::inout(0));
+		assert_eq!(mapping[inout2], ValueIndex::inout(1));
 
 		// The witness wires take the front of the private segment and the internal ones follow.
-		assert_eq!(mapping[witness1], WitnessIndex::private(0));
-		assert_eq!(mapping[witness2], WitnessIndex::private(1));
-		assert_eq!(mapping[witness3], WitnessIndex::private(2));
-		assert_eq!(mapping[internal1], WitnessIndex::private(3));
+		assert_eq!(mapping[witness1], ValueIndex::private(0));
+		assert_eq!(mapping[witness2], ValueIndex::private(1));
+		assert_eq!(mapping[witness3], ValueIndex::private(2));
+		assert_eq!(mapping[internal1], ValueIndex::private(3));
 
 		// A scratch wire keeps the slot it was placed at.
-		assert_eq!(mapping[scratch1], WitnessIndex::scratch(0));
-		assert_eq!(mapping[scratch2], WitnessIndex::scratch(1));
+		assert_eq!(mapping[scratch1], ValueIndex::scratch(0));
+		assert_eq!(mapping[scratch2], ValueIndex::scratch(1));
 
 		// The constants vector preserves insertion order.
 		assert_eq!(assignment.constants, vec![Word(42), Word(100), Word(200)]);

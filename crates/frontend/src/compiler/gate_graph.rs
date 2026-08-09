@@ -34,7 +34,7 @@ impl ConstPool {
 
 /// A wire through which a value flows in and out of gates.
 ///
-/// The difference from `WitnessIndex` is that a wire is abstract. Some wires could be moved during
+/// The difference from `ValueIndex` is that a wire is abstract. Some wires could be moved during
 /// compilation and some wires might be pruned altogether.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Wire(u32);

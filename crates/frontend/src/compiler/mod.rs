@@ -6,7 +6,7 @@ use std::{
 };
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, ShiftVariant, WitnessSegment},
+	constraint_system::{ConstraintSystem, ShiftVariant, ValueSegment},
 	word::Word,
 };
 use cranelift_entity::EntitySet;
@@ -349,7 +349,7 @@ impl CircuitBuilder {
 
 		// Invariant: the all-one constant seeded at graph construction is the first constant.
 		// Downstream consumers reference it by the fixed index 0.
-		debug_assert_eq!(wire_mapping[all_one], binius_core::WitnessIndex::constant(0));
+		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex::constant(0));
 		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
 
 		let (mut zero_constraints, mut and_constraints, mut imul_constraints, mut bmul_constraints) =
@@ -367,7 +367,7 @@ impl CircuitBuilder {
 			for operand in operands {
 				operand.retain(|term: &binius_core::constraint_system::ShiftedValueIndex| {
 					let index = term.value_index;
-					index.segment() != WitnessSegment::Constant
+					index.segment() != ValueSegment::Constant
 						|| constants[index.index() as usize] != Word::ZERO
 				});
 			}

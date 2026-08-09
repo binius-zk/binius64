@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueVec, WitnessIndex},
+	constraint_system::{ConstraintSystem, ValueVec, ValueIndex},
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
@@ -410,7 +410,7 @@ fn test_prove_verify_rejects_violated_zero_constraint() {
 		.flat_map(|c| &c.0)
 		.flatten()
 		.map(|svi| svi.value_index)
-		.find(|index| !and_words.contains(index) && *index != WitnessIndex::constant(0))
+		.find(|index| !and_words.contains(index) && *index != ValueIndex::constant(0))
 		.expect("some ZERO constraint reads a word no AND constraint does");
 
 	let mut words = witness.combined_witness().to_vec();

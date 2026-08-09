@@ -6,7 +6,7 @@ use binius_field::BinaryField128bGhash as B128;
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
-use super::{ShiftedValueIndex, ValueVec, WitnessIndex};
+use super::{ShiftedValueIndex, ValueVec, ValueIndex};
 use crate::{error::ConstraintViolation, word::Word};
 
 /// Operand type.
@@ -72,7 +72,7 @@ impl ZeroConstraint {
 	pub const OPERAND_NAMES: [&'static str; Self::ARITY] = ["val"];
 
 	/// Creates a new Zero constraint from an XOR combination of the given unshifted values.
-	pub fn plain(val: impl IntoIterator<Item = WitnessIndex>) -> ZeroConstraint {
+	pub fn plain(val: impl IntoIterator<Item = ValueIndex>) -> ZeroConstraint {
 		ZeroConstraint::new(val.into_iter().map(ShiftedValueIndex::plain))
 	}
 
@@ -141,9 +141,9 @@ impl AndConstraint {
 
 	/// Creates a new AND constraint from XOR combinations of the given unshifted values.
 	pub fn plain_abc(
-		a: impl IntoIterator<Item = WitnessIndex>,
-		b: impl IntoIterator<Item = WitnessIndex>,
-		c: impl IntoIterator<Item = WitnessIndex>,
+		a: impl IntoIterator<Item = ValueIndex>,
+		b: impl IntoIterator<Item = ValueIndex>,
+		c: impl IntoIterator<Item = ValueIndex>,
 	) -> AndConstraint {
 		AndConstraint::abc(
 			a.into_iter().map(ShiftedValueIndex::plain),
@@ -428,9 +428,9 @@ mod tests {
 		// One term per segment a constraint may name, so the round trip covers the segment tag as
 		// well as the index.
 		let constraint = ZeroConstraint::new([
-			ShiftedValueIndex::sll(WitnessIndex::constant(1), 5),
-			ShiftedValueIndex::srl(WitnessIndex::inout(2), 10),
-			ShiftedValueIndex::plain(WitnessIndex::private(3)),
+			ShiftedValueIndex::sll(ValueIndex::constant(1), 5),
+			ShiftedValueIndex::srl(ValueIndex::inout(2), 10),
+			ShiftedValueIndex::plain(ValueIndex::private(3)),
 		]);
 
 		let mut buf = Vec::new();
@@ -449,11 +449,11 @@ mod tests {
 	#[test]
 	fn test_and_constraint_serialization_round_trip() {
 		let constraint = AndConstraint::abc(
-			vec![ShiftedValueIndex::sll(WitnessIndex::constant(1), 5)],
-			vec![ShiftedValueIndex::srl(WitnessIndex::constant(2), 10)],
+			vec![ShiftedValueIndex::sll(ValueIndex::constant(1), 5)],
+			vec![ShiftedValueIndex::srl(ValueIndex::constant(2), 10)],
 			vec![
-				ShiftedValueIndex::sar(WitnessIndex::constant(3), 15),
-				ShiftedValueIndex::plain(WitnessIndex::constant(4)),
+				ShiftedValueIndex::sar(ValueIndex::constant(3), 15),
+				ShiftedValueIndex::plain(ValueIndex::constant(4)),
 			],
 		);
 
@@ -474,10 +474,10 @@ mod tests {
 	#[test]
 	fn test_imul_constraint_serialization_round_trip() {
 		let constraint = ImulConstraint([
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(0))],
-			vec![ShiftedValueIndex::srl(WitnessIndex::constant(1), 32)],
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(2))],
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(3))],
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(0))],
+			vec![ShiftedValueIndex::srl(ValueIndex::constant(1), 32)],
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(2))],
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(3))],
 		]);
 
 		let mut buf = Vec::new();
@@ -493,14 +493,14 @@ mod tests {
 	#[test]
 	fn test_bmul_constraint_serialization_round_trip() {
 		let constraint = BmulConstraint([
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(0))],
-			vec![ShiftedValueIndex::srl(WitnessIndex::constant(1), 32)],
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(2))],
-			vec![ShiftedValueIndex::sll(WitnessIndex::constant(3), 5)],
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(4))],
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(0))],
+			vec![ShiftedValueIndex::srl(ValueIndex::constant(1), 32)],
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(2))],
+			vec![ShiftedValueIndex::sll(ValueIndex::constant(3), 5)],
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(4))],
 			vec![
-				ShiftedValueIndex::sar(WitnessIndex::constant(5), 15),
-				ShiftedValueIndex::plain(WitnessIndex::constant(6)),
+				ShiftedValueIndex::sar(ValueIndex::constant(5), 15),
+				ShiftedValueIndex::plain(ValueIndex::constant(6)),
 			],
 		]);
 
@@ -541,7 +541,7 @@ mod tests {
 
 	/// An operand reading constant `index` unshifted.
 	fn at(index: u32) -> Operand {
-		vec![ShiftedValueIndex::plain(WitnessIndex::constant(index))]
+		vec![ShiftedValueIndex::plain(ValueIndex::constant(index))]
 	}
 
 	/// The two words carrying a GHASH element, low half first.
@@ -555,7 +555,7 @@ mod tests {
 		// The operand vanishes even though neither word is zero.
 		let values = values(&[0xfeed_face, 0xfeed_face]);
 		let constraint =
-			ZeroConstraint::plain([WitnessIndex::constant(0), WitnessIndex::constant(1)]);
+			ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::constant(1)]);
 
 		assert!(constraint.verify(&values).is_ok());
 	}
@@ -564,7 +564,7 @@ mod tests {
 	fn zero_constraint_rejects_operand_that_survives() {
 		let values = values(&[0xfeed_face, 0x0bad_cafe]);
 		let constraint =
-			ZeroConstraint::plain([WitnessIndex::constant(0), WitnessIndex::constant(1)]);
+			ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::constant(1)]);
 
 		match constraint.verify(&values).unwrap_err() {
 			ConstraintViolation::Zero { val } => assert_eq!(val, 0xfeed_face ^ 0x0bad_cafe),
@@ -576,9 +576,9 @@ mod tests {
 	fn and_constraint_accepts_matching_conjunction() {
 		let values = values(&[0b1100, 0b1010, 0b1000]);
 		let constraint = AndConstraint::plain_abc(
-			[WitnessIndex::constant(0)],
-			[WitnessIndex::constant(1)],
-			[WitnessIndex::constant(2)],
+			[ValueIndex::constant(0)],
+			[ValueIndex::constant(1)],
+			[ValueIndex::constant(2)],
 		);
 
 		assert!(constraint.verify(&values).is_ok());
@@ -589,9 +589,9 @@ mod tests {
 		// C claims one bit too many: 0b1100 & 0b1010 is 0b1000, not 0b1001.
 		let values = values(&[0b1100, 0b1010, 0b1001]);
 		let constraint = AndConstraint::plain_abc(
-			[WitnessIndex::constant(0)],
-			[WitnessIndex::constant(1)],
-			[WitnessIndex::constant(2)],
+			[ValueIndex::constant(0)],
+			[ValueIndex::constant(1)],
+			[ValueIndex::constant(2)],
 		);
 
 		match constraint.verify(&values).unwrap_err() {

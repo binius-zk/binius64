@@ -18,7 +18,7 @@ mod tests;
 pub use assertion::MAX_ASSERTION_FAILURES;
 use batch::BatchExecutionContext;
 pub use batch::BatchPopulateError;
-use binius_core::{ValueVec, ValueVecLayout, WitnessIndex, Word};
+use binius_core::{ValueVec, ValueVecLayout, ValueIndex, Word};
 use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;
@@ -52,7 +52,7 @@ impl EvalForm {
 	/// emission only reads from it to resolve `Opcode::Hint` gates.
 	pub(crate) fn build(
 		gate_graph: &GateGraph,
-		wire_mapping: &SecondaryMap<Wire, WitnessIndex>,
+		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 		layout: &ValueVecLayout,
 		hint_registry: HintRegistry,
 	) -> Self {

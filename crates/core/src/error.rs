@@ -4,7 +4,7 @@
 
 use crate::{
 	ConstraintSystem,
-	constraint_system::{ConstraintKind, WitnessSegment},
+	constraint_system::{ConstraintKind, ValueSegment},
 };
 
 /// Constraint system related error.
@@ -58,7 +58,7 @@ pub enum ConstraintSystemError {
 		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
-		segment: WitnessSegment,
+		segment: ValueSegment,
 		value_index: u32,
 		segment_len: usize,
 	},

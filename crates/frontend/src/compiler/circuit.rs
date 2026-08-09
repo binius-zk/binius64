@@ -6,7 +6,7 @@ use std::{
 };
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueVec, ValueVecLayout, WitnessIndex},
+	constraint_system::{ConstraintSystem, ValueVec, ValueVecLayout, ValueIndex},
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;
@@ -148,7 +148,7 @@ pub struct Circuit {
 	gate_graph: GateGraph,
 	constraint_system: ConstraintSystem,
 	value_vec_layout: ValueVecLayout,
-	wire_mapping: SecondaryMap<Wire, WitnessIndex>,
+	wire_mapping: SecondaryMap<Wire, ValueIndex>,
 	eval_form: EvalForm,
 	scratch_peak_live: usize,
 }
@@ -160,7 +160,7 @@ impl Circuit {
 		gate_graph: GateGraph,
 		constraint_system: ConstraintSystem,
 		value_vec_layout: ValueVecLayout,
-		wire_mapping: SecondaryMap<Wire, WitnessIndex>,
+		wire_mapping: SecondaryMap<Wire, ValueIndex>,
 		eval_form: EvalForm,
 		scratch_peak_live: usize,
 	) -> Self {
@@ -186,7 +186,7 @@ impl Circuit {
 
 	/// For the given wire, returns its index in the witness vector.
 	#[inline(always)]
-	pub fn witness_index(&self, wire: Wire) -> WitnessIndex {
+	pub fn witness_index(&self, wire: Wire) -> ValueIndex {
 		self.wire_mapping[wire]
 	}
 
@@ -232,7 +232,7 @@ impl Circuit {
 	pub fn populate_wire_witness(&self, w: &mut WitnessFiller) -> Result<(), PopulateError> {
 		// Fill the constant part from the witness.
 		for (index, constant) in self.constraint_system.constants.iter().enumerate() {
-			w.value_vec[WitnessIndex::constant(index as u32)] = *constant;
+			w.value_vec[ValueIndex::constant(index as u32)] = *constant;
 		}
 
 		// Execute the evaluation form - it modifies the ValueVec in place

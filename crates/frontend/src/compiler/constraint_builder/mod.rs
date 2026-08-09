@@ -1,14 +1,14 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-//! Wire-level constraint DSL and its lowering to core `WitnessIndex` constraints.
+//! Wire-level constraint DSL and its lowering to core `ValueIndex` constraints.
 
 mod constraint;
 pub mod expr;
 mod shift;
 
 use binius_core::constraint_system::{
-	AndConstraint, BmulConstraint, ImulConstraint, WitnessIndex, ZeroConstraint,
+	AndConstraint, BmulConstraint, ImulConstraint, ValueIndex, ZeroConstraint,
 };
 pub use constraint::{
 	WireAndConstraint, WireBmulConstraint, WireImulConstraint, WireLinearConstraint,
@@ -29,7 +29,7 @@ use crate::compiler::Wire;
 /// - leaving one out is a compile error rather than a silent zero;
 /// - an operand that is meant to be zero says so with [`expr::empty`].
 ///
-/// [`build`](Self::build) then converts every wire to its [`WitnessIndex`] and
+/// [`build`](Self::build) then converts every wire to its [`ValueIndex`] and
 /// produces the core constraint lists the prover and verifier consume.
 pub struct ConstraintBuilder {
 	/// AND constraints: `A & B == C`.
@@ -108,13 +108,13 @@ impl ConstraintBuilder {
 		});
 	}
 
-	/// Lowers every wire-level constraint to its core `WitnessIndex` form.
+	/// Lowers every wire-level constraint to its core `ValueIndex` form.
 	///
 	/// A linear constraint lowers to the Zero constraint `RHS ^ DST == 0`, which carries one
 	/// constraint array where an AND against the all-ones constant would carry three.
 	pub fn build(
 		self,
-		wire_mapping: &SecondaryMap<Wire, WitnessIndex>,
+		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> (Vec<ZeroConstraint>, Vec<AndConstraint>, Vec<ImulConstraint>, Vec<BmulConstraint>) {
 		let and_constraints = self
 			.and_constraints

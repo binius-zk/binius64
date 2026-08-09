@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use super::{ConstraintSystem, WitnessIndex};
+use super::{ConstraintSystem, ValueIndex};
 use crate::word::Word;
 
 /// Description of a layout of the value vector for a particular circuit.
@@ -53,10 +53,10 @@ impl ValueVecLayout {
 	}
 
 	/// Returns the word each segment starts at, indexed by
-	/// [`WitnessSegment`](super::WitnessSegment).
+	/// [`ValueSegment`](super::ValueSegment).
 	///
 	/// This is the one place the section order is written down; both the value vector and the
-	/// evaluation form resolve a [`WitnessIndex`] through it. The witness and internal values
+	/// evaluation form resolve a [`ValueIndex`] through it. The witness and internal values
 	/// share the private segment, in that order, so it starts where the witness values do.
 	pub const fn segment_starts(&self) -> [usize; 4] {
 		[
@@ -67,8 +67,8 @@ impl ValueVecLayout {
 		]
 	}
 
-	/// Returns the flat position of the word a [`WitnessIndex`] names, counting the scratch tail.
-	pub const fn word_offset(&self, index: WitnessIndex) -> usize {
+	/// Returns the flat position of the word a [`ValueIndex`] names, counting the scratch tail.
+	pub const fn word_offset(&self, index: ValueIndex) -> usize {
 		index.offset_within(self.segment_starts())
 	}
 

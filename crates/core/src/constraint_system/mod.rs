@@ -8,7 +8,7 @@ mod shift;
 mod system;
 mod value_vec;
 mod values_data;
-mod witness_index;
+mod value_index;
 
 pub use constraint::*;
 pub use layout::*;
@@ -17,4 +17,4 @@ pub use shift::*;
 pub use system::*;
 pub use value_vec::*;
 pub use values_data::*;
-pub use witness_index::*;
+pub use value_index::*;

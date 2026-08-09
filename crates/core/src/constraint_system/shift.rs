@@ -4,7 +4,7 @@ use std::{iter, mem::MaybeUninit};
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
-use super::{ValueVec, WitnessIndex};
+use super::{ValueVec, ValueIndex};
 use crate::word::Word;
 
 /// A different variants of shifting a value.
@@ -288,7 +288,7 @@ impl DeserializeBytes for ShiftVariant {
 	}
 }
 
-/// Similar to [`WitnessIndex`], but represents a value that has been shifted by a certain amount.
+/// Similar to [`ValueIndex`], but represents a value that has been shifted by a certain amount.
 ///
 /// This is used in the operands to constraints like [`AndConstraint`](super::AndConstraint).
 ///
@@ -297,7 +297,7 @@ impl DeserializeBytes for ShiftVariant {
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ShiftedValueIndex {
 	/// The index of this value in the input values vector.
-	pub value_index: WitnessIndex,
+	pub value_index: ValueIndex,
 	/// The flavour of the shift that the value must be shifted by.
 	pub shift_variant: ShiftVariant,
 	/// The number of bits to shift by.
@@ -310,7 +310,7 @@ pub struct ShiftedValueIndex {
 impl ShiftedValueIndex {
 	/// Create a value index that just uses the specified value. Equivalent to [`Self::sll`] with
 	/// amount equals 0.
-	pub const fn plain(value_index: WitnessIndex) -> Self {
+	pub const fn plain(value_index: ValueIndex) -> Self {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Sll,
@@ -322,7 +322,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn sll(value_index: WitnessIndex, amount: usize) -> Self {
+	pub fn sll(value_index: ValueIndex, amount: usize) -> Self {
 		assert!(amount < 64, "shift amount n={amount} out of range");
 		Self {
 			value_index,
@@ -335,7 +335,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn srl(value_index: WitnessIndex, amount: usize) -> Self {
+	pub fn srl(value_index: ValueIndex, amount: usize) -> Self {
 		assert!(amount < 64, "shift amount n={amount} out of range");
 		Self {
 			value_index,
@@ -351,7 +351,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn sar(value_index: WitnessIndex, amount: usize) -> Self {
+	pub fn sar(value_index: ValueIndex, amount: usize) -> Self {
 		assert!(amount < 64, "shift amount n={amount} out of range");
 		Self {
 			value_index,
@@ -366,7 +366,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn rotr(value_index: WitnessIndex, amount: usize) -> Self {
+	pub fn rotr(value_index: ValueIndex, amount: usize) -> Self {
 		assert!(amount < 64, "shift amount n={amount} out of range");
 		Self {
 			value_index,
@@ -382,7 +382,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn sll32(value_index: WitnessIndex, amount: usize) -> Self {
+	pub fn sll32(value_index: ValueIndex, amount: usize) -> Self {
 		assert!(amount < 32, "shift amount n={amount} out of range for 32-bit shift");
 		Self {
 			value_index,
@@ -398,7 +398,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn srl32(value_index: WitnessIndex, amount: usize) -> Self {
+	pub fn srl32(value_index: ValueIndex, amount: usize) -> Self {
 		assert!(amount < 32, "shift amount n={amount} out of range for 32-bit shift");
 		Self {
 			value_index,
@@ -415,7 +415,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn sra32(value_index: WitnessIndex, amount: usize) -> Self {
+	pub fn sra32(value_index: ValueIndex, amount: usize) -> Self {
 		assert!(amount < 32, "shift amount n={amount} out of range for 32-bit shift");
 		Self {
 			value_index,
@@ -432,7 +432,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn rotr32(value_index: WitnessIndex, amount: usize) -> Self {
+	pub fn rotr32(value_index: ValueIndex, amount: usize) -> Self {
 		assert!(amount < 32, "shift amount n={amount} out of range for 32-bit rotate");
 		Self {
 			value_index,
@@ -467,7 +467,7 @@ impl DeserializeBytes for ShiftedValueIndex {
 	where
 		Self: Sized,
 	{
-		let value_index = WitnessIndex::deserialize(&mut read_buf)?;
+		let value_index = ValueIndex::deserialize(&mut read_buf)?;
 		let shift_variant = ShiftVariant::deserialize(&mut read_buf)?;
 		let amount = usize::deserialize(read_buf)?;
 
@@ -639,7 +639,7 @@ mod tests {
 
 	#[test]
 	fn test_shifted_value_index_serialization_round_trip() {
-		let shifted_value_index = ShiftedValueIndex::srl(WitnessIndex::private(42), 23);
+		let shifted_value_index = ShiftedValueIndex::srl(ValueIndex::private(42), 23);
 
 		let mut buf = Vec::new();
 		shifted_value_index.serialize(&mut buf).unwrap();
@@ -657,7 +657,7 @@ mod tests {
 	fn test_shifted_value_index_invalid_amount() {
 		// Create a buffer with invalid shift amount (>= 64)
 		let mut buf = Vec::new();
-		WitnessIndex::constant(0).serialize(&mut buf).unwrap();
+		ValueIndex::constant(0).serialize(&mut buf).unwrap();
 		ShiftVariant::Sll.serialize(&mut buf).unwrap();
 		64usize.serialize(&mut buf).unwrap(); // Invalid amount
 
@@ -694,7 +694,7 @@ mod tests {
 		amount: usize,
 	) -> Result<ShiftedValueIndex, SerializationError> {
 		let mut buf = Vec::new();
-		WitnessIndex::constant(0).serialize(&mut buf).unwrap();
+		ValueIndex::constant(0).serialize(&mut buf).unwrap();
 		shift_variant.serialize(&mut buf).unwrap();
 		amount.serialize(&mut buf).unwrap();
 		ShiftedValueIndex::deserialize(&mut buf.as_slice())
@@ -706,7 +706,7 @@ mod tests {
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll32, 31).unwrap(),
 			ShiftedValueIndex {
-				value_index: WitnessIndex::constant(0),
+				value_index: ValueIndex::constant(0),
 				shift_variant: ShiftVariant::Sll32,
 				amount: 31,
 			}
@@ -722,7 +722,7 @@ mod tests {
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll, 32).unwrap(),
 			ShiftedValueIndex {
-				value_index: WitnessIndex::constant(0),
+				value_index: ValueIndex::constant(0),
 				shift_variant: ShiftVariant::Sll,
 				amount: 32,
 			}
@@ -730,7 +730,7 @@ mod tests {
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll, 63).unwrap(),
 			ShiftedValueIndex {
-				value_index: WitnessIndex::constant(0),
+				value_index: ValueIndex::constant(0),
 				shift_variant: ShiftVariant::Sll,
 				amount: 63,
 			}

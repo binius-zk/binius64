@@ -690,7 +690,7 @@ impl DeserializeBytes for KeyCollection {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::constraint_system::{AndConstraint, WitnessIndex};
+	use binius_core::constraint_system::{AndConstraint, ValueIndex};
 	use binius_field::{BinaryField128bGhash, Field};
 	use binius_math::FieldBuffer;
 
@@ -709,8 +709,8 @@ mod tests {
 	fn shifted_constraint_system() -> ConstraintSystem {
 		// The system has four constants and no inout values, so the public segment is the
 		// constants and the hidden one is the private values.
-		let public = WitnessIndex::constant(1);
-		let hidden = WitnessIndex::private(1);
+		let public = ValueIndex::constant(1);
+		let hidden = ValueIndex::private(1);
 		ConstraintSystem {
 			constants: vec![Word::ZERO; 4],
 			n_const_pad: 0,

@@ -10,7 +10,7 @@ use bytes::{Buf, BufMut};
 
 use super::{
 	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ShiftVariant, ValueVec,
-	WitnessIndex, WitnessSegment, ZeroConstraint,
+	ValueIndex, ValueSegment, ZeroConstraint,
 };
 use crate::{
 	error::{ConstraintSystemError, VerificationError},
@@ -32,7 +32,7 @@ use crate::{
 ///  \------------- public segment -----------/  \----- hidden segment -/
 /// ```
 ///
-/// A constraint names a word by its [`WitnessSegment`] and its position within that segment, so
+/// A constraint names a word by its [`ValueSegment`] and its position within that segment, so
 /// the padding is unaddressable: an index reaches only the values of its own segment, and where
 /// those values sit in the vector is the layout's business rather than the constraint's.
 ///
@@ -152,16 +152,16 @@ impl ConstraintSystem {
 	///
 	/// The scratch segment holds no values a constraint may name, so it reports zero: every index
 	/// into it is out of range as far as this system is concerned.
-	pub const fn segment_len(&self, segment: WitnessSegment) -> usize {
+	pub const fn segment_len(&self, segment: ValueSegment) -> usize {
 		match segment {
-			WitnessSegment::Constant => self.n_const(),
-			WitnessSegment::InOut => self.n_inout,
-			WitnessSegment::Private => self.n_private,
-			WitnessSegment::Scratch => 0,
+			ValueSegment::Constant => self.n_const(),
+			ValueSegment::InOut => self.n_inout,
+			ValueSegment::Private => self.n_private,
+			ValueSegment::Scratch => 0,
 		}
 	}
 
-	/// Returns the word each segment starts at, indexed by [`WitnessSegment`].
+	/// Returns the word each segment starts at, indexed by [`ValueSegment`].
 	///
 	/// Scratch words are not part of a constraint system, so its segment starts where the value
 	/// vector ends; every scratch index therefore lands past the last word.
@@ -174,18 +174,18 @@ impl ConstraintSystem {
 		]
 	}
 
-	/// Returns the position of the word a [`WitnessIndex`] names within the value vector.
+	/// Returns the position of the word a [`ValueIndex`] names within the value vector.
 	///
 	/// This is the address the proving protocol reads the word at: the public segment occupies
 	/// the low positions and the hidden segment follows it.
-	pub const fn word_offset(&self, index: WitnessIndex) -> usize {
+	pub const fn word_offset(&self, index: ValueIndex) -> usize {
 		index.offset_within(self.segment_starts())
 	}
 
 	/// Builds a value vector from the words of this system's public and hidden segments.
 	///
 	/// The system places the inout values within the public segment, which is what resolves a
-	/// [`WitnessSegment::InOut`] index against the rebuilt vector.
+	/// [`ValueSegment::InOut`] index against the rebuilt vector.
 	pub fn value_vec_from_data(&self, public: &[Word], private: &[Word]) -> ValueVec {
 		ValueVec::new_from_data(self.offset_inout(), public, private)
 	}
@@ -250,7 +250,7 @@ impl ConstraintSystem {
 		// A vector opening one to the wrong word satisfies a different system than declared.
 		for (index, &constant) in self.constants.iter().enumerate() {
 			let value_index = index as u32;
-			let actual = values[WitnessIndex::constant(value_index)];
+			let actual = values[ValueIndex::constant(value_index)];
 			if actual != constant {
 				return Err(VerificationError::ConstantMismatch {
 					value_index,
@@ -541,35 +541,35 @@ mod tests {
 	pub(crate) fn create_test_constraint_system() -> ConstraintSystem {
 		ConstraintSystem {
 			zero_constraints: vec![ZeroConstraint::plain([
-				WitnessIndex::constant(0),
-				WitnessIndex::inout(0),
-				WitnessIndex::private(0),
+				ValueIndex::constant(0),
+				ValueIndex::inout(0),
+				ValueIndex::private(0),
 			])],
 			and_constraints: vec![
 				AndConstraint::plain_abc(
-					vec![WitnessIndex::constant(0), WitnessIndex::constant(1)],
-					vec![WitnessIndex::constant(2)],
-					vec![WitnessIndex::inout(0), WitnessIndex::inout(1)],
+					vec![ValueIndex::constant(0), ValueIndex::constant(1)],
+					vec![ValueIndex::constant(2)],
+					vec![ValueIndex::inout(0), ValueIndex::inout(1)],
 				),
 				AndConstraint::abc(
-					vec![ShiftedValueIndex::sll(WitnessIndex::constant(0), 5)],
-					vec![ShiftedValueIndex::srl(WitnessIndex::constant(1), 10)],
-					vec![ShiftedValueIndex::sar(WitnessIndex::constant(2), 15)],
+					vec![ShiftedValueIndex::sll(ValueIndex::constant(0), 5)],
+					vec![ShiftedValueIndex::srl(ValueIndex::constant(1), 10)],
+					vec![ShiftedValueIndex::sar(ValueIndex::constant(2), 15)],
 				),
 			],
 			imul_constraints: vec![ImulConstraint([
-				vec![ShiftedValueIndex::plain(WitnessIndex::constant(0))],
-				vec![ShiftedValueIndex::plain(WitnessIndex::constant(1))],
-				vec![ShiftedValueIndex::plain(WitnessIndex::constant(2))],
-				vec![ShiftedValueIndex::plain(WitnessIndex::private(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(1))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(2))],
+				vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
 			])],
 			bmul_constraints: vec![BmulConstraint([
-				vec![ShiftedValueIndex::plain(WitnessIndex::constant(0))],
-				vec![ShiftedValueIndex::plain(WitnessIndex::constant(1))],
-				vec![ShiftedValueIndex::plain(WitnessIndex::constant(2))],
-				vec![ShiftedValueIndex::plain(WitnessIndex::inout(0))],
-				vec![ShiftedValueIndex::plain(WitnessIndex::inout(1))],
-				vec![ShiftedValueIndex::sll(WitnessIndex::constant(0), 5)],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(1))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(2))],
+				vec![ShiftedValueIndex::plain(ValueIndex::inout(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex::inout(1))],
+				vec![ShiftedValueIndex::sll(ValueIndex::constant(0), 5)],
 			])],
 			..test_shape()
 		}
@@ -751,9 +751,9 @@ mod tests {
 		// Scratch words are the evaluating circuit's uncommitted temporaries, so a system that
 		// names one references a word that was never committed.
 		cs.and_constraints.push(AndConstraint::plain_abc(
-			vec![WitnessIndex::constant(0)],
-			vec![WitnessIndex::scratch(0)], // SCRATCH!
-			vec![WitnessIndex::private(0)],
+			vec![ValueIndex::constant(0)],
+			vec![ValueIndex::scratch(0)], // SCRATCH!
+			vec![ValueIndex::private(0)],
 		));
 
 		match cs.validate().unwrap_err() {
@@ -773,9 +773,9 @@ mod tests {
 		// what makes the check segment-relative rather than global.
 		let mut cs = test_shape();
 		cs.and_constraints.push(AndConstraint::plain_abc(
-			vec![WitnessIndex::constant(3)],
-			vec![WitnessIndex::inout(0)],
-			vec![WitnessIndex::private(3)],
+			vec![ValueIndex::constant(3)],
+			vec![ValueIndex::inout(0)],
+			vec![ValueIndex::private(3)],
 		));
 
 		match cs.validate().unwrap_err() {
@@ -785,7 +785,7 @@ mod tests {
 				segment_len,
 				..
 			} => {
-				assert_eq!(segment, WitnessSegment::Constant);
+				assert_eq!(segment, ValueSegment::Constant);
 				assert_eq!(value_index, 3);
 				assert_eq!(segment_len, 3);
 			}
@@ -799,16 +799,16 @@ mod tests {
 
 		// Add constraints that only reference valid non-padding indices
 		cs.and_constraints.push(AndConstraint::plain_abc(
-			vec![WitnessIndex::constant(0), WitnessIndex::constant(1)], // constants
-			vec![WitnessIndex::inout(0), WitnessIndex::inout(1)],       // inout
-			vec![WitnessIndex::private(0), WitnessIndex::private(1)],   // private
+			vec![ValueIndex::constant(0), ValueIndex::constant(1)], // constants
+			vec![ValueIndex::inout(0), ValueIndex::inout(1)],       // inout
+			vec![ValueIndex::private(0), ValueIndex::private(1)],   // private
 		));
 
 		cs.imul_constraints.push(ImulConstraint([
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(2))], // a
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(3))], // b
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(4))], // lo
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(5))], // hi
+			vec![ShiftedValueIndex::plain(ValueIndex::private(2))], // a
+			vec![ShiftedValueIndex::plain(ValueIndex::private(3))], // b
+			vec![ShiftedValueIndex::plain(ValueIndex::private(4))], // lo
+			vec![ShiftedValueIndex::plain(ValueIndex::private(5))], // hi
 		]));
 
 		let result = cs.validate();
@@ -840,7 +840,7 @@ mod tests {
 		let mut cs = test_shape();
 
 		cs.zero_constraints
-			.push(ZeroConstraint::plain([WitnessIndex::constant(0), WitnessIndex::private(100)]));
+			.push(ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::private(100)]));
 
 		match cs.validate().unwrap_err() {
 			ConstraintSystemError::OutOfRangeValueIndex {
@@ -868,13 +868,13 @@ mod tests {
 		assert_eq!(cs.log_zero_constraints(), None);
 
 		cs.zero_constraints =
-			vec![ZeroConstraint::plain([WitnessIndex::constant(0), WitnessIndex::private(0)]); 3];
+			vec![ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::private(0)]); 3];
 		assert_eq!(cs.log_zero_constraints(), Some(2));
 
 		let and = AndConstraint::plain_abc(
-			vec![WitnessIndex::constant(0)],
-			vec![WitnessIndex::inout(0)],
-			vec![WitnessIndex::private(0)],
+			vec![ValueIndex::constant(0)],
+			vec![ValueIndex::inout(0)],
+			vec![ValueIndex::private(0)],
 		);
 		cs.and_constraints = vec![and; 3];
 		assert_eq!(cs.log_and_constraints(), Some(2));
@@ -888,9 +888,9 @@ mod tests {
 
 		// Add AND constraint that references an out-of-range index
 		cs.and_constraints.push(AndConstraint::plain_abc(
-			vec![WitnessIndex::constant(0)], // valid constant
-			vec![WitnessIndex::private(6)],  // OUT OF RANGE! the private segment holds 6 values
-			vec![WitnessIndex::private(0)],  // valid private value
+			vec![ValueIndex::constant(0)], // valid constant
+			vec![ValueIndex::private(6)],  // OUT OF RANGE! the private segment holds 6 values
+			vec![ValueIndex::private(0)],  // valid private value
 		));
 
 		let result = cs.validate();
@@ -919,10 +919,10 @@ mod tests {
 
 		// Add IMUL constraint with out-of-range index in 'hi' operand
 		cs.imul_constraints.push(ImulConstraint([
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(0))], // a: valid
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(1))], // b: valid
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(0))],  // lo: valid
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(100))], // hi: WAY out of range!
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(0))], // a: valid
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(1))], // b: valid
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],  // lo: valid
+			vec![ShiftedValueIndex::plain(ValueIndex::private(100))], // hi: WAY out of range!
 		]));
 
 		let result = cs.validate();
@@ -951,12 +951,12 @@ mod tests {
 
 		// Add BMUL constraint with out-of-range index in 'c_hi' operand
 		cs.bmul_constraints.push(BmulConstraint([
-			vec![ShiftedValueIndex::plain(WitnessIndex::constant(0))], // a_lo: valid const
-			vec![ShiftedValueIndex::plain(WitnessIndex::inout(0))],    // a_hi: valid inout
-			vec![ShiftedValueIndex::plain(WitnessIndex::inout(1))],    // b_lo: valid inout
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(0))],  // b_hi: valid private
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(1))],  // c_lo: valid private
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(100))], // c_hi: WAY out of range!
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(0))], // a_lo: valid const
+			vec![ShiftedValueIndex::plain(ValueIndex::inout(0))],    // a_hi: valid inout
+			vec![ShiftedValueIndex::plain(ValueIndex::inout(1))],    // b_lo: valid inout
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],  // b_hi: valid private
+			vec![ShiftedValueIndex::plain(ValueIndex::private(1))],  // c_lo: valid private
+			vec![ShiftedValueIndex::plain(ValueIndex::private(100))], // c_hi: WAY out of range!
 		]));
 
 		let result = cs.validate();
@@ -987,12 +987,12 @@ mod tests {
 		// 32 is out of range even though it is below the full-width bound of 64.
 		cs.and_constraints.push(AndConstraint::abc(
 			vec![ShiftedValueIndex {
-				value_index: WitnessIndex::constant(0),
+				value_index: ValueIndex::constant(0),
 				shift_variant: ShiftVariant::Sll32,
 				amount: 32,
 			}],
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(0))],
-			vec![ShiftedValueIndex::plain(WitnessIndex::private(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
 		));
 
 		match cs.validate().unwrap_err() {
@@ -1065,7 +1065,7 @@ mod tests {
 			n_private: 8,
 			n_private_pad: 0,
 			zero_constraints: (0..n)
-				.map(|i| ZeroConstraint::plain([WitnessIndex::private(i as u32)]))
+				.map(|i| ZeroConstraint::plain([ValueIndex::private(i as u32)]))
 				.collect(),
 			and_constraints: vec![],
 			imul_constraints: vec![],
@@ -1150,7 +1150,7 @@ mod tests {
 			n_inout_pad: 0,
 			n_private: 8,
 			n_private_pad: 0,
-			zero_constraints: vec![ZeroConstraint::plain([WitnessIndex::constant(0)])],
+			zero_constraints: vec![ZeroConstraint::plain([ValueIndex::constant(0)])],
 			and_constraints: vec![],
 			imul_constraints: vec![],
 			bmul_constraints: vec![],

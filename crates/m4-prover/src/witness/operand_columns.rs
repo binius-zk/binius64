@@ -7,7 +7,7 @@ use std::{iter, mem::MaybeUninit, ptr};
 
 use binius_compute::{Allocator, VecLike};
 use binius_core::{
-	WitnessSegment,
+	ValueSegment,
 	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
@@ -434,17 +434,17 @@ impl<'a> ValueWords<'a> {
 
 		let row_index = match value_index.segment() {
 			// A constant names one word, shifted once and shared by every instance.
-			WitnessSegment::Constant => {
+			ValueSegment::Constant => {
 				let constant = self.constants[value_index.index() as usize];
 				return TermWords::Splat(variant.apply(constant, amount as usize));
 			}
 			// A private index names one wire, whose instances are one contiguous row.
-			WitnessSegment::Private => value_index.index() as usize,
+			ValueSegment::Private => value_index.index() as usize,
 			// An inout value is public but chosen per instance, so it would need a bank of its
 			// own rather than one shared word; `ValueTable` rejects a circuit that declares any.
 			// A scratch word is never committed, and `ConstraintSystem::validate` rejects an
 			// operand naming one.
-			segment @ (WitnessSegment::InOut | WitnessSegment::Scratch) => {
+			segment @ (ValueSegment::InOut | ValueSegment::Scratch) => {
 				panic!("a batched constraint system has no {segment:?} values")
 			}
 		};
