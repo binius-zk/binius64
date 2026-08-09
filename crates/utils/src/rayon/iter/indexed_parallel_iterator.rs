@@ -186,6 +186,7 @@ impl<I: IndexedParallelIteratorInner> IndexedParallelIteratorInner for std::iter
 impl<T> IndexedParallelIteratorInner for std::vec::IntoIter<T> {}
 impl<T, const N: usize> IndexedParallelIteratorInner for std::array::IntoIter<T, N> {}
 impl<T: Clone> IndexedParallelIteratorInner for std::iter::RepeatN<T> {}
+impl<T> IndexedParallelIteratorInner for std::iter::Once<T> {}
 impl<I: IndexedParallelIteratorInner> IndexedParallelIteratorInner for std::iter::Skip<I> {}
 impl<L: IndexedParallelIteratorInner, R: IndexedParallelIteratorInner<Item = L::Item>>
 	IndexedParallelIteratorInner for itertools::Either<L, R>
