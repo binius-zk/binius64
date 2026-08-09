@@ -30,7 +30,7 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_truncate_low_inplace, eq_one_var},
 };
 
-use super::round_evals::{RoundEvals2, round_coeffs_by_eq};
+use super::round_evals::RoundEvals;
 
 /// Where the rounds have reached in the point, and the product they accrued.
 #[derive(Debug, Clone)]
@@ -230,7 +230,7 @@ impl<F: Field, P: PackedField<Scalar = F>> ChunkedEqTracker<P> {
 	pub fn interpolate2(
 		&self,
 		sum: F,
-		prime_evals: RoundEvals2<F>,
+		prime_evals: RoundEvals<F, 2>,
 	) -> (RoundCoeffs<F>, RoundCoeffs<F>) {
 		let alpha = self.next_coordinate();
 
@@ -240,7 +240,7 @@ impl<F: Field, P: PackedField<Scalar = F>> ChunkedEqTracker<P> {
 
 		// Multiplying the linear term back in restores the second factor.
 		// Scaling by the accrued product restores the first.
-		let round_coeffs = round_coeffs_by_eq(&prime_coeffs, alpha) * self.prefix.eq_prefix_eval;
+		let round_coeffs = prime_coeffs.mul_by_eq(alpha) * self.prefix.eq_prefix_eval;
 
 		(prime_coeffs, round_coeffs)
 	}

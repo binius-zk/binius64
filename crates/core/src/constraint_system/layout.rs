@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use super::ConstraintSystem;
+use super::{ConstraintSystem, ValueIndex, ValueSegment};
 use crate::word::Word;
 
 /// Description of a layout of the value vector for a particular circuit.
@@ -50,6 +50,20 @@ impl ValueVecLayout {
 	/// This is the length of the value vector prefix that constraint operands can reference.
 	pub const fn combined_len(&self) -> usize {
 		self.offset_witness + self.n_hidden_words
+	}
+
+	/// Returns the flat position of the word a [`ValueIndex`] names, counting the scratch tail.
+	///
+	/// The witness and internal values share the private segment, in that order, so it starts
+	/// where the witness values do.
+	pub const fn word_offset(&self, index: ValueIndex) -> usize {
+		let segment_start = match index.segment() {
+			ValueSegment::Constant => 0,
+			ValueSegment::InOut => self.offset_inout,
+			ValueSegment::Private => self.offset_witness,
+			ValueSegment::Scratch => self.combined_len(),
+		};
+		segment_start + index.index() as usize
 	}
 
 	/// Returns the constraint system shape this layout realizes.

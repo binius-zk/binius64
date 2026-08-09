@@ -7,7 +7,7 @@ use std::{iter, mem::MaybeUninit, ptr};
 
 use binius_compute::{Allocator, VecLike};
 use binius_core::{
-	ValueIndex,
+	ValueSegment,
 	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
@@ -265,8 +265,6 @@ struct ValueWords<'a> {
 	constants: &'a [Word],
 	/// Every instance's hidden words, wire-major.
 	hidden: &'a [Word],
-	/// The value index at which hidden words begin.
-	witness_offset: ValueIndex,
 	/// The base-2 logarithm of the instance count, which is one hidden row's stride.
 	log_instances: usize,
 }
@@ -294,7 +292,6 @@ impl<'a> ValueWords<'a> {
 		Self {
 			constants,
 			hidden: table.as_words(),
-			witness_offset: ValueIndex(table.layout().offset_witness as u32),
 			log_instances: table.log_instances(),
 		}
 	}
@@ -435,14 +432,22 @@ impl<'a> ValueWords<'a> {
 			amount,
 		} = term;
 
-		// A public index names one constant, shifted once and shared by every instance.
-		if value_index < self.witness_offset {
-			let constant = self.constants[value_index.0 as usize];
-			return TermWords::Splat(variant.apply(constant, amount as usize));
-		}
-
-		// A hidden index names one wire, whose instances are one contiguous row.
-		let row_index = (value_index.0 - self.witness_offset.0) as usize;
+		let row_index = match value_index.segment() {
+			// A constant names one word, shifted once and shared by every instance.
+			ValueSegment::Constant => {
+				let constant = self.constants[value_index.index() as usize];
+				return TermWords::Splat(variant.apply(constant, amount as usize));
+			}
+			// A private index names one wire, whose instances are one contiguous row.
+			ValueSegment::Private => value_index.index() as usize,
+			// An inout value is public but chosen per instance, so it would need a bank of its
+			// own rather than one shared word; `ValueTable` rejects a circuit that declares any.
+			// A scratch word is never committed, and `ConstraintSystem::validate` rejects an
+			// operand naming one.
+			segment @ (ValueSegment::InOut | ValueSegment::Scratch) => {
+				panic!("a batched constraint system has no {segment:?} values")
+			}
+		};
 		let row = &self.hidden
 			[(row_index << self.log_instances)..((row_index + 1) << self.log_instances)];
 

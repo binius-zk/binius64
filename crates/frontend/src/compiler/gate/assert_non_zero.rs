@@ -183,7 +183,7 @@ mod tests {
 		let mut w = circuit.new_witness_filler();
 		let cs = circuit.constraint_system();
 		for (i, c) in cs.constants.iter().enumerate() {
-			w.value_vec_mut()[ValueIndex(i as u32)] = *c;
+			w.value_vec_mut()[ValueIndex::constant(i as u32)] = *c;
 		}
 
 		// The carry-out constraint is satisfied by the all-zero witness, but the AND

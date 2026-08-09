@@ -32,8 +32,8 @@ pub mod stat;
 
 pub use compiler::{
 	CircuitBuilder, Options, Wire,
-	circuit::{Circuit, PopulateError, WitnessFiller},
-	eval_form::BatchPopulateError,
+	circuit::{AssertionFailure, Circuit, PopulateError, WitnessFiller},
+	eval_form::{BatchPopulateError, MAX_ASSERTION_FAILURES},
 	hints::{self, Hint},
 };
 pub use stat::CircuitStat;

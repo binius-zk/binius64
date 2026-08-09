@@ -2,7 +2,7 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
-use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
+use binius_core::constraint_system::{ConstraintSystem, Proof, ValuesData};
 use binius_examples::setup;
 use binius_hash::StdHashSuite;
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
@@ -66,7 +66,7 @@ fn main() -> Result<()> {
 		.context("Failed to deserialize non-public ValuesData")?;
 
 	// Reconstruct the full ValueVec
-	let witness = ValueVec::new_from_data(&public, &non_public);
+	let witness = cs.value_vec_from_data(&public, &non_public);
 
 	// Setup prover (verifier is not used here)
 	let (_verifier, prover) = setup::<StdHashSuite>(cs, args.log_inv_rate as usize, None)?;

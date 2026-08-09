@@ -639,7 +639,7 @@ mod tests {
 
 	#[test]
 	fn test_shifted_value_index_serialization_round_trip() {
-		let shifted_value_index = ShiftedValueIndex::srl(ValueIndex(42), 23);
+		let shifted_value_index = ShiftedValueIndex::srl(ValueIndex::private(42), 23);
 
 		let mut buf = Vec::new();
 		shifted_value_index.serialize(&mut buf).unwrap();
@@ -657,7 +657,7 @@ mod tests {
 	fn test_shifted_value_index_invalid_amount() {
 		// Create a buffer with invalid shift amount (>= 64)
 		let mut buf = Vec::new();
-		ValueIndex(0).serialize(&mut buf).unwrap();
+		ValueIndex::constant(0).serialize(&mut buf).unwrap();
 		ShiftVariant::Sll.serialize(&mut buf).unwrap();
 		64usize.serialize(&mut buf).unwrap(); // Invalid amount
 
@@ -694,7 +694,7 @@ mod tests {
 		amount: usize,
 	) -> Result<ShiftedValueIndex, SerializationError> {
 		let mut buf = Vec::new();
-		ValueIndex(0).serialize(&mut buf).unwrap();
+		ValueIndex::constant(0).serialize(&mut buf).unwrap();
 		shift_variant.serialize(&mut buf).unwrap();
 		amount.serialize(&mut buf).unwrap();
 		ShiftedValueIndex::deserialize(&mut buf.as_slice())
@@ -706,7 +706,7 @@ mod tests {
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll32, 31).unwrap(),
 			ShiftedValueIndex {
-				value_index: ValueIndex(0),
+				value_index: ValueIndex::constant(0),
 				shift_variant: ShiftVariant::Sll32,
 				amount: 31,
 			}
@@ -722,7 +722,7 @@ mod tests {
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll, 32).unwrap(),
 			ShiftedValueIndex {
-				value_index: ValueIndex(0),
+				value_index: ValueIndex::constant(0),
 				shift_variant: ShiftVariant::Sll,
 				amount: 32,
 			}
@@ -730,7 +730,7 @@ mod tests {
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll, 63).unwrap(),
 			ShiftedValueIndex {
-				value_index: ValueIndex(0),
+				value_index: ValueIndex::constant(0),
 				shift_variant: ShiftVariant::Sll,
 				amount: 63,
 			}

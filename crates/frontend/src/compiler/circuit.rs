@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 use std::{
-	error, fmt,
+	fmt,
 	ops::{Index, IndexMut},
 };
 
@@ -18,29 +18,61 @@ use crate::compiler::{
 	gate_graph::{GateGraph, Wire},
 };
 
-/// Error returned when populating wire witness fails due to assertion failures.
-#[derive(Debug)]
+/// A single assertion that did not hold while populating the witness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssertionFailure {
+	/// The circuit path the assertion was declared under, such as `.sha256.round[3]`.
+	///
+	/// Empty for an assertion at the circuit root.
+	pub path: String,
+	/// What the assertion required, against the words it saw instead.
+	///
+	/// A diagnostic for a human to read.
+	/// Its wording is not part of the API, so do not match on it.
+	pub detail: String,
+}
+
+impl fmt::Display for AssertionFailure {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		if self.path.is_empty() {
+			f.write_str(&self.detail)
+		} else {
+			write!(f, "{}: {}", self.path, self.detail)
+		}
+	}
+}
+
+/// Witness population failed because the circuit is not satisfied.
+///
+/// Evaluation runs to completion rather than stopping at the first bad assertion.
+/// So a caller sees every violation at once.
+///
+/// The retained list is capped at [`MAX_ASSERTION_FAILURES`](crate::MAX_ASSERTION_FAILURES).
+/// [`Self::total`] counts every violation, capped or not.
+/// The two disagree exactly when the cap was reached.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub struct PopulateError {
-	/// List of assertion failure messages (limited to MAX_ASSERTION_FAILURES).
-	pub messages: Vec<String>,
-	/// Total count of assertion failures (may exceed messages.len()).
-	pub total_count: usize,
+	/// The failures that were retained, in the order evaluation found them.
+	pub failures: Vec<AssertionFailure>,
+	/// How many assertions failed in total, which may exceed `failures.len()`.
+	pub total: usize,
 }
 
 impl fmt::Display for PopulateError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		writeln!(f, "assertions failed:")?;
-		for message in &self.messages {
-			writeln!(f, "{message}")?;
+		// No trailing newline: the caller owns how this is framed.
+		write!(f, "circuit not satisfied: {} assertion(s) failed", self.total)?;
+		for failure in &self.failures {
+			write!(f, "\n  {failure}")?;
 		}
-		if self.total_count > self.messages.len() {
-			writeln!(f, "(Some assertions are omitted. Total: {})", self.total_count)?;
+		let omitted = self.total.saturating_sub(self.failures.len());
+		if omitted > 0 {
+			write!(f, "\n  ... and {omitted} more, omitted")?;
 		}
 		Ok(())
 	}
 }
-
-impl error::Error for PopulateError {}
 
 /// A helper struct for filling witness values in a circuit.
 pub struct WitnessFiller<'a> {
@@ -158,6 +190,15 @@ impl Circuit {
 		self.wire_mapping[wire]
 	}
 
+	/// For the given wire, returns the row it occupies in a transposed value array.
+	///
+	/// This is the wire's flat position in the value vector, counting the scratch tail, which is
+	/// how [`Self::populate_wire_witness_batched`] numbers the rows it fills.
+	#[inline(always)]
+	pub fn witness_row(&self, wire: Wire) -> usize {
+		self.value_vec_layout.word_offset(self.witness_index(wire))
+	}
+
 	/// Creates a new witness filler for this circuit.
 	pub fn new_witness_filler(&self) -> WitnessFiller<'_> {
 		WitnessFiller {
@@ -181,9 +222,9 @@ impl Circuit {
 	///
 	/// # Errors
 	///
-	/// In case the circuit is not satisfiable (any assertion fails), this function will return
-	/// an error with a list of assertion failure messages.
-	///
+	/// Returns [`PopulateError`] when any assertion fails.
+	/// Each failure names the circuit path the assertion was declared under.
+	/// Evaluation runs to completion first, so every violation is reported at once.
 	///
 	/// [`CircuitBuilder::add_constant`]: super::CircuitBuilder::add_constant
 	/// [`CircuitBuilder::add_inout`]: super::CircuitBuilder::add_inout
@@ -191,7 +232,7 @@ impl Circuit {
 	pub fn populate_wire_witness(&self, w: &mut WitnessFiller) -> Result<(), PopulateError> {
 		// Fill the constant part from the witness.
 		for (index, constant) in self.constraint_system.constants.iter().enumerate() {
-			w.value_vec[ValueIndex(index as u32)] = *constant;
+			w.value_vec[ValueIndex::constant(index as u32)] = *constant;
 		}
 
 		// Execute the evaluation form - it modifies the ValueVec in place
@@ -296,5 +337,79 @@ impl Circuit {
 	/// Returns a string with a JSON dump that is useful to profile the circuit.
 	pub fn simple_json_dump(&self) -> String {
 		dump_composition(&self.gate_graph)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn failure(path: &str, detail: &str) -> AssertionFailure {
+		AssertionFailure {
+			path: path.to_string(),
+			detail: detail.to_string(),
+		}
+	}
+
+	#[test]
+	fn a_failure_at_the_root_renders_without_a_separator() {
+		// A root assertion has no path, so there is nothing to prefix and no stray colon.
+		assert_eq!(failure("", "Word(0x1) != Word(0x2)").to_string(), "Word(0x1) != Word(0x2)");
+	}
+
+	#[test]
+	fn a_nested_failure_renders_path_then_detail() {
+		// The path and the detail are stored apart; rendering is what joins them.
+		assert_eq!(
+			failure(".sha256.round", "Word(0x1) != 0").to_string(),
+			".sha256.round: Word(0x1) != 0"
+		);
+	}
+
+	#[test]
+	fn the_error_lists_every_retained_failure_and_never_ends_with_a_newline() {
+		// Invariant: a caller frames the message, so it must not arrive with its own line break.
+		let err = PopulateError {
+			failures: vec![failure(".a", "one"), failure(".b", "two")],
+			total: 2,
+		};
+		let rendered = err.to_string();
+		assert_eq!(rendered, "circuit not satisfied: 2 assertion(s) failed\n  .a: one\n  .b: two");
+		assert!(!rendered.ends_with('\n'));
+	}
+
+	#[test]
+	fn a_capped_error_reports_how_many_it_dropped() {
+		// `total` counts past the cap, so the difference is what the list does not show.
+		let err = PopulateError {
+			failures: vec![failure(".a", "one")],
+			total: 7,
+		};
+		assert_eq!(
+			err.to_string(),
+			"circuit not satisfied: 7 assertion(s) failed\n  .a: one\n  ... and 6 more, omitted"
+		);
+	}
+
+	#[test]
+	fn an_uncapped_error_reports_no_omissions() {
+		// Equal counts mean the cap was never reached, so no trailing note is added.
+		let err = PopulateError {
+			failures: vec![failure(".a", "one")],
+			total: 1,
+		};
+		assert_eq!(err.to_string(), "circuit not satisfied: 1 assertion(s) failed\n  .a: one");
+	}
+
+	#[test]
+	fn the_error_is_a_std_error() {
+		// The whole point of the type: it can cross an API boundary as a `dyn Error`.
+		let err = PopulateError {
+			failures: vec![failure(".a", "one")],
+			total: 1,
+		};
+		let boxed: Box<dyn std::error::Error> = Box::new(err);
+		assert!(boxed.to_string().starts_with("circuit not satisfied"));
+		assert!(boxed.source().is_none());
 	}
 }

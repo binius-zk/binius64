@@ -70,15 +70,11 @@ impl Alloc {
 	}
 
 	pub fn into_assignment(self) -> Assignment {
-		// `ValueVec` expects the wires to be in a certain order. Specifically:
+		// Each wire is named by the segment it belongs to and its position within that segment,
+		// so the four groups are numbered independently and nothing here has to reason about
+		// where a segment lands in the value vector.
 		//
-		// 1. const
-		// 2. inout
-		// 3. witness
-		// 4. internal
-		// 5. scratch
-		//
-		// So we create a mapping between a `Wire` to the final `ValueIndex`.
+		// The witness and internal wires share the private segment, the witness wires first.
 
 		let mut wire_mapping = SecondaryMap::new();
 
@@ -90,54 +86,41 @@ impl Alloc {
 
 		// Constants keep the order in which they were added, which is wire-creation order.
 		// The gate graph seeds the all-one constant first (see `GateGraph::new`).
-		// So it is the first constant here and lands at value index 0.
-
-		// First, allocate the indices for the public section of the value vec. The public section
-		// consists of constant wires followed by inout wires.
-		//
-		// Next, we align the current index to the next power of 2 so the witness section starts at
-		// a power-of-two offset.
-		//
-		// Finally, allocate wires for witness values and internal wires. The committed length is
-		// not padded to a power of two; the prover zero-pads the committed witness when it builds
-		// the witness polynomial.
-		let mut cur_index: u32 = 0;
+		// So it is the first constant here and lands at constant index 0.
 		let mut constants = Vec::with_capacity(n_const);
-		for (wire, value) in self.w_const {
-			wire_mapping[wire] = ValueIndex(cur_index);
+		for (index, (wire, value)) in self.w_const.into_iter().enumerate() {
+			wire_mapping[wire] = ValueIndex::constant(index as u32);
 			constants.push(value);
-			cur_index += 1;
 		}
-		let offset_inout = cur_index as usize;
-		for wire in self.w_inout {
-			wire_mapping[wire] = ValueIndex(cur_index);
-			cur_index += 1;
+		for (index, wire) in self.w_inout.into_iter().enumerate() {
+			wire_mapping[wire] = ValueIndex::inout(index as u32);
 		}
-		// Ensure the public section meets the minimum size requirement
-		cur_index = cur_index.max(ConstraintSystem::MIN_WORDS_PER_SEGMENT as u32);
-		cur_index = cur_index.next_power_of_two();
-		let offset_witness = cur_index as usize;
-		for wire in self.w_witness.into_iter().chain(self.w_internal) {
-			wire_mapping[wire] = ValueIndex(cur_index);
-			cur_index += 1;
+		for (index, wire) in self
+			.w_witness
+			.into_iter()
+			.chain(self.w_internal)
+			.enumerate()
+		{
+			wire_mapping[wire] = ValueIndex::private(index as u32);
 		}
 
-		// Pad the hidden segment to at least the public segment length, so
-		// `log_witness_words >= log_public_words` (see `ConstraintSystem::validate_shape`).
-		cur_index = cur_index.max(2 * offset_witness as u32);
-
-		let n_hidden_words = cur_index as usize - offset_witness;
-
-		// Each uncommitted value lands at its own slot within the segment.
+		// Each uncommitted value lands at its own slot within the scratch segment.
 		// Two values given the same slot share one index.
 		// That is sound only because their lifetimes do not overlap.
-		//
-		// The segment is the tail of the value vector.
-		// So the running index is not advanced past it.
-		let scratch_base = cur_index;
 		for (wire, slot) in self.w_scratch {
-			wire_mapping[wire] = ValueIndex(scratch_base + slot);
+			wire_mapping[wire] = ValueIndex::scratch(slot);
 		}
+
+		// The layout places the segments in the value vector. The public section holds the
+		// constants followed by the inout values, padded up to a power-of-two length that meets
+		// the minimum segment size. The hidden section follows, padded to at least the public
+		// length so that `log_witness_words >= log_public_words` (see
+		// `ConstraintSystem::validate_shape`).
+		let offset_inout = n_const;
+		let offset_witness = (n_const + n_inout)
+			.max(ConstraintSystem::MIN_WORDS_PER_SEGMENT)
+			.next_power_of_two();
+		let n_hidden_words = (n_witness + n_internal).max(offset_witness);
 
 		let value_vec_layout = ValueVecLayout {
 			n_const,
@@ -201,51 +184,48 @@ mod tests {
 
 		// Build the assignment
 		let assignment = alloc.into_assignment();
+		let mapping = &assignment.wire_mapping;
 
-		// Constants come first, in the order they were added.
-		assert_eq!(assignment.wire_mapping[const1], ValueIndex(0));
-		assert_eq!(assignment.wire_mapping[const2], ValueIndex(1));
-		assert_eq!(assignment.wire_mapping[const3], ValueIndex(2));
+		// Each segment is numbered from zero, in the order its wires were added.
+		assert_eq!(mapping[const1], ValueIndex::constant(0));
+		assert_eq!(mapping[const2], ValueIndex::constant(1));
+		assert_eq!(mapping[const3], ValueIndex::constant(2));
+		assert_eq!(mapping[inout1], ValueIndex::inout(0));
+		assert_eq!(mapping[inout2], ValueIndex::inout(1));
+
+		// The witness wires take the front of the private segment and the internal ones follow.
+		assert_eq!(mapping[witness1], ValueIndex::private(0));
+		assert_eq!(mapping[witness2], ValueIndex::private(1));
+		assert_eq!(mapping[witness3], ValueIndex::private(2));
+		assert_eq!(mapping[internal1], ValueIndex::private(3));
+
+		// A scratch wire keeps the slot it was placed at.
+		assert_eq!(mapping[scratch1], ValueIndex::scratch(0));
+		assert_eq!(mapping[scratch2], ValueIndex::scratch(1));
 
 		// The constants vector preserves insertion order.
 		assert_eq!(assignment.constants, vec![Word(42), Word(100), Word(200)]);
 
-		// Inout wires should come after constants
-		let inout1_idx = assignment.wire_mapping[inout1];
-		let inout2_idx = assignment.wire_mapping[inout2];
-		assert!(inout1_idx.0 > assignment.wire_mapping[const3].0);
-		assert!(inout2_idx.0 > inout1_idx.0);
+		// The layout is what places those segments in the value vector.
+		let layout = &assignment.value_vec_layout;
+		assert_eq!(layout.n_const, 3);
+		assert_eq!(layout.n_inout, 2);
+		assert_eq!(layout.n_witness, 3);
+		assert_eq!(layout.n_internal, 1);
+		assert_eq!(layout.offset_inout, 3);
+		// Five public values padded up to the next power of two.
+		assert_eq!(layout.offset_witness, 8);
+		// The hidden segment is padded from 4 words up to the public segment length.
+		assert_eq!(layout.n_hidden_words, 8);
 
-		// Witness wires should start at a power-of-two index
-		let witness1_idx = assignment.wire_mapping[witness1];
-		assert!(witness1_idx.0.is_power_of_two(), "witness values must start with a po2 index");
-
-		// Verify witness wires come after inout and maintain relative order
-		let witness2_idx = assignment.wire_mapping[witness2];
-		let witness3_idx = assignment.wire_mapping[witness3];
-		assert!(witness1_idx.0 > inout2_idx.0);
-		assert!(witness2_idx.0 > witness1_idx.0);
-		assert!(witness3_idx.0 > witness2_idx.0);
-
-		// Internal wires come after witness wires
-		let internal1_idx = assignment.wire_mapping[internal1];
-		assert!(internal1_idx.0 > witness3_idx.0);
-
-		// Scratch wires should be in scratch mapping with high bit set
-		let scratch1_idx = assignment.wire_mapping[scratch1];
-		let scratch2_idx = assignment.wire_mapping[scratch2];
-		assert!(scratch1_idx.0 > internal1_idx.0);
-		assert!(scratch2_idx.0 > scratch1_idx.0);
-
-		// Verify the value_vec_layout
-		assert_eq!(assignment.value_vec_layout.n_const, 3);
-		assert_eq!(assignment.value_vec_layout.n_inout, 2);
-		assert_eq!(assignment.value_vec_layout.n_witness, 3);
-		assert_eq!(assignment.value_vec_layout.n_internal, 1);
-		assert_eq!(assignment.value_vec_layout.offset_inout, 3);
-		assert_eq!(assignment.value_vec_layout.offset_witness, witness1_idx.0 as usize);
-		// The witness segment is padded from 4 words up to the public segment length (8).
-		assert_eq!(assignment.value_vec_layout.n_hidden_words, 8);
+		// Resolving the indices through the layout reproduces the section order the value vector
+		// lays the words out in.
+		let offsets = [
+			const1, const2, const3, inout1, inout2, witness1, witness2, witness3, internal1,
+			scratch1, scratch2,
+		]
+		.map(|wire| layout.word_offset(mapping[wire]));
+		assert_eq!(offsets, [0, 1, 2, 3, 4, 8, 9, 10, 11, 16, 17]);
 	}
 
 	#[test]
@@ -263,10 +243,10 @@ mod tests {
 
 		let assignment = alloc.into_assignment();
 
-		// Even with just one constant, the witness should start at MIN_WORDS_PER_SEGMENT
-		// (which should be a power of 2)
-		let witness_idx = assignment.wire_mapping[witness1];
-		assert!(witness_idx.0 >= ConstraintSystem::MIN_WORDS_PER_SEGMENT as u32);
-		assert!(witness_idx.0.is_power_of_two());
+		// Even with just one constant, the public segment is padded to MIN_WORDS_PER_SEGMENT, so
+		// that is where the hidden segment starts.
+		let offset_witness = assignment.value_vec_layout.offset_witness;
+		assert!(offset_witness >= ConstraintSystem::MIN_WORDS_PER_SEGMENT);
+		assert!(offset_witness.is_power_of_two());
 	}
 }

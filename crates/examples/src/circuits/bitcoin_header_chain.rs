@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use anyhow::bail;
-use binius_circuits::bitcoin::header_chain::HeaderChain;
+use binius_circuits::bitcoin::header_chain::header_chain;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use clap::Args;
 
@@ -15,7 +15,6 @@ use crate::ExampleCircuit;
 pub struct BitcoinHeaderChainExample {
 	latest_digest: [Wire; 4],
 	headers: Vec<[Wire; 10]>,
-	header_chain_gadget: HeaderChain,
 }
 
 #[derive(Args)]
@@ -47,12 +46,11 @@ impl ExampleCircuit for BitcoinHeaderChainExample {
 			std::iter::repeat_with(|| std::array::from_fn(|_| builder.add_witness()))
 				.take(params.num_blocks)
 				.collect();
-		let header_chain_gadget = HeaderChain::construct_circuit(builder, &headers, latest_digest);
+		builder.assert_eq_v("latest digest", header_chain(builder, &headers), latest_digest);
 
 		Ok(Self {
 			latest_digest,
 			headers,
-			header_chain_gadget,
 		})
 	}
 
@@ -67,9 +65,6 @@ impl ExampleCircuit for BitcoinHeaderChainExample {
 			filler.pack_bytes_le(header, header_value);
 		}
 		filler.pack_bytes_le(&self.latest_digest, &latest_digest_value);
-		let headers_value_ref: Vec<&[u8]> = headers_value.iter().map(AsRef::as_ref).collect();
-		self.header_chain_gadget
-			.populate_inner(filler, &headers_value_ref);
 
 		Ok(())
 	}

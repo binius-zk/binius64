@@ -1,7 +1,11 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Hosts error definitions for the core crate.
 
-use crate::{ConstraintSystem, constraint_system::ConstraintKind};
+use crate::{
+	ConstraintSystem,
+	constraint_system::{ConstraintKind, ValueSegment},
+};
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
@@ -30,9 +34,9 @@ pub enum ConstraintSystemError {
 		operand_name: &'static str,
 	},
 	#[error(
-		"{constraint_kind} #{constraint_index} refers to padding in its {operand_name} operand"
+		"{constraint_kind} #{constraint_index} refers to a scratch value in its {operand_name} operand"
 	)]
-	PaddingValueIndex {
+	ScratchValueIndex {
 		constraint_kind: ConstraintKind,
 		operand_name: &'static str,
 		constraint_index: usize,
@@ -48,14 +52,15 @@ pub enum ConstraintSystemError {
 		max_amount: usize,
 	},
 	#[error(
-		"{constraint_kind} #{constraint_index} refers to out-of-range value index in {operand_name} operand (index {value_index} >= total length {total_len})"
+		"{constraint_kind} #{constraint_index} refers to out-of-range value index in {operand_name} operand ({segment:?} index {value_index} >= segment length {segment_len})"
 	)]
 	OutOfRangeValueIndex {
 		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
+		segment: ValueSegment,
 		value_index: u32,
-		total_len: usize,
+		segment_len: usize,
 	},
 }
 

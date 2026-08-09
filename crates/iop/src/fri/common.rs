@@ -856,13 +856,13 @@ mod tests {
 		BinaryMerkleTreeScheme::new()
 	}
 
-	// Invariant: the size the arity search minimizes is the size a prover sends.
+	// Invariant: the size the arity search minimizes is the size a prover actually sends.
 	//
-	//     cost model    what `compute_layer_reduction_size` charges
+	//     cost model    what `compute_layer_reduction_size` charges, and the search minimizes
 	//     proof_size    the exact byte count
 	//
-	// The cost model omits the commitment digests, which do not vary with the arity.
-	// A batch of N carries `N + 1 + fold_arities.len()` of them.
+	// The cost model omits the commitment digests, which do not vary with the arity choice.
+	// A batch of N input oracles carries `N + 1 + fold_arities.len()` of them.
 	#[test]
 	fn optimizer_estimate_matches_exact_proof_size() {
 		let merkle_scheme = test_merkle_scheme();
@@ -873,10 +873,17 @@ mod tests {
 			domain_context: GaoMateerOnTheFly::<B128>::generate(24),
 		};
 
-		// Shapes that stress the layout: lifting, ZK mixed with flexible, non-power-of-two counts.
-		let batches: Vec<Vec<OracleSpec>> = vec![
-			vec![OracleSpec::new(16)],
-			vec![OracleSpec::new_zk(16)],
+		// Single oracles across the size range, then shapes that stress the batch layout: lifting,
+		// ZK mixed with flexible, non-power-of-two counts.
+		//
+		// A ZK oracle pins its batch size at 1; a non-ZK oracle takes a flexible one, so the two
+		// exercise different branches of the selection.
+		let mut batches: Vec<Vec<OracleSpec>> = Vec::new();
+		for log_msg_len in [0, 1, 4, 8, 12, 16, 20] {
+			batches.push(vec![OracleSpec::new(log_msg_len)]);
+			batches.push(vec![OracleSpec::new_zk(log_msg_len)]);
+		}
+		batches.extend([
 			vec![OracleSpec::new(16), OracleSpec::new(16)],
 			vec![OracleSpec::new(16), OracleSpec::new(12)],
 			vec![OracleSpec::new_zk(11), OracleSpec::new(16)],
@@ -891,7 +898,7 @@ mod tests {
 				OracleSpec::new(8),
 				OracleSpec::new_zk(4),
 			],
-		];
+		]);
 
 		for log_inv_rate in [1, 2, 3] {
 			for n_test_queries in [32, 128, 232] {
@@ -908,9 +915,8 @@ mod tests {
 					assert_eq!(
 						estimate + digests,
 						proof_size(&params, &merkle_scheme),
-						"n_oracles={} log_inv_rate={log_inv_rate} \
+						"oracles={oracles:?} log_inv_rate={log_inv_rate} \
 						 n_test_queries={n_test_queries} arities={:?}",
-						oracles.len(),
 						params.fold_arities(),
 					);
 				}
@@ -1067,7 +1073,8 @@ mod tests {
 
 		// Pin the estimated proof size, to catch unintended changes in the optimizer.
 		//
-		// `optimizer_estimate_matches_exact_proof_size` ties this to the exact byte count.
+		// This sums one reduction per committed oracle, as the exact byte count does.
+		// `optimizer_estimate_matches_exact_proof_size` ties the two together.
 		assert_eq!(proof_size, 188416);
 	}
 

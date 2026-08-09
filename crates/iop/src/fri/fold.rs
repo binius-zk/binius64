@@ -3,10 +3,8 @@
 
 use std::iter;
 
-use binius_field::{BinaryField, ExtensionField, Field, PackedField};
-use binius_math::{
-	inner_product::inner_product_packed, line::extrapolate_line_packed, ntt::AdditiveNTT,
-};
+use binius_field::{BinaryField, ExtensionField};
+use binius_math::{line::extrapolate_line_packed, ntt::AdditiveNTT};
 
 use super::{FRIParams, error::Error};
 use crate::merkle_channel::MerkleIPVerifierChannel;
@@ -95,37 +93,6 @@ where
 	}
 
 	values[0]
-}
-
-/// Calculate the fold of an interleaved chunk of values with random folding challenges.
-///
-/// The elements in the `values` vector are the interleaved cosets of a batch of codewords at the
-/// index `coset_index`. That is, the layout of elements in the values slice is
-///
-/// ```text
-/// [a0, b0, c0, d0, a1, b1, c1, d1, ...]
-/// ```
-///
-/// where `a0, a1, ...` form a coset of a codeword `a`, `b0, b1, ...` form a coset of a codeword
-/// `b`, and similarly for `c` and `d`.
-///
-/// The fold operation first folds the adjacent symbols in the slice using regular multilinear
-/// tensor folding for the symbols from different cosets and FRI folding for the cosets themselves
-/// using the remaining challenges.
-//
-/// NB: This method is on a hot path and does not perform any allocations or
-/// precondition checks.
-///
-/// See [DP24], Def. 3.6 and Lemma 3.9 for more details.
-///
-/// [DP24]: <https://eprint.iacr.org/2024/504>
-#[inline]
-pub fn fold_interleaved_chunk<F, P>(log_batch_size: usize, values: &[P], tensor: &[P]) -> F
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	inner_product_packed(log_batch_size, values.iter().copied(), tensor.iter().copied())
 }
 
 /// A stateful verifier for the FRI fold phase that tracks when to receive commitments.

@@ -7,7 +7,7 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
-	common::SumcheckProver, multilinear_eval::multilinear_eval_prover,
+	common::MleCheckProver, multilinear_eval::multilinear_eval_prover,
 };
 use binius_math::{FieldVec, ntt::AdditiveNTT};
 
