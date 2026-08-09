@@ -1,15 +1,77 @@
 // Copyright 2025-2026 The Binius Developers
 
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::FieldSlice;
+use binius_math::{FieldSlice, FieldVec};
 
 use crate::sumcheck::{
-	mle_store::{ColId, ColumnChunk, EvaluationChunk, RoundContext},
+	mle_store::{ColId, ColumnChunk, EvaluationChunk, MleStore, RoundContext},
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
-	round_evals::RoundEvals2,
-	round_evaluator::MleCheckRoundEvaluator,
+	round_evals::RoundEvals,
+	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
+
+/// The store-based MLE-check prover for one fractional-addition layer.
+///
+/// It owns its four half-columns, so it is self-contained: a caller can drive it, batch it, or
+/// extend its store with more columns and evaluators (as the logUp* final layer does).
+pub type LayerProver<'a, A, F, P> =
+	SharedMleCheckProver<'a, A, F, P, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>>;
+
+/// Creates the [`LayerProver`] reducing one fractional-addition layer, sharing two allocations.
+///
+/// `num` and `den` each have one more variable than `eval_point`:
+/// - their low halves fix the highest variable to 0,
+/// - their high halves fix it to 1.
+///
+/// The reduction proves the fractional addition of those halves. Both halves of each buffer live
+/// inside the one allocation, so separating them costs no copy.
+///
+/// # Arguments
+///
+/// * `num`, `den` - The layer's numerator and denominator buffers.
+/// * `eval_point` - The shared point at which both claims are taken.
+/// * `claims` - The layer's claimed numerator and denominator evaluations, in that order.
+///
+/// # Returns
+///
+/// The prover and its store's column ids `[num_0, num_1, den_0, den_1]`.
+///
+/// # Preconditions
+/// * `num.log_len() == den.log_len()`
+/// * `num.log_len() == eval_point.len() + 1`
+pub fn new_split_half<'alloc, A, F, P>(
+	alloc: &'alloc A,
+	num: FieldVec<P, A>,
+	den: FieldVec<P, A>,
+	eval_point: Vec<F>,
+	claims: [F; 2],
+) -> (LayerProver<'alloc, A, F, P>, [ColId; 4])
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	assert_eq!(
+		num.log_len(),
+		den.log_len(),
+		"precondition: numerator and denominator have equal length"
+	);
+	// The store checks that each buffer has exactly one more variable than itself.
+	let mut store = MleStore::new(num.log_len() - 1, alloc);
+	let [num_0, num_1] = store.push_split_half(num);
+	let [den_0, den_1] = store.push_split_half(den);
+	let cols = [num_0, num_1, den_0, den_1];
+	let (num_evaluator, den_evaluator) = evaluators::<F, P>(cols);
+
+	let [num_claim, den_claim] = claims;
+	let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P> + 'alloc>); 2] = [
+		(num_claim, Box::new(num_evaluator)),
+		(den_claim, Box::new(den_evaluator)),
+	];
+	(SharedMleCheckProver::new(store, claims_with_evaluators, eval_point), cols)
+}
 
 /// Creates the round evaluators for the fractional-addition claims required in logUp*.
 ///
@@ -57,7 +119,7 @@ where
 /// The sums `den_a.lo + den_a.hi` and `den_b.lo + den_b.hi` are then formed once, not twice.
 ///
 /// It emits one round polynomial, already batched, rather than one per claim.
-/// That is exact, because [`RoundEvals2::interpolate_eq`] is affine in its claim and evaluations:
+/// That is exact, because [`RoundEvals::interpolate_eq`] is affine in its claim and evaluations:
 ///
 /// ```text
 ///     interp(c_num + z*c_den, y_num + z*y_den) = interp(c_num, y_num) + z*interp(c_den, y_den)
@@ -138,10 +200,10 @@ where
 			den_y_inf += P::wide_mul(da * db, eq_i);
 		}
 
-		accum[0] += num_y_1;
-		accum[1] += num_y_inf;
-		accum[2] += den_y_1;
-		accum[3] += den_y_inf;
+		// The run holds the two claims back to back: numerator first, then denominator.
+		let (numerator, denominator) = accum.split_at_mut(2);
+		RoundEvals([num_y_1, num_y_inf]).add_to(numerator);
+		RoundEvals([den_y_1, den_y_inf]).add_to(denominator);
 	}
 
 	fn interpolate(
@@ -156,16 +218,9 @@ where
 		assert!(n_vars_remaining > 0);
 
 		// Sum each claim's packed lanes into scalars.
-		let numerator = RoundEvals2 {
-			y_1: accum[0],
-			y_inf: accum[1],
-		}
-		.sum_scalars(n_vars_remaining);
-		let denominator = RoundEvals2 {
-			y_1: accum[2],
-			y_inf: accum[3],
-		}
-		.sum_scalars(n_vars_remaining);
+		let (num_slots, den_slots) = accum.split_at(2);
+		let numerator = RoundEvals::<P, 2>::from_slots(num_slots).sum_scalars(n_vars_remaining);
+		let denominator = RoundEvals::<P, 2>::from_slots(den_slots).sum_scalars(n_vars_remaining);
 
 		// Batch the sampled evaluations, then interpolate once against the batched claim.
 		// That order is equivalent to interpolating each claim and batching the polynomials.
@@ -193,7 +248,7 @@ mod tests {
 	use crate::sumcheck::{
 		MleToSumCheckEvaluator,
 		batch::batch_prove,
-		common::SumcheckProver,
+		common::{MleCheckProver, SumcheckProver},
 		mle_store::MleStore,
 		round_evaluator::{SharedMleCheckProver, SharedSumcheckProver, SumcheckRoundEvaluator},
 	};

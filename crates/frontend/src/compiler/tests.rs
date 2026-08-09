@@ -866,10 +866,11 @@ fn test_scratch_pooling_rejects_a_bad_assignment() {
 		.populate_wire_witness(&mut w)
 		.expect_err("a perturbed expected value must fail the chain assertion");
 	// Exactly one assertion exists in the fixture, so exactly one failure is reported.
-	assert_eq!(err.total_count, 1);
-	assert_eq!(err.messages.len(), 1);
-	// The message is prefixed with the path of the assertion that failed, naming the chain.
-	assert!(err.messages[0].starts_with(".chain: "), "unexpected message: {}", err.messages[0]);
+	assert_eq!(err.total, 1);
+	assert_eq!(err.failures.len(), 1);
+	// The failure names the path of the assertion that failed, apart from the detail.
+	assert_eq!(err.failures[0].path, ".chain");
+	assert!(!err.failures[0].detail.is_empty());
 }
 
 #[test]

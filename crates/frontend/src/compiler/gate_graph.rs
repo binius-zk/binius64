@@ -66,11 +66,6 @@ impl WireKind {
 	}
 }
 
-#[derive(Copy, Clone)]
-pub struct WireData {
-	pub kind: WireKind,
-}
-
 /// Gate ID - identifies a gate in the graph
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Gate(u32);
@@ -202,7 +197,7 @@ impl GateData {
 pub struct GateGraph {
 	// Primary maps
 	pub gates: PrimaryMap<Gate, GateData>,
-	pub wires: PrimaryMap<Wire, WireData>,
+	pub wires: PrimaryMap<Wire, WireKind>,
 
 	pub path_spec_tree: PathSpecTree,
 	pub gate_origin: SecondaryMap<Gate, PathSpec>,
@@ -268,40 +263,30 @@ impl GateGraph {
 
 	pub fn add_inout(&mut self) -> Wire {
 		self.n_inout += 1;
-		self.wires.push(WireData {
-			kind: WireKind::Inout,
-		})
+		self.wires.push(WireKind::Inout)
 	}
 
 	pub fn add_witness(&mut self) -> Wire {
 		self.n_witness += 1;
-		self.wires.push(WireData {
-			kind: WireKind::Witness,
-		})
+		self.wires.push(WireKind::Witness)
 	}
 
 	pub fn add_internal(&mut self) -> Wire {
 		// Internal wires are treated as witnesses for allocation purposes
 		self.n_witness += 1;
-		self.wires.push(WireData {
-			kind: WireKind::Internal,
-		})
+		self.wires.push(WireKind::Internal)
 	}
 
 	pub fn add_scratch(&mut self) -> Wire {
 		// Scratch wires are temporary storage, not part of witness
-		self.wires.push(WireData {
-			kind: WireKind::Scratch,
-		})
+		self.wires.push(WireKind::Scratch)
 	}
 
 	pub fn add_constant(&mut self, word: Word) -> Wire {
 		if let Some(wire) = self.const_pool.get(word) {
 			return wire;
 		}
-		let wire = self.wires.push(WireData {
-			kind: WireKind::Constant(word),
-		});
+		let wire = self.wires.push(WireKind::Constant(word));
 		self.const_pool.insert(word, wire);
 		wire
 	}
@@ -493,14 +478,14 @@ impl GateGraph {
 		self.use_edges[run].iter().copied()
 	}
 
-	/// Returns an iterator over all constant wires and their data
-	pub fn iter_const_wires(&self) -> impl Iterator<Item = (Wire, &WireData)> {
-		self.wires.iter().filter(|(_, data)| data.kind.is_const())
+	/// Returns an iterator over all constant wires and their kind
+	pub fn iter_const_wires(&self) -> impl Iterator<Item = (Wire, &WireKind)> {
+		self.wires.iter().filter(|(_, kind)| kind.is_const())
 	}
 
-	/// Gets wire data by reference
-	pub fn wire_data(&self, wire: Wire) -> &WireData {
-		&self.wires[wire]
+	/// Gets the kind of the given wire
+	pub fn wire_kind(&self, wire: Wire) -> WireKind {
+		self.wires[wire]
 	}
 
 	/// Gets gate data by reference
@@ -801,7 +786,7 @@ mod tests {
 		assert!(inputs.contains(&bin));
 		// The constant wire is surfaced first.
 		let const_wire = inputs[0];
-		match graph.wires[const_wire].kind {
+		match graph.wires[const_wire] {
 			WireKind::Constant(word) => assert_eq!(word, Word::ALL_ONE),
 			_ => panic!("Expected constant wire"),
 		}

@@ -185,14 +185,6 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 		EqId(index)
 	}
 
-	/// Returns the equality-indicator expansion of a registered tracker.
-	///
-	/// The expansion has `n_vars() - 1` variables: the tracker keeps the indicator folded on the
-	/// variable currently being bound.
-	pub fn eq_expansion(&self, id: EqId) -> &FieldBuffer<P> {
-		self.eq_trackers[id.0].expansion()
-	}
-
 	/// Returns the equality-indicator expansion of every registered tracker, in [`EqId`] order.
 	///
 	/// The driving prover slices each expansion per chunk once per round; the returned order

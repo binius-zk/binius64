@@ -18,7 +18,7 @@ use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
 		batch::batch_prove_mle_with_coeff_and_write_evals,
-		common::{MleCheckProver, SumcheckProver},
+		common::MleCheckProver,
 		frac_add_mle::{self, FracAddFusedEvaluator},
 		mle_store::{ColId, MleStore},
 		round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
@@ -30,13 +30,9 @@ use crate::{
 /// Both claims share the same evaluation point, that of the layer they describe.
 pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 
-/// The store-based MLE-check prover for one fractional-addition layer.
-///
-/// Returned by `FracAddCheckProver::layer_prover`. It owns its four half-columns, so it is
-/// self-contained: a caller can drive it, batch it, or extend its store with more columns and
-/// evaluators (as the logUp* final layer does).
-pub type LayerProver<'a, A, F, P> =
-	SharedMleCheckProver<'a, A, F, P, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>>;
+pub mod zero_pad_mle;
+
+pub use crate::sumcheck::frac_add_mle::LayerProver;
 
 /// A numerator/denominator pair of pooled column buffers.
 type PooledFractionalBuffer<A, P> = (FieldVec<P, A>, FieldVec<P, A>);
@@ -200,21 +196,14 @@ where
 		// and of the denominator buffer. The store takes ownership of the two popped buffers and
 		// shares each between its halves, so the prover is self-contained with no up-front copy of
 		// the popped layer.
-		let mut store = MleStore::new(num.log_len() - 1, alloc);
-		let [num_0, num_1] = store.push_split_half(num);
-		let [den_0, den_1] = store.push_split_half(den);
-		let cols = [num_0, num_1, den_0, den_1];
-		let (num_evaluator, den_evaluator) = frac_add_mle::evaluators::<F, P>(cols);
-
-		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>); 2] = [
-			(num_claim.eval, Box::new(num_evaluator)),
-			(den_claim.eval, Box::new(den_evaluator)),
-		];
-		(
-			remaining,
-			SharedMleCheckProver::new(store, claims_with_evaluators, num_claim.point),
-			cols,
-		)
+		let (layer_prover, cols) = frac_add_mle::new_split_half(
+			alloc,
+			num,
+			den,
+			num_claim.point,
+			[num_claim.eval, den_claim.eval],
+		);
+		(remaining, layer_prover, cols)
 	}
 
 	/// Pops the last layer as a prover carrying the two fractional claims batched into one.

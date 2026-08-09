@@ -15,6 +15,7 @@ mod scalar;
 #[cfg(test)]
 mod tests;
 
+pub use assertion::MAX_ASSERTION_FAILURES;
 use batch::BatchExecutionContext;
 pub use batch::BatchPopulateError;
 use binius_core::{ValueIndex, ValueVec, Word};

@@ -1,71 +1,40 @@
 // Copyright 2025 Irreducible Inc.
 //! Proof that a Bitcoin block contains a certain transaction.
 
-use binius_circuits::bitcoin::{
-	double_sha256::DoubleSha256,
-	merkle_path::{MerklePath, SiblingSide},
-};
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
+use binius_circuits::bitcoin::{double_sha256::double_sha256, merkle_path::merkle_path};
+use binius_frontend::{CircuitBuilder, Wire};
 
-/// Stores some intermediate wires of the circuit, so that they can later be populated with
-/// [`Self::populate_inner`].
-pub struct BlockContainsTransaction {
-	merkle_path: MerklePath,
-	block_header: DoubleSha256,
-}
+/// Asserts that `transaction_hash` has a valid merkle path to the merkle root in `block_header`,
+/// and that `block_header` hashes to `block_hash`.
+///
+/// **Note:** This does NOT assert that `transaction_hash` is actually the hash of a well formed
+/// transaction. In particular, `transaction_hash` might just be an internal (non-leaf) node in
+/// the transaction merkle tree, yet this circuit would pass.
+pub fn block_contains_transaction(
+	builder: &CircuitBuilder,
+	transaction_hash: [Wire; 4],
+	siblings: &[([Wire; 4], Wire)],
+	merkle_path_len: Wire,
+	block_header: [Wire; 10],
+	block_hash: [Wire; 4],
+) {
+	// extract merkle root from block header
+	let merkle_root = [
+		join(builder, block_header[5], block_header[4]),
+		join(builder, block_header[6], block_header[5]),
+		join(builder, block_header[7], block_header[6]),
+		join(builder, block_header[8], block_header[7]),
+	];
 
-impl BlockContainsTransaction {
-	/// Constructs a circuit that asserts that `transaction_hash` has a valid `merkle_path` to the
-	/// merkle root in `block_header`, and that `block_header` hashes to `block_hash`.
-	///
-	/// **Note:** This does NOT assert that `transaction_hash` is actually the hash of a well formed
-	/// transaction. In particular, `transaction_hash` might just be an internal (non-leaf) node in
-	/// the transaction merkle tree, yet this circuit would pass.
-	pub fn construct_circuit(
-		builder: &CircuitBuilder,
-		transaction_hash: [Wire; 4],
-		merkle_path: Vec<([Wire; 4], Wire)>,
-		merkle_path_len: Wire,
-		block_header: [Wire; 10],
-		block_hash: [Wire; 4],
-	) -> Self {
-		// extract merkle root from block header
-		let merkle_root = [
-			join(builder, block_header[5], block_header[4]),
-			join(builder, block_header[6], block_header[5]),
-			join(builder, block_header[7], block_header[6]),
-			join(builder, block_header[8], block_header[7]),
-		];
+	// validity of merkle path
+	builder.assert_eq_v(
+		"merkle root",
+		merkle_path(builder, transaction_hash, siblings, merkle_path_len),
+		merkle_root,
+	);
 
-		// validity of merkle path
-		let merkle_path = MerklePath::construct_circuit(
-			builder,
-			transaction_hash,
-			merkle_path,
-			merkle_root,
-			merkle_path_len,
-		);
-
-		// `block_header` hashes to `block_hash`
-		let block_header = DoubleSha256::construct_circuit(builder, &block_header, block_hash);
-
-		Self {
-			merkle_path,
-			block_header,
-		}
-	}
-
-	pub fn populate_inner(
-		&self,
-		filler: &mut WitnessFiller,
-		transaction_hash: [u8; 32],
-		merkle_path: &[([u8; 32], SiblingSide)],
-		block_header: &[u8],
-	) {
-		self.merkle_path
-			.populate_inner(filler, transaction_hash, merkle_path);
-		self.block_header.populate_inner(filler, block_header);
-	}
+	// `block_header` hashes to `block_hash`
+	builder.assert_eq_v("block hash", double_sha256(builder, &block_header), block_hash);
 }
 
 fn join(builder: &CircuitBuilder, b0: Wire, b1: Wire) -> Wire {
@@ -76,6 +45,7 @@ fn join(builder: &CircuitBuilder, b0: Wire, b1: Wire) -> Wire {
 
 #[cfg(test)]
 mod tests {
+	use binius_circuits::bitcoin::merkle_path::SiblingSide;
 	use binius_core::Word;
 	use hex_literal::hex;
 
@@ -86,7 +56,7 @@ mod tests {
 		// build circuit
 		let builder = CircuitBuilder::new();
 		let transaction_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_witness());
-		let merkle_path: Vec<([Wire; 4], Wire)> = std::iter::repeat_with(|| {
+		let siblings: Vec<([Wire; 4], Wire)> = std::iter::repeat_with(|| {
 			(std::array::from_fn(|_| builder.add_witness()), builder.add_witness())
 		})
 		.take(30)
@@ -94,10 +64,10 @@ mod tests {
 		let merkle_path_len = builder.add_witness();
 		let block_header: [Wire; 10] = std::array::from_fn(|_| builder.add_witness());
 		let block_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_witness());
-		let block_contains_transaction = BlockContainsTransaction::construct_circuit(
+		block_contains_transaction(
 			&builder,
 			transaction_hash,
-			merkle_path.clone(),
+			&siblings,
 			merkle_path_len,
 			block_header,
 			block_hash,
@@ -113,7 +83,7 @@ mod tests {
 			hex!("228561b085b7524957e515605725901238299ff2793300000000000000000000");
 		let transaction_hash_value =
 			hex!("6f2f044a225e8b293c6e54cf2771bf4d17ba8904b1f61cf9c392965dcbda0b83");
-		let merkle_path_value = vec![
+		let siblings_value = vec![
 			(
 				hex!("783089645b0bc42d44e9d6a7ea62adf7a8a2adc6b7f0173d663369217b771b86"),
 				SiblingSide::Right,
@@ -166,20 +136,11 @@ mod tests {
 		filler.pack_bytes_le(&block_header, &block_header_value);
 		filler.pack_bytes_le(&block_hash, &block_hash_value);
 		filler.pack_bytes_le(&transaction_hash, &transaction_hash_value);
-		for i in 0..merkle_path_value.len() {
-			filler.pack_bytes_le(&merkle_path[i].0, &merkle_path_value[i].0);
-			filler[merkle_path[i].1] = match merkle_path_value[i].1 {
-				SiblingSide::Left => Word::ZERO,
-				SiblingSide::Right => Word::ALL_ONE,
-			};
+		for ((sibling, is_right), (value, side)) in siblings.iter().zip(&siblings_value) {
+			filler.pack_bytes_le(sibling, value);
+			filler[*is_right] = side.to_word();
 		}
-		filler[merkle_path_len] = Word(12);
-		block_contains_transaction.populate_inner(
-			&mut filler,
-			transaction_hash_value,
-			&merkle_path_value,
-			&block_header_value,
-		);
+		filler[merkle_path_len] = Word(siblings_value.len() as u64);
 		circuit.populate_wire_witness(&mut filler).unwrap();
 
 		// check
