@@ -6,12 +6,16 @@ use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim, sumcheck::RoundCoeffs};
 use binius_math::{
-	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldVec,
+	batch_invert::BatchInversion,
+	line::extrapolate_line_packed,
+	multilinear::eq::{eq_ind_partial_eval, eq_one_var},
 };
 use binius_utils::rayon::{
 	iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
+use either::Either;
 use itertools::izip;
 
 use crate::{
@@ -25,14 +29,16 @@ use crate::{
 	},
 };
 
+pub mod zero_pad_mle;
+
+use zero_pad_mle::{ConstantFraction, ZeroPadMleCheckProver};
+
+pub use crate::sumcheck::frac_add_mle::LayerProver;
+
 /// The numerator and denominator evaluation claims of one fractional-addition layer.
 ///
 /// Both claims share the same evaluation point, that of the layer they describe.
 pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
-
-pub mod zero_pad_mle;
-
-pub use crate::sumcheck::frac_add_mle::LayerProver;
 
 /// A numerator/denominator pair of pooled column buffers.
 type PooledFractionalBuffer<A, P> = (FieldVec<P, A>, FieldVec<P, A>);
@@ -750,9 +756,198 @@ where
 	(next_provers, next_fractions, next_point)
 }
 
+/// Output of [`batch_prove_unequal_depths`].
+///
+/// After `n_layers - 1` reduction layers, each tree retains its final (widest) layer, wrapped in
+/// the padding prover that corrects it to the batch's depth.
+pub struct BatchProveUnequalDepthsOutput<F, Prover> {
+	/// The reduced evaluation point shared by all remaining provers.
+	pub eval_point: Vec<F>,
+	/// Each input prover's reduced (padded) `(num, den)` fraction paired with the not-yet-run
+	/// prover for its final layer, in input order.
+	pub provers: Vec<((F, F), Prover)>,
+}
+
+/// Runs a batched fractional-addition check for trees of *unequal* depths.
+///
+/// This is [`batch_prove`] without the requirement that every prover have the same layer count.
+/// Each tree shallower than the deepest is proved as a fracadd check over its witness padded with
+/// zero fractions — the same witness with the extra depth filled by $0/1$ leaves, which leaves its
+/// fractional sum unchanged. The transcript is then exactly that of an equal-depth batch of the
+/// maximum depth: the verifier runs the ordinary [`binius_ip::fracaddcheck::verify`] over
+/// `n_layers` layers and never learns the individual depths.
+///
+/// Unlike [`batch_prove`], every prover must reduce over *all* of its witness variables, so each
+/// fractional sum is a scalar and there is no content point. The padding is only worth its
+/// bookkeeping on full trees, and dropping the content dimension keeps that bookkeeping to four
+/// scalars per layer.
+///
+/// The prover does not materialize the padded witnesses. Each layer's per-tree reduction runs
+/// through [`zero_pad_mle`], which corrects the unpadded layer's messages in $O(1)$ per round.
+///
+/// # Arguments
+///
+/// As [`batch_prove`], except that the provers' layer counts may differ and there is no
+/// `content_point`.
+///
+/// # Preconditions
+/// * `provers` must be non-empty.
+/// * Every prover's witness must have exactly `prover.n_layers()` variables, which must be at least
+///   1.
+/// * `2^selector_point.len() >= provers.len()`.
+/// * `claimed_fractions.len() == provers.len()`.
+///
+/// # Returns
+///
+/// Like [`batch_prove_until_final_layer`], this stops one layer short, returning each tree's
+/// reduced fraction beside the prover for its final (widest) layer — the layer whose reduction
+/// dominates the cost, which a caller can therefore batch with other sumchecks. Running those
+/// provers and the selector rounds that follow finishes the check.
+///
+/// The returned fractions and, after the final layer, the per-tree leaf evaluations are claims on
+/// the *padded* witnesses. [`binius_ip::fracaddcheck::unpad_leaf_claim`] reduces one to the claims
+/// on the tree's own witness.
+pub fn batch_prove_unequal_depths<'a, A, F, P>(
+	provers: Vec<FracAddCheckProver<'a, A, P>>,
+	claimed_fractions: Vec<(F, F)>,
+	selector_point: Vec<F>,
+	channel: &mut impl IPProverChannel<F>,
+) -> BatchProveUnequalDepthsOutput<F, PaddedLayerProver<'a, A, F, P>>
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	assert!(!provers.is_empty()); // precondition
+	assert_eq!(claimed_fractions.len(), provers.len()); // precondition
+
+	let k = selector_point.len();
+	assert!(provers.len() <= (1 << k)); // precondition
+	assert!(provers.iter().all(|prover| prover.n_layers() >= 1)); // precondition
+
+	let alloc = provers[0].alloc;
+	let mut provers = provers;
+	let n_layers = provers
+		.iter()
+		.map(FracAddCheckProver::n_layers)
+		.max()
+		.expect("provers is non-empty");
+	// How much depth each tree is padded by.
+	let pad_lens = provers
+		.iter()
+		.map(|prover| n_layers - prover.n_layers())
+		.collect::<Vec<_>>();
+
+	let mut claims = claimed_fractions;
+	let mut eval_point = selector_point;
+
+	// Reduce down to the final layer. Each iteration reduces the layer whose node variables are the
+	// point's suffix past the selector coordinates.
+	for _ in 0..n_layers - 1 {
+		let (next_provers, layer_provers) =
+			layer_provers(provers, &pad_lens, &claims, &eval_point[k..]);
+		provers = next_provers;
+		let (next_claims, next_point) =
+			reduce_layer::<A, F, P, _>(alloc, layer_provers, &eval_point, k, channel);
+		claims = next_claims;
+		eval_point = next_point;
+	}
+
+	let n_trees = provers.len();
+	let (_exhausted, layer_provers) = layer_provers(provers, &pad_lens, &claims, &eval_point[k..]);
+	// `reduce_layer` pads its output to the 2^k selector slots; only the real trees remain.
+	claims.truncate(n_trees);
+
+	BatchProveUnequalDepthsOutput {
+		eval_point,
+		provers: iter::zip(claims, layer_provers).collect(),
+	}
+}
+
+/// The per-tree layer prover: either a real layer of the tree, or the padding layer it contributes
+/// while the batch is still above it.
+type PaddedLayerProver<'a, A, F, P> =
+	ZeroPadMleCheckProver<F, Either<LayerProver<'a, A, F, P>, ConstantFraction<F>>>;
+
+/// Builds one padded layer prover per tree, for the layer claimed at `node_point`.
+///
+/// Returns the provers for the trees that still have layers below this one, in input order, beside
+/// the layer provers themselves.
+#[allow(clippy::type_complexity)]
+fn layer_provers<'a, A, F, P>(
+	provers: Vec<FracAddCheckProver<'a, A, P>>,
+	pad_lens: &[usize],
+	claims: &[(F, F)],
+	node_point: &[F],
+) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<PaddedLayerProver<'a, A, F, P>>)
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	let node_len = node_point.len();
+
+	// Every tree's padding segment is a prefix of this one node point, so a single table of prefix
+	// products serves the whole batch.
+	let pad_eq_prefixes = iter::once(F::ONE)
+		.chain(node_point.iter().scan(F::ONE, |acc, &coord| {
+			*acc *= eq_one_var(F::ZERO, coord);
+			Some(*acc)
+		}))
+		.collect::<Vec<_>>();
+
+	// De-padding a claim divides by the padding segment's equality weight, so the batch pays one
+	// inversion rather than one per tree.
+	let mut pad_eq_invs = pad_lens
+		.iter()
+		.map(|&pad_len| pad_eq_prefixes[pad_len.min(node_len)])
+		.collect::<Vec<_>>();
+	assert!(
+		pad_eq_invs.iter().all(|&pad_eq| pad_eq != F::ZERO),
+		"a padding coordinate of the claim point equals one"
+	);
+	BatchInversion::<F>::new(pad_eq_invs.len()).invert_nonzero(&mut pad_eq_invs);
+
+	let mut next_provers = Vec::with_capacity(provers.len());
+	let layer_provers = izip!(provers, pad_lens, claims, &pad_eq_invs)
+		.map(|(prover, &tree_pad_len, &(num, den), &pad_eq_inv)| {
+			let pad_len = tree_pad_len.min(node_len);
+			let point = node_point[pad_len..].to_vec();
+			let [num_claim, den_claim] = zero_pad_mle::unpad_claims(pad_eq_inv, [num, den]);
+
+			let inner = if node_len < tree_pad_len {
+				// The batch is still above this tree, so every variable of its layer is a padding
+				// variable and the de-padded claim is the tree's own fractional sum. The layer is
+				// that fraction beside the zero fraction 0/1, and the tree keeps all of its layers.
+				next_provers.push(prover);
+				Either::Right(ConstantFraction::new(num_claim, den_claim))
+			} else {
+				let (rest, layer_prover, _cols) = prover.layer_prover((
+					MultilinearEvalClaim {
+						eval: num_claim,
+						point: point.clone(),
+					},
+					MultilinearEvalClaim {
+						eval: den_claim,
+						point,
+					},
+				));
+				// Every tree is padded to the same depth, so one that pops here still holds a layer
+				// for each round below — until the final layer, whose remainders the caller drops.
+				next_provers.extend(rest);
+				Either::Left(layer_prover)
+			};
+
+			zero_pad_mle::new(pad_eq_prefixes[..=pad_len].to_vec(), node_point.to_vec(), inner)
+		})
+		.collect();
+
+	(next_provers, layer_provers)
+}
+
 #[cfg(test)]
 mod tests {
-	use binius_field::PackedField;
+	use binius_field::{PackedField, field::FieldOps};
 	use binius_ip::fracaddcheck;
 	use binius_math::{
 		inner_product::inner_product,
@@ -1138,5 +1333,189 @@ mod tests {
 	fn test_batch_prove_with_content() {
 		// 3 provers (non power of 2), 4 layers, content_len = 2.
 		test_batch_prove_with_content_helper::<Packed128b>(4, 3, 2);
+	}
+
+	// ==================== batch_prove_unequal_depths tests ====================
+
+	/// A numerator/denominator witness pair.
+	type Witness<P> = (FieldBuffer<P>, FieldBuffer<P>);
+
+	/// One prover per entry of `depths`, each reducing over all of its witness variables.
+	#[allow(clippy::type_complexity)]
+	fn unequal_depth_provers<'a, P: PackedField>(
+		rng: &mut impl Rng,
+		alloc: &'a GlobalAllocator,
+		depths: &[usize],
+	) -> (
+		Vec<Witness<P>>,
+		Vec<FracAddCheckProver<'a, GlobalAllocator, P>>,
+		Vec<(P::Scalar, P::Scalar)>,
+	) {
+		itertools::multiunzip(depths.iter().map(|&depth| {
+			let num = random_field_buffer::<P>(&mut *rng, depth);
+			let den = random_field_buffer::<P>(&mut *rng, depth);
+			let (prover, sums) = FracAddCheckProver::new(depth, alloc, (num.clone(), den.clone()));
+			assert_eq!(sums.0.log_len(), 0);
+			((num, den), prover, (sums.0.get(0), sums.1.get(0)))
+		}))
+	}
+
+	/// The eq(selector)-weighted combination of per-tree fractions, as the verifier forms it.
+	///
+	/// The selector slots beyond the trees hold the zero fraction 0/1.
+	fn combine_fractions<P: PackedField>(
+		fractions: &[(P::Scalar, P::Scalar)],
+		selector_point: &[P::Scalar],
+	) -> (P::Scalar, P::Scalar) {
+		let n_slots = 1 << selector_point.len();
+		let eq_weights = eq_ind_partial_eval::<P>(selector_point);
+		let num_eval = inner_product(
+			fractions.iter().map(|&(num, _)| num),
+			(0..fractions.len()).map(|i| eq_weights.get(i)),
+		);
+		let den_eval = inner_product(
+			fractions
+				.iter()
+				.map(|&(_, den)| den)
+				.chain(iter::repeat_n(P::Scalar::ONE, n_slots - fractions.len())),
+			(0..n_slots).map(|i| eq_weights.get(i)),
+		);
+		(num_eval, den_eval)
+	}
+
+	/// Proves a batch of unequal-depth trees against the depth-oblivious verifier, then unpads each
+	/// tree's leaf claims and checks them against that tree's own witness.
+	fn test_unequal_depths_helper<P: PackedField>(depths: &[usize]) {
+		let mut rng = StdRng::seed_from_u64(11);
+		let alloc = GlobalAllocator;
+
+		let k = log2_ceil_usize(depths.len());
+		let n_layers = *depths.iter().max().expect("depths is non-empty");
+
+		let (witnesses, provers, claimed_fractions) =
+			unequal_depth_provers::<P>(&mut rng, &alloc, depths);
+
+		// The verifier's input claim is the eq(selector)-weighted combination of the fractions.
+		let selector_point = random_scalars::<P::Scalar>(&mut rng, k);
+		let (num_eval, den_eval) = combine_fractions::<P>(&claimed_fractions, &selector_point);
+		let claim = fracaddcheck::FracAddEvalClaim {
+			num_eval,
+			den_eval,
+			point: selector_point.clone(),
+		};
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let BatchProveUnequalDepthsOutput {
+			eval_point,
+			provers,
+		} = batch_prove_unequal_depths(
+			provers,
+			claimed_fractions,
+			selector_point,
+			&mut prover_transcript,
+		);
+
+		// Finish the retained final layer: run it exactly as an interior reduction layer does.
+		let (_claims, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
+		let (mut fractions, eval_point) =
+			reduce_layer::<_, _, P, _>(&alloc, provers, &eval_point, k, &mut prover_transcript);
+		fractions.truncate(depths.len());
+
+		// The verifier's control flow depends only on the maximum depth.
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output =
+			fracaddcheck::verify(n_layers, claim, &mut verifier_transcript).unwrap();
+
+		assert_eq!(verifier_output.point, eval_point);
+		let (num_eval, den_eval) = combine_fractions::<P>(&fractions, &eval_point[..k]);
+		assert_eq!(verifier_output.num_eval, num_eval);
+		assert_eq!(verifier_output.den_eval, den_eval);
+
+		// Each tree's reduced claims are on its *padded* witness; unpadding them yields claims on
+		// the witness itself, at a suffix of the shared node point.
+		for (i, (&depth, (num, den))) in iter::zip(depths, &witnesses).enumerate() {
+			let leaf =
+				fracaddcheck::unpad_leaf_claim(fractions[i], &eval_point[k..], n_layers - depth);
+			assert_eq!(leaf.point.len(), depth);
+			assert_eq!(leaf.num_eval, evaluate(num, &leaf.point), "tree {i} numerator");
+			assert_eq!(leaf.den_eval, evaluate(den, &leaf.point), "tree {i} denominator");
+		}
+	}
+
+	#[test]
+	fn test_unequal_depths_mixed() {
+		test_unequal_depths_helper::<Packed128b>(&[2, 4, 5]);
+	}
+
+	#[test]
+	fn test_unequal_depths_single_prover() {
+		test_unequal_depths_helper::<Packed128b>(&[3]);
+	}
+
+	#[test]
+	fn test_unequal_depths_power_of_two_provers() {
+		// The shallowest tree is padded by more than one layer, the deepest not at all.
+		test_unequal_depths_helper::<Packed128b>(&[1, 2, 5, 5]);
+	}
+
+	#[test]
+	fn test_unequal_depths_all_minimal() {
+		// Depth 1 throughout: every tree retains its final layer immediately.
+		test_unequal_depths_helper::<Packed128b>(&[1, 1, 1]);
+	}
+
+	#[test]
+	fn test_unequal_depths_maximal_padding() {
+		// A single-layer tree beside a deep one: all but its last reduction is padding.
+		test_unequal_depths_helper::<Packed128b>(&[1, 6]);
+	}
+
+	/// At equal depths every tree is padded by nothing, so the unequal-depth driver must emit
+	/// byte-for-byte the transcript that [`batch_prove`] does.
+	#[test]
+	fn test_unequal_depths_matches_batch_prove_at_equal_depths() {
+		type P = Packed128b;
+		type F = <P as FieldOps>::Scalar;
+
+		let depths = [4; 3];
+		let k = log2_ceil_usize(depths.len());
+		let alloc = GlobalAllocator;
+
+		let mut rng = StdRng::seed_from_u64(23);
+		let selector_point = random_scalars::<F>(&mut rng, k);
+		// Both drivers see the same trees, so both rebuild them from the same seed.
+		let prover_seed = 24;
+
+		let unequal_proof = {
+			let mut rng = StdRng::seed_from_u64(prover_seed);
+			let (_, provers, claimed_fractions) =
+				unequal_depth_provers::<P>(&mut rng, &alloc, &depths);
+
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let BatchProveUnequalDepthsOutput {
+				eval_point,
+				provers,
+			} = batch_prove_unequal_depths(
+				provers,
+				claimed_fractions,
+				selector_point.clone(),
+				&mut transcript,
+			);
+			let (_claims, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
+			reduce_layer::<_, _, P, _>(&alloc, provers, &eval_point, k, &mut transcript);
+			transcript.finalize()
+		};
+
+		let equal_proof = {
+			let mut rng = StdRng::seed_from_u64(prover_seed);
+			let (_, provers, claimed_fractions) =
+				unequal_depth_provers::<P>(&mut rng, &alloc, &depths);
+
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			batch_prove(provers, claimed_fractions, selector_point, Vec::new(), &mut transcript);
+			transcript.finalize()
+		};
+
+		assert_eq!(unequal_proof, equal_proof);
 	}
 }

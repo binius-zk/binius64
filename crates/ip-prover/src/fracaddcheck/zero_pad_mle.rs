@@ -16,17 +16,13 @@
 //! [`ZeroPadMleCheckProver`] wraps the unpadded layer's own MLE-check and corrects its messages at
 //! a cost of $O(1)$ per round.
 
-use std::{iter, mem};
+use std::mem;
 
-use binius_compute::Allocator;
-use binius_field::{Field, PackedField};
+use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldVec, multilinear::eq::eq_one_var};
+use binius_math::multilinear::eq::eq_one_var;
 
-use crate::sumcheck::{
-	common::MleCheckProver,
-	frac_add_mle::{self, LayerProver},
-};
+use crate::sumcheck::common::MleCheckProver;
 
 /// The one-padding selector $\textsf{sel}(s, v) = 1 + (v - 1) s$.
 ///
@@ -97,62 +93,56 @@ enum Phase<F, Inner> {
 	},
 }
 
+/// Divides the padding back out of a padded layer's claims.
+///
+/// The padded layer's numerator is the unpadded one scaled by $q$ and its denominator the unpadded
+/// one pushed through the padding selector at $q$, so recovering the unpadded pair is a scale and a
+/// selector at $q^{-1}$. Callers seed the inner prover with the result; for a layer that is *all*
+/// padding it is the tree's own fractional sum.
+///
+/// # Arguments
+///
+/// * `pad_eq_inv` - The inverse of the padding segment's equality weight $q$.
+/// * `claims` - The padded layer's numerator and denominator claims.
+pub fn unpad_claims<F: Field>(pad_eq_inv: F, claims: [F; 2]) -> [F; 2] {
+	let [num, den] = claims;
+	[num * pad_eq_inv, select(pad_eq_inv, den)]
+}
+
 /// Creates the prover for one padded fractional-addition layer.
 ///
 /// # Arguments
 ///
-/// * `num`, `den` - The unpadded child layer's numerator and denominator buffers, whose low and
-///   high halves on their highest variable are the multilinears this layer adds.
-/// * `pad_len` - Length of `eval_point`'s padding segment. Zero leaves the inner reduction
-///   uncorrected.
+/// * `pad_eq_prefixes` - Equality weights of the claim point's padding segment: entry `i` is
+///   $\prod_{c < i} \textsf{eq}(0, \rho_{\text{pa}, c})$. Its length fixes the padding segment at
+///   one less, so a single-entry table leaves the inner reduction uncorrected. Every layer of a
+///   batch shares one point, so one table of prefix products serves them all.
 /// * `eval_point` - The padded layer's claim point, `[padding | real]`.
-/// * `claims` - The padded layer's claimed numerator and denominator evaluations at `eval_point`.
+/// * `inner` - The unpadded layer's MLE-check, seeded at the real segment of the claim point with
+///   the claims [`unpad_claims`] returns.
 ///
 /// # Preconditions
 ///
-/// * `num.log_len() == den.log_len() >= 1`
-/// * `eval_point.len() == num.log_len() - 1 + pad_len`
-///
-/// # Panics
-///
-/// Panics if the padding segment's equality weight $q$ is zero, which requires one of its
-/// coordinates — all verifier challenges — to equal one, and so happens with probability at most
-/// $\nu / |K|$.
-pub fn new<'alloc, A, F, P>(
-	alloc: &'alloc A,
-	num: FieldVec<P, A>,
-	den: FieldVec<P, A>,
-	pad_len: usize,
+/// * `pad_eq_prefixes` is non-empty and its last entry — the padding segment's equality weight — is
+///   non-zero
+/// * `eval_point.len() + 1 >= pad_eq_prefixes.len()`
+/// * `inner.n_vars() == eval_point.len() + 1 - pad_eq_prefixes.len()`
+pub fn new<F, Inner>(
+	pad_eq_prefixes: Vec<F>,
 	eval_point: Vec<F>,
-	claims: [F; 2],
-) -> ZeroPadMleCheckProver<F, LayerProver<'alloc, A, F, P>>
+	inner: Inner,
+) -> ZeroPadMleCheckProver<F, Inner>
 where
-	A: Allocator,
 	F: Field,
-	P: PackedField<Scalar = F>,
+	Inner: MleCheckProver<F>,
 {
-	assert!(num.log_len() >= 1); // precondition
-	let n_real_rounds = num.log_len() - 1;
-	assert_eq!(eval_point.len(), pad_len + n_real_rounds); // precondition
-
-	// Prefix products over the padding segment, so both the round polynomials' `e` factors and the
-	// claims' `q` are lookups.
-	let pad_eq_prefixes = iter::once(F::ONE)
-		.chain(eval_point[..pad_len].iter().scan(F::ONE, |acc, &coord| {
-			*acc *= eq_one_var(F::ZERO, coord);
-			Some(*acc)
-		}))
-		.collect::<Vec<_>>();
-	let pad_eq = pad_eq_prefixes[pad_len];
-	assert!(pad_eq != F::ZERO, "a padding coordinate of the claim point equals one");
-
-	// The padded claims are the images of the unpadded ones under the padding, so the inner prover
-	// starts from the preimages.
-	let pad_eq_inv = pad_eq.invert_or_zero();
-	let [num_claim, den_claim] = claims;
-	let inner_claims = [num_claim * pad_eq_inv, select(pad_eq_inv, den_claim)];
-	let (inner, _cols) =
-		frac_add_mle::new_split_half(alloc, num, den, eval_point[pad_len..].to_vec(), inner_claims);
+	let pad_len = pad_eq_prefixes
+		.len()
+		.checked_sub(1)
+		.expect("precondition: non-empty");
+	assert!(eval_point.len() >= pad_len); // precondition
+	assert_ne!(pad_eq_prefixes[pad_len], F::ZERO); // precondition
+	assert_eq!(inner.n_vars(), eval_point.len() - pad_len); // precondition
 
 	let mut prover = ZeroPadMleCheckProver {
 		eval_point,
@@ -164,6 +154,49 @@ where
 	// A layer with no real variables starts in the padding phase.
 	prover.advance();
 	prover
+}
+
+/// The layer a tree contributes while the batch is still above it: one fraction beside the zero
+/// fraction $0/1$.
+///
+/// Such a layer is a padding of the tree's own fractional sum, so its low child is that sum and its
+/// high child is identically $0/1$. Every one of its variables is a padding variable, so there is
+/// nothing to reduce — [`ZeroPadMleCheckProver`] goes straight to its padding rounds and only ever
+/// asks for these four child evaluations.
+pub struct ConstantFraction<F> {
+	/// The child evaluations `[num_0, num_1, den_0, den_1]`.
+	children: [F; 4],
+}
+
+impl<F: Field> ConstantFraction<F> {
+	/// The layer whose low child is the fraction `(num, den)` and whose high child is $0/1$.
+	pub const fn new(num: F, den: F) -> Self {
+		Self {
+			children: [num, F::ZERO, den, F::ONE],
+		}
+	}
+}
+
+impl<F: Field> MleCheckProver<F> for ConstantFraction<F> {
+	fn n_vars(&self) -> usize {
+		0
+	}
+
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		panic!("a constant-fraction layer has no variables to reduce")
+	}
+
+	fn fold(&mut self, _challenge: F) {
+		panic!("a constant-fraction layer has no variables to bind")
+	}
+
+	fn finish(self) -> Vec<F> {
+		self.children.to_vec()
+	}
+
+	fn eval_point(&self) -> &[F] {
+		&[]
+	}
 }
 
 impl<F: Field, Inner: MleCheckProver<F>> ZeroPadMleCheckProver<F, Inner> {
@@ -284,8 +317,10 @@ impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for ZeroPadMleCheckPr
 // the same round polynomials and the same child evaluations.
 #[cfg(test)]
 mod tests {
+	use std::iter;
+
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Random, field::FieldOps};
+	use binius_field::{Random, arithmetic_traits::InvertOrZero, field::FieldOps};
 	use binius_math::{
 		FieldBuffer,
 		multilinear::evaluate::evaluate,
@@ -294,6 +329,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
+	use crate::sumcheck::frac_add_mle;
 
 	type P = Packed128b;
 	type F = <P as FieldOps>::Scalar;
@@ -333,34 +369,27 @@ mod tests {
 		]
 	}
 
-	/// Runs the padded prover and the reference prover over the materialized padded layer in
-	/// lockstep.
-	fn assert_matches_padded_reference(num: FieldBuffer<P>, den: FieldBuffer<P>, pad_len: usize) {
-		let mut rng = StdRng::seed_from_u64(0);
+	/// Runs `prover` and an ordinary fracadd MLE-check over the materialized padded layer in
+	/// lockstep, requiring the same round polynomials and the same child evaluations.
+	fn assert_matches_padded_reference(
+		rng: &mut impl Rng,
+		padded_num: FieldBuffer<P>,
+		padded_den: FieldBuffer<P>,
+		eval_point: Vec<F>,
+		claims: [F; 2],
+		mut prover: impl MleCheckProver<F>,
+	) {
 		let alloc = GlobalAllocator;
-
-		// The zero fraction 0/1 fills the padding positions.
-		let padded_num = pad_layer(&num, pad_len, F::ZERO);
-		let padded_den = pad_layer(&den, pad_len, F::ONE);
-		let n_vars = padded_num.log_len() - 1;
-		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let claims = split_half_claims(&padded_num, &padded_den, &eval_point);
-
-		let (mut reference, _cols) = frac_add_mle::new_split_half(
-			&alloc,
-			padded_num,
-			padded_den,
-			eval_point.clone(),
-			claims,
-		);
-		let mut prover = new(&alloc, num, den, pad_len, eval_point, claims);
+		let n_vars = eval_point.len();
+		let (mut reference, _cols) =
+			frac_add_mle::new_split_half(&alloc, padded_num, padded_den, eval_point, claims);
 
 		for round in 0..n_vars {
 			assert_eq!(prover.n_vars(), n_vars - round);
 			assert_eq!(prover.eval_point(), reference.eval_point());
 			assert_eq!(prover.execute(), reference.execute(), "round {round}");
 
-			let challenge = F::random(&mut rng);
+			let challenge = F::random(&mut *rng);
 			prover.fold(challenge);
 			reference.fold(challenge);
 		}
@@ -368,30 +397,87 @@ mod tests {
 		assert_eq!(prover.finish(), reference.finish());
 	}
 
+	/// Prefix products over the first `pad_len` coordinates of `eval_point`.
+	fn pad_eq_prefixes(eval_point: &[F], pad_len: usize) -> Vec<F> {
+		iter::once(F::ONE)
+			.chain(eval_point[..pad_len].iter().scan(F::ONE, |acc, &coord| {
+				*acc *= eq_one_var(F::ZERO, coord);
+				Some(*acc)
+			}))
+			.collect()
+	}
+
+	/// The padded layer of an ordinary tree layer, and the claims on it.
+	fn padded_layer(
+		rng: &mut impl Rng,
+		num: &FieldBuffer<P>,
+		den: &FieldBuffer<P>,
+		pad_len: usize,
+	) -> (FieldBuffer<P>, FieldBuffer<P>, Vec<F>, [F; 2]) {
+		// The zero fraction 0/1 fills the padding positions.
+		let padded_num = pad_layer(num, pad_len, F::ZERO);
+		let padded_den = pad_layer(den, pad_len, F::ONE);
+		let eval_point = random_scalars::<F>(rng, padded_num.log_len() - 1);
+		let claims = split_half_claims(&padded_num, &padded_den, &eval_point);
+		(padded_num, padded_den, eval_point, claims)
+	}
+
 	#[test]
 	fn matches_padded_reference() {
 		let mut rng = StdRng::seed_from_u64(1);
+		let alloc = GlobalAllocator;
+
 		for n_real_rounds in [0, 1, 3] {
 			for pad_len in [0, 1, 3] {
 				let num = random_field_buffer::<P>(&mut rng, n_real_rounds + 1);
 				let den = random_field_buffer::<P>(&mut rng, n_real_rounds + 1);
-				assert_matches_padded_reference(num, den, pad_len);
+				let (padded_num, padded_den, eval_point, claims) =
+					padded_layer(&mut rng, &num, &den, pad_len);
+
+				let prefixes = pad_eq_prefixes(&eval_point, pad_len);
+				let pad_eq_inv = prefixes[pad_len].invert_or_zero();
+				let (inner, _cols) = frac_add_mle::new_split_half(
+					&alloc,
+					num,
+					den,
+					eval_point[pad_len..].to_vec(),
+					unpad_claims(pad_eq_inv, claims),
+				);
+				let prover = new(prefixes, eval_point.clone(), inner);
+
+				assert_matches_padded_reference(
+					&mut rng, padded_num, padded_den, eval_point, claims, prover,
+				);
 			}
 		}
 	}
 
-	// The layers a shallow tree spends while the batch is still above it are paddings of its
-	// fractional sum, whose high child is the zero fraction 0/1. That degenerate shape is what
-	// `batch_prove_unequal_depths` feeds in for those layers.
+	// While the batch is still above a tree, that tree's layer is a padding of its own fractional
+	// sum, whose high child is the zero fraction 0/1. `ConstantFraction` stands in for it, so it
+	// must drive the padding rounds exactly as the materialized layer does.
 	#[test]
-	fn matches_padded_reference_with_zero_fraction_child() {
+	fn constant_fraction_matches_padded_reference() {
 		let mut rng = StdRng::seed_from_u64(2);
+
 		for pad_len in [1, 2, 4] {
 			let root_num = F::random(&mut rng);
 			let root_den = F::random(&mut rng);
 			let num = FieldBuffer::<P>::from_values(&[root_num, F::ZERO]);
 			let den = FieldBuffer::<P>::from_values(&[root_den, F::ONE]);
-			assert_matches_padded_reference(num, den, pad_len);
+			let (padded_num, padded_den, eval_point, claims) =
+				padded_layer(&mut rng, &num, &den, pad_len);
+
+			// De-padding an all-padding layer's claims recovers the fraction it stands for, which
+			// is how the driver reaches `ConstantFraction` without carrying the root separately.
+			let prefixes = pad_eq_prefixes(&eval_point, pad_len);
+			let pad_eq_inv = prefixes[pad_len].invert_or_zero();
+			assert_eq!(unpad_claims(pad_eq_inv, claims), [root_num, root_den]);
+			let prover =
+				new(prefixes, eval_point.clone(), ConstantFraction::new(root_num, root_den));
+
+			assert_matches_padded_reference(
+				&mut rng, padded_num, padded_den, eval_point, claims, prover,
+			);
 		}
 	}
 }

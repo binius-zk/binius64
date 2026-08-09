@@ -151,3 +151,30 @@ pub trait MleCheckProver<F: Field> {
 	/// The still-unbound part of the evaluation point, one coordinate per free variable.
 	fn eval_point(&self) -> &[F];
 }
+
+impl<F, L, R> MleCheckProver<F> for Either<L, R>
+where
+	F: Field,
+	L: MleCheckProver<F>,
+	R: MleCheckProver<F>,
+{
+	fn n_vars(&self) -> usize {
+		either::for_both!(self, inner => inner.n_vars())
+	}
+
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		either::for_both!(self, inner => inner.execute())
+	}
+
+	fn fold(&mut self, challenge: F) {
+		either::for_both!(self, inner => inner.fold(challenge))
+	}
+
+	fn finish(self) -> Vec<F> {
+		either::for_both!(self, inner => inner.finish())
+	}
+
+	fn eval_point(&self) -> &[F] {
+		either::for_both!(self, inner => inner.eval_point())
+	}
+}
