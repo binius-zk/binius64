@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_core::{ValueIndex, ValueVec, ValueVecLayout, word::Word};
+use binius_core::{ValueVec, ValueVecLayout, word::Word};
 
 use crate::compiler::{
 	eval_form::{BytecodeBuilder, exec::Executor, scalar::ExecutionContext},
@@ -86,7 +86,7 @@ impl InterpreterTest {
 
 		// Set the values
 		for (i, value) in self.values.into_iter().enumerate() {
-			value_vec[ValueIndex(i as u32)] = value;
+			*value_vec.word_mut(i as u32) = value;
 		}
 
 		let hint_registry = HintRegistry::new();
@@ -95,7 +95,7 @@ impl InterpreterTest {
 
 		// Check the expected values
 		for (idx, expected_value) in expected {
-			let actual = value_vec[ValueIndex(idx)];
+			let actual = value_vec.word(idx);
 			assert_eq!(
 				actual, expected_value,
 				"Wire {} should have value {:?}, got {:?}",
@@ -123,7 +123,7 @@ impl InterpreterTest {
 
 		// Set the values
 		for (i, value) in self.values.into_iter().enumerate() {
-			value_vec[ValueIndex(i as u32)] = value;
+			*value_vec.word_mut(i as u32) = value;
 		}
 
 		let hint_registry = HintRegistry::new();

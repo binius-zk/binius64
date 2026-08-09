@@ -190,6 +190,15 @@ impl Circuit {
 		self.wire_mapping[wire]
 	}
 
+	/// For the given wire, returns the row it occupies in a transposed value array.
+	///
+	/// This is the wire's flat position in the value vector, counting the scratch tail, which is
+	/// how [`Self::populate_wire_witness_batched`] numbers the rows it fills.
+	#[inline(always)]
+	pub fn witness_row(&self, wire: Wire) -> usize {
+		self.value_vec_layout.word_offset(self.witness_index(wire))
+	}
+
 	/// Creates a new witness filler for this circuit.
 	pub fn new_witness_filler(&self) -> WitnessFiller<'_> {
 		WitnessFiller {
@@ -223,7 +232,7 @@ impl Circuit {
 	pub fn populate_wire_witness(&self, w: &mut WitnessFiller) -> Result<(), PopulateError> {
 		// Fill the constant part from the witness.
 		for (index, constant) in self.constraint_system.constants.iter().enumerate() {
-			w.value_vec[ValueIndex(index as u32)] = *constant;
+			w.value_vec[ValueIndex::constant(index as u32)] = *constant;
 		}
 
 		// Execute the evaluation form - it modifies the ValueVec in place

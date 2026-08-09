@@ -10,7 +10,7 @@ use bytes::{Buf, BufMut};
 
 use super::{
 	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ShiftVariant,
-	ValueIndex, ValueVec, ZeroConstraint,
+	ValueIndex, ValueSegment, ValueVec, ZeroConstraint,
 };
 use crate::{
 	error::{ConstraintSystemError, VerificationError},
@@ -32,7 +32,9 @@ use crate::{
 ///  \------------- public segment -----------/  \----- hidden segment -/
 /// ```
 ///
-/// A constraint may reference any value word, but not a padding word.
+/// A constraint names a word by its [`ValueSegment`] and its position within that segment, so
+/// the padding is unaddressable: an index reaches only the values of its own segment, and where
+/// those values sit in the vector is the layout's business rather than the constraint's.
 ///
 /// # Constraint counts
 ///
@@ -76,7 +78,7 @@ pub struct ConstraintSystem {
 
 impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
-	pub const SERIALIZATION_VERSION: u32 = 7;
+	pub const SERIALIZATION_VERSION: u32 = 8;
 
 	/// The minimum number of words in the public segment.
 	///
@@ -146,28 +148,41 @@ impl ConstraintSystem {
 		Ok(())
 	}
 
-	/// Returns true if the given index points to an area that is considered to be padding.
-	const fn is_padding(&self, index: ValueIndex) -> bool {
-		let idx = index.0 as usize;
-
-		// padding 1: between constants and inout section
-		if idx >= self.n_const() && idx < self.offset_inout() {
-			return true;
+	/// Returns the number of values the given segment holds, excluding the padding after them.
+	///
+	/// The scratch segment holds no values a constraint may name, so it reports zero: every index
+	/// into it is out of range as far as this system is concerned.
+	pub const fn segment_len(&self, segment: ValueSegment) -> usize {
+		match segment {
+			ValueSegment::Constant => self.n_const(),
+			ValueSegment::InOut => self.n_inout,
+			ValueSegment::Private => self.n_private,
+			ValueSegment::Scratch => 0,
 		}
+	}
 
-		// padding 2: between the end of inout section and the end of the public segment
-		let end_of_inout = self.offset_inout() + self.n_inout;
-		if idx >= end_of_inout && idx < self.n_public_words() {
-			return true;
-		}
+	/// Returns the position of the word a [`ValueIndex`] names within the value vector.
+	///
+	/// This is the address the proving protocol reads the word at: the public segment occupies
+	/// the low positions and the hidden segment follows it. Scratch words are not part of a
+	/// constraint system, so a scratch index lands past the last word — [`Self::validate`] rejects
+	/// any constraint naming one.
+	pub const fn word_offset(&self, index: ValueIndex) -> usize {
+		let segment_start = match index.segment() {
+			ValueSegment::Constant => 0,
+			ValueSegment::InOut => self.offset_inout(),
+			ValueSegment::Private => self.n_public_words(),
+			ValueSegment::Scratch => self.value_vec_len(),
+		};
+		segment_start + index.index() as usize
+	}
 
-		// padding 3: between the last private value and the end of the hidden segment
-		let end_of_private = self.n_public_words() + self.n_private;
-		if idx >= end_of_private && idx < self.value_vec_len() {
-			return true;
-		}
-
-		false
+	/// Builds a value vector from the words of this system's public and hidden segments.
+	///
+	/// The system places the inout values within the public segment, which is what resolves a
+	/// [`ValueSegment::InOut`] index against the rebuilt vector.
+	pub fn value_vec_from_data(&self, public: &[Word], private: &[Word]) -> ValueVec {
+		ValueVec::new_from_data(self.offset_inout(), public, private)
 	}
 
 	/// Ensures that this constraint system is well-formed and ready for proving.
@@ -176,8 +191,8 @@ impl ConstraintSystem {
 	///
 	/// - the value vector shape is [valid][`Self::validate_shape`].
 	/// - every [shifted value index][super::ShiftedValueIndex] is canonical.
-	/// - referenced values indices are in the range.
-	/// - constraints do not reference values in the padding area.
+	/// - referenced value indices are within their segment.
+	/// - constraints do not reference scratch values.
 	/// - shifts amounts are valid.
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
 		tracing::debug_span!("Validating constraint system");
@@ -230,7 +245,7 @@ impl ConstraintSystem {
 		// A vector opening one to the wrong word satisfies a different system than declared.
 		for (index, &constant) in self.constants.iter().enumerate() {
 			let value_index = index as u32;
-			let actual = values[ValueIndex(value_index)];
+			let actual = values[ValueIndex::constant(value_index)];
 			if actual != constant {
 				return Err(VerificationError::ConstantMismatch {
 					value_index,
@@ -321,22 +336,27 @@ impl ConstraintSystem {
 					max_amount,
 				});
 			}
-			// Check if the value index is out of bounds.
-			if term.value_index.0 as usize >= self.value_vec_len() {
+			// Scratch words are uncommitted temporaries of the circuit that produced this system,
+			// so no constraint may name one.
+			let segment = term.value_index.segment();
+			if !segment.is_referenceable() {
+				return Err(ConstraintSystemError::ScratchValueIndex {
+					constraint_kind,
+					constraint_index,
+					operand_name,
+				});
+			}
+			// An index is checked against its own segment, so it can only name a declared value.
+			// Padding follows the values of a segment, and no index reaches it.
+			let segment_len = self.segment_len(segment);
+			if term.value_index.index() as usize >= segment_len {
 				return Err(ConstraintSystemError::OutOfRangeValueIndex {
 					constraint_kind,
 					constraint_index,
 					operand_name,
-					value_index: term.value_index.0,
-					total_len: self.value_vec_len(),
-				});
-			}
-			// No value should refer to padding.
-			if self.is_padding(term.value_index) {
-				return Err(ConstraintSystemError::PaddingValueIndex {
-					constraint_kind,
-					constraint_index,
-					operand_name,
+					segment,
+					value_index: term.value_index.index(),
+					segment_len,
 				});
 			}
 		}
@@ -485,7 +505,7 @@ impl DeserializeBytes for ConstraintSystem {
 mod tests {
 	use super::*;
 	use crate::{
-		constraint_system::{ShiftedValueIndex, ValueVec, ValuesData},
+		constraint_system::{ShiftedValueIndex, ValuesData},
 		error::ConstraintViolation,
 	};
 
@@ -516,35 +536,35 @@ mod tests {
 	pub(crate) fn create_test_constraint_system() -> ConstraintSystem {
 		ConstraintSystem {
 			zero_constraints: vec![ZeroConstraint::plain([
-				ValueIndex(0),
-				ValueIndex(4),
-				ValueIndex(8),
+				ValueIndex::constant(0),
+				ValueIndex::inout(0),
+				ValueIndex::private(0),
 			])],
 			and_constraints: vec![
 				AndConstraint::plain_abc(
-					vec![ValueIndex(0), ValueIndex(1)],
-					vec![ValueIndex(2)],
-					vec![ValueIndex(4), ValueIndex(5)],
+					vec![ValueIndex::constant(0), ValueIndex::constant(1)],
+					vec![ValueIndex::constant(2)],
+					vec![ValueIndex::inout(0), ValueIndex::inout(1)],
 				),
 				AndConstraint::abc(
-					vec![ShiftedValueIndex::sll(ValueIndex(0), 5)],
-					vec![ShiftedValueIndex::srl(ValueIndex(1), 10)],
-					vec![ShiftedValueIndex::sar(ValueIndex(2), 15)],
+					vec![ShiftedValueIndex::sll(ValueIndex::constant(0), 5)],
+					vec![ShiftedValueIndex::srl(ValueIndex::constant(1), 10)],
+					vec![ShiftedValueIndex::sar(ValueIndex::constant(2), 15)],
 				),
 			],
 			imul_constraints: vec![ImulConstraint([
-				vec![ShiftedValueIndex::plain(ValueIndex(0))],
-				vec![ShiftedValueIndex::plain(ValueIndex(1))],
-				vec![ShiftedValueIndex::plain(ValueIndex(2))],
-				vec![ShiftedValueIndex::plain(ValueIndex(8))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(1))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(2))],
+				vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
 			])],
 			bmul_constraints: vec![BmulConstraint([
-				vec![ShiftedValueIndex::plain(ValueIndex(0))],
-				vec![ShiftedValueIndex::plain(ValueIndex(1))],
-				vec![ShiftedValueIndex::plain(ValueIndex(2))],
-				vec![ShiftedValueIndex::plain(ValueIndex(4))],
-				vec![ShiftedValueIndex::plain(ValueIndex(5))],
-				vec![ShiftedValueIndex::sll(ValueIndex(0), 5)],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(1))],
+				vec![ShiftedValueIndex::plain(ValueIndex::constant(2))],
+				vec![ShiftedValueIndex::plain(ValueIndex::inout(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex::inout(1))],
+				vec![ShiftedValueIndex::sll(ValueIndex::constant(0), 5)],
 			])],
 			..test_shape()
 		}
@@ -560,7 +580,7 @@ mod tests {
 		let deserialized = ConstraintSystem::deserialize(&mut buf.as_slice()).unwrap();
 
 		// Check version
-		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 7);
+		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 8);
 
 		// Check the value vector shape
 		assert_eq!(original.constants, deserialized.constants);
@@ -629,7 +649,7 @@ mod tests {
 		constraint_system.serialize(&mut buf).unwrap();
 
 		// Write to reference file.
-		let test_data_path = std::path::Path::new("test_data/constraint_system_v7.bin");
+		let test_data_path = std::path::Path::new("test_data/constraint_system_v8.bin");
 
 		// Create directory if it doesn't exist
 		if let Some(parent) = test_data_path.parent() {
@@ -646,9 +666,9 @@ mod tests {
 	/// This test will fail if breaking changes are made without incrementing the version.
 	#[test]
 	fn test_deserialize_from_reference_binary_file() {
-		// The v7 format adds the ZERO constraints ahead of the AND constraints. Older files are no
-		// longer compatible.
-		let binary_data = include_bytes!("../../test_data/constraint_system_v7.bin");
+		// The v8 format packs a segment tag into every value index. Older files name words by
+		// their absolute position instead, so they are no longer compatible.
+		let binary_data = include_bytes!("../../test_data/constraint_system_v8.bin");
 
 		let deserialized = ConstraintSystem::deserialize(&mut binary_data.as_slice()).unwrap();
 
@@ -672,7 +692,7 @@ mod tests {
 		// This is implicitly checked during deserialization, but we can also verify
 		// the file starts with the correct version bytes
 		let version_bytes = &binary_data[0..4]; // First 4 bytes should be version
-		let expected_version_bytes = 7u32.to_le_bytes(); // Version 7 in little-endian
+		let expected_version_bytes = 8u32.to_le_bytes(); // Version 8 in little-endian
 		assert_eq!(
 			version_bytes, expected_version_bytes,
 			"Binary file version mismatch. If you made breaking changes, increment ConstraintSystem::SERIALIZATION_VERSION"
@@ -720,67 +740,51 @@ mod tests {
 	}
 
 	#[test]
-	fn test_is_padding_covers_every_gap() {
-		//     [ c c | _ _ _ _ _ _ | i i | _ _ _ _ _ _ ][ p p p p p p p p | _ _ _ _ _ _ _ _ ]
-		//       0 1   2 ...     7   8 9   10 ...   15    16 ...      23   24 ...       31
-		let cs = ConstraintSystem {
-			constants: vec![Word::ONE, Word::ALL_ONE],
-			n_const_pad: 6,
-			n_inout: 2,
-			n_inout_pad: 6,
-			n_private: 8,
-			n_private_pad: 8,
-			..test_shape()
-		};
-		cs.validate_shape().unwrap();
-
-		let padding = (0..cs.value_vec_len())
-			.filter(|&i| cs.is_padding(ValueIndex(i as u32)))
-			.collect::<Vec<_>>();
-		let expected = (2..8).chain(10..16).chain(24..32).collect::<Vec<_>>();
-		assert_eq!(padding, expected);
-	}
-
-	#[test]
-	fn test_is_padding_gapless_shape_has_no_padding() {
-		//     [ c c c c | i i i i ][ p p p p p p p p ]
-		let cs = ConstraintSystem {
-			constants: vec![Word::ONE; 4],
-			n_const_pad: 0,
-			n_inout: 4,
-			n_inout_pad: 0,
-			n_private: 8,
-			n_private_pad: 0,
-			..test_shape()
-		};
-		cs.validate_shape().unwrap();
-
-		for i in 0..cs.value_vec_len() {
-			assert!(!cs.is_padding(ValueIndex(i as u32)), "index {i} should not be padding");
-		}
-	}
-
-	#[test]
-	fn test_validate_rejects_padding_references() {
+	fn test_validate_rejects_scratch_references() {
 		let mut cs = test_shape();
 
-		// Index 3 is the padding word between the constants and the inout values.
+		// Scratch words are the evaluating circuit's uncommitted temporaries, so a system that
+		// names one references a word that was never committed.
 		cs.and_constraints.push(AndConstraint::plain_abc(
-			vec![ValueIndex(0)], // valid constant
-			vec![ValueIndex(3)], // PADDING!
-			vec![ValueIndex(8)], // valid private value
+			vec![ValueIndex::constant(0)],
+			vec![ValueIndex::scratch(0)], // SCRATCH!
+			vec![ValueIndex::private(0)],
 		));
 
-		let result = cs.validate();
-		assert!(result.is_err(), "Should reject constraint referencing padding");
-
-		match result.unwrap_err() {
-			ConstraintSystemError::PaddingValueIndex {
+		match cs.validate().unwrap_err() {
+			ConstraintSystemError::ScratchValueIndex {
 				constraint_kind, ..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
 			}
-			other => panic!("Expected PaddingValueIndex error, got: {:?}", other),
+			other => panic!("Expected ScratchValueIndex error, got: {:?}", other),
+		}
+	}
+
+	#[test]
+	fn test_validate_checks_each_segment_against_its_own_length() {
+		// The shape holds 3 constants, 2 inout values and 6 private values. Index 3 is out of
+		// range in the constant segment while naming a perfectly valid private word, which is
+		// what makes the check segment-relative rather than global.
+		let mut cs = test_shape();
+		cs.and_constraints.push(AndConstraint::plain_abc(
+			vec![ValueIndex::constant(3)],
+			vec![ValueIndex::inout(0)],
+			vec![ValueIndex::private(3)],
+		));
+
+		match cs.validate().unwrap_err() {
+			ConstraintSystemError::OutOfRangeValueIndex {
+				segment,
+				value_index,
+				segment_len,
+				..
+			} => {
+				assert_eq!(segment, ValueSegment::Constant);
+				assert_eq!(value_index, 3);
+				assert_eq!(segment_len, 3);
+			}
+			other => panic!("Expected OutOfRangeValueIndex error, got: {:?}", other),
 		}
 	}
 
@@ -790,16 +794,16 @@ mod tests {
 
 		// Add constraints that only reference valid non-padding indices
 		cs.and_constraints.push(AndConstraint::plain_abc(
-			vec![ValueIndex(0), ValueIndex(1)], // constants
-			vec![ValueIndex(4), ValueIndex(5)], // inout
-			vec![ValueIndex(8), ValueIndex(9)], // private
+			vec![ValueIndex::constant(0), ValueIndex::constant(1)], // constants
+			vec![ValueIndex::inout(0), ValueIndex::inout(1)],       // inout
+			vec![ValueIndex::private(0), ValueIndex::private(1)],   // private
 		));
 
 		cs.imul_constraints.push(ImulConstraint([
-			vec![ShiftedValueIndex::plain(ValueIndex(10))], // a
-			vec![ShiftedValueIndex::plain(ValueIndex(11))], // b
-			vec![ShiftedValueIndex::plain(ValueIndex(12))], // lo
-			vec![ShiftedValueIndex::plain(ValueIndex(13))], // hi
+			vec![ShiftedValueIndex::plain(ValueIndex::private(2))], // a
+			vec![ShiftedValueIndex::plain(ValueIndex::private(3))], // b
+			vec![ShiftedValueIndex::plain(ValueIndex::private(4))], // lo
+			vec![ShiftedValueIndex::plain(ValueIndex::private(5))], // hi
 		]));
 
 		let result = cs.validate();
@@ -831,20 +835,20 @@ mod tests {
 		let mut cs = test_shape();
 
 		cs.zero_constraints
-			.push(ZeroConstraint::plain([ValueIndex(0), ValueIndex(100)]));
+			.push(ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::private(100)]));
 
 		match cs.validate().unwrap_err() {
 			ConstraintSystemError::OutOfRangeValueIndex {
 				constraint_kind,
 				operand_name,
 				value_index,
-				total_len,
+				segment_len,
 				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::Zero);
 				assert_eq!(operand_name, "val");
 				assert_eq!(value_index, 100);
-				assert_eq!(total_len, 16);
+				assert_eq!(segment_len, 6);
 			}
 			other => panic!("Expected OutOfRangeValueIndex error, got: {:?}", other),
 		}
@@ -858,11 +862,15 @@ mod tests {
 		assert_eq!(cs.log_and_constraints(), None);
 		assert_eq!(cs.log_zero_constraints(), None);
 
-		cs.zero_constraints = vec![ZeroConstraint::plain([ValueIndex(0), ValueIndex(8)]); 3];
+		cs.zero_constraints =
+			vec![ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::private(0)]); 3];
 		assert_eq!(cs.log_zero_constraints(), Some(2));
 
-		let and =
-			AndConstraint::plain_abc(vec![ValueIndex(0)], vec![ValueIndex(4)], vec![ValueIndex(8)]);
+		let and = AndConstraint::plain_abc(
+			vec![ValueIndex::constant(0)],
+			vec![ValueIndex::inout(0)],
+			vec![ValueIndex::private(0)],
+		);
 		cs.and_constraints = vec![and; 3];
 		assert_eq!(cs.log_and_constraints(), Some(2));
 		cs.and_constraints.push(cs.and_constraints[0].clone());
@@ -875,9 +883,9 @@ mod tests {
 
 		// Add AND constraint that references an out-of-range index
 		cs.and_constraints.push(AndConstraint::plain_abc(
-			vec![ValueIndex(0)],  // valid constant
-			vec![ValueIndex(16)], // OUT OF RANGE! (total_len is 16, so max valid index is 15)
-			vec![ValueIndex(8)],  // valid private value
+			vec![ValueIndex::constant(0)], // valid constant
+			vec![ValueIndex::private(6)],  // OUT OF RANGE! the private segment holds 6 values
+			vec![ValueIndex::private(0)],  // valid private value
 		));
 
 		let result = cs.validate();
@@ -888,13 +896,13 @@ mod tests {
 				constraint_kind,
 				operand_name,
 				value_index,
-				total_len,
+				segment_len,
 				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
 				assert_eq!(operand_name, "b");
-				assert_eq!(value_index, 16);
-				assert_eq!(total_len, 16);
+				assert_eq!(value_index, 6);
+				assert_eq!(segment_len, 6);
 			}
 			other => panic!("Expected OutOfRangeValueIndex error, got: {:?}", other),
 		}
@@ -906,10 +914,10 @@ mod tests {
 
 		// Add IMUL constraint with out-of-range index in 'hi' operand
 		cs.imul_constraints.push(ImulConstraint([
-			vec![ShiftedValueIndex::plain(ValueIndex(0))], // a: valid
-			vec![ShiftedValueIndex::plain(ValueIndex(1))], // b: valid
-			vec![ShiftedValueIndex::plain(ValueIndex(8))], // lo: valid
-			vec![ShiftedValueIndex::plain(ValueIndex(100))], // hi: WAY out of range!
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(0))], // a: valid
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(1))], // b: valid
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],  // lo: valid
+			vec![ShiftedValueIndex::plain(ValueIndex::private(100))], // hi: WAY out of range!
 		]));
 
 		let result = cs.validate();
@@ -920,13 +928,13 @@ mod tests {
 				constraint_kind,
 				operand_name,
 				value_index,
-				total_len,
+				segment_len,
 				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::Imul);
 				assert_eq!(operand_name, "hi");
 				assert_eq!(value_index, 100);
-				assert_eq!(total_len, 16);
+				assert_eq!(segment_len, 6);
 			}
 			other => panic!("Expected OutOfRangeValueIndex error, got: {:?}", other),
 		}
@@ -938,12 +946,12 @@ mod tests {
 
 		// Add BMUL constraint with out-of-range index in 'c_hi' operand
 		cs.bmul_constraints.push(BmulConstraint([
-			vec![ShiftedValueIndex::plain(ValueIndex(0))], // a_lo: valid const
-			vec![ShiftedValueIndex::plain(ValueIndex(4))], // a_hi: valid inout
-			vec![ShiftedValueIndex::plain(ValueIndex(5))], // b_lo: valid inout
-			vec![ShiftedValueIndex::plain(ValueIndex(8))], // b_hi: valid private
-			vec![ShiftedValueIndex::plain(ValueIndex(9))], // c_lo: valid private
-			vec![ShiftedValueIndex::plain(ValueIndex(100))], // c_hi: WAY out of range!
+			vec![ShiftedValueIndex::plain(ValueIndex::constant(0))], // a_lo: valid const
+			vec![ShiftedValueIndex::plain(ValueIndex::inout(0))],    // a_hi: valid inout
+			vec![ShiftedValueIndex::plain(ValueIndex::inout(1))],    // b_lo: valid inout
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],  // b_hi: valid private
+			vec![ShiftedValueIndex::plain(ValueIndex::private(1))],  // c_lo: valid private
+			vec![ShiftedValueIndex::plain(ValueIndex::private(100))], // c_hi: WAY out of range!
 		]));
 
 		let result = cs.validate();
@@ -954,45 +962,15 @@ mod tests {
 				constraint_kind,
 				operand_name,
 				value_index,
-				total_len,
+				segment_len,
 				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::Bmul);
 				assert_eq!(operand_name, "c_hi");
 				assert_eq!(value_index, 100);
-				assert_eq!(total_len, 16);
+				assert_eq!(segment_len, 6);
 			}
 			other => panic!("Expected OutOfRangeValueIndex error, got: {:?}", other),
-		}
-	}
-
-	#[test]
-	fn test_validate_checks_out_of_range_before_padding() {
-		// This test verifies that out-of-range checking happens before padding checking
-		// by using an index that is both out-of-range AND would be in a padding area if it were
-		// valid
-		let mut cs = test_shape();
-
-		// Index 19 is out of range (>= 16)
-		// If it were in range, indices 3 and 6-7 would be padding
-		cs.and_constraints.push(AndConstraint::plain_abc(
-			vec![ValueIndex(0)],
-			vec![ValueIndex(19)], // out of range
-			vec![ValueIndex(8)],
-		));
-
-		let result = cs.validate();
-		assert!(result.is_err());
-
-		// Should get OutOfRangeValueIndex, not PaddingValueIndex
-		match result.unwrap_err() {
-			ConstraintSystemError::OutOfRangeValueIndex { .. } => {
-				// Good, out-of-range was detected first
-			}
-			other => panic!(
-				"Expected OutOfRangeValueIndex to be detected before padding check, got: {:?}",
-				other
-			),
 		}
 	}
 
@@ -1004,12 +982,12 @@ mod tests {
 		// 32 is out of range even though it is below the full-width bound of 64.
 		cs.and_constraints.push(AndConstraint::abc(
 			vec![ShiftedValueIndex {
-				value_index: ValueIndex(0),
+				value_index: ValueIndex::constant(0),
 				shift_variant: ShiftVariant::Sll32,
 				amount: 32,
 			}],
-			vec![ShiftedValueIndex::plain(ValueIndex(8))],
-			vec![ShiftedValueIndex::plain(ValueIndex(8))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
 		));
 
 		match cs.validate().unwrap_err() {
@@ -1041,7 +1019,7 @@ mod tests {
 		let private = (0..cs.n_hidden_words())
 			.map(|i| Word::from_u64(0x5A5A_A5A5 ^ (i as u64 * 0x9E37_79B9)))
 			.collect::<Vec<_>>();
-		let values = ValueVec::new_from_data(&public, &private);
+		let values = cs.value_vec_from_data(&public, &private);
 
 		// Split into public and non-public witnesses and serialize all artifacts
 		let public_data = ValuesData::from(values.public());
@@ -1064,7 +1042,7 @@ mod tests {
 		assert_eq!(cs2.n_hidden_words(), non_pub2.len());
 
 		// Reconstruct ValueVec from deserialized pieces
-		let reconstructed = ValueVec::new_from_data(&pub2, &non_pub2);
+		let reconstructed = cs2.value_vec_from_data(&pub2, &non_pub2);
 
 		assert_eq!(reconstructed.combined_witness(), values.combined_witness());
 	}
@@ -1082,7 +1060,7 @@ mod tests {
 			n_private: 8,
 			n_private_pad: 0,
 			zero_constraints: (0..n)
-				.map(|i| ZeroConstraint::plain([ValueIndex(8 + i as u32)]))
+				.map(|i| ZeroConstraint::plain([ValueIndex::private(i as u32)]))
 				.collect(),
 			and_constraints: vec![],
 			imul_constraints: vec![],
@@ -1093,7 +1071,7 @@ mod tests {
 	#[test]
 	fn verify_accepts_a_value_vector_satisfying_every_constraint() {
 		let cs = zero_constraint_system(3);
-		let values = ValueVec::new_from_data(&[Word::ZERO; 8], &[Word::ZERO; 8]);
+		let values = cs.value_vec_from_data(&[Word::ZERO; 8], &[Word::ZERO; 8]);
 
 		assert!(cs.verify(&values).is_ok());
 	}
@@ -1104,7 +1082,7 @@ mod tests {
 		let cs = zero_constraint_system(3);
 		let mut private = [Word::ZERO; 8];
 		private[1] = Word::from_u64(0xabc);
-		let values = ValueVec::new_from_data(&[Word::ZERO; 8], &private);
+		let values = cs.value_vec_from_data(&[Word::ZERO; 8], &private);
 
 		let err = cs.verify(&values).unwrap_err();
 
@@ -1140,7 +1118,7 @@ mod tests {
 		public[0] = Word::from_u64(1);
 		public[1] = Word::from_u64(42);
 		public[2] = Word::from_u64(0xBAADF00D);
-		let values = ValueVec::new_from_data(&public, &[Word::ZERO; 8]);
+		let values = cs.value_vec_from_data(&public, &[Word::ZERO; 8]);
 
 		match cs.verify(&values).unwrap_err() {
 			VerificationError::ConstantMismatch {
@@ -1167,13 +1145,12 @@ mod tests {
 			n_inout_pad: 0,
 			n_private: 8,
 			n_private_pad: 0,
-			zero_constraints: vec![ZeroConstraint::plain([ValueIndex(0)])],
+			zero_constraints: vec![ZeroConstraint::plain([ValueIndex::constant(0)])],
 			and_constraints: vec![],
 			imul_constraints: vec![],
 			bmul_constraints: vec![],
 		};
-		let values =
-			ValueVec::new_from_data(&[Word::ONE, Word::ZERO, Word::ZERO], &[Word::ZERO; 8]);
+		let values = cs.value_vec_from_data(&[Word::ONE, Word::ZERO, Word::ZERO], &[Word::ZERO; 8]);
 
 		match cs.verify(&values).unwrap_err() {
 			VerificationError::MalformedSystem(ConstraintSystemError::PublicInputPowerOfTwo) => {}

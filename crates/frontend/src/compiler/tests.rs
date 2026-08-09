@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use binius_core::{
-	constraint_system::{ShiftedValueIndex, ValueIndex},
+	constraint_system::{Operand, ShiftedValueIndex, ValueIndex, ValueSegment},
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;
@@ -115,7 +115,7 @@ fn test_linear_constraints_lower_to_zero_constraints() {
 
 	// The Zero constraint XORs the linear constraint's terms with its destination, and names no
 	// all-ones constant.
-	let all_one = ValueIndex(0);
+	let all_one = ValueIndex::constant(0);
 	let val = cs.zero_constraints[0].val();
 	assert_eq!(val.len(), 3);
 	assert!(val.iter().all(|svi| svi.value_index != all_one));
@@ -156,7 +156,7 @@ fn test_zero_constraints_reach_a_fused_committed_lin_def() {
 		zero_cs.zero_constraints[0]
 			.val()
 			.iter()
-			.all(|svi| svi.value_index != ValueIndex(0))
+			.all(|svi| svi.value_index != ValueIndex::constant(0))
 	);
 
 	let mut filler = zero_circuit.new_witness_filler();
@@ -914,8 +914,8 @@ fn test_scratch_pooling_matches_scalar_per_instance_batched() {
 		.collect();
 
 	// Locate the two public rows, then seed every instance's column before evaluating.
-	let x_row = circuit.witness_index(x).0 as usize;
-	let expected_row = circuit.witness_index(expected).0 as usize;
+	let x_row = circuit.witness_row(x);
+	let expected_row = circuit.witness_row(expected);
 	let mut data = vec![Word::ZERO; full_len * n];
 	let mut view = StridedArray2DViewMut::without_stride(&mut data, full_len, n).unwrap();
 	for (instance, &x_val) in inputs.iter().enumerate() {
@@ -961,37 +961,28 @@ fn test_zero_constant_not_in_binius64_operands() {
 		.map(|(i, _)| i)
 		.collect();
 
-	for constraint in &cs.and_constraints {
-		for operand in &constraint.0 {
+	// Only a constant-segment index can name a constant, so the private and inout words are left
+	// alone however their indices happen to number.
+	let assert_no_zero_constants = |operands: &[Operand], kind: &str| {
+		for operand in operands {
 			for term in operand {
+				let index = term.value_index;
 				assert!(
-					!zero_const_indices.contains(&(term.value_index.0 as usize)),
-					"zero constant at ValueIndex({}) found in AND operand",
-					term.value_index.0
+					index.segment() != ValueSegment::Constant
+						|| !zero_const_indices.contains(&(index.index() as usize)),
+					"zero constant at {index:?} found in {kind} operand",
 				);
 			}
 		}
+	};
+
+	for constraint in &cs.and_constraints {
+		assert_no_zero_constants(&constraint.0, "AND");
 	}
 	for constraint in &cs.imul_constraints {
-		for operand in &constraint.0 {
-			for term in operand {
-				assert!(
-					!zero_const_indices.contains(&(term.value_index.0 as usize)),
-					"zero constant at ValueIndex({}) found in IMUL operand",
-					term.value_index.0
-				);
-			}
-		}
+		assert_no_zero_constants(&constraint.0, "IMUL");
 	}
 	for constraint in &cs.bmul_constraints {
-		for operand in &constraint.0 {
-			for term in operand {
-				assert!(
-					!zero_const_indices.contains(&(term.value_index.0 as usize)),
-					"zero constant at ValueIndex({}) found in BMUL operand",
-					term.value_index.0
-				);
-			}
-		}
+		assert_no_zero_constants(&constraint.0, "BMUL");
 	}
 }

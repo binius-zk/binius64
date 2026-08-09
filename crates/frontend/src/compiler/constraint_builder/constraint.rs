@@ -160,10 +160,10 @@ mod tests {
 		let mut wire_mapping = SecondaryMap::new();
 		let wires: Vec<Wire> = (0..7).map(Wire::new).collect();
 		for (i, w) in wires.iter().enumerate() {
-			wire_mapping[*w] = ValueIndex(i as u32);
+			wire_mapping[*w] = ValueIndex::private(i as u32);
 		}
 		let all_one_wire = Wire::new(7);
-		wire_mapping[all_one_wire] = ValueIndex(7);
+		wire_mapping[all_one_wire] = ValueIndex::private(7);
 
 		let mut builder = ConstraintBuilder::new();
 		builder.bmul(
@@ -183,21 +183,21 @@ mod tests {
 		assert_eq!(bmul_constraints.len(), 1);
 
 		let bc = &bmul_constraints[0];
-		assert_eq!(bc.a_lo()[0].value_index, ValueIndex(0));
-		assert_eq!(bc.a_hi()[0].value_index, ValueIndex(1));
-		assert_eq!(bc.b_lo()[0].value_index, ValueIndex(2));
-		assert_eq!(bc.b_hi()[0].value_index, ValueIndex(3));
-		assert_eq!(bc.c_lo()[0].value_index, ValueIndex(4));
+		assert_eq!(bc.a_lo()[0].value_index, ValueIndex::private(0));
+		assert_eq!(bc.a_hi()[0].value_index, ValueIndex::private(1));
+		assert_eq!(bc.b_lo()[0].value_index, ValueIndex::private(2));
+		assert_eq!(bc.b_hi()[0].value_index, ValueIndex::private(3));
+		assert_eq!(bc.c_lo()[0].value_index, ValueIndex::private(4));
 
 		// c_hi is `wire5 ^ (wire6 << 5)`.
 		assert_eq!(bc.c_hi().len(), 2);
 		assert!(
 			bc.c_hi()
 				.iter()
-				.any(|svi| svi.value_index == ValueIndex(5) && svi.amount == 0)
+				.any(|svi| svi.value_index == ValueIndex::private(5) && svi.amount == 0)
 		);
 		assert!(bc.c_hi().iter().any(|svi| {
-			svi.value_index == ValueIndex(6)
+			svi.value_index == ValueIndex::private(6)
 				&& svi.amount == 5
 				&& matches!(svi.shift_variant, ShiftVariant::Sll)
 		}));
