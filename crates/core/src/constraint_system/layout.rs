@@ -69,20 +69,39 @@ impl ValueVecLayout {
 	/// Returns the constraint system shape this layout realizes.
 	///
 	/// The returned system has no constraints; the caller fills them in.
-	pub const fn constraint_system_shape(&self, constants: Vec<Word>) -> ConstraintSystem {
+	///
+	/// # Panics
+	///
+	/// Panics if the layout's padded section offsets disagree with the ones the returned system
+	/// derives from its value counts, which would leave the two views of the same value vector
+	/// addressing different words.
+	pub fn constraint_system_shape(&self, constants: Vec<Word>) -> ConstraintSystem {
 		assert!(constants.len() == self.n_const, "constants must match the layout's n_const");
-		ConstraintSystem {
+		let system = ConstraintSystem {
 			constants,
-			n_const_pad: self.offset_inout - self.n_const,
 			n_inout: self.n_inout,
-			n_inout_pad: self.offset_witness - self.offset_inout - self.n_inout,
 			n_private: self.n_witness + self.n_internal,
-			n_private_pad: self.n_hidden_words - self.n_witness - self.n_internal,
 			zero_constraints: Vec::new(),
 			and_constraints: Vec::new(),
 			imul_constraints: Vec::new(),
 			bmul_constraints: Vec::new(),
-		}
+		};
+		assert_eq!(
+			system.offset_inout(),
+			self.offset_inout,
+			"the layout and the system must place the inout values at the same word"
+		);
+		assert_eq!(
+			system.n_public_words(),
+			self.offset_witness,
+			"the layout and the system must pad the public segment to the same length"
+		);
+		assert_eq!(
+			system.n_hidden_words(),
+			self.n_hidden_words,
+			"the layout and the system must pad the hidden segment to the same length"
+		);
+		system
 	}
 }
 
@@ -90,32 +109,49 @@ impl ValueVecLayout {
 mod tests {
 	use super::*;
 
-	#[test]
-	fn constraint_system_shape_splits_sections_into_values_and_padding() {
-		let layout = ValueVecLayout {
-			n_const: 2,         // constants at indices 0-1
-			n_inout: 2,         // inout at indices 8-9
-			n_witness: 4,       // witness at indices 16-19
-			n_internal: 4,      // internal at indices 20-23
-			offset_inout: 8,    // padding after the constants at indices 2-7
-			offset_witness: 16, // padding after the inout values at indices 10-15
-			n_hidden_words: 16, // padding after the internal values at indices 24-31
+	/// A layout of two constants, two inout values and eight private values.
+	///
+	/// Four public values pad to a four-word public segment; the eight private values exceed that,
+	/// so the hidden segment holds them unpadded.
+	fn test_layout() -> ValueVecLayout {
+		ValueVecLayout {
+			n_const: 2,    // constants at indices 0-1
+			n_inout: 2,    // inout at indices 2-3
+			n_witness: 4,  // witness at indices 4-7
+			n_internal: 4, // internal at indices 8-11
+			offset_inout: 2,
+			offset_witness: 4,
+			n_hidden_words: 8,
 			n_scratch: 3,
-		};
+		}
+	}
 
+	#[test]
+	fn constraint_system_shape_carries_the_value_counts() {
+		let layout = test_layout();
 		let cs = layout.constraint_system_shape(vec![Word::ONE, Word::ALL_ONE]);
-		assert_eq!(cs.n_const(), 2);
-		assert_eq!(cs.n_const_pad, 6);
-		assert_eq!(cs.n_inout, 2);
-		assert_eq!(cs.n_inout_pad, 6);
-		assert_eq!(cs.n_private, 8);
-		assert_eq!(cs.n_private_pad, 8);
 
-		// The derived sections reproduce the layout's offsets and lengths.
+		assert_eq!(cs.n_const(), 2);
+		assert_eq!(cs.n_inout, 2);
+		// The witness and internal values share the private segment.
+		assert_eq!(cs.n_private, 8);
+
+		// The system derives the same padded sections the layout lays out.
 		assert_eq!(cs.offset_inout(), layout.offset_inout);
 		assert_eq!(cs.n_public_words(), layout.n_public_words());
 		assert_eq!(cs.n_hidden_words(), layout.n_hidden_words);
 		assert_eq!(cs.value_vec_len(), layout.combined_len());
-		cs.validate_shape().unwrap();
+	}
+
+	#[test]
+	#[should_panic(expected = "pad the public segment to the same length")]
+	fn constraint_system_shape_rejects_a_layout_it_cannot_reproduce() {
+		// The system derives a four-word public segment from the four public values, so a layout
+		// that pads it to eight describes a different value vector.
+		let layout = ValueVecLayout {
+			offset_witness: 8,
+			..test_layout()
+		};
+		let _ = layout.constraint_system_shape(vec![Word::ONE, Word::ALL_ONE]);
 	}
 }

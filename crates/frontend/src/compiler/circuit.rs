@@ -156,7 +156,7 @@ pub struct Circuit {
 impl Circuit {
 	/// Creates a new circuit with the given shared data and wire mapping. Only used during building
 	/// by the circuit builder.
-	pub(super) fn new(
+	pub(super) const fn new(
 		gate_graph: GateGraph,
 		constraint_system: ConstraintSystem,
 		value_vec_layout: ValueVecLayout,
@@ -164,7 +164,6 @@ impl Circuit {
 		eval_form: EvalForm,
 		scratch_peak_live: usize,
 	) -> Self {
-		assert!(constraint_system.validate_shape().is_ok());
 		Self {
 			gate_graph,
 			constraint_system,
