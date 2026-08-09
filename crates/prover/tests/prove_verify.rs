@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
+	constraint_system::{ConstraintSystem, ValueVec, WitnessIndex},
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
@@ -410,13 +410,14 @@ fn test_prove_verify_rejects_violated_zero_constraint() {
 		.flat_map(|c| &c.0)
 		.flatten()
 		.map(|svi| svi.value_index)
-		.find(|index| !and_words.contains(index) && *index != ValueIndex(0))
+		.find(|index| !and_words.contains(index) && *index != WitnessIndex::constant(0))
 		.expect("some ZERO constraint reads a word no AND constraint does");
 
 	let mut words = witness.combined_witness().to_vec();
-	words[victim.0 as usize] = words[victim.0 as usize] ^ Word::ONE;
+	let victim_word = cs.word_offset(victim);
+	words[victim_word] = words[victim_word] ^ Word::ONE;
 	let corrupted =
-		ValueVec::new_from_data(&words[..cs.n_public_words()], &words[cs.n_public_words()..]);
+		cs.value_vec_from_data(&words[..cs.n_public_words()], &words[cs.n_public_words()..]);
 	assert!(cs.verify(&corrupted).is_err());
 
 	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();

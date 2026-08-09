@@ -137,7 +137,7 @@ pub fn empty() -> WireExpr {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::constraint_system::{ShiftVariant, ValueIndex};
+	use binius_core::constraint_system::{ShiftVariant, WitnessIndex};
 	use cranelift_entity::{EntityRef, SecondaryMap};
 
 	use crate::compiler::{
@@ -155,10 +155,10 @@ mod tests {
 		let wire_c = Wire::new(2);
 		let all_one_wire = Wire::new(3);
 
-		wire_mapping[wire_a] = ValueIndex(0);
-		wire_mapping[wire_b] = ValueIndex(1);
-		wire_mapping[wire_c] = ValueIndex(2);
-		wire_mapping[all_one_wire] = ValueIndex(3);
+		wire_mapping[wire_a] = WitnessIndex::private(0);
+		wire_mapping[wire_b] = WitnessIndex::private(1);
+		wire_mapping[wire_c] = WitnessIndex::private(2);
+		wire_mapping[all_one_wire] = WitnessIndex::private(3);
 
 		let mut builder = ConstraintBuilder::new();
 		builder.linear(
@@ -179,12 +179,12 @@ mod tests {
 
 		assert!(
 			val.iter()
-				.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0),
+				.any(|svi| svi.value_index == WitnessIndex::private(0) && svi.amount == 0),
 			"plain(a) from rotr(a, 0)"
 		);
 		assert!(
 			val.iter().any(|svi| {
-				svi.value_index == ValueIndex(1)
+				svi.value_index == WitnessIndex::private(1)
 					&& svi.amount == 5
 					&& matches!(svi.shift_variant, ShiftVariant::Sll)
 			}),
@@ -192,7 +192,7 @@ mod tests {
 		);
 		assert!(
 			val.iter().any(|svi| {
-				svi.value_index == ValueIndex(0)
+				svi.value_index == WitnessIndex::private(0)
 					&& svi.amount == 12
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
 			}),

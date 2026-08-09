@@ -6,7 +6,7 @@ use std::{
 };
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
+	constraint_system::{ConstraintSystem, ValueVec, ValueVecLayout, WitnessIndex},
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;
@@ -148,7 +148,7 @@ pub struct Circuit {
 	gate_graph: GateGraph,
 	constraint_system: ConstraintSystem,
 	value_vec_layout: ValueVecLayout,
-	wire_mapping: SecondaryMap<Wire, ValueIndex>,
+	wire_mapping: SecondaryMap<Wire, WitnessIndex>,
 	eval_form: EvalForm,
 	scratch_peak_live: usize,
 }
@@ -160,7 +160,7 @@ impl Circuit {
 		gate_graph: GateGraph,
 		constraint_system: ConstraintSystem,
 		value_vec_layout: ValueVecLayout,
-		wire_mapping: SecondaryMap<Wire, ValueIndex>,
+		wire_mapping: SecondaryMap<Wire, WitnessIndex>,
 		eval_form: EvalForm,
 		scratch_peak_live: usize,
 	) -> Self {
@@ -186,8 +186,17 @@ impl Circuit {
 
 	/// For the given wire, returns its index in the witness vector.
 	#[inline(always)]
-	pub fn witness_index(&self, wire: Wire) -> ValueIndex {
+	pub fn witness_index(&self, wire: Wire) -> WitnessIndex {
 		self.wire_mapping[wire]
+	}
+
+	/// For the given wire, returns the row it occupies in a transposed value array.
+	///
+	/// This is the wire's flat position in the value vector, counting the scratch tail, which is
+	/// how [`Self::populate_wire_witness_batched`] numbers the rows it fills.
+	#[inline(always)]
+	pub fn witness_row(&self, wire: Wire) -> usize {
+		self.value_vec_layout.word_offset(self.witness_index(wire))
 	}
 
 	/// Creates a new witness filler for this circuit.
@@ -223,7 +232,7 @@ impl Circuit {
 	pub fn populate_wire_witness(&self, w: &mut WitnessFiller) -> Result<(), PopulateError> {
 		// Fill the constant part from the witness.
 		for (index, constant) in self.constraint_system.constants.iter().enumerate() {
-			w.value_vec[ValueIndex(index as u32)] = *constant;
+			w.value_vec[WitnessIndex::constant(index as u32)] = *constant;
 		}
 
 		// Execute the evaluation form - it modifies the ValueVec in place

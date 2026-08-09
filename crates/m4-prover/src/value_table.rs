@@ -4,7 +4,7 @@ use std::ops::{Index, IndexMut};
 
 use binius_compute::Allocator;
 use binius_core::{
-	constraint_system::{ValueIndex, ValueVec, ValueVecLayout},
+	constraint_system::{ValueVec, ValueVecLayout, WitnessIndex},
 	word::Word,
 };
 use binius_field::PackedField;
@@ -257,12 +257,13 @@ impl ValueTable {
 		// padding a fresh value vector already carries. There are no inout wires.
 		let mut values = ValueVec::new(&self.layout);
 		for (i, &constant) in constants.iter().enumerate() {
-			values[ValueIndex(i as u32)] = constant;
+			values[WitnessIndex::constant(i as u32)] = constant;
 		}
 
-		// Gather this instance's column of hidden words across every row.
+		// Gather this instance's column of hidden words across every row. The rows cover the whole
+		// hidden segment, padding included, so they are written by position rather than by index.
 		for row in 0..self.n_hidden_words() {
-			values[ValueIndex((self.layout.offset_witness + row) as u32)] =
+			*values.word_mut((self.layout.offset_witness + row) as u32) =
 				self.data[(row << self.log_instances) + instance];
 		}
 
@@ -311,13 +312,13 @@ impl Index<Wire> for BatchWitnessFiller<'_, '_> {
 	type Output = Word;
 
 	fn index(&self, wire: Wire) -> &Self::Output {
-		&self.values[(self.circuit.witness_index(wire).0 as usize, self.instance)]
+		&self.values[(self.circuit.witness_row(wire), self.instance)]
 	}
 }
 
 impl IndexMut<Wire> for BatchWitnessFiller<'_, '_> {
 	fn index_mut(&mut self, wire: Wire) -> &mut Self::Output {
-		let row = self.circuit.witness_index(wire).0 as usize;
+		let row = self.circuit.witness_row(wire);
 		&mut self.values[(row, self.instance)]
 	}
 }

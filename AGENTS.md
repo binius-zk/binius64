@@ -22,7 +22,9 @@ For optimal performance: `export RUSTFLAGS="-C target-cpu=native"`
 
 | Term | Definition |
 |------|------------|
-| **Shifted value index** | Tuple `(value_id, shift_op, shift_amount)` - references a witness word with an optional shift |
+| **Witness index** | `(segment, index)` - names one word of the value vector. The segment is `Constant`, `InOut`, `Private` or `Scratch`; the index counts within it. Packed into a `u32` (2-bit tag, 30-bit index) |
+| **Witness segment** | One of the four sections a circuit allocates values in. A constraint may reference the first three; `Scratch` holds uncommitted temporaries and only exists in the circuit's wire mapping |
+| **Shifted value index** | Tuple `(witness_index, shift_op, shift_amount)` - references a witness word with an optional shift |
 | **AND constraint** | `A & B ^ C = 0` where A, B, C are XOR combinations of shifted values |
 | **MUL constraint** | `A * B = HI \|\| LO` - unsigned 64-bit multiplication producing 128-bit result |
 | **Tower field $T_i$** | Binary extension field $\mathbb{F}_{2^{2^i}}$, e.g. $T_7 = \mathbb{F}_{2^{128}}$ |

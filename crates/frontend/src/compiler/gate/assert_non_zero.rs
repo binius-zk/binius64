@@ -160,7 +160,7 @@ mod tests {
 
 	#[test]
 	fn test_assert_non_zero_forge_zero_rejected() {
-		use binius_core::constraint_system::ValueIndex;
+		use binius_core::constraint_system::WitnessIndex;
 
 		// Soundness regression: a malicious prover claims `x ≠ 0` while actually planting
 		// `x = 0` and the aux carry-out `cout = 0`. Before the `MSB(cout) = 1` constraint
@@ -183,7 +183,7 @@ mod tests {
 		let mut w = circuit.new_witness_filler();
 		let cs = circuit.constraint_system();
 		for (i, c) in cs.constants.iter().enumerate() {
-			w.value_vec_mut()[ValueIndex(i as u32)] = *c;
+			w.value_vec_mut()[WitnessIndex::constant(i as u32)] = *c;
 		}
 
 		// The carry-out constraint is satisfied by the all-zero witness, but the AND

@@ -6,7 +6,7 @@
 //! It evaluates the bytecode against a single value vector.
 //! The batched counterpart evaluates many instances at once.
 
-use binius_core::{ValueIndex, ValueVec, Word};
+use binius_core::{ValueVec, Word};
 
 use super::{
 	assertion::{MAX_ASSERTION_FAILURES, render_path},
@@ -73,11 +73,11 @@ impl EvalContext for ExecutionContext<'_> {
 	}
 
 	fn load(&self, reg: u32, _instance: usize) -> Word {
-		self.value_vec[ValueIndex(reg)]
+		self.value_vec.word(reg)
 	}
 
 	fn store(&mut self, reg: u32, _instance: usize, value: Word) {
-		self.value_vec[ValueIndex(reg)] = value;
+		*self.value_vec.word_mut(reg) = value;
 	}
 
 	#[cold]

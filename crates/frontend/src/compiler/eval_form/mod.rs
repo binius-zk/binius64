@@ -18,7 +18,7 @@ mod tests;
 pub use assertion::MAX_ASSERTION_FAILURES;
 use batch::BatchExecutionContext;
 pub use batch::BatchPopulateError;
-use binius_core::{ValueIndex, ValueVec, Word};
+use binius_core::{ValueVec, ValueVecLayout, WitnessIndex, Word};
 use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;
@@ -52,7 +52,8 @@ impl EvalForm {
 	/// emission only reads from it to resolve `Opcode::Hint` gates.
 	pub(crate) fn build(
 		gate_graph: &GateGraph,
-		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
+		wire_mapping: &SecondaryMap<Wire, WitnessIndex>,
+		layout: &ValueVecLayout,
 		hint_registry: HintRegistry,
 	) -> Self {
 		let mut builder = BytecodeBuilder::new();
@@ -60,8 +61,12 @@ impl EvalForm {
 		// Combined wire to register mapping
 		// The mapping is dense over wires, so index it rather than probing for an entry.
 		//
+		// The interpreter addresses the value vector as a flat register file, scratch tail and
+		// all, so a wire's segment and index are resolved to one position here rather than on
+		// every load and store.
+		//
 		// Invariant: every wire the graph holds was given a value index before this runs.
-		let wire_to_reg = |wire: Wire| -> u32 { wire_mapping[wire].0 };
+		let wire_to_reg = |wire: Wire| -> u32 { layout.word_offset(wire_mapping[wire]) as u32 };
 
 		// Build bytecode for each gate
 		for gate_id in gate_graph.gates.keys() {

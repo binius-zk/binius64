@@ -5,7 +5,7 @@
 
 use std::ops::Index;
 
-use binius_core::constraint_system::{ShiftedValueIndex, ValueIndex};
+use binius_core::constraint_system::{ShiftedValueIndex, WitnessIndex};
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::compiler::Wire;
@@ -25,7 +25,7 @@ impl ShiftedWire {
 	/// A zero-amount shift is the identity, so it collapses to a plain value index.
 	pub(super) fn to_shifted_value_index(
 		self,
-		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
+		wire_mapping: &SecondaryMap<Wire, WitnessIndex>,
 	) -> ShiftedValueIndex {
 		let idx = wire_mapping[self.wire];
 		match self.shift {
@@ -85,7 +85,7 @@ impl WireOperand {
 	/// Lowers the whole operand to core `ShiftedValueIndex` terms.
 	pub(super) fn into_value_indices(
 		self,
-		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
+		wire_mapping: &SecondaryMap<Wire, WitnessIndex>,
 	) -> Vec<ShiftedValueIndex> {
 		self.0
 			.into_iter()
@@ -247,7 +247,7 @@ impl Shift {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::constraint_system::{ShiftVariant, ValueIndex};
+	use binius_core::constraint_system::{ShiftVariant, WitnessIndex};
 	use cranelift_entity::{EntityRef, SecondaryMap};
 
 	use crate::compiler::{
@@ -264,10 +264,10 @@ mod tests {
 		let wire_c = Wire::new(2);
 		let all_one_wire = Wire::new(3);
 
-		wire_mapping[wire_a] = ValueIndex(0);
-		wire_mapping[wire_b] = ValueIndex(1);
-		wire_mapping[wire_c] = ValueIndex(2);
-		wire_mapping[all_one_wire] = ValueIndex(3);
+		wire_mapping[wire_a] = WitnessIndex::private(0);
+		wire_mapping[wire_b] = WitnessIndex::private(1);
+		wire_mapping[wire_c] = WitnessIndex::private(2);
+		wire_mapping[all_one_wire] = WitnessIndex::private(3);
 
 		// c = rotr(a, 0) ^ b  ->  rotr(0) collapses to plain(a).
 		{
@@ -286,16 +286,16 @@ mod tests {
 			assert_eq!(val.len(), 3);
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0)
+					.any(|svi| svi.value_index == WitnessIndex::private(0) && svi.amount == 0)
 			);
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex(1) && svi.amount == 0)
+					.any(|svi| svi.value_index == WitnessIndex::private(1) && svi.amount == 0)
 			);
 			// The destination joins the operand rather than sitting in its own `c`.
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex(2) && svi.amount == 0)
+					.any(|svi| svi.value_index == WitnessIndex::private(2) && svi.amount == 0)
 			);
 		}
 
@@ -314,13 +314,13 @@ mod tests {
 			let val = zero_constraints[0].val();
 			assert_eq!(val.len(), 3);
 			assert!(val.iter().any(|svi| {
-				svi.value_index == ValueIndex(0)
+				svi.value_index == WitnessIndex::private(0)
 					&& svi.amount == 5
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
 			}));
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex(1) && svi.amount == 0)
+					.any(|svi| svi.value_index == WitnessIndex::private(1) && svi.amount == 0)
 			);
 		}
 	}
@@ -334,10 +334,10 @@ mod tests {
 		let wire_c = Wire::new(2);
 		let all_one_wire = Wire::new(3);
 
-		wire_mapping[wire_a] = ValueIndex(0);
-		wire_mapping[wire_b] = ValueIndex(1);
-		wire_mapping[wire_c] = ValueIndex(2);
-		wire_mapping[all_one_wire] = ValueIndex(3);
+		wire_mapping[wire_a] = WitnessIndex::private(0);
+		wire_mapping[wire_b] = WitnessIndex::private(1);
+		wire_mapping[wire_c] = WitnessIndex::private(2);
+		wire_mapping[all_one_wire] = WitnessIndex::private(3);
 
 		// a & rotr(b, 0) = c  ->  b stays plain.
 		{
@@ -350,15 +350,15 @@ mod tests {
 			let and_c = &and_constraints[0];
 
 			assert_eq!(and_c.a().len(), 1);
-			assert_eq!(and_c.a()[0].value_index, ValueIndex(0));
+			assert_eq!(and_c.a()[0].value_index, WitnessIndex::private(0));
 			assert_eq!(and_c.a()[0].amount, 0);
 
 			assert_eq!(and_c.b().len(), 1);
-			assert_eq!(and_c.b()[0].value_index, ValueIndex(1));
+			assert_eq!(and_c.b()[0].value_index, WitnessIndex::private(1));
 			assert_eq!(and_c.b()[0].amount, 0);
 
 			assert_eq!(and_c.c().len(), 1);
-			assert_eq!(and_c.c()[0].value_index, ValueIndex(2));
+			assert_eq!(and_c.c()[0].value_index, WitnessIndex::private(2));
 			assert_eq!(and_c.c()[0].amount, 0);
 		}
 
@@ -373,7 +373,7 @@ mod tests {
 			let and_c = &and_constraints[0];
 			assert_eq!(and_c.b().len(), 1);
 			assert!(and_c.b().iter().any(|svi| {
-				svi.value_index == ValueIndex(1)
+				svi.value_index == WitnessIndex::private(1)
 					&& svi.amount == 8
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
 			}));

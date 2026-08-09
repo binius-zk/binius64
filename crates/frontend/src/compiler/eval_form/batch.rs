@@ -206,8 +206,8 @@ mod tests {
 			.collect();
 
 		// Batched: fill the input rows for every instance, then evaluate all at once.
-		let a_row = circuit.witness_index(a).0 as usize;
-		let b_row = circuit.witness_index(b).0 as usize;
+		let a_row = circuit.witness_row(a);
+		let b_row = circuit.witness_row(b);
 		let mut data = vec![Word::ZERO; full_len * n];
 		let mut view = StridedArray2DViewMut::without_stride(&mut data, full_len, n).unwrap();
 		for (instance, &(x, y)) in inputs.iter().enumerate() {
@@ -244,8 +244,8 @@ mod tests {
 
 		// Instances 2 and 3 violate a == b; instance 2 is the lowest.
 		let inputs = [(1u64, 1u64), (7, 7), (4, 5), (9, 8)];
-		let a_row = circuit.witness_index(a).0 as usize;
-		let b_row = circuit.witness_index(b).0 as usize;
+		let a_row = circuit.witness_row(a);
+		let b_row = circuit.witness_row(b);
 		let mut data = vec![Word::ZERO; full_len * n];
 		let mut view = StridedArray2DViewMut::without_stride(&mut data, full_len, n).unwrap();
 		for (instance, &(x, y)) in inputs.iter().enumerate() {

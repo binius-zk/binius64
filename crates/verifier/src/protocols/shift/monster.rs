@@ -111,12 +111,21 @@ pub struct OperationEvalFn<'a, C, const ARITY: usize> {
 	/// The operation's constraints, each exposing its `ARITY` operands as an array in storage
 	/// order.
 	constraints: &'a [C],
+	/// The word each value-vector segment starts at, which places an operand term's
+	/// segment-relative index in the word-index tensor.
+	segment_starts: [usize; 4],
 }
 
 impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 	/// Wraps an operation's constraints for monster-multilinear evaluation.
-	pub const fn new(constraints: &'a [C]) -> Self {
-		Self { constraints }
+	///
+	/// The segment starts come from the constraint system holding the constraints; they are what
+	/// resolve each operand term to its position in the word-index tensor.
+	pub const fn new(constraints: &'a [C], segment_starts: [usize; 4]) -> Self {
+		Self {
+			constraints,
+			segment_starts,
+		}
 	}
 
 	/// Splits the flat [`FieldFn`] input into `(r_x_prime, lambda, shift_scalars, r_y_tensor)`.
@@ -164,7 +173,7 @@ where
 					let variant = svi.shift_variant as usize;
 					let index = (variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
 					constraint_eval += operand_shift_scalars[index].clone()
-						* &r_y_tensor[svi.value_index.0 as usize];
+						* &r_y_tensor[svi.value_index.offset_within(self.segment_starts)];
 				}
 			}
 			eval += constraint_eval * r_x_prime_entry;
@@ -202,8 +211,8 @@ where
 						let variant = svi.shift_variant as usize;
 						let index =
 							(variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
-						constraint_eval +=
-							operand_shift_scalars[index] * r_y_tensor[svi.value_index.0 as usize];
+						constraint_eval += operand_shift_scalars[index]
+							* r_y_tensor[svi.value_index.offset_within(self.segment_starts)];
 					}
 				}
 				F::wide_mul(constraint_eval, r_x_prime_entry)
@@ -256,7 +265,7 @@ fn operand_shift_scalar_table<E: FieldOps>(
 mod tests {
 	use binius_core::{
 		ShiftVariant,
-		constraint_system::{AndConstraint, ShiftedValueIndex, ValueIndex},
+		constraint_system::{AndConstraint, ShiftedValueIndex, WitnessIndex},
 	};
 	use binius_field::{BinaryField128bGhash, Field, Random};
 	use binius_math::{
@@ -270,6 +279,14 @@ mod tests {
 
 	/// Builds `n_constraints` random arity-3 constraints (like `AndConstraint`), constraint-major:
 	/// one array of operands per constraint.
+	/// Segment starts placing the private segment at the front of a `n_words`-long value vector.
+	///
+	/// The constraints below name private words only, so this makes a private index its own
+	/// position in the word-index tensor.
+	fn private_only_segment_starts(n_words: usize) -> [usize; 4] {
+		[0, 0, 0, n_words]
+	}
+
 	fn random_and_constraints(
 		rng: &mut StdRng,
 		n_constraints: usize,
@@ -290,7 +307,7 @@ mod tests {
 				AndConstraint(std::array::from_fn(|_| {
 					(0..rng.random_range(0..=3))
 						.map(|_| ShiftedValueIndex {
-							value_index: ValueIndex(rng.random_range(0..n_words) as u32),
+							value_index: WitnessIndex::private(rng.random_range(0..n_words) as u32),
 							shift_variant: shift_variants[rng.random_range(0..SHIFT_VARIANT_COUNT)],
 							amount: rng.random_range(0..Word::BITS) as u8,
 						})
@@ -318,7 +335,7 @@ mod tests {
 				std::array::from_fn(|_| F::random(&mut rng));
 			let r_y_tensor = random_scalars::<F>(&mut rng, n_words);
 
-			let eval_fn = OperationEvalFn::new(&constraints);
+			let eval_fn = OperationEvalFn::new(&constraints, private_only_segment_starts(n_words));
 			let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, &r_y_tensor);
 			let generic = eval_fn.call::<F>(&input);
 			let native = eval_fn.call_native(&input);
@@ -357,12 +374,14 @@ mod tests {
 
 		let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, &r_y_tensor);
 		assert_eq!(
-			OperationEvalFn::new(&constraints).call::<F>(&input),
-			OperationEvalFn::new(&padded).call::<F>(&input)
+			OperationEvalFn::new(&constraints, private_only_segment_starts(n_words))
+				.call::<F>(&input),
+			OperationEvalFn::new(&padded, private_only_segment_starts(n_words)).call::<F>(&input)
 		);
 		assert_eq!(
-			OperationEvalFn::new(&constraints).call_native(&input),
-			OperationEvalFn::new(&padded).call_native(&input)
+			OperationEvalFn::new(&constraints, private_only_segment_starts(n_words))
+				.call_native(&input),
+			OperationEvalFn::new(&padded, private_only_segment_starts(n_words)).call_native(&input)
 		);
 	}
 

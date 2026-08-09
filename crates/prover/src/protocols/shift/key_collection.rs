@@ -353,6 +353,7 @@ fn update_with_operand(
 	operation: Operation,
 	operand_index: usize,
 	operand_values: impl Iterator<Item = impl AsRef<Operand>>,
+	segment_starts: [usize; 4],
 	builder_key_lists: &mut [Vec<BuilderKey>],
 ) {
 	for (constraint_idx, operand_value) in operand_values.enumerate() {
@@ -363,8 +364,9 @@ fn update_with_operand(
 			amount,
 		} in operand_value.as_ref()
 		{
-			// Access and update the builder keys corresponding to the word index (`value_index.0`)
-			let builder_keys = &mut builder_key_lists[value_index.0 as usize];
+			// The lists are indexed by word position, so resolve the term's segment-relative
+			// index against the segment starts.
+			let builder_keys = &mut builder_key_lists[value_index.offset_within(segment_starts)];
 			let shift = (*shift_variant, *amount);
 
 			// Find existing builder key or create a new one for this (operation, shift) pair
@@ -396,6 +398,7 @@ fn update_with_operand(
 fn update_with_constraints<C, const ARITY: usize>(
 	operation: Operation,
 	constraints: &[C],
+	segment_starts: [usize; 4],
 	builder_key_lists: &mut [Vec<BuilderKey>],
 ) where
 	C: AsRef<[Operand; ARITY]>,
@@ -407,6 +410,7 @@ fn update_with_constraints<C, const ARITY: usize>(
 			constraints
 				.iter()
 				.map(|constraint| &constraint.as_ref()[operand_index]),
+			segment_starts,
 			builder_key_lists,
 		);
 	}
@@ -419,10 +423,31 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 		(0..cs.value_vec_len()).map(|_| Vec::new()).collect();
 
 	// Update the builder keys lists with respect to each operand of each operation.
-	update_with_constraints(Operation::Zero, &cs.zero_constraints, &mut builder_key_lists);
-	update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, &mut builder_key_lists);
-	update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, &mut builder_key_lists);
-	update_with_constraints(Operation::BinMul, &cs.bmul_constraints, &mut builder_key_lists);
+	let segment_starts = cs.segment_starts();
+	update_with_constraints(
+		Operation::Zero,
+		&cs.zero_constraints,
+		segment_starts,
+		&mut builder_key_lists,
+	);
+	update_with_constraints(
+		Operation::BitwiseAnd,
+		&cs.and_constraints,
+		segment_starts,
+		&mut builder_key_lists,
+	);
+	update_with_constraints(
+		Operation::IntegerMul,
+		&cs.imul_constraints,
+		segment_starts,
+		&mut builder_key_lists,
+	);
+	update_with_constraints(
+		Operation::BinMul,
+		&cs.bmul_constraints,
+		segment_starts,
+		&mut builder_key_lists,
+	);
 
 	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
 	// per half.
@@ -665,7 +690,7 @@ impl DeserializeBytes for KeyCollection {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::constraint_system::{AndConstraint, ValueIndex};
+	use binius_core::constraint_system::{AndConstraint, WitnessIndex};
 	use binius_field::{BinaryField128bGhash, Field};
 	use binius_math::FieldBuffer;
 
@@ -682,8 +707,10 @@ mod tests {
 	/// The public segment references `(Sll, 0)` and `(Slr, 3)`; the hidden one references
 	/// `(Sll, 0)`, `(Sar, 7)` and `(Rotr, 1)`.
 	fn shifted_constraint_system() -> ConstraintSystem {
-		let public = ValueIndex(1);
-		let hidden = ValueIndex(5);
+		// The system has four constants and no inout values, so the public segment is the
+		// constants and the hidden one is the private values.
+		let public = WitnessIndex::constant(1);
+		let hidden = WitnessIndex::private(1);
 		ConstraintSystem {
 			constants: vec![Word::ZERO; 4],
 			n_const_pad: 0,
