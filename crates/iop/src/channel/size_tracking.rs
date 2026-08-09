@@ -64,6 +64,9 @@ where
 	F: Field + FixedSizeSerializeBytes,
 	MerkleScheme_: MerkleTreeScheme<F>,
 {
+	// Nothing here reads a value, so a zero-sized stand-in would seem to fit.
+	// It does not: openings arrive as field elements, and folding mixes them with sampled
+	// challenges, so the two must be one type.
 	type Elem = F;
 
 	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
