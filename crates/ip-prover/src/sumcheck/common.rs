@@ -80,22 +80,74 @@ where
 
 /// A prover for the MLE-check variant of the sumcheck protocol.
 ///
-/// See [`binius_ip::mlecheck::verify`] for context on the protocol.
+/// The prover argues that a claimed value $s$ is the equality-weighted sum
 ///
-/// This trait inherits from [`SumcheckProver`] since it shares the same type-level interface
-/// and protocol execution pattern. However, `MleCheckProver` instances provide different
-/// guarantees for the values returned by [`SumcheckProver::execute`] compared to regular
-/// sumcheck provers.
+/// $$
+/// s = \sum_{v \in B_n} F(v) \cdot eq(v, z)
+/// $$
 ///
-/// Note that while this technically violates the Liskov substitution principle (LSP), the
-/// violation is contained and deemed acceptable for the current design. A future refactor
-/// could introduce a common `SumcheckLikeProver` parent trait if stricter LSP compliance
-/// becomes necessary.
+/// over the hypercube $B_n$, for a point $z$ agreed in advance.
+/// The weight $eq(v, z)$ is $1$ where $v = z$ and $0$ at every other vertex.
+/// For multilinear $F$ the sum is then just $F(z)$.
+///
+/// The protocol runs one round per variable:
+///
+/// - The prover sends a univariate polynomial for the round.
+/// - The verifier answers with a random challenge, binding that variable.
+/// - After the last round the prover reports the evaluations it reached.
+///
+/// Driving it out of that order panics.
+///
+/// This trait is _not_ object-safe.
+///
+/// See [`binius_ip::mlecheck::verify`] for the verifier side, and [Gruen24] for the optimization.
+///
+/// A plain sumcheck proves the same claim by folding the weight into the summand.
+/// This protocol leaves the weight out of the polynomial it sends, which is where it saves work.
+/// The two send different polynomials:
+///
+/// ```text
+///     plain sumcheck   R (X)    claim = R(0) + R(1)
+///     MLE-check        R'(X)    claim = (1 - alpha) * R'(0) + alpha * R'(1)
+/// ```
+///
+/// with `alpha` this round's coordinate of the point, and `R = R' * eq(X, alpha)`.
+///
+/// Each verifier rebuilds a different missing coefficient.
+/// One protocol's polynomial fails the other's verifier, so neither trait inherits from the other.
+/// Multiplying the weight back in converts a prover here into a plain sumcheck one.
+/// The adaptor in this module that does so is the only sound bridge.
 ///
 /// [Gruen24]: <https://eprint.iacr.org/2024/108>
-pub trait MleCheckProver<F: Field>: SumcheckProver<F> {
-	/// Returns the evaluation point for the remaining claim.
+pub trait MleCheckProver<F: Field> {
+	/// The number of variables still free.
 	///
-	/// The length of the evaluation point is equal to `self.n_vars()`.
+	/// Each round binds one variable to a challenge, so this drops by one per round.
+	fn n_vars(&self) -> usize;
+
+	/// Computes this round's message, one univariate polynomial per claim.
+	///
+	/// With $r_0$, ..., $r_{k-1}$ already bound, for claims over $C_0, ..., C_{m-1}$, the output in
+	/// low-to-high evaluation order is
+	///
+	/// $$
+	/// R'_i = \sum_{v \in B_{n-k-1}} C_i(r_0, ..., r_{k-1}, X, \{v\}) \cdot eq(\{v\}, z')
+	/// $$
+	///
+	/// where $z'$ is the part of the point summed over.
+	///
+	/// The coordinate bound this round is left out of the weight.
+	/// Multiplying it back gives the round polynomial $R_i(X) = R'_i(X) \cdot eq(X, z_k)$.
+	///
+	/// For high-to-low order the variables are taken in reverse and summed over the lower indices.
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>>;
+
+	/// Binds this round's variable to the verifier challenge.
+	fn fold(&mut self, challenge: F);
+
+	/// Consumes the prover and returns every multilinear's evaluation at the challenge point.
+	fn finish(self) -> Vec<F>;
+
+	/// The still-unbound part of the evaluation point, one coordinate per free variable.
 	fn eval_point(&self) -> &[F];
 }

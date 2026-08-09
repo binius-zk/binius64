@@ -149,16 +149,16 @@ mod tests {
 	fn multi_term_xor_expression_lowers_each_term() {
 		// c = rotr(a, 0) ^ sll(b, 5) ^ rotr(a, 12) must lower to three operand terms:
 		// plain(a), native sll(b, 5), native rotr(a, 12).
-		let mut wire_mapping = SecondaryMap::with_default(ValueIndex(u32::MAX));
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex::scratch(0));
 		let wire_a = Wire::new(0);
 		let wire_b = Wire::new(1);
 		let wire_c = Wire::new(2);
 		let all_one_wire = Wire::new(3);
 
-		wire_mapping[wire_a] = ValueIndex(0);
-		wire_mapping[wire_b] = ValueIndex(1);
-		wire_mapping[wire_c] = ValueIndex(2);
-		wire_mapping[all_one_wire] = ValueIndex(3);
+		wire_mapping[wire_a] = ValueIndex::private(0);
+		wire_mapping[wire_b] = ValueIndex::private(1);
+		wire_mapping[wire_c] = ValueIndex::private(2);
+		wire_mapping[all_one_wire] = ValueIndex::private(3);
 
 		let mut builder = ConstraintBuilder::new();
 		builder.linear(
@@ -179,12 +179,12 @@ mod tests {
 
 		assert!(
 			val.iter()
-				.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0),
+				.any(|svi| svi.value_index == ValueIndex::private(0) && svi.amount == 0),
 			"plain(a) from rotr(a, 0)"
 		);
 		assert!(
 			val.iter().any(|svi| {
-				svi.value_index == ValueIndex(1)
+				svi.value_index == ValueIndex::private(1)
 					&& svi.amount == 5
 					&& matches!(svi.shift_variant, ShiftVariant::Sll)
 			}),
@@ -192,7 +192,7 @@ mod tests {
 		);
 		assert!(
 			val.iter().any(|svi| {
-				svi.value_index == ValueIndex(0)
+				svi.value_index == ValueIndex::private(0)
 					&& svi.amount == 12
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
 			}),

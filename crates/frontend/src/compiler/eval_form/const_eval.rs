@@ -210,7 +210,7 @@ mod tests {
 		constants: &[Word],
 		hints: &HintRegistry,
 	) -> Result<Vec<Word>, String> {
-		use binius_core::{ValueIndex, ValueVec, ValueVecLayout};
+		use binius_core::{ValueVec, ValueVecLayout};
 
 		use crate::compiler::{
 			eval_form::{BytecodeBuilder, exec::Executor, scalar::ExecutionContext},
@@ -233,7 +233,7 @@ mod tests {
 		};
 		let mut value_vec = ValueVec::new(&layout);
 		for (i, &v) in shape.const_in.iter().chain(constants.iter()).enumerate() {
-			value_vec[ValueIndex(i as u32)] = v;
+			*value_vec.word_mut(i as u32) = v;
 		}
 		let wire_to_reg =
 			|wire: Wire| -> u32 { data.wires.iter().position(|&w| w == wire).unwrap() as u32 };
@@ -245,7 +245,7 @@ mod tests {
 		ctx.check_assertions(None).map_err(|e| format!("{e:?}"))?;
 		let start = shape.const_in.len() + shape.n_in;
 		Ok((start..start + shape.n_out)
-			.map(|i| value_vec[ValueIndex(i as u32)])
+			.map(|i| value_vec.word(i as u32))
 			.collect())
 	}
 

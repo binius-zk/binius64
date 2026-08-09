@@ -10,7 +10,7 @@ use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals2,
+		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals,
 	},
 };
 use binius_math::{
@@ -159,7 +159,7 @@ where
 	let y_1 = sum_lanes(wide_dense);
 	let y_inf = y_1 + sum_lanes(wide_low_hidden) + sum_lanes(wide_low_cross);
 
-	RoundEvals2 { y_1, y_inf }.interpolate(gamma)
+	RoundEvals([y_1, y_inf]).interpolate(gamma)
 }
 
 /// Folds the two segment buffers of the witness at the selector challenge.

@@ -6,19 +6,19 @@
 //! It evaluates the bytecode against a single value vector.
 //! The batched counterpart evaluates many instances at once.
 
-use binius_core::{ValueIndex, ValueVec, Word};
+use binius_core::{ValueVec, Word};
 
 use super::{
-	assertion::{MAX_ASSERTION_FAILURES, symbolicate},
+	assertion::{MAX_ASSERTION_FAILURES, render_path},
 	exec::EvalContext,
 };
 use crate::compiler::{
-	circuit::PopulateError,
+	circuit::{AssertionFailure, PopulateError},
 	pathspec::{PathSpec, PathSpecTree},
 };
 
-/// Assertion failure information
-struct AssertionFailure {
+/// One recorded assertion failure, before its path is resolved against the tree.
+struct RecordedFailure {
 	path_spec: PathSpec,
 	message: String,
 }
@@ -29,7 +29,7 @@ pub struct ExecutionContext<'a> {
 	/// Assertion failures recorded during the evaluation of the circuit.
 	///
 	/// This list is capped by [`MAX_ASSERTION_FAILURES`].
-	assertion_failures: Vec<AssertionFailure>,
+	assertion_failures: Vec<RecordedFailure>,
 	/// The total number of assert violations recorded.
 	assertion_count: usize,
 }
@@ -53,12 +53,15 @@ impl<'a> ExecutionContext<'a> {
 		}
 
 		Err(PopulateError {
-			messages: self
+			failures: self
 				.assertion_failures
 				.into_iter()
-				.map(|f| symbolicate(path_spec_tree, f.path_spec, f.message))
+				.map(|f| AssertionFailure {
+					path: render_path(path_spec_tree, f.path_spec),
+					detail: f.message,
+				})
 				.collect(),
-			total_count: self.assertion_count,
+			total: self.assertion_count,
 		})
 	}
 }
@@ -70,11 +73,11 @@ impl EvalContext for ExecutionContext<'_> {
 	}
 
 	fn load(&self, reg: u32, _instance: usize) -> Word {
-		self.value_vec[ValueIndex(reg)]
+		self.value_vec.word(reg)
 	}
 
 	fn store(&mut self, reg: u32, _instance: usize, value: Word) {
-		self.value_vec[ValueIndex(reg)] = value;
+		*self.value_vec.word_mut(reg) = value;
 	}
 
 	#[cold]
@@ -82,7 +85,7 @@ impl EvalContext for ExecutionContext<'_> {
 		self.assertion_count += 1;
 		if self.assertion_failures.len() < MAX_ASSERTION_FAILURES {
 			self.assertion_failures
-				.push(AssertionFailure { path_spec, message });
+				.push(RecordedFailure { path_spec, message });
 		}
 	}
 }

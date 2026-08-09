@@ -877,7 +877,7 @@ where
 		tracing::info!("Non-public data loaded from '{}'", non_pub_data_path);
 
 		// Reconstruct the full witness from its two segments
-		let witness = ValueVec::new_from_data(&pub_witness_data, &non_pub_data);
+		let witness = cs.value_vec_from_data(&pub_witness_data, &non_pub_data);
 		drop(witness_load_scope);
 
 		match hash_suite {

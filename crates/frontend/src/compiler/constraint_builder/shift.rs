@@ -258,16 +258,16 @@ mod tests {
 	#[test]
 	fn rotr_zero_folds_to_plain_via_linear() {
 		// A rotr-by-0 term must lower to a plain value index; a rotr-by-n>0 must stay native.
-		let mut wire_mapping = SecondaryMap::with_default(ValueIndex(u32::MAX));
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex::scratch(0));
 		let wire_a = Wire::new(0);
 		let wire_b = Wire::new(1);
 		let wire_c = Wire::new(2);
 		let all_one_wire = Wire::new(3);
 
-		wire_mapping[wire_a] = ValueIndex(0);
-		wire_mapping[wire_b] = ValueIndex(1);
-		wire_mapping[wire_c] = ValueIndex(2);
-		wire_mapping[all_one_wire] = ValueIndex(3);
+		wire_mapping[wire_a] = ValueIndex::private(0);
+		wire_mapping[wire_b] = ValueIndex::private(1);
+		wire_mapping[wire_c] = ValueIndex::private(2);
+		wire_mapping[all_one_wire] = ValueIndex::private(3);
 
 		// c = rotr(a, 0) ^ b  ->  rotr(0) collapses to plain(a).
 		{
@@ -286,16 +286,16 @@ mod tests {
 			assert_eq!(val.len(), 3);
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0)
+					.any(|svi| svi.value_index == ValueIndex::private(0) && svi.amount == 0)
 			);
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex(1) && svi.amount == 0)
+					.any(|svi| svi.value_index == ValueIndex::private(1) && svi.amount == 0)
 			);
 			// The destination joins the operand rather than sitting in its own `c`.
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex(2) && svi.amount == 0)
+					.any(|svi| svi.value_index == ValueIndex::private(2) && svi.amount == 0)
 			);
 		}
 
@@ -314,13 +314,13 @@ mod tests {
 			let val = zero_constraints[0].val();
 			assert_eq!(val.len(), 3);
 			assert!(val.iter().any(|svi| {
-				svi.value_index == ValueIndex(0)
+				svi.value_index == ValueIndex::private(0)
 					&& svi.amount == 5
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
 			}));
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex(1) && svi.amount == 0)
+					.any(|svi| svi.value_index == ValueIndex::private(1) && svi.amount == 0)
 			);
 		}
 	}
@@ -328,16 +328,16 @@ mod tests {
 	#[test]
 	fn rotr_folds_inside_and_operand() {
 		// The same rotr(0)->plain and rotr(n)->native folding must hold inside an AND operand.
-		let mut wire_mapping = SecondaryMap::with_default(ValueIndex(u32::MAX));
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex::scratch(0));
 		let wire_a = Wire::new(0);
 		let wire_b = Wire::new(1);
 		let wire_c = Wire::new(2);
 		let all_one_wire = Wire::new(3);
 
-		wire_mapping[wire_a] = ValueIndex(0);
-		wire_mapping[wire_b] = ValueIndex(1);
-		wire_mapping[wire_c] = ValueIndex(2);
-		wire_mapping[all_one_wire] = ValueIndex(3);
+		wire_mapping[wire_a] = ValueIndex::private(0);
+		wire_mapping[wire_b] = ValueIndex::private(1);
+		wire_mapping[wire_c] = ValueIndex::private(2);
+		wire_mapping[all_one_wire] = ValueIndex::private(3);
 
 		// a & rotr(b, 0) = c  ->  b stays plain.
 		{
@@ -350,15 +350,15 @@ mod tests {
 			let and_c = &and_constraints[0];
 
 			assert_eq!(and_c.a().len(), 1);
-			assert_eq!(and_c.a()[0].value_index, ValueIndex(0));
+			assert_eq!(and_c.a()[0].value_index, ValueIndex::private(0));
 			assert_eq!(and_c.a()[0].amount, 0);
 
 			assert_eq!(and_c.b().len(), 1);
-			assert_eq!(and_c.b()[0].value_index, ValueIndex(1));
+			assert_eq!(and_c.b()[0].value_index, ValueIndex::private(1));
 			assert_eq!(and_c.b()[0].amount, 0);
 
 			assert_eq!(and_c.c().len(), 1);
-			assert_eq!(and_c.c()[0].value_index, ValueIndex(2));
+			assert_eq!(and_c.c()[0].value_index, ValueIndex::private(2));
 			assert_eq!(and_c.c()[0].amount, 0);
 		}
 
@@ -373,7 +373,7 @@ mod tests {
 			let and_c = &and_constraints[0];
 			assert_eq!(and_c.b().len(), 1);
 			assert!(and_c.b().iter().any(|svi| {
-				svi.value_index == ValueIndex(1)
+				svi.value_index == ValueIndex::private(1)
 					&& svi.amount == 8
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
 			}));

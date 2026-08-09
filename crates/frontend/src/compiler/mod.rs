@@ -6,7 +6,7 @@ use std::{
 };
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, ShiftVariant},
+	constraint_system::{ConstraintSystem, ShiftVariant, ValueSegment},
 	word::Word,
 };
 use cranelift_entity::EntitySet;
@@ -290,8 +290,8 @@ impl CircuitBuilder {
 		// Gate fusion is what decides that.
 		// The rest exist purely during witness evaluation, so they form the scratch segment.
 		let mut scratch_wires = EntitySet::new();
-		for (wire, wire_data) in graph.wires.iter() {
-			if matches!(wire_data.kind, WireKind::Internal | WireKind::Scratch)
+		for (wire, kind) in graph.wires.iter() {
+			if matches!(kind, WireKind::Internal | WireKind::Scratch)
 				&& !constrained_wires.contains(wire)
 			{
 				scratch_wires.insert(wire);
@@ -317,9 +317,9 @@ impl CircuitBuilder {
 			constants,
 		} = {
 			let mut value_vec_alloc = value_vec_alloc::Alloc::new(scratch_alloc.n_slots());
-			for (wire, wire_data) in graph.wires.iter() {
-				match wire_data.kind {
-					WireKind::Constant(ref value) => {
+			for (wire, kind) in graph.wires.iter() {
+				match kind {
+					WireKind::Constant(value) => {
 						value_vec_alloc.add_constant(wire, *value);
 					}
 					WireKind::Inout => value_vec_alloc.add_inout(wire),
@@ -349,7 +349,7 @@ impl CircuitBuilder {
 
 		// Invariant: the all-one constant seeded at graph construction is the first constant.
 		// Downstream consumers reference it by the fixed index 0.
-		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex(0));
+		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex::constant(0));
 		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
 
 		let (mut zero_constraints, mut and_constraints, mut imul_constraints, mut bmul_constraints) =
@@ -357,7 +357,6 @@ impl CircuitBuilder {
 
 		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
 		// terms referencing a zero constant contribute nothing to an XOR operand.
-		let n_const = value_vec_layout.n_const;
 		{
 			let operands = chain!(
 				zero_constraints.iter_mut().flat_map(|c| &mut c.0),
@@ -367,8 +366,9 @@ impl CircuitBuilder {
 			);
 			for operand in operands {
 				operand.retain(|term: &binius_core::constraint_system::ShiftedValueIndex| {
-					let idx = term.value_index.0 as usize;
-					idx >= n_const || constants[idx] != Word::ZERO
+					let index = term.value_index;
+					index.segment() != ValueSegment::Constant
+						|| constants[index.index() as usize] != Word::ZERO
 				});
 			}
 		}
@@ -386,7 +386,12 @@ impl CircuitBuilder {
 		}
 
 		// Build evaluation form (consumes the hint registry the user populated via call_hint).
-		let eval_form = eval_form::EvalForm::build(&graph, &wire_mapping, shared.hint_registry);
+		let eval_form = eval_form::EvalForm::build(
+			&graph,
+			&wire_mapping,
+			&value_vec_layout,
+			shared.hint_registry,
+		);
 
 		Circuit::new(
 			graph,
@@ -476,7 +481,7 @@ impl CircuitBuilder {
 	fn const_of(&self, wire: Wire) -> Option<Word> {
 		let shared = self.shared.borrow();
 		let shared = shared.as_ref().expect("CircuitBuilder used after build");
-		match shared.graph.wires[wire].kind {
+		match shared.graph.wires[wire] {
 			WireKind::Constant(word) => Some(word),
 			_ => None,
 		}

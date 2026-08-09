@@ -3,7 +3,9 @@
 // Original: Copyright (c) 2021 Joshua Holmer
 // Licensed under MIT License
 
-use crate::rayon::iter::{IndexedParallelIteratorInner, ParallelWrapper};
+use crate::rayon::iter::{
+	IndexedParallelIterator, IndexedParallelIteratorInner, ParallelIterator, ParallelWrapper,
+};
 
 pub trait ParallelSlice<T: Sync> {
 	fn as_parallel_slice(&self) -> &[T];
@@ -38,11 +40,8 @@ pub trait ParallelSlice<T: Sync> {
 	}
 
 	#[inline(always)]
-	fn par_chunks_exact(
-		&self,
-		chunk_size: usize,
-	) -> ParallelWrapper<std::slice::ChunksExact<'_, T>> {
-		ParallelWrapper::new(self.as_parallel_slice().chunks_exact(chunk_size))
+	fn par_chunks_exact(&self, chunk_size: usize) -> ChunksExactParallelWrapper<'_, T> {
+		ChunksExactParallelWrapper(self.as_parallel_slice().chunks_exact(chunk_size))
 	}
 
 	#[inline(always)]
@@ -66,6 +65,37 @@ pub trait ParallelSlice<T: Sync> {
 		ParallelWrapper::new(self.as_parallel_slice().chunk_by(pred))
 	}
 }
+
+/// The iterator returned by [`ParallelSlice::par_chunks_exact`].
+///
+/// A dedicated wrapper rather than a [`ParallelWrapper`], so that it can expose
+/// [`remainder`](Self::remainder) the way `rayon::slice::ChunksExact` does.
+pub struct ChunksExactParallelWrapper<'a, T>(std::slice::ChunksExact<'a, T>);
+
+impl<'a, T> ChunksExactParallelWrapper<'a, T> {
+	/// The slice's tail past the last full chunk, which the iterator does not yield.
+	#[inline(always)]
+	pub fn remainder(&self) -> &'a [T] {
+		self.0.remainder()
+	}
+}
+
+impl<'a, T> ParallelIterator for ChunksExactParallelWrapper<'a, T> {
+	type Inner = std::slice::ChunksExact<'a, T>;
+	type Item = &'a [T];
+
+	#[inline(always)]
+	fn into_inner(self) -> Self::Inner {
+		self.0
+	}
+
+	#[inline(always)]
+	fn as_inner(&self) -> &Self::Inner {
+		&self.0
+	}
+}
+
+impl<T> IndexedParallelIterator for ChunksExactParallelWrapper<'_, T> {}
 
 impl<T: Sync> ParallelSlice<T> for [T] {
 	#[inline(always)]

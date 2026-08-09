@@ -491,7 +491,6 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		//     over the unused `r_y` coordinates — the same `padded_public_eval` factor that
 		//     `check_eval` reconstructs the witness evaluation with.
 		let cs = &self.constraint_system;
-		let n_public_words = cs.n_public_words();
 		let log_public_words = cs.log_public_words();
 
 		let public_scale =
@@ -500,11 +499,15 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 			scaled_eq_ind_partial_eval_scalars(&r_y_v[..log_public_words], public_scale);
 		let hidden_tensor = scaled_eq_ind_partial_eval_scalars(r_y_v, r_segment);
 
-		// `n_public_words` is a power of two, so the public prefix indicator has exactly that many
-		// entries; the hidden portion fills the remainder of the value vector.
-		let mut r_y_tensor = Vec::with_capacity(cs.value_vec_len());
-		r_y_tensor.extend_from_slice(&public_tensor);
-		r_y_tensor.extend_from_slice(&hidden_tensor[..cs.value_vec_len() - n_public_words]);
+		// Cut the two indicators into one run per value segment, which is what an operand term's
+		// `(segment, index)` pair reads against. The constants and the inout values both sit in
+		// the public indicator, at the offsets the system places them; the padding words between
+		// them are dropped, since no index can name one.
+		let r_y_tensor = [
+			&public_tensor[..cs.n_const()],
+			&public_tensor[cs.offset_inout()..cs.offset_inout() + cs.n_inout],
+			&hidden_tensor[..cs.n_private],
+		];
 		let l_tilde = lagrange_evals_scalars(self.subspace, &r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
@@ -520,18 +523,14 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		// Re-encode the shared tensors with each operation's `r_x'` and `lambda`. IntMul and BinMul
 		// are skipped (no input built) when they have no constraints.
 		let zero_input =
-			encode_operation_input(zero_r_x_prime_v, zero_lambda_v, &shift_scalars, &r_y_tensor);
-		let bitand_input = encode_operation_input(
-			bitand_r_x_prime_v,
-			bitand_lambda_v,
-			&shift_scalars,
-			&r_y_tensor,
-		);
+			encode_operation_input(zero_r_x_prime_v, zero_lambda_v, &shift_scalars, r_y_tensor);
+		let bitand_input =
+			encode_operation_input(bitand_r_x_prime_v, bitand_lambda_v, &shift_scalars, r_y_tensor);
 		let intmul_input = (!self.constraint_system.imul_constraints.is_empty()).then(|| {
-			encode_operation_input(intmul_r_x_prime_v, intmul_lambda_v, &shift_scalars, &r_y_tensor)
+			encode_operation_input(intmul_r_x_prime_v, intmul_lambda_v, &shift_scalars, r_y_tensor)
 		});
 		let binmul_input = (!self.constraint_system.bmul_constraints.is_empty()).then(|| {
-			encode_operation_input(binmul_r_x_prime_v, binmul_lambda_v, &shift_scalars, &r_y_tensor)
+			encode_operation_input(binmul_r_x_prime_v, binmul_lambda_v, &shift_scalars, r_y_tensor)
 		});
 
 		OperationInputs {
@@ -553,14 +552,24 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		} = self.operation_inputs(vals);
 		let cs = &self.constraint_system;
 
-		let zero = OperationEvalFn::new(&cs.zero_constraints).call::<E>(&zero_input);
-		let bitand = OperationEvalFn::new(&cs.and_constraints).call::<E>(&bitand_input);
+		let zero =
+			OperationEvalFn::new(&cs.zero_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+				.call::<E>(&zero_input);
+		let bitand =
+			OperationEvalFn::new(&cs.and_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+				.call::<E>(&bitand_input);
 		let intmul = match intmul_input {
-			Some(input) => OperationEvalFn::new(&cs.imul_constraints).call::<E>(&input),
+			Some(input) => {
+				OperationEvalFn::new(&cs.imul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+					.call::<E>(&input)
+			}
 			None => E::zero(),
 		};
 		let binmul = match binmul_input {
-			Some(input) => OperationEvalFn::new(&cs.bmul_constraints).call::<E>(&input),
+			Some(input) => {
+				OperationEvalFn::new(&cs.bmul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+					.call::<E>(&input)
+			}
 			None => E::zero(),
 		};
 
@@ -578,14 +587,24 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		} = self.operation_inputs(vals);
 		let cs = &self.constraint_system;
 
-		let zero = OperationEvalFn::new(&cs.zero_constraints).call_native(&zero_input);
-		let bitand = OperationEvalFn::new(&cs.and_constraints).call_native(&bitand_input);
+		let zero =
+			OperationEvalFn::new(&cs.zero_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+				.call_native(&zero_input);
+		let bitand =
+			OperationEvalFn::new(&cs.and_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+				.call_native(&bitand_input);
 		let intmul = match intmul_input {
-			Some(input) => OperationEvalFn::new(&cs.imul_constraints).call_native(&input),
+			Some(input) => {
+				OperationEvalFn::new(&cs.imul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+					.call_native(&input)
+			}
 			None => F::ZERO,
 		};
 		let binmul = match binmul_input {
-			Some(input) => OperationEvalFn::new(&cs.bmul_constraints).call_native(&input),
+			Some(input) => {
+				OperationEvalFn::new(&cs.bmul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+					.call_native(&input)
+			}
 			None => F::ZERO,
 		};
 
