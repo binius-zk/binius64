@@ -599,19 +599,36 @@ where
 		}
 	}
 
+	/// The proof bytes one reduction of the given arity contributes.
+	///
+	/// Each test query sends one opened coset and its Merkle branch:
+	///
+	/// ```text
+	///     coset     2^arity field elements
+	///     branch    one hash per tree level
+	/// ```
+	///
+	/// The oracle commits one coset per leaf.
+	/// So its tree holds `2^(log_code_len - arity)` leaves, not `2^log_code_len`.
+	///
+	/// Sizing the tree by the codeword length would charge `arity` extra hashes per branch.
+	/// The arities chosen would then minimize a proof size no prover produces.
 	fn compute_layer_reduction_size(&self, log_code_len: usize, arity: usize) -> usize {
 		// Each queried coset contains 2^arity values.
 		let leaf_size = F::BYTE_SIZE << arity;
 		// One coset per test query.
 		let leaves_size = leaf_size * self.n_test_queries;
 
+		// One leaf per coset, so the tree is `arity` levels shorter than the codeword.
+		let log_n_cosets = log_code_len - arity;
+
 		// Size of the Merkle multi-proof.
 		let optimal_layer = self
 			.merkle_scheme
-			.optimal_verify_layer(self.n_test_queries, log_code_len);
+			.optimal_verify_layer(self.n_test_queries, log_n_cosets);
 		let merkle_size =
 			self.merkle_scheme
-				.proof_size(1 << log_code_len, self.n_test_queries, optimal_layer);
+				.proof_size(1 << log_n_cosets, self.n_test_queries, optimal_layer);
 
 		leaves_size + merkle_size
 	}
@@ -831,12 +848,68 @@ mod tests {
 	};
 
 	use super::*;
-	use crate::merkle_tree::BinaryMerkleTreeScheme;
+	use crate::{fri::proof_size, merkle_tree::BinaryMerkleTreeScheme};
 
 	type TestMerkleScheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 
 	fn test_merkle_scheme() -> TestMerkleScheme {
 		BinaryMerkleTreeScheme::new()
+	}
+
+	// Invariant: the size the arity search minimizes is the size a prover actually sends.
+	//
+	//     cost model    what `compute_layer_reduction_size` charges, and the search minimizes
+	//     proof_size    the exact byte count
+	//
+	// Nothing compared the two, so they were free to disagree.
+	//
+	// The cost model omits the commitment digests, which do not vary with the arity choice.
+	// One input oracle carries `2 + fold_arities.len()` of them.
+	//
+	// Only the single-oracle case is pinned.
+	// `proof_size` charges one combined initial fold.
+	// A batch instead commits one tree per oracle, so the two still diverge for N > 1.
+	// That is a defect in `proof_size`, tracked separately.
+	#[test]
+	fn optimizer_estimate_matches_exact_proof_size() {
+		let merkle_scheme = test_merkle_scheme();
+		let digest_size = size_of::<<TestMerkleScheme as MerkleTreeScheme<B128>>::Digest>();
+
+		// Large enough for the widest case below: a ZK oracle commits `log_msg_len + 1`.
+		let ntt = NeighborsLastReference {
+			domain_context: GaoMateerOnTheFly::<B128>::generate(24),
+		};
+
+		for log_inv_rate in [1, 2, 3] {
+			for n_test_queries in [32, 128, 232] {
+				for log_msg_len in [0, 1, 4, 8, 12, 16, 20] {
+					// A ZK oracle pins its batch size at 1; a non-ZK oracle takes a flexible one,
+					// so the two exercise different branches of the selection.
+					for oracle in [
+						OracleSpec::new(log_msg_len),
+						OracleSpec::new_zk(log_msg_len),
+					] {
+						let (params, estimate) = FRIParams::optimal_for_batch(
+							ntt.domain_context(),
+							&merkle_scheme,
+							std::slice::from_ref(&oracle),
+							log_inv_rate,
+							n_test_queries,
+						);
+
+						let digests = (2 + params.fold_arities().len()) * digest_size;
+						assert_eq!(
+							estimate + digests,
+							proof_size(&params, &merkle_scheme),
+							"log_msg_len={log_msg_len} is_zk={} log_inv_rate={log_inv_rate} \
+							 n_test_queries={n_test_queries} arities={:?}",
+							oracle.is_zk,
+							params.fold_arities(),
+						);
+					}
+				}
+			}
+		}
 	}
 
 	#[test]
@@ -986,8 +1059,12 @@ mod tests {
 		assert_eq!(fri_params.input_oracles[2].log_lift, 0);
 		assert_eq!(fri_params.input_oracles[2].log_batch_size(), 16 - reduced_log_dim);
 
-		// Pin the estimated proof size to detect unintended changes in the optimizer.
-		assert_eq!(proof_size, 229376);
+		// Pin the estimated proof size, to catch unintended changes in the optimizer.
+		//
+		// This sums one reduction per committed oracle.
+		// `size_estimation::proof_size` does not, so the two disagree for a batch.
+		// `optimizer_estimate_matches_exact_proof_size` pins them together for one oracle.
+		assert_eq!(proof_size, 188416);
 	}
 
 	#[test]
