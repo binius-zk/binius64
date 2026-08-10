@@ -77,11 +77,24 @@ impl IOPVerifier {
 
 	/// Returns log2 of the number of field elements in the packed trace.
 	///
-	/// The trace oracle commits only the witness's hidden segment, padded to the segment
-	/// length; the public segment is a verifier-known polynomial.
+	/// The trace oracle commits only the witness's hidden segment; the public segment is a
+	/// verifier-known polynomial. The shift reduction claims that segment over the shared
+	/// word-index space, which spans the wider of the two segments, so the oracle covers
+	/// `log_segment_words` words. That is the hidden segment's own length for every system
+	/// whose private values outnumber its public ones, and the committed words above the
+	/// hidden segment are zero.
+	///
+	/// ## Preconditions
+	/// * the wider segment spans at least one field element's worth of words, which every system
+	///   with more than one public or private value satisfies
 	pub const fn log_witness_elems(&self) -> usize {
-		let log_witness_words = self.constraint_system.log_witness_words();
-		log_witness_words - LOG_WORDS_PER_ELEM
+		let log_segment_words = self.constraint_system.log_segment_words();
+		assert!(
+			log_segment_words >= LOG_WORDS_PER_ELEM,
+			"the committed trace is a whole number of field elements, so the wider value \
+			 segment spans at least that many words"
+		);
+		log_segment_words - LOG_WORDS_PER_ELEM
 	}
 
 	/// Returns log2 of the number of words in the committed trace.
@@ -397,10 +410,7 @@ where
 	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
 		constraint_system.validate()?;
 
-		// The validated layout guarantees a power-of-two public segment of at least one full
-		// element.
 		let log_public_words = constraint_system.log_public_words();
-		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 

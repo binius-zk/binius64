@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, ops::DerefMut};
+use std::{cmp::max, iter, ops::DerefMut};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -84,13 +84,19 @@ where
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
 	// Fold each segment separately; the combined witness is never materialized. `fold_words`
-	// zero-pads each fold to `log2_ceil(len)` variables, so the hidden fold already has
-	// `log_witness_words` variables (its word count is the hidden segment length).
+	// zero-pads each fold to `log2_ceil(len)` variables, so each fold spans its own segment.
 	let public_folded = fold_words::<_, P, _>(alloc, words.public, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<_, P, _>(alloc, words.hidden, r_j_tensor.as_ref());
 
 	let (public_monster, hidden_monster) =
 		build_monster_segments(alloc, key_collection, prepared, domain_subspace, &r_j, &r_s, &r_v);
+
+	// Both halves of the sumcheck share one word-index address space, spanning the wider of the
+	// two segments. The hidden segment is normally the wider one, but a system with more public
+	// words than private values inverts that, and the hidden half zero-extends to match.
+	let log_segment_words = max(public_folded.log_len(), hidden_folded.log_len());
+	let hidden_folded = zero_extend(alloc, hidden_folded, log_segment_words);
+	let hidden_monster = zero_extend(alloc, hidden_monster, log_segment_words);
 
 	run_sumcheck(
 		&public_folded,
@@ -103,6 +109,33 @@ where
 		channel,
 		alloc,
 	)
+}
+
+/// Zero-extends a segment buffer to span `log_len` word-index variables.
+///
+/// Returns the buffer untouched when it already spans that many, which is the common case: the
+/// hidden segment is normally the wider of the two, so no copy happens.
+///
+/// ## Preconditions
+/// * `log_len` is at least `buffer.log_len()`
+fn zero_extend<F, P: PackedField<Scalar = F>, A: Allocator>(
+	alloc: &A,
+	buffer: FieldVec<P, A>,
+	log_len: usize,
+) -> FieldVec<P, A>
+where
+	F: BinaryField,
+{
+	assert!(log_len >= buffer.log_len());
+	if log_len == buffer.log_len() {
+		return buffer;
+	}
+
+	// Whole packed words copy across: a trailing partial word carries zero high lanes, which are
+	// exactly the zeros the extension pads with.
+	let mut extended = FieldVec::<P, A>::zeros_in(alloc, log_len);
+	extended.as_mut()[..buffer.as_ref().len()].copy_from_slice(buffer.as_ref());
+	extended
 }
 
 /// Computes the phase-2 first-round message: the degree-2 round polynomial that binds the segment
@@ -222,6 +255,8 @@ pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>, 
 where
 	F: BinaryField,
 {
+	// The hidden pair is the dense one both the first round and `fold_segments` iterate over, so
+	// it spans the whole word-index space and the public pair sits at its base.
 	let log_hidden = hidden_folded.log_len();
 	assert_eq!(hidden_monster.log_len(), log_hidden);
 	assert_eq!(public_monster.log_len(), public_folded.log_len());

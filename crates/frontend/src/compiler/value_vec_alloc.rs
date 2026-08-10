@@ -134,8 +134,6 @@ impl Alloc {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::ConstraintSystem;
-
 	use super::*;
 
 	#[test]
@@ -219,7 +217,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_minimum_segment_size() {
+	fn segments_are_stored_unpadded() {
 		// Test that the public section meets the minimum size requirement
 		let mut alloc = Alloc::new(0);
 
@@ -233,13 +231,12 @@ mod tests {
 
 		let assignment = alloc.into_assignment();
 
-		// The layout stores the single constant on its own; the constraint system pads the public
-		// segment it commits up to the minimum.
+		// Nothing is padded: the layout stores the single constant on its own and the constraint
+		// system's public segment is exactly that one word.
 		assert_eq!(assignment.value_vec_layout.offset_witness(), 1);
 		let cs = assignment
 			.value_vec_layout
 			.constraint_system_shape(assignment.constants.clone());
-		assert!(cs.n_public_words() >= ConstraintSystem::MIN_WORDS_PER_SEGMENT);
-		assert!(cs.n_public_words().is_power_of_two());
+		assert_eq!(cs.n_public_words(), 1);
 	}
 }

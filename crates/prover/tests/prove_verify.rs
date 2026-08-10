@@ -386,6 +386,70 @@ fn test_prove_verify_fewer_zero_than_and_constraints() {
 	prove_verify(cs, &witness);
 }
 
+/// Builds a circuit whose public segment is wider than its hidden one: `n_inout` input/output
+/// values against a handful of private ones.
+///
+/// Each inout value is asserted equal to the same AND output, which lowers to a ZERO constraint
+/// and commits nothing further, so the hidden segment stays at three words however many inout
+/// values the circuit declares. The optimization passes are off so that the repeated assertions
+/// survive as distinct constraints.
+fn public_heavy_circuit(n_inout: usize) -> (ConstraintSystem, ValueVec) {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_gate_fusion: false,
+		enable_common_subexpression_elimination: false,
+		enable_dead_code_elimination: false,
+		enable_algebraic_folding: false,
+		..Options::default()
+	});
+	let a = builder.add_witness();
+	let b = builder.add_witness();
+	let and_out = builder.band(a, b);
+
+	let inout = (0..n_inout)
+		.map(|_| builder.add_inout())
+		.collect::<Vec<_>>();
+	for &wire in &inout {
+		builder.assert_eq("inout_is_and_output", wire, and_out);
+	}
+
+	let circuit = builder.build();
+	let mut w = circuit.new_witness_filler();
+	let (a_val, b_val) = (Word(0x0123_4567_89AB_CDEF), Word(0xFEDC_BA98_7654_3210));
+	w[a] = a_val;
+	w[b] = b_val;
+	for &wire in &inout {
+		w[wire] = a_val & b_val;
+	}
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	let cs = circuit.constraint_system().clone();
+	let witness = w.into_value_vec();
+	cs.verify(&witness).unwrap();
+	(cs, witness)
+}
+
+/// A public segment wider than the hidden one proves and verifies.
+///
+/// Neither segment is padded to the other's length, so the shift reduction's word-index space
+/// spans the *wider* of the two — here the public one. Both sides size that space from
+/// `log_segment_words`, and the hidden half zero-extends up to it, so the sumcheck draws word-index
+/// challenges the hidden segment alone would not have called for. Every other circuit in this file
+/// has the hidden segment wider, which is the case the padding used to guarantee.
+#[test]
+fn test_prove_verify_public_wider_than_hidden() {
+	let (cs, witness) = public_heavy_circuit(300);
+	assert!(
+		cs.log_public_words() > cs.log_witness_words(),
+		"public segment ({} words) must be wider than the hidden one ({} words) for this test to \
+		 exercise the extra word-index challenges",
+		cs.n_public_words(),
+		cs.n_hidden_words(),
+	);
+	assert_eq!(cs.log_segment_words(), cs.log_public_words());
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
+}
+
 /// A witness violating one ZERO constraint is rejected. The prover has nothing to send for the
 /// Zero reduction, so it claims the constant zero regardless; the shift reduction, running against
 /// the committed witness, is what catches the discrepancy.

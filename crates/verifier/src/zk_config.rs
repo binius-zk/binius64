@@ -38,10 +38,7 @@ use binius_utils::{DeserializeBytes, SerializeBytes, serialization::Serializatio
 use bytes::{Buf, BufMut};
 use digest::Output;
 
-use crate::{
-	config::LOG_WORDS_PER_ELEM,
-	verify::{IOPVerifier, SECURITY_BITS},
-};
+use crate::verify::{IOPVerifier, SECURITY_BITS};
 
 /// Zero-knowledge verifier for Binius64 constraint systems.
 ///
@@ -68,10 +65,7 @@ where
 
 		constraint_system.validate()?;
 
-		// The validated layout guarantees a power-of-two public segment of at least one full
-		// element.
 		let log_public_words = constraint_system.log_public_words();
-		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let inner_iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 
