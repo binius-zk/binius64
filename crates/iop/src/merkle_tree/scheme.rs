@@ -10,19 +10,17 @@ use binius_utils::{
 	checked_arithmetics::{checked_log_2, log2_ceil_usize},
 };
 use digest::{Digest, Output};
-use getset::CopyGetters;
+use getset::Getters;
 
 use super::{
 	error::{Error, VerificationError},
 	merkle_tree_vcs::MerkleTreeScheme,
 };
 
-#[derive(Clone, CopyGetters)]
+#[derive(Clone, Getters)]
 pub struct BinaryMerkleTreeScheme<T, H: HashSuite> {
 	#[getset(get = "pub")]
 	compression: H::Compression,
-	#[getset(get_copy = "pub")]
-	salt_len: usize,
 	// This makes it so that `BinaryMerkleTreeScheme` remains Send + Sync regardless of `T`.
 	// See https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
 	_phantom: PhantomData<fn() -> T>,
@@ -36,13 +34,8 @@ impl<T, H: HashSuite> Default for BinaryMerkleTreeScheme<T, H> {
 
 impl<T, H: HashSuite> BinaryMerkleTreeScheme<T, H> {
 	pub fn new() -> Self {
-		Self::hiding(0)
-	}
-
-	pub fn hiding(salt_len: usize) -> Self {
 		Self {
 			compression: H::Compression::default(),
-			salt_len,
 			_phantom: PhantomData,
 		}
 	}
@@ -53,13 +46,8 @@ where
 	T: FixedSizeSerializeBytes,
 	H: HashSuite,
 {
-	fn compute_leaf_digest<B: Buf>(
-		&self,
-		values: &[T],
-		proof: &mut TranscriptReader<B>,
-	) -> Result<Output<H::LeafHash>, Error> {
-		let salt = proof.read_vec::<T>(self.salt_len)?;
-		hash_serialize::<T, H::LeafHash>(values.iter().chain(&salt)).map_err(Error::Serialization)
+	fn compute_leaf_digest(&self, values: &[T]) -> Result<Output<H::LeafHash>, Error> {
+		hash_serialize::<T, H::LeafHash>(values).map_err(Error::Serialization)
 	}
 }
 
@@ -89,12 +77,11 @@ where
 			* <H::LeafHash as Digest>::output_size()
 	}
 
-	fn verify_vector<B: Buf>(
+	fn verify_vector(
 		&self,
 		root: &Self::Digest,
 		data: &[T],
 		batch_size: usize,
-		proof: &mut TranscriptReader<B>,
 	) -> Result<(), Error> {
 		assert!(
 			data.len().is_multiple_of(batch_size),
@@ -103,7 +90,7 @@ where
 
 		let digests = data
 			.chunks(batch_size)
-			.map(|chunk| self.compute_leaf_digest(chunk, proof))
+			.map(|chunk| self.compute_leaf_digest(chunk))
 			.collect::<Result<Vec<_>, _>>()?;
 
 		if fold_digests_vector_inplace(&self.compression, digests) != *root {
@@ -147,7 +134,7 @@ where
 		);
 		assert!(index < (1 << tree_depth), "precondition: index must be less than 2^tree_depth");
 
-		let mut leaf_digest = self.compute_leaf_digest(values, proof)?;
+		let mut leaf_digest = self.compute_leaf_digest(values)?;
 		for branch_node in proof.read_vec(tree_depth - layer_depth)? {
 			leaf_digest = self.compression.compress(if index & 1 == 0 {
 				[leaf_digest, branch_node]

@@ -13,8 +13,6 @@ use crate::merkle_tree::MerkleTreeScheme;
 ///   observed by Fiat-Shamir).
 /// - **Decommitment channel**: the terminal codeword, Merkle layer digests, per-query branch
 ///   digests, and per-query coset field values.
-///
-/// The estimate assumes non-hiding proofs (salt_len = 0).
 pub fn proof_size<F, VCS>(params: &FRIParams<F>, vcs: &VCS) -> usize
 where
 	F: BinaryField,

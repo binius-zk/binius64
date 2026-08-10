@@ -42,15 +42,16 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 
 	/// Verify the opening of the full vector.
 	///
+	/// The committed values are the whole opening, so there is no decommitment advice to read.
+	///
 	/// ## Preconditions
 	///
 	/// * `data.len()` must be a multiple of `batch_size`.
-	fn verify_vector<B: Buf>(
+	fn verify_vector(
 		&self,
 		root: &Self::Digest,
 		data: &[T],
 		batch_size: usize,
-		proof: &mut TranscriptReader<B>,
 	) -> Result<(), Error>;
 
 	/// Verify a given layer of the Merkle tree.

@@ -176,10 +176,10 @@ impl<F: Field> IOPVerifier<F> {
 			});
 		}
 
-		// Receive the private and mask oracle commitments. The private witness is
-		// witness-dependent. The mask is passed `is_witness_dependent = true` to preserve its ZK
-		// masking (it is a fresh random mask rather than witness data, but is committed with
-		// hiding in the ZK protocol).
+		// Receive the private and mask oracle commitments.
+		// The private witness is witness-dependent.
+		// The mask is a fresh random draw, not witness data.
+		// It is still flagged witness-dependent so the protocol keeps treating it as secret.
 		let private_oracle = channel.recv_oracle(cs.log_private() as usize, true)?;
 		let (m_n, m_d) = cs.mask_dims();
 		let mask_oracle = channel.recv_oracle(m_n + m_d, true)?;
