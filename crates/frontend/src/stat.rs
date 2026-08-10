@@ -348,7 +348,7 @@ impl Cx {
 	/// Records every term of one operand.
 	fn visit_operand(&mut self, operand: &Operand) {
 		for term in operand {
-			if term.amount == 0 {
+			if term.shift.is_identity() {
 				self.unshifted_terms.insert(*term);
 			} else {
 				self.shifted_terms.insert(*term);

@@ -441,8 +441,7 @@ mod tests {
 
 		for (orig, deser) in constraint.val().iter().zip(deserialized.val().iter()) {
 			assert_eq!(orig.value_index, deser.value_index);
-			assert_eq!(orig.shift_variant, deser.shift_variant);
-			assert_eq!(orig.amount, deser.amount);
+			assert_eq!(orig.shift, deser.shift);
 		}
 	}
 
@@ -467,7 +466,7 @@ mod tests {
 
 		for (orig, deser) in constraint.a().iter().zip(deserialized.a().iter()) {
 			assert_eq!(orig.value_index, deser.value_index);
-			assert_eq!(orig.amount, deser.amount);
+			assert_eq!(orig.shift.amount, deser.shift.amount);
 		}
 	}
 

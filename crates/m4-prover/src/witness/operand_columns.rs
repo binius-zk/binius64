@@ -8,7 +8,7 @@ use std::{iter, mem::MaybeUninit, ptr};
 use binius_compute::{Allocator, VecLike};
 use binius_core::{
 	ValueSegment,
-	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex},
+	constraint_system::{Operand, Shift, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
 use binius_field::{Field, PackedField};
@@ -428,8 +428,7 @@ impl<'a> ValueWords<'a> {
 	fn term_words(&self, term: &ShiftedValueIndex) -> TermWords<'a> {
 		let &ShiftedValueIndex {
 			value_index,
-			shift_variant: variant,
-			amount,
+			shift: Shift { variant, amount },
 		} = term;
 
 		let row_index = match value_index.segment() {
@@ -469,7 +468,7 @@ impl<'a> ValueWords<'a> {
 mod tests {
 	use assert_matches::assert_matches;
 	use binius_compute::{BufferPool, GlobalAllocator};
-	use binius_core::constraint_system::{AndConstraint, ShiftVariant, ValueVec};
+	use binius_core::constraint_system::{AndConstraint, Shift, ShiftVariant, ValueVec};
 	use binius_field::{AESTowerField8b as B8, PackedBinaryGhash1x128b, Random};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
@@ -1046,10 +1045,9 @@ mod tests {
 			let to_operand = |terms: &[(usize, ShiftVariant, u8)]| -> Operand {
 				terms
 					.iter()
-					.map(|&(wire, shift_variant, amount)| ShiftedValueIndex {
+					.map(|&(wire, variant, amount)| ShiftedValueIndex {
 						value_index: wires[wire],
-						shift_variant,
-						amount,
+						shift: Shift { variant, amount },
 					})
 					.collect()
 			};
@@ -1154,7 +1152,7 @@ mod tests {
 		let shifted = and_constraints
 			.iter()
 			.flat_map(|con| [con.a(), con.b()])
-			.any(|op| op.iter().any(|sv| sv.amount != 0));
+			.any(|op| op.iter().any(|sv| !sv.shift.is_identity()));
 		assert!(shifted, "fixture must contain a shifted operand");
 
 		let columns =

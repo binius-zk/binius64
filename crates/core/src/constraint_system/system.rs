@@ -9,8 +9,8 @@ use binius_utils::{
 use bytes::{Buf, BufMut};
 
 use super::{
-	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ShiftVariant,
-	ValueIndex, ValueSegment, ValueVec, ZeroConstraint,
+	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ValueIndex,
+	ValueSegment, ValueVec, ZeroConstraint,
 };
 use crate::{
 	error::{ConstraintSystemError, VerificationError},
@@ -303,22 +303,24 @@ impl ConstraintSystem {
 		operand_name: &'static str,
 	) -> Result<(), ConstraintSystemError> {
 		for term in operand {
-			// check canonicity. SLL is the canonical form of the operand.
-			if term.amount == 0 && term.shift_variant != ShiftVariant::Sll {
+			// check canonicity. SLL is the canonical form of the identity.
+			if !term.shift.is_canonical() {
 				return Err(ConstraintSystemError::NonCanonicalShift {
 					constraint_kind,
 					constraint_index,
 					operand_name,
 				});
 			}
-			// Half-word (*32) variants cap at 32, full-width at 64.
-			let max_amount = term.shift_variant.max_amount();
-			if usize::from(term.amount) >= max_amount {
+			// Half-word (*32) variants cap at 32, full-width at 64. `Shift::new` and the
+			// deserializer both enforce this, but the fields are public, so a hand-built term can
+			// still carry an amount the variant cannot represent.
+			let max_amount = term.shift.variant.max_amount();
+			if usize::from(term.shift.amount) >= max_amount {
 				return Err(ConstraintSystemError::ShiftAmountTooLarge {
 					constraint_kind,
 					constraint_index,
 					operand_name,
-					shift_amount: term.amount as usize,
+					shift_amount: term.shift.amount as usize,
 					max_amount,
 				});
 			}
@@ -482,7 +484,7 @@ impl DeserializeBytes for ConstraintSystem {
 mod tests {
 	use super::*;
 	use crate::{
-		constraint_system::{ShiftedValueIndex, ValuesData},
+		constraint_system::{Shift, ShiftVariant, ShiftedValueIndex, ValuesData},
 		error::ConstraintViolation,
 	};
 
@@ -955,8 +957,12 @@ mod tests {
 		cs.and_constraints.push(AndConstraint::abc(
 			vec![ShiftedValueIndex {
 				value_index: ValueIndex::constant(0),
-				shift_variant: ShiftVariant::Sll32,
-				amount: 32,
+				// Built raw: `Shift::new` would reject this amount, and `validate` is what is
+				// under test here.
+				shift: Shift {
+					variant: ShiftVariant::Sll32,
+					amount: 32,
+				},
 			}],
 			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
 			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
