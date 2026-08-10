@@ -110,7 +110,7 @@ pub struct VerifyOutput<F> {
 	pub r_s: Vec<F>,
 	/// Challenge point for the shift-variant variables (length `LOG_SHIFT_VARIANT_COUNT`).
 	pub r_v: Vec<F>,
-	/// Challenge point for the word index variables (length `log_witness_words`).
+	/// Challenge point for the word index variables (length `log_segment_words`).
 	pub r_y: Vec<F>,
 	/// Challenge for the witness's segment selector variable.
 	pub r_segment: F,
@@ -208,9 +208,10 @@ where
 	let r_s = r_j.split_off(Word::LOG_BITS);
 
 	// The second sumcheck runs over the witness: the public segment in the low half-cube and
-	// the hidden segment in the high half-cube, selected by the top word-index variable. This
-	// matches the prover, which zero-pads each segment to the half size.
-	let log_word_count = constraint_system.log_witness_words() + 1;
+	// the hidden segment in the high half-cube, selected by the top word-index variable. Each
+	// half spans the wider of the two segments, which the prover zero-pads the shorter one up
+	// to, so a public segment longer than the hidden one draws the extra word-index challenges.
+	let log_word_count = constraint_system.log_segment_words() + 1;
 
 	let SumcheckOutput {
 		eval,

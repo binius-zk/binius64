@@ -78,12 +78,6 @@ impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
 	pub const SERIALIZATION_VERSION: u32 = 9;
 
-	/// The minimum number of words in the public segment.
-	///
-	/// The public segment is padded up to at least this many words, so that
-	/// [`Self::log_public_words`] is never smaller than its logarithm.
-	pub const MIN_WORDS_PER_SEGMENT: usize = 2;
-
 	/// Returns the number of constants.
 	pub const fn n_const(&self) -> usize {
 		self.constants.len()
@@ -99,44 +93,39 @@ impl ConstraintSystem {
 		self.n_const() + self.n_inout
 	}
 
-	/// Returns the number of words in the public segment, which the proving protocol pads to a
-	/// power of two of at least [`Self::MIN_WORDS_PER_SEGMENT`] words.
-	///
-	/// The padding is the protocol's, not the system's: no [`ValueIndex`] reaches a padding word,
-	/// and the words past [`Self::n_public_values`] are zero.
+	/// Returns the number of words in the public segment, which is the public values themselves.
 	pub const fn n_public_words(&self) -> usize {
-		let n_values = if self.n_public_values() < Self::MIN_WORDS_PER_SEGMENT {
-			Self::MIN_WORDS_PER_SEGMENT
-		} else {
-			self.n_public_values()
-		};
-		n_values.next_power_of_two()
+		self.n_public_values()
 	}
 
-	/// Returns the base-2 logarithm of the public segment length in words.
+	/// Returns the number of word-index variables the public segment spans.
+	///
+	/// The word count need not be a power of two; the reductions read the words past it as zero.
 	pub const fn log_public_words(&self) -> usize {
-		self.n_public_words().trailing_zeros() as usize
+		log2_ceil_usize(self.n_public_words())
 	}
 
-	/// Returns the number of words in the hidden segment.
-	///
-	/// The hidden segment holds the private values, padded up to the public segment length so
-	/// that [`Self::log_witness_words`] is at least [`Self::log_public_words`] — the shift
-	/// reduction addresses both halves with one set of word-index challenges.
+	/// Returns the number of words in the hidden segment, which is the private values themselves.
 	pub const fn n_hidden_words(&self) -> usize {
-		if self.n_private < self.n_public_words() {
-			self.n_public_words()
-		} else {
-			self.n_private
-		}
+		self.n_private
 	}
 
-	/// Returns the base-2 logarithm of the hidden segment length in words, rounded up to a
-	/// power of two.
-	///
-	/// This is at least [`Self::log_public_words`].
+	/// Returns the number of word-index variables the hidden segment spans.
 	pub const fn log_witness_words(&self) -> usize {
 		log2_ceil_usize(self.n_hidden_words())
+	}
+
+	/// Returns the number of word-index variables the shift reduction runs over.
+	///
+	/// The reduction addresses both segments with one set of word-index challenges, so it needs
+	/// as many as the wider of the two spans. The narrower segment reads the extra coordinates as
+	/// zero.
+	pub const fn log_segment_words(&self) -> usize {
+		if self.log_public_words() > self.log_witness_words() {
+			self.log_public_words()
+		} else {
+			self.log_witness_words()
+		}
 	}
 
 	/// Returns the number of values the given segment holds, excluding the padding after them.
@@ -682,35 +671,39 @@ mod tests {
 	}
 
 	#[test]
-	fn segment_lengths_are_derived_from_the_value_counts() {
-		// Three constants and two inout values are five public words, padded to eight; six
-		// private values are fewer than that, so the hidden segment is padded to eight too.
+	fn segment_lengths_are_the_value_counts() {
+		// Three constants and two inout values are five public words; six private values are six
+		// hidden words. Neither is padded.
 		let cs = test_shape();
 		assert_eq!(cs.n_public_values(), 5);
-		assert_eq!(cs.n_public_words(), 8);
-		assert_eq!(cs.log_public_words(), 3);
-		assert_eq!(cs.n_hidden_words(), 8);
-		assert_eq!(cs.log_witness_words(), 3);
-		assert_eq!(cs.value_vec_len(), 16);
+		assert_eq!(cs.n_public_words(), 5);
+		assert_eq!(cs.n_hidden_words(), 6);
+		assert_eq!(cs.value_vec_len(), 11);
 
-		// A system with more private values than public words pads the hidden segment to the
-		// private count instead, and the two logarithms come apart.
+		// The spans are the counts rounded up, and the reduction runs over the wider of the two.
+		assert_eq!(cs.log_public_words(), 3);
+		assert_eq!(cs.log_witness_words(), 3);
+		assert_eq!(cs.log_segment_words(), 3);
+
+		// A hidden segment wider than the public one sets the span.
 		let wide = ConstraintSystem {
 			n_private: 60,
 			..test_shape()
 		};
-		assert_eq!(wide.n_public_words(), 8);
-		assert_eq!(wide.n_hidden_words(), 60);
+		assert_eq!(wide.log_public_words(), 3);
 		assert_eq!(wide.log_witness_words(), 6);
+		assert_eq!(wide.log_segment_words(), 6);
 
-		// An empty system still meets the minimum segment size.
-		let empty = ConstraintSystem {
-			constants: vec![],
-			n_inout: 0,
-			n_private: 0,
+		// And a public segment wider than the hidden one sets it instead — the case the old
+		// hidden-segment padding existed to rule out.
+		let public_heavy = ConstraintSystem {
+			n_inout: 200,
+			n_private: 4,
 			..test_shape()
 		};
-		assert_eq!(empty.n_public_words(), ConstraintSystem::MIN_WORDS_PER_SEGMENT);
+		assert_eq!(public_heavy.log_public_words(), 8);
+		assert_eq!(public_heavy.log_witness_words(), 2);
+		assert_eq!(public_heavy.log_segment_words(), 8);
 	}
 
 	#[test]

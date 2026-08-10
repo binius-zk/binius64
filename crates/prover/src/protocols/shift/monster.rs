@@ -10,7 +10,7 @@ use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product,
 	multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY, evaluate_h_op,
 };
@@ -296,7 +296,8 @@ where
 		FieldBuffer::new(log_len, values)
 	};
 
-	let log_public_words = checked_log_2(key_collection.public.n_words());
+	// The segment word count need not be a power of two; the monster spans the rounded-up count.
+	let log_public_words = log2_ceil_usize(key_collection.public.n_words());
 	let public_monster = build_segment(&key_collection.public, log_public_words);
 	let hidden_monster = build_segment(&key_collection.hidden, key_collection.log_witness_words());
 
