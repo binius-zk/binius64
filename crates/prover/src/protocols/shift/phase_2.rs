@@ -28,7 +28,8 @@ use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
 use super::{
-	claims::PreparedOperatorClaims, key_collection::KeyCollection, monster::build_monster_segments,
+	SegmentWords, claims::PreparedOperatorClaims, key_collection::KeyCollection,
+	monster::build_monster_segments,
 };
 use crate::fold_word::fold_words;
 
@@ -59,7 +60,7 @@ use crate::fold_word::fold_words;
 #[instrument(skip_all, name = "prove_phase_2")]
 pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
-	words: &[Word],
+	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	phase_1_output: SumcheckOutput<F>,
@@ -86,9 +87,8 @@ where
 	// Fold each segment separately; the combined witness is never materialized. `fold_words`
 	// zero-pads each fold to `log2_ceil(len)` variables, so the hidden fold already has
 	// `log_witness_words` variables (its word count is the hidden segment length).
-	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-	let public_folded = fold_words::<_, P, _>(alloc, public_words, r_j_tensor.as_ref());
-	let hidden_folded = fold_words::<_, P, _>(alloc, hidden_words, r_j_tensor.as_ref());
+	let public_folded = fold_words::<_, P, _>(alloc, words.public, r_j_tensor.as_ref());
+	let hidden_folded = fold_words::<_, P, _>(alloc, words.hidden, r_j_tensor.as_ref());
 
 	let (public_monster, hidden_monster) =
 		build_monster_segments(alloc, key_collection, prepared, domain_subspace, &r_j, &r_s);
@@ -98,7 +98,7 @@ where
 		hidden_folded,
 		&public_monster,
 		hidden_monster,
-		public_words,
+		words.public,
 		r_j,
 		gamma,
 		channel,

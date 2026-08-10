@@ -51,11 +51,19 @@ pub struct ValueTable {
 	layout: ValueVecLayout,
 	/// The base-2 logarithm of the instance count.
 	log_instances: usize,
+	/// The number of hidden-word rows the proving protocol commits per instance.
+	///
+	/// The layout stores the private values back to back, but the shift reduction addresses the
+	/// hidden segment with the same word-index challenges as the public one, so it needs at least
+	/// the public segment's width. This is
+	/// [`ConstraintSystem::n_hidden_words`](binius_core::ConstraintSystem::n_hidden_words) of the
+	/// circuit's system, and the rows past the private values are the zero padding it implies.
+	n_hidden_words: usize,
 	/// The hidden words of every wire, in wire-major order.
 	///
 	/// Row `r` (for `r` in `0..n_hidden_words`) holds the `2^log_instances` values of hidden wire
-	/// `r` — value index `offset_witness + r` — one per instance. The rows are laid out
-	/// contiguously, so the length is `n_hidden_words << log_instances`.
+	/// `r` — private value `r` — one per instance. The rows are laid out contiguously, so the
+	/// length is `n_hidden_words << log_instances`.
 	data: Vec<Word>,
 }
 
@@ -193,16 +201,23 @@ impl ValueTable {
 			}
 		}
 
-		// Keep only the hidden segment: rows `[offset_witness, combined_len)`. In the wire-major
+		// Keep only the private values: rows `[offset_witness, combined_len)`. In the wire-major
 		// working buffer these rows are contiguous, so this is a single slice of the words. The
 		// constants and scratch are dropped.
-		let start = layout.offset_witness << log_instances;
+		//
+		// The committed segment is wider than the private values whenever the public segment is,
+		// so the copy lands at the front of a zeroed buffer of the committed width and the rows
+		// past it stay zero.
+		let start = layout.offset_witness() << log_instances;
 		let end = layout.combined_len() << log_instances;
-		let data = working[start..end].to_vec();
+		let n_hidden_words = circuit.constraint_system().n_hidden_words();
+		let mut data = vec![Word::ZERO; n_hidden_words << log_instances];
+		data[..end - start].copy_from_slice(&working[start..end]);
 
 		Ok(Self {
 			layout,
 			log_instances,
+			n_hidden_words,
 			data,
 		})
 	}
@@ -222,9 +237,9 @@ impl ValueTable {
 		&self.layout
 	}
 
-	/// The number of hidden words per instance: the witness and internal words stored in each row.
+	/// The number of hidden-word rows per instance, including the protocol's zero padding.
 	pub const fn n_hidden_words(&self) -> usize {
-		self.layout.n_hidden_words
+		self.n_hidden_words
 	}
 
 	/// The whole batch as one flat, wire-major word buffer.
@@ -260,10 +275,10 @@ impl ValueTable {
 			values[ValueIndex::constant(i as u32)] = constant;
 		}
 
-		// Gather this instance's column of hidden words across every row. The rows cover the whole
-		// hidden segment, padding included, so they are written by position rather than by index.
-		for row in 0..self.n_hidden_words() {
-			*values.word_mut((self.layout.offset_witness + row) as u32) =
+		// Gather this instance's column of private values across every row. The stored rows run
+		// past them into the protocol's padding, which the value vector does not hold.
+		for row in 0..self.layout.n_private() {
+			*values.word_mut((self.layout.offset_witness() + row) as u32) =
 				self.data[(row << self.log_instances) + instance];
 		}
 
@@ -390,8 +405,11 @@ mod tests {
 		let layout = c.circuit.value_vec_layout();
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), 8);
-		assert_eq!(table.n_hidden_words(), layout.n_hidden_words);
-		assert_eq!(table.as_words().len(), layout.n_hidden_words * 8);
+		let n_hidden_words = c.circuit.constraint_system().n_hidden_words();
+		assert_eq!(table.n_hidden_words(), n_hidden_words);
+		assert_eq!(table.as_words().len(), n_hidden_words * 8);
+		// The committed rows start with the private values the layout stores.
+		assert!(n_hidden_words >= layout.n_private());
 	}
 
 	#[test]
@@ -617,7 +635,7 @@ mod tests {
 		let constants = &c.circuit.constraint_system().constants;
 
 		// Shape: 2^10 instances, one hidden-word row per committed word.
-		let n_hidden_words = c.circuit.value_vec_layout().n_hidden_words;
+		let n_hidden_words = c.circuit.constraint_system().n_hidden_words();
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), n_instances);
 		assert_eq!(table.n_hidden_words(), n_hidden_words);

@@ -6,10 +6,19 @@ use crate::word::Word;
 /// Description of a layout of the value vector for a particular circuit.
 ///
 /// This is the compiler's view of the value vector: it names every section the circuit allocates,
-/// including the ones a [`ConstraintSystem`] has no interest in — the split of the hidden segment
+/// including the ones a [`ConstraintSystem`] has no interest in — the split of the private segment
 /// into declared witness and gate-created internal values, and the scratch tail used only while
-/// evaluating the circuit. The section sizes it shares with the constraint system are stored
-/// redundantly in both.
+/// evaluating the circuit.
+///
+/// The sections are stored back to back, with no padding between them:
+///
+/// ```text
+/// [ constants | inout ][ witness | internal ][ scratch ]
+///  \-- public values -/ \--- private values -/
+/// ```
+///
+/// The proving protocol pads the two committed segments to the widths its reductions need, which
+/// [`ConstraintSystem`] derives; none of that padding is stored here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValueVecLayout {
 	/// The number of the constants declared by the circuit.
@@ -23,44 +32,40 @@ pub struct ValueVecLayout {
 	/// Those are outputs and intermediaries created by the gates.
 	pub n_internal: usize,
 
-	/// The offset at which `inout` parameters start.
-	pub offset_inout: usize,
-	/// The offset at which `witness` parameters start.
-	///
-	/// The public section of the value vec has the power-of-two size and is greater than the
-	/// minimum number of words. By public section we mean the constants and the inout values.
-	pub offset_witness: usize,
-	/// The number of words in the hidden segment: the witness and internal values, including
-	/// padding up to the segment length. This does not include the public segment or any
-	/// scratch values.
-	pub n_hidden_words: usize,
 	/// The number of scratch values at the end of the value vec.
 	pub n_scratch: usize,
 }
 
 impl ValueVecLayout {
-	/// Returns the number of words in the public segment: the constants and inout values,
-	/// including padding up to the power-of-two segment length.
-	pub const fn n_public_words(&self) -> usize {
-		self.offset_witness
+	/// Returns the word at which the inout values start.
+	pub const fn offset_inout(&self) -> usize {
+		self.n_const
 	}
 
-	/// Returns the combined number of public and hidden words, excluding scratch.
+	/// Returns the word at which the private values start, which is where the public ones end.
+	pub const fn offset_witness(&self) -> usize {
+		self.n_const + self.n_inout
+	}
+
+	/// Returns the number of private values: the declared witness values followed by the
+	/// gate-created internal ones, which share the segment.
+	pub const fn n_private(&self) -> usize {
+		self.n_witness + self.n_internal
+	}
+
+	/// Returns the combined number of public and private values, excluding scratch.
 	///
 	/// This is the length of the value vector prefix that constraint operands can reference.
 	pub const fn combined_len(&self) -> usize {
-		self.offset_witness + self.n_hidden_words
+		self.offset_witness() + self.n_private()
 	}
 
 	/// Returns the flat position of the word a [`ValueIndex`] names, counting the scratch tail.
-	///
-	/// The witness and internal values share the private segment, in that order, so it starts
-	/// where the witness values do.
 	pub const fn word_offset(&self, index: ValueIndex) -> usize {
 		let segment_start = match index.segment() {
 			ValueSegment::Constant => 0,
-			ValueSegment::InOut => self.offset_inout,
-			ValueSegment::Private => self.offset_witness,
+			ValueSegment::InOut => self.offset_inout(),
+			ValueSegment::Private => self.offset_witness(),
 			ValueSegment::Scratch => self.combined_len(),
 		};
 		segment_start + index.index() as usize
@@ -72,36 +77,18 @@ impl ValueVecLayout {
 	///
 	/// # Panics
 	///
-	/// Panics if the layout's padded section offsets disagree with the ones the returned system
-	/// derives from its value counts, which would leave the two views of the same value vector
-	/// addressing different words.
+	/// Panics if the constant count does not match the layout's.
 	pub fn constraint_system_shape(&self, constants: Vec<Word>) -> ConstraintSystem {
 		assert!(constants.len() == self.n_const, "constants must match the layout's n_const");
-		let system = ConstraintSystem {
+		ConstraintSystem {
 			constants,
 			n_inout: self.n_inout,
-			n_private: self.n_witness + self.n_internal,
+			n_private: self.n_private(),
 			zero_constraints: Vec::new(),
 			and_constraints: Vec::new(),
 			imul_constraints: Vec::new(),
 			bmul_constraints: Vec::new(),
-		};
-		assert_eq!(
-			system.offset_inout(),
-			self.offset_inout,
-			"the layout and the system must place the inout values at the same word"
-		);
-		assert_eq!(
-			system.n_public_words(),
-			self.offset_witness,
-			"the layout and the system must pad the public segment to the same length"
-		);
-		assert_eq!(
-			system.n_hidden_words(),
-			self.n_hidden_words,
-			"the layout and the system must pad the hidden segment to the same length"
-		);
-		system
+		}
 	}
 }
 
@@ -110,20 +97,35 @@ mod tests {
 	use super::*;
 
 	/// A layout of two constants, two inout values and eight private values.
-	///
-	/// Four public values pad to a four-word public segment; the eight private values exceed that,
-	/// so the hidden segment holds them unpadded.
 	fn test_layout() -> ValueVecLayout {
 		ValueVecLayout {
-			n_const: 2,    // constants at indices 0-1
-			n_inout: 2,    // inout at indices 2-3
-			n_witness: 4,  // witness at indices 4-7
-			n_internal: 4, // internal at indices 8-11
-			offset_inout: 2,
-			offset_witness: 4,
-			n_hidden_words: 8,
-			n_scratch: 3,
+			n_const: 2,    // constants at words 0-1
+			n_inout: 2,    // inout at words 2-3
+			n_witness: 4,  // witness at words 4-7
+			n_internal: 4, // internal at words 8-11
+			n_scratch: 3,  // scratch at words 12-14
 		}
+	}
+
+	#[test]
+	fn sections_are_stored_back_to_back() {
+		let layout = test_layout();
+		assert_eq!(layout.offset_inout(), 2);
+		assert_eq!(layout.offset_witness(), 4);
+		assert_eq!(layout.n_private(), 8);
+		assert_eq!(layout.combined_len(), 12);
+
+		// Every section is reached by resolving an index of its own segment, with no gap between
+		// them. The internal values continue the private segment past the witness ones.
+		let offsets = [
+			ValueIndex::constant(0),
+			ValueIndex::inout(0),
+			ValueIndex::private(0),
+			ValueIndex::private(4),
+			ValueIndex::scratch(0),
+		]
+		.map(|index| layout.word_offset(index));
+		assert_eq!(offsets, [0, 2, 4, 8, 12]);
 	}
 
 	#[test]
@@ -135,23 +137,10 @@ mod tests {
 		assert_eq!(cs.n_inout, 2);
 		// The witness and internal values share the private segment.
 		assert_eq!(cs.n_private, 8);
+		assert_eq!(cs.n_public_values(), layout.offset_witness());
 
-		// The system derives the same padded sections the layout lays out.
-		assert_eq!(cs.offset_inout(), layout.offset_inout);
-		assert_eq!(cs.n_public_words(), layout.n_public_words());
-		assert_eq!(cs.n_hidden_words(), layout.n_hidden_words);
-		assert_eq!(cs.value_vec_len(), layout.combined_len());
-	}
-
-	#[test]
-	#[should_panic(expected = "pad the public segment to the same length")]
-	fn constraint_system_shape_rejects_a_layout_it_cannot_reproduce() {
-		// The system derives a four-word public segment from the four public values, so a layout
-		// that pads it to eight describes a different value vector.
-		let layout = ValueVecLayout {
-			offset_witness: 8,
-			..test_layout()
-		};
-		let _ = layout.constraint_system_shape(vec![Word::ONE, Word::ALL_ONE]);
+		// The system pads the segments the protocol commits; the layout stores neither padding.
+		assert_eq!(cs.n_public_words(), 4);
+		assert_eq!(cs.n_hidden_words(), 8);
 	}
 }

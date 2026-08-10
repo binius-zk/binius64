@@ -170,10 +170,11 @@ impl ConstraintSystem {
 
 	/// Builds a value vector from the words of this system's public and hidden segments.
 	///
-	/// The system places the inout values within the public segment, which is what resolves a
-	/// [`ValueSegment::InOut`] index against the rebuilt vector.
+	/// The words are the values as the circuit declares them, unpadded: the constants followed by
+	/// the inout values, then the private ones. The constant count splits the public words, which
+	/// is what resolves a [`ValueSegment::InOut`] index against the rebuilt vector.
 	pub fn value_vec_from_data(&self, public: &[Word], private: &[Word]) -> ValueVec {
-		ValueVec::new_from_data(self.offset_inout(), public, private)
+		ValueVec::new_from_data(self.n_const(), public, private)
 	}
 
 	/// Ensures that this constraint system is well-formed and ready for proving.

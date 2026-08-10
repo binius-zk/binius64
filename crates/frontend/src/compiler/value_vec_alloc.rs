@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use binius_core::{ConstraintSystem, ValueIndex, ValueVecLayout, Word};
+use binius_core::{ValueIndex, ValueVecLayout, Word};
 use cranelift_entity::SecondaryMap;
 
 use crate::compiler::Wire;
@@ -114,25 +114,13 @@ impl Alloc {
 			wire_mapping[wire] = ValueIndex::scratch(slot);
 		}
 
-		// The layout places the segments in the value vector. The public section holds the
-		// constants followed by the inout values, padded up to a power-of-two length that meets
-		// the minimum segment size. The hidden section follows, padded to at least the public
-		// length so that `log_witness_words >= log_public_words` (see
-		// `ConstraintSystem::validate_shape`).
-		let offset_inout = n_const;
-		let offset_witness = (n_const + n_inout)
-			.max(ConstraintSystem::MIN_WORDS_PER_SEGMENT)
-			.next_power_of_two();
-		let n_hidden_words = (n_witness + n_internal).max(offset_witness);
-
+		// The layout is just the section sizes: the sections sit back to back, and the padding the
+		// proving protocol commits is `ConstraintSystem`'s to derive.
 		let value_vec_layout = ValueVecLayout {
 			n_const,
 			n_inout,
 			n_witness,
 			n_internal,
-			offset_inout,
-			offset_witness,
-			n_hidden_words,
 			n_scratch,
 		};
 
@@ -146,6 +134,8 @@ impl Alloc {
 
 #[cfg(test)]
 mod tests {
+	use binius_core::ConstraintSystem;
+
 	use super::*;
 
 	#[test]
@@ -215,11 +205,8 @@ mod tests {
 		assert_eq!(layout.n_inout, 2);
 		assert_eq!(layout.n_witness, 3);
 		assert_eq!(layout.n_internal, 1);
-		assert_eq!(layout.offset_inout, 3);
-		// Five public values padded up to the next power of two.
-		assert_eq!(layout.offset_witness, 8);
-		// The hidden segment is padded from 4 words up to the public segment length.
-		assert_eq!(layout.n_hidden_words, 8);
+		assert_eq!(layout.offset_inout(), 3);
+		assert_eq!(layout.offset_witness(), 5);
 
 		// Resolving the indices through the layout reproduces the section order the value vector
 		// lays the words out in.
@@ -228,7 +215,7 @@ mod tests {
 			scratch1, scratch2,
 		]
 		.map(|wire| layout.word_offset(mapping[wire]));
-		assert_eq!(offsets, [0, 1, 2, 3, 4, 8, 9, 10, 11, 16, 17]);
+		assert_eq!(offsets, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 	}
 
 	#[test]
@@ -246,10 +233,13 @@ mod tests {
 
 		let assignment = alloc.into_assignment();
 
-		// Even with just one constant, the public segment is padded to MIN_WORDS_PER_SEGMENT, so
-		// that is where the hidden segment starts.
-		let offset_witness = assignment.value_vec_layout.offset_witness;
-		assert!(offset_witness >= ConstraintSystem::MIN_WORDS_PER_SEGMENT);
-		assert!(offset_witness.is_power_of_two());
+		// The layout stores the single constant on its own; the constraint system pads the public
+		// segment it commits up to the minimum.
+		assert_eq!(assignment.value_vec_layout.offset_witness(), 1);
+		let cs = assignment
+			.value_vec_layout
+			.constraint_system_shape(assignment.constants.clone());
+		assert!(cs.n_public_words() >= ConstraintSystem::MIN_WORDS_PER_SEGMENT);
+		assert!(cs.n_public_words().is_power_of_two());
 	}
 }

@@ -313,7 +313,8 @@ fn test_shift_prove_and_verify() {
 
 		let prover_output = prove::<F, P, _, _>(
 			&key_collection,
-			value_vec.combined_witness(),
+			value_vec.public(),
+			value_vec.non_public(),
 			OperatorClaims {
 				zero: prover_zero_data.clone(),
 				bitand: prover_bitand_data.clone(),

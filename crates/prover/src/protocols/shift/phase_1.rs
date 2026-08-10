@@ -22,6 +22,7 @@ use itertools::izip;
 use tracing::instrument;
 
 use super::{
+	SegmentWords,
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment},
 	monster::build_h_parts,
@@ -36,7 +37,7 @@ const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 #[instrument(skip_all, name = "prover_phase_1")]
 pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
-	words: &[Word],
+	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
@@ -50,11 +51,10 @@ where
 {
 	// Build the g parts for the public and hidden segments separately, then sum them. The public
 	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
-	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
 	let mut g_parts =
-		build_g_parts::<_, P, _>(alloc, public_words, &key_collection.public, prepared);
+		build_g_parts::<_, P, _>(alloc, words.public, &key_collection.public, prepared);
 	let hidden_g_parts =
-		build_g_parts::<_, P, _>(alloc, hidden_words, &key_collection.hidden, prepared);
+		build_g_parts::<_, P, _>(alloc, words.hidden, &key_collection.hidden, prepared);
 	for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
 		for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
 			*slot += *add;

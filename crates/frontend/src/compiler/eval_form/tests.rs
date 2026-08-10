@@ -78,9 +78,6 @@ impl InterpreterTest {
 			n_inout: 0,
 			n_witness,
 			n_internal: 0,
-			offset_inout: 0,
-			offset_witness: 0,
-			n_hidden_words: n_witness,
 			n_scratch: 0,
 		});
 
@@ -115,9 +112,6 @@ impl InterpreterTest {
 			n_inout: 0,
 			n_witness,
 			n_internal: 0,
-			offset_inout: 0,
-			offset_witness: 0,
-			n_hidden_words: n_witness,
 			n_scratch: 0,
 		});
 

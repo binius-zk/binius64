@@ -225,10 +225,8 @@ mod tests {
 			n_const: shape.const_in.len(),
 			n_inout: 0,
 			n_witness: 0,
-			n_internal: wire_count,
-			offset_inout: shape.const_in.len(),
-			offset_witness: shape.const_in.len(),
-			n_hidden_words: wire_count - shape.const_in.len(),
+			// The constants lead the register file, so the rest of the wires are the internal ones.
+			n_internal: wire_count - shape.const_in.len(),
 			n_scratch: 0,
 		};
 		let mut value_vec = ValueVec::new(&layout);

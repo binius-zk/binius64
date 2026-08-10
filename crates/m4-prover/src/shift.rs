@@ -330,7 +330,7 @@ mod tests {
 		// public constants.
 		let folded_witness =
 			FoldedWitness::<B128, _>::fold_instances(&table, &r_rho, &GlobalAllocator);
-		let _offset = table.layout().offset_witness;
+		let _offset = table.layout().offset_witness();
 		let public_words = &cs.constants;
 
 		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no IMUL constraints, so
@@ -467,9 +467,11 @@ mod tests {
 			&r_x,
 			&r_rho,
 		);
-		// The hidden segment spans value indices `[offset_witness, combined_len)`.
-		let offset = table.layout().offset_witness;
+		// The private values span value indices `[offset_witness, combined_len)`. The committed
+		// rows can run past them into the protocol's zero padding, which this fixture has none of.
+		let offset = table.layout().offset_witness();
 		let combined = table.layout().combined_len();
+		assert_eq!(table.n_hidden_words(), combined - offset, "fixture must have no padding");
 		let public_words = &cs.constants;
 		let hidden_folded = fold_words_over_instances(&table, constants, &r_rho, offset..combined);
 

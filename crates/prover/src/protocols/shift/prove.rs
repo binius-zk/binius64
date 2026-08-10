@@ -1,7 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 
+use std::borrow::Cow;
+
 use binius_compute::Allocator;
-use binius_core::word::Word;
+use binius_core::{ConstraintSystem, word::Word};
 use binius_field::{BinaryField, Field, PackedField, util::powers};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
@@ -10,7 +12,7 @@ use binius_math::{
 };
 
 use super::{
-	claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
+	SegmentWords, claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
 	phase_2::prove_phase_2,
 };
 
@@ -133,7 +135,8 @@ impl<F: Field> PreparedOperatorData<F> {
 ///
 /// # Parameters
 /// - `key_collection`: the prover's key collection for the constraint system.
-/// - `words`: the witness words, which must have a power-of-two length.
+/// - `public_words`: the constants followed by the inout values, as the circuit declares them.
+/// - `hidden_words`: the private values, as the circuit declares them.
 /// - `claims`: the operand evaluation claim of each operation.
 /// - `domain_subspace`: the univariate evaluation domain.
 /// - `channel`: the prover channel driving the interactive protocol.
@@ -141,9 +144,21 @@ impl<F: Field> PreparedOperatorData<F> {
 ///
 /// # Returns
 /// The `SumcheckOutput` with the final challenges and the witness evaluation.
+/// Zero-fills a segment up to a minimum length, borrowing it when it already reaches that.
+fn pad_to_min(words: &[Word], min_words: usize) -> Cow<'_, [Word]> {
+	if words.len() >= min_words {
+		Cow::Borrowed(words)
+	} else {
+		let mut padded = words.to_vec();
+		padded.resize(min_words, Word::ZERO);
+		Cow::Owned(padded)
+	}
+}
+
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
-	words: &[Word],
+	public_words: &[Word],
+	hidden_words: &[Word],
 	claims: OperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
@@ -155,6 +170,22 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
+	// The segments are passed as the circuit declares them, at whatever length that is: phase 1
+	// zips each word with its key range, so a segment shorter than its key ranges stops at its
+	// last value — the words past it carry no keys — and phase 2's `fold_words` zero-pads each
+	// fold up to `log2_ceil(len)` variables. Neither needs a power-of-two segment.
+	//
+	// The one length the folds cannot infer is the minimum segment size, which the constraint
+	// system applies to the public segment and the monster multilinear is therefore built at. A
+	// circuit declaring fewer public values than that (only the all-one constant, say) would fold
+	// to a narrower multilinear than the monster it is checked against, so the floor is applied
+	// here. It costs at most `MIN_WORDS_PER_SEGMENT` words.
+	let public_words = pad_to_min(public_words, ConstraintSystem::MIN_WORDS_PER_SEGMENT);
+	let words = SegmentWords {
+		public: &public_words,
+		hidden: hidden_words,
+	};
+
 	// One batching coefficient per operation, expanded along with its constraint point.
 	// SOUNDNESS: `prepare` draws in the order the verifier draws in; do not reorder it.
 	let prepared = {
