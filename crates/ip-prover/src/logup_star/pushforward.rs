@@ -3,7 +3,7 @@
 //! The pushforward reduction that closes the table side.
 //!
 //! The table-side fractional-addition GKR runs all the way to its leaf, which claims the
-//! pushforward `Y` at a point `z`. Its denominator half is the public `D = c - J`, so the verifier
+//! pushforward `Y` at a point `z`. Its denominator half is the public `D = J - c`, so the verifier
 //! checks that one itself. That leaves two claims that both read `Y`:
 //!
 //! - the GKR leaf claim `Y(z)`,

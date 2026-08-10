@@ -3,7 +3,7 @@
 //! The pushforward reduction that closes the table side.
 //!
 //! The table-side fractional-addition GKR runs to its leaf, which claims the pushforward `Y` at a
-//! point `z`; its denominator half is the public `D = c - J`, which the verifier checks itself.
+//! point `z`; its denominator half is the public `D = J - c`, which the verifier checks itself.
 //! That leaves two claims that both read `Y` — the leaf claim `Y(z)` and the product claim
 //! `<T, Y> = e` — and one batched `m`-variable sumcheck reduces them to a single evaluation point.
 
@@ -93,11 +93,12 @@ where
 	})
 }
 
-/// Evaluate the table-side denominator multilinear at a point.
+/// Evaluate the negated table-side denominator multilinear at a point.
 ///
-/// The denominator is `D(x) = c - J(x)` with the index embedding
-/// `J(x) = sum_{t} basis(t) * x_t`, so it is transparent: the verifier evaluates it itself rather
-/// than taking the prover's word for the GKR leaf's denominator half.
+/// The logUp denominator is `c - J(x)` with the index embedding `J(x) = sum_{t} basis(t) * x_t`.
+/// The table's fraction enters the sum of every instance negated, and that negation is carried on
+/// the denominator, so this returns `J(x) - c`. Either way it is transparent: the verifier
+/// evaluates it itself rather than taking the prover's word for the GKR leaf's denominator half.
 ///
 /// In characteristic 2 subtraction is addition, but the field operations are written generically.
 ///
@@ -119,7 +120,7 @@ where
 		})
 		.fold(E::zero(), |acc, term| acc + term);
 
-	c.clone() - j
+	j - c.clone()
 }
 
 #[cfg(test)]
@@ -156,9 +157,10 @@ mod tests {
 		let c = B128::random(&mut rng);
 		let point = random_scalars::<B128>(&mut rng, m);
 
-		// The explicitly built denominator multilinear D[j] = c - iota(j) over the table cube.
+		// The explicitly built negated denominator multilinear D[j] = iota(j) - c over the table
+		// cube.
 		let d_values = (0..(1usize << m))
-			.map(|j| c - iota(j, m))
+			.map(|j| iota(j, m) - c)
 			.collect::<Vec<_>>();
 
 		assert_eq!(

@@ -5,7 +5,7 @@
 //! Each layer represents combining siblings with the fractional-addition rule:
 //! (a0 / b0) + (a1 / b1) = (a0 * b1 + a1 * b0) / (b0 * b1).
 
-use binius_field::Field;
+use binius_field::{Field, field::FieldOps};
 use binius_math::{line::extrapolate_line, multilinear::eq::eq_one_var};
 use binius_transcript::Error as TranscriptError;
 
@@ -81,6 +81,28 @@ where
 		},
 		channel,
 	)
+}
+
+/// Pads a leaf fraction — the forward map that [`unpad_leaf_claim`] inverts.
+///
+/// Padding a tree scales its numerator by the padding coordinates' equality weight $q$ and sends
+/// its denominator through the one-padding selector $\textsf{sel}(q, v) = 1 + (v - 1) q$. A
+/// verifier that rebuilds a padded batch's leaf claim from transparent parts applies this to each
+/// tree, so the two directions live together.
+///
+/// The weight is a parameter rather than the padding coordinates, so a caller padding several
+/// trees computes each distinct one once.
+///
+/// # Arguments
+///
+/// * `fraction` - The unpadded leaf's numerator and denominator.
+/// * `pad_eq` - The padding coordinates' equality weight $\text{eq}(0^\nu; X_\text{pad})$, which is
+///   [`eq_ind_zero`] over the lowest coordinates of the leaf point.
+///
+/// [`eq_ind_zero`]: binius_math::multilinear::eq::eq_ind_zero
+pub fn pad_leaf_fraction<E: FieldOps>(fraction: (E, E), pad_eq: E) -> (E, E) {
+	let (num, den) = fraction;
+	(num * pad_eq.clone(), E::one() + (den - E::one()) * pad_eq)
 }
 
 /// Reduces a leaf claim on a zero-fraction-padded witness to the claim on the witness itself.
