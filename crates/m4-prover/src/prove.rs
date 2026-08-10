@@ -16,7 +16,7 @@ use binius_ip_prover::sumcheck::{
 use binius_m4_verifier::{IOPVerifier, Verifier};
 use binius_math::{
 	BinarySubspace,
-	inner_product::inner_product,
+	inner_product::{inner_product, inner_product_scalars},
 	multilinear::eq::eq_ind_partial_eval_scalars,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 	univariate::lagrange_evals_scalars,
@@ -228,7 +228,8 @@ impl IOPProver {
 		//
 		// The re-randomization runs whenever IntMul or BinMul is present: BitAnd always enters,
 		// plus each present multiplication operation, all unified onto one shared `r_rho`.
-		let (r_rho, claims) = if mul.is_some() || bmul.is_some() {
+		// One instance has nothing to transport; the verifier's guard matches.
+		let (r_rho, claims) = if table.log_instances() > 0 && (mul.is_some() || bmul.is_some()) {
 			// Every present operation enters the re-randomization as operand columns with their
 			// oblong claims at their own instance point.
 			// BitAnd is already oblong.
@@ -268,9 +269,12 @@ impl IOPProver {
 			}
 			.prove::<P, _>(zero_data, &lagrange, z_challenge, channel, alloc)
 		} else {
-			// Neither IMUL nor BMUL constraints: the AND-check instance point is used directly.
-			// The IntMul and BinMul claims are zero claims at an empty point, contributing nothing
-			// to the shift.
+			// Nothing to transport: every claim already sits at the AND-check instance point.
+			// A present multiplication still contributes, collapsed from its per-bit form.
+			let lagrange = lagrange_evals_scalars::<B128, B128>(&shift_domain, &z_challenge);
+			let collapse = |evals: &[B128]| {
+				inner_product_scalars(evals.iter().copied(), lagrange.iter().copied())
+			};
 			(
 				r_rho_and.to_vec(),
 				OperatorClaims {
@@ -280,8 +284,34 @@ impl IOPProver {
 						r_zhat_prime: z_challenge,
 						r_x_prime: r_x_and.to_vec(),
 					},
-					intmul: OperatorData::zero_claim(z_challenge),
-					binmul: OperatorData::zero_claim(z_challenge),
+					intmul: mul.as_ref().map_or_else(
+						|| OperatorData::zero_claim(z_challenge),
+						|(_, out)| OperatorData {
+							evals: [
+								collapse(&out.a_evals),
+								collapse(&out.b_evals),
+								collapse(&out.c_lo_evals),
+								collapse(&out.c_hi_evals),
+							],
+							r_zhat_prime: z_challenge,
+							r_x_prime: out.eval_point.clone(),
+						},
+					),
+					binmul: bmul.as_ref().map_or_else(
+						|| OperatorData::zero_claim(z_challenge),
+						|(_, out)| OperatorData {
+							evals: [
+								collapse(&out.a_lo_evals),
+								collapse(&out.a_hi_evals),
+								collapse(&out.b_lo_evals),
+								collapse(&out.b_hi_evals),
+								collapse(&out.c_lo_evals),
+								collapse(&out.c_hi_evals),
+							],
+							r_zhat_prime: z_challenge,
+							r_x_prime: out.eval_point.clone(),
+						},
+					),
 				},
 			)
 		};

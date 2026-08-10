@@ -366,3 +366,14 @@ fn prove_integer_multiplication() {
 	let (circuit, inputs) = build_imul_circuit();
 	prove_once("imul", &circuit, log_instances, |instance, w| fill_imul(&inputs, instance, w));
 }
+
+// A batch of one instance, with IMUL constraints.
+//
+// One instance skips the re-randomization on both sides.
+// The IMUL claims must still reach the shift, collapsed from their per-bit form.
+// A zero claim there would drop those constraints silently.
+#[test]
+fn prove_integer_multiplication_single_instance() {
+	let (circuit, inputs) = build_imul_circuit();
+	prove_once("imul-1", &circuit, 0, |instance, w| fill_imul(&inputs, instance, w));
+}
