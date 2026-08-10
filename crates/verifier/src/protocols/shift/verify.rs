@@ -11,6 +11,7 @@ use binius_ip::{
 };
 use binius_math::{
 	BinarySubspace,
+	inner_product::inner_product_scalars,
 	line::extrapolate_line,
 	multilinear::eq::{
 		eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var, scaled_eq_ind_partial_eval_scalars,
@@ -20,8 +21,8 @@ use binius_math::{
 use getset::Getters;
 
 use super::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperationEvalFn, SHIFT_VARIANT_COUNT, ZERO_ARITY,
-	encode_operation_input, error::Error, evaluate_h_op,
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, OperationEvalFn,
+	SHIFT_VARIANT_COUNT, ZERO_ARITY, encode_operation_input, error::Error, evaluate_h_op,
 };
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
@@ -105,8 +106,10 @@ pub struct VerifyOutput<F> {
 	binmul_lambda: F,
 	/// Challenge point for the bit index variables (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
-	/// Challenge point for the shift variables (length `Word::LOG_BITS`).
+	/// Challenge point for the shift-amount variables (length `Word::LOG_BITS`).
 	pub r_s: Vec<F>,
+	/// Challenge point for the shift-variant variables (length `LOG_SHIFT_VARIANT_COUNT`).
+	pub r_v: Vec<F>,
 	/// Challenge point for the word index variables (length `log_witness_words`).
 	pub r_y: Vec<F>,
 	/// Challenge for the witness's segment selector variable.
@@ -150,7 +153,7 @@ impl<F> VerifyOutput<F> {
 /// 1. **Sampling Phase**: Samples random lambda coefficients for batching bitand, intmul and binmul
 ///    evaluation claims across operands.
 /// 2. **First Sumcheck**: Verifies the batched evaluation claim over `Word::LOG_BITS * 2` variables
-/// 3. **Challenge Splitting**: Splits sumcheck challenges into `r_j` and `r_s` components
+/// 3. **Challenge Splitting**: Splits sumcheck challenges into `r_j`, `r_s` and `r_v` components
 /// 4. **Second Sumcheck**: Verifies the gamma claim over `log_word_count` variables
 /// 5. **Monster Multilinear Verification**: Checks that the claimed evaluations match expected
 ///    monster multilinear evaluations for AND constraints (bitand), IMUL constraints (intmul) and
@@ -195,15 +198,14 @@ where
 
 	let SumcheckOutput {
 		eval: gamma,
-		challenges: mut r_jr_s,
-	} = verify_sumcheck(Word::LOG_BITS * 2, 2, eval, channel)?;
+		challenges: mut r_j,
+	} = verify_sumcheck(Word::LOG_BITS * 2 + LOG_SHIFT_VARIANT_COUNT, 2, eval, channel)?;
 
-	r_jr_s.reverse();
-	// Split challenges as `r_j,r_s` where `r_j` is the first `Word::LOG_BITS`
-	// variables and `r_s` is the last `Word::LOG_BITS` variables
-	// Thus `r_s` are the more significant variables.
-	let r_s = r_jr_s.split_off(Word::LOG_BITS);
-	let r_j = r_jr_s;
+	r_j.reverse();
+	// Split the challenges as `r_j, r_s, r_v`: the bit position within a word, then the shift
+	// amount, then the shift variant, in increasing order of significance.
+	let r_v = r_j.split_off(Word::LOG_BITS * 2);
+	let r_s = r_j.split_off(Word::LOG_BITS);
 
 	// The second sumcheck runs over the witness: the public segment in the low half-cube and
 	// the hidden segment in the high half-cube, selected by the top word-index variable. This
@@ -229,6 +231,7 @@ where
 		r_y,
 		r_segment,
 		r_s,
+		r_v,
 		eval,
 		witness_eval,
 	})
@@ -287,6 +290,7 @@ where
 		eval,
 		r_j,
 		r_s,
+		r_v,
 		r_y,
 		r_segment,
 		witness_eval,
@@ -305,6 +309,7 @@ where
 		let binmul_r_x_prime_len = binmul_data.r_x_prime.len();
 		let r_j_len = r_j.len();
 		let r_s_len = r_s.len();
+		let r_v_len = r_v.len();
 		let r_y_len = r_y.len();
 
 		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
@@ -318,6 +323,7 @@ where
 			.chain(binmul_data.r_x_prime.iter().cloned())
 			.chain(r_j.iter().cloned())
 			.chain(r_s.iter().cloned())
+			.chain(r_v.iter().cloned())
 			.chain(r_y.iter().cloned())
 			.chain(iter::once(r_segment.clone()))
 			.collect();
@@ -331,6 +337,7 @@ where
 			binmul_r_x_prime_len,
 			r_j_len,
 			r_s_len,
+			r_v_len,
 			r_y_len,
 		};
 		channel.compute_public_value(&inputs, eval_fn)
@@ -384,7 +391,7 @@ impl<F: BinaryField> FieldFn<F> for PublicWordsEvalFn<'_> {
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// r_zhat_prime | zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_j.. | r_s.. | r_y..
+/// r_zhat_prime | zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_j.. | r_s.. | r_v.. | r_y..
 /// ```
 ///
 /// The stored lengths recover each variable-length section from that flat slice.
@@ -405,6 +412,8 @@ struct MonsterEvalFn<'a, F: BinaryField> {
 	r_j_len: usize,
 	/// Length of the `r_s` section (the shift-amount challenges).
 	r_s_len: usize,
+	/// Length of the `r_v` section (the shift-variant challenges).
+	r_v_len: usize,
 	/// Length of the `r_y` section (the column challenges).
 	r_y_len: usize,
 }
@@ -473,6 +482,8 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		off += self.r_j_len;
 		let r_s_v = &vals[off..off + self.r_s_len];
 		off += self.r_s_len;
+		let r_v_v = &vals[off..off + self.r_v_len];
+		off += self.r_v_len;
 		let r_y_v = &vals[off..off + self.r_y_len];
 		off += self.r_y_len;
 		// `r_segment` is the top word-index coordinate, appended after `r_y`; it selects the public
@@ -511,13 +522,19 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		let l_tilde = lagrange_evals_scalars(self.subspace, &r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
-		// Tensor the shift-selector evaluations with the shift-amount equality indicator once, so
-		// the BitAnd, IntMul and BinMul monster evaluations share it. Indexed by
-		// `variant * Word::BITS + amount`.
+		// Phase 1 folded the shift variant into its sumcheck, so the h multilinear contributes a
+		// single evaluation here: the multilinear interpolation of the eight shift indicators over
+		// the variant axis.
+		let eq_r_v = eq_ind_partial_eval_scalars(r_v_v);
+		let h_eval = inner_product_scalars(h_op_evals, eq_r_v.iter().cloned());
+
+		// A key's shift now selects itself through a pure equality indicator over both shift axes,
+		// scaled by that one h evaluation. Built once, so the Zero, BitAnd, IntMul and BinMul
+		// monster evaluations share it. Indexed by `variant * Word::BITS + amount`.
 		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
 		let shift_scalars =
 			Box::new(array::from_fn::<_, { SHIFT_VARIANT_COUNT * Word::BITS }, _>(|i| {
-				h_op_evals[i / Word::BITS].clone() * &eq_r_s[i % Word::BITS]
+				h_eval.clone() * &eq_r_v[i / Word::BITS] * &eq_r_s[i % Word::BITS]
 			}));
 
 		// Re-encode the shared tensors with each operation's `r_x'` and `lambda`. IntMul and BinMul
