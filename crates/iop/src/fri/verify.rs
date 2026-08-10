@@ -3,6 +3,7 @@
 
 use std::iter::{self, repeat_with};
 
+use binius_core::word::Word;
 use binius_field::{BinaryField, FieldOps};
 use binius_math::ntt::domain_context::GenericOnTheFly;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -100,7 +101,6 @@ where
 		// holds whenever `log_lift <= log_dim`, so assert it here rather than trusting the
 		// caller.
 		let log_dim = params.rs_code().log_dim();
-		let log_inv_rate = params.rs_code().log_inv_rate();
 		for spec in params.input_oracles() {
 			assert!(
 				spec.log_lift <= log_dim,
@@ -135,15 +135,13 @@ where
 		let later_challenges = &challenges[max_early + log_n_oracles..params.log_batch_size()];
 		let codeword_sub_oracles = iter::zip(codeword_commitments, params.input_oracles())
 			.map(|(commitment, spec)| {
-				// The oracle's own codeword has dimension `log_dim - log_lift`, so its Merkle tree
-				// depth is that plus the inverse rate. It is lifted to the common first-round
-				// length (`index_bits`) by duplicating each entry `2^log_lift` times.
-				let depth = (log_dim - spec.log_lift) + log_inv_rate;
+				// The oracle is lifted to the common first-round length (`index_bits`) by
+				// duplicating each entry `2^log_lift` times.
 				let early_window = &early_challenges[max_early - spec.log_early_batch_size..];
 				let later_window = &later_challenges[max_later - spec.log_later_batch_size..];
 				let fold_challenges: Vec<E> =
 					early_window.iter().chain(later_window).cloned().collect();
-				BrakedownOracle::new(fold_challenges, commitment.clone(), depth, spec.log_lift)
+				BrakedownOracle::new(fold_challenges, commitment.clone(), spec.log_lift)
 			})
 			.collect();
 		let codeword_oracle = BatchBrakedownOracle::new(codeword_sub_oracles, outer_challenges);
@@ -199,9 +197,10 @@ where
 		let mut claims = self.codeword_oracle.open_queries(&indices, channel)?;
 		for (oracle, &arity) in self.fri_oracles.iter().zip(self.params.fold_arities()) {
 			claims = oracle.reduce_queries(&indices, &claims, channel)?;
-			for index in &mut indices {
-				*index >>= arity;
-			}
+			indices = indices
+				.into_iter()
+				.map(|index| index >> arity as u32)
+				.collect();
 		}
 
 		// Check the fully-reduced queries against the terminal codeword sent in full.
@@ -217,7 +216,7 @@ where
 	fn verify_terminal_queries<Channel>(
 		&self,
 		claims: &[E],
-		indices: &[usize],
+		indices: &[Channel::Word],
 		channel: &mut Channel,
 	) -> Result<E, Error>
 	where
@@ -229,8 +228,9 @@ where
 		let terminate_codeword = channel.recv_committed_vector(&self.terminal_commitment)?;
 
 		// Check the fully-reduced claims against the terminal codeword the verifier holds in full.
-		iter::zip(claims, indices).try_for_each(|(claim, &index)| {
-			channel.assert_zero(claim.clone() - terminate_codeword[index].clone())
+		iter::zip(claims, indices).try_for_each(|(claim, index)| {
+			let entry = channel.select(&terminate_codeword, index);
+			channel.assert_zero(claim.clone() - entry)
 		})?;
 
 		// Fold each coset of the terminal codeword and check that the folds are all equal, i.e.
@@ -242,12 +242,16 @@ where
 			.chunks(1 << n_final_challenges)
 			.enumerate()
 			.map(|(coset_index, coset)| {
+				// The coset index is fixed by the protocol here rather than sampled, so it is
+				// lifted from a concrete word.
+				let coset_index = Channel::Word::from(Word::from_u64(coset_index as u64));
 				fold_coset(
 					&domain_context,
 					log_len,
-					coset_index,
+					&coset_index,
 					self.final_challenges,
 					coset.to_vec(),
+					channel,
 				)
 			})
 			.collect::<Vec<_>>();

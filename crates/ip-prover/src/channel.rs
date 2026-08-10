@@ -14,10 +14,13 @@
 //! communication mechanism, whether it's an actual interactive channel or a non-interactive
 //! transcript using the Fiat-Shamir heuristic.
 
+use std::ops::Shr;
+
+use binius_core::word::Word;
 use binius_field::Field;
 use binius_transcript::{
 	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
+	fiat_shamir::{CanSample, CanSampleBits, Challenger},
 };
 
 /// Channel for sending prover messages and sampling challenges in a public-coin interactive
@@ -67,6 +70,29 @@ pub trait IPProverChannel<F: Field> {
 	}
 }
 
+/// A prover channel whose protocol carries 64-bit words alongside field elements.
+///
+/// The prover-side counterpart of
+/// [`WordIPVerifierChannel`](binius_ip::channel::WordIPVerifierChannel). It carries only the
+/// operations both parties perform — lifting constants, observing, shifting and sampling — since
+/// the arithmetic over a word's bits is the verifier's alone.
+pub trait WordIPProverChannel<F: Field>: IPProverChannel<F> {
+	/// The word type this channel carries.
+	///
+	/// Mirrors [`WordIPVerifierChannel::Word`](binius_ip::channel::WordIPVerifierChannel::Word),
+	/// including the [`From<Word>`](From) and [`Shr`] bounds that keep lifting and index
+	/// arithmetic plain operations rather than channel methods.
+	type Word: Clone + From<Word> + Shr<u32, Output = Self::Word>;
+
+	/// Feeds words into the Fiat-Shamir state, each as eight little-endian bytes.
+	fn observe_words(&mut self, words: &[Self::Word]);
+
+	/// Samples a uniform word of the given bit width, matching what the verifier samples.
+	///
+	/// The result is masked to `bits` bits.
+	fn sample_bits(&mut self, bits: usize) -> Self::Word;
+}
+
 impl<F, Challenger_> IPProverChannel<F> for ProverTranscript<Challenger_>
 where
 	F: Field,
@@ -90,5 +116,21 @@ where
 
 	fn sample(&mut self) -> F {
 		CanSample::sample(self)
+	}
+}
+
+impl<F, Challenger_> WordIPProverChannel<F> for ProverTranscript<Challenger_>
+where
+	F: Field,
+	Challenger_: Challenger,
+{
+	type Word = Word;
+
+	fn observe_words(&mut self, words: &[Word]) {
+		self.observe().write_slice(words);
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Word {
+		Word::from_u64(CanSampleBits::<u32>::sample_bits(self, bits) as u64)
 	}
 }

@@ -4,8 +4,9 @@
 
 use std::{marker::PhantomData, mem::size_of};
 
+use binius_core::word::Word;
 use binius_field::{Field, util::FieldFn};
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
 use binius_utils::serialization::FixedSizeSerializeBytes;
 
 use crate::{
@@ -103,6 +104,30 @@ where
 	}
 }
 
+impl<F, MerkleScheme_> WordIPVerifierChannel<F> for SizeTrackingChannel<'_, F, MerkleScheme_>
+where
+	F: Field + FixedSizeSerializeBytes,
+	MerkleScheme_: MerkleTreeScheme<F>,
+{
+	type Word = Word;
+
+	// Observing feeds the Fiat-Shamir state rather than the proof tape, so it costs no bytes.
+	fn observe_words(&mut self, _words: &[Word]) {}
+
+	fn subset_sum(&mut self, elems: &[F], word: &Word) -> F {
+		subset_sum_word(elems, *word)
+	}
+
+	fn select(&mut self, elems: &[F], word: &Word) -> F {
+		select_word(elems, *word)
+	}
+
+	// Which leaves are opened does not change what an opening costs, only how many.
+	fn sample_bits(&mut self, _bits: usize) -> Word {
+		Word::ZERO
+	}
+}
+
 impl<F, MerkleScheme_> MerkleIPVerifierChannel<F> for SizeTrackingChannel<'_, F, MerkleScheme_>
 where
 	F: Field + FixedSizeSerializeBytes,
@@ -123,7 +148,7 @@ where
 	fn recv_openings(
 		&mut self,
 		commitment: &Self::Commitment,
-		indices: &[usize],
+		indices: &[Word],
 	) -> Result<Vec<F>, Error> {
 		// A multi-opening sends one internal layer, then one branch per index up to that layer.
 		// The scheme prices both, since it is the scheme that decides where the layer sits.
@@ -145,10 +170,5 @@ where
 		let len = commitment.leaf_size << commitment.depth;
 		self.proof_size += len * F::BYTE_SIZE;
 		Ok(vec![F::ZERO; len])
-	}
-
-	fn sample_bits(&mut self, _bits: usize) -> usize {
-		// Which leaves are opened does not change what the opening costs, only how many.
-		0
 	}
 }

@@ -15,7 +15,7 @@ use binius_iop::{
 		IOPVerifierChannel, OracleLinearRelation, OracleSpec, oracle_setup::OracleSetupChannel,
 	},
 };
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::BinarySubspace;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::DeserializeBytes;
@@ -127,7 +127,7 @@ impl IOPVerifier {
 	/// For most users, [`Verifier::verify`] is the simpler interface.
 	pub fn verify<Channel>(&self, inout: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<B128>,
+		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128, Word = Word>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
 		// The caller passes only the inout values. The constants are already part of the
@@ -142,7 +142,7 @@ impl IOPVerifier {
 
 		// Only the inout values go into Fiat-Shamir: they are what varies per instance, and the
 		// constants are fixed by the constraint system the transcript is already bound to.
-		channel.observe_many(&encode_inout(inout));
+		channel.observe_words(inout);
 
 		// The shift reduction reads the whole public segment, which is the constants followed by
 		// the inout values — the order the value vector places them in.
@@ -364,24 +364,4 @@ where
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
 	verify_with_channel(&zerocheck_challenges, channel, eval_domain)
-}
-
-/// Encodes the inout words as the field elements both sides observe in Fiat-Shamir.
-///
-/// Two words share one element, so an odd count leaves a final element whose high half is zero.
-/// The prover and the verifier both go through here, which is what keeps their transcripts
-/// identical.
-pub fn encode_inout(inout: &[Word]) -> Vec<B128> {
-	let (pairs, remainder) = inout.as_chunks::<2>();
-	let mut elems = pairs
-		.iter()
-		.map(|[w0, w1]| B128::new(((w1.as_u64() as u128) << 64) | w0.as_u64() as u128))
-		.collect::<Vec<_>>();
-
-	// An odd word count leaves one word over, which takes the low half of a final element.
-	if let [w0] = remainder {
-		elems.push(B128::new(w0.as_u64() as u128));
-	}
-
-	elems
 }

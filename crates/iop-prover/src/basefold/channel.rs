@@ -8,7 +8,7 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_ip_prover::{
-	channel::IPProverChannel,
+	channel::{IPProverChannel, WordIPProverChannel},
 	sumcheck::{
 		self, PaddedSumcheckDecorator, batch::BatchSumcheckOutput,
 		bivariate_product_evaluator::BivariateProductEvaluator, mle_store::MleStore,
@@ -493,6 +493,26 @@ where
 
 	fn sample(&mut self) -> F {
 		self.channel.sample()
+	}
+}
+
+impl<F, P, NTT, Channel, A> WordIPProverChannel<F>
+	for BaseFoldProverChannel<'_, F, P, NTT, Channel, A>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
+{
+	type Word = Channel::Word;
+
+	fn observe_words(&mut self, words: &[Self::Word]) {
+		self.channel.observe_words(words);
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Self::Word {
+		self.channel.sample_bits(bits)
 	}
 }
 

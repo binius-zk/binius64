@@ -13,22 +13,23 @@
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
+use binius_core::word::Word;
 use binius_field::{Field, PackedField};
 use binius_hash::binary_merkle_tree::{BinaryMerkleTree, HashSuite};
 use binius_iop::merkle_tree::MerkleTreeScheme;
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::FieldSlice;
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSampleBits, Challenger},
-};
+use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
 
 use crate::merkle_tree::{MerkleTreeProver, commit_field_buffer, prover::BinaryMerkleTreeProver};
 
-/// An extension of [`IPProverChannel`] that can send and open Merkle commitments.
-pub trait MerkleIPProverChannel<F: Field>: IPProverChannel<F> {
+/// An extension of [`WordIPProverChannel`] that can send and open Merkle commitments.
+///
+/// Query indices are [`Self::Word`](WordIPProverChannel::Word)s, matching the verifier's
+/// `MerkleIPVerifierChannel`.
+pub trait MerkleIPProverChannel<F: Field>: WordIPProverChannel<F> {
 	/// A Merkle commitment, carrying the data required to open it later.
 	type Commitment;
 
@@ -59,7 +60,7 @@ pub trait MerkleIPProverChannel<F: Field>: IPProverChannel<F> {
 		&mut self,
 		commitment: &Self::Commitment,
 		data: FieldSlice<P>,
-		indices: &[usize],
+		indices: &[Self::Word],
 	);
 
 	/// Sends the full committed vector, bound by a Merkle commitment.
@@ -72,12 +73,6 @@ pub trait MerkleIPProverChannel<F: Field>: IPProverChannel<F> {
 		commitment: &Self::Commitment,
 		data: FieldSlice<P>,
 	);
-
-	/// Samples a uniform integer with the given number of bits.
-	///
-	/// Protocols use this to sample query indices for [`Self::send_openings`], matching the
-	/// verifier's samples.
-	fn sample_bits(&mut self, bits: usize) -> usize;
 }
 
 /// A [`MerkleIPProverChannel`] over a [`ProverTranscript`], committing with a
@@ -152,6 +147,25 @@ where
 	}
 }
 
+impl<F, T, Challenger_, H> WordIPProverChannel<F>
+	for ProverMerkleTranscriptChannel<T, Challenger_, F, H>
+where
+	F: Field,
+	T: BorrowMut<ProverTranscript<Challenger_>>,
+	Challenger_: Challenger,
+	H: HashSuite,
+{
+	type Word = Word;
+
+	fn observe_words(&mut self, words: &[Word]) {
+		WordIPProverChannel::<F>::observe_words(self.transcript.borrow_mut(), words);
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Word {
+		WordIPProverChannel::<F>::sample_bits(self.transcript.borrow_mut(), bits)
+	}
+}
+
 impl<F, T, Challenger_, H> MerkleIPProverChannel<F>
 	for ProverMerkleTranscriptChannel<T, Challenger_, F, H>
 where
@@ -186,10 +200,14 @@ where
 		&mut self,
 		commitment: &Self::Commitment,
 		data: FieldSlice<P>,
-		indices: &[usize],
+		indices: &[Word],
 	) {
 		let tree_depth = commitment.depth;
 		debug_assert_eq!(tree_depth, data.log_len() - commitment.log_leaf_size);
+		let indices = indices
+			.iter()
+			.map(|index| index.as_u64() as usize)
+			.collect::<Vec<_>>();
 		assert!(indices.iter().all(|&index| index < 1 << tree_depth)); // precondition
 
 		// Write the optimal internal layer once, then the leaf values and opening proof for each
@@ -199,7 +217,7 @@ where
 		let layer = self.merkle_prover.layer(&commitment.committed, layer_depth);
 		let mut advice = self.transcript.borrow_mut().decommitment();
 		advice.write_slice(layer);
-		for &index in indices {
+		for &index in &indices {
 			let leaf = data.chunk(commitment.log_leaf_size, index);
 			advice.write_scalar_iter(leaf.iter_scalars());
 			self.merkle_prover.prove_opening(
@@ -223,17 +241,15 @@ where
 		let mut advice = self.transcript.borrow_mut().decommitment();
 		advice.write_scalar_iter(data.iter_scalars());
 	}
-
-	fn sample_bits(&mut self, bits: usize) -> usize {
-		CanSampleBits::sample_bits(self.transcript.borrow_mut(), bits) as usize
-	}
 }
 
 #[cfg(test)]
 mod tests {
+	use binius_core::word::Word;
 	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash2x128b};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel};
+	use binius_ip::channel::WordIPVerifierChannel;
 	use binius_math::{FieldBuffer, test_utils::random_scalars};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use rand::prelude::*;
@@ -251,7 +267,9 @@ mod tests {
 	const DEPTH: usize = LOG_LEN - LOG_LEAF_SIZE;
 	const N_QUERIES: usize = 5;
 
-	fn sample_indices(channel: &mut impl MerkleIPProverChannel<B128>) -> Vec<usize> {
+	fn sample_indices<Channel: MerkleIPProverChannel<B128>>(
+		channel: &mut Channel,
+	) -> Vec<Channel::Word> {
 		(0..N_QUERIES).map(|_| channel.sample_bits(DEPTH)).collect()
 	}
 
@@ -285,7 +303,8 @@ mod tests {
 			.recv_openings(&commitment, &indices)
 			.unwrap();
 		assert_eq!(values.len(), N_QUERIES * LEAF_SIZE);
-		for (chunk, &index) in values.chunks(LEAF_SIZE).zip(&indices) {
+		for (chunk, index) in values.chunks(LEAF_SIZE).zip(&indices) {
+			let index = index.as_u64() as usize;
 			assert_eq!(chunk, &scalars[index * LEAF_SIZE..(index + 1) * LEAF_SIZE]);
 		}
 
@@ -322,7 +341,8 @@ mod tests {
 			let values = verifier_channel
 				.recv_openings(&commitment, &indices)
 				.unwrap();
-			for (chunk, &index) in values.chunks(LEAF_SIZE).zip(&indices) {
+			for (chunk, index) in values.chunks(LEAF_SIZE).zip(&indices) {
+				let index = index.as_u64() as usize;
 				assert_eq!(chunk, &scalars[index * LEAF_SIZE..(index + 1) * LEAF_SIZE]);
 			}
 		}
@@ -352,7 +372,10 @@ mod tests {
 			.collect::<Vec<_>>();
 
 		// Requesting openings at indices other than the ones the prover opened must fail.
-		let wrong_indices = indices.iter().map(|&index| index ^ 1).collect::<Vec<_>>();
+		let wrong_indices = indices
+			.iter()
+			.map(|&index| index ^ Word::ONE)
+			.collect::<Vec<_>>();
 		assert!(
 			verifier_channel
 				.recv_openings(&commitment, &wrong_indices)

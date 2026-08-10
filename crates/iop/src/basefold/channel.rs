@@ -4,7 +4,7 @@
 
 use binius_field::{BinaryField, util::FieldFn};
 use binius_ip::{
-	channel::IPVerifierChannel,
+	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{self, BatchSumcheckOutput},
 };
 use binius_math::{
@@ -281,6 +281,30 @@ where
 
 	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem {
 		self.channel.compute_public_value(inputs, f)
+	}
+}
+
+impl<F, Channel> WordIPVerifierChannel<F> for BaseFoldVerifierChannel<'_, F, Channel>
+where
+	F: BinaryField,
+	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
+{
+	type Word = Channel::Word;
+
+	fn observe_words(&mut self, words: &[Self::Word]) {
+		self.channel.observe_words(words);
+	}
+
+	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		self.channel.subset_sum(elems, word)
+	}
+
+	fn select(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		self.channel.select(elems, word)
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Self::Word {
+		self.channel.sample_bits(bits)
 	}
 }
 

@@ -12,6 +12,7 @@ use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
+use binius_ip_prover::channel::WordIPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec,
 	inner_product::inner_product,
@@ -26,7 +27,6 @@ use binius_utils::{
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
-	encode_inout,
 	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput, zero},
 };
 use digest::Output;
@@ -96,7 +96,7 @@ impl IOPProver {
 	where
 		A: Allocator,
 		P: PackedField<Scalar = B128>,
-		Channel: IOPProverChannel<P, A>,
+		Channel: IOPProverChannel<P, A> + WordIPProverChannel<B128, Word = Word>,
 	{
 		let cs = &self.constraint_system;
 
@@ -109,10 +109,9 @@ impl IOPProver {
 			pack_witness::<P, _>(alloc, self.log_witness_elems, witness.non_public())?;
 		drop(setup_guard);
 
-		// Observe the inout values as B128 elements (includes them in Fiat-Shamir). The constants
-		// are fixed by the constraint system, so only the per-instance values are observed, and
-		// the encoding is shared with the verifier so the two transcripts cannot drift.
-		channel.observe_many(&encode_inout(witness.inout()));
+		// Observe the inout words, which includes them in Fiat-Shamir. The constants are fixed by
+		// the constraint system, so only the per-instance values are observed.
+		channel.observe_words(witness.inout());
 
 		// [phase] Witness Commit - witness generation and commitment
 		let witness_commit_guard = tracing::info_span!("Commit witness").entered();
