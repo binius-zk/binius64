@@ -1,8 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::iter;
-
 use binius_field::{BinaryField, ExtensionField};
 use binius_math::{line::extrapolate_line_packed, ntt::AdditiveNTT};
 
@@ -95,24 +93,35 @@ where
 	values[0]
 }
 
-/// A stateful verifier for the FRI fold phase that tracks when to receive commitments.
+/// One commitment the prover is expected to send during the fold phase.
+struct ExpectedCommitment {
+	/// The fold round this commitment arrives in.
+	round: usize,
+	/// Number of field elements packed into a single leaf of the Merkle tree.
+	leaf_size: usize,
+	/// Base-2 logarithm of the number of leaves in the Merkle tree.
+	depth: usize,
+}
+
+/// Receives the prover's fold-phase commitments in the order the protocol sends them.
 ///
-/// This verifier encapsulates the logic of determining which FRI rounds require
-/// commitments and handles receiving them over the Merkle channel at the appropriate times. It is
-/// parameterized by the channel's Merkle commitment handle type `C`.
+/// The fold phase spends one round per variable of the committed message.
+/// Most rounds only absorb a folding challenge and carry no message from the prover.
+///
+/// A round that completes a fold shrinks the codeword.
+/// The prover commits to that new codeword, and this type reads it off the channel.
 pub struct FRIFoldVerifier<'a, F, C>
 where
 	F: BinaryField,
 {
-	/// Indicates which rounds require receiving a commitment
-	commit_rounds: Vec<bool>,
-	/// The `(leaf_size, depth)` Merkle tree shape of each expected commitment, matching the
-	/// prover's fold-phase commits.
-	commitment_shapes: Vec<(usize, usize)>,
-	/// The round commitments received over the channel
+	/// Every commitment the fold phase expects, ordered by the round it arrives in.
+	commit_schedule: Vec<ExpectedCommitment>,
+	/// Commitments read off the channel so far, in arrival order.
 	round_commitments: Vec<C>,
-	/// Current round number
+	/// The round about to be processed, counted from zero.
 	curr_round: usize,
+	/// Number of rounds the fold phase runs.
+	n_rounds: usize,
 	_phantom: std::marker::PhantomData<&'a F>,
 }
 
@@ -121,95 +130,131 @@ where
 	F: BinaryField,
 	C: Clone,
 {
-	/// Creates a new FRI fold verifier.
-	///
-	/// ## Arguments
-	///
-	/// * `params` - The FRI parameters
+	/// Derives the schedule of expected commitments from the protocol parameters.
 	pub fn new(params: &'a FRIParams<F>) -> Self {
-		let commit_rounds = calculate_fri_commit_rounds(
-			params.log_batch_size(),
-			params.fold_arities(),
-			params.n_fold_rounds() + 1,
-		);
-
+		// One commitment per codeword the fold phase sends: batched, one per fold, then terminal.
 		let expected_oracles = params.n_oracles();
 
-		// The prover commits each folded codeword with one coset of the *next* fold's arity per
-		// leaf, so commitment `j` has `2^arity_j` scalars per leaf and depth `index_bits` minus the
-		// arities folded so far. The last commitment is the terminal codeword, with one coset of
-		// `2^n_final_challenges` scalars per leaf and one leaf per codeword symbol position, i.e.
-		// depth `log_inv_rate`.
-		let mut commitment_shapes = Vec::with_capacity(expected_oracles);
+		// A fold absorbs one challenge per round, then commits to the codeword it produced.
+		// So commitments land on the running total of the fold widths, never in between.
+		//
+		// Concrete run: batch width 4, folds of arity 4 then 3, over a 2^18-symbol codeword.
+		//
+		//     rounds 0..3   batch fold        commit at 4    leaf 2^4   2^14 leaves
+		//     rounds 4..7   fold of arity 4   commit at 8    leaf 2^3   2^11 leaves
+		//     rounds 8..10  fold of arity 3   commit at 11   leaf 2^9   2^2  leaves
+		//
+		// A leaf holds the whole coset that the *next* fold reads.
+		// So each tree is shorter than its own codeword by that fold's arity.
+		let mut commit_schedule = Vec::with_capacity(expected_oracles);
+
+		// The opening fold absorbs the batching challenges.
+		// So nothing is committed until it ends.
+		let mut round = params.log_batch_size();
+
+		// Ahead of any fold, the tree holds one leaf per codeword symbol.
 		let mut depth = params.index_bits();
+
 		for &arity in params.fold_arities() {
+			// This fold reads cosets of its own arity.
+			// So packing one per leaf costs the tree that many levels.
 			depth -= arity;
-			commitment_shapes.push((1 << arity, depth));
+			commit_schedule.push(ExpectedCommitment {
+				round,
+				leaf_size: 1 << arity,
+				depth,
+			});
+
+			// The next commitment waits for this fold to absorb every one of its challenges.
+			round += arity;
 		}
-		commitment_shapes.push((1 << params.n_final_challenges(), params.rs_code().log_inv_rate()));
+
+		// The terminal codeword is sent in full rather than folded again.
+		// So its leaf spans a whole message, not a coset, leaving one leaf per rate position.
+		commit_schedule.push(ExpectedCommitment {
+			round,
+			leaf_size: 1 << params.n_final_challenges(),
+			depth: params.rs_code().log_inv_rate(),
+		});
 
 		Self {
-			commit_rounds,
-			commitment_shapes,
+			commit_schedule,
 			round_commitments: Vec::with_capacity(expected_oracles),
 			curr_round: 0,
+			// The opening round precedes the first challenge.
+			// So the phase runs one round longer than it has challenges.
+			n_rounds: params.n_fold_rounds() + 1,
 			_phantom: std::marker::PhantomData,
 		}
 	}
 
-	/// Processes the next round, receiving a commitment over the channel if needed.
+	/// The next commitment still awaited, or nothing once every one of them has arrived.
+	fn next_commitment(&self) -> Option<&ExpectedCommitment> {
+		// Commitments arrive in schedule order.
+		// So the number received so far is the read cursor.
+		self.commit_schedule.get(self.round_commitments.len())
+	}
+
+	/// Advances one fold round, reading a commitment off the channel if this round carries one.
 	///
-	/// ## Arguments
+	/// # Returns
 	///
-	/// * `channel` - The channel to receive the commitment from (if needed)
+	/// The commitment received, or nothing when this round carries none.
 	///
-	/// ## Returns
+	/// # Panics
 	///
-	/// * `Ok(Some(commitment))` if a commitment was received in this round
-	/// * `Ok(None)` if no commitment was needed in this round
+	/// Panics once the fold phase has already run all of its rounds.
 	pub fn process_round<Channel>(&mut self, channel: &mut Channel) -> Result<Option<C>, Error>
 	where
 		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
 	{
+		// The fold phase has a length fixed by the parameters.
+		// Stepping past it would read a message the prover never sent.
 		assert!(
 			self.curr_round < self.n_rounds(),
 			"precondition: process_round must not be called more than n_rounds() times"
 		);
 
-		let needs_commitment = self.commit_rounds[self.curr_round];
-		let commitment = if needs_commitment {
-			let (leaf_size, depth) = self.commitment_shapes[self.round_commitments.len()];
-			let commitment = channel.recv_merkle_commitment(leaf_size, depth)?;
-			self.round_commitments.push(commitment.clone());
-			Some(commitment)
-		} else {
-			None
+		// Only the round named by the next scheduled commitment carries one.
+		let commitment = match self.next_commitment() {
+			Some(&ExpectedCommitment {
+				round,
+				leaf_size,
+				depth,
+			}) if round == self.curr_round => {
+				// Demanding the scheduled shape pins the prover to the prescribed layout.
+				// A mis-shaped tree is rejected here rather than at query time.
+				let commitment = channel.recv_merkle_commitment(leaf_size, depth)?;
+				self.round_commitments.push(commitment.clone());
+				Some(commitment)
+			}
+			_ => None,
 		};
 
 		self.curr_round += 1;
 		Ok(commitment)
 	}
 
-	/// Checks if the current round requires a commitment.
+	/// Reports whether the round about to be processed carries a commitment.
 	pub fn needs_commitment(&self) -> bool {
-		*self.commit_rounds.get(self.curr_round).unwrap_or(&false)
+		// A commitment is due only when the schedule names this exact round.
+		self.next_commitment()
+			.is_some_and(|expected| expected.round == self.curr_round)
 	}
 
-	/// Returns true if all rounds have been processed.
+	/// Reports whether every fold round has been processed.
 	pub const fn is_complete(&self) -> bool {
 		self.curr_round == self.n_rounds()
 	}
 
-	/// Finalizes the fold verifier and returns the collected commitments.
+	/// Consumes the verifier and yields the commitments it collected, in arrival order.
 	///
-	/// ## Preconditions
+	/// # Panics
 	///
-	/// * All rounds must have been processed (see [`Self::is_complete`]).
-	///
-	/// ## Returns
-	///
-	/// The collected round commitments
+	/// Panics unless every fold round has been processed.
+	/// Stopping early would drop commitments the query phase needs to open.
 	pub fn finalize(self) -> Vec<C> {
+		// Every scheduled commitment lands on some round, so an unfinished phase is a short list.
 		assert!(
 			self.is_complete(),
 			"precondition: all fold rounds must be processed before finalize"
@@ -218,47 +263,13 @@ where
 		self.round_commitments
 	}
 
-	/// Returns the current round number.
+	/// The round about to be processed, counted from zero.
 	pub const fn current_round(&self) -> usize {
 		self.curr_round
 	}
 
-	/// Returns the total number of rounds.
+	/// Number of rounds the fold phase runs.
 	pub const fn n_rounds(&self) -> usize {
-		self.commit_rounds.len()
+		self.n_rounds
 	}
-}
-
-/// Calculates which rounds require FRI commitments.
-///
-/// ## Arguments
-///
-/// * `log_batch_size` - The log2 of the batch size
-/// * `fold_arities` - The folding arities for each commitment round after the first
-/// * `n_rounds` - The total number of rounds
-///
-/// ## Returns
-///
-/// A vector of booleans where `true` indicates a commitment is needed in that round.
-fn calculate_fri_commit_rounds(
-	log_batch_size: usize,
-	fold_arities: &[usize],
-	n_rounds: usize,
-) -> Vec<bool> {
-	let mut result = vec![false; n_rounds];
-	let mut round_idx = 0;
-
-	// First commitment happens after log_batch_size rounds
-	for arity in iter::once(log_batch_size).chain(fold_arities.iter().copied()) {
-		round_idx += arity;
-		if round_idx < n_rounds {
-			result[round_idx] = true;
-		} else if round_idx == n_rounds {
-			// The last round might need special handling - it's the termination round
-			// We'll mark it as needing a commitment
-			break;
-		}
-	}
-
-	result
 }
