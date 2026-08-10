@@ -133,7 +133,7 @@ where
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		// The replay closure captures the public words as a borrowed slice.
-		let public_words = witness.public();
+		let inout_words = witness.inout();
 
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs. The inner IOP proof and the outer wrapper proof (run inside
@@ -154,7 +154,7 @@ where
 				let inner_iop_verifier = &self.inner_iop_verifier;
 				move |replay_channel: &mut ReplayChannel<B128>| {
 					inner_iop_verifier
-						.verify(public_words, replay_channel)
+						.verify(inout_words, replay_channel)
 						.expect("replay verification should not fail");
 				}
 			},
