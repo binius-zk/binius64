@@ -201,7 +201,10 @@ mod tests {
 	use std::iter;
 
 	use binius_compute::GlobalAllocator;
-	use binius_core::{constraint_system::AndConstraint, word::Word};
+	use binius_core::{
+		constraint_system::{AndConstraint, InoutSegment},
+		word::Word,
+	};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
 		inner_product::inner_product_buffers,
@@ -300,7 +303,7 @@ mod tests {
 
 		let cs = c.circuit.constraint_system().clone();
 		cs.validate().unwrap();
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
@@ -317,7 +320,6 @@ mod tests {
 		// public constants.
 		let folded_witness =
 			FoldedWitness::<B128, _>::fold_instances(&table, &r_rho, &GlobalAllocator);
-		let _offset = table.layout().offset_witness();
 		let public_words = &cs.constants;
 
 		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no IMUL constraints, so
@@ -366,6 +368,7 @@ mod tests {
 		let verifier_bmul = VerifierOperatorData::new(Vec::new(), [B128::ZERO; 6]);
 		let verifier_output = verify(
 			&cs,
+			InoutSegment::Hidden,
 			&verifier_zero,
 			&verifier_bitand,
 			&verifier_intmul,
@@ -375,6 +378,7 @@ mod tests {
 		.unwrap();
 		check_eval(
 			&cs,
+			InoutSegment::Hidden,
 			public_words,
 			&verifier_zero,
 			&verifier_bitand,
@@ -434,7 +438,7 @@ mod tests {
 
 		let cs = c.circuit.constraint_system().clone();
 		cs.validate().unwrap();
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
@@ -454,11 +458,10 @@ mod tests {
 			&r_x,
 			&r_rho,
 		);
-		// The private values span value indices `[offset_witness, combined_len)`. The committed
-		// rows can run past them into the protocol's zero padding, which this fixture has none of.
-		let offset = table.layout().offset_witness();
+		// The hidden segment spans value indices `[offset_inout, combined_len)`.
+		let offset = table.layout().offset_inout();
 		let combined = table.layout().combined_len();
-		assert_eq!(table.n_hidden_words(), combined - offset, "fixture must have no padding");
+		assert_eq!(table.n_hidden_words(), combined - offset);
 		let public_words = &cs.constants;
 		let hidden_folded = fold_words_over_instances(&table, constants, &r_rho, offset..combined);
 

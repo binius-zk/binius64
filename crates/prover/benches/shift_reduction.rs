@@ -5,7 +5,11 @@ use std::iter;
 
 use binius_circuits::sha256::sha256_fixed;
 use binius_compute::{BufferPool, GlobalAllocator};
-use binius_core::{ValueVec, constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	ValueVec,
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_ip::sumcheck::SumcheckOutput;
@@ -119,7 +123,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let zero_evals = [F::random(&mut rng)];
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Public);
 		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 		let mut group = c.benchmark_group(format!(
@@ -214,6 +218,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				verify(
 					&cs,
+					InoutSegment::Public,
 					&VerifierOperatorData::new(r_x_prime_zero.clone(), zero_evals),
 					&verifier_bitand_data,
 					&verifier_intmul_data,
@@ -259,7 +264,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let bitand_evals = [F::random(&mut rng); 3];
 	let intmul_evals = [F::ZERO; 4];
 
-	let key_collection = build_key_collection(&cs);
+	let key_collection = build_key_collection(&cs, InoutSegment::Public);
 	// The phase functions take each segment as the circuit declares it: `build_g` zips the
 	// words with their key ranges and `fold_words` pads each fold to `log2_ceil(len)` variables.
 	let public_words = value_vec.public();

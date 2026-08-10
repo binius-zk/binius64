@@ -822,7 +822,10 @@ where
 		// Save KeyCollection if requested
 		if let Some(path) = key_collection_path.as_deref() {
 			let key_collection_scope = tracing::info_span!("Building key collection").entered();
-			let key_collection = binius_prover::protocols::shift::build_key_collection(cs);
+			let key_collection = binius_prover::protocols::shift::build_key_collection(
+				cs,
+				binius_core::constraint_system::InoutSegment::Public,
+			);
 			drop(key_collection_scope);
 			write_serialized(&key_collection, path)?;
 			tracing::info!("Key collection saved to '{}'", path);

@@ -251,20 +251,23 @@ impl<A: Allocator> OperandColumns<A, 2> {
 ///
 /// # Overview
 ///
-/// A value index splits at the witness offset:
+/// A value index splits at the inout offset:
 ///
-/// - below it, a public word: the same constant in every instance;
+/// - below it, a constant: the same word in every instance;
 /// - at or above it, a hidden word: one per instance, read from the table.
 ///
-/// Both banks are carried here, together with the offset that separates them.
+/// Both banks are carried here, together with the inout count that positions the private rows
+/// behind the inout ones.
 ///
 /// So a term resolves without its caller re-deriving that split at each use.
 #[derive(Clone, Copy)]
 struct ValueWords<'a> {
 	/// The circuit's constant words, shared by every instance.
 	constants: &'a [Word],
-	/// Every instance's hidden words, wire-major.
+	/// Every instance's hidden words, wire-major: the inout rows, then the private ones.
 	hidden: &'a [Word],
+	/// The number of inout values, which is where the private rows start.
+	n_inout: usize,
 	/// The base-2 logarithm of the instance count, which is one hidden row's stride.
 	log_instances: usize,
 }
@@ -292,6 +295,7 @@ impl<'a> ValueWords<'a> {
 		Self {
 			constants,
 			hidden: table.as_words(),
+			n_inout: table.layout().n_inout,
 			log_instances: table.log_instances(),
 		}
 	}
@@ -437,15 +441,14 @@ impl<'a> ValueWords<'a> {
 				let constant = self.constants[value_index.index() as usize];
 				return TermWords::Splat(variant.apply(constant, amount as usize));
 			}
-			// A private index names one wire, whose instances are one contiguous row.
-			ValueSegment::Private => value_index.index() as usize,
-			// An inout value is public but chosen per instance, so it would need a bank of its
-			// own rather than one shared word; `ValueTable` rejects a circuit that declares any.
+			// An inout or private index names one wire, whose instances are one contiguous row.
+			// The table stores the hidden segment, so the inout rows lead and the private ones
+			// follow them.
+			ValueSegment::InOut => value_index.index() as usize,
+			ValueSegment::Private => self.n_inout + value_index.index() as usize,
 			// A scratch word is never committed, and `ConstraintSystem::validate` rejects an
 			// operand naming one.
-			segment @ (ValueSegment::InOut | ValueSegment::Scratch) => {
-				panic!("a batched constraint system has no {segment:?} values")
-			}
+			ValueSegment::Scratch => panic!("a constraint system has no Scratch values"),
 		};
 		let row = &self.hidden
 			[(row_index << self.log_instances)..((row_index + 1) << self.log_instances)];
@@ -658,7 +661,7 @@ mod tests {
 
 	// A circuit asserting `z == (x & y) ^ w`, over four witness words.
 	//
-	//     inputs : x, y, w, z   (all witness — the wire-major table admits no inout)
+	//     inputs : x, y, w, z   (all witness wires)
 	//     gate   : and = x & y
 	//     assert : and ^ w == z
 	struct AndCircuit {

@@ -3,7 +3,10 @@
 
 use std::{array, iter};
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
 use binius_ip::{
 	channel::IPVerifierChannel,
@@ -161,6 +164,7 @@ impl<F> VerifyOutput<F> {
 ///
 /// # Parameters
 /// - `constraint_system`: The constraint system containing AND, IMUL and BMUL constraints
+/// - `inout`: Which segment holds the inout values, which fixes where the two segments split
 /// - `bitand_data`: Operator data for bit multiplication operations
 /// - `intmul_data`: Operator data for integer multiplication operations
 /// - `binmul_data`: Operator data for GHASH-field multiplication operations
@@ -176,6 +180,7 @@ impl<F> VerifyOutput<F> {
 /// - Propagates sumcheck verification errors
 pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
+	inout: InoutSegment,
 	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
@@ -211,7 +216,7 @@ where
 	// the hidden segment in the high half-cube, selected by the top word-index variable. Each
 	// half spans the wider of the two segments, which the prover zero-pads the shorter one up
 	// to, so a public segment longer than the hidden one draws the extra word-index challenges.
-	let log_word_count = constraint_system.log_segment_words() + 1;
+	let log_word_count = constraint_system.log_segment_words(inout) + 1;
 
 	let SumcheckOutput {
 		eval,
@@ -268,6 +273,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn check_eval<F, C>(
 	constraint_system: &ConstraintSystem,
+	inout: InoutSegment,
 	public: &[Word],
 	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
@@ -332,6 +338,7 @@ where
 		let eval_fn = MonsterEvalFn {
 			subspace,
 			constraint_system,
+			inout,
 			zero_r_x_prime_len,
 			bitand_r_x_prime_len,
 			intmul_r_x_prime_len,
@@ -346,7 +353,7 @@ where
 
 	// The public-half evaluation is a function of the verifier's public words (plaintext) and
 	// public-channel-derived challenges, so it is computed the same way as `monster_eval`.
-	let log_public_words = constraint_system.log_public_words();
+	let log_public_words = constraint_system.log_public_words(inout);
 	let public_eval = {
 		let inputs: Vec<C::Elem> = r_j
 			.iter()
@@ -401,6 +408,8 @@ struct MonsterEvalFn<'a, F: BinaryField> {
 	subspace: &'a BinarySubspace<F>,
 	/// The AND, IMUL and BMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,
+	/// Which segment holds the inout values, which fixes where the word-index tensor is cut.
+	inout: InoutSegment,
 	/// Length of the Zero operator's `r_x_prime` section.
 	zero_r_x_prime_len: usize,
 	/// Length of the BitAnd operator's `r_x_prime` section.
@@ -503,7 +512,7 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		//     over the unused `r_y` coordinates — the same `padded_public_eval` factor that
 		//     `check_eval` reconstructs the witness evaluation with.
 		let cs = &self.constraint_system;
-		let log_public_words = cs.log_public_words();
+		let log_public_words = cs.log_public_words(self.inout);
 
 		let public_scale =
 			eq_one_var(r_segment.clone(), E::zero()) * eq_ind_zero(&r_y_v[log_public_words..]);
@@ -512,14 +521,22 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		let hidden_tensor = scaled_eq_ind_partial_eval_scalars(r_y_v, r_segment);
 
 		// Cut the two indicators into one run per value segment, which is what an operand term's
-		// `(segment, index)` pair reads against. The constants and the inout values both sit in
-		// the public indicator, at the offsets the system places them; the padding words between
-		// them are dropped, since no index can name one.
-		let r_y_tensor = [
-			&public_tensor[..cs.n_const()],
-			&public_tensor[cs.offset_inout()..cs.offset_inout() + cs.n_inout],
-			&hidden_tensor[..cs.n_private],
-		];
+		// `(segment, index)` pair reads against. The constants lead the public indicator and the
+		// private values trail the hidden one; the inout values follow whichever indicator they
+		// are placed in. The padding words between the runs are dropped, since no index can name
+		// one.
+		let r_y_tensor = match self.inout {
+			InoutSegment::Public => [
+				&public_tensor[..cs.n_const()],
+				&public_tensor[cs.offset_inout()..cs.offset_inout() + cs.n_inout],
+				&hidden_tensor[..cs.n_private],
+			],
+			InoutSegment::Hidden => [
+				&public_tensor[..cs.n_const()],
+				&hidden_tensor[..cs.n_inout],
+				&hidden_tensor[cs.n_inout..cs.n_inout + cs.n_private],
+			],
+		};
 		let l_tilde = lagrange_evals_scalars(self.subspace, &r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 

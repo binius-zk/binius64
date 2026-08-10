@@ -31,20 +31,24 @@ const DEFAULT_PARALLEL_STRIPE_WIDTH: usize = 1024;
 /// Each row is one wire and each column is one instance.
 /// So a batched interpreter can advance every instance of a wire in a single pass.
 ///
-/// This table is specialized for the M4 accelerator setting.
-/// A circuit plugs into a larger system rather than exposing public inputs and outputs:
+/// This table is specialized for the M4 accelerator setting, where the value vector splits with
+/// the inout values on the hidden side
+/// ([`InoutSegment::Hidden`](binius_core::constraint_system::InoutSegment::Hidden)):
 ///
-/// 1. **No inout wires.** The circuit's [`ValueVecLayout`] must have `n_inout == 0`. Output wires
-///    are kept alive with
-///    [`CircuitBuilder::force_commit`](binius_frontend::CircuitBuilder::force_commit) so that
-///    dead-code elimination does not drop the circuit. Inout wires are inappropriate here, so
-///    [`Self::populate`] rejects them.
+/// 1. **Inout wires are committed.** Every instance chooses its own inout words, so they are not
+///    one set of shared values a verifier can evaluate. They are committed with the private values
+///    instead, at the front of the hidden segment. A circuit is free to declare them, and
+///    [`Self::populate`] takes their values from the same filler as the witness inputs.
 /// 2. **Constants are not stored.** The constants live once on the constraint system as a
-///    `Vec<Word>`, not replicated per instance. Only the hidden segment — the witness and internal
-///    words — is stored here. Witness generation reads the constants from that separate bank.
+///    `Vec<Word>`, not replicated per instance. Only the hidden segment — the inout, witness and
+///    internal words — is stored here. Witness generation reads the constants from that separate
+///    bank.
 ///
 /// So the stored data holds exactly the hidden segment of every instance: `n_hidden_words` rows by
 /// `2^log_instances` columns.
+///
+/// The committed inout words are not tied to any value the verifier knows, so the statement a
+/// proof over this table makes is that *some* inout values complete every instance.
 #[derive(Clone, Debug)]
 pub struct ValueTable {
 	/// The per-instance value layout, shared by every instance in the batch.
@@ -53,36 +57,30 @@ pub struct ValueTable {
 	log_instances: usize,
 	/// The number of hidden-word rows the proving protocol commits per instance.
 	///
-	/// The layout stores the private values back to back, but the shift reduction addresses the
-	/// hidden segment with the same word-index challenges as the public one, so it needs at least
-	/// the public segment's width. This is
-	/// [`ConstraintSystem::n_hidden_words`](binius_core::ConstraintSystem::n_hidden_words) of the
-	/// circuit's system, and the rows past the private values are the zero padding it implies.
+	/// This is the inout values followed by the private ones, which is
+	/// [`ConstraintSystem::n_hidden_words`](binius_core::ConstraintSystem::n_hidden_words) under
+	/// [`InoutSegment::Hidden`](binius_core::constraint_system::InoutSegment::Hidden).
 	n_hidden_words: usize,
 	/// The hidden words of every wire, in wire-major order.
 	///
 	/// Row `r` (for `r` in `0..n_hidden_words`) holds the `2^log_instances` values of hidden wire
-	/// `r` — private value `r` — one per instance. The rows are laid out contiguously, so the
-	/// length is `n_hidden_words << log_instances`.
+	/// `r` — inout value `r`, then private value `r - n_inout` — one per instance. The rows are
+	/// laid out contiguously, so the length is `n_hidden_words << log_instances`.
 	data: Vec<Word>,
 }
 
 impl ValueTable {
 	/// Builds the batch witness in wire-major order, populating all `2^log_instances` instances.
 	///
-	/// The instances are independent. For each, `fill` sets the witness input wires; the batched
+	/// The instances are independent. For each, `fill` sets the input wires; the batched
 	/// interpreter then derives every remaining wire, filling all instances of one wire at a time.
 	///
 	/// # Arguments
 	///
-	/// - `circuit`: the single-instance circuit. Its layout must have no inout wires.
+	/// - `circuit`: the single-instance circuit.
 	/// - `log_instances`: base-2 logarithm of the instance count.
-	/// - `fill`: sets the witness input wires of instance `i`, for `i` in `0..2^log_instances`. It
-	///   must assign every witness input on each call.
-	///
-	/// # Panics
-	///
-	/// Panics if the circuit's layout has any inout wires (`n_inout != 0`).
+	/// - `fill`: sets the input wires of instance `i`, for `i` in `0..2^log_instances`. It must
+	///   assign every witness input and every inout wire on each call.
 	///
 	/// # Errors
 	///
@@ -107,10 +105,6 @@ impl ValueTable {
 	///
 	/// Returns an error naming a failing instance whose inputs do not satisfy the circuit. The
 	/// reported instance is not guaranteed to be the lowest failing instance across all stripes.
-	///
-	/// # Panics
-	///
-	/// Panics if the circuit's layout has any inout wires.
 	pub fn populate_parallel<F>(
 		circuit: &Circuit,
 		log_instances: usize,
@@ -139,7 +133,7 @@ impl ValueTable {
 	///
 	/// # Panics
 	///
-	/// Panics if `stripe_width == 0` or if the circuit's layout has any inout wires.
+	/// Panics if `stripe_width == 0`.
 	pub fn populate_parallel_with_stripe_width<F>(
 		circuit: &Circuit,
 		log_instances: usize,
@@ -163,12 +157,6 @@ impl ValueTable {
 		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
 		let layout = circuit.value_vec_layout().clone();
-		assert_eq!(
-			layout.n_inout, 0,
-			"ValueTable requires a constraint system with no inout wires; \
-			 use force_commit on output wires instead"
-		);
-
 		let n_instances = 1usize << log_instances;
 
 		// The transient working buffer spans the full value vector — constants, inputs, internal
@@ -201,23 +189,17 @@ impl ValueTable {
 			}
 		}
 
-		// Keep only the private values: rows `[offset_witness, combined_len)`. In the wire-major
-		// working buffer these rows are contiguous, so this is a single slice of the words. The
-		// constants and scratch are dropped.
-		//
-		// The committed segment is wider than the private values whenever the public segment is,
-		// so the copy lands at the front of a zeroed buffer of the committed width and the rows
-		// past it stay zero.
-		let start = layout.offset_witness() << log_instances;
+		// Keep the hidden segment: rows `[offset_inout, combined_len)`, the inout values followed
+		// by the private ones. In the wire-major working buffer these rows are contiguous, so
+		// this is a single slice of the words. The constants and scratch are dropped.
+		let start = layout.offset_inout() << log_instances;
 		let end = layout.combined_len() << log_instances;
-		let n_hidden_words = circuit.constraint_system().n_hidden_words();
-		let mut data = vec![Word::ZERO; n_hidden_words << log_instances];
-		data[..end - start].copy_from_slice(&working[start..end]);
+		let data = working[start..end].to_vec();
 
 		Ok(Self {
+			n_hidden_words: layout.combined_len() - layout.offset_inout(),
 			layout,
 			log_instances,
-			n_hidden_words,
 			data,
 		})
 	}
@@ -268,17 +250,16 @@ impl ValueTable {
 			"constants length must match the layout's constant count"
 		);
 
-		// The public segment holds the constants at the front; the rest of it is the zero
-		// padding a fresh value vector already carries. There are no inout wires.
+		// The constants are the whole public segment; the table stores everything after them.
 		let mut values = ValueVec::new(&self.layout);
 		for (i, &constant) in constants.iter().enumerate() {
 			values[ValueIndex::constant(i as u32)] = constant;
 		}
 
-		// Gather this instance's column of private values across every row. The stored rows run
-		// past them into the protocol's padding, which the value vector does not hold.
-		for row in 0..self.layout.n_private() {
-			*values.word_mut((self.layout.offset_witness() + row) as u32) =
+		// Gather this instance's column of hidden values across every row, which the value vector
+		// holds from the first inout word onwards.
+		for row in 0..self.n_hidden_words {
+			*values.word_mut((self.layout.offset_inout() + row) as u32) =
 				self.data[(row << self.log_instances) + instance];
 		}
 
@@ -341,6 +322,7 @@ impl IndexMut<Wire> for BatchWitnessFiller<'_, '_> {
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
+	use binius_core::constraint_system::InoutSegment;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{AssertionFailure, CircuitBuilder, Wire};
 	use proptest::prelude::*;
@@ -405,11 +387,14 @@ mod tests {
 		let layout = c.circuit.value_vec_layout();
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), 8);
-		let n_hidden_words = c.circuit.constraint_system().n_hidden_words();
+		let n_hidden_words = c
+			.circuit
+			.constraint_system()
+			.n_hidden_words(InoutSegment::Hidden);
 		assert_eq!(table.n_hidden_words(), n_hidden_words);
 		assert_eq!(table.as_words().len(), n_hidden_words * 8);
-		// The committed rows start with the private values the layout stores.
-		assert!(n_hidden_words >= layout.n_private());
+		// The committed rows are the inout values the layout stores, then the private ones.
+		assert_eq!(n_hidden_words, layout.n_inout + layout.n_private());
 	}
 
 	#[test]
@@ -597,20 +582,50 @@ mod tests {
 		);
 	}
 
+	// Inout wires are committed, so they lead the stored rows: row `i` is inout value `i`, and the
+	// private values follow. Each instance carries its own inout words.
 	#[test]
-	#[should_panic(expected = "no inout wires")]
-	fn rejects_circuits_with_inout_wires() {
+	fn inout_wires_lead_the_committed_rows() {
 		let builder = CircuitBuilder::new();
 		let a = builder.add_inout();
-		let b = builder.add_witness();
+		let b = builder.add_inout();
+		let w = builder.add_witness();
 		let and = builder.band(a, b);
 		builder.force_commit(and);
+		builder.force_commit(builder.bxor(and, w));
 		let circuit = builder.build();
 
-		let _ = ValueTable::populate(&circuit, 1, |_, w| {
-			w[a] = Word(1);
-			w[b] = Word(1);
-		});
+		let log_instances = 2;
+		let table = ValueTable::populate(&circuit, log_instances, |i, f| {
+			f[a] = Word(i as u64);
+			f[b] = Word(i as u64 + 0x100);
+			f[w] = Word(i as u64 ^ 0xbeef);
+		})
+		.unwrap();
+
+		// Two inout values ahead of the private ones, all of them committed.
+		let layout = circuit.value_vec_layout();
+		assert_eq!(layout.n_inout, 2);
+		assert_eq!(table.n_hidden_words(), 2 + layout.n_private());
+
+		// The inout rows hold what the filler assigned, one column per instance.
+		let inout_row =
+			|row: usize| &table.as_words()[row << log_instances..(row + 1) << log_instances];
+		assert_eq!(inout_row(0), [Word(0), Word(1), Word(2), Word(3)]);
+		assert_eq!(inout_row(1), [Word(0x100), Word(0x101), Word(0x102), Word(0x103)]);
+
+		// And each instance reconstructs to a witness the constraint system accepts, inout
+		// values included.
+		let constants = &circuit.constraint_system().constants;
+		for i in 0..table.n_instances() {
+			let vv = table.instance_value_vec(i, constants);
+			assert_eq!(vv[circuit.witness_index(a)], Word(i as u64));
+			assert_eq!(vv[circuit.witness_index(b)], Word(i as u64 + 0x100));
+			circuit
+				.constraint_system()
+				.verify(&vv)
+				.unwrap_or_else(|e| panic!("instance {i} failed verification: {e}"));
+		}
 	}
 
 	// A large batch of independent random instances populates to the documented shape.
@@ -635,7 +650,10 @@ mod tests {
 		let constants = &c.circuit.constraint_system().constants;
 
 		// Shape: 2^10 instances, one hidden-word row per committed word.
-		let n_hidden_words = c.circuit.constraint_system().n_hidden_words();
+		let n_hidden_words = c
+			.circuit
+			.constraint_system()
+			.n_hidden_words(InoutSegment::Hidden);
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), n_instances);
 		assert_eq!(table.n_hidden_words(), n_hidden_words);

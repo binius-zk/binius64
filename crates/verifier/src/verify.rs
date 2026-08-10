@@ -3,7 +3,10 @@
 
 use std::marker::PhantomData;
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
@@ -88,7 +91,9 @@ impl IOPVerifier {
 	/// * the wider segment spans at least one field element's worth of words, which every system
 	///   with more than one public or private value satisfies
 	pub const fn log_witness_elems(&self) -> usize {
-		let log_segment_words = self.constraint_system.log_segment_words();
+		let log_segment_words = self
+			.constraint_system
+			.log_segment_words(InoutSegment::Public);
 		assert!(
 			log_segment_words >= LOG_WORDS_PER_ELEM,
 			"the committed trace is a whole number of field elements, so the wider value \
@@ -321,6 +326,7 @@ impl IOPVerifier {
 		.entered();
 		let shift_output = shift::verify(
 			self.constraint_system(),
+			InoutSegment::Public,
 			&zero_claim,
 			&bitand_claim,
 			&intmul_claim,
@@ -338,6 +344,7 @@ impl IOPVerifier {
 		.entered();
 		shift::check_eval(
 			self.constraint_system(),
+			InoutSegment::Public,
 			&public,
 			&zero_claim,
 			&bitand_claim,
@@ -410,7 +417,7 @@ where
 	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
 		constraint_system.validate()?;
 
-		let log_public_words = constraint_system.log_public_words();
+		let log_public_words = constraint_system.log_public_words(InoutSegment::Public);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 
@@ -491,7 +498,7 @@ where
 
 		let _verify_scope = tracing::info_span!(
 			"Verify",
-			n_hidden_words = cs.n_hidden_words(),
+			n_hidden_words = cs.n_hidden_words(InoutSegment::Public),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)

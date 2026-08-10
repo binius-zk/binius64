@@ -134,6 +134,8 @@ impl Alloc {
 
 #[cfg(test)]
 mod tests {
+	use binius_core::InoutSegment;
+
 	use super::*;
 
 	#[test]
@@ -237,6 +239,6 @@ mod tests {
 		let cs = assignment
 			.value_vec_layout
 			.constraint_system_shape(assignment.constants.clone());
-		assert_eq!(cs.n_public_words(), 1);
+		assert_eq!(cs.n_public_words(InoutSegment::Public), 1);
 	}
 }

@@ -15,7 +15,10 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::BinaryField128bGhash as B128;
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
@@ -65,7 +68,7 @@ where
 
 		constraint_system.validate()?;
 
-		let log_public_words = constraint_system.log_public_words();
+		let log_public_words = constraint_system.log_public_words(InoutSegment::Public);
 
 		let inner_iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 
@@ -197,7 +200,7 @@ where
 			let inner_cs = self.inner_iop_verifier.constraint_system();
 			let _scope = tracing::debug_span!(
 				"Binius64",
-				n_hidden_words = inner_cs.n_hidden_words(),
+				n_hidden_words = inner_cs.n_hidden_words(InoutSegment::Public),
 				n_bitand = inner_cs.and_constraints.len(),
 				n_intmul = inner_cs.imul_constraints.len(),
 			)
