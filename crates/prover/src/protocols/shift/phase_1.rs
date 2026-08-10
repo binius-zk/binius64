@@ -11,7 +11,7 @@ use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{ProveSingleOutput, bivariate_product_prover, prove_single},
 };
-use binius_math::{BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product_buffers};
+use binius_math::{BinarySubspace, FieldBuffer, FieldVec};
 use binius_utils::rayon::{
 	prelude::*,
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
@@ -63,7 +63,7 @@ where
 	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
 	let h = build_h(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
 
-	run_phase_1_sumcheck(g, h, channel, alloc)
+	run_phase_1_sumcheck(g, h, prepared.batched_eval(), channel, alloc)
 }
 
 /// Runs the phase 1 sumcheck protocol for shift constraint verification.
@@ -74,6 +74,17 @@ where
 ///
 /// The `g` multilinear carries the witness and the batching randomness; `h` encodes what each
 /// shift does at the univariate challenge point.
+///
+/// # Arguments
+///
+/// - `sum`: the claim being proved, as the operations' batched evaluations give it. This is the
+///   same value the verifier feeds its own sumcheck, so the prover proves the statement it was
+///   handed rather than whatever `g · h` happens to come to.
+///
+/// The two agree exactly when the witness satisfies the constraint system — which is what this
+/// reduction exists to establish, so it is not something the prover can check on its way in. On an
+/// unsatisfying witness they differ, and that difference travels through both phases to the
+/// reduction's final evaluation check, which is where verification fails.
 ///
 /// # Returns
 ///
@@ -87,10 +98,10 @@ pub fn run_phase_1_sumcheck<
 >(
 	g: FieldVec<P, A>,
 	h: FieldVec<P, A>,
+	sum: F,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> SumcheckOutput<F> {
-	let sum = inner_product_buffers(&g, &h);
 	let prover = bivariate_product_prover(alloc, [g, h], sum);
 
 	let ProveSingleOutput {
