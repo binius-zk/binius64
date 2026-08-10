@@ -724,15 +724,12 @@ mod tests {
 		use binius_frontend::Wire;
 
 		let builder = CircuitBuilder::new();
-		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_witness());
-		let and = builder.band(inputs[0], inputs[1]);
-		builder.force_commit(and);
+		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_inout());
 		let (hi, lo) = builder.imul(inputs[0], inputs[1]);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
 		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		for wire in [builder.band(inputs[0], inputs[1]), hi, lo, c_lo, c_hi] {
+			builder.mark_inout(wire);
+		}
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -798,19 +795,14 @@ mod tests {
 			enable_gate_fusion: false,
 			..Options::default()
 		});
-		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_witness());
+		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_inout());
 		let x = builder.bxor(inputs[0], inputs[1]);
 		let y = builder.bxor(x, inputs[2]);
-		builder.force_commit(x);
-		builder.force_commit(y);
-		let and_out = builder.band(inputs[0], inputs[1]);
-		builder.force_commit(and_out);
 		let (hi, lo) = builder.imul(inputs[0], inputs[1]);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
 		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		for wire in [x, y, builder.band(inputs[0], inputs[1]), hi, lo, c_lo, c_hi] {
+			builder.mark_inout(wire);
+		}
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -861,9 +853,8 @@ mod tests {
 			enable_gate_fusion: false,
 			..Options::default()
 		});
-		let inputs: [Wire; 3] = array::from_fn(|_| builder.add_witness());
-		let x = builder.bxor(inputs[0], inputs[1]);
-		builder.force_commit(x);
+		let inputs: [Wire; 3] = array::from_fn(|_| builder.add_inout());
+		builder.mark_inout(builder.bxor(inputs[0], inputs[1]));
 		let circuit = builder.build();
 
 		let mut cs = circuit.constraint_system().clone();
@@ -943,11 +934,11 @@ mod tests {
 	fn protocol_round_trips_with_mul() {
 		// One product per instance, with both result words committed as hidden words.
 		let builder = CircuitBuilder::new();
-		let x = builder.add_witness();
-		let y = builder.add_witness();
+		let x = builder.add_inout();
+		let y = builder.add_inout();
 		let (hi, lo) = builder.imul(x, y);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
+		builder.mark_inout(hi);
+		builder.mark_inout(lo);
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -1057,15 +1048,15 @@ mod tests {
 		use binius_frontend::Wire;
 
 		let builder = CircuitBuilder::new();
-		let cv: [Wire; 8] = array::from_fn(|_| builder.add_witness());
-		let block: [Wire; 16] = array::from_fn(|_| builder.add_witness());
-		let counter = builder.add_witness();
-		let block_len = builder.add_witness();
-		let flags = builder.add_witness();
-		// Force-commit the output so dead-code elimination keeps the compression.
-		let out = blake3_compress(&builder, cv, block, counter, block_len, flags);
-		for wire in out {
-			builder.force_commit(wire);
+		let cv: [Wire; 8] = array::from_fn(|_| builder.add_inout());
+		let block: [Wire; 16] = array::from_fn(|_| builder.add_inout());
+		let counter = builder.add_inout();
+		let block_len = builder.add_inout();
+		let flags = builder.add_inout();
+		// Promoting the output chaining value keeps the compression alive under dead-code
+		// elimination.
+		for wire in blake3_compress(&builder, cv, block, counter, block_len, flags) {
+			builder.mark_inout(wire);
 		}
 		let circuit = builder.build();
 
@@ -1124,17 +1115,16 @@ mod tests {
 		type WideP = PackedBinaryGhash2x128b;
 
 		let builder = CircuitBuilder::new();
-		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_witness());
+		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		// Four standalone AND gates on distinct wires — the AND work is not tied to the products.
 		for pair in inputs.chunks_exact(2) {
-			let and = builder.band(pair[0], pair[1]);
-			builder.force_commit(and);
+			builder.mark_inout(builder.band(pair[0], pair[1]));
 		}
 		// Two products — fewer IMUL constraints than AND constraints.
 		for pair in inputs.chunks_exact(2).take(2) {
 			let (hi, lo) = builder.imul(pair[0], pair[1]);
-			builder.force_commit(hi);
-			builder.force_commit(lo);
+			builder.mark_inout(hi);
+			builder.mark_inout(lo);
 		}
 		let circuit = builder.build();
 
@@ -1190,11 +1180,11 @@ mod tests {
 		// One GHASH-field squaring per instance: `(c_lo, c_hi) = (x_lo, x_hi)^2`, with both result
 		// words committed as hidden words.
 		let builder = CircuitBuilder::new();
-		let x_lo = builder.add_witness();
-		let x_hi = builder.add_witness();
+		let x_lo = builder.add_inout();
+		let x_hi = builder.add_inout();
 		let (c_lo, c_hi) = builder.bmul(x_lo, x_hi, x_lo, x_hi);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		builder.mark_inout(c_lo);
+		builder.mark_inout(c_hi);
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -1244,22 +1234,21 @@ mod tests {
 		type WideP = PackedBinaryGhash2x128b;
 
 		let builder = CircuitBuilder::new();
-		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_witness());
+		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		// Four standalone AND gates on distinct wires.
 		for pair in inputs.chunks_exact(2) {
-			let and = builder.band(pair[0], pair[1]);
-			builder.force_commit(and);
+			builder.mark_inout(builder.band(pair[0], pair[1]));
 		}
 		// Two integer products — fewer IMUL constraints than AND constraints.
 		for pair in inputs.chunks_exact(2).take(2) {
 			let (hi, lo) = builder.imul(pair[0], pair[1]);
-			builder.force_commit(hi);
-			builder.force_commit(lo);
+			builder.mark_inout(hi);
+			builder.mark_inout(lo);
 		}
 		// One GHASH-field product — the fewest of the three operations.
 		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		builder.mark_inout(c_lo);
+		builder.mark_inout(c_hi);
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -1339,11 +1328,11 @@ mod tests {
 	#[test]
 	fn tampered_mul_opening_is_rejected() {
 		let builder = CircuitBuilder::new();
-		let x = builder.add_witness();
-		let y = builder.add_witness();
+		let x = builder.add_inout();
+		let y = builder.add_inout();
 		let (hi, lo) = builder.imul(x, y);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
+		builder.mark_inout(hi);
+		builder.mark_inout(lo);
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();

@@ -333,19 +333,31 @@ mod tests {
 		N_INPUT_WORDS, crc64_circuit, crc64_iso_reference, populate_crc64_witness,
 	};
 
-	// A circuit that computes several derived words from two witness inputs and a constant, with no
-	// inout wires. Every observable output is force-committed so dead-code elimination keeps it.
+	/// The constant the mix circuit XORs its first input against.
+	const MIX_K: u64 = 0x0123_4567_89ab_cdef;
+
+	// A circuit deriving four words from two public inputs and a constant, each promoted to a
+	// public output. The promotions are what keep the derivations alive under dead-code
+	// elimination.
 	struct MixCircuit {
 		circuit: Circuit,
 		a: Wire,
 		b: Wire,
 	}
 
+	impl MixCircuit {
+		// Assigns one instance's inputs; the circuit derives its public outputs.
+		fn fill<F: IndexMut<Wire, Output = Word>>(&self, filler: &mut F, a: u64, b: u64) {
+			filler[self.a] = Word(a);
+			filler[self.b] = Word(b);
+		}
+	}
+
 	fn mix_circuit() -> MixCircuit {
 		let builder = CircuitBuilder::new();
-		let a = builder.add_witness();
-		let b = builder.add_witness();
-		let k = builder.add_constant_64(0x0123_4567_89ab_cdef);
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		let k = builder.add_constant_64(MIX_K);
 
 		let and = builder.band(a, b);
 		let xor = builder.bxor(a, k);
@@ -353,10 +365,9 @@ mod tests {
 		let rot = builder.rotr(b, 7);
 		let or = builder.bor(and, rot);
 
-		builder.force_commit(and);
-		builder.force_commit(xor);
-		builder.force_commit(sum);
-		builder.force_commit(or);
+		for wire in [and, xor, sum, or] {
+			builder.mark_inout(wire);
+		}
 
 		MixCircuit {
 			circuit: builder.build(),
@@ -368,8 +379,7 @@ mod tests {
 	// Populate one instance on its own through the ordinary single-instance flow.
 	fn reference_value_vec(c: &MixCircuit, a: u64, b: u64) -> ValueVec {
 		let mut filler = c.circuit.new_witness_filler();
-		filler[c.a] = Word(a);
-		filler[c.b] = Word(b);
+		c.fill(&mut filler, a, b);
 		c.circuit.populate_wire_witness(&mut filler).unwrap();
 		filler.into_value_vec()
 	}
@@ -379,8 +389,7 @@ mod tests {
 		let c = mix_circuit();
 		let log_instances = 3;
 		let table = ValueTable::populate(&c.circuit, log_instances, |i, w| {
-			w[c.a] = Word(i as u64);
-			w[c.b] = Word(i as u64 + 1);
+			c.fill(w, i as u64, i as u64 + 1);
 		})
 		.unwrap();
 
@@ -403,8 +412,7 @@ mod tests {
 		let constants = &c.circuit.constraint_system().constants;
 
 		let table = ValueTable::populate(&c.circuit, 2, |i, w| {
-			w[c.a] = Word(i as u64 * 0x9e37_79b9);
-			w[c.b] = Word(i as u64 ^ 0xdead);
+			c.fill(w, i as u64 * 0x9e37_79b9, i as u64 ^ 0xdead);
 		})
 		.unwrap();
 
@@ -423,8 +431,7 @@ mod tests {
 		let constants = &c.circuit.constraint_system().constants;
 
 		let table = ValueTable::populate(&c.circuit, 0, |_, w| {
-			w[c.a] = Word(0xABCD);
-			w[c.b] = Word(0x0F0F);
+			c.fill(w, 0xABCD, 0x0F0F);
 		})
 		.unwrap();
 
@@ -446,8 +453,7 @@ mod tests {
 
 			let table = ValueTable::populate(&c.circuit, 2, |i, w| {
 				let (a, b) = inputs[i];
-				w[c.a] = Word(a);
-				w[c.b] = Word(b);
+				c.fill(w, a, b);
 			})
 			.unwrap();
 
@@ -465,14 +471,20 @@ mod tests {
 		let log_instances = 3;
 
 		let serial = ValueTable::populate(&c.circuit, log_instances, |i, w| {
-			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
-			w[c.b] = Word((i as u64).rotate_left(17) ^ 0xdead_beef);
+			c.fill(
+				w,
+				(i as u64).wrapping_mul(0x9e37_79b9),
+				(i as u64).rotate_left(17) ^ 0xdead_beef,
+			);
 		})
 		.unwrap();
 
 		let default_parallel = ValueTable::populate_parallel(&c.circuit, log_instances, |i, w| {
-			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
-			w[c.b] = Word((i as u64).rotate_left(17) ^ 0xdead_beef);
+			c.fill(
+				w,
+				(i as u64).wrapping_mul(0x9e37_79b9),
+				(i as u64).rotate_left(17) ^ 0xdead_beef,
+			);
 		})
 		.unwrap();
 		assert_eq!(default_parallel.as_words(), serial.as_words());
@@ -483,8 +495,11 @@ mod tests {
 				log_instances,
 				stripe_width,
 				|i, w| {
-					w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
-					w[c.b] = Word((i as u64).rotate_left(17) ^ 0xdead_beef);
+					c.fill(
+						w,
+						(i as u64).wrapping_mul(0x9e37_79b9),
+						(i as u64).rotate_left(17) ^ 0xdead_beef,
+					);
 				},
 			)
 			.unwrap();
@@ -501,8 +516,8 @@ mod tests {
 	fn unsatisfiable_instance_reports_its_index() {
 		// A circuit that asserts a == b; instances where they differ fail.
 		let builder = CircuitBuilder::new();
-		let a = builder.add_witness();
-		let b = builder.add_witness();
+		let a = builder.add_inout();
+		let b = builder.add_inout();
 		builder.assert_eq("a_eq_b", a, b);
 		let circuit = builder.build();
 
@@ -528,8 +543,8 @@ mod tests {
 	fn parallel_unsatisfiable_instance_reports_global_index_across_stripes() {
 		// A circuit that asserts a == b; instances where they differ fail.
 		let builder = CircuitBuilder::new();
-		let a = builder.add_witness();
-		let b = builder.add_witness();
+		let a = builder.add_inout();
+		let b = builder.add_inout();
 		builder.assert_eq("a_eq_b", a, b);
 		let circuit = builder.build();
 
@@ -556,8 +571,8 @@ mod tests {
 	fn parallel_failure_diagnostics_report_global_instance_across_stripes() {
 		// A circuit that asserts a == b; instances where they differ fail.
 		let builder = CircuitBuilder::new();
-		let a = builder.add_witness();
-		let b = builder.add_witness();
+		let a = builder.add_inout();
+		let b = builder.add_inout();
 		builder.assert_eq("a_eq_b", a, b);
 		let circuit = builder.build();
 
@@ -589,10 +604,12 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let a = builder.add_inout();
 		let b = builder.add_inout();
+		// A private wire, so the table carries private rows behind the inout ones.
 		let w = builder.add_witness();
 		let and = builder.band(a, b);
-		builder.force_commit(and);
-		builder.force_commit(builder.bxor(and, w));
+		let mixed = builder.bxor(and, w);
+		builder.mark_inout(and);
+		builder.mark_inout(mixed);
 		let circuit = builder.build();
 
 		let log_instances = 2;
@@ -603,10 +620,11 @@ mod tests {
 		})
 		.unwrap();
 
-		// Two inout values ahead of the private ones, all of them committed.
+		// The inout values lead the private ones, all of them committed.
 		let layout = circuit.value_vec_layout();
-		assert_eq!(layout.n_inout, 2);
-		assert_eq!(table.n_hidden_words(), 2 + layout.n_private());
+		assert_eq!(layout.n_inout, 4);
+		assert!(layout.n_private() > 0, "the fixture must carry private rows too");
+		assert_eq!(table.n_hidden_words(), layout.n_inout + layout.n_private());
 
 		// The inout rows hold what the filler assigned, one column per instance.
 		let inout_row =
@@ -679,8 +697,7 @@ mod tests {
 
 		// Fixture state: 4 instances with distinct witness inputs.
 		let table = ValueTable::populate(&c.circuit, 2, |i, w| {
-			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
-			w[c.b] = Word(i as u64 ^ 0xdead);
+			c.fill(w, (i as u64).wrapping_mul(0x9e37_79b9), i as u64 ^ 0xdead);
 		})
 		.unwrap();
 

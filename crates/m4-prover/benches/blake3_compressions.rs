@@ -33,12 +33,12 @@ const DEFAULT_LOG_INV_RATE: usize = 1;
 /// Compressions computed per instance: the two-lane core runs two at once.
 const COMPRESSIONS_PER_INSTANCE: u64 = 2;
 
-/// The witness input wires of one two-lane BLAKE3 compression instance.
+/// The public wires of one two-lane BLAKE3 compression instance.
 ///
 /// Each wire packs two independent compressions: lane 0 in the low 32 bits, lane 1 in the high 32
-/// bits. The output is force-committed, so the circuit has no inout wires.
+/// bits.
 #[derive(Clone, Copy)]
-struct Blake3Inputs {
+struct Blake3Wires {
 	/// The 8-word input chaining value, two lanes per word.
 	cv: [Wire; 8],
 	/// The 16-word message block, two lanes per word.
@@ -53,29 +53,29 @@ struct Blake3Inputs {
 	flags: Wire,
 }
 
-/// Builds a circuit for one two-lane BLAKE3 compression and force-commits its output.
+/// Builds a circuit for one two-lane BLAKE3 compression, with its output chaining value promoted
+/// to public outputs.
 ///
-/// Force-committing the output keeps the compression alive under dead-code elimination.
-fn build_blake3_circuit() -> (Circuit, Blake3Inputs) {
+/// That promotion keeps the compression alive under dead-code elimination.
+fn build_blake3_circuit() -> (Circuit, Blake3Wires) {
 	let builder = CircuitBuilder::new();
 
-	// Every compression input is a witness wire, filled per instance.
-	let cv = array::from_fn(|_| builder.add_witness());
-	let block = array::from_fn(|_| builder.add_witness());
-	let counter_lo = builder.add_witness();
-	let counter_hi = builder.add_witness();
-	let block_len = builder.add_witness();
-	let flags = builder.add_witness();
+	// Every compression input is public, filled per instance.
+	let cv = array::from_fn(|_| builder.add_inout());
+	let block = array::from_fn(|_| builder.add_inout());
+	let counter_lo = builder.add_inout();
+	let counter_hi = builder.add_inout();
+	let block_len = builder.add_inout();
+	let flags = builder.add_inout();
 
-	// Force-commit each output word so the compression survives dead-code elimination.
 	let out = blake3_compress_2x(&builder, cv, block, counter_lo, counter_hi, block_len, flags);
 	for wire in out {
-		builder.force_commit(wire);
+		builder.mark_inout(wire);
 	}
 
 	(
 		builder.build(),
-		Blake3Inputs {
+		Blake3Wires {
 			cv,
 			block,
 			counter_lo,
@@ -90,31 +90,30 @@ fn build_blake3_circuit() -> (Circuit, Blake3Inputs) {
 const fn pack_lanes(lane0: u32, lane1: u32) -> Word {
 	Word((lane0 as u64) | ((lane1 as u64) << 32))
 }
-
 /// Assigns one instance's two-lane BLAKE3 inputs from a per-instance seeded RNG.
 ///
 /// Each 64-bit word carries two independent 32-bit lanes, matching the two-lane core.
 /// The compression derives its output from these inputs, so any assignment is valid.
 /// Seeding per instance keeps the data non-degenerate and reproducible.
-fn fill_instance(inputs: &Blake3Inputs, i: usize, w: &mut BatchWitnessFiller<'_, '_>) {
+fn fill_instance(wires: &Blake3Wires, i: usize, w: &mut BatchWitnessFiller<'_, '_>) {
 	// Seed from the instance index so the batch is deterministic and instance-varying.
 	let mut rng = StdRng::seed_from_u64(i as u64);
 
 	// A 32-bit value per chaining-value word, per lane.
-	for wire in inputs.cv {
+	for wire in wires.cv {
 		w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
 	}
 	// A 32-bit value per message word, per lane.
-	for wire in inputs.block {
+	for wire in wires.block {
 		w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
 	}
 	// The 64-bit counter, split into low and high halves, per lane.
-	w[inputs.counter_lo] = pack_lanes(rng.next_u32(), rng.next_u32());
-	w[inputs.counter_hi] = pack_lanes(rng.next_u32(), rng.next_u32());
+	w[wires.counter_lo] = pack_lanes(rng.next_u32(), rng.next_u32());
+	w[wires.counter_hi] = pack_lanes(rng.next_u32(), rng.next_u32());
 	// A byte length in 0..=64, per lane.
-	w[inputs.block_len] = pack_lanes(rng.next_u32() % 65, rng.next_u32() % 65);
+	w[wires.block_len] = pack_lanes(rng.next_u32() % 65, rng.next_u32() % 65);
 	// Arbitrary domain-separation flags, per lane.
-	w[inputs.flags] = pack_lanes(rng.next_u32(), rng.next_u32());
+	w[wires.flags] = pack_lanes(rng.next_u32(), rng.next_u32());
 }
 
 fn bench_prove_blake3_compressions(c: &mut Criterion) {

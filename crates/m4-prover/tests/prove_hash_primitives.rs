@@ -130,12 +130,11 @@ where
 		.expect("no trailing proof data");
 }
 
-/// The witness input wires of one two-lane BLAKE3 compression.
+/// The public wires of one two-lane BLAKE3 compression.
 ///
 /// Each wire packs two independent compressions.
 /// Lane 0 sits in the low 32 bits, lane 1 in the high 32.
-/// The output is force-committed, so the circuit has no inout wires.
-struct Blake3Inputs {
+struct Blake3Wires {
 	/// The 8-word input chaining value, two lanes per word.
 	cv: [Wire; 8],
 	/// The 16-word message block, two lanes per word.
@@ -150,43 +149,42 @@ struct Blake3Inputs {
 	flags: Wire,
 }
 
-/// Builds a circuit for `N` independent two-lane BLAKE3 compressions, force-committing every
-/// output word.
+/// Builds a circuit for `N` independent two-lane BLAKE3 compressions.
 ///
 /// Each two-lane compression is itself two independent compressions, so the circuit proves
 /// `2 * N` compressions total.
 /// Packing several into one circuit fills the value vector more densely, so less of it is padding.
-fn build_blake3_circuit<const N: usize>() -> (Circuit, [Blake3Inputs; N]) {
+fn build_blake3_circuit<const N: usize>() -> (Circuit, [Blake3Wires; N]) {
 	let builder = CircuitBuilder::new();
 
-	// Every compression's inputs are witness wires.
-	let inputs: [Blake3Inputs; N] = array::from_fn(|_| Blake3Inputs {
-		cv: array::from_fn(|_| builder.add_witness()),
-		block: array::from_fn(|_| builder.add_witness()),
-		counter_lo: builder.add_witness(),
-		counter_hi: builder.add_witness(),
-		block_len: builder.add_witness(),
-		flags: builder.add_witness(),
+	// Every compression's inputs are public.
+	let wires: [Blake3Wires; N] = array::from_fn(|_| Blake3Wires {
+		cv: array::from_fn(|_| builder.add_inout()),
+		block: array::from_fn(|_| builder.add_inout()),
+		counter_lo: builder.add_inout(),
+		counter_hi: builder.add_inout(),
+		block_len: builder.add_inout(),
+		flags: builder.add_inout(),
 	});
 
-	for &Blake3Inputs {
+	for &Blake3Wires {
 		cv,
 		block,
 		counter_lo,
 		counter_hi,
 		block_len,
 		flags,
-	} in &inputs
+	} in &wires
 	{
-		// Force-commit each output word.
-		// This keeps the compression alive under dead-code elimination.
+		// Promote each output chaining-value word to a public output.
+		// That promotion keeps the compression alive under dead-code elimination.
 		let out = blake3_compress_2x(&builder, cv, block, counter_lo, counter_hi, block_len, flags);
 		for wire in out {
-			builder.force_commit(wire);
+			builder.mark_inout(wire);
 		}
 	}
 
-	(builder.build(), inputs)
+	(builder.build(), wires)
 }
 
 /// Packs two independent 32-bit lane values into one 64-bit word.
@@ -199,42 +197,41 @@ const fn pack_lanes(lane0: u32, lane1: u32) -> Word {
 /// The compression derives its output from these inputs.
 /// So any assignment is valid.
 fn fill_blake3<const N: usize>(
-	inputs: &[Blake3Inputs; N],
+	wires: &[Blake3Wires; N],
 	_instance: usize,
 	w: &mut BatchWitnessFiller<'_, '_>,
 ) {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	for input in inputs {
+	for wire_set in wires {
 		// A 32-bit value per chaining-value word, per lane.
-		for wire in input.cv {
+		for wire in wire_set.cv {
 			w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
 		}
 		// A 32-bit value per message word, per lane.
-		for wire in input.block {
+		for wire in wire_set.block {
 			w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
 		}
 		// The 64-bit counter, split into low and high halves, per lane.
-		w[input.counter_lo] = pack_lanes(rng.next_u32(), rng.next_u32());
-		w[input.counter_hi] = pack_lanes(rng.next_u32(), rng.next_u32());
+		w[wire_set.counter_lo] = pack_lanes(rng.next_u32(), rng.next_u32());
+		w[wire_set.counter_hi] = pack_lanes(rng.next_u32(), rng.next_u32());
 		// A byte length in 0..=64, per lane.
-		w[input.block_len] = pack_lanes(rng.next_u32() % 65, rng.next_u32() % 65);
+		w[wire_set.block_len] = pack_lanes(rng.next_u32() % 65, rng.next_u32() % 65);
 		// Arbitrary domain-separation flags, per lane.
-		w[input.flags] = pack_lanes(rng.next_u32(), rng.next_u32());
+		w[wire_set.flags] = pack_lanes(rng.next_u32(), rng.next_u32());
 	}
 }
 
-/// Builds a circuit for `N` independent Keccak-f1600 permutations, force-committing every output
-/// state.
+/// Builds a circuit for `N` independent Keccak-f1600 permutations.
 ///
 /// The permutations share no wires.
 /// Packing several into one circuit fills the value vector more densely, so less of it is padding.
 fn build_keccak_circuit<const N: usize>() -> (Circuit, [[Wire; KECCAK_STATE_LANES]; N]) {
 	let builder = CircuitBuilder::new();
 
-	// Each permutation gets its own 25-lane witness input state.
+	// Each permutation gets its own 25-lane public input state.
 	let inputs: [[Wire; KECCAK_STATE_LANES]; N] =
-		array::from_fn(|_| array::from_fn(|_| builder.add_witness()));
+		array::from_fn(|_| array::from_fn(|_| builder.add_inout()));
 
 	for input in inputs {
 		// Permute a copy of the input in place.
@@ -242,10 +239,10 @@ fn build_keccak_circuit<const N: usize>() -> (Circuit, [[Wire; KECCAK_STATE_LANE
 		let mut state = input;
 		keccak_f1600(&builder, &mut state);
 
-		// Force-commit the output lanes.
-		// This keeps the permutation alive under dead-code elimination.
+		// Promote the permuted lanes to public outputs.
+		// That promotion keeps the permutation alive under dead-code elimination.
 		for wire in state {
-			builder.force_commit(wire);
+			builder.mark_inout(wire);
 		}
 	}
 
@@ -269,7 +266,7 @@ fn fill_keccak<const N: usize>(
 	}
 }
 
-/// Builds a circuit for one 64×64→128-bit integer multiplication and force-commits its output.
+/// Builds a circuit for one 64×64→128-bit integer multiplication.
 ///
 /// Unlike the hash primitives (which are purely bitwise / carry-adder based), this circuit has IMUL
 /// constraints, so its M4 proof commits the extra IntMul logup* pushforward oracle — exercising the
@@ -277,14 +274,14 @@ fn fill_keccak<const N: usize>(
 fn build_imul_circuit() -> (Circuit, [Wire; 2]) {
 	let builder = CircuitBuilder::new();
 
-	// Two 64-bit witness factors.
-	let a = builder.add_witness();
-	let b = builder.add_witness();
+	// Two 64-bit public factors.
+	let a = builder.add_inout();
+	let b = builder.add_inout();
 
-	// Force-commit the 128-bit product halves so the multiplication survives dead-code elimination.
+	// Promoting the product halves keeps the multiplication alive under dead-code elimination.
 	let (hi, lo) = builder.imul(a, b);
-	builder.force_commit(hi);
-	builder.force_commit(lo);
+	builder.mark_inout(hi);
+	builder.mark_inout(lo);
 
 	(builder.build(), [a, b])
 }
