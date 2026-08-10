@@ -12,10 +12,11 @@ use binius_math::{
 	},
 	univariate::evaluate_univariate,
 };
+use itertools::izip;
 
 use super::{
 	error::{Error, VerificationError},
-	output::LogupOutput,
+	output::{LogupOutput, LogupTableOutput},
 	pushforward::{Pushforward, TableClaim, denominator_eval, verify_pushforward},
 };
 use crate::{
@@ -23,7 +24,7 @@ use crate::{
 	fracaddcheck::{self, FracAddEvalClaim},
 };
 
-/// One looker's claim on its looked-up vector: `(I_j^* T)(eval_point) = eval_claim`.
+/// One looker's claim on its looked-up vector: `(I^* T)(eval_point) = eval_claim`.
 #[derive(Debug, Clone)]
 pub struct LookerClaim<'a, Elem> {
 	/// The `n`-coordinate evaluation point of this looker's claim.
@@ -32,40 +33,62 @@ pub struct LookerClaim<'a, Elem> {
 	pub eval_claim: Elem,
 }
 
-/// Verify a logUp* indexed-lookup reduction over one or more lookers sharing a table.
+/// One table together with the lookers that read it.
+#[derive(Debug, Clone)]
+pub struct TableLookup<'a, Elem> {
+	/// The number of variables `m` of this table's multilinear (`2^m` entries).
+	pub n_vars: usize,
+	/// The claims of the lookers that read this table. Their evaluation points may differ in
+	/// length, both from each other and from the table.
+	pub lookers: Vec<LookerClaim<'a, Elem>>,
+}
+
+/// Verify a logUp* indexed-lookup reduction over one or more tables, each with its own lookers.
 ///
-/// Reduces the claims `(I_j^* T)(r_j) = e_j` to the claims in [`LogupOutput`]. The lookers batch
-/// by a random linear combination: the challenge `gamma` scales looker `j`'s numerator by
-/// `gamma^j`, the pushforward is the gamma-weighted sum of the per-looker pushforwards, and the
-/// product check binds `<T, Y>` to the gamma-combination of the claims.
+/// Reduces the claims `(I^* T)(r) = e` to the claims in [`LogupOutput`]. Each table batches its own
+/// lookers by a random linear combination: its challenge `gamma` scales its looker `i`'s numerator
+/// by `gamma^i`. A table's pushforward `Y` is the gamma-weighted sum of its lookers' pushforwards,
+/// and its product check binds `<T, Y>` to the gamma-combination of its lookers' claims. Tables
+/// share nothing but the batching machinery.
 ///
-/// Every fractional-addition circuit — one per looker `j` over `n_j` variables, plus the table's
-/// over `m` — is an instance of **one** GKR of `k + max(max_j n_j, m)` layers, where
-/// `k = ceil(log2(#lookers + 1))`. Its top `k` layers add the per-instance root fractions together
-/// and its lower `max(max_j n_j, m)` run the instances in a batch, with every shallower instance
-/// padded by zero fractions — that leaves a fractional sum unchanged and costs `O(1)` per round,
-/// so the layer count depends only on the deepest instance.
+/// Every fractional-addition circuit — one per looker over `n` variables, plus one per table over
+/// `m` — is an instance of **one** GKR of `k + max(max n, max m)` layers, where
+/// `k = ceil(log2(#lookers + #tables))`. Its top `k` layers add the per-instance root fractions
+/// together and its lower layers run the instances in a batch, with every shallower instance padded
+/// by zero fractions — that leaves a fractional sum unchanged and costs `O(1)` per round, so the
+/// layer count depends only on the deepest instance.
 ///
-/// The lookers need not agree on a length: a looker over `n_j` variables is simply padded by
-/// `max(max_j n_j, m) - n_j`, and its reduced index claim lands on the **last `n_j`** coordinates
+/// No column need agree with any other on a length: an instance over `d` variables is simply padded
+/// by `max(max n, max m) - d`. A looker's reduced index claim lands on the **last `n`** coordinates
 /// of [`LogupOutput::index_eval_point`].
 ///
-/// The table's fraction enters that sum negated, so the circuit's root is
-/// `sum_j num_j/den_j - num_r/den_r`, whose numerator vanishes exactly when the lookup identity
-/// holds. The verifier therefore reads only the root *denominator* and supplies the zero numerator
-/// itself: the identity is enforced by the shape of the claim rather than by a separate check.
+/// Every table's fraction enters that sum negated, so the circuit's root is
+/// `sum_lookers num/den - sum_tables num/den`, whose numerator vanishes exactly when the lookup
+/// identities hold. The verifier therefore reads only the root *denominator* and supplies the zero
+/// numerator itself: the identities are enforced by the shape of the claim rather than by a
+/// separate check.
 ///
-/// The caller samples `gamma` itself, before receiving the pushforward commitment: the prover
-/// needs `gamma` to build the combined pushforward, so the commitment must come after.
+/// # Why one logUp challenge per table
 ///
-/// The logUp challenge `c` is sampled against the committed `I_j`, `T`, and pushforward `Y`.
-/// So the caller must absorb those commitments into the transcript before calling this routine.
+/// Each table is randomized by its own `c`, so table `t`'s contribution to the root fraction,
+///
+/// ```text
+///     f_t(c_t) = sum_i gamma_t^i sum_x eq_{r_i}(x)/(c_t - I_i(x))  -  sum_v Y_t(v)/(c_t - v)
+/// ```
+///
+/// is a rational function of `c_t` alone, vanishing as `c_t` grows. A sum of such functions in
+/// disjoint variables is identically zero only when every term is, so the one root check certifies
+/// every table separately. Under a single shared challenge that argument fails: two tables could
+/// miscount the same position in opposite directions and cancel inside the root numerator.
+///
+/// The logUp challenges are sampled against the committed `I`, `T`, and pushforwards `Y`.
+/// So the caller must absorb those commitments into the transcript before calling this routine, and
+/// must have sampled each table's `gamma` before its pushforward commitment.
 ///
 /// # Arguments
 ///
-/// * `gamma` - The looker batching challenge, sampled by the caller.
-/// * `table_n_vars` - The number of variables `m` of the table multilinear (`2^m` entries).
-/// * `lookers` - The looker claims; their evaluation points may differ in length.
+/// * `tables` - One [`TableLookup`] per table, each carrying its batching challenge, its variable
+///   count, and its lookers' claims.
 /// * `channel` - The verifier channel for receiving prover messages and sampling challenges.
 ///
 /// # Transcript layout
@@ -73,26 +96,30 @@ pub struct LookerClaim<'a, Elem> {
 /// The prover messages are consumed in this exact order:
 ///
 /// ```text
-///     1. sample c                                  (logUp challenge)
-///     2. recv den_root                             (the root denominator; its numerator is 0)
-///     3. combined GKR, k + max(max_j n_j, m) layers (see fracaddcheck::verify)
-///     4. recv per-looker index evaluations, then Y (the non-transparent leaf halves)
+///     1. sample c                         (one logUp challenge per table)
+///     2. recv den_root                    (the root denominator; its numerator is 0)
+///     3. combined GKR, k + max(max n, max m) layers (see fracaddcheck::verify)
+///     4. recv per-looker index evaluations, then per-table Y (the non-transparent leaf halves)
 ///     5. pushforward reduction:
 ///        a. sample batch_coeff
-///        b. m rounds of degree-2 sumcheck
-///        c. recv [Y, T]                            (evaluations at the challenge point)
+///        b. max m rounds of degree-2 sumcheck
+///        c. recv per-table [Y, T]         (evaluations at the challenge point)
 /// ```
+///
+/// The per-looker index evaluations arrive table by table, in the order the tables are given, and
+/// within a table in its own looker order.
 ///
 /// The sumchecks are assumed to bind variables from the highest index to the lowest.
 /// This matches the convention of the fractional-addition GKR layers.
 ///
 /// # Preconditions
 ///
-/// - `table_n_vars` must be at least 1, so the table-side GKR has a variable to split on.
+/// - `tables` is non-empty, every table has at least one variable so its GKR has a variable to
+///   split on, and every table has at least one looker.
 ///
 /// # Returns
 ///
-/// The reduced [`LogupOutput`] claims on the table, pushforward, and index multilinears.
+/// The reduced [`LogupOutput`] claims on the tables, pushforwards, and index multilinears.
 ///
 /// # Errors
 ///
@@ -102,46 +129,80 @@ pub struct LookerClaim<'a, Elem> {
 /// - the transparent leaf numerators do not interpolate to the batch's leaf numerator,
 /// - the index and table denominators do not interpolate to the batch's leaf denominator,
 /// - the pushforward reduction is inconsistent.
-pub fn verify_reduction<F, C>(
+pub fn verify_reduction<'a, F, C>(
 	gamma: &C::Elem,
-	table_n_vars: usize,
-	lookers: &[LookerClaim<'_, C::Elem>],
+	tables: impl IntoIterator<Item = TableLookup<'a, C::Elem>>,
 	channel: &mut C,
 ) -> Result<LogupOutput<C::Elem>, Error>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	C: IPVerifierChannel<F>,
-	C::Elem: From<F>,
+	C::Elem: From<F> + 'a,
 {
-	// The table-side GKR circuit needs at least one variable to split on.
-	assert!(table_n_vars > 0, "table must have at least one variable");
-	assert!(!lookers.is_empty(), "at least one looker claim is required");
+	let tables = tables.into_iter().collect::<Vec<_>>();
+	assert!(!tables.is_empty(), "at least one table is required");
+	// Each table-side GKR circuit needs at least one variable to split on.
+	assert!(
+		tables.iter().all(|table| table.n_vars > 0),
+		"every table must have at least one variable"
+	);
+	assert!(
+		tables.iter().all(|table| !table.lookers.is_empty()),
+		"every table must have at least one looker"
+	);
 
-	let m = table_n_vars;
-	// Lookers may differ in length; the batch pads each up to the deepest instance.
-	let max_n = lookers
+	let n_tables = tables.len();
+	let n_lookers = tables
 		.iter()
+		.map(|table| table.lookers.len())
+		.sum::<usize>();
+	// No column need agree with any other on a length; the batch pads each up to the deepest
+	// instance.
+	let max_n = tables
+		.iter()
+		.flat_map(|table| &table.lookers)
 		.map(|looker| looker.eval_point.len())
 		.max()
-		.expect("lookers is non-empty");
+		.expect("every table has at least one looker");
+	let max_m = tables
+		.iter()
+		.map(|table| table.n_vars)
+		.max()
+		.expect("tables is non-empty");
 
-	// Sample the logUp challenge c that randomizes the logarithmic-derivative denominators.
-	let c = channel.sample();
+	// Within a table, looker `i` is weighted by gamma^i. The same series serves every table: the
+	// combination only has to bind the lookers inside one table, because the per-table denominator
+	// challenges already separate the tables from each other. So only as many powers are needed as
+	// the largest table has lookers.
+	let max_table_lookers = tables
+		.iter()
+		.map(|table| table.lookers.len())
+		.max()
+		.expect("tables is non-empty");
+	let looker_powers = powers(gamma.clone())
+		.take(max_table_lookers)
+		.collect::<Vec<_>>();
+
+	// Sample one logUp challenge per table. Distinct challenges are what make the single root check
+	// certify every table separately: a table's contribution to the root fraction is a rational
+	// function of its own c alone, so a sum of them vanishes only when each does. Under one shared
+	// challenge two tables' errors could cancel inside the root numerator.
+	let cs = channel.sample_many(n_tables);
 
 	// Read the root denominator. The root numerator is not on the transcript: the whole circuit
-	// sums the looker fractions against the negated table fraction, so its value is zero exactly
-	// when the lookup identity holds, and the verifier supplies that zero itself.
+	// sums the looker fractions against the negated table fractions, so its value is zero exactly
+	// when every lookup identity holds, and the verifier supplies that zero itself.
 	let root_den: C::Elem = channel
 		.recv_one()
 		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
 
 	// One GKR over the whole thing, from that single root fraction down to the leaves: k layers
-	// interpolating the per-instance roots, then max(max_n, m) more over the instances. Looker j's
-	// tree has depth n_j and the table tree depth m, so every shallower instance is padded by zero
-	// fractions — the layer count reveals only the deepest one.
-	let n_instances = lookers.len() + 1;
+	// interpolating the per-instance roots, then max(max_n, max_m) more over the instances. Looker
+	// j's tree has depth n_j and table t's tree depth m_t, so every shallower instance is padded by
+	// zero fractions — the layer count reveals only the deepest one.
+	let n_instances = n_lookers + n_tables;
 	let k = n_instances.next_power_of_two().ilog2() as usize;
-	let n_layers = k + max_n.max(m);
+	let n_layers = k + max_n.max(max_m);
 	let FracAddEvalClaim {
 		num_eval: leaf_num,
 		den_eval: leaf_den,
@@ -159,20 +220,21 @@ where
 	// The leaf point splits into the selector coordinates and the shared node point.
 	let (selector_coords, node_point) = leaf_point.split_at(k);
 
-	// Read the claims the verifier cannot derive: the per-looker index evaluations and Y's.
-	let index_eval_claims: Vec<C::Elem> = channel
-		.recv_many(lookers.len())
+	// Read the claims the verifier cannot derive: the per-looker index evaluations and the
+	// per-table pushforward evaluations.
+	let index_evals: Vec<C::Elem> = channel
+		.recv_many(n_lookers)
 		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
-	let pushforward_eval: C::Elem = channel
-		.recv_one()
+	let pushforward_evals: Vec<C::Elem> = channel
+		.recv_many(n_tables)
 		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
 
 	// Rebuild each circuit's padded leaf fraction and check they interpolate to the batch's leaf.
 	//
-	// The node point spans max(max_n, m) coordinates, so an instance over `d` variables is padded
-	// by `max(max_n, m) - d` and its own content is the last `d` coordinates. Padding scales a
-	// numerator by the padding coordinates' equality weight q and sends a denominator through
-	// sel(q, .), so both halves follow from the claims above.
+	// The node point spans max(max_n, max_m) coordinates, so an instance over `d` variables is
+	// padded by `max(max_n, max_m) - d` and its own content is the last `d` coordinates. Padding
+	// scales a numerator by the padding coordinates' equality weight q and sends a denominator
+	// through sel(q, .), so both halves follow from the claims above.
 	let n_node_vars = node_point.len();
 
 	// Every instance's padding weight is a prefix of the node point, so accumulate the prefixes
@@ -185,31 +247,46 @@ where
 		}))
 		.collect::<Vec<_>>();
 
-	let table_pad = n_node_vars - m;
-	let table_point = &node_point[table_pad..];
+	// Each table's own content is the last m_t coordinates of the node point.
+	let table_points = tables
+		.iter()
+		.map(|table| &node_point[n_node_vars - table.n_vars..])
+		.collect::<Vec<_>>();
 
-	// Looker numerators are transparent: gamma^j scales the equality indicator at r_j. The
-	// denominators are c - I_j, from the index evaluations just read.
-	let (mut leaf_nums, mut leaf_dens): (Vec<_>, Vec<_>) =
-		iter::zip(iter::zip(lookers, powers(gamma.clone())), &index_eval_claims)
-			.map(|((looker, power), index_eval)| {
+	// Looker numerators are transparent: its table's gamma^i scales the equality indicator at r_i.
+	// The denominators are that table's c minus the index evaluation just read. The evaluations
+	// arrive table by table, so they are split back into per-table groups here.
+	let mut index_eval_claims = Vec::with_capacity(n_tables);
+	let mut remaining_index_evals = index_evals.as_slice();
+	let (mut leaf_nums, mut leaf_dens): (Vec<_>, Vec<_>) = izip!(&tables, &cs)
+		.flat_map(|(table, c)| {
+			let (table_evals, rest) = remaining_index_evals.split_at(table.lookers.len());
+			remaining_index_evals = rest;
+			index_eval_claims.push(table_evals.to_vec());
+			izip!(&table.lookers, &looker_powers, table_evals).map(|(looker, power, index_eval)| {
 				let pad = n_node_vars - looker.eval_point.len();
 				let content = &node_point[pad..];
-				let num = power * eq_ind::<C::Elem>(looker.eval_point, content);
+				let num = power.clone() * eq_ind::<C::Elem>(looker.eval_point, content);
 				let den = c.clone() - index_eval.clone();
 				fracaddcheck::pad_leaf_fraction((num, den), pad_eqs[pad].clone())
 			})
-			.unzip();
+		})
+		.unzip();
 
-	// The table's numerator is Y, just read. Its denominator is the transparent J - c, the logUp
-	// denominator negated — the table's fraction enters the sum that way, which is what makes the
-	// root numerator vanish.
-	let (table_num, table_den) = fracaddcheck::pad_leaf_fraction(
-		(pushforward_eval.clone(), denominator_eval::<F, C::Elem>(&c, table_point)),
-		pad_eqs[table_pad].clone(),
-	);
-	leaf_nums.push(table_num);
-	leaf_dens.push(table_den);
+	// A table's numerator is its Y_t, just read. Its denominator is the transparent J - c_t, the
+	// logUp denominator negated — every table's fraction enters the sum that way, which is what
+	// makes the root numerator vanish.
+	for ((c, point), pushforward_eval) in
+		iter::zip(iter::zip(&cs, &table_points), &pushforward_evals)
+	{
+		let pad = n_node_vars - point.len();
+		let (num, den) = fracaddcheck::pad_leaf_fraction(
+			(pushforward_eval.clone(), denominator_eval::<F, C::Elem>(c, point)),
+			pad_eqs[pad].clone(),
+		);
+		leaf_nums.push(num);
+		leaf_dens.push(den);
+	}
 
 	leaf_nums.resize(1 << k, C::Elem::zero());
 	leaf_dens.resize(1 << k, C::Elem::one());
@@ -220,41 +297,44 @@ where
 		.assert_zero(leaf_den - evaluate_inplace_scalars(leaf_dens, selector_coords))
 		.map_err(|_| VerificationError::IncorrectIndexEvaluation)?;
 
-	// Reduce the leaf claim on Y and the product claim <T, Y> = e to a single shared evaluation.
-	// The product check binds <T, Y> to the gamma-combination of the looker claims.
-	let claims = lookers
-		.iter()
-		.map(|looker| looker.eval_claim.clone())
-		.collect::<Vec<_>>();
-	let combined_eval_claim = evaluate_univariate(&claims, gamma);
+	// Reduce every table's leaf claim on Y_t and its product claim <T_t, Y_t> = e_t to one shared
+	// evaluation point. A table's product check binds it to the gamma-combination of the claims of
+	// the lookers that read it.
+	let table_claims = izip!(&tables, pushforward_evals, &table_points).map(
+		|(table, pushforward_eval_claim, &point)| {
+			// Its lookers are weighted gamma^0, gamma^1, ..., so the combination is the univariate
+			// evaluation of their claims at gamma.
+			let claims = table
+				.lookers
+				.iter()
+				.map(|looker| looker.eval_claim.clone())
+				.collect::<Vec<_>>();
+			let eval_claim = evaluate_univariate(&claims, gamma);
+			TableClaim {
+				eval_claim,
+				pushforward_eval_claim,
+				pushforward_eval_point: point,
+			}
+		},
+	);
 	let Pushforward {
 		table_eval_point,
 		table_eval_claims,
 		pushforward_eval_claims,
-	} = verify_pushforward::<F, C>(
-		[TableClaim {
-			eval_claim: combined_eval_claim,
-			pushforward_eval_claim: pushforward_eval,
-			pushforward_eval_point: table_point,
-		}],
-		channel,
-	)?;
-	// The reduction runs over the one shared table, so it returns one claim of each kind.
-	let [table_eval_claim]: [_; 1] = table_eval_claims
-		.try_into()
-		.unwrap_or_else(|_| unreachable!("the reduction runs over one table"));
-	let [pushforward_eval_claim]: [_; 1] = pushforward_eval_claims
-		.try_into()
-		.unwrap_or_else(|_| unreachable!("the reduction runs over one table"));
+	} = verify_pushforward::<F, C>(table_claims, channel)?;
 
 	Ok(LogupOutput {
 		table_eval_point,
-		table_eval_claim,
-		pushforward_eval_claim,
-		// Spans the deepest looker, not the whole node point: when the table is deeper than every
-		// looker its extra coordinates belong to the table alone. Looker j reads the last n_j.
+		// Spans the deepest looker, not the whole node point: when a table is deeper than every
+		// looker its extra coordinates belong to the tables alone. A looker reads the last n.
 		index_eval_point: node_point[n_node_vars - max_n..].to_vec(),
-		index_eval_claims,
+		tables: izip!(table_eval_claims, pushforward_eval_claims, index_eval_claims)
+			.map(|(eval_claim, pushforward_claim, index_eval_claims)| LogupTableOutput {
+				eval_claim,
+				pushforward_claim,
+				index_eval_claims,
+			})
+			.collect(),
 	})
 }
 
@@ -268,17 +348,40 @@ mod tests {
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
 	#[test]
-	#[should_panic(expected = "table must have at least one variable")]
+	#[should_panic(expected = "every table must have at least one variable")]
 	fn test_empty_table_panics() {
 		// A zero-variable table has no variable for the GKR circuit to split on.
 		let transcript = ProverTranscript::new(StdChallenger::default());
 		let mut verifier = transcript.into_verifier();
 
 		// The precondition assertion fires before any transcript interaction.
-		let claim = LookerClaim {
-			eval_point: &[],
-			eval_claim: B128::ZERO,
-		};
-		let _ = verify_reduction::<B128, _>(&B128::ZERO, 0, &[claim], &mut verifier);
+		let _ = verify_reduction::<B128, _>(
+			&B128::ZERO,
+			[TableLookup {
+				n_vars: 0,
+				lookers: vec![LookerClaim {
+					eval_point: &[],
+					eval_claim: B128::ZERO,
+				}],
+			}],
+			&mut verifier,
+		);
+	}
+
+	#[test]
+	#[should_panic(expected = "every table must have at least one looker")]
+	fn test_table_without_lookers_panics() {
+		// A table nothing reads has no claim to prove, so it does not belong in the batch.
+		let transcript = ProverTranscript::new(StdChallenger::default());
+		let mut verifier = transcript.into_verifier();
+
+		let _ = verify_reduction::<B128, _>(
+			&B128::ZERO,
+			[TableLookup {
+				n_vars: 3,
+				lookers: Vec::new(),
+			}],
+			&mut verifier,
+		);
 	}
 }

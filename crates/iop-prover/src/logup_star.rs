@@ -16,9 +16,7 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, PackedField};
 pub use binius_ip_prover::logup_star::Looker;
 use binius_ip_prover::logup_star::{self as reduction, witness};
-use binius_math::{
-	FieldSlice, multilinear::eq::eq_ind_partial_eval_in, univariate::evaluate_univariate,
-};
+use binius_math::{FieldSlice, multilinear::eq::eq_ind_partial_eval_in};
 
 use crate::channel::IOPProverChannel;
 
@@ -75,37 +73,39 @@ where
 	Channel: IOPProverChannel<P, A>,
 	A: Allocator,
 {
-	let m = table.log_len();
-
-	// Sample the looker batching challenge, then build the two witnesses that do not depend on
-	// the logUp challenge c.
+	// Sample the looker batching challenge, then build the witnesses that do not depend on the
+	// logUp challenge c.
 	//
-	//     gamma^j * eq_{r_j} = the per-looker scaled numerators
-	//     Y = sum_j gamma^j * (I_j)_* eq_{r_j}     the combined pushforward
+	//     gamma^i * eq_{r_i} = the per-looker scaled numerators
+	//     Y = sum_i gamma^i * (I_i)_* eq_{r_i}     the combined pushforward
+	//
+	// The reduction takes a list of tables; this layer commits one pushforward, so it runs it over
+	// the one table.
 	let gamma = channel.sample();
-	let (numerators, pushforward) = witness::combined_lookers::<A, F, P>(alloc, lookers, gamma, m);
+	let tables = [reduction::TableLookup {
+		table,
+		lookers: lookers.to_vec(),
+	}];
+	let (numerators, pushforwards) = witness::combined_lookers::<A, F, P>(alloc, gamma, &tables);
+	let [pushforward]: [_; 1] = pushforwards
+		.try_into()
+		.unwrap_or_else(|_| unreachable!("this layer runs the reduction over one table"));
 
 	// Commit Y before the reduction, so the logUp challenge binds the commitment.
 	let oracle = tracing::debug_span!("Commit pushforward")
 		.in_scope(|| channel.send_oracle(pushforward.to_ref()));
 
-	// The product check binds <T, Y> to the gamma-combination of the looker claims.
-	let claims = lookers
-		.iter()
-		.map(|looker| looker.eval_claim)
-		.collect::<Vec<_>>();
-	let combined_eval_claim = evaluate_univariate(&claims, &gamma);
-
 	// Run the reduction over the committed Y and the numerators, viewing the channel as IP.
 	let output = reduction::prove_reduction(
 		alloc,
-		table,
-		lookers,
-		combined_eval_claim,
+		gamma,
+		&tables,
 		numerators,
-		pushforward.to_ref(),
+		&[pushforward.to_ref()],
 		channel,
 	);
+	let [table_output] = <[_; 1]>::try_from(output.tables)
+		.unwrap_or_else(|_| unreachable!("this layer runs the reduction over one table"));
 
 	// Open the pushforward relation through the channel; a deferring channel (e.g. BaseFold)
 	// batches it with every other queued relation in `finish()`.
@@ -117,14 +117,14 @@ where
 		oracle,
 		pushforward,
 		transparent,
-		output.pushforward_eval_claim,
+		table_output.pushforward_claim,
 	)]);
 
 	LogupProof {
 		table_eval_point: output.table_eval_point,
-		table_eval_claim: output.table_eval_claim,
+		table_eval_claim: table_output.eval_claim,
 		index_eval_point: output.index_eval_point,
-		index_eval_claims: output.index_eval_claims,
+		index_eval_claims: table_output.index_eval_claims,
 	}
 }
 
