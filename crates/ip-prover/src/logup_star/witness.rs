@@ -57,7 +57,6 @@ where
 	P: PackedField<Scalar = F>,
 {
 	assert!(!lookers.is_empty(), "at least one looker is required");
-	let n = lookers[0].eval_point.len();
 
 	// The scale for looker j is gamma^j.
 	// The powers chain is sequential: each power depends on the last.
@@ -66,24 +65,24 @@ where
 
 	// Build one numerator per looker, fanned out across lookers.
 	// Why fan out: the per-looker expansion is itself parallel.
-	//   But it under-saturates the machine at moderate n.
+	//   But it under-saturates the machine at moderate n_j.
 	//   Spreading the lookers over the cores fills them.
-	// The 2^n backing buffers are drawn from `alloc` up front on this thread, so the parallel
-	// region only fills them — no allocator traffic inside the rayon closures.
+	// The 2^n_j backing buffers are drawn from `alloc` up front on this thread, so the parallel
+	// region only fills them — no allocator traffic inside the rayon closures. Lookers may differ
+	// in length, so each buffer is sized to its own looker.
 	// Invariant: the fill writes results back in looker order (the zip is index-aligned).
 	//   So numerator j stays gamma^j * eq_{r_j}.
-	let packed_len = 1 << n.saturating_sub(P::LOG_WIDTH);
-	let buffers = iter::repeat_with(|| alloc.alloc::<P>(packed_len))
-		.take(lookers.len())
+	let buffers = lookers
+		.iter()
+		.map(|looker| {
+			let packed_len = 1 << looker.eval_point.len().saturating_sub(P::LOG_WIDTH);
+			alloc.alloc::<P>(packed_len)
+		})
 		.collect::<Vec<_>>();
 	let numerators = (buffers, scales.as_slice(), lookers)
 		.into_par_iter()
 		.map(|(buffer, &scale, looker)| {
-			assert_eq!(
-				looker.eval_point.len(),
-				n,
-				"every looker evaluation point must have the same length"
-			);
+			let n = looker.eval_point.len();
 			assert_eq!(
 				looker.index.len(),
 				1 << n,
@@ -93,7 +92,7 @@ where
 			);
 			// Looker j's numerator is gamma^j * eq_{r_j}.
 			// Seeding the expansion with gamma^j folds the scale into the tensor product.
-			// That keeps it to one pass over one 2^n buffer.
+			// That keeps it to one pass over one 2^n_j buffer.
 			scaled_eq_ind_partial_eval_into(looker.eval_point, scale, buffer)
 		})
 		.collect::<Vec<_>>();
