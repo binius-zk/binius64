@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 //! Constraint system and related definitions.
 
+mod chip_layout;
 mod constraint;
 mod layout;
 mod proof;
@@ -10,6 +11,7 @@ mod value_index;
 mod value_vec;
 mod values_data;
 
+pub use chip_layout::*;
 pub use constraint::*;
 pub use layout::*;
 pub use proof::*;
