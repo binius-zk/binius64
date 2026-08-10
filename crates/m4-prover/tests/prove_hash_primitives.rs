@@ -9,11 +9,17 @@
 //! With tracing enabled, the prover's internal spans nest beneath that span.
 //! The per-phase breakdown of proving is then visible.
 //!
+//! The batched runs exist to be read rather than to gate anything, and each proves a workload
+//! sized for a legible timing tree, so they are `#[ignore]`d and need `--ignored` to run. Run them
+//! `--release` as well: an unoptimized prover over these batch sizes is slower by orders of
+//! magnitude. `prove_integer_multiplication_single_instance` is the exception — it proves a batch
+//! of one to cover a degenerate case, costs a fraction of a second, and runs by default.
+//!
 //! Run one with the timing tree:
 //!
 //! ```text
-//! RUST_LOG=debug cargo test -p binius-m4-prover --test prove_hash_primitives \
-//!     prove_blake3_compression -- --nocapture
+//! RUST_LOG=debug cargo test --release -p binius-m4-prover --test prove_hash_primitives \
+//!     prove_blake3_compression -- --ignored --nocapture
 //! ```
 
 use std::array;
@@ -305,6 +311,7 @@ fn fill_imul(inputs: &[Wire; 2], _instance: usize, w: &mut BatchWitnessFiller<'_
 // Each instance packs two lanes, so the instance count is half the compression count. Overridable
 // via `LOG_BLAKE3_COMPRESSIONS`.
 #[test]
+#[ignore = "proving run for its timing tree; use --ignored --release"]
 fn prove_blake3_compression() {
 	let log_compressions = log_size_from_env("LOG_BLAKE3_COMPRESSIONS", 14);
 	assert!(log_compressions >= 1, "LOG_BLAKE3_COMPRESSIONS must be at least 1");
@@ -320,6 +327,7 @@ fn prove_blake3_compression() {
 // smaller share of the committed trace is padding. The instance count is overridable via
 // `LOG_BLAKE3_3X_INSTANCES`; each instance holds 6 compressions.
 #[test]
+#[ignore = "proving run for its timing tree; use --ignored --release"]
 fn prove_blake3_compression_3x() {
 	let log_instances = log_size_from_env("LOG_BLAKE3_3X_INSTANCES", 13);
 	let (circuit, inputs) = build_blake3_circuit::<3>();
@@ -332,6 +340,7 @@ fn prove_blake3_compression_3x() {
 //
 // Overridable via `LOG_KECCAK_PERMUTATIONS`.
 #[test]
+#[ignore = "proving run for its timing tree; use --ignored --release"]
 fn prove_keccak_permutation() {
 	let log_permutations = log_size_from_env("LOG_KECCAK_PERMUTATIONS", 13);
 	let (circuit, inputs) = build_keccak_circuit::<1>();
@@ -346,6 +355,7 @@ fn prove_keccak_permutation() {
 // of the committed trace is padding. The instance count is overridable via
 // `LOG_KECCAK_3X_INSTANCES`; each instance holds 3 permutations.
 #[test]
+#[ignore = "proving run for its timing tree; use --ignored --release"]
 fn prove_keccak_permutation_3x() {
 	let log_instances = log_size_from_env("LOG_KECCAK_3X_INSTANCES", 13);
 	let (circuit, inputs) = build_keccak_circuit::<3>();
@@ -361,6 +371,7 @@ fn prove_keccak_permutation_3x() {
 // prover/verifier compiler disagree and fail the trace opening. Overridable via
 // `LOG_IMUL_INSTANCES`.
 #[test]
+#[ignore = "proving run for its timing tree; use --ignored --release"]
 fn prove_integer_multiplication() {
 	let log_instances = log_size_from_env("LOG_IMUL_INSTANCES", 13);
 	let (circuit, inputs) = build_imul_circuit();
