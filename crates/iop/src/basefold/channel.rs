@@ -83,13 +83,18 @@ where
 	/// Consumes the channel and verifies the single combined opening over **all** committed
 	/// oracles.
 	///
-	/// All oracle relations queued by
-	/// [`verify_oracle_relations`](IOPVerifierChannel::verify_oracle_relations) across every call
-	/// are processed here in one batch: masking, one batched sumcheck reducing the masked claims
-	/// to a shared point `r`, then one combined FRI opening over every committed oracle
-	/// (in oracle-index order). Because the whole opening is deferred to this point, every oracle
-	/// is committed and there is a single sumcheck point, so the precomputed combined `FRIParams`
-	/// (`optimal_for_batch` over all oracle specs) serves the opening.
+	/// Opens every queued relation in one batch:
+	///
+	/// ```text
+	/// 1. batch each oracle's claims into one relation
+	/// 2. mask the ZK oracles' claims
+	/// 3. one batched sumcheck reduces them to a shared point `r`
+	/// 4. one combined FRI opens every oracle, in oracle-index order
+	/// ```
+	///
+	/// Relations reach the queue through [`IOPVerifierChannel::verify_oracle_relations`].
+	/// Deferring the whole opening to here is what makes step 3 a single sumcheck.
+	/// So the combined `FRIParams` precomputed over every oracle spec serves it.
 	///
 	/// Returns the Merkle channel, so a caller can still reach what it accumulated.
 	pub fn finish(self) -> Result<Channel, Error> {
@@ -127,15 +132,21 @@ where
 /// point `r`, then opens all committed oracles together with a single combined FRI over the
 /// piecewise-concatenated oracle.
 ///
-/// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
-/// each reduced eval lines up with its batched-claim coefficient), while the per-oracle evaluations
-/// α_i are indexed by oracle index. Each relation carries its oracle's index, so the two orders are
-/// reconciled by indexing rather than by sorting the relations; `oracle_specs` and
-/// `oracle_commitments` are indexed by oracle index.
+/// One queued relation opens one oracle against one transparent multilinear.
+/// An oracle claimed at several points therefore arrives as several relations.
+/// [`combine_relations_per_oracle`] batches those into one relation per oracle first.
+/// So everything below sees exactly one relation per committed oracle.
 ///
-/// Phase B collapses the oracle-index variables up front at sampled batching challenges `r'`: the
-/// combined target is `s' = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j)` with `e = eq_ind_partial_eval(r')`,
-/// and the single combined FRI (`fri_params`) opens all `k` committed `[π_i ‖ ω_i]` codewords.
+/// Two orders meet here, and each relation's oracle index reconciles them:
+///
+/// ```text
+/// arrival order    -> the masking σ_i and the batched sumcheck's claims
+/// oracle index     -> α_i, `oracle_specs`, `oracle_commitments`
+/// ```
+///
+/// Phase B collapses the oracle-index variables at sampled batching challenges `r'`.
+/// The combined target is `s' = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j)` for `e = eq_ind_partial_eval(r')`.
+/// One combined FRI then opens all `k` committed `[π_i ‖ ω_i]` codewords.
 fn verify_batch_zk_basefold<F, Channel>(
 	channel: &mut Channel,
 	oracle_specs: &[OracleSpec],
@@ -148,6 +159,10 @@ where
 	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
 	let n_committed = oracle_commitments.len();
+
+	// Batch each oracle's claims into one relation, before σ: a σ below is an inner product
+	// against the *combined* transparent.
+	let relations = combine_relations_per_oracle(relations, n_committed, channel);
 
 	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
 	let max_n = oracle_specs
@@ -242,6 +257,92 @@ where
 	)?;
 
 	Ok(())
+}
+
+/// Batches the queued relations into exactly one relation per committed oracle.
+///
+/// One committed message may be opened at several points.
+/// Those arrive as several relations naming the same oracle.
+/// A sampled `lambda` batches their claims into one:
+///
+/// ```text
+/// T_i = sum_j lambda_i^j * t_j     the combined transparent
+/// S_i = sum_j lambda_i^j * s_j     the combined claim
+/// ```
+///
+/// The inner product is linear in the transparent.
+/// So `<pi_i, T_i> = S_i` holds exactly when every `<pi_i, t_j> = s_j` does.
+/// A cheating prover survives with probability at most `(n_claims - 1) / |F|`.
+///
+/// An oracle with one claim samples no `lambda` and passes through untouched.
+/// So a batch of single-claim relations leaves the transcript as if this step did not exist.
+///
+/// The returned relations follow the order the oracles were *first* queued in.
+/// That is not ascending oracle index; the prover groups its openings the same way.
+///
+/// # Panics
+///
+/// Panics unless every committed oracle carries at least one relation.
+/// These relations are the verifier's own, not the prover's.
+/// So a mismatch is a bug in the calling protocol, never a malformed proof.
+fn combine_relations_per_oracle<F, Channel>(
+	relations: Vec<OracleLinearRelation<BaseFoldOracle, F>>,
+	n_committed: usize,
+	channel: &mut Channel,
+) -> Vec<OracleLinearRelation<BaseFoldOracle, F>>
+where
+	F: BinaryField,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
+{
+	// Bucket the relations by oracle, recording the order the oracles first appear in.
+	let mut groups: Vec<(BaseFoldOracle, Vec<OracleLinearRelation<BaseFoldOracle, F>>)> =
+		Vec::new();
+	let mut group_of_oracle = vec![None; n_committed];
+	for relation in relations {
+		let index = relation.oracle.index;
+		let group = *group_of_oracle[index].get_or_insert_with(|| {
+			groups.push((relation.oracle, Vec::new()));
+			groups.len() - 1
+		});
+		groups[group].1.push(relation);
+	}
+
+	assert_eq!(
+		groups.len(),
+		n_committed,
+		"every committed oracle must carry at least one relation"
+	);
+
+	groups
+		.into_iter()
+		.map(|(oracle, mut group)| {
+			// A single claim is already the combined claim; batching it would only add a challenge.
+			if group.len() == 1 {
+				return group.pop().expect("the group holds one relation");
+			}
+
+			// SOUNDNESS: `lambda` is drawn after the claims are bound to the transcript, so the
+			// prover cannot choose a claim as a function of it.
+			let lambda = channel.sample();
+
+			let (transparents, claims): (Vec<_>, Vec<_>) = group
+				.into_iter()
+				.map(|relation| (relation.transparent, relation.claim))
+				.unzip();
+
+			OracleLinearRelation {
+				oracle,
+				transparent: Box::new(move |point: &[F]| {
+					let evals = transparents
+						.iter()
+						.map(|transparent| transparent(point))
+						.collect::<Vec<_>>();
+					evaluate_univariate(&evals, &lambda)
+				}),
+				claim: evaluate_univariate(&claims, &lambda),
+			}
+		})
+		.collect()
 }
 
 impl<F, Channel> IPVerifierChannel<F> for BaseFoldVerifierChannel<'_, F, Channel>

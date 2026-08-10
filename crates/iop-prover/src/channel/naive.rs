@@ -6,13 +6,13 @@ use binius_compute::GlobalAllocator;
 use binius_field::{Field, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, FieldSlice, inner_product::inner_product_buffers};
+use binius_math::{FieldSlice, inner_product::inner_product_buffers};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::channel::IOPProverChannel;
+use crate::channel::{IOPProverChannel, OracleOpening, TransparentClaim};
 
 /// Oracle handle returned by [`NaiveProverChannel::send_oracle`].
 #[derive(Debug, Clone, Copy)]
@@ -154,13 +154,19 @@ where
 
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
-		>,
+		openings: impl IntoIterator<Item = OracleOpening<Self::Oracle, P, GlobalAllocator>>,
 	) {
 		// For the naive channel, we write the transparent polynomial to the transcript
 		// so the verifier can read it and verify the inner product directly.
-		for (oracle, message, transparent_poly, eval_claim) in oracle_relations {
+		//
+		// Each claim is written on its own, in the order the verifier queues its relations.
+		// So this channel needs no batching challenge.
+		for OracleOpening {
+			oracle,
+			message,
+			claims,
+		} in openings
+		{
 			let index = oracle.index;
 			assert!(index < self.n_committed, "oracle index {index} out of bounds");
 
@@ -172,20 +178,22 @@ where
 				message.log_len()
 			);
 
-			// Write the transparent polynomial to the transcript
-			self.transcript
-				.message()
-				.write_scalar_iter(transparent_poly.iter_scalars());
+			for TransparentClaim { transparent, claim } in claims {
+				// Write the transparent polynomial to the transcript
+				self.transcript
+					.message()
+					.write_scalar_iter(transparent.iter_scalars());
 
-			// Sample evaluation point challenges (verifier will sample the same)
-			let _point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
+				// Sample evaluation point challenges (verifier will sample the same)
+				let _point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
 
-			// Debug assertion: prover should provide consistent eval claims
-			let actual_eval: F = inner_product_buffers(&message, &transparent_poly);
-			debug_assert_eq!(
-				actual_eval, eval_claim,
-				"NaiveProverChannel: eval_claim mismatch for oracle {index}"
-			);
+				// Debug assertion: prover should provide consistent eval claims
+				let actual_eval: F = inner_product_buffers(&message, &transparent);
+				debug_assert_eq!(
+					actual_eval, claim,
+					"NaiveProverChannel: eval_claim mismatch for oracle {index}"
+				);
+			}
 		}
 	}
 }

@@ -5,7 +5,10 @@ use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::StdHashSuite;
-use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
+use binius_iop_prover::{
+	basefold::compiler::BaseFoldProverCompiler,
+	channel::{IOPProverChannel, OracleOpening},
+};
 use binius_ip_prover::sumcheck::{
 	MleToSumCheckEvaluator,
 	batch::batch_prove_and_write_evals,
@@ -346,7 +349,12 @@ impl IOPProver {
 
 		// Queue the trace opening against the ring-switch's transparent multilinear.
 		// The final call runs the single combined FRI opening and writes it to the transcript.
-		channel.prove_oracle_relations([(trace_oracle, trace_packed, rs_eq_ind, sumcheck_claim)]);
+		channel.prove_oracle_relations([OracleOpening::single(
+			trace_oracle,
+			trace_packed,
+			rs_eq_ind,
+			sumcheck_claim,
+		)]);
 	}
 }
 

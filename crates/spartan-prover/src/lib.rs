@@ -40,7 +40,10 @@ use std::{
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
+use binius_iop_prover::{
+	basefold::compiler::BaseFoldProverCompiler,
+	channel::{IOPProverChannel, OracleOpening},
+};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{quadratic_mlecheck_prover, zk_mlecheck},
@@ -319,9 +322,19 @@ impl<F: Field> IOPProver<F> {
 
 		// Prove all oracle relations.
 		channel.prove_oracle_relations([
-			(precommit_oracle, precommit_packed, precommit_wiring_poly, precommit_claim),
-			(private_oracle, private_packed, private_wiring_poly, private_claim),
-			(mask_oracle, masks_buffer, libra_eval_tensor, mask_eval),
+			OracleOpening::single(
+				precommit_oracle,
+				precommit_packed,
+				precommit_wiring_poly,
+				precommit_claim,
+			),
+			OracleOpening::single(
+				private_oracle,
+				private_packed,
+				private_wiring_poly,
+				private_claim,
+			),
+			OracleOpening::single(mask_oracle, masks_buffer, libra_eval_tensor, mask_eval),
 		]);
 
 		Ok(())

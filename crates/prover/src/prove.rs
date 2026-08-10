@@ -10,7 +10,10 @@ use binius_core::{
 };
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
+use binius_iop_prover::{
+	basefold::compiler::BaseFoldProverCompiler,
+	channel::{IOPProverChannel, OracleOpening},
+};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec,
@@ -332,7 +335,12 @@ impl IOPProver {
 
 		// Prove oracle relations via channel (runs BaseFold internally). The intmul pushforward
 		// relation, when the IntMul reduction ran, was already queued inside phase 5.
-		channel.prove_oracle_relations([(trace_oracle, witness_packed, rs_eq_ind, sumcheck_claim)]);
+		channel.prove_oracle_relations([OracleOpening::single(
+			trace_oracle,
+			witness_packed,
+			rs_eq_ind,
+			sumcheck_claim,
+		)]);
 
 		drop(pcs_guard);
 

@@ -18,7 +18,7 @@ use binius_field::{BinaryField, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{
 	basefold::channel::{BaseFoldOracle, BaseFoldProverChannel},
-	channel::IOPProverChannel,
+	channel::{IOPProverChannel, OracleOpening},
 	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::IPProverChannel;
@@ -290,20 +290,20 @@ where
 
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldVec<P, A>, FieldVec<P, A>, P::Scalar),
-		>,
+		openings: impl IntoIterator<Item = OracleOpening<Self::Oracle, P, A>>,
 	) {
-		let oracle_relations = oracle_relations.into_iter().collect::<Vec<_>>();
+		let openings = openings.into_iter().collect::<Vec<_>>();
 
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.
-		for (_, _, _, claim) in &oracle_relations {
-			self.inner_channel.send_one(*claim);
-			self.interaction.push(*claim);
+		//
+		// An oracle opened at several points sends one evaluation per claim, in claim order.
+		for claim in openings.iter().flat_map(|opening| &opening.claims) {
+			self.inner_channel.send_one(claim.claim);
+			self.interaction.push(claim.claim);
 		}
 
-		self.inner_channel.prove_oracle_relations(oracle_relations)
+		self.inner_channel.prove_oracle_relations(openings)
 	}
 }

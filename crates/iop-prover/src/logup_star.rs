@@ -20,7 +20,7 @@ use binius_math::{
 	FieldSlice, multilinear::eq::eq_ind_partial_eval_in, univariate::evaluate_univariate,
 };
 
-use crate::channel::IOPProverChannel;
+use crate::channel::{IOPProverChannel, OracleOpening};
 
 /// The reduced claims of a committed logUp* proof.
 ///
@@ -113,7 +113,7 @@ where
 	//     <Y, eq_r'> = Y(r') = pushforward_eval_claim
 	let _open_guard = tracing::debug_span!("Open pushforward relation").entered();
 	let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point);
-	channel.prove_oracle_relations([(
+	channel.prove_oracle_relations([OracleOpening::single(
 		oracle,
 		pushforward,
 		transparent,

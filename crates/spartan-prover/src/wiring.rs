@@ -420,7 +420,9 @@ mod tests {
 		use binius_iop::channel::{
 			IOPVerifierChannel, OracleLinearRelation, OracleSpec, naive::NaiveVerifierChannel,
 		};
-		use binius_iop_prover::channel::{IOPProverChannel, naive::NaiveProverChannel};
+		use binius_iop_prover::channel::{
+			IOPProverChannel, OracleOpening, naive::NaiveProverChannel,
+		};
 		use binius_ip::channel::IPVerifierChannel;
 		use binius_ip_prover::channel::IPProverChannel;
 		use binius_math::{inner_product::inner_product_buffers, test_utils::random_field_buffer};
@@ -504,7 +506,7 @@ mod tests {
 		);
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relations([(
+		prover_channel.prove_oracle_relations([OracleOpening::single(
 			witness_oracle,
 			private_buf,
 			wiring_poly.clone(),
