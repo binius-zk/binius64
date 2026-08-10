@@ -434,6 +434,49 @@ impl CircuitBuilder {
 			.insert(wire);
 	}
 
+	/// Promotes a gate-created wire to a public output.
+	///
+	/// The wire moves from the private segment to the inout one, joining the circuit's public
+	/// interface. This is what a circuit exposing a gadget's result wants: declaring a separate
+	/// inout wire and asserting the result against it costs a second committed word and a
+	/// constraint whenever the result is a wire that has to be committed anyway.
+	///
+	/// The value is still derived by the gate producing it, so a witness filler must *not* assign
+	/// it — unlike a wire from [`Self::add_inout`], which the filler is required to set.
+	///
+	/// Promoting also pins the wire, so this subsumes [`Self::force_commit`] rather than needing
+	/// it alongside.
+	///
+	/// # Position in the segment
+	///
+	/// The inout segment is ordered by wire creation, so a promoted wire follows the declared
+	/// inout wires and sits among its fellow promotions in the order their gates created them —
+	/// which is not necessarily the order they are promoted in. That is invisible to a caller
+	/// filling by [`Wire`], but a caller building the positional public-input vector a verifier
+	/// takes should read each index back with
+	/// [`Circuit::witness_index`](super::Circuit::witness_index) rather than assume promotion
+	/// order.
+	///
+	/// # Panics
+	///
+	/// Panics unless the wire is a gate-created internal wire. A constant, an input, or an
+	/// already-public wire has nothing to promote.
+	pub fn mark_inout(&self, wire: Wire) {
+		{
+			let mut graph = self.graph_mut();
+			assert!(
+				matches!(graph.wire_kind(wire), WireKind::Internal),
+				"only a gate-created wire can be promoted to a public output"
+			);
+			graph.wires[wire] = WireKind::Inout;
+		}
+
+		// Dead-code elimination and CSE already treat an inout wire as observable, but gate fusion
+		// reads only the pinned set: without this it would inline a linear definition and leave the
+		// public word with no constraint defining it.
+		self.force_commit(wire);
+	}
+
 	/// Shares the value-vector slots of values the constraint system never references.
 	///
 	/// # Overview

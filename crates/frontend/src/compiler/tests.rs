@@ -983,3 +983,107 @@ fn test_zero_constant_not_in_binius64_operands() {
 		assert_no_zero_constants(&constraint.0, "BMUL");
 	}
 }
+
+// Promoting a gate output to a public output costs neither a second committed word nor a
+// constraint, unlike declaring an inout wire and asserting the gate output against it.
+//
+// The three circuits below compute the same conjunction and differ only in how its result is
+// exposed. `a & b` is an AND-gate output, so it occupies a committed word in every one of them.
+#[test]
+fn mark_inout_promotes_without_duplicating() {
+	// The inout count, the private count, and the AND-constraint count of one circuit.
+	let shape = |build: &dyn Fn(&CircuitBuilder)| {
+		let builder = CircuitBuilder::new();
+		build(&builder);
+		let circuit = builder.build();
+		let layout = circuit.value_vec_layout();
+		(layout.n_inout, layout.n_private(), circuit.constraint_system().and_constraints.len())
+	};
+
+	// The result kept alive by pinning: private, and not part of the public interface.
+	let (pinned_inout, pinned_private, pinned_and) = shape(&|builder| {
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		builder.force_commit(builder.band(a, b));
+	});
+
+	// The result asserted against a separately declared public output.
+	let (asserted_inout, asserted_private, asserted_and) = shape(&|builder| {
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		let out = builder.add_inout();
+		builder.assert_eq("out", out, builder.band(a, b));
+	});
+
+	// The result promoted in place.
+	let (promoted_inout, promoted_private, promoted_and) = shape(&|builder| {
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		builder.mark_inout(builder.band(a, b));
+	});
+
+	// Asserting duplicates the conjunction: its own committed word, plus the declared output's,
+	// plus the AND constraint tying them together.
+	assert_eq!(asserted_inout + asserted_private, pinned_inout + pinned_private + 1);
+	assert_eq!(asserted_and, pinned_and + 1);
+
+	// Promoting costs nothing over pinning — it is the same word, relabelled public.
+	assert_eq!(promoted_inout + promoted_private, pinned_inout + pinned_private);
+	assert_eq!(promoted_and, pinned_and);
+	assert_eq!(promoted_inout, pinned_inout + 1);
+	assert_eq!(promoted_private, pinned_private - 1);
+}
+
+// A promoted wire is derived by the gate that produces it, so a filler leaves it alone and reads
+// the computed value back — unlike a declared inout wire, which the filler must assign.
+//
+// The XOR is the case promotion has to pin: gate fusion inlines a linear definition into its
+// consumers, which would leave the public word with nothing defining it.
+#[test]
+fn mark_inout_wire_is_derived_by_population() {
+	let builder = CircuitBuilder::new();
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let c = builder.add_inout();
+	// The XOR feeds the AND, so gate fusion has somewhere to inline it — the case promotion has
+	// to pin against.
+	let xor = builder.bxor(a, b);
+	let and = builder.band(xor, c);
+	builder.mark_inout(xor);
+	builder.mark_inout(and);
+	let circuit = builder.build();
+
+	// Both promoted wires are public.
+	assert_eq!(circuit.value_vec_layout().n_inout, 5);
+	for wire in [xor, and] {
+		assert_eq!(circuit.witness_index(wire).segment(), ValueSegment::InOut);
+	}
+
+	// Only the two inputs are assigned; the derived words are left unset.
+	let mut filler = circuit.new_witness_filler();
+	filler[a] = Word(0xF0F0_F0F0_F0F0_F0F0);
+	filler[b] = Word(0xFF00_FF00_FF00_FF00);
+	filler[c] = Word(0xFFFF_0000_FFFF_0000);
+	circuit.populate_wire_witness(&mut filler).unwrap();
+
+	assert_eq!(filler[xor], Word(0x0FF0_0FF0_0FF0_0FF0));
+	assert_eq!(filler[and], Word(0x0FF0_0000_0FF0_0000));
+
+	// Every promoted word is defined by a constraint. This is what pinning buys for the XOR: left
+	// unpinned, gate fusion would inline the linear definition and leave the public word free for
+	// a prover to choose.
+	let cs = circuit.constraint_system();
+	let operands = cs
+		.zero_constraints
+		.iter()
+		.flat_map(|c| c.0.iter())
+		.chain(cs.and_constraints.iter().flat_map(|c| c.0.iter()));
+	let constrained: HashSet<ValueIndex> =
+		operands.flatten().map(|term| term.value_index).collect();
+	for wire in [xor, and] {
+		assert!(
+			constrained.contains(&circuit.witness_index(wire)),
+			"a promoted word must be defined by a constraint"
+		);
+	}
+}

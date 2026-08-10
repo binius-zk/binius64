@@ -217,7 +217,9 @@ impl Circuit {
 	/// - [`CircuitBuilder::add_witness`] that were not created by the gates,
 	///
 	/// The wires created by [`CircuitBuilder::add_constant`] (and its convenience methods)
-	/// are automatically populated by this function as well.
+	/// are automatically populated by this function as well. So is a wire promoted with
+	/// [`CircuitBuilder::mark_inout`]: it is public but gate-derived, so the caller leaves it
+	/// unset and reads the computed value back afterwards.
 	///
 	/// # Errors
 	///
@@ -228,6 +230,7 @@ impl Circuit {
 	/// [`CircuitBuilder::add_constant`]: super::CircuitBuilder::add_constant
 	/// [`CircuitBuilder::add_inout`]: super::CircuitBuilder::add_inout
 	/// [`CircuitBuilder::add_witness`]: super::CircuitBuilder::add_witness
+	/// [`CircuitBuilder::mark_inout`]: super::CircuitBuilder::mark_inout
 	pub fn populate_wire_witness(&self, w: &mut WitnessFiller) -> Result<(), PopulateError> {
 		// Fill the constant part from the witness.
 		for (index, constant) in self.constraint_system.constants.iter().enumerate() {
@@ -249,14 +252,17 @@ impl Circuit {
 	/// instance's [`ValueVec`] uses) and columns are instances. Its height must be the full
 	/// value-vector length (including scratch) and its width is the instance count.
 	///
-	/// The caller must fill each instance's input rows first — the witness wires and any inout
-	/// wires. This function fills the constant rows (broadcasting each constant across every
+	/// The caller must fill each instance's input rows first — the witness wires and any declared
+	/// inout wires, but not a wire promoted with [`CircuitBuilder::mark_inout`], which its gate
+	/// derives. This function fills the constant rows (broadcasting each constant across every
 	/// instance) and then evaluates the circuit gate-by-gate for all instances.
 	///
 	/// # Errors
 	///
 	/// If any instance is not satisfiable, returns an error naming the lowest-indexed failing
 	/// instance and its assertion failures.
+	///
+	/// [`CircuitBuilder::mark_inout`]: super::CircuitBuilder::mark_inout
 	pub fn populate_wire_witness_batched(
 		&self,
 		values: &mut StridedArray2DViewMut<'_, Word>,
