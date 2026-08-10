@@ -2,7 +2,6 @@
 // Copyright 2026 The Binius Developers
 
 use binius_core::word::Word;
-use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
 /// The value vector's two committed segments, each at the width the protocol addresses it at.
 ///

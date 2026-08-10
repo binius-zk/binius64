@@ -73,14 +73,13 @@ where
 	A: Allocator,
 {
 	let SumcheckOutput {
-		challenges: mut r_jr_s,
+		challenges: mut r_j,
 		eval: gamma,
 	} = phase_1_output;
-	// Split challenges as r_j,r_s where r_j is the first Word::LOG_BITS
-	// variables and r_s is the last Word::LOG_BITS variables
-	// Thus r_s are the more significant variables.
-	let r_s = r_jr_s.split_off(Word::LOG_BITS);
-	let r_j = r_jr_s;
+	// Split the challenges as `r_j, r_s, r_v`: the bit position, then the shift amount, then the
+	// shift variant, in increasing order of significance.
+	let r_v = r_j.split_off(Word::LOG_BITS * 2);
+	let r_s = r_j.split_off(Word::LOG_BITS);
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
@@ -91,7 +90,7 @@ where
 	let hidden_folded = fold_words::<_, P, _>(alloc, words.hidden, r_j_tensor.as_ref());
 
 	let (public_monster, hidden_monster) =
-		build_monster_segments(alloc, key_collection, prepared, domain_subspace, &r_j, &r_s);
+		build_monster_segments(alloc, key_collection, prepared, domain_subspace, &r_j, &r_s, &r_v);
 
 	run_sumcheck(
 		&public_folded,

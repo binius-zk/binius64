@@ -1,22 +1,22 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, iter, ops::Range};
+use std::{iter, ops::Range};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
-use binius_ip::sumcheck::{SumcheckOutput, common::RoundCoeffs};
+use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	sumcheck::{bivariate_product_prover, common::SumcheckProver},
+	sumcheck::{ProveSingleOutput, bivariate_product_prover, prove_single},
 };
 use binius_math::{BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product_buffers};
 use binius_utils::rayon::{
 	prelude::*,
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
-use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
+use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 use bytemuck::zeroed_vec;
 use itertools::izip;
 use tracing::instrument;
@@ -25,15 +25,18 @@ use super::{
 	SegmentWords,
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment},
-	monster::build_h_parts,
+	monster::build_h,
 };
 
-// This is the number of variables in the g (and h) multilinears of phase 1.
-const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
+/// The number of variables in the g (and h) multilinear of phase 1.
+///
+/// The axes run, from the low index positions up: the bit position within a word, the shift
+/// amount, and the shift variant.
+pub const PHASE_1_LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS + LOG_SHIFT_VARIANT_COUNT;
 
-/// Constructs the "g" multilinear parts for the BITAND, INTMUL and BMUL operations.
 /// Proves the first phase of the shift reduction.
-/// Computes the g and h multilinears and performs the sumcheck.
+///
+/// Builds the g and h multilinears and runs one sumcheck over their product.
 #[instrument(skip_all, name = "prover_phase_1")]
 pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
@@ -49,49 +52,32 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	// Build the g parts for the public and hidden segments separately, then sum them. The public
-	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
-	let mut g_parts =
-		build_g_parts::<_, P, _>(alloc, words.public, &key_collection.public, prepared);
-	let hidden_g_parts =
-		build_g_parts::<_, P, _>(alloc, words.hidden, &key_collection.hidden, prepared);
-	for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
-		for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
-			*slot += *add;
-		}
+	// Build the g multilinear for the public and hidden segments separately, then sum them. The
+	// public words are the prefix of `words`, and each segment's key ranges are segment-relative.
+	let mut g = build_g::<_, P, _>(alloc, words.public, &key_collection.public, prepared);
+	let hidden_g = build_g::<_, P, _>(alloc, words.hidden, &key_collection.hidden, prepared);
+	for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
+		*slot += *add;
 	}
 
 	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
-	let h_parts = build_h_parts(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
+	let h = build_h(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
 
-	run_phase_1_sumcheck(g_parts, h_parts, channel, alloc)
+	run_phase_1_sumcheck(g, h, channel, alloc)
 }
 
 /// Runs the phase 1 sumcheck protocol for shift constraint verification.
 ///
-/// Executes a sumcheck over bivariate products of g and h multilinear parts for each
-/// operation (BITAND, INTMUL). The protocol proves that the sum of g·h products across
-/// all shift variants equals the claimed batched evaluation.
+/// One bivariate-product sumcheck over `g` and `h`, both multilinears of [`PHASE_1_LOG_LEN`]
+/// variables. The shift variant is the high [`LOG_SHIFT_VARIANT_COUNT`] variables of each, so the
+/// sumcheck folds the variant axis rather than the prover summing a separate claim per variant.
 ///
-/// # Protocol Structure
-///
-/// For each operation, creates 3 bivariate product sumcheck provers (one per shift variant):
-/// - g_sll · h_sll with claim `sll_sum`
-/// - g_srl · h_srl with claim `srl_sum`
-/// - g_sra · h_sra with claim `sar_sum = total_sum - sll_sum - srl_sum`
-///
-/// The g parts incorporate batching randomness (lambda weighting), while h parts
-/// encode the shift operation behavior at the univariate challenge points.
-///
-/// # Parameters
-///
-/// - `g_parts`: g multilinear parts for each operation (witness-dependent)
-/// - `h_parts`: h multilinear parts for each operation (challenge-dependent)
-/// - `sums`: Expected total sums for each operation from lambda-weighted evaluation claims
+/// The `g` multilinear carries the witness and the batching randomness; `h` encodes what each
+/// shift does at the univariate challenge point.
 ///
 /// # Returns
 ///
-/// `SumcheckOutput` containing the challenge vector and final evaluation `gamma`
+/// `SumcheckOutput` containing the challenge vector and the final evaluation `gamma`.
 #[instrument(skip_all, name = "run_sumcheck")]
 pub fn run_phase_1_sumcheck<
 	F: Field,
@@ -99,69 +85,31 @@ pub fn run_phase_1_sumcheck<
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 >(
-	g_parts: [FieldVec<P, A>; SHIFT_VARIANT_COUNT],
-	h_parts: [FieldVec<P, A>; SHIFT_VARIANT_COUNT],
+	g: FieldVec<P, A>,
+	h: FieldVec<P, A>,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> SumcheckOutput<F> {
-	// Build one shared bivariate-product prover per shift variant.
-	let mut provers = iter::zip(g_parts, h_parts)
-		.map(|(g_part, h_part)| {
-			let sum = inner_product_buffers(&g_part, &h_part);
-			bivariate_product_prover(alloc, [g_part, h_part], sum)
-		})
-		.collect::<Vec<_>>();
+	let sum = inner_product_buffers(&g, &h);
+	let prover = bivariate_product_prover(alloc, [g, h], sum);
 
-	// Perform the sumcheck rounds, collecting challenges.
-	let n_vars = 2 * Word::LOG_BITS;
-	let mut challenges = Vec::with_capacity(n_vars);
-	for _ in 0..n_vars {
-		let mut all_round_coeffs = Vec::new();
-		for prover in &mut provers {
-			all_round_coeffs.extend(prover.execute());
-		}
-
-		let summed_round_coeffs = all_round_coeffs
-			.into_iter()
-			.rfold(RoundCoeffs::default(), |acc, coeffs| acc + &coeffs);
-
-		let round_proof = summed_round_coeffs.truncate();
-
-		channel.send_many(round_proof.coeffs());
-
-		let challenge = channel.sample();
-		challenges.push(challenge);
-
-		for prover in &mut provers {
-			prover.fold(challenge);
-		}
-	}
+	let ProveSingleOutput {
+		multilinear_evals,
+		mut challenges,
+	} = prove_single(prover, channel);
 	challenges.reverse();
 
-	let multilinear_evals = provers
-		.into_iter()
-		.map(|prover| prover.finish())
-		.collect::<Vec<Vec<F>>>();
-
-	// Evaluate the composition polynomial to compute `gamma`.
-	let gamma = multilinear_evals
-		.into_iter()
-		.map(|prover_evals| {
-			assert_eq!(prover_evals.len(), 2);
-			let h_eval = prover_evals[0];
-			let g_eval = prover_evals[1];
-			h_eval * g_eval
-		})
-		.sum();
+	let [g_eval, h_eval] = multilinear_evals
+		.try_into()
+		.expect("prover has 2 multilinear polynomials");
 
 	SumcheckOutput {
 		challenges,
-		eval: gamma,
+		eval: g_eval * h_eval,
 	}
 }
 
-/// Constructs the "g" multilinear parts for the BITAND, INTMUL and BMUL operations, for one key
-/// segment.
+/// Constructs the phase-1 "g" multilinear for one key segment.
 ///
 /// This builds the g multilinear polynomials used in phase 1 of the shift protocol, over the words
 /// of a single value-vector segment (public or hidden). It constructs one multilinear polynomial
@@ -184,20 +132,21 @@ pub fn run_phase_1_sumcheck<
 ///
 /// # Returns
 ///
-/// An array of multilinear extensions of each shift variant part. Within a part, the rows of
-/// `Word::BITS` scalars run in order of shift amount.
+/// One multilinear of [`PHASE_1_LOG_LEN`] variables holding every shift variant's part: the
+/// variant indexes the high [`LOG_SHIFT_VARIANT_COUNT`] variables, and within a variant the rows
+/// of `Word::BITS` scalars run in order of shift amount.
 ///
 /// # Usage
 ///
 /// Used in phase 1 to construct the constant size g multilinears
 /// that will participate in the phase 1 sumcheck protocol.
-#[instrument(skip_all, name = "build_g_parts")]
-pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
+#[instrument(skip_all, name = "build_g")]
+pub fn build_g<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	words: &[Word],
 	segment: &KeySegment,
 	prepared: &PreparedOperatorClaims<F>,
-) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
+) -> FieldVec<P, A> {
 	// One row of `Word::BITS` scalars per shift the segment uses.
 	let row_len = Word::BITS >> P::LOG_WIDTH;
 	let acc_size = segment.dense_shift_enc.len() * row_len;
@@ -294,22 +243,20 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 		// An empty word list yields no partials at all, and its parts are zero.
 		.unwrap_or_else(|| zeroed_vec::<P>(acc_size).into_boxed_slice());
 
-	scatter_multilinear_parts(alloc, &multilinears, &segment.dense_shift_enc)
+	scatter_shift_rows(alloc, &multilinears, &segment.dense_shift_enc)
 }
 
-/// Spreads the rows of a dense phase-1 accumulator over the multilinear parts of every shift
-/// variant.
+/// Spreads the rows of a dense phase-1 accumulator over the shift axes of the g multilinear.
 ///
 /// The accumulator holds the rows of `Word::BITS` scalars the segment's keys accumulate into, one
-/// per shift the segment uses and in dense shift index order. Each row lands in the part of its
-/// shift variant, at the offset its shift amount names; every row the segment does not use stays
-/// zero.
-#[instrument(skip_all, name = "scatter_multilinear_parts")]
-fn scatter_multilinear_parts<P: PackedField, A: Allocator>(
+/// per shift the segment uses and in dense shift index order. Each row lands at the offset its
+/// `(variant, amount)` pair names; every row the segment does not use stays zero.
+#[instrument(skip_all, name = "scatter_shift_rows")]
+fn scatter_shift_rows<P: PackedField, A: Allocator>(
 	alloc: &A,
 	multilinears: &[P],
 	dense_shift_enc: &DenseShiftEncoding,
-) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
+) -> FieldVec<P, A> {
 	const {
 		assert!(
 			P::LOG_WIDTH <= Word::LOG_BITS,
@@ -317,16 +264,15 @@ fn scatter_multilinear_parts<P: PackedField, A: Allocator>(
 		);
 	}
 
-	// A row is a whole number of packed elements, so it copies into a part at row alignment.
+	// A row is a whole number of packed elements, so it copies in at row alignment.
 	let row_len = Word::BITS >> P::LOG_WIDTH;
-	let mut parts =
-		array::from_fn::<_, SHIFT_VARIANT_COUNT, _>(|_| FieldBuffer::zeros_in(alloc, LOG_LEN));
+	let mut g = FieldBuffer::zeros_in(alloc, PHASE_1_LOG_LEN);
 	for ((variant, amount), row) in iter::zip(dense_shift_enc.iter(), multilinears.chunks(row_len))
 	{
-		// Dense indices are distinct, so no two rows land in the same place and each destination
-		// is still zero.
-		parts[variant as usize].as_mut()[amount as usize * row_len..][..row_len]
-			.copy_from_slice(row);
+		// The variant indexes the high variables and the amount the middle ones. Dense indices are
+		// distinct, so no two rows land in the same place and each destination is still zero.
+		let offset = (variant as usize * Word::BITS + amount as usize) * row_len;
+		g.as_mut()[offset..][..row_len].copy_from_slice(row);
 	}
-	parts
+	g
 }
