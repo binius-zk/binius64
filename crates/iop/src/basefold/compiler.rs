@@ -120,9 +120,9 @@ where
 
 	/// Creates a ZK verifier channel over a transcript, for the common case.
 	///
-	/// The transcript (owned or mutably borrowed) is wrapped in a
-	/// [`VerifierMerkleTranscriptChannel`] with a non-hiding [`BinaryMerkleTreeScheme`] for the
-	/// given hash suite, then passed to [`Self::create_channel`].
+	/// The transcript may be owned or mutably borrowed.
+	/// It is wrapped in a [`VerifierMerkleTranscriptChannel`] for the given hash suite.
+	/// That channel is then passed to [`Self::create_channel`].
 	pub fn create_channel_from_transcript<H, Challenger_, T>(
 		&self,
 		transcript: T,

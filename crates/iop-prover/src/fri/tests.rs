@@ -79,7 +79,8 @@ fn test_commit_prove_verify_success<F, P>(
 	}
 
 	round_prover.finish_proof(&mut prover_channel);
-	drop(prover_channel);
+	// Hand the transcript back, releasing the channel's borrow of it.
+	prover_channel.into_transcript();
 	// Now run the verifier, receiving commitments and openings over a Merkle channel.
 	let mut verifier_challenger = prover_challenger.into_verifier();
 	let mut channel = VerifierMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
@@ -276,7 +277,8 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 		round_prover.execute_fold_round(&mut prover_channel);
 	}
 	round_prover.finish_proof(&mut prover_channel);
-	drop(prover_channel);
+	// Hand the transcript back, releasing the channel's borrow of it.
+	prover_channel.into_transcript();
 
 	// Run the verifier, receiving commitments and openings over a Merkle channel.
 	let mut verifier_challenger = prover_challenger.into_verifier();
@@ -412,7 +414,8 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 		round_prover.execute_fold_round(&mut prover_channel);
 	}
 	round_prover.finish_proof(&mut prover_channel);
-	drop(prover_channel);
+	// Hand the transcript back, releasing the channel's borrow of it.
+	prover_channel.into_transcript();
 
 	// Run the verifier, receiving commitments and openings over a Merkle channel.
 	let mut verifier_challenger = prover_challenger.into_verifier();
@@ -575,7 +578,8 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		round_prover.execute_fold_round(&mut prover_channel);
 	}
 	round_prover.finish_proof(&mut prover_channel);
-	drop(prover_channel);
+	// Hand the transcript back, releasing the channel's borrow of it.
+	prover_channel.into_transcript();
 
 	// Run the verifier, receiving commitments and openings over a Merkle channel.
 	let mut verifier_challenger = prover_challenger.into_verifier();
@@ -699,7 +703,8 @@ where
 	}
 
 	round_prover.finish_proof(&mut prover_channel);
-	drop(prover_channel);
+	// Hand the transcript back, releasing the channel's borrow of it.
+	prover_channel.into_transcript();
 
 	let scheme = binius_iop::merkle_tree::BinaryMerkleTreeScheme::new();
 	let proof_bytes = prover_transcript.finalize();
