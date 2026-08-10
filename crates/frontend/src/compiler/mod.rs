@@ -1347,7 +1347,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint, or none when both arms are the same wire.
+	/// 1 BMUL constraint, or none when both arms are the same wire.
 	pub fn select(&self, cond: Wire, t: Wire, f: Wire) -> Wire {
 		// Both arms identical: the result is that wire regardless of the condition.
 		// This reads no bit of `cond`, so it is independent of the MSB-boolean convention.
