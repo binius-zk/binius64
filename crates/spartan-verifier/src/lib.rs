@@ -342,7 +342,8 @@ where
 			channel.recv_oracle(self.constraint_system().log_precommit() as usize, true)?;
 		self.iop_verifier
 			.verify(precommit_oracle, public, &mut channel)?;
-		Ok(channel.finish()?)
+		channel.finish()?;
+		Ok(())
 	}
 }
 
