@@ -16,7 +16,7 @@ use binius_math::{
 use super::{
 	error::{Error, VerificationError},
 	output::LogupOutput,
-	pushforward::{Pushforward, denominator_eval, verify_pushforward},
+	pushforward::{Pushforward, TableClaim, denominator_eval, verify_pushforward},
 };
 use crate::{
 	channel::IPVerifierChannel,
@@ -229,9 +229,23 @@ where
 	let combined_eval_claim = evaluate_univariate(&claims, gamma);
 	let Pushforward {
 		table_eval_point,
-		table_eval_claim,
-		pushforward_eval_claim,
-	} = verify_pushforward::<F, C>(combined_eval_claim, pushforward_eval, table_point, channel)?;
+		table_eval_claims,
+		pushforward_eval_claims,
+	} = verify_pushforward::<F, C>(
+		[TableClaim {
+			eval_claim: combined_eval_claim,
+			pushforward_eval_claim: pushforward_eval,
+			pushforward_eval_point: table_point,
+		}],
+		channel,
+	)?;
+	// The reduction runs over the one shared table, so it returns one claim of each kind.
+	let [table_eval_claim]: [_; 1] = table_eval_claims
+		.try_into()
+		.unwrap_or_else(|_| unreachable!("the reduction runs over one table"));
+	let [pushforward_eval_claim]: [_; 1] = pushforward_eval_claims
+		.try_into()
+		.unwrap_or_else(|_| unreachable!("the reduction runs over one table"));
 
 	Ok(LogupOutput {
 		table_eval_point,

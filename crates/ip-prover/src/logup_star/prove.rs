@@ -11,7 +11,7 @@ use binius_math::{FieldBuffer, FieldSlice, FieldVec, univariate::evaluate_univar
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
-	pushforward::{PushforwardOutput, prove_pushforward},
+	pushforward::{PushforwardOutput, TableWitness, prove_pushforward},
 	witness,
 };
 use crate::{
@@ -289,17 +289,26 @@ where
 	// Reduce the leaf claim on Y and the product claim <T, Y> = e to one shared evaluation point.
 	let PushforwardOutput {
 		table_eval_point,
-		table_eval_claim,
-		pushforward_eval_claim,
+		table_eval_claims,
+		pushforward_eval_claims,
 	} = prove_pushforward(
 		alloc,
-		table,
-		pushforward,
-		eval_claim,
-		table_leaf.num_eval,
-		&table_leaf.point,
+		[TableWitness {
+			table,
+			pushforward,
+			eval_claim,
+			pushforward_eval_claim: table_leaf.num_eval,
+			pushforward_eval_point: &table_leaf.point,
+		}],
 		channel,
 	);
+	// The reduction runs over the one shared table, so it returns one claim of each kind.
+	let [table_eval_claim]: [_; 1] = table_eval_claims
+		.try_into()
+		.unwrap_or_else(|_| unreachable!("the reduction runs over one table"));
+	let [pushforward_eval_claim]: [_; 1] = pushforward_eval_claims
+		.try_into()
+		.unwrap_or_else(|_| unreachable!("the reduction runs over one table"));
 
 	LogupOutput {
 		table_eval_point,

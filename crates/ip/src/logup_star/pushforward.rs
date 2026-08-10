@@ -2,13 +2,19 @@
 
 //! The pushforward reduction that closes the table side.
 //!
-//! The table-side fractional-addition GKR runs to its leaf, which claims the pushforward `Y` at a
-//! point `z`; its denominator half is the public `D = J - c`, which the verifier checks itself.
-//! That leaves two claims that both read `Y` — the leaf claim `Y(z)` and the product claim
-//! `<T, Y> = e` — and one batched `m`-variable sumcheck reduces them to a single evaluation point.
+//! Each table's fractional-addition GKR runs to its leaf, which claims that table's pushforward
+//! `Y_t` at a point `z_t`; its denominator half is the public `D = J - c_t`, which the verifier
+//! checks itself. That leaves two claims per table that both read `Y_t` — the leaf claim `Y_t(z_t)`
+//! and the product claim `<T_t, Y_t> = e_t` — and one batched sumcheck reduces all of them to a
+//! single evaluation point.
+
+use std::iter;
 
 use binius_field::{BinaryField1b, ExtensionField, Field, field::FieldOps};
-use binius_math::multilinear::eq::eq_ind;
+use binius_math::{
+	multilinear::eq::{eq_ind, eq_ind_zero},
+	univariate::evaluate_univariate,
+};
 
 use super::error::{Error, VerificationError};
 use crate::{
@@ -16,80 +22,139 @@ use crate::{
 	sumcheck::{self, BatchSumcheckOutput},
 };
 
-/// The output of the pushforward reduction.
-pub struct Pushforward<F> {
-	/// The `m`-coordinate point at which both `T` and `Y` are evaluated.
-	pub table_eval_point: Vec<F>,
-	/// The claimed evaluation of `T` at the point.
-	pub table_eval_claim: F,
-	/// The claimed evaluation of `Y` at the point.
+/// One table's two claims entering the pushforward reduction.
+#[derive(Debug, Clone)]
+pub struct TableClaim<'a, F> {
+	/// The product claim `e_t = <T_t, Y_t>`.
+	pub eval_claim: F,
+	/// The fractional-addition leaf claim `Y_t(z_t)`.
 	pub pushforward_eval_claim: F,
+	/// The leaf point `z_t`, of length `m_t`.
+	pub pushforward_eval_point: &'a [F],
 }
 
-/// Verify the pushforward reduction.
+/// The output of the pushforward reduction.
+pub struct Pushforward<F> {
+	/// The point spanning the widest table, at which every table's claims are taken.
+	///
+	/// Table `t`, over `m_t` variables, is claimed at the **first `m_t`** coordinates: the batch
+	/// pads each table at its high coordinates.
+	pub table_eval_point: Vec<F>,
+	/// The claimed evaluations of the tables `T_t`, each at its own prefix of the point.
+	pub table_eval_claims: Vec<F>,
+	/// The claimed evaluations of the pushforwards `Y_t`, each at the same prefix.
+	pub pushforward_eval_claims: Vec<F>,
+}
+
+/// Verify the pushforward reduction over one or more tables.
 ///
-/// Batches two sum claims over the `m`-variable cube:
+/// Each table contributes two sum claims over its own `m_t`-variable cube:
 ///
 /// ```text
-///     S_1 = sum_x eq(x; z) * Y(x) = Y(z)      the GKR leaf claim, re-randomized
-///     S_2 = sum_x (Y * T)(x)      = e         the product claim
+///     S_1 = sum_x eq(x; z_t) * Y_t(x) = Y_t(z_t)      the GKR leaf claim, re-randomized
+///     S_2 = sum_x (Y_t * T_t)(x)      = e_t           the product claim
 /// ```
 ///
 /// Both summands are degree 2 per variable — `eq` times a multilinear, and a product of two
-/// multilinears — so the batched degree is 2. The reduction ends in one evaluation of `Y` and one
-/// of `T` at the shared challenge point.
+/// multilinears — so the batched degree is 2.
+///
+/// Tables need not agree on a size. A table over `m_t < max_t m_t` variables is batched through
+/// the padded claim `S * eq(0^nu; X_pad)` over the padding variables, which are the highest ones
+/// and so are bound first; that equality factor sums to one over the cube, so the padded claim
+/// holds exactly when the original does. The deepest table is never padded, so every round
+/// polynomial in the batch still has degree 2.
+///
+/// The reduction ends in one evaluation of `Y_t` and one of `T_t` per table, all at the prefix of
+/// one shared point.
 ///
 /// # Arguments
 ///
-/// * `eval_claim` - The product claim `e = <T, Y>`.
-/// * `pushforward_eval_claim` - The GKR leaf claim `Y(z)`.
-/// * `pushforward_eval_point` - The leaf point `z`, of length `m`.
+/// * `tables` - The per-table claims; their leaf points may differ in length.
 /// * `channel` - The verifier channel.
-pub fn verify_pushforward<F, C>(
-	eval_claim: C::Elem,
-	pushforward_eval_claim: C::Elem,
-	pushforward_eval_point: &[C::Elem],
+///
+/// # Preconditions
+///
+/// - `tables` is non-empty.
+pub fn verify_pushforward<'a, F, C>(
+	tables: impl IntoIterator<Item = TableClaim<'a, C::Elem>>,
 	channel: &mut C,
 ) -> Result<Pushforward<C::Elem>, Error>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	C: IPVerifierChannel<F>,
-	C::Elem: From<F>,
+	C::Elem: From<F> + 'a,
 {
-	let m = pushforward_eval_point.len();
+	// The claims are walked three times — for the deepest table, for the batched sums, and for the
+	// reconstruction — so the iterator is materialized once here.
+	let tables = tables.into_iter().collect::<Vec<_>>();
+	assert!(!tables.is_empty(), "at least one table is required"); // precondition
 
-	// Batch the two sum claims with powers of a single coefficient and run the sumcheck.
+	let max_m = tables
+		.iter()
+		.map(|table| table.pushforward_eval_point.len())
+		.max()
+		.expect("tables is non-empty");
+
+	// Batch every table's two sum claims with powers of a single coefficient and run the sumcheck.
+	// The claims are flattened in table order, two per table, which is the order the prover's
+	// round polynomials arrive in.
 	//
-	//     sum = Y(z) + bc * e
+	//     sum = Y_0(z_0) + bc * e_0 + bc^2 * Y_1(z_1) + ...
+	let sums = tables
+		.iter()
+		.flat_map(|table| {
+			[
+				table.pushforward_eval_claim.clone(),
+				table.eval_claim.clone(),
+			]
+		})
+		.collect::<Vec<_>>();
 	let BatchSumcheckOutput {
 		batch_coeff,
 		eval,
 		mut challenges,
-	} = sumcheck::batch_verify::<F, C>(m, 2, &[pushforward_eval_claim, eval_claim], channel)?;
+	} = sumcheck::batch_verify::<F, C>(max_m, 2, &sums, channel)?;
 
-	// Read the pushforward and table evaluations at the sumcheck challenge point.
-	let [y_eval, t_eval] = channel
-		.recv_array()
+	// Read every table's pushforward and table evaluations at the sumcheck challenge point, in the
+	// same table order.
+	let evals: Vec<C::Elem> = channel
+		.recv_many(2 * tables.len())
 		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
+	let (pushforward_eval_claims, table_eval_claims): (Vec<_>, Vec<_>) = evals
+		.chunks_exact(2)
+		.map(|pair| (pair[0].clone(), pair[1].clone()))
+		.unzip();
 
-	// Sumcheck binds variables highest-to-lowest; reverse to align with the low-to-high point z.
+	// Sumcheck binds variables highest-to-lowest; reverse to align with the low-to-high points z_t.
 	challenges.reverse();
 	let rho = challenges;
 
-	// Reconstruct the batched summand at the challenge point and check it against the reduced eval.
-	// Both claims read Y, so it factors out:
+	// Reconstruct each table's pair of summands at the challenge point and check the batch against
+	// the reduced evaluation. Both of a table's claims read Y_t, so it factors out:
 	//
-	//     eq(rho; z) * Y(rho) + bc * Y(rho) * T(rho) = Y(rho) * (eq(rho; z) + bc * T(rho))
-	let eq_eval = eq_ind::<C::Elem>(&rho, pushforward_eval_point);
-	let expected = y_eval.clone() * (eq_eval + batch_coeff * t_eval.clone());
+	//     eq(rho_t; z_t) * Y_t(rho_t) + bc * Y_t(rho_t) * T_t(rho_t)
+	//         = Y_t(rho_t) * (eq(rho_t; z_t) + bc * T_t(rho_t))
+	//
+	// and a padded table's contribution carries the padding coordinates' equality weight.
+	let contributions = iter::zip(&tables, iter::zip(&pushforward_eval_claims, &table_eval_claims))
+		.flat_map(|(table, (y_eval, t_eval))| {
+			let (own_point, padding_point) = rho.split_at(table.pushforward_eval_point.len());
+			let weighted_y = y_eval.clone() * eq_ind_zero::<C::Elem>(padding_point);
+			[
+				weighted_y.clone() * eq_ind::<C::Elem>(own_point, table.pushforward_eval_point),
+				weighted_y * t_eval.clone(),
+			]
+		})
+		.collect::<Vec<_>>();
+	let expected = evaluate_univariate(&contributions, &batch_coeff);
 	channel
 		.assert_zero(eval - expected)
 		.map_err(|_| VerificationError::PushforwardMismatch)?;
 
 	Ok(Pushforward {
 		table_eval_point: rho,
-		table_eval_claim: t_eval,
-		pushforward_eval_claim: y_eval,
+		table_eval_claims,
+		pushforward_eval_claims,
 	})
 }
 
