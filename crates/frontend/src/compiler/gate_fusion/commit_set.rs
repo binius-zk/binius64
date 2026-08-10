@@ -1,11 +1,11 @@
 // Copyright 2025 Irreducible Inc.
-use binius_core::constraint_system::{Shift, ShiftVariant};
 use petgraph::{
 	Direction,
 	visit::{DfsPostOrder, EdgeRef},
 };
 
 use super::{LeGraph, Stat};
+use crate::compiler::constraint_builder::{Shift, ShiftKind};
 
 /// Longest inline chain a definition of two or more terms may sit at the top of.
 ///
@@ -41,11 +41,11 @@ pub const MAX_DEPTH: usize = 6;
 /// Both fit in an integer, so the summary is [`Copy`] and allocates nothing.
 #[derive(Copy, Clone, Default)]
 struct ShiftSummary {
-	/// One bit per shift variant seen, excluding the identity.
+	/// One bit per shift kind seen, excluding the identity.
 	///
-	/// A variant's bit is its discriminant.
-	/// There are eight variants, so a byte holds them all.
-	variants: u8,
+	/// A kind's bit is its discriminant.
+	/// There are eight kinds, so a byte holds them all.
+	kinds: u8,
 	/// Total distance covered by the farthest-shifting path this summary spans.
 	///
 	/// Zero when only the identity was seen, which imposes no distance.
@@ -59,20 +59,18 @@ impl ShiftSummary {
 	}
 
 	/// The summary of this path extended by one more shift.
-	///
-	/// A shift of no distance is the identity whatever variant spells it, so it constrains
-	/// nothing and drops out here.
 	const fn with(self, shift: Shift) -> Self {
-		if shift.is_identity() {
-			return self;
-		}
-		// Composing two shifts of one variant adds their distances.
-		// So walking a path accumulates the distances of its links:
-		//     sll(3) then sll(5) then sll(4)  ->  sll(12)
-		// Saturating keeps an absurdly long chain from wrapping back to a small total.
-		Self {
-			variants: self.variants | bit_of(shift.variant),
-			total_amount: self.total_amount.saturating_add(shift.amount as u32),
+		match shift.kind_and_amount() {
+			// The identity composes with anything, so it constrains nothing.
+			None => self,
+			// Composing two shifts of one kind adds their distances.
+			// So walking a path accumulates the distances of its links:
+			//     sll(3) then sll(5) then sll(4)  ->  sll(12)
+			// Saturating keeps an absurdly long chain from wrapping back to a small total.
+			Some((kind, amount)) => Self {
+				kinds: self.kinds | bit_of(kind),
+				total_amount: self.total_amount.saturating_add(amount),
+			},
 		}
 	}
 
@@ -84,40 +82,38 @@ impl ShiftSummary {
 		//     path B accumulates sll(50)   <- binding
 		//     -> a further sll(13) fits A but leaves the width on B, so it is rejected
 		summaries.fold(Self::default(), |acc, s| Self {
-			variants: acc.variants | s.variants,
+			kinds: acc.kinds | s.kinds,
 			total_amount: acc.total_amount.max(s.total_amount),
 		})
 	}
 
 	/// Whether `shift` composes with every shift on this path.
 	const fn composable(self, shift: Shift) -> bool {
-		// The identity composes with anything already seen.
-		if shift.is_identity() {
+		let Some((kind, amount)) = shift.kind_and_amount() else {
+			// The identity composes with anything already seen.
+			return true;
+		};
+
+		// Only the identity was seen, which imposes no kind and no distance.
+		if self.kinds == 0 {
 			return true;
 		}
 
-		// Only identities were seen, which impose no variant and no distance.
-		if self.variants == 0 {
-			return true;
-		}
-
-		// A second variant on the path can never compose with this one.
-		if self.variants != bit_of(shift.variant) {
+		// A second kind on the path can never compose with this one.
+		if self.kinds != bit_of(kind) {
 			return false;
 		}
 
-		// A cyclic variant loses no bits, so its distances wrap and always compose.
-		// Any other variant drops the bits it shifts out.
+		// A cyclic kind loses no bits, so its distances wrap and always compose.
+		// Any other kind drops the bits it shifts out.
 		// So the distance the path already covers plus this one has to stay inside the width.
-		shift.variant.is_cyclic()
-			|| self.total_amount.saturating_add(shift.amount as u32)
-				< shift.variant.max_amount() as u32
+		kind.is_cyclic() || self.total_amount.saturating_add(amount) < kind.width()
 	}
 }
 
-/// The bit standing for one variant in [`ShiftSummary::variants`].
-const fn bit_of(variant: ShiftVariant) -> u8 {
-	1 << variant as u8
+/// The bit standing for one kind in [`ShiftSummary::kinds`].
+const fn bit_of(kind: ShiftKind) -> u8 {
+	1 << kind as u8
 }
 
 #[derive(Copy, Clone)]
@@ -314,7 +310,6 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::constraint_system::Composition;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -332,12 +327,7 @@ mod tests {
 		// So folding left over the chain gives the same answer as any other order.
 		chain
 			.iter()
-			.try_fold(Shift::IDENTITY, |acc, s| match Shift::compose(acc, *s) {
-				Composition::Single(shift) => Some(shift),
-				// A chain that needs two slots, or that clears the word, is not one the pass may
-				// inline into a single shifted term.
-				Composition::Zero | Composition::Pair => None,
-			})
+			.try_fold(Shift::None, |acc, s| Shift::compose(acc, *s))
 	}
 
 	/// Whether one more shift composes with a chain once that chain has collapsed.
@@ -345,9 +335,7 @@ mod tests {
 	/// This is the predicate the summary stands in for.
 	/// It is the reference the summary is checked against.
 	fn composable_reference(chain: &[Shift], shift: Shift) -> bool {
-		collapse(chain).is_some_and(|collapsed| {
-			matches!(Shift::compose(collapsed, shift), Composition::Single(_))
-		})
+		collapse(chain).is_some_and(|collapsed| Shift::compose(collapsed, shift).is_some())
 	}
 
 	/// The summary of one chain, accumulated link by link the way the pass accumulates it.
@@ -360,28 +348,28 @@ mod tests {
 	/// Every shift kind, at a distance inside its own width.
 	fn any_shift() -> impl Strategy<Value = Shift> {
 		prop_oneof![
-			Just(Shift::IDENTITY),
-			(0u32..64).prop_map(|n| Shift::sll(n as usize)),
-			(0u32..32).prop_map(|n| Shift::sll32(n as usize)),
-			(0u32..64).prop_map(|n| Shift::srl(n as usize)),
-			(0u32..32).prop_map(|n| Shift::srl32(n as usize)),
-			(0u32..64).prop_map(|n| Shift::sar(n as usize)),
-			(0u32..32).prop_map(|n| Shift::sra32(n as usize)),
-			(0u32..64).prop_map(|n| Shift::rotr(n as usize)),
-			(0u32..32).prop_map(|n| Shift::rotr32(n as usize)),
+			Just(Shift::None),
+			(0u32..64).prop_map(Shift::Sll),
+			(0u32..32).prop_map(Shift::Sll32),
+			(0u32..64).prop_map(Shift::Srl),
+			(0u32..32).prop_map(Shift::Srl32),
+			(0u32..64).prop_map(Shift::Sar),
+			(0u32..32).prop_map(Shift::Sra32),
+			(0u32..64).prop_map(Shift::Rotr),
+			(0u32..32).prop_map(Shift::Rotr32),
 		]
 	}
 
 	/// The eight shift constructors, in discriminant order.
-	const KINDS: [fn(usize) -> Shift; 8] = [
-		Shift::sll,
-		Shift::srl,
-		Shift::sar,
-		Shift::rotr,
-		Shift::sll32,
-		Shift::srl32,
-		Shift::sra32,
-		Shift::rotr32,
+	const KINDS: [fn(u32) -> Shift; 8] = [
+		Shift::Sll,
+		Shift::Sll32,
+		Shift::Srl,
+		Shift::Srl32,
+		Shift::Sar,
+		Shift::Sra32,
+		Shift::Rotr,
+		Shift::Rotr32,
 	];
 
 	/// A chain of one kind, mixed with identity links, as an inlined path carries.
@@ -398,10 +386,7 @@ mod tests {
 				// Identity links are legal anywhere and must not sway the answer.
 				amounts
 					.into_iter()
-					.map(|amount| match amount {
-						Some(amount) => KINDS[kind](amount as usize),
-						None => Shift::IDENTITY,
-					})
+					.map(|amount| amount.map_or(Shift::None, KINDS[kind]))
 					.collect()
 			},
 		)
@@ -417,20 +402,15 @@ mod tests {
 			// The pass commits the rest rather than inlining them, so no summary is ever built.
 			prop_assume!(collapse(&chain).is_some());
 
-			// Invariant: whatever the summary permits, the collapsed chain really composes.
+			// Invariant: the summary answers exactly as the collapsed chain answers.
 			//
-			//     chain:   [sll(3), sll(5), sll(4)]   summary: variant sll, total 12
+			//     chain:   [sll(3), sll(5), sll(4)]   summary: kind sll, total 12
 			//     collapse:              sll(12)
-			//     query sll(51) -> 12 + 51 = 63, inside 64  -> permitted, and it composes
-			//     query sll(52) -> 12 + 52 = 64, at the width -> refused
-			//
-			// The converse does not hold, and need not: the summary tracks a total distance
-			// rather than the composition itself, so it refuses chains core collapses anyway —
-			// `sar(40)` then `sar(40)` saturates to `sar(63)`, but the summary sees 80 and says
-			// no. That costs inlining, never correctness, and `patch::process_term` panics only
-			// on the direction asserted here.
-			prop_assert!(
-				!summary_of(&chain).composable(query) || composable_reference(&chain, query)
+			//     query sll(51) -> 12 + 51 = 63, inside 64  -> both say yes
+			//     query sll(52) -> 12 + 52 = 64, at the width -> both say no
+			prop_assert_eq!(
+				summary_of(&chain).composable(query),
+				composable_reference(&chain, query)
 			);
 		}
 
@@ -446,9 +426,9 @@ mod tests {
 
 			// Invariant: extending a summary by one link answers as the longer chain does.
 			// This is the step the pass takes at every graph edge it walks.
-			prop_assert!(
-				!summary_of(head).with(*extra).composable(query)
-					|| composable_reference(&chain, query)
+			prop_assert_eq!(
+				summary_of(head).with(*extra).composable(query),
+				composable_reference(&chain, query)
 			);
 		}
 
@@ -466,9 +446,9 @@ mod tests {
 			let joined = ShiftSummary::union([summary_of(&left), summary_of(&right)].into_iter());
 
 			// Invariant: a shift joins the spanning summary only when it composes with each path.
-			prop_assert!(
-				!joined.composable(query)
-					|| composable_reference(&left, query) && composable_reference(&right, query)
+			prop_assert_eq!(
+				joined.composable(query),
+				composable_reference(&left, query) && composable_reference(&right, query)
 			);
 		}
 	}

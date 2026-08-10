@@ -1,11 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-//! The shift algebra shared by operands: a core [`Shift`] applied to a [`Wire`].
+//! The shift algebra shared by operands: a [`Shift`] applied to a [`Wire`].
 
 use std::ops::Index;
 
-use binius_core::constraint_system::{Shift, ShiftedValueIndex, ValueIndex};
+use binius_core::constraint_system::{ShiftedValueIndex, ValueIndex};
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::compiler::Wire;
@@ -21,13 +21,31 @@ pub struct ShiftedWire {
 
 impl ShiftedWire {
 	/// Lowers this term to a core [`ShiftedValueIndex`] via the wire mapping.
+	///
+	/// A zero-amount shift is the identity, so it collapses to a plain value index.
 	pub(super) fn to_shifted_value_index(
 		self,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> ShiftedValueIndex {
-		ShiftedValueIndex {
-			value_index: wire_mapping[self.wire],
-			shift: self.shift,
+		let idx = wire_mapping[self.wire];
+		match self.shift {
+			Shift::None => ShiftedValueIndex::plain(idx),
+			Shift::Sll(0)
+			| Shift::Sll32(0)
+			| Shift::Srl(0)
+			| Shift::Srl32(0)
+			| Shift::Sar(0)
+			| Shift::Sra32(0)
+			| Shift::Rotr(0)
+			| Shift::Rotr32(0) => ShiftedValueIndex::plain(idx),
+			Shift::Sll(n) => ShiftedValueIndex::sll(idx, n as usize),
+			Shift::Sll32(n) => ShiftedValueIndex::sll32(idx, n as usize),
+			Shift::Srl(n) => ShiftedValueIndex::srl(idx, n as usize),
+			Shift::Srl32(n) => ShiftedValueIndex::srl32(idx, n as usize),
+			Shift::Sar(n) => ShiftedValueIndex::sar(idx, n as usize),
+			Shift::Sra32(n) => ShiftedValueIndex::sra32(idx, n as usize),
+			Shift::Rotr(n) => ShiftedValueIndex::rotr(idx, n as usize),
+			Shift::Rotr32(n) => ShiftedValueIndex::rotr32(idx, n as usize),
 		}
 	}
 }
@@ -109,6 +127,121 @@ impl FromIterator<ShiftedWire> for WireOperand {
 impl From<Vec<ShiftedWire>> for WireOperand {
 	fn from(terms: Vec<ShiftedWire>) -> Self {
 		Self(terms)
+	}
+}
+
+/// The operation a shift performs, without its distance.
+///
+/// The `*32` kinds act half-wise on the two 32-bit lanes of a 64-bit word.
+/// The others act on the whole word.
+///
+/// The discriminant is fixed, so a caller can index by kind with one slot or bit per variant.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum ShiftKind {
+	/// Logical left shift of the whole word.
+	Sll = 0,
+	/// Half-wise logical left shift of each 32-bit lane.
+	Sll32 = 1,
+	/// Logical right shift of the whole word.
+	Srl = 2,
+	/// Half-wise logical right shift of each 32-bit lane.
+	Srl32 = 3,
+	/// Arithmetic right shift of the whole word.
+	Sar = 4,
+	/// Half-wise arithmetic right shift of each 32-bit lane.
+	Sra32 = 5,
+	/// Rotate-right of the whole word.
+	Rotr = 6,
+	/// Half-wise rotate-right of each 32-bit lane.
+	Rotr32 = 7,
+}
+
+impl ShiftKind {
+	/// The width this kind operates over: the whole word, or one 32-bit lane.
+	pub const fn width(self) -> u32 {
+		match self {
+			ShiftKind::Sll32 | ShiftKind::Srl32 | ShiftKind::Sra32 | ShiftKind::Rotr32 => 32,
+			_ => 64,
+		}
+	}
+
+	/// Whether this kind wraps what it moves out, rather than discarding it.
+	///
+	/// A cyclic kind loses nothing.
+	/// So any two of them compose, however far they move.
+	pub const fn is_cyclic(self) -> bool {
+		matches!(self, ShiftKind::Rotr | ShiftKind::Rotr32)
+	}
+}
+
+/// A shift folded into an operand term.
+///
+/// The `*32` variants act half-wise on the two 32-bit lanes of a 64-bit word;
+/// the others act on the whole word. The amount is the shift distance in bits.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub enum Shift {
+	/// No shift; the wire is used as-is.
+	None,
+	/// Logical left shift of the whole word.
+	Sll(u32),
+	/// Half-wise logical left shift of each 32-bit lane.
+	Sll32(u32),
+	/// Logical right shift of the whole word.
+	Srl(u32),
+	/// Half-wise logical right shift of each 32-bit lane.
+	Srl32(u32),
+	/// Arithmetic right shift of the whole word.
+	Sar(u32),
+	/// Half-wise arithmetic right shift of each 32-bit lane.
+	Sra32(u32),
+	/// Rotate-right of the whole word.
+	Rotr(u32),
+	/// Half-wise rotate-right of each 32-bit lane.
+	Rotr32(u32),
+}
+
+impl Shift {
+	/// The operation and distance of this shift, or `None` for the identity.
+	pub const fn kind_and_amount(self) -> Option<(ShiftKind, u32)> {
+		match self {
+			Shift::None => None,
+			Shift::Sll(n) => Some((ShiftKind::Sll, n)),
+			Shift::Sll32(n) => Some((ShiftKind::Sll32, n)),
+			Shift::Srl(n) => Some((ShiftKind::Srl, n)),
+			Shift::Srl32(n) => Some((ShiftKind::Srl32, n)),
+			Shift::Sar(n) => Some((ShiftKind::Sar, n)),
+			Shift::Sra32(n) => Some((ShiftKind::Sra32, n)),
+			Shift::Rotr(n) => Some((ShiftKind::Rotr, n)),
+			Shift::Rotr32(n) => Some((ShiftKind::Rotr32, n)),
+		}
+	}
+
+	/// Folds `rhs` applied after `lhs` into a single equivalent shift.
+	///
+	/// Returns `None` when the two shifts cannot be one shift:
+	/// - `None` is the identity, so it composes with anything.
+	/// - Like-kind shifts add their amounts.
+	/// - Rotations are cyclic, so the sum wraps modulo the width and always composes.
+	/// - A shift (not a rotation) whose amounts sum past the width shifts everything out to zero,
+	///   which is not expressible as one shift, so it returns `None`.
+	/// - Different kinds never compose.
+	pub const fn compose(lhs: Shift, rhs: Shift) -> Option<Self> {
+		// A shift whose amounts sum to `>= width` clears the word, which is not
+		// expressible as a single shift, so those arms return `None`.
+		// Rotations are cyclic, so their sum wraps modulo the width instead.
+		match (lhs, rhs) {
+			(Shift::None, shift) | (shift, Shift::None) => Some(shift),
+			(Shift::Sll(a), Shift::Sll(b)) if a + b < 64 => Some(Shift::Sll(a + b)),
+			(Shift::Sll32(a), Shift::Sll32(b)) if a + b < 32 => Some(Shift::Sll32(a + b)),
+			(Shift::Srl(a), Shift::Srl(b)) if a + b < 64 => Some(Shift::Srl(a + b)),
+			(Shift::Srl32(a), Shift::Srl32(b)) if a + b < 32 => Some(Shift::Srl32(a + b)),
+			(Shift::Sar(a), Shift::Sar(b)) if a + b < 64 => Some(Shift::Sar(a + b)),
+			(Shift::Sra32(a), Shift::Sra32(b)) if a + b < 32 => Some(Shift::Sra32(a + b)),
+			(Shift::Rotr(a), Shift::Rotr(b)) => Some(Shift::Rotr((a + b) % 64)),
+			(Shift::Rotr32(a), Shift::Rotr32(b)) => Some(Shift::Rotr32((a + b) % 32)),
+			_ => None,
+		}
 	}
 }
 

@@ -1,13 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 //! linear expression graph.
 
-use binius_core::constraint_system::Shift;
 use cranelift_entity::{EntitySet, SecondaryMap};
 use petgraph::graph::{DiGraph, NodeIndex};
 
 use crate::compiler::{
 	Wire,
-	constraint_builder::{ConstraintBuilder, WireOperand},
+	constraint_builder::{ConstraintBuilder, Shift, WireOperand},
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

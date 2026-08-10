@@ -272,8 +272,7 @@ fn test_sar_boundary_63_vs_64() {
 
 #[test]
 fn test_zero_shift_composition() {
-	// A shift of no distance is the identity, whichever variant spells it, so two of them
-	// compose however their variants differ. Nothing here needs committing.
+	// Zero shifts still carry their type; mixed types do not compose → commit
 	test_commit_set(
 		|cb| {
 			// y = sll(x, 0)
@@ -282,8 +281,8 @@ fn test_zero_shift_composition() {
 			cb.linear(expr::srl(w(1), 0), w(2));
 			cb.and(w(2), w(3), w(4));
 		},
-		&[],
-		&[w(1), w(2)],
+		&[w(1)], // y must be committed (Sll vs Srl are incompatible)
+		&[w(2)],
 	);
 
 	// Same-type zero shifts compose trivially
