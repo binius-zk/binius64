@@ -1,12 +1,14 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
+use binius_core::constraint_system::{Composition, Shift};
+
 use super::legraph::LeGraph;
 use crate::compiler::{
 	Wire,
 	constraint_builder::{
-		ConstraintBuilder, Shift, ShiftedWire, WireAndConstraint, WireBmulConstraint,
-		WireImulConstraint, WireLinearConstraint, WireOperand,
+		ConstraintBuilder, ShiftedWire, WireAndConstraint, WireBmulConstraint, WireImulConstraint,
+		WireLinearConstraint, WireOperand,
 	},
 	gate_fusion::legraph::ConstraintRef,
 };
@@ -239,12 +241,16 @@ fn process_term(
 			// Compose shifts: we're applying 'shift' to 'inner_term'
 			// So we need Shift::compose(inner_term.shift, shift)
 			match Shift::compose(inner_term.shift, shift) {
-				Some(composed_shift) => {
+				Composition::Single(composed_shift) => {
 					// Recursively process this term with the composed shift
 					process_term(cb, leg, new_operand, subsumes, inner_term.wire, composed_shift);
 				}
-				None => {
-					// Incompatible shifts - this shouldn't happen if commit set is correct
+				// The two shifts clear the word, so the term is identically zero. An operand is
+				// an XOR, so a zero term contributes nothing and the inlining simply drops it.
+				Composition::Zero => {}
+				// Needing both slots means the commit set inlined a definition it should have
+				// committed: the two passes disagree about what is inlinable.
+				Composition::Pair => {
 					panic!(
 						"Incompatible shifts during inlining: {:?} followed by {:?} for wire {:?}",
 						inner_term.shift, shift, inner_term.wire
@@ -336,11 +342,11 @@ mod tests {
 				vec![
 					ShiftedWire {
 						wire: w(0),
-						shift: Shift::Rotr(0),
+						shift: Shift::IDENTITY,
 					},
 					ShiftedWire {
 						wire: w(1),
-						shift: Shift::Rotr(0),
+						shift: Shift::IDENTITY,
 					},
 				],
 			)],
@@ -444,54 +450,53 @@ mod tests {
 	#[test]
 	fn test_stress_shift_combinations_no_panic() {
 		// Iterate over a small set of shift pairs; ensure commit_set + build/apply don't panic
-		use crate::compiler::constraint_builder::Shift;
 		fn w(id: u32) -> Wire {
 			Wire::from_u32(id)
 		}
 
+		use binius_core::constraint_system::ShiftVariant;
+
+		use crate::compiler::constraint_builder::WireExprTerm;
+
+		/// The expression term applying one shift to a wire.
+		///
+		/// The identity has no constructor of its own, so it reads the wire plainly.
+		fn shifted_expr(wire: Wire, shift: Shift) -> WireExprTerm {
+			let amount = shift.amount as u32;
+			if shift.is_identity() {
+				return wire.into();
+			}
+			match shift.variant {
+				ShiftVariant::Sll => expr::sll(wire, amount),
+				ShiftVariant::Slr => expr::srl(wire, amount),
+				ShiftVariant::Sar => expr::sar(wire, amount),
+				ShiftVariant::Rotr => expr::rotr(wire, amount),
+				ShiftVariant::Sll32 => expr::sll32(wire, amount),
+				ShiftVariant::Srl32 => expr::srl32(wire, amount),
+				ShiftVariant::Sra32 => expr::sra32(wire, amount),
+				ShiftVariant::Rotr32 => expr::rotr32(wire, amount),
+			}
+		}
+
 		let shifts = [
-			Shift::None,
-			Shift::Sll(5),
-			Shift::Sll32(5),
-			Shift::Srl(5),
-			Shift::Srl32(5),
-			Shift::Sar(5),
-			Shift::Sra32(5),
-			Shift::Rotr(13),
-			Shift::Rotr32(13),
+			Shift::IDENTITY,
+			Shift::sll(5),
+			Shift::sll32(5),
+			Shift::srl(5),
+			Shift::srl32(5),
+			Shift::sar(5),
+			Shift::sra32(5),
+			Shift::rotr(13),
+			Shift::rotr32(13),
 		];
 
 		for (i, s1) in shifts.iter().enumerate() {
 			for (j, s2) in shifts.iter().enumerate() {
 				let mut cb = ConstraintBuilder::new();
 				// y = shift1(x)
-				match s1 {
-					Shift::None => cb.linear(expr::xor2(w(0), w(1)), w(2)),
-					Shift::Sll(n) => cb.linear(expr::sll(w(0), *n), w(2)),
-					Shift::Sll32(n) => cb.linear(expr::sll32(w(0), *n), w(2)),
-					Shift::Srl(n) => cb.linear(expr::srl(w(0), *n), w(2)),
-					Shift::Srl32(n) => cb.linear(expr::srl32(w(0), *n), w(2)),
-					Shift::Sar(n) => {
-						cb.linear(crate::compiler::constraint_builder::expr::sar(w(0), *n), w(2))
-					}
-					Shift::Sra32(n) => cb.linear(expr::sra32(w(0), *n), w(2)),
-					Shift::Rotr(n) => cb.linear(expr::rotr(w(0), *n), w(2)),
-					Shift::Rotr32(n) => cb.linear(expr::rotr32(w(0), *n), w(2)),
-				}
+				cb.linear(shifted_expr(w(0), *s1), w(2));
 				// z = shift2(y)
-				match s2 {
-					Shift::None => cb.linear(expr::xor2(w(2), w(3)), w(4)),
-					Shift::Sll(n) => cb.linear(expr::sll(w(2), *n), w(4)),
-					Shift::Sll32(n) => cb.linear(expr::sll32(w(2), *n), w(4)),
-					Shift::Srl(n) => cb.linear(expr::srl(w(2), *n), w(4)),
-					Shift::Srl32(n) => cb.linear(expr::srl32(w(2), *n), w(4)),
-					Shift::Sar(n) => {
-						cb.linear(crate::compiler::constraint_builder::expr::sar(w(2), *n), w(4))
-					}
-					Shift::Sra32(n) => cb.linear(expr::sra32(w(2), *n), w(4)),
-					Shift::Rotr(n) => cb.linear(expr::rotr(w(2), *n), w(4)),
-					Shift::Rotr32(n) => cb.linear(expr::rotr32(w(2), *n), w(4)),
-				}
+				cb.linear(shifted_expr(w(2), *s2), w(4));
 				cb.and(w(4), w(5), w(6));
 
 				let mut stat = Stat::default();
@@ -517,7 +522,7 @@ mod tests {
 			// Not a linear def - return as is
 			result.push(ShiftedWire {
 				wire,
-				shift: Shift::None,
+				shift: Shift::IDENTITY,
 			});
 			return result;
 		}
@@ -544,8 +549,16 @@ mod tests {
 			// This is a non-committed linear def - expand recursively
 			let inner = leg.lin_def_operand(cb, wire);
 			for term in inner {
-				let composed = Shift::compose(term.shift, shift).unwrap();
-				expand_term_recursive(cb, leg, result, term.wire, composed);
+				match Shift::compose(term.shift, shift) {
+					Composition::Single(composed) => {
+						expand_term_recursive(cb, leg, result, term.wire, composed)
+					}
+					// A term the two shifts clear contributes nothing to the XOR.
+					Composition::Zero => {}
+					Composition::Pair => {
+						panic!("the commit set only inlines definitions whose shifts compose")
+					}
+				}
 			}
 		}
 	}
@@ -592,15 +605,15 @@ mod tests {
 					vec![
 						ShiftedWire {
 							wire: w(0),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(1),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(3),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 					],
 				),
@@ -610,11 +623,11 @@ mod tests {
 					vec![
 						ShiftedWire {
 							wire: w(0),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(1),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 					],
 				),
@@ -642,7 +655,7 @@ mod tests {
 					w(2),
 					vec![ShiftedWire {
 						wire: w(0),
-						shift: Shift::Sll(30),
+						shift: Shift::sll(30),
 					}],
 				),
 				// y should expand to: x << 10
@@ -650,7 +663,7 @@ mod tests {
 					w(1),
 					vec![ShiftedWire {
 						wire: w(0),
-						shift: Shift::Sll(10),
+						shift: Shift::sll(10),
 					}],
 				),
 			],
@@ -678,11 +691,11 @@ mod tests {
 					vec![
 						ShiftedWire {
 							wire: w(0),
-							shift: Shift::Rotr(5),
+							shift: Shift::rotr(5),
 						},
 						ShiftedWire {
 							wire: w(1),
-							shift: Shift::Rotr(5),
+							shift: Shift::rotr(5),
 						},
 					],
 				),
@@ -710,7 +723,7 @@ mod tests {
 					w(2),
 					vec![ShiftedWire {
 						wire: w(1),
-						shift: Shift::Srl(20),
+						shift: Shift::srl(20),
 					}],
 				),
 			],
@@ -738,23 +751,23 @@ mod tests {
 					vec![
 						ShiftedWire {
 							wire: w(0),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(1),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(2),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(4),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(5),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 					],
 				),
@@ -792,17 +805,17 @@ mod tests {
 				added: AddedConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(30),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					b: vec![ShiftedWire {
 						wire: w(31),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					c: vec![ShiftedWire {
 						wire: w(32),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 				}),
@@ -812,17 +825,17 @@ mod tests {
 				added: AddedConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(33),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					b: vec![ShiftedWire {
 						wire: w(34),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					c: vec![ShiftedWire {
 						wire: w(35),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 				}),
@@ -832,22 +845,22 @@ mod tests {
 				added: AddedConstraint::Imul(WireImulConstraint {
 					a: vec![ShiftedWire {
 						wire: w(36),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					b: vec![ShiftedWire {
 						wire: w(37),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					lo: vec![ShiftedWire {
 						wire: w(38),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					hi: vec![ShiftedWire {
 						wire: w(39),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 				}),
@@ -968,23 +981,23 @@ mod tests {
 			&[
 				ShiftedWire {
 					wire: w(0),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(1),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(0),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(1),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(3),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 			],
 			"mul.a",
@@ -1023,7 +1036,7 @@ mod tests {
 			&m.a,
 			&[ShiftedWire {
 				wire: w(1),
-				shift: Shift::Sll(30),
+				shift: Shift::sll(30),
 			}],
 			"mul.a (committed)",
 		);
@@ -1032,11 +1045,11 @@ mod tests {
 			&[
 				ShiftedWire {
 					wire: w(3),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(4),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 			],
 			"mul.b (inlinable)",
@@ -1074,7 +1087,7 @@ mod tests {
 			&m.hi,
 			&[ShiftedWire {
 				wire: w(1),
-				shift: Shift::Sll(20),
+				shift: Shift::sll(20),
 			}],
 			"mul.hi (committed)",
 		);
@@ -1083,11 +1096,11 @@ mod tests {
 			&[
 				ShiftedWire {
 					wire: w(3),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(4),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 			],
 			"mul.lo (inlinable)",
