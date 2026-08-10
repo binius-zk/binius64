@@ -453,6 +453,43 @@ impl Shift {
 	pub fn apply(self, word: Word) -> Word {
 		self.variant.apply(word, self.amount as usize)
 	}
+
+	/// Classifies the composition of two shifts, `outer` applied to the result of `inner`.
+	///
+	/// This is the merge rule for a shift sequence: it says whether the two collapse to one shift,
+	/// clear the word, or genuinely need both slots.
+	///
+	/// Collapsing is not just a matter of adding amounts. Two shifts collapse when the second
+	/// continues the first — which happens for more pairs than sharing a variant, since a shift
+	/// that has already cleared the sign bit or carried every bit past the halfway point leaves
+	/// the next shift nothing to distinguish. `chained` enumerates those, and `degenerate` the
+	/// cases where one shift has flattened the word past the other's notice.
+	///
+	/// Reporting [`Composition::Pair`] where a collapse exists would cost a shift slot but never a
+	/// wrong answer; the tests check against an independent bit-level model so that does not
+	/// happen silently.
+	///
+	/// # Arguments
+	///
+	/// - `inner`: the shift applied first.
+	/// - `outer`: the shift applied to its result.
+	pub fn compose(inner: Shift, outer: Shift) -> Composition {
+		// The identity leaves the other shift to stand alone, whichever side it is on.
+		if inner.is_identity() {
+			return Composition::Single(outer);
+		}
+		if outer.is_identity() {
+			return Composition::Single(inner);
+		}
+
+		if let Some(single) = degenerate(inner, outer) {
+			return Composition::Single(single);
+		}
+		match chained(inner, outer) {
+			Some((variant, distance)) => chained_composition(variant, distance),
+			None => Composition::Pair,
+		}
+	}
 }
 
 impl SerializeBytes for Shift {
@@ -485,6 +522,118 @@ impl DeserializeBytes for Shift {
 			variant,
 			amount: amount as u8,
 		})
+	}
+}
+
+/// What the composition of two shifts denotes.
+///
+/// Composing two shifts does not always need two: they may collapse to one shift, or clear the
+/// word outright. A caller merging shifts has to tell those apart — the collapsed cases save a
+/// shift slot, and the cleared case means the term contributes nothing and should be dropped
+/// rather than encoded.
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+pub enum Composition {
+	/// The two collapse to this single shift, which may be [`Shift::IDENTITY`].
+	Single(Shift),
+	/// The two clear every bit, so the term they apply to is zero.
+	Zero,
+	/// The two do not collapse; both are needed, in the order they were given.
+	Pair,
+}
+
+/// Two shifts that chain, as the one direction they move bits in and the distance they cover
+/// together.
+///
+/// Chaining is what makes a composition collapse: the second shift continues the first rather than
+/// undoing part of it, so only the total distance matters and the variant's own overflow rule
+/// decides what comes out.
+///
+/// Returns `None` when the two do not chain, which is the common case.
+fn chained(inner: Shift, outer: Shift) -> Option<(ShiftVariant, usize)> {
+	let distance = inner.amount as usize + outer.amount as usize;
+	// Two shifts of one variant always chain.
+	if inner.variant == outer.variant {
+		return Some((inner.variant, distance));
+	}
+
+	// Neither shift is the identity here, so every amount below is at least 1.
+	Some((
+		match (inner.variant, outer.variant) {
+			// A logical right shift clears the sign bit, so an arithmetic one behind it has no
+			// sign left to replicate and moves zeros in just the same.
+			(ShiftVariant::Slr, ShiftVariant::Sar) => ShiftVariant::Slr,
+			(ShiftVariant::Srl32, ShiftVariant::Sra32) => ShiftVariant::Srl32,
+
+			// Once a full-width shift has carried everything past the halfway point, each 32-bit
+			// half holds only bits from one side of the word, so a half-wise shift in the same
+			// direction continues it as if it were full-width.
+			(ShiftVariant::Sll, ShiftVariant::Sll32) if inner.amount >= 32 => ShiftVariant::Sll,
+			(ShiftVariant::Sll32, ShiftVariant::Sll) if outer.amount >= 32 => ShiftVariant::Sll,
+			(ShiftVariant::Slr, ShiftVariant::Srl32) if inner.amount >= 32 => ShiftVariant::Slr,
+			(ShiftVariant::Srl32, ShiftVariant::Slr) if outer.amount >= 32 => ShiftVariant::Slr,
+			(ShiftVariant::Sar, ShiftVariant::Sra32) if inner.amount >= 32 => ShiftVariant::Sar,
+			(ShiftVariant::Sra32, ShiftVariant::Sar) if outer.amount >= 32 => ShiftVariant::Sar,
+
+			// The same, where the half-wise shift is the arithmetic one: it needs both halves'
+			// sign bits already cleared, which costs one more bit of travel than the cases above.
+			(ShiftVariant::Slr, ShiftVariant::Sra32) if inner.amount >= 33 => ShiftVariant::Slr,
+			(ShiftVariant::Srl32, ShiftVariant::Sar) if outer.amount >= 32 => ShiftVariant::Slr,
+
+			_ => return None,
+		},
+		distance,
+	))
+}
+
+/// The single shift a composition collapses to for reasons other than chaining.
+///
+/// These are the degenerate cases, where one shift has already flattened the word enough that the
+/// other cannot tell the difference.
+const fn degenerate(inner: Shift, outer: Shift) -> Option<Shift> {
+	match (inner.variant, outer.variant) {
+		// Shifted arithmetically all the way, a word is all zeros or all ones. Rotating a word of
+		// one repeated bit leaves it alone.
+		(ShiftVariant::Sar, ShiftVariant::Rotr | ShiftVariant::Rotr32) if inner.amount == 63 => {
+			Some(inner)
+		}
+		(ShiftVariant::Sra32, ShiftVariant::Rotr32) if inner.amount == 31 => Some(inner),
+
+		// Keeping only the top bit keeps the very bit an arithmetic right shift replicates, so
+		// whatever that shift did before it does not show.
+		(ShiftVariant::Sar | ShiftVariant::Sra32, ShiftVariant::Slr) if outer.amount == 63 => {
+			Some(outer)
+		}
+		(ShiftVariant::Sra32, ShiftVariant::Srl32) if outer.amount == 31 => Some(outer),
+
+		_ => None,
+	}
+}
+
+/// What a chained shift of the given total distance comes to, once its own overflow rule applies.
+///
+/// This is where the variants differ: a logical shift runs out of word and clears it, an
+/// arithmetic one saturates at the sign, and a rotation wraps.
+fn chained_composition(variant: ShiftVariant, distance: usize) -> Composition {
+	let width = variant.max_amount();
+	match variant {
+		// Bits carried past the end are gone; carry everything past it and nothing is left.
+		ShiftVariant::Sll | ShiftVariant::Sll32 | ShiftVariant::Slr | ShiftVariant::Srl32 => {
+			if distance < width {
+				Composition::Single(Shift::new(variant, distance))
+			} else {
+				Composition::Zero
+			}
+		}
+		// Every position past the shift reads the sign bit, so travel beyond the width adds
+		// nothing.
+		ShiftVariant::Sar | ShiftVariant::Sra32 => {
+			Composition::Single(Shift::new(variant, distance.min(width - 1)))
+		}
+		// A rotation loses nothing, so a full turn is the identity.
+		ShiftVariant::Rotr | ShiftVariant::Rotr32 => match distance % width {
+			0 => Composition::Single(Shift::IDENTITY),
+			distance => Composition::Single(Shift::new(variant, distance)),
+		},
 	}
 }
 
@@ -667,6 +816,209 @@ mod tests {
 			ShiftVariant::Sra32 => halves(|half, n| ((half as i32) >> n) as u32),
 			ShiftVariant::Rotr32 => halves(|half, n| half.rotate_right(n)),
 		}
+	}
+
+	/// The width the half-word (`*32`) variants act over.
+	const HALF_WORD_BITS: usize = 32;
+
+	/// The bit an output position reads, for the positions that read nothing.
+	const READS_ZERO: u8 = u8::MAX;
+
+	/// What a shift does to a word, as one input bit position per output bit position.
+	///
+	/// This is an independent model of a shift's meaning, written from the definitions rather than
+	/// from the composition rules it is used to check. Entry `i` is the input bit that output bit
+	/// `i` reads, or [`READS_ZERO`].
+	fn bit_map(shift: Shift) -> [u8; Word::BITS] {
+		let mut map = [READS_ZERO; Word::BITS];
+		let amount = shift.amount as usize;
+		let width = if shift.variant.is_half_word() {
+			HALF_WORD_BITS
+		} else {
+			Word::BITS
+		};
+		for (half, positions) in map.chunks_exact_mut(width).enumerate() {
+			let base = (half * width) as u8;
+			for (out, slot) in positions.iter_mut().enumerate() {
+				let read = match shift.variant {
+					ShiftVariant::Sll | ShiftVariant::Sll32 => out.checked_sub(amount),
+					ShiftVariant::Slr | ShiftVariant::Srl32 => {
+						Some(out + amount).filter(|&read| read < width)
+					}
+					ShiftVariant::Sar | ShiftVariant::Sra32 => Some((out + amount).min(width - 1)),
+					ShiftVariant::Rotr | ShiftVariant::Rotr32 => Some((out + amount) % width),
+				};
+				if let Some(read) = read {
+					*slot = base + read as u8;
+				}
+			}
+		}
+		map
+	}
+
+	/// What composing two shifts denotes, worked out at the bit level.
+	///
+	/// Composition is function composition of the maps: output bit `i` reads whatever the inner
+	/// shift put where the outer shift looks. The result is then matched against the alphabet.
+	fn reference_composition(
+		inner: Shift,
+		outer: Shift,
+		by_map: &std::collections::HashMap<[u8; Word::BITS], Shift>,
+	) -> Composition {
+		let (inner_map, outer_map) = (bit_map(inner), bit_map(outer));
+		let mut composed = [READS_ZERO; Word::BITS];
+		for (slot, &read) in iter::zip(&mut composed, &outer_map) {
+			if read != READS_ZERO {
+				*slot = inner_map[read as usize];
+			}
+		}
+
+		if composed == [READS_ZERO; Word::BITS] {
+			return Composition::Zero;
+		}
+		match by_map.get(&composed) {
+			Some(&single) => Composition::Single(single),
+			None => Composition::Pair,
+		}
+	}
+
+	/// Every canonical shift, in the order the alphabet is enumerated.
+	fn canonical_shifts() -> Vec<Shift> {
+		ShiftVariant::ALL
+			.into_iter()
+			.flat_map(|variant| {
+				(0..variant.max_amount()).map(move |amount| Shift::new(variant, amount))
+			})
+			.filter(|shift| shift.is_canonical())
+			.collect()
+	}
+
+	#[test]
+	fn bit_map_matches_applying_the_shift() {
+		// The bit map is the oracle the composition rules are checked against, so it is pinned to
+		// the word operations first.
+		//
+		// One-hot words pin every entry: setting only input bit `b` makes the output exactly the
+		// positions whose map entry is `b`, so a map that reads the wrong bit shows up here.
+		for shift in canonical_shifts() {
+			let map = bit_map(shift);
+			for bit in 0..Word::BITS {
+				let expected = shift.apply(Word(1u64 << bit)).as_u64();
+				let from_map = map
+					.iter()
+					.enumerate()
+					.filter(|&(_, &read)| read as usize == bit)
+					.map(|(out, _)| 1u64 << out)
+					.fold(0u64, |acc, position| acc | position);
+				assert_eq!(from_map, expected, "{shift:?} disagrees on input bit {bit}");
+			}
+		}
+	}
+
+	#[test]
+	fn the_canonical_alphabet_has_no_two_spellings_of_one_shift() {
+		// The alphabet is 4 full-width variants at 63 non-zero amounts, 4 half-word ones at 31,
+		// and the identity: 4 * 63 + 4 * 31 + 1.
+		let shifts = canonical_shifts();
+		assert_eq!(shifts.len(), 4 * 63 + 4 * 31 + 1);
+
+		// Every one of them denotes a distinct operation, which is what makes `Single` name one
+		// shift unambiguously.
+		let maps = shifts
+			.iter()
+			.map(|&shift| bit_map(shift))
+			.collect::<std::collections::HashSet<_>>();
+		assert_eq!(maps.len(), shifts.len());
+	}
+
+	#[test]
+	fn compose_matches_the_bit_level_model() {
+		// The casework in `compose` is a closed form for something the bits already determine.
+		// This checks the two agree on every ordered pair of the alphabet — so a missing rule, or
+		// one whose guard is off by a bit of travel, fails here rather than costing a shift slot
+		// silently.
+		let shifts = canonical_shifts();
+		let by_map = shifts
+			.iter()
+			.map(|&shift| (bit_map(shift), shift))
+			.collect::<std::collections::HashMap<_, _>>();
+		for &inner in &shifts {
+			for &outer in &shifts {
+				assert_eq!(
+					Shift::compose(inner, outer),
+					reference_composition(inner, outer, &by_map),
+					"composing {inner:?} then {outer:?}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn compose_classifies_the_whole_alphabet_the_way_the_derivation_does() {
+		// The split from the BINIUS-408 design pass, as a regression: of the 377^2 ordered pairs,
+		// 23,046 collapse to one shift, 10,512 clear the word, and 108,571 need both slots. The
+		// counts move only if the shift alphabet itself changes.
+		let shifts = canonical_shifts();
+		let mut single = 0;
+		let mut zero = 0;
+		let mut pair = 0;
+		for &inner in &shifts {
+			for &outer in &shifts {
+				match Shift::compose(inner, outer) {
+					Composition::Single(_) => single += 1,
+					Composition::Zero => zero += 1,
+					Composition::Pair => pair += 1,
+				}
+			}
+		}
+		assert_eq!(single + zero + pair, shifts.len() * shifts.len());
+		assert_eq!((single, zero, pair), (23_046, 10_512, 108_571));
+	}
+
+	#[test]
+	fn compose_catches_the_collapses_amount_arithmetic_misses() {
+		// Saturating past the width is still a shift: every position already reads the sign bit.
+		assert_eq!(
+			Shift::compose(Shift::sar(5), Shift::sar(60)),
+			Composition::Single(Shift::sar(63))
+		);
+		// Shifting the whole word out clears it, rather than shifting by the sum of the amounts.
+		assert_eq!(Shift::compose(Shift::sll(40), Shift::sll(30)), Composition::Zero);
+		// Rotations wrap, so a full turn is the identity.
+		assert_eq!(
+			Shift::compose(Shift::rotr(7), Shift::rotr(57)),
+			Composition::Single(Shift::IDENTITY)
+		);
+		// The identity composes with anything, leaving the other shift alone.
+		for shift in [Shift::rotr(9), Shift::sar(3), Shift::sll32(4)] {
+			assert_eq!(Shift::compose(Shift::IDENTITY, shift), Composition::Single(shift));
+			assert_eq!(Shift::compose(shift, Shift::IDENTITY), Composition::Single(shift));
+		}
+		// Clearing the low bits needs both slots: no single shift both drops bits and returns the
+		// rest to where they started.
+		assert_eq!(Shift::compose(Shift::srl(3), Shift::sll(3)), Composition::Pair);
+	}
+
+	#[test]
+	fn compose_collapses_a_half_word_shift_into_a_full_width_one() {
+		// Once a full-width shift has carried everything past the halfway point, a half-wise shift
+		// in the same direction continues it — the case plain amount arithmetic over variants
+		// misses, and the one an inlined `*32` gadget is most likely to produce.
+		assert_eq!(
+			Shift::compose(Shift::sll(32), Shift::sll32(1)),
+			Composition::Single(Shift::sll(33))
+		);
+		assert_eq!(
+			Shift::compose(Shift::sll32(1), Shift::sll(32)),
+			Composition::Single(Shift::sll(33))
+		);
+		// The arithmetic half-wise shift needs one more bit of travel, since it wants both halves'
+		// sign bits already clear.
+		assert_eq!(
+			Shift::compose(Shift::srl(33), Shift::sra32(1)),
+			Composition::Single(Shift::srl(34))
+		);
+		assert_eq!(Shift::compose(Shift::srl(32), Shift::sra32(1)), Composition::Pair);
 	}
 
 	#[test]
