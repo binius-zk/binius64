@@ -24,7 +24,7 @@ use crate::{
 		batch::batch_prove_mle_with_coeff_and_write_evals,
 		common::MleCheckProver,
 		frac_add_mle::{self, FracAddFusedEvaluator},
-		mle_store::{ColId, MleStore},
+		mle_store::MleStore,
 		round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 	},
 };
@@ -175,14 +175,12 @@ where
 
 	/// Pops the last layer and returns a sumcheck prover for it.
 	///
-	/// Returns `(layer_prover, remaining, cols)` where:
-	/// - `remaining` is `Some(self)` if there are more layers, `None` otherwise
-	/// - `layer_prover` is a sumcheck prover for the popped layer
-	/// - `cols` contains the [`MleStore`] column IDs `[num_0, num_1, den_0, den_1]`
+	/// Returns `(remaining, layer_prover)` where `remaining` is `Some(self)` if there are more
+	/// layers and `None` otherwise.
 	pub fn layer_prover(
 		mut self,
 		claim: FracEvalClaim<F>,
-	) -> (Option<Self>, LayerProver<'a, A, F, P>, [ColId; 4]) {
+	) -> (Option<Self>, LayerProver<'a, A, F, P>) {
 		let (num_claim, den_claim) = claim;
 		assert_eq!(
 			num_claim.point, den_claim.point,
@@ -202,14 +200,14 @@ where
 		// and of the denominator buffer. The store takes ownership of the two popped buffers and
 		// shares each between its halves, so the prover is self-contained with no up-front copy of
 		// the popped layer.
-		let (layer_prover, cols) = frac_add_mle::new_split_half(
+		let layer_prover = frac_add_mle::new_split_half(
 			alloc,
 			num,
 			den,
 			num_claim.point,
 			[num_claim.eval, den_claim.eval],
 		);
-		(remaining, layer_prover, cols)
+		(remaining, layer_prover)
 	}
 
 	/// Pops the last layer as a prover carrying the two fractional claims batched into one.
@@ -389,8 +387,7 @@ pub struct BatchProveOutput<F> {
 /// multilinears at a shared `content_point`. When the fractions are scalars (each prover reduces
 /// over all of its variables), `content_point` is empty.
 ///
-/// This delegates to [`batch_prove_until_final_layer`] and then runs the final layer's MLE-check,
-/// returning the reduced per-input-prover fractions at the reduced evaluation point. The batched
+/// Returns the reduced per-input-prover fractions at the reduced evaluation point. The batched
 /// claim is checked by the ordinary `binius_ip::fracaddcheck::verify` recursion over
 /// `k + n_layers` variables (the eq(selector)-weighted combination of the returned fractions),
 /// with the selector coordinates forming the first `k` coordinates of the claim point — there is
@@ -425,82 +422,10 @@ where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	let n = provers.len();
-	let k = selector_point.len();
-	let alloc = provers[0].alloc;
-
-	let BatchProveUntilFinalLayerOutput {
-		eval_point,
-		final_layer,
-	} = batch_prove_until_final_layer(
-		provers,
-		claimed_fractions,
-		selector_point,
-		content_point,
-		channel,
-	);
-
-	// Finish the retained final layer: run its per-instance content MLE-checks and the selector
-	// merge, exactly as an interior reduction layer does.
-	let layer_provers = final_layer
-		.into_iter()
-		.map(|(_frac, prover)| prover)
-		.collect();
-	let (mut fractions, eval_point) =
-		reduce_layer::<A, F, P, _>(alloc, layer_provers, &eval_point, k, channel);
-
-	// Drop the padded (2^k) selector slots, keeping one reduced fraction per input prover.
-	fractions.truncate(n);
-
-	BatchProveOutput {
-		eval_point,
-		fractions,
-	}
-}
-
-/// Output of [`batch_prove_until_final_layer`].
-///
-/// After running `n_layers - 1` reductions, holds — for each input prover, in input order — its
-/// reduced `(num, den)` fraction paired with the [`MleCheckProver`] `MP` for its final (widest)
-/// layer, at the shared `eval_point` (`selector ++ content`).
-pub struct BatchProveUntilFinalLayerOutput<F, MP> {
-	/// The reduced evaluation point (`selector ++ content`) at which the final layer is claimed.
-	pub eval_point: Vec<F>,
-	/// Each input prover's reduced `(num, den)` fraction and final-layer MLE-check prover.
-	pub final_layer: Vec<((F, F), MP)>,
-}
-
-/// Runs a batched fractional-addition check up to (but not finishing) the final layer's MLE-check.
-///
-/// Runs `n_layers - 1` of the per-layer reductions, then — for each input prover — pops its final
-/// (widest) layer as an [`MleCheckProver`] (via `FracAddCheckProver::layer_prover`), seeded at
-/// the reduced content coordinates with the prover's reduced `(num, den)` fraction claim.
-///
-/// # Returns
-/// * the reduced evaluation point (`selector ++ content`) at which the final layer is claimed, and
-/// * for each input prover, its reduced `(num, den)` fraction paired with the final-layer
-///   [`MleCheckProver`].
-///
-/// The caller finishes the final layer — e.g. [`batch_prove`] runs its MLE-check directly, or the
-/// logUp* final layer splices these provers into another reduction.
-///
-/// Arguments and preconditions are as for [`batch_prove`].
-pub fn batch_prove_until_final_layer<'a, A, F, P, Channel>(
-	provers: Vec<FracAddCheckProver<'a, A, P>>,
-	claimed_fractions: Vec<(F, F)>,
-	selector_point: Vec<F>,
-	content_point: Vec<F>,
-	channel: &mut Channel,
-) -> BatchProveUntilFinalLayerOutput<F, LayerProver<'a, A, F, P>>
-where
-	A: Allocator,
-	F: Field,
-	P: PackedField<Scalar = F>,
-	Channel: IPProverChannel<F>,
-{
 	assert!(!provers.is_empty()); // precondition
 	assert_eq!(claimed_fractions.len(), provers.len()); // precondition
 
+	let n = provers.len();
 	let k = selector_point.len();
 	assert!(provers.len() <= (1 << k)); // precondition
 
@@ -513,39 +438,20 @@ where
 	// layer this seeds each layer prover with a claim at `content_point`.
 	let eval_point = [selector_point, content_point].concat();
 
-	// Run `n_layers - 1` reductions, stopping one layer short so each prover retains its final
-	// (widest) layer for the caller to finish.
-	let (provers, claimed_fractions, eval_point) = (0..n_layers - 1).fold(
+	let (provers, mut fractions, eval_point) = (0..n_layers).fold(
 		(provers, claimed_fractions, eval_point),
 		|(provers, claimed_fractions, eval_point), _| {
 			batch_prove_layer(provers, &claimed_fractions, &eval_point, k, channel)
 		},
 	);
+	debug_assert!(provers.is_empty(), "the final layer leaves no provers");
 
-	// Pop each remaining single-layer prover's final layer as an MLE-check prover, seeded at the
-	// content coordinates with its reduced fraction. `claimed_fractions` is padded to `2^k`; zip
-	// with the `n` real provers keeps only the real (input-prover) entries.
-	let inner_coords = eval_point[k..].to_vec();
-	let final_layer = iter::zip(provers, claimed_fractions)
-		.map(|(prover, (num, den))| {
-			let (remaining, mle_prover, _cols) = prover.layer_prover((
-				MultilinearEvalClaim {
-					eval: num,
-					point: inner_coords.clone(),
-				},
-				MultilinearEvalClaim {
-					eval: den,
-					point: inner_coords.clone(),
-				},
-			));
-			debug_assert!(remaining.is_none(), "one retained layer per prover");
-			((num, den), mle_prover)
-		})
-		.collect();
+	// Drop the padded (2^k) selector slots, keeping one reduced fraction per input prover.
+	fractions.truncate(n);
 
-	BatchProveUntilFinalLayerOutput {
+	BatchProveOutput {
 		eval_point,
-		final_layer,
+		fractions,
 	}
 }
 
@@ -734,7 +640,7 @@ where
 	let inner_coords = eval_point[k..].to_vec();
 	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_fractions)
 		.map(|(prover, &(num, den))| {
-			let (remaining, layer_prover, _cols) = prover.layer_prover((
+			let (remaining, layer_prover) = prover.layer_prover((
 				MultilinearEvalClaim {
 					eval: num,
 					point: inner_coords.clone(),
@@ -799,8 +705,8 @@ pub struct BatchProveUnequalDepthsOutput<F, Prover> {
 ///
 /// # Returns
 ///
-/// Like [`batch_prove_until_final_layer`], this stops one layer short, returning each tree's
-/// reduced fraction beside the prover for its final (widest) layer — the layer whose reduction
+/// This stops one layer short, returning each tree's reduced fraction beside the prover for its
+/// final (widest) layer — the layer whose reduction
 /// dominates the cost, which a caller can therefore batch with other sumchecks. Running those
 /// provers and the selector rounds that follow finishes the check.
 ///
@@ -922,7 +828,7 @@ where
 				next_provers.push(prover);
 				Either::Right(ConstantFraction::new(num_claim, den_claim))
 			} else {
-				let (rest, layer_prover, _cols) = prover.layer_prover((
+				let (rest, layer_prover) = prover.layer_prover((
 					MultilinearEvalClaim {
 						eval: num_claim,
 						point: point.clone(),
@@ -1223,8 +1129,7 @@ mod tests {
 
 	#[test]
 	fn test_batch_prove_single_layer() {
-		// n_layers=1 edge case: batch_prove_until_final_layer runs 0 reductions and the single
-		// (final) layer is finished by batch_prove.
+		// n_layers=1 edge case: the single layer is the final one.
 		test_batch_prove_verify_helper::<Packed128b>(1, 4);
 	}
 
