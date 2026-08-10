@@ -20,9 +20,19 @@ pub struct Commitment<Digest> {
 
 /// A Merkle tree scheme.
 pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
+	/// The digest of a leaf or an inner node.
 	type Digest: Clone + PartialEq + Eq;
 
 	/// Returns the optimal layer that the verifier should verify only once.
+	///
+	/// Decommitting a layer at depth `d` costs `2^d` digests but shortens every one of the
+	/// `n_queries` branches by `d`, so the proof holds
+	///
+	/// ```text
+	/// (tree_depth - d) * n_queries + 2^d
+	/// ```
+	///
+	/// digests. That is minimized at `d = ceil(log2(n_queries))`, clamped to the tree depth.
 	fn optimal_verify_layer(&self, n_queries: usize, tree_depth: usize) -> usize;
 
 	/// Returns the total byte-size of a proof for multiple opening queries.
@@ -46,7 +56,9 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 	///
 	/// ## Preconditions
 	///
+	/// * `batch_size` must be non-zero.
 	/// * `data.len()` must be a multiple of `batch_size`.
+	/// * `data.len() / batch_size` must be a non-zero power of two.
 	fn verify_vector(
 		&self,
 		root: &Self::Digest,
@@ -75,6 +87,7 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 	/// ## Preconditions
 	///
 	/// * `layer_digests.len()` must equal `2^layer_depth`.
+	/// * `layer_depth` must be at most `tree_depth`.
 	/// * `index` must be less than `2^tree_depth`.
 	fn verify_opening<B: Buf>(
 		&self,
