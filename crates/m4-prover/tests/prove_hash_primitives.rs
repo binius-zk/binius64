@@ -366,3 +366,13 @@ fn prove_integer_multiplication() {
 	let (circuit, inputs) = build_imul_circuit();
 	prove_once("imul", &circuit, log_instances, |instance, w| fill_imul(&inputs, instance, w));
 }
+
+// A batch of one instance, with IMUL constraints.
+//
+// The re-randomization still runs here, over no rounds, since a batch of one is still a batch.
+// Nothing else covers that degenerate sumcheck, on either side.
+#[test]
+fn prove_integer_multiplication_single_instance() {
+	let (circuit, inputs) = build_imul_circuit();
+	prove_once("imul-1", &circuit, 0, |instance, w| fill_imul(&inputs, instance, w));
+}
