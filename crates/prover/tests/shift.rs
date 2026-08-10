@@ -1,10 +1,14 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::array;
+
 use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
 use binius_compute::GlobalAllocator;
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, InoutSegment, ValueVec},
+	constraint_system::{
+		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, InoutSegment, ValueVec,
+	},
 	word::Word,
 };
 use binius_field::{AESTowerField8b, BinaryField};
@@ -176,6 +180,20 @@ fn compute_intmul_images(constraints: &[ImulConstraint], witness: &ValueVec) -> 
 	[a_image, b_image, lo_image, hi_image].map(|image| pad_image(image, constraints.len()))
 }
 
+// Compute the image of the witness applied to the BMUL constraints
+//
+// Each image is zero-padded to a power-of-two length, matching the operand columns the prover
+// materializes.
+fn compute_binmul_images(constraints: &[BmulConstraint], witness: &ValueVec) -> [Vec<Word>; 6] {
+	array::from_fn(|op_idx| {
+		let image = constraints
+			.iter()
+			.map(|constraint| witness.eval_operand(&constraint.as_ref()[op_idx]))
+			.collect();
+		pad_image(image, constraints.len())
+	})
+}
+
 // Evaluate the image of the witness applied to the AND or IMUL constraints
 // Univariate point is `r_zhat_prime`, multilinear point tensor-expanded is `r_x_prime_tensor`
 fn evaluate_image<F: BinaryField>(
@@ -252,6 +270,18 @@ fn test_shift_prove_and_verify() {
 			Vec::new()
 		};
 
+		// A constraint system may equally have zero BMUL constraints, and the BinMul operator is
+		// then empty for the same reason.
+		let binmul_is_empty = cs.bmul_constraints.is_empty();
+		let r_x_prime_binmul = if let Some(log_binmul_constraint_count) = cs.log_bmul_constraints()
+		{
+			(0..log_binmul_constraint_count as u128)
+				.map(F::new)
+				.collect::<Vec<_>>()
+		} else {
+			Vec::new()
+		};
+
 		// Sample univariate eval point — the bitand and intmul operators share
 		// `r_zhat_prime` so the verifier can compute `h_op_evals` once for both.
 		let r_zhat_prime = F::random(&mut rng);
@@ -276,6 +306,19 @@ fn test_shift_prove_and_verify() {
 					&image,
 					r_zhat_prime,
 					eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
+				)
+			})
+		};
+
+		let binmul_evals: [F; 6] = if binmul_is_empty {
+			[F::ZERO; 6]
+		} else {
+			compute_binmul_images(&cs.bmul_constraints, &value_vec).map(|image| {
+				evaluate_image(
+					&subspace,
+					&image,
+					r_zhat_prime,
+					eq_ind_partial_eval(&r_x_prime_binmul).as_ref(),
 				)
 			})
 		};
@@ -307,9 +350,11 @@ fn test_shift_prove_and_verify() {
 			r_zhat_prime,
 			r_x_prime: r_x_prime_zero.clone(),
 		};
-		// These circuits have no BMUL constraints, so the BinMul claim is the zero claim at an
-		// empty point (the prover's skipped-case `None` branch).
-		let prover_binmul_data = OperatorData::zero_claim(r_zhat_prime);
+		let prover_binmul_data = OperatorData {
+			evals: binmul_evals,
+			r_zhat_prime,
+			r_x_prime: r_x_prime_binmul.clone(),
+		};
 
 		let prover_output = prove::<F, P, _, _>(
 			&key_collection,
@@ -332,7 +377,7 @@ fn test_shift_prove_and_verify() {
 		let verifier_zero_data = VerifierOperatorData::new(r_x_prime_zero, [F::ZERO]);
 		let verifier_bitand_data = VerifierOperatorData::new(r_x_prime_bitand, bitand_evals);
 		let verifier_intmul_data = VerifierOperatorData::new(r_x_prime_intmul, intmul_evals);
-		let verifier_binmul_data = VerifierOperatorData::new(Vec::new(), [F::ZERO; 6]);
+		let verifier_binmul_data = VerifierOperatorData::new(r_x_prime_binmul, binmul_evals);
 
 		let verifier_output = verify(
 			&cs,

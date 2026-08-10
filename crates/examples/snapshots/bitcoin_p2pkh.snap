@@ -7,14 +7,14 @@ Gates & Instructions
 Constraints
 ├─ ZERO constraints: 1,914 used (93.5% of 2^11)
 │  [▓▓▓▓▓▓▓▓▓░] spare: 134
-├─ AND constraints: 111,567 used (85.1% of 2^17)
-│  [▓▓▓▓▓▓▓▓░░] spare: 19,505
+├─ AND constraints: 98,901 used (75.5% of 2^17)
+│  [▓▓▓▓▓▓▓░░░] spare: 32,171
 ├─ IMUL constraints: 15,186 used (92.7% of 2^14)
 │  [▓▓▓▓▓▓▓▓▓░] spare: 1,198
-├─ BMUL constraints: 0 used (0.0% of 0)
-│  [░░░░░░░░░░] spare: 0
-└─ Distinct value indices: 267,506
-   ├─ Distinct shifted value indices: 131,631
+├─ BMUL constraints: 12,666 used (77.3% of 2^14)
+│  [▓▓▓▓▓▓▓░░░] spare: 3,718
+└─ Distinct value indices: 267,507
+   ├─ Distinct shifted value indices: 131,632
    └─ Distinct unshifted value indices: 135,875
 
 Value Vector
