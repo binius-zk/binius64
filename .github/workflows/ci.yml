@@ -80,7 +80,7 @@ jobs:
         with:
           components: clippy
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2.85.5
+        uses: taiki-e/install-action@v2.85.10
         with:
           tool: cargo-nextest
       - name: Install lld
