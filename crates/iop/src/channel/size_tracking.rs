@@ -35,8 +35,6 @@ pub struct CommittedShape {
 ///
 /// Zero survives every fold and equality check a verifier performs.
 /// So the verifier takes the path it would on a real proof, reaching the same receives in order.
-///
-/// The count assumes a non-hiding scheme, whose leaves carry no salt.
 pub struct SizeTrackingChannel<'a, F, MerkleScheme_> {
 	scheme: &'a MerkleScheme_,
 	proof_size: usize,

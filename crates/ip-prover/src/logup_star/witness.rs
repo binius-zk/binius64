@@ -6,7 +6,7 @@
 //!
 //! - the looker numerator `eq_r`, the equality indicator at the evaluation point,
 //! - the looker denominator `c - I`, with `I` the embedded index column,
-//! - the table denominator `c - J`, with `J` the embedded table positions,
+//! - the negated table denominator `J - c`, with `J` the embedded table positions,
 //! - the pushforward `Y = I_* eq_r`, the looker numerator scattered onto table positions.
 
 use std::iter;
@@ -57,7 +57,6 @@ where
 	P: PackedField<Scalar = F>,
 {
 	assert!(!lookers.is_empty(), "at least one looker is required");
-	let n = lookers[0].eval_point.len();
 
 	// The scale for looker j is gamma^j.
 	// The powers chain is sequential: each power depends on the last.
@@ -66,24 +65,24 @@ where
 
 	// Build one numerator per looker, fanned out across lookers.
 	// Why fan out: the per-looker expansion is itself parallel.
-	//   But it under-saturates the machine at moderate n.
+	//   But it under-saturates the machine at moderate n_j.
 	//   Spreading the lookers over the cores fills them.
-	// The 2^n backing buffers are drawn from `alloc` up front on this thread, so the parallel
-	// region only fills them — no allocator traffic inside the rayon closures.
+	// The 2^n_j backing buffers are drawn from `alloc` up front on this thread, so the parallel
+	// region only fills them — no allocator traffic inside the rayon closures. Lookers may differ
+	// in length, so each buffer is sized to its own looker.
 	// Invariant: the fill writes results back in looker order (the zip is index-aligned).
 	//   So numerator j stays gamma^j * eq_{r_j}.
-	let packed_len = 1 << n.saturating_sub(P::LOG_WIDTH);
-	let buffers = iter::repeat_with(|| alloc.alloc::<P>(packed_len))
-		.take(lookers.len())
+	let buffers = lookers
+		.iter()
+		.map(|looker| {
+			let packed_len = 1 << looker.eval_point.len().saturating_sub(P::LOG_WIDTH);
+			alloc.alloc::<P>(packed_len)
+		})
 		.collect::<Vec<_>>();
 	let numerators = (buffers, scales.as_slice(), lookers)
 		.into_par_iter()
 		.map(|(buffer, &scale, looker)| {
-			assert_eq!(
-				looker.eval_point.len(),
-				n,
-				"every looker evaluation point must have the same length"
-			);
+			let n = looker.eval_point.len();
 			assert_eq!(
 				looker.index.len(),
 				1 << n,
@@ -93,7 +92,7 @@ where
 			);
 			// Looker j's numerator is gamma^j * eq_{r_j}.
 			// Seeding the expansion with gamma^j folds the scale into the tensor product.
-			// That keeps it to one pass over one 2^n buffer.
+			// That keeps it to one pass over one 2^n_j buffer.
 			scaled_eq_ind_partial_eval_into(looker.eval_point, scale, buffer)
 		})
 		.collect::<Vec<_>>();
@@ -262,18 +261,20 @@ where
 	FieldBuffer::new(log_len, packed)
 }
 
-/// Build the table denominator `c - J` over the `m`-variable table cube.
+/// Build the negated table denominator `J - c` over the `m`-variable table cube.
 ///
-/// Entry `j` is `c - iota(j)`, the logUp denominator for table position `j`.
+/// Entry `j` is `iota(j) - c`. The logUp denominator for table position `j` is `c - iota(j)`; the
+/// table's fraction enters the sum of every instance negated, and carrying that negation on the
+/// denominator rather than the numerator costs nothing here, where the entries are built anyway.
 pub fn table_denominator<A, F, P>(alloc: &A, c: F, table_n_vars: usize) -> FieldVec<P, A>
 where
 	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
-	// One denominator per table position: shift the challenge by the position's embedding.
+	// One denominator per table position: shift the position's embedding by the challenge.
 	let values = (0..1usize << table_n_vars)
-		.map(|j| c - embed_position::<F>(j))
+		.map(|j| embed_position::<F>(j) - c)
 		.collect::<Vec<_>>();
 	FieldBuffer::from_values_in(alloc, &values)
 }

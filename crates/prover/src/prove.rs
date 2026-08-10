@@ -5,7 +5,7 @@ use std::{marker::PhantomData, mem::MaybeUninit};
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
-	constraint_system::{ConstraintSystem, Operand, ValueVec},
+	constraint_system::{ConstraintSystem, InoutSegment, Operand, ValueVec},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
@@ -26,6 +26,7 @@ use binius_utils::{
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
+	encode_inout,
 	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput, zero},
 };
 use digest::Output;
@@ -54,7 +55,6 @@ type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
 #[derive(Debug)]
 pub struct IOPProver {
 	constraint_system: ConstraintSystem,
-	log_public_words: usize,
 	log_witness_elems: usize,
 	key_collection: KeyCollection,
 }
@@ -62,12 +62,10 @@ pub struct IOPProver {
 impl IOPProver {
 	/// Constructs an IOP prover from an IOP verifier and pre-computed keys.
 	pub fn new(iop_verifier: IOPVerifier, key_collection: KeyCollection) -> Self {
-		let log_public_words = iop_verifier.log_public_words();
 		let log_witness_elems = iop_verifier.log_witness_elems();
 		let constraint_system = iop_verifier.into_constraint_system();
 		Self {
 			constraint_system,
-			log_public_words,
 			log_witness_elems,
 			key_collection,
 		}
@@ -111,17 +109,10 @@ impl IOPProver {
 			pack_witness::<P, _>(alloc, self.log_witness_elems, witness.non_public())?;
 		drop(setup_guard);
 
-		// Observe the public input as B128 elements (includes it in Fiat-Shamir). The packed buffer
-		// is a temporary of this statement, so its pool block is returned immediately rather than
-		// held for the rest of the proof.
-		let public_elems = pack_witness::<P, _>(
-			alloc,
-			self.log_public_words - LOG_WORDS_PER_ELEM,
-			witness.public(),
-		)?
-		.iter_scalars()
-		.collect::<Vec<_>>();
-		channel.observe_many(&public_elems);
+		// Observe the inout values as B128 elements (includes them in Fiat-Shamir). The constants
+		// are fixed by the constraint system, so only the per-instance values are observed, and
+		// the encoding is shared with the verifier so the two transcripts cannot drift.
+		channel.observe_many(&encode_inout(witness.inout()));
 
 		// [phase] Witness Commit - witness generation and commitment
 		let witness_commit_guard = tracing::info_span!("Commit witness").entered();
@@ -394,7 +385,8 @@ where
 	///
 	/// See [`Prover`] struct documentation for details.
 	pub fn setup(verifier: Verifier<H>) -> Result<Self, Error> {
-		let key_collection = build_key_collection(verifier.constraint_system());
+		let key_collection =
+			build_key_collection(verifier.constraint_system(), InoutSegment::Public);
 		Self::setup_with_key_collection(verifier, key_collection)
 	}
 
@@ -452,7 +444,7 @@ where
 
 		let _prove_guard = tracing::info_span!(
 			"Prove",
-			n_hidden_words = cs.n_hidden_words(),
+			n_hidden_words = cs.n_hidden_words(InoutSegment::Public),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)

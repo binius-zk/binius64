@@ -15,7 +15,10 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::BinaryField128bGhash as B128;
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
@@ -38,10 +41,7 @@ use binius_utils::{DeserializeBytes, SerializeBytes, serialization::Serializatio
 use bytes::{Buf, BufMut};
 use digest::Output;
 
-use crate::{
-	config::LOG_WORDS_PER_ELEM,
-	verify::{IOPVerifier, SECURITY_BITS},
-};
+use crate::verify::{IOPVerifier, SECURITY_BITS};
 
 /// Zero-knowledge verifier for Binius64 constraint systems.
 ///
@@ -68,22 +68,19 @@ where
 
 		constraint_system.validate()?;
 
-		// The validated layout guarantees a power-of-two public segment of at least one full
-		// element.
-		let log_public_words = constraint_system.log_public_words();
-		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
+		let log_public_words = constraint_system.log_public_words(InoutSegment::Public);
 
 		let inner_iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 
 		// Symbolically execute the inner verifier to build the outer constraint system.
-		let dummy_public_words =
-			vec![Word::from_u64(0); inner_iop_verifier.constraint_system().n_public_values()];
+		let dummy_inout_words =
+			vec![Word::from_u64(0); inner_iop_verifier.constraint_system().n_inout];
 
 		let outer_builder = {
 			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
 			let mut builder_channel = IronSpartanBuilderChannel::new();
 			inner_iop_verifier
-				.verify(&dummy_public_words, &mut builder_channel)
+				.verify(&dummy_inout_words, &mut builder_channel)
 				.expect("symbolic verify should not fail");
 			builder_channel.finish()
 		};
@@ -185,7 +182,7 @@ where
 	/// Verifies a ZK proof against the constraint system.
 	pub fn verify<Challenger_: Challenger>(
 		&self,
-		public: &[Word],
+		inout: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		// Create BaseFold channel and wrap with outer verifier.
@@ -203,14 +200,14 @@ where
 			let inner_cs = self.inner_iop_verifier.constraint_system();
 			let _scope = tracing::debug_span!(
 				"Binius64",
-				n_hidden_words = inner_cs.n_hidden_words(),
+				n_hidden_words = inner_cs.n_hidden_words(InoutSegment::Public),
 				n_bitand = inner_cs.and_constraints.len(),
 				n_intmul = inner_cs.imul_constraints.len(),
 			)
 			.entered();
 
 			self.inner_iop_verifier
-				.verify(public, &mut wrapped_channel)?;
+				.verify(inout, &mut wrapped_channel)?;
 		};
 
 		// Finish runs the outer spartan verification.
@@ -235,12 +232,12 @@ where
 	/// [`Self::verify`] checks. See [`crate::signature`] for details.
 	pub fn verify_sig<Challenger_: Challenger>(
 		&self,
-		public: &[Word],
+		inout: &[Word],
 		message: &[u8],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		crate::signature::observe_message::<H, _>(&mut transcript.observe(), message);
-		self.verify(public, transcript)
+		self.verify(inout, transcript)
 	}
 }
 

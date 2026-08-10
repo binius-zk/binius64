@@ -19,7 +19,10 @@
 
 use std::array;
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b as B8, FieldOps};
 use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::{
@@ -128,6 +131,7 @@ impl<F: Clone> ReductionOutput<F> {
 ///
 /// - `cs`: the single-instance constraint system every instance satisfies.
 /// - `instances`: whether this is the monolithic reduction or a batch, and how wide.
+/// - `inout`: which value segment the inout words sit in.
 /// - `public`: the declared public values, unpadded — the constants, then the inout values.
 /// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.
 ///
@@ -145,6 +149,7 @@ impl<F: Clone> ReductionOutput<F> {
 pub fn reduce_constraints<Channel>(
 	cs: &ConstraintSystem,
 	instances: Instances,
+	inout: InoutSegment,
 	public: &[Word],
 	channel: &mut Channel,
 ) -> Result<ReductionOutput<Channel::Elem>, Error>
@@ -269,7 +274,7 @@ where
 			perfetto_category = "phase"
 		)
 		.entered();
-		shift::verify::<B128, _>(cs, &zero, &bitand, &intmul, &binmul, channel)?
+		shift::verify::<B128, _>(cs, inout, &zero, &bitand, &intmul, &binmul, channel)?
 	};
 
 	// Tie in the public values through the public-input consistency check.
@@ -284,6 +289,7 @@ where
 		.entered();
 		shift::check_eval::<B128, _>(
 			cs,
+			inout,
 			public,
 			&zero,
 			&bitand,

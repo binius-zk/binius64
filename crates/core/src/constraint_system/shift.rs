@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use std::{iter, mem::MaybeUninit};
 
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
@@ -288,33 +289,222 @@ impl DeserializeBytes for ShiftVariant {
 	}
 }
 
-/// Similar to [`ValueIndex`], but represents a value that has been shifted by a certain amount.
+/// One shift: an operation paired with the distance it moves by.
+///
+/// The amount is always below the variant's [`max_amount`](ShiftVariant::max_amount), so a `Shift`
+/// that exists denotes the same operation wherever it is read.
+///
+/// Every variant is the identity at amount 0, so the amount alone does not fix how the identity is
+/// spelled. [`Shift::IDENTITY`] is the canonical spelling, and [`Self::is_canonical`] is what says
+/// which spelling a constraint system may carry.
+///
+/// The amount is stored as a byte to keep the struct small: constraint systems hold millions of
+/// these.
+///
+/// ```
+/// use binius_core::{constraint_system::Shift, word::Word};
+///
+/// let word = Word::from_u64(0xf0);
+/// assert_eq!(Shift::srl(4).apply(word), Word::from_u64(0x0f));
+/// assert_eq!(Shift::IDENTITY.apply(word), word);
+///
+/// // Every variant is the identity at amount 0, but only one spelling is canonical.
+/// assert!(Shift::rotr(0).is_identity());
+/// assert!(!Shift::rotr(0).is_canonical());
+/// ```
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Shift {
+	/// The operation this shift performs.
+	pub variant: ShiftVariant,
+	/// The number of bits to shift by, below the variant's upper bound.
+	pub amount: u8,
+}
+
+impl Shift {
+	/// The canonical shift that leaves a word untouched.
+	pub const IDENTITY: Self = Self {
+		variant: ShiftVariant::Sll,
+		amount: 0,
+	};
+
+	/// A shift of `amount` bits by `variant`.
+	///
+	/// # Panics
+	///
+	/// Panics if the amount is not below the variant's [`max_amount`](ShiftVariant::max_amount):
+	/// 32 for the half-word (`*32`) variants, 64 for the rest.
+	pub fn new(variant: ShiftVariant, amount: usize) -> Self {
+		assert!(
+			amount < variant.max_amount(),
+			"shift amount n={amount} out of range for {variant:?}"
+		);
+		Self {
+			variant,
+			// An amount below 64 always fits in the byte-sized field.
+			amount: amount as u8,
+		}
+	}
+
+	/// Shift Left Logical.
+	///
+	/// # Panics
+	/// Panics if the shift amount is greater than or equal to 64.
+	pub fn sll(amount: usize) -> Self {
+		Self::new(ShiftVariant::Sll, amount)
+	}
+
+	/// Shift Right Logical.
+	///
+	/// # Panics
+	/// Panics if the shift amount is greater than or equal to 64.
+	pub fn srl(amount: usize) -> Self {
+		Self::new(ShiftVariant::Slr, amount)
+	}
+
+	/// Shift Right Arithmetic.
+	///
+	/// This is similar to the Shift Right Logical but instead of shifting in 0 bits it will
+	/// replicate the sign bit.
+	///
+	/// # Panics
+	/// Panics if the shift amount is greater than or equal to 64.
+	pub fn sar(amount: usize) -> Self {
+		Self::new(ShiftVariant::Sar, amount)
+	}
+
+	/// Rotate Right.
+	///
+	/// Rotates bits to the right, with bits shifted off the right end wrapping around to the left.
+	///
+	/// # Panics
+	/// Panics if the shift amount is greater than or equal to 64.
+	pub fn rotr(amount: usize) -> Self {
+		Self::new(ShiftVariant::Rotr, amount)
+	}
+
+	/// Shift Left Logical on 32-bit halves.
+	///
+	/// Performs independent logical left shifts on the upper and lower 32-bit halves.
+	///
+	/// # Panics
+	/// Panics if the shift amount is greater than or equal to 32.
+	pub fn sll32(amount: usize) -> Self {
+		Self::new(ShiftVariant::Sll32, amount)
+	}
+
+	/// Shift Right Logical on 32-bit halves.
+	///
+	/// Performs independent logical right shifts on the upper and lower 32-bit halves.
+	///
+	/// # Panics
+	/// Panics if the shift amount is greater than or equal to 32.
+	pub fn srl32(amount: usize) -> Self {
+		Self::new(ShiftVariant::Srl32, amount)
+	}
+
+	/// Shift Right Arithmetic on 32-bit halves.
+	///
+	/// Performs independent arithmetic right shifts on the upper and lower 32-bit halves,
+	/// sign extending each half independently.
+	///
+	/// # Panics
+	/// Panics if the shift amount is greater than or equal to 32.
+	pub fn sra32(amount: usize) -> Self {
+		Self::new(ShiftVariant::Sra32, amount)
+	}
+
+	/// Rotate Right on 32-bit halves.
+	///
+	/// Performs independent rotate right operations on the upper and lower 32-bit halves.
+	///
+	/// # Panics
+	/// Panics if the shift amount is greater than or equal to 32.
+	pub fn rotr32(amount: usize) -> Self {
+		Self::new(ShiftVariant::Rotr32, amount)
+	}
+
+	/// Whether this shift leaves every word untouched.
+	///
+	/// Every variant is the identity at amount 0, so this holds for more shifts than
+	/// [`Shift::IDENTITY`] alone.
+	#[inline]
+	pub const fn is_identity(self) -> bool {
+		self.amount == 0
+	}
+
+	/// Whether this is the canonical spelling of the operation it denotes.
+	///
+	/// Only the identity has more than one spelling, and [`Shift::IDENTITY`] is the one to use.
+	/// Constraint systems carry canonical shifts only, so that two terms denoting the same shifted
+	/// word compare equal.
+	#[inline]
+	pub const fn is_canonical(self) -> bool {
+		!self.is_identity() || matches!(self.variant, ShiftVariant::Sll)
+	}
+
+	/// Applies this shift to a word and returns the result.
+	///
+	/// # Performance
+	///
+	/// Which operation to run is decided on every call. To shift many words by one fixed shift,
+	/// resolve the variant once instead — see [`ShiftVariant::write_shifted`] and
+	/// [`ShiftVariant::xor_shifted`].
+	#[inline]
+	pub fn apply(self, word: Word) -> Word {
+		self.variant.apply(word, self.amount as usize)
+	}
+}
+
+impl SerializeBytes for Shift {
+	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
+		self.variant.serialize(&mut write_buf)?;
+		// Keep the wire format a usize so serialized systems stay byte-compatible.
+		(self.amount as usize).serialize(write_buf)
+	}
+}
+
+impl DeserializeBytes for Shift {
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError>
+	where
+		Self: Sized,
+	{
+		let variant = ShiftVariant::deserialize(&mut read_buf)?;
+		let amount = usize::deserialize(read_buf)?;
+
+		// Reject any amount the variant cannot represent.
+		// Half-word variants cap at 32, full-width at 64.
+		// This mirrors the bound `Shift::new` enforces.
+		// An amount below 64 always fits in the byte-sized field.
+		if amount >= variant.max_amount() {
+			return Err(SerializationError::InvalidConstruction {
+				name: "Shift::amount",
+			});
+		}
+
+		Ok(Shift {
+			variant,
+			amount: amount as u8,
+		})
+	}
+}
+
+/// Similar to [`ValueIndex`], but represents a value that has been shifted.
 ///
 /// This is used in the operands to constraints like [`AndConstraint`](super::AndConstraint).
-///
-/// The canonical formto represent a value without any shifting is [`ShiftVariant::Sll`] with
-/// amount equals 0.
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ShiftedValueIndex {
 	/// The index of this value in the input values vector.
 	pub value_index: ValueIndex,
-	/// The flavour of the shift that the value must be shifted by.
-	pub shift_variant: ShiftVariant,
-	/// The number of bits to shift by.
-	///
-	/// Stored as a byte to keep the struct small: constraint systems hold millions of these.
-	/// Must be less than 64.
-	pub amount: u8,
+	/// The shift applied to the value.
+	pub shift: Shift,
 }
 
 impl ShiftedValueIndex {
-	/// Create a value index that just uses the specified value. Equivalent to [`Self::sll`] with
-	/// amount equals 0.
+	/// Create a value index that just uses the specified value, unshifted.
 	pub const fn plain(value_index: ValueIndex) -> Self {
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Sll,
-			amount: 0,
+			shift: Shift::IDENTITY,
 		}
 	}
 
@@ -323,11 +513,9 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
 	pub fn sll(value_index: ValueIndex, amount: usize) -> Self {
-		assert!(amount < 64, "shift amount n={amount} out of range");
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Sll,
-			amount: amount as u8,
+			shift: Shift::sll(amount),
 		}
 	}
 
@@ -336,11 +524,9 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
 	pub fn srl(value_index: ValueIndex, amount: usize) -> Self {
-		assert!(amount < 64, "shift amount n={amount} out of range");
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Slr,
-			amount: amount as u8,
+			shift: Shift::srl(amount),
 		}
 	}
 
@@ -352,11 +538,9 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
 	pub fn sar(value_index: ValueIndex, amount: usize) -> Self {
-		assert!(amount < 64, "shift amount n={amount} out of range");
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Sar,
-			amount: amount as u8,
+			shift: Shift::sar(amount),
 		}
 	}
 
@@ -367,11 +551,9 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
 	pub fn rotr(value_index: ValueIndex, amount: usize) -> Self {
-		assert!(amount < 64, "shift amount n={amount} out of range");
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Rotr,
-			amount: amount as u8,
+			shift: Shift::rotr(amount),
 		}
 	}
 
@@ -383,11 +565,9 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
 	pub fn sll32(value_index: ValueIndex, amount: usize) -> Self {
-		assert!(amount < 32, "shift amount n={amount} out of range for 32-bit shift");
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Sll32,
-			amount: amount as u8,
+			shift: Shift::sll32(amount),
 		}
 	}
 
@@ -399,11 +579,9 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
 	pub fn srl32(value_index: ValueIndex, amount: usize) -> Self {
-		assert!(amount < 32, "shift amount n={amount} out of range for 32-bit shift");
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Srl32,
-			amount: amount as u8,
+			shift: Shift::srl32(amount),
 		}
 	}
 
@@ -416,11 +594,9 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
 	pub fn sra32(value_index: ValueIndex, amount: usize) -> Self {
-		assert!(amount < 32, "shift amount n={amount} out of range for 32-bit shift");
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Sra32,
-			amount: amount as u8,
+			shift: Shift::sra32(amount),
 		}
 	}
 
@@ -428,16 +604,13 @@ impl ShiftedValueIndex {
 	///
 	/// Performs independent rotate right operations on the upper and lower 32-bit halves.
 	/// Bits shifted off the right end wrap around to the left within each 32-bit half.
-	/// Only uses the lower 5 bits of the shift amount (0-31).
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
 	pub fn rotr32(value_index: ValueIndex, amount: usize) -> Self {
-		assert!(amount < 32, "shift amount n={amount} out of range for 32-bit rotate");
 		Self {
 			value_index,
-			shift_variant: ShiftVariant::Rotr32,
-			amount: amount as u8,
+			shift: Shift::rotr32(amount),
 		}
 	}
 
@@ -448,17 +621,14 @@ impl ShiftedValueIndex {
 	#[inline]
 	pub fn eval(&self, witness: &ValueVec) -> Word {
 		// Look up the referenced word, then apply this term's shift.
-		self.shift_variant
-			.apply(witness[self.value_index], self.amount as usize)
+		self.shift.apply(witness[self.value_index])
 	}
 }
 
 impl SerializeBytes for ShiftedValueIndex {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.value_index.serialize(&mut write_buf)?;
-		self.shift_variant.serialize(&mut write_buf)?;
-		// Keep the wire format a u32 so serialized systems stay byte-compatible.
-		(self.amount as usize).serialize(write_buf)
+		self.shift.serialize(write_buf)
 	}
 }
 
@@ -468,24 +638,8 @@ impl DeserializeBytes for ShiftedValueIndex {
 		Self: Sized,
 	{
 		let value_index = ValueIndex::deserialize(&mut read_buf)?;
-		let shift_variant = ShiftVariant::deserialize(&mut read_buf)?;
-		let amount = usize::deserialize(read_buf)?;
-
-		// Reject any amount the variant cannot represent.
-		// Half-word variants cap at 32, full-width at 64.
-		// This mirrors the bound the constructors enforce.
-		// A value below 64 always fits in the byte-sized field.
-		if amount >= shift_variant.max_amount() {
-			return Err(SerializationError::InvalidConstruction {
-				name: "ShiftedValueIndex::amount",
-			});
-		}
-
-		Ok(ShiftedValueIndex {
-			value_index,
-			shift_variant,
-			amount: amount as u8,
-		})
+		let shift = Shift::deserialize(read_buf)?;
+		Ok(ShiftedValueIndex { value_index, shift })
 	}
 }
 
@@ -646,8 +800,8 @@ mod tests {
 
 		let deserialized = ShiftedValueIndex::deserialize(&mut buf.as_slice()).unwrap();
 		assert_eq!(shifted_value_index.value_index, deserialized.value_index);
-		assert_eq!(shifted_value_index.amount, deserialized.amount);
-		match (shifted_value_index.shift_variant, deserialized.shift_variant) {
+		assert_eq!(shifted_value_index.shift.amount, deserialized.shift.amount);
+		match (shifted_value_index.shift.variant, deserialized.shift.variant) {
 			(ShiftVariant::Slr, ShiftVariant::Slr) => {}
 			_ => panic!("ShiftVariant mismatch"),
 		}
@@ -665,7 +819,7 @@ mod tests {
 		assert!(result.is_err());
 		match result.unwrap_err() {
 			SerializationError::InvalidConstruction { name } => {
-				assert_eq!(name, "ShiftedValueIndex::amount");
+				assert_eq!(name, "Shift::amount");
 			}
 			_ => panic!("Expected InvalidConstruction error"),
 		}
@@ -707,14 +861,13 @@ mod tests {
 			deserialize_amount(ShiftVariant::Sll32, 31).unwrap(),
 			ShiftedValueIndex {
 				value_index: ValueIndex::constant(0),
-				shift_variant: ShiftVariant::Sll32,
-				amount: 31,
+				shift: Shift::sll32(31),
 			}
 		);
 		// 32 exceeds the 5-bit range and must be rejected.
 		match deserialize_amount(ShiftVariant::Sll32, 32).unwrap_err() {
 			SerializationError::InvalidConstruction { name } => {
-				assert_eq!(name, "ShiftedValueIndex::amount");
+				assert_eq!(name, "Shift::amount");
 			}
 			other => panic!("Expected InvalidConstruction, got: {other:?}"),
 		}
@@ -723,23 +876,21 @@ mod tests {
 			deserialize_amount(ShiftVariant::Sll, 32).unwrap(),
 			ShiftedValueIndex {
 				value_index: ValueIndex::constant(0),
-				shift_variant: ShiftVariant::Sll,
-				amount: 32,
+				shift: Shift::sll(32),
 			}
 		);
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll, 63).unwrap(),
 			ShiftedValueIndex {
 				value_index: ValueIndex::constant(0),
-				shift_variant: ShiftVariant::Sll,
-				amount: 63,
+				shift: Shift::sll(63),
 			}
 		);
 	}
 
 	#[test]
 	fn shifted_value_index_fits_in_a_word() {
-		// Layout: value_index (u32, 4 bytes) + shift_variant (1 byte) + amount (u8, 1 byte).
+		// Layout: value_index (u32, 4 bytes) + Shift (variant byte + amount byte).
 		// Padded to the u32 alignment, that is 8 bytes.
 		// Holding this at one word matters: systems carry millions of these on the prover hot path.
 		assert_eq!(size_of::<ShiftedValueIndex>(), 8);

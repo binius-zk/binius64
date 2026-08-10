@@ -2,18 +2,21 @@
 
 //! The top-level logUp* verification routine.
 
-use std::iter;
+use std::{iter, slice};
 
 use binius_field::{BinaryField1b, ExtensionField, Field, field::FieldOps, util::powers};
 use binius_math::{
-	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
+	multilinear::{
+		eq::{eq_ind, eq_ind_zero},
+		evaluate::evaluate_inplace_scalars,
+	},
 	univariate::evaluate_univariate,
 };
 
 use super::{
 	error::{Error, VerificationError},
 	output::LogupOutput,
-	pushforward::{Pushforward, denominator_eval, verify_pushforward},
+	pushforward::{Pushforward, TableClaim, denominator_eval, verify_pushforward},
 };
 use crate::{
 	channel::IPVerifierChannel,
@@ -34,10 +37,23 @@ pub struct LookerClaim<'a, Elem> {
 /// Reduces the claims `(I_j^* T)(r_j) = e_j` to the claims in [`LogupOutput`]. The lookers batch
 /// by a random linear combination: the challenge `gamma` scales looker `j`'s numerator by
 /// `gamma^j`, the pushforward is the gamma-weighted sum of the per-looker pushforwards, and the
-/// product check binds `<T, Y>` to the gamma-combination of the claims. The looker side runs as
-/// one GKR circuit over `k + n` variables (`k = ceil(log2 #lookers)`): the top `k` layers
-/// fractionally add the per-looker circuit roots (padded with the zero fraction `0/1`), so the
-/// reduced index claims share one evaluation point.
+/// product check binds `<T, Y>` to the gamma-combination of the claims.
+///
+/// Every fractional-addition circuit — one per looker `j` over `n_j` variables, plus the table's
+/// over `m` — is an instance of **one** GKR of `k + max(max_j n_j, m)` layers, where
+/// `k = ceil(log2(#lookers + 1))`. Its top `k` layers add the per-instance root fractions together
+/// and its lower `max(max_j n_j, m)` run the instances in a batch, with every shallower instance
+/// padded by zero fractions — that leaves a fractional sum unchanged and costs `O(1)` per round,
+/// so the layer count depends only on the deepest instance.
+///
+/// The lookers need not agree on a length: a looker over `n_j` variables is simply padded by
+/// `max(max_j n_j, m) - n_j`, and its reduced index claim lands on the **last `n_j`** coordinates
+/// of [`LogupOutput::index_eval_point`].
+///
+/// The table's fraction enters that sum negated, so the circuit's root is
+/// `sum_j num_j/den_j - num_r/den_r`, whose numerator vanishes exactly when the lookup identity
+/// holds. The verifier therefore reads only the root *denominator* and supplies the zero numerator
+/// itself: the identity is enforced by the shape of the claim rather than by a separate check.
 ///
 /// The caller samples `gamma` itself, before receiving the pushforward commitment: the prover
 /// needs `gamma` to build the combined pushforward, so the commitment must come after.
@@ -49,7 +65,7 @@ pub struct LookerClaim<'a, Elem> {
 ///
 /// * `gamma` - The looker batching challenge, sampled by the caller.
 /// * `table_n_vars` - The number of variables `m` of the table multilinear (`2^m` entries).
-/// * `lookers` - The looker claims; every evaluation point must have the same length `n`.
+/// * `lookers` - The looker claims; their evaluation points may differ in length.
 /// * `channel` - The verifier channel for receiving prover messages and sampling challenges.
 ///
 /// # Transcript layout
@@ -58,11 +74,10 @@ pub struct LookerClaim<'a, Elem> {
 ///
 /// ```text
 ///     1. sample c                                  (logUp challenge)
-///     2. recv [num_L, den_L, num_R, den_R]         (root fractions of both GKR circuits)
-///     3. looker-side GKR, k + n layers             (see fracaddcheck::verify)
-///     4. recv per-looker index evaluations
-///     5. table-side GKR, all m layers              (see fracaddcheck::verify)
-///     6. pushforward reduction:
+///     2. recv den_root                             (the root denominator; its numerator is 0)
+///     3. combined GKR, k + max(max_j n_j, m) layers (see fracaddcheck::verify)
+///     4. recv per-looker index evaluations, then Y (the non-transparent leaf halves)
+///     5. pushforward reduction:
 ///        a. sample batch_coeff
 ///        b. m rounds of degree-2 sumcheck
 ///        c. recv [Y, T]                            (evaluations at the challenge point)
@@ -83,10 +98,9 @@ pub struct LookerClaim<'a, Elem> {
 ///
 /// Returns an error when the proof is malformed or any verification identity fails:
 ///
-/// - the two lookup sums disagree,
-/// - the batched `eq_r` evaluation is wrong,
-/// - the index evaluations do not combine to the batched leaf denominator,
-/// - the table-side leaf denominator is not the transparent `c - J`,
+/// - a GKR layer's reduction is inconsistent, which is where a violated lookup identity surfaces,
+/// - the transparent leaf numerators do not interpolate to the batch's leaf numerator,
+/// - the index and table denominators do not interpolate to the batch's leaf denominator,
 /// - the pushforward reduction is inconsistent.
 pub fn verify_reduction<F, C>(
 	gamma: &C::Elem,
@@ -104,105 +118,107 @@ where
 	assert!(!lookers.is_empty(), "at least one looker claim is required");
 
 	let m = table_n_vars;
-	let n = lookers[0].eval_point.len();
-	assert!(
-		lookers.iter().all(|looker| looker.eval_point.len() == n),
-		"every looker evaluation point must have the same length"
-	);
-	let log_lookers = lookers.len().next_power_of_two().ilog2() as usize;
+	// Lookers may differ in length; the batch pads each up to the deepest instance.
+	let max_n = lookers
+		.iter()
+		.map(|looker| looker.eval_point.len())
+		.max()
+		.expect("lookers is non-empty");
 
 	// Sample the logUp challenge c that randomizes the logarithmic-derivative denominators.
 	let c = channel.sample();
 
-	// Read the root fractions of both fractional-addition GKR circuits.
-	//
-	//     looker side: num_L / den_L = sum_j gamma^j sum_{i in B_n} eq_{r_j}(i) / (c - I_j(i))
-	//     table  side: num_R / den_R = sum_{v in B_m} Y(v) / (c - v)
-	let [num_l, den_l, num_r, den_r] = channel
-		.recv_array()
+	// Read the root denominator. The root numerator is not on the transcript: the whole circuit
+	// sums the looker fractions against the negated table fraction, so its value is zero exactly
+	// when the lookup identity holds, and the verifier supplies that zero itself.
+	let root_den: C::Elem = channel
+		.recv_one()
 		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
 
-	// The lookup identity is the equality of the two fractional sums.
-	//
-	//     num_L / den_L = num_R / den_R   <=>   num_L * den_R - num_R * den_L = 0
-	let sum_diff = num_l.clone() * den_r.clone() - num_r.clone() * den_l.clone();
-	channel
-		.assert_zero(sum_diff)
-		.map_err(|_| VerificationError::LookupSumMismatch)?;
-
-	// Looker side: run the full GKR down to the leaf claim. The top log_lookers layers
-	// fractionally add the per-looker circuit roots (interpolated over the looker variables,
-	// padded with the zero fraction 0/1), and the remaining n layers run the per-looker circuits
-	// batched by the selector coordinates those top layers bind.
+	// One GKR over the whole thing, from that single root fraction down to the leaves: k layers
+	// interpolating the per-instance roots, then max(max_n, m) more over the instances. Looker j's
+	// tree has depth n_j and the table tree depth m, so every shallower instance is padded by zero
+	// fractions — the layer count reveals only the deepest one.
+	let n_instances = lookers.len() + 1;
+	let k = n_instances.next_power_of_two().ilog2() as usize;
+	let n_layers = k + max_n.max(m);
 	let FracAddEvalClaim {
-		num_eval: looker_num,
-		den_eval: looker_den,
+		num_eval: leaf_num,
+		den_eval: leaf_den,
 		point: leaf_point,
 	} = fracaddcheck::verify::<F, C>(
-		n + log_lookers,
+		n_layers,
 		FracAddEvalClaim {
-			num_eval: num_l,
-			den_eval: den_l,
+			num_eval: C::Elem::zero(),
+			den_eval: root_den,
 			point: Vec::new(),
 		},
 		channel,
 	)?;
 
-	// The leaf point splits into the selector coordinates and the shared content point.
-	let (selector_coords, content_point) = leaf_point.split_at(log_lookers);
+	// The leaf point splits into the selector coordinates and the shared node point.
+	let (selector_coords, node_point) = leaf_point.split_at(k);
 
-	// The per-looker leaf numerators are transparent scaled equality indicators, so the verifier
-	// evaluates the batched leaf numerator by itself (padding numerators are zero):
-	//
-	//     N(leaf) = sum_j eq(selector_coords, j) * gamma^j * eq(r_j, content_point)
-	let mut eq_evals = iter::zip(lookers, powers(gamma.clone()))
-		.map(|(looker, power)| power * eq_ind::<C::Elem>(looker.eval_point, content_point))
-		.collect::<Vec<_>>();
-	eq_evals.resize(1 << log_lookers, C::Elem::zero());
-	let expected_num = evaluate_inplace_scalars(eq_evals, selector_coords);
-	channel
-		.assert_zero(looker_num - expected_num)
-		.map_err(|_| VerificationError::IncorrectXEvaluation)?;
-
-	// Receive the per-looker index evaluations and check they combine to the batched leaf
-	// denominator, whose per-looker leaves are c - I_j (padding denominators are one):
-	//
-	//     den(leaf) = sum_j eq(selector_coords, j) * (c - I_j(content_point))
-	let index_eval_claims = channel
+	// Read the claims the verifier cannot derive: the per-looker index evaluations and Y's.
+	let index_eval_claims: Vec<C::Elem> = channel
 		.recv_many(lookers.len())
 		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
-	let mut den_evals = index_eval_claims
-		.iter()
-		.map(|eval| c.clone() - eval.clone())
-		.collect::<Vec<_>>();
-	den_evals.resize(1 << log_lookers, C::Elem::one());
-	let expected_den = evaluate_inplace_scalars(den_evals, selector_coords);
-	channel
-		.assert_zero(looker_den - expected_den)
-		.map_err(|_| VerificationError::IncorrectIndexEvaluation)?;
+	let pushforward_eval: C::Elem = channel
+		.recv_one()
+		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
 
-	// Table side: run the full GKR down to the leaf claim on the pushforward and the denominator.
+	// Rebuild each circuit's padded leaf fraction and check they interpolate to the batch's leaf.
 	//
-	//     Y(z) and D(z), where D = c - J is the table-side denominator
-	let FracAddEvalClaim {
-		num_eval: pushforward_eval,
-		den_eval: table_den_eval,
-		point: table_leaf_point,
-	} = fracaddcheck::verify::<F, C>(
-		m,
-		FracAddEvalClaim {
-			num_eval: num_r,
-			den_eval: den_r,
-			point: Vec::new(),
-		},
-		channel,
-	)?;
+	// The node point spans max(max_n, m) coordinates, so an instance over `d` variables is padded
+	// by `max(max_n, m) - d` and its own content is the last `d` coordinates. Padding scales a
+	// numerator by the padding coordinates' equality weight q and sends a denominator through
+	// sel(q, .), so both halves follow from the claims above.
+	let n_node_vars = node_point.len();
 
-	// The denominator is transparent, so the verifier evaluates it rather than trusting the leaf.
-	let expected_den = denominator_eval::<F, C::Elem>(&c, &table_leaf_point);
+	// Every instance's padding weight is a prefix of the node point, so accumulate the prefixes
+	// once: `pad_eqs[p] = eq(0^p; node_point[..p])`. With lookers of differing lengths there is one
+	// weight per distinct depth, and this indexes them all in a single pass.
+	let pad_eqs = iter::once(C::Elem::one())
+		.chain(node_point.iter().scan(C::Elem::one(), |acc, coord| {
+			*acc = acc.clone() * eq_ind_zero::<C::Elem>(slice::from_ref(coord));
+			Some(acc.clone())
+		}))
+		.collect::<Vec<_>>();
+
+	let table_pad = n_node_vars - m;
+	let table_point = &node_point[table_pad..];
+
+	// Looker numerators are transparent: gamma^j scales the equality indicator at r_j. The
+	// denominators are c - I_j, from the index evaluations just read.
+	let (mut leaf_nums, mut leaf_dens): (Vec<_>, Vec<_>) =
+		iter::zip(iter::zip(lookers, powers(gamma.clone())), &index_eval_claims)
+			.map(|((looker, power), index_eval)| {
+				let pad = n_node_vars - looker.eval_point.len();
+				let content = &node_point[pad..];
+				let num = power * eq_ind::<C::Elem>(looker.eval_point, content);
+				let den = c.clone() - index_eval.clone();
+				fracaddcheck::pad_leaf_fraction((num, den), pad_eqs[pad].clone())
+			})
+			.unzip();
+
+	// The table's numerator is Y, just read. Its denominator is the transparent J - c, the logUp
+	// denominator negated — the table's fraction enters the sum that way, which is what makes the
+	// root numerator vanish.
+	let (table_num, table_den) = fracaddcheck::pad_leaf_fraction(
+		(pushforward_eval.clone(), denominator_eval::<F, C::Elem>(&c, table_point)),
+		pad_eqs[table_pad].clone(),
+	);
+	leaf_nums.push(table_num);
+	leaf_dens.push(table_den);
+
+	leaf_nums.resize(1 << k, C::Elem::zero());
+	leaf_dens.resize(1 << k, C::Elem::one());
 	channel
-		.assert_zero(table_den_eval - expected_den)
-		.map_err(|_| VerificationError::IncorrectTableDenominator)?;
+		.assert_zero(leaf_num - evaluate_inplace_scalars(leaf_nums, selector_coords))
+		.map_err(|_| VerificationError::IncorrectXEvaluation)?;
+	channel
+		.assert_zero(leaf_den - evaluate_inplace_scalars(leaf_dens, selector_coords))
+		.map_err(|_| VerificationError::IncorrectIndexEvaluation)?;
 
 	// Reduce the leaf claim on Y and the product claim <T, Y> = e to a single shared evaluation.
 	// The product check binds <T, Y> to the gamma-combination of the looker claims.
@@ -213,15 +229,31 @@ where
 	let combined_eval_claim = evaluate_univariate(&claims, gamma);
 	let Pushforward {
 		table_eval_point,
-		table_eval_claim,
-		pushforward_eval_claim,
-	} = verify_pushforward::<F, C>(combined_eval_claim, pushforward_eval, &table_leaf_point, channel)?;
+		table_eval_claims,
+		pushforward_eval_claims,
+	} = verify_pushforward::<F, C>(
+		[TableClaim {
+			eval_claim: combined_eval_claim,
+			pushforward_eval_claim: pushforward_eval,
+			pushforward_eval_point: table_point,
+		}],
+		channel,
+	)?;
+	// The reduction runs over the one shared table, so it returns one claim of each kind.
+	let [table_eval_claim]: [_; 1] = table_eval_claims
+		.try_into()
+		.unwrap_or_else(|_| unreachable!("the reduction runs over one table"));
+	let [pushforward_eval_claim]: [_; 1] = pushforward_eval_claims
+		.try_into()
+		.unwrap_or_else(|_| unreachable!("the reduction runs over one table"));
 
 	Ok(LogupOutput {
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-		index_eval_point: content_point.to_vec(),
+		// Spans the deepest looker, not the whole node point: when the table is deeper than every
+		// looker its extra coordinates belong to the table alone. Looker j reads the last n_j.
+		index_eval_point: node_point[n_node_vars - max_n..].to_vec(),
 		index_eval_claims,
 	})
 }

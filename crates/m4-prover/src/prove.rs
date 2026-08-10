@@ -2,7 +2,10 @@
 // Copyright 2026 The Binius Developers
 
 use binius_compute::{Allocator, BufferPool, VecLike};
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::StdHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
@@ -292,21 +295,11 @@ impl IOPProver {
 			FoldedWitness::<B128, _>::fold_instances(table, &r_rho, alloc)
 		};
 
-		// The public segment is the shared constants, padded with zeros to the layout's
-		// power-of-two word count.
-		// The shift folds it against the monster's public part, which is sized to that padded
-		// count. The padding makes the two lengths agree, and matches the zeros the verifier
-		// assumes.
-		let n_public_words = cs.n_public_words();
-		// Growing a pooled buffer past the block it was handed would reallocate and free that block
-		// at the element's alignment rather than the pool's, so the fill below must fit exactly.
-		assert!(
-			cs.constants.len() <= n_public_words,
-			"the public segment is padded to at least the constant count"
-		);
-		let mut public_words = alloc.alloc::<Word>(n_public_words);
+		// The public segment is the shared constants alone: the inout values are committed, so
+		// nothing else is public. The shift folds it against the monster's public part, which is
+		// sized to the same count.
+		let mut public_words = alloc.alloc::<Word>(cs.constants.len());
 		public_words.extend_from_slice(&cs.constants);
-		public_words.resize(n_public_words, Word::ZERO);
 
 		// Reduce the operand claims to one witness evaluation.
 		let witness_claim = {
@@ -388,7 +381,8 @@ where
 			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
 		// Build the shift keys once from the shared constraint system.
-		let key_collection = build_key_collection(verifier.constraint_system());
+		let key_collection =
+			build_key_collection(verifier.constraint_system(), InoutSegment::Hidden);
 
 		let iop_prover = IOPProver::new(verifier.iop_verifier().clone(), key_collection);
 
@@ -989,6 +983,68 @@ mod tests {
 			.expect("no trailing proof data");
 	}
 
+	// A circuit declaring inout wires round-trips through the whole protocol.
+	//
+	// The inout values are committed with the private ones, so they lead the hidden segment and the
+	// public segment is the constants alone. That moves the boundary the shift reduction splits at,
+	// which every stage below it must agree on: the key collection, the word-index tensor, the
+	// committed shape, and the trace point the ring-switch opens at.
+	//
+	// Fixture: a per-instance public input and output either side of a private computation, over
+	// 2^6 instances. A constant keeps the public segment non-empty, so both halves carry words.
+	#[test]
+	fn protocol_round_trips_with_inout_wires() {
+		let builder = CircuitBuilder::new();
+		let input = builder.add_inout();
+		let output = builder.add_inout();
+		let secret = builder.add_witness();
+		let k = builder.add_constant_64(0x0123_4567_89ab_cdef);
+		// output == (input & secret) ^ k, so both inout wires are read by real constraints.
+		let masked = builder.band(input, secret);
+		builder.assert_eq("output", output, builder.bxor(masked, k));
+		let circuit = builder.build();
+
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
+		// Confirm the fixture genuinely exercises the inout path, on both sides of the boundary.
+		assert!(cs.n_inout > 0, "the fixture must declare inout wires");
+		assert!(!cs.constants.is_empty(), "the public segment must hold words of its own");
+
+		// Every instance chooses its own inout words — the reason they cannot be shared public
+		// data.
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			let input_word = rng.next_u64();
+			let secret_word = rng.next_u64();
+			w[input] = Word(input_word);
+			w[secret] = Word(secret_word);
+			w[output] = Word((input_word & secret_word) ^ 0x0123_4567_89ab_cdef);
+		})
+		.unwrap();
+
+		// The committed segment covers the inout words as well as the private ones.
+		assert_eq!(
+			table.n_hidden_words(),
+			cs.n_hidden_words(InoutSegment::Hidden),
+			"the table commits the inout values with the private ones"
+		);
+
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
 	// A circuit whose constant count is not a power of two proves and verifies: the shift evaluates
 	// the constants over the layout's power-of-two word count, treating the words past the constant
 	// count as zero, so no caller padding is needed.
@@ -1006,7 +1062,7 @@ mod tests {
 		let counter = builder.add_witness();
 		let block_len = builder.add_witness();
 		let flags = builder.add_witness();
-		// Force-commit the output so the circuit has no inout wires.
+		// Force-commit the output so dead-code elimination keeps the compression.
 		let out = blake3_compress(&builder, cv, block, counter, block_len, flags);
 		for wire in out {
 			builder.force_commit(wire);

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
+	constraint_system::{ConstraintSystem, InoutSegment, ValueSegment, ValueVec},
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
@@ -29,7 +29,7 @@ fn prove_verify(cs: ConstraintSystem, witness: &ValueVec) {
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	verifier
-		.verify(witness.public(), &mut verifier_transcript)
+		.verify(witness.inout(), &mut verifier_transcript)
 		.unwrap();
 	verifier_transcript.finalize().unwrap();
 }
@@ -49,7 +49,7 @@ fn prove_verify_zk(cs: ConstraintSystem, witness: &ValueVec) {
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	zk_verifier
-		.verify(witness.public(), &mut verifier_transcript)
+		.verify(witness.inout(), &mut verifier_transcript)
 		.unwrap();
 	verifier_transcript.finalize().unwrap();
 }
@@ -80,7 +80,7 @@ fn prove_verify_zk_serialized(cs: ConstraintSystem, witness: &ValueVec) {
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	zk_verifier
-		.verify(witness.public(), &mut verifier_transcript)
+		.verify(witness.inout(), &mut verifier_transcript)
 		.unwrap();
 	verifier_transcript.finalize().unwrap();
 }
@@ -353,7 +353,7 @@ fn zero_constraint_circuit(
 	assert!(
 		cs.zero_constraints
 			.iter()
-			.any(|c| c.val().iter().any(|svi| svi.amount != 0)),
+			.any(|c| c.val().iter().any(|svi| !svi.shift.is_identity())),
 		"the fixture must emit a ZERO constraint with a shifted operand"
 	);
 	let witness = w.into_value_vec();
@@ -386,6 +386,73 @@ fn test_prove_verify_fewer_zero_than_and_constraints() {
 	prove_verify(cs, &witness);
 }
 
+/// Builds a circuit whose public segment is wider than its hidden one: `n_inout` input/output
+/// values against a handful of private ones.
+///
+/// Each inout value is asserted equal to the same AND output, which lowers to a ZERO constraint
+/// and commits nothing further, so the hidden segment stays at three words however many inout
+/// values the circuit declares. The optimization passes are off so that the repeated assertions
+/// survive as distinct constraints.
+fn public_heavy_circuit(n_inout: usize) -> (ConstraintSystem, ValueVec) {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_gate_fusion: false,
+		enable_common_subexpression_elimination: false,
+		enable_dead_code_elimination: false,
+		enable_algebraic_folding: false,
+		..Options::default()
+	});
+	let a = builder.add_witness();
+	let b = builder.add_witness();
+	let and_out = builder.band(a, b);
+
+	let inout = (0..n_inout)
+		.map(|_| builder.add_inout())
+		.collect::<Vec<_>>();
+	for &wire in &inout {
+		builder.assert_eq("inout_is_and_output", wire, and_out);
+	}
+
+	let circuit = builder.build();
+	let mut w = circuit.new_witness_filler();
+	let (a_val, b_val) = (Word(0x0123_4567_89AB_CDEF), Word(0xFEDC_BA98_7654_3210));
+	w[a] = a_val;
+	w[b] = b_val;
+	for &wire in &inout {
+		w[wire] = a_val & b_val;
+	}
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	let cs = circuit.constraint_system().clone();
+	let witness = w.into_value_vec();
+	cs.verify(&witness).unwrap();
+	(cs, witness)
+}
+
+/// A public segment wider than the hidden one proves and verifies.
+///
+/// Neither segment is padded to the other's length, so the shift reduction's word-index space
+/// spans the *wider* of the two — here the public one. Both sides size that space from
+/// `log_segment_words`, and the hidden half zero-extends up to it, so the sumcheck draws word-index
+/// challenges the hidden segment alone would not have called for. Every other circuit in this file
+/// has the hidden segment wider, which is the case the padding used to guarantee.
+#[test]
+fn test_prove_verify_public_wider_than_hidden() {
+	let (cs, witness) = public_heavy_circuit(300);
+	assert!(
+		cs.log_public_words(InoutSegment::Public) > cs.log_witness_words(InoutSegment::Public),
+		"public segment ({} words) must be wider than the hidden one ({} words) for this test to \
+		 exercise the extra word-index challenges",
+		cs.n_public_words(InoutSegment::Public),
+		cs.n_hidden_words(InoutSegment::Public),
+	);
+	assert_eq!(
+		cs.log_segment_words(InoutSegment::Public),
+		cs.log_public_words(InoutSegment::Public)
+	);
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
+}
+
 /// A witness violating one ZERO constraint is rejected. The prover has nothing to send for the
 /// Zero reduction, so it claims the constant zero regardless; the shift reduction, running against
 /// the committed witness, is what catches the discrepancy.
@@ -410,14 +477,18 @@ fn test_prove_verify_rejects_violated_zero_constraint() {
 		.flat_map(|c| &c.0)
 		.flatten()
 		.map(|svi| svi.value_index)
-		.find(|index| !and_words.contains(index) && *index != ValueIndex::constant(0))
-		.expect("some ZERO constraint reads a word no AND constraint does");
+		// The rebuild below sources the constants from the system, so tampering with one would be
+		// undone; the victim has to be a word the caller supplies.
+		.find(|index| !and_words.contains(index) && index.segment() != ValueSegment::Constant)
+		.expect("some ZERO constraint reads a non-constant word no AND constraint does");
 
 	let mut words = witness.combined_witness().to_vec();
 	let victim_word = cs.word_offset(victim);
 	words[victim_word] = words[victim_word] ^ Word::ONE;
-	let corrupted =
-		cs.value_vec_from_data(&words[..cs.n_public_words()], &words[cs.n_public_words()..]);
+	let corrupted = cs.value_vec_from_data(
+		&words[cs.n_const()..cs.n_public_values()],
+		&words[cs.n_public_values()..],
+	);
 	assert!(cs.verify(&corrupted).is_err());
 
 	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
@@ -476,10 +547,10 @@ fn sign_verify(
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	let verify_ok = match verify_message {
 		Some(message) => zk_verifier
-			.verify_sig(witness.public(), message, &mut verifier_transcript)
+			.verify_sig(witness.inout(), message, &mut verifier_transcript)
 			.is_ok(),
 		None => zk_verifier
-			.verify(witness.public(), &mut verifier_transcript)
+			.verify(witness.inout(), &mut verifier_transcript)
 			.is_ok(),
 	};
 	verify_ok && verifier_transcript.finalize().is_ok()

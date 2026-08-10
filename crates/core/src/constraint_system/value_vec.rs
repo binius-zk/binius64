@@ -188,6 +188,11 @@ impl ValueVec {
 		&self.data[..self.n_public_values]
 	}
 
+	/// Returns the inout values: the public values past the constants.
+	pub fn inout(&self) -> &[Word] {
+		&self.data[self.n_const..self.n_public_values]
+	}
+
 	/// Returns the private values, unpadded and without scratch space.
 	pub fn non_public(&self) -> &[Word] {
 		&self.data[self.n_public_values..self.size()]

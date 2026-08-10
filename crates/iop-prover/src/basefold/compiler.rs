@@ -170,9 +170,9 @@ where
 
 	/// Creates a ZK prover channel over a transcript, for the common case.
 	///
-	/// The transcript (owned or mutably borrowed) is wrapped in a
-	/// [`ProverMerkleTranscriptChannel`] with a non-hiding Merkle tree prover for the given hash
-	/// suite, then passed to [`Self::create_channel`].
+	/// The transcript may be owned or mutably borrowed.
+	/// It is wrapped in a [`ProverMerkleTranscriptChannel`] for the given hash suite.
+	/// That channel is then passed to [`Self::create_channel`].
 	pub fn create_channel_from_transcript<H, Challenger_, T, A>(
 		&self,
 		transcript: T,

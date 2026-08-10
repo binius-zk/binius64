@@ -216,7 +216,8 @@ mod test {
 			&mut prover_channel,
 			&GlobalAllocator,
 		);
-		drop(prover_channel);
+		// Hand the transcript back, releasing the channel's borrow of it.
+		prover_channel.into_transcript();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel =

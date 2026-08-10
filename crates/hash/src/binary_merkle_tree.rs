@@ -6,11 +6,9 @@ use std::{fmt::Debug, mem::MaybeUninit};
 use binius_field::Field;
 use binius_utils::{
 	checked_arithmetics::checked_log_2,
-	rand::par_rand,
 	rayon::{prelude::*, slice::ParallelSlice},
 };
 use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
-use rand::{CryptoRng, Rng, rngs::StdRng};
 
 use super::{
 	compress::CompressionFunction, parallel_compression::ParallelPseudoCompression,
@@ -50,75 +48,105 @@ pub enum Error {
 
 /// A binary Merkle tree that commits batches of vectors.
 ///
-/// The vector entries at each index in a batch are hashed together into leaf digests. Then a
-/// Merkle tree is constructed over the leaf digests. The implementation requires that the vector
-/// lengths are all equal to each other and a power of two.
+/// # Overview
+///
+/// The entries sharing an index across a batch are hashed together into one leaf digest.
+/// A binary tree is then folded over those leaf digests.
+///
+/// All committed vectors must have the same length, and that length must be a power of two.
 #[derive(Debug, Clone)]
-pub struct BinaryMerkleTree<D, F> {
-	/// Base-2 logarithm of the number of leaves
+pub struct BinaryMerkleTree<D> {
+	/// Base-2 logarithm of the number of leaves.
 	pub log_len: usize,
-	/// The inner nodes, arranged as a flattened array of layers with the root at the end
+	/// The inner nodes, arranged as a flattened array of layers with the root at the end.
 	pub inner_nodes: Vec<D>,
-	/// Salt values for each leaf (if using hiding commitments)
-	pub salts: Vec<F>,
 }
 
-pub fn build<F, H, R>(
+/// Commits a slice of values, cutting it into consecutive leaves.
+///
+/// # Arguments
+///
+/// * `elements` - the values to commit, in leaf order.
+/// * `batch_size` - how many consecutive values are hashed together into one leaf.
+///
+/// # Returns
+///
+/// The committed tree, or a failure describing which shape requirement the input broke.
+///
+/// # Errors
+///
+/// * The value count is not a multiple of the batch size.
+/// * The resulting leaf count is not a power of two.
+pub fn build<F, H>(
 	elements: &[F],
 	batch_size: usize,
-	salt_len: usize,
-	rng: R,
-) -> Result<BinaryMerkleTree<Output<H::LeafHash>, F>, Error>
+) -> Result<BinaryMerkleTree<Output<H::LeafHash>>, Error>
 where
 	F: Field,
 	H: HashSuite,
-	R: Rng + CryptoRng,
 {
+	// Every leaf holds the same number of values, so the split has to come out even.
 	if !elements.len().is_multiple_of(batch_size) {
 		return Err(Error::IncorrectBatchSize);
 	}
 
+	// A binary tree only spans a power-of-two number of leaves.
 	let len = elements.len() / batch_size;
-
 	if !len.is_power_of_two() {
 		return Err(Error::PowerOfTwoLengthRequired);
 	}
 
-	build_from_iterator::<_, H, _, _>(
+	// Hand the leaves over one contiguous chunk at a time.
+	build_from_iterator::<_, H, _>(
 		elements
 			.par_chunks(batch_size)
 			.map(|chunk| chunk.iter().copied()),
 		batch_size,
-		salt_len,
-		rng,
 	)
 }
 
-pub fn build_from_iterator<F, H, R, ParIter>(
+/// Commits leaves drawn from a parallel iterator, one iterator item per leaf.
+///
+/// # Overview
+///
+/// The tree is laid out as one flat buffer of layers, widest first:
+///
+/// ```text
+///     [ leaf digests | layer 1 | ... | root ]
+///        2^log_len      2^(log_len-1)    1
+/// ```
+///
+/// Each layer is written into the buffer's spare capacity.
+/// It is then read back as the input to the layer above it.
+///
+/// # Arguments
+///
+/// * `iterated_chunks` - one iterator per leaf, each yielding that leaf's values.
+/// * `n_items_per_input` - how many values every leaf iterator yields.
+///
+/// # Panics
+///
+/// Panics unless the number of leaves is a power of two.
+pub fn build_from_iterator<F, H, ParIter>(
 	iterated_chunks: ParIter,
 	n_items_per_input: usize,
-	salt_len: usize,
-	mut rng: R,
-) -> Result<BinaryMerkleTree<Output<H::LeafHash>, F>, Error>
+) -> Result<BinaryMerkleTree<Output<H::LeafHash>>, Error>
 where
 	F: Field,
 	H: HashSuite,
-	R: Rng + CryptoRng,
 	ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 {
 	let log_len = checked_log_2(iterated_chunks.len()); // precondition
 
-	// Generate salts if needed
-	let salts =
-		par_rand::<StdRng, _, _>(salt_len << log_len, &mut rng, F::random).collect::<Vec<_>>();
-
+	// A binary tree over 2^log_len leaves has 2^(log_len+1) - 1 nodes in total.
 	let total_length = (1 << (log_len + 1)) - 1;
 	let mut inner_nodes = Vec::with_capacity(total_length);
+
+	// Fill the widest layer first, straight into uninitialized capacity.
 	hash_leaves::<F, H, _>(
 		iterated_chunks,
 		n_items_per_input,
 		&mut inner_nodes.spare_capacity_mut()[..(1 << log_len)],
-		&salts,
 	);
 
 	let (prev_layer, mut remaining) = inner_nodes.spare_capacity_mut().split_at_mut(1 << log_len);
@@ -127,6 +155,7 @@ where
 		// SAFETY: prev-layer was initialized by hash_leaves
 		prev_layer.assume_init_mut()
 	};
+	// Fold one layer per round, each half the width of the one below it.
 	let parallel_compression = H::ParCompression::default();
 	for i in 1..(log_len + 1) {
 		let (next_layer, next_remaining) = remaining.split_at_mut(1 << (log_len - i));
@@ -149,26 +178,15 @@ where
 	Ok(BinaryMerkleTree {
 		log_len,
 		inner_nodes,
-		salts,
 	})
 }
 
-impl<D: Clone, F> BinaryMerkleTree<D, F> {
+impl<D: Clone> BinaryMerkleTree<D> {
 	pub fn root(&self) -> D {
 		self.inner_nodes
 			.last()
 			.expect("MerkleTree inner nodes can't be empty")
 			.clone()
-	}
-
-	/// Returns the salt values associated with a specific leaf index in the Merkle tree.
-	///
-	/// # Arguments
-	/// * `index` - The index of the leaf. Must be less than 2^log_len (the total number of leaves).
-	pub fn get_salt(&self, index: usize) -> &[F] {
-		assert!(index < (1 << self.log_len));
-		let salt_len = self.salts.len() >> self.log_len;
-		&self.salts[index * salt_len..(index + 1) * salt_len]
 	}
 
 	pub fn layer(&self, layer_depth: usize) -> Result<&[D], Error> {
@@ -206,9 +224,8 @@ impl<D: Clone, F> BinaryMerkleTree<D, F> {
 /// Given a vector of elements and an output buffer of N hash digests, this splits the elements
 /// into N equal-sized chunks and hashes each chunks into the corresponding output digest.
 ///
-/// Each leaf is built from exactly `n_items_per_input` data elements (plus the per-leaf salt, when
-/// salts are present), so the leaf byte length is constant. This is passed to
-/// [`ParallelDigest::digest_with_const_len`] so the hasher can specialize for short leaves.
+/// Every leaf holds exactly `n_items_per_input` values, so its byte length is a constant.
+/// Passing that length to the hasher lets it specialize for short leaves.
 ///
 /// # Preconditions
 /// - Each iterator in `iterated_chunks` yields exactly `n_items_per_input` elements.
@@ -217,29 +234,12 @@ fn hash_leaves<F, H, ParIter>(
 	iterated_chunks: ParIter,
 	n_items_per_input: usize,
 	digests: &mut [MaybeUninit<Output<H::LeafHash>>],
-	salts: &[F],
 ) where
 	F: Field,
 	H: HashSuite,
 	ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 {
-	if salts.is_empty() {
-		// Need special-case handling when salts is empty, otherwise salt_len is 0 and par_chunks
-		// cannot handle chunk size of 0.
-		let hasher = H::ParLeafHash::default();
-		hasher.digest_with_const_len(n_items_per_input, iterated_chunks, digests);
-	} else {
-		assert!(salts.len().is_multiple_of(digests.len()));
-
-		let salt_len = salts.len() / digests.len();
-
-		// Create an iterator that chains each chunk with its salt
-		let salted_iter = iterated_chunks
-			.zip(salts.par_chunks(salt_len))
-			.map(|(chunk, salt)| chunk.into_iter().chain(salt.iter().copied()));
-
-		// Each salted leaf yields the data elements followed by the salt elements.
-		let hasher = H::ParLeafHash::default();
-		hasher.digest_with_const_len(n_items_per_input + salt_len, salted_iter, digests);
-	}
+	// The constant leaf length lets the hasher skip per-leaf length bookkeeping and padding.
+	let hasher = H::ParLeafHash::default();
+	hasher.digest_with_const_len(n_items_per_input, iterated_chunks, digests);
 }

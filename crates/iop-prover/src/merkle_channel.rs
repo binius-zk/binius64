@@ -24,7 +24,6 @@ use binius_transcript::{
 };
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
-use rand::CryptoRng;
 
 use crate::merkle_tree::{MerkleTreeProver, commit_field_buffer, prover::BinaryMerkleTreeProver};
 
@@ -93,15 +92,9 @@ pub struct ProverMerkleTranscriptChannel<T, Challenger_, F, H: HashSuite> {
 }
 
 impl<T, Challenger_, F, H: HashSuite> ProverMerkleTranscriptChannel<T, Challenger_, F, H> {
-	/// Constructs a channel over the transcript with a non-hiding Merkle tree prover.
+	/// Constructs a channel over the transcript with a default Merkle tree prover.
 	pub fn new(transcript: T) -> Self {
 		Self::with_merkle_prover(transcript, BinaryMerkleTreeProver::new())
-	}
-
-	/// Constructs a channel over the transcript with a hiding Merkle tree prover, salting each
-	/// leaf with `salt_len` random field elements drawn from `rng`.
-	pub fn hiding(transcript: T, rng: impl CryptoRng, salt_len: usize) -> Self {
-		Self::with_merkle_prover(transcript, BinaryMerkleTreeProver::hiding(rng, salt_len))
 	}
 
 	/// Constructs a channel over the transcript with the given Merkle tree prover.
@@ -168,7 +161,7 @@ where
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
-	type Commitment = ProverMerkleCommitment<BinaryMerkleTree<Output<H::LeafHash>, F>>;
+	type Commitment = ProverMerkleCommitment<BinaryMerkleTree<Output<H::LeafHash>>>;
 
 	fn send_merkle_commitment<P: PackedField<Scalar = F>>(
 		&mut self,
@@ -225,12 +218,10 @@ where
 	) {
 		debug_assert_eq!(commitment.depth, data.log_len() - commitment.log_leaf_size);
 
-		// Write the data in full, then whatever binding data the verifier's `verify_vector` reads
-		// while recomputing the root (the per-leaf salts, empty for non-hiding trees).
+		// The data itself is the whole opening.
+		// The verifier recomputes the root from it, so no further advice follows.
 		let mut advice = self.transcript.borrow_mut().decommitment();
 		advice.write_scalar_iter(data.iter_scalars());
-		self.merkle_prover
-			.prove_vector(&commitment.committed, &mut advice);
 	}
 
 	fn sample_bits(&mut self, bits: usize) -> usize {
@@ -242,10 +233,7 @@ where
 mod tests {
 	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash2x128b};
 	use binius_hash::{StdDigest, StdHashSuite};
-	use binius_iop::{
-		merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
-		merkle_tree::BinaryMerkleTreeScheme,
-	};
+	use binius_iop::merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel};
 	use binius_math::{FieldBuffer, test_utils::random_scalars};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use rand::prelude::*;
@@ -297,48 +285,6 @@ mod tests {
 			.recv_openings(&commitment, &indices)
 			.unwrap();
 		assert_eq!(values.len(), N_QUERIES * LEAF_SIZE);
-		for (chunk, &index) in values.chunks(LEAF_SIZE).zip(&indices) {
-			assert_eq!(chunk, &scalars[index * LEAF_SIZE..(index + 1) * LEAF_SIZE]);
-		}
-
-		let vector = verifier_channel.recv_committed_vector(&commitment).unwrap();
-		assert_eq!(vector, scalars);
-
-		verifier_channel.into_transcript().finalize().unwrap();
-	}
-
-	#[test]
-	fn test_merkle_channel_roundtrip_hiding() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let salt_len = 2;
-
-		let scalars = random_scalars::<B128>(&mut rng, 1 << LOG_LEN);
-		let data = FieldBuffer::<P, _>::from_values(&scalars);
-
-		let mut prover_channel = ProverChannel::hiding(
-			ProverTranscript::new(StdChallenger::default()),
-			&mut rng,
-			salt_len,
-		);
-		let commitment = prover_channel.send_merkle_commitment(data.to_ref(), LEAF_SIZE);
-		let indices = sample_indices(&mut prover_channel);
-		prover_channel.send_openings(&commitment, data.to_ref(), &indices);
-		prover_channel.send_committed_vector(&commitment, data.to_ref());
-
-		let transcript = prover_channel.into_transcript().into_verifier();
-		let mut verifier_channel =
-			VerifierChannel::with_scheme(transcript, BinaryMerkleTreeScheme::hiding(salt_len));
-		let commitment = verifier_channel
-			.recv_merkle_commitment(LEAF_SIZE, DEPTH)
-			.unwrap();
-		let verifier_indices = (0..N_QUERIES)
-			.map(|_| verifier_channel.sample_bits(DEPTH))
-			.collect::<Vec<_>>();
-		assert_eq!(verifier_indices, indices);
-
-		let values = verifier_channel
-			.recv_openings(&commitment, &indices)
-			.unwrap();
 		for (chunk, &index) in values.chunks(LEAF_SIZE).zip(&indices) {
 			assert_eq!(chunk, &scalars[index * LEAF_SIZE..(index + 1) * LEAF_SIZE]);
 		}

@@ -18,15 +18,13 @@ Constraints
    └─ Distinct unshifted value indices: 7,847
 
 Value Vector
-├─ Public Section: 28 used (87.5% of 2^5)
-│  [▓▓▓▓▓▓▓▓░░] spare: 4
+├─ Public Section: 28 (not committed)
 │  ├─ Constants: 28
 │  └─ Inout: 0
-├─ Private Section: 7,832 used (96.0%)
-│  [▓▓▓▓▓▓▓▓▓░] spare: 328
+├─ Private Section: 7,832
 │  ├─ Witness: 136
 │  └─ Internal: 7,696
-├─ Total Committed: 7,860 used (95.9% of 2^13)
-│  [▓▓▓▓▓▓▓▓▓░] spare: 332
+├─ Committed Trace: 7,832 used (95.6% of 2^13)
+│  [▓▓▓▓▓▓▓▓▓░] spare: 360
 └─ Scratch (uncommitted): 7,728 (peak live: 21)
 

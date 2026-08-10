@@ -3,7 +3,10 @@
 
 use std::marker::PhantomData;
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
@@ -70,11 +73,26 @@ impl IOPVerifier {
 
 	/// Returns log2 of the number of field elements in the packed trace.
 	///
-	/// The trace oracle commits only the witness's hidden segment, padded to the segment
-	/// length; the public segment is a verifier-known polynomial.
+	/// The trace oracle commits only the witness's hidden segment; the public segment is a
+	/// verifier-known polynomial. The shift reduction claims that segment over the shared
+	/// word-index space, which spans the wider of the two segments, so the oracle covers
+	/// `log_segment_words` words. That is the hidden segment's own length for every system
+	/// whose private values outnumber its public ones, and the committed words above the
+	/// hidden segment are zero.
+	///
+	/// ## Preconditions
+	/// * the wider segment spans at least one field element's worth of words, which every system
+	///   with more than one public or private value satisfies
 	pub const fn log_witness_elems(&self) -> usize {
-		let log_witness_words = self.constraint_system.log_witness_words();
-		log_witness_words - LOG_WORDS_PER_ELEM
+		let log_segment_words = self
+			.constraint_system
+			.log_segment_words(InoutSegment::Public);
+		assert!(
+			log_segment_words >= LOG_WORDS_PER_ELEM,
+			"the committed trace is a whole number of field elements, so the wider value \
+			 segment spans at least that many words"
+		);
+		log_segment_words - LOG_WORDS_PER_ELEM
 	}
 
 	/// Returns log2 of the number of words in the committed trace.
@@ -96,10 +114,10 @@ impl IOPVerifier {
 	/// `verify`, rather than duplicating it here.
 	pub fn oracle_specs(&self, is_zk: bool) -> Vec<OracleSpec> {
 		let mut channel = OracleSetupChannel::new(is_zk);
-		let public = vec![Word::ZERO; self.constraint_system.n_public_values()];
+		let inout = vec![Word::ZERO; self.constraint_system.n_inout];
 		// The result is discarded: the setup channel performs no real verification (all `recv_*`
 		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle specs.
-		let _ = self.verify(&public, &mut channel);
+		let _ = self.verify(&inout, &mut channel);
 		channel.into_oracle_specs()
 	}
 
@@ -107,23 +125,28 @@ impl IOPVerifier {
 	///
 	/// This is the core verification logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Verifier::verify`] is the simpler interface.
-	pub fn verify<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
+	pub fn verify<Channel>(&self, inout: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
-		// The caller passes the public values the circuit declares, unpadded: the constants
-		// followed by the inout values.
-		if public.len() != self.constraint_system.n_public_values() {
+		// The caller passes only the inout values. The constants are already part of the
+		// constraint system, so restating them would be redundant — and a caller that restated
+		// them wrongly would be describing a different system.
+		if inout.len() != self.constraint_system.n_inout {
 			return Err(Error::IncorrectPublicInputLength {
-				expected: self.constraint_system.n_public_values(),
-				actual: public.len(),
+				expected: self.constraint_system.n_inout,
+				actual: inout.len(),
 			});
 		}
 
-		// Verifier observes the public input (includes it in Fiat-Shamir). The prover packs the
-		// same words zero-padded up to the public segment width, so the encoding pads to match.
-		channel.observe_many(&encode_public(public, self.constraint_system.n_public_words()));
+		// Only the inout values go into Fiat-Shamir: they are what varies per instance, and the
+		// constants are fixed by the constraint system the transcript is already bound to.
+		channel.observe_many(&encode_inout(inout));
+
+		// The shift reduction reads the whole public segment, which is the constants followed by
+		// the inout values — the order the value vector places them in.
+		let public = [self.constraint_system.constants.as_slice(), inout].concat();
 
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -134,8 +157,13 @@ impl IOPVerifier {
 		let trace_oracle = channel.recv_oracle(self.log_witness_elems(), true)?;
 
 		// Reduce every constraint to one claim on the committed trace.
-		let reduction =
-			reduce_constraints(self.constraint_system(), Instances::Single, public, channel)?;
+		let reduction = reduce_constraints(
+			self.constraint_system(),
+			Instances::Single,
+			InoutSegment::Public,
+			&public,
+			channel,
+		)?;
 
 		// [phase] Ring-Switching + Verify PCS Opening
 		let pcs_guard = tracing::info_span!(
@@ -197,10 +225,7 @@ where
 	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
 		constraint_system.validate()?;
 
-		// The validated layout guarantees a power-of-two public segment of at least one full
-		// element.
-		let log_public_words = constraint_system.log_public_words();
-		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
+		let log_public_words = constraint_system.log_public_words(InoutSegment::Public);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 
@@ -274,14 +299,14 @@ where
 
 	pub fn verify<Challenger_: Challenger>(
 		&self,
-		public: &[Word],
+		inout: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		let cs = self.iop_verifier.constraint_system();
 
 		let _verify_scope = tracing::info_span!(
 			"Verify",
-			n_hidden_words = cs.n_hidden_words(),
+			n_hidden_words = cs.n_hidden_words(InoutSegment::Public),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)
@@ -291,7 +316,7 @@ where
 		let mut channel = self
 			.iop_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
-		self.iop_verifier.verify(public, &mut channel)?;
+		self.iop_verifier.verify(inout, &mut channel)?;
 		channel.finish()?;
 		Ok(())
 	}
@@ -341,19 +366,22 @@ where
 	verify_with_channel(&zerocheck_challenges, channel, eval_domain)
 }
 
-/// Encode public input words as B128 elements, for compliance with the IOP interface.
-fn encode_public(public: &[Word], n_public_words: usize) -> Vec<B128> {
-	// The public segment is a power of two words long and at least `MIN_WORDS_PER_SEGMENT`, so
-	// the zero-padded words always pair up.
-	debug_assert!(public.len() <= n_public_words);
-	debug_assert!(n_public_words.is_multiple_of(2));
-
-	let mut padded = public.to_vec();
-	padded.resize(n_public_words, Word::ZERO);
-	padded
-		.as_chunks::<2>()
-		.0
+/// Encodes the inout words as the field elements both sides observe in Fiat-Shamir.
+///
+/// Two words share one element, so an odd count leaves a final element whose high half is zero.
+/// The prover and the verifier both go through here, which is what keeps their transcripts
+/// identical.
+pub fn encode_inout(inout: &[Word]) -> Vec<B128> {
+	let (pairs, remainder) = inout.as_chunks::<2>();
+	let mut elems = pairs
 		.iter()
 		.map(|[w0, w1]| B128::new(((w1.as_u64() as u128) << 64) | w0.as_u64() as u128))
-		.collect()
+		.collect::<Vec<_>>();
+
+	// An odd word count leaves one word over, which takes the low half of a final element.
+	if let [w0] = remainder {
+		elems.push(B128::new(w0.as_u64() as u128));
+	}
+
+	elems
 }

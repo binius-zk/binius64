@@ -56,7 +56,6 @@ struct Blake3Inputs {
 /// Builds a circuit for one two-lane BLAKE3 compression and force-commits its output.
 ///
 /// Force-committing the output keeps the compression alive under dead-code elimination.
-/// The circuit has no inout wires, as the batch witness table requires.
 fn build_blake3_circuit() -> (Circuit, Blake3Inputs) {
 	let builder = CircuitBuilder::new();
 

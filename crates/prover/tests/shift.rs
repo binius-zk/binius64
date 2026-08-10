@@ -4,7 +4,7 @@
 use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
 use binius_compute::GlobalAllocator;
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, ValueVec},
+	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, InoutSegment, ValueVec},
 	word::Word,
 };
 use binius_field::{AESTowerField8b, BinaryField};
@@ -281,7 +281,7 @@ fn test_shift_prove_and_verify() {
 		};
 
 		// Build prover's constraint system
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Public);
 
 		// Create prover transcript and call the prover
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
@@ -336,6 +336,7 @@ fn test_shift_prove_and_verify() {
 
 		let verifier_output = verify(
 			&cs,
+			InoutSegment::Public,
 			&verifier_zero_data,
 			&verifier_bitand_data,
 			&verifier_intmul_data,
@@ -347,6 +348,7 @@ fn test_shift_prove_and_verify() {
 		// Check consistency with verifier output
 		check_eval(
 			&cs,
+			InoutSegment::Public,
 			value_vec.public(),
 			&verifier_zero_data,
 			&verifier_bitand_data,

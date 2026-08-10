@@ -662,18 +662,6 @@ where
 	(next_provers, next_fractions, next_point)
 }
 
-/// Output of [`batch_prove_unequal_depths`].
-///
-/// After `n_layers - 1` reduction layers, each tree retains its final (widest) layer, wrapped in
-/// the padding prover that corrects it to the batch's depth.
-pub struct BatchProveUnequalDepthsOutput<F, Prover> {
-	/// The reduced evaluation point shared by all remaining provers.
-	pub eval_point: Vec<F>,
-	/// Each input prover's reduced (padded) `(num, den)` fraction paired with the not-yet-run
-	/// prover for its final layer, in input order.
-	pub provers: Vec<((F, F), Prover)>,
-}
-
 /// Runs a batched fractional-addition check for trees of *unequal* depths.
 ///
 /// This is [`batch_prove`] without the requirement that every prover have the same layer count.
@@ -698,27 +686,26 @@ pub struct BatchProveUnequalDepthsOutput<F, Prover> {
 ///
 /// # Preconditions
 /// * `provers` must be non-empty.
-/// * Every prover's witness must have exactly `prover.n_layers()` variables, which must be at least
-///   1.
+/// * Every prover's witness must have exactly `prover.n_layers()` variables. A tree of depth zero
+///   is allowed — it is all padding, so its leaf claim is its root — but at least one tree must
+///   have a layer.
 /// * `2^selector_point.len() >= provers.len()`.
 /// * `claimed_fractions.len() == provers.len()`.
 ///
 /// # Returns
 ///
-/// This stops one layer short, returning each tree's reduced fraction beside the prover for its
-/// final (widest) layer — the layer whose reduction
-/// dominates the cost, which a caller can therefore batch with other sumchecks. Running those
-/// provers and the selector rounds that follow finishes the check.
+/// A [`BatchProveOutput`] whose `fractions` are each tree's leaf claim, in input order, at the
+/// shared reduced `eval_point`.
 ///
-/// The returned fractions and, after the final layer, the per-tree leaf evaluations are claims on
-/// the *padded* witnesses. [`binius_ip::fracaddcheck::unpad_leaf_claim`] reduces one to the claims
-/// on the tree's own witness.
+/// Those leaf claims are on the *padded* witnesses.
+/// [`binius_ip::fracaddcheck::unpad_leaf_claim`] reduces one to the claims on the tree's own
+/// witness, given how much depth that tree was padded by.
 pub fn batch_prove_unequal_depths<'a, A, F, P>(
 	provers: Vec<FracAddCheckProver<'a, A, P>>,
 	claimed_fractions: Vec<(F, F)>,
 	selector_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
-) -> BatchProveUnequalDepthsOutput<F, PaddedLayerProver<'a, A, F, P>>
+) -> BatchProveOutput<F>
 where
 	A: Allocator,
 	F: Field,
@@ -729,7 +716,6 @@ where
 
 	let k = selector_point.len();
 	assert!(provers.len() <= (1 << k)); // precondition
-	assert!(provers.iter().all(|prover| prover.n_layers() >= 1)); // precondition
 
 	let alloc = provers[0].alloc;
 	let mut provers = provers;
@@ -738,18 +724,20 @@ where
 		.map(FracAddCheckProver::n_layers)
 		.max()
 		.expect("provers is non-empty");
+	assert!(n_layers >= 1); // precondition
 	// How much depth each tree is padded by.
 	let pad_lens = provers
 		.iter()
 		.map(|prover| n_layers - prover.n_layers())
 		.collect::<Vec<_>>();
 
+	let n_trees = provers.len();
 	let mut claims = claimed_fractions;
 	let mut eval_point = selector_point;
 
-	// Reduce down to the final layer. Each iteration reduces the layer whose node variables are the
-	// point's suffix past the selector coordinates.
-	for _ in 0..n_layers - 1 {
+	// Each iteration reduces the layer whose node variables are the point's suffix past the
+	// selector coordinates. A tree the batch has not yet reached contributes a padding layer.
+	for _ in 0..n_layers {
 		let (next_provers, layer_provers) =
 			layer_provers(provers, &pad_lens, &claims, &eval_point[k..]);
 		provers = next_provers;
@@ -758,15 +746,20 @@ where
 		claims = next_claims;
 		eval_point = next_point;
 	}
+	// A depth-0 tree is all padding, so it is passed through every round and never popped; every
+	// tree that had a layer has spent them all.
+	debug_assert!(
+		provers.iter().all(|prover| prover.n_layers() == 0),
+		"every tree with layers is exhausted after n_layers reductions"
+	);
 
-	let n_trees = provers.len();
-	let (_exhausted, layer_provers) = layer_provers(provers, &pad_lens, &claims, &eval_point[k..]);
 	// `reduce_layer` pads its output to the 2^k selector slots; only the real trees remain.
-	claims.truncate(n_trees);
+	let mut fractions = claims;
+	fractions.truncate(n_trees);
 
-	BatchProveUnequalDepthsOutput {
+	BatchProveOutput {
 		eval_point,
-		provers: iter::zip(claims, layer_provers).collect(),
+		fractions,
 	}
 }
 
@@ -1310,21 +1303,15 @@ mod tests {
 		};
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let BatchProveUnequalDepthsOutput {
+		let BatchProveOutput {
 			eval_point,
-			provers,
+			fractions,
 		} = batch_prove_unequal_depths(
 			provers,
 			claimed_fractions,
 			selector_point,
 			&mut prover_transcript,
 		);
-
-		// Finish the retained final layer: run it exactly as an interior reduction layer does.
-		let (_claims, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
-		let (mut fractions, eval_point) =
-			reduce_layer::<_, _, P, _>(&alloc, provers, &eval_point, k, &mut prover_transcript);
-		fractions.truncate(depths.len());
 
 		// The verifier's control flow depends only on the maximum depth.
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -1370,6 +1357,12 @@ mod tests {
 	}
 
 	#[test]
+	fn test_unequal_depths_zero_depth_tree() {
+		// A depth-0 tree never pops a layer: it is all padding, so its leaf claim is its root.
+		test_unequal_depths_helper::<Packed128b>(&[0, 3]);
+	}
+
+	#[test]
 	fn test_unequal_depths_maximal_padding() {
 		// A single-layer tree beside a deep one: all but its last reduction is padding.
 		test_unequal_depths_helper::<Packed128b>(&[1, 6]);
@@ -1397,17 +1390,12 @@ mod tests {
 				unequal_depth_provers::<P>(&mut rng, &alloc, &depths);
 
 			let mut transcript = ProverTranscript::new(StdChallenger::default());
-			let BatchProveUnequalDepthsOutput {
-				eval_point,
-				provers,
-			} = batch_prove_unequal_depths(
+			batch_prove_unequal_depths(
 				provers,
 				claimed_fractions,
 				selector_point.clone(),
 				&mut transcript,
 			);
-			let (_claims, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
-			reduce_layer::<_, _, P, _>(&alloc, provers, &eval_point, k, &mut transcript);
 			transcript.finalize()
 		};
 

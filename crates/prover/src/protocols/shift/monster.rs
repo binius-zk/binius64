@@ -4,13 +4,13 @@
 use std::iter;
 
 use binius_compute::{Allocator, VecLike};
-use binius_core::word::Word;
+use binius_core::{ShiftVariant, word::Word};
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval,
-	univariate::lagrange_evals,
+	BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product,
+	multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY, evaluate_h_op,
 };
@@ -18,10 +18,13 @@ use bytemuck::zeroed_vec;
 use tracing::instrument;
 
 use super::{
-	SHIFT_VARIANT_COUNT,
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment, Operation},
+	phase_1::PHASE_1_LOG_LEN,
 };
+
+/// The width the half-word (`*32`) shift variants act over.
+const HALF_WORD_BITS: usize = 32;
 
 /// The phase-2 scalar weights of one key segment, one table per operation.
 ///
@@ -34,87 +37,94 @@ struct ScalarTables<F> {
 	binmul: Vec<F>,
 }
 
-/// Constructs the three "h" multilinear polynomials for shift operations at a
-/// univariate challenge point. See the paper for definition of h polynomials.
+/// Fills one row of the phase-1 "h" multilinear: the shift indicator of one `(variant, amount)`
+/// pair, contracted against the Lagrange evaluations at the univariate challenge.
 ///
-/// There is one h multilinear for each shift variant. For each operation, there is one univariate
-/// challenge `r_zhat_prime` at which to construct the h parts.
+/// This is the one place that says what a variant does to the challenge weights:
+/// - Logical left and logical right move the weights and leave zeros behind.
+/// - Arithmetic right piles every weight that falls off the end onto the sign position.
+/// - Rotate wraps them around instead.
+/// - The half-word forms apply the same rule to each 32-bit half, reading only the low 5 bits of
+///   the amount.
+fn fill_h_row<F: Field>(variant: ShiftVariant, amount: usize, row: &mut [F], l_tilde: &[F]) {
+	// A half-word variant repeats the full-width rule over each half, so both share one closure.
+	let halves = |row: &mut [F], rule: fn(usize, &mut [F], &[F])| {
+		let amount = amount % HALF_WORD_BITS;
+		for (row_half, l_tilde_half) in
+			iter::zip(row.chunks_mut(HALF_WORD_BITS), l_tilde.chunks(HALF_WORD_BITS))
+		{
+			rule(amount, row_half, l_tilde_half);
+		}
+	};
+
+	fn sll<F: Field>(amount: usize, row: &mut [F], l_tilde: &[F]) {
+		let width = row.len();
+		row[..width - amount].copy_from_slice(&l_tilde[amount..]);
+	}
+	fn srl<F: Field>(amount: usize, row: &mut [F], l_tilde: &[F]) {
+		let width = row.len();
+		row[amount..].copy_from_slice(&l_tilde[..width - amount]);
+	}
+	fn sar<F: Field>(amount: usize, row: &mut [F], l_tilde: &[F]) {
+		let width = row.len();
+		srl(amount, row, l_tilde);
+		// Every position past the shift reads the sign bit, so their weights pile onto it.
+		row[width - 1] += l_tilde[width - amount..].iter().sum::<F>();
+	}
+	fn rotr<F: Field>(amount: usize, row: &mut [F], l_tilde: &[F]) {
+		let width = row.len();
+		row[..amount].copy_from_slice(&l_tilde[width - amount..]);
+		row[amount..].copy_from_slice(&l_tilde[..width - amount]);
+	}
+
+	match variant {
+		ShiftVariant::Sll => sll(amount, row, l_tilde),
+		ShiftVariant::Slr => srl(amount, row, l_tilde),
+		ShiftVariant::Sar => sar(amount, row, l_tilde),
+		ShiftVariant::Rotr => rotr(amount, row, l_tilde),
+		ShiftVariant::Sll32 => halves(row, sll),
+		ShiftVariant::Srl32 => halves(row, srl),
+		ShiftVariant::Sra32 => halves(row, sar),
+		ShiftVariant::Rotr32 => halves(row, rotr),
+	}
+}
+
+/// Constructs the "h" multilinear for shift operations at a univariate challenge point.
+///
+/// See the paper for the definition of the h polynomials. There is one per shift variant, and this
+/// returns all of them as a single multilinear over [`PHASE_1_LOG_LEN`] variables: the shift
+/// variant occupies the high
+/// [`LOG_SHIFT_VARIANT_COUNT`](binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT)
+/// variables, the shift amount the middle
+/// [`Word::LOG_BITS`], and the bit position the low [`Word::LOG_BITS`].
 ///
 /// # Usage in Protocol
 ///
-/// Used in phase 1, thus returning an array of multilinear evaluations.
-#[instrument(skip_all, name = "build_h_parts")]
-pub fn build_h_parts<F, P: PackedField<Scalar = F>, A: Allocator>(
+/// Phase 1 runs one sumcheck over this multilinear and its "g" counterpart, so the variant axis is
+/// folded by the sumcheck rather than summed across separate provers.
+#[instrument(skip_all, name = "build_h")]
+pub fn build_h<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	domain_subspace: &BinarySubspace<F>,
 	r_zhat_prime: F,
-) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT]
+) -> FieldVec<P, A>
 where
 	F: BinaryField,
 {
 	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
 	let l_tilde = l_tilde.as_ref();
 
-	fn build_part<F: Field, P: PackedField<Scalar = F>, A: Allocator>(
-		alloc: &A,
-		fill: impl Fn(usize, &mut [F; Word::BITS]),
-	) -> FieldVec<P, A> {
-		let mut data = zeroed_vec::<[F; Word::BITS]>(Word::BITS);
-		for (s, chunk) in data.iter_mut().enumerate() {
-			fill(s, chunk);
+	// One row of `Word::BITS` scalars per `(variant, amount)`, variant most significant.
+	let mut data = zeroed_vec::<F>(1 << PHASE_1_LOG_LEN);
+	for (variant, block) in
+		iter::zip(ShiftVariant::ALL, data.chunks_exact_mut(Word::BITS * Word::BITS))
+	{
+		for (amount, row) in block.chunks_exact_mut(Word::BITS).enumerate() {
+			fill_h_row(variant, amount, row, l_tilde);
 		}
-		FieldBuffer::from_values_in(alloc, &data.into_flattened())
 	}
 
-	let sll = build_part(alloc, |s, sll_s| {
-		sll_s[..Word::BITS - s].copy_from_slice(&l_tilde[s..]);
-	});
-
-	let srl = build_part(alloc, |s, srl_s| {
-		srl_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
-	});
-
-	let sra = build_part(alloc, |s, sra_s| {
-		sra_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
-		sra_s[Word::BITS - 1] += l_tilde[Word::BITS - s..].iter().sum::<F>();
-	});
-
-	let rotr = build_part(alloc, |s, rotr_s| {
-		rotr_s[..s].copy_from_slice(&l_tilde[Word::BITS - s..]);
-		rotr_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
-	});
-
-	let sll32 = build_part(alloc, |s, sll32_s| {
-		let s = s % 32;
-		for (l_tilde_i, sll_s_i) in iter::zip(l_tilde.chunks(32), sll32_s.chunks_mut(32)) {
-			sll_s_i[..32 - s].copy_from_slice(&l_tilde_i[s..]);
-		}
-	});
-
-	let srl32 = build_part(alloc, |s, srl32_s| {
-		let s = s % 32;
-		for (l_tilde_i, srl32_s_i) in iter::zip(l_tilde.chunks(32), srl32_s.chunks_mut(32)) {
-			srl32_s_i[s..].copy_from_slice(&l_tilde_i[..32 - s]);
-		}
-	});
-
-	let sra32 = build_part(alloc, |s, sra32_s| {
-		let s = s % 32;
-		for (l_tilde_i, sra32_s_i) in iter::zip(l_tilde.chunks(32), sra32_s.chunks_mut(32)) {
-			sra32_s_i[s..].copy_from_slice(&l_tilde_i[..32 - s]);
-			sra32_s_i[32 - 1] += l_tilde_i[32 - s..].iter().sum::<F>();
-		}
-	});
-
-	let rotr32 = build_part(alloc, |s, rotr32_s| {
-		let s = s % 32;
-		for (l_tilde_i, rotr32_s_i) in iter::zip(l_tilde.chunks(32), rotr32_s.chunks_mut(32)) {
-			rotr32_s_i[..s].copy_from_slice(&l_tilde_i[32 - s..]);
-			rotr32_s_i[s..].copy_from_slice(&l_tilde_i[..32 - s]);
-		}
-	});
-
-	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32]
+	FieldBuffer::from_values_in(alloc, &data)
 }
 
 /// Constructs the "monster multilinear" that combines all shift operations into a single
@@ -159,12 +169,17 @@ pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 	domain_subspace: &BinarySubspace<F>,
 	r_j: &[F],
 	r_s: &[F],
+	r_v: &[F],
 ) -> (FieldVec<P, A>, FieldVec<P, A>)
 where
 	F: BinaryField,
 {
-	// Compute h evaluations
-	let [zero_h_ops, bitand_h_ops, intmul_h_ops, binmul_h_ops] = [
+	// Phase 1 folded the variant axis into the sumcheck, so the h multilinear contributes one
+	// scalar per operation — the interpolation of its eight shift indicators at `r_v` — rather
+	// than one per variant.
+	let r_v_tensor = eq_ind_partial_eval::<F>(r_v);
+
+	let [zero_h_eval, bitand_h_eval, intmul_h_eval, binmul_h_eval] = [
 		prepared.zero.r_zhat_prime,
 		prepared.bitand.r_zhat_prime,
 		prepared.intmul.r_zhat_prime,
@@ -172,7 +187,8 @@ where
 	]
 	.map(|r_zhat_prime| {
 		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-		evaluate_h_op(l_tilde.as_ref(), r_j, r_s)
+		let h_ops = evaluate_h_op(l_tilde.as_ref(), r_j, r_s);
+		inner_product(h_ops, r_v_tensor.as_ref().iter().copied())
 	});
 
 	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
@@ -180,11 +196,16 @@ where
 	// The scalars of one operation, laid out with the operand index innermost so that the `arity`
 	// weights for one `key.dense_shift_idx` form a contiguous chunk that [`Key::accumulate_wide`]
 	// can index directly by operand index.
+	//
+	// A key's shift now selects itself through a pure equality indicator over both of phase 1's
+	// shift axes, and the h evaluation is a single factor shared by every key of the operation.
 	let build_scalars =
-		|arity: usize, lambda_powers: &[F], h_ops: &[F], dense_shift_enc: &DenseShiftEncoding| {
+		|arity: usize, lambda_powers: &[F], h_eval: F, dense_shift_enc: &DenseShiftEncoding| {
 			let mut scalars = vec![F::ZERO; arity * dense_shift_enc.len()];
 			for (dense_shift_idx, (variant, amount)) in dense_shift_enc.iter().enumerate() {
-				let shift_scalar = h_ops[variant as usize] * r_s_tensor.as_ref()[amount as usize];
+				let shift_scalar = h_eval
+					* r_v_tensor.as_ref()[variant as usize]
+					* r_s_tensor.as_ref()[amount as usize];
 				for operand_idx in 0..arity {
 					scalars[dense_shift_idx * arity + operand_idx] =
 						lambda_powers[operand_idx] * shift_scalar;
@@ -195,23 +216,23 @@ where
 
 	// Each segment has its own dense shift encoding, so it has its own scalar tables.
 	let build_scalar_tables = |dense_shift_enc: &DenseShiftEncoding| ScalarTables {
-		zero: build_scalars(ZERO_ARITY, &prepared.zero.lambda_powers, &zero_h_ops, dense_shift_enc),
+		zero: build_scalars(ZERO_ARITY, &prepared.zero.lambda_powers, zero_h_eval, dense_shift_enc),
 		bitand: build_scalars(
 			BITAND_ARITY,
 			&prepared.bitand.lambda_powers,
-			&bitand_h_ops,
+			bitand_h_eval,
 			dense_shift_enc,
 		),
 		intmul: build_scalars(
 			INTMUL_ARITY,
 			&prepared.intmul.lambda_powers,
-			&intmul_h_ops,
+			intmul_h_eval,
 			dense_shift_enc,
 		),
 		binmul: build_scalars(
 			BINMUL_ARITY,
 			&prepared.binmul.lambda_powers,
-			&binmul_h_ops,
+			binmul_h_eval,
 			dense_shift_enc,
 		),
 	};
@@ -275,7 +296,8 @@ where
 		FieldBuffer::new(log_len, values)
 	};
 
-	let log_public_words = checked_log_2(key_collection.public.n_words());
+	// The segment word count need not be a power of two; the monster spans the rounded-up count.
+	let log_public_words = log2_ceil_usize(key_collection.public.n_words());
 	let public_monster = build_segment(&key_collection.public, log_public_words);
 	let hidden_monster = build_segment(&key_collection.hidden, key_collection.log_witness_words());
 
@@ -286,14 +308,20 @@ where
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{AESTowerField8b, BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
-	use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
-	use binius_verifier::protocols::shift::evaluate_h_op;
+	use binius_math::{
+		inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
+		test_utils::random_scalars,
+	};
+	use binius_verifier::protocols::shift::{LOG_SHIFT_VARIANT_COUNT, evaluate_h_op};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
 
-	/// Test consistency between direct multilinear evaluation of h
-	/// multilinears and the succinct `evaluate_h_op` implementation
+	/// The built h multilinear and the succinct `evaluate_h_op` must agree.
+	///
+	/// The variant axis is folded by the sumcheck now, so evaluating the whole multilinear at
+	/// `(r_j, r_s, r_v)` gives the interpolation of the eight succinct evaluations over `r_v` —
+	/// which is exactly the single scalar phase 2 weights its keys by.
 	#[test]
 	fn h_op_consistency() {
 		type F = BinaryField128bGhash;
@@ -306,22 +334,25 @@ mod tests {
 		for test_case in 0..num_random_tests {
 			let r_zhat_prime = F::random(&mut rng);
 
-			let r_j: Vec<F> = (0..6).map(|_| F::random(&mut rng)).collect();
-			let r_s: Vec<F> = (0..6).map(|_| F::random(&mut rng)).collect();
+			let r_j = random_scalars::<F>(&mut rng, Word::LOG_BITS);
+			let r_s = random_scalars::<F>(&mut rng, Word::LOG_BITS);
+			let r_v = random_scalars::<F>(&mut rng, LOG_SHIFT_VARIANT_COUNT);
 
-			// Method 1: Succinct evaluation using `evaluate_h_op`
+			// Method 1: the succinct per-variant evaluations, interpolated over the variant axis.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 			let succinct_evaluations = evaluate_h_op(l_tilde.as_ref(), &r_j, &r_s);
+			let r_v_tensor = eq_ind_partial_eval::<F>(&r_v);
+			let succinct = inner_product(succinct_evaluations, r_v_tensor.as_ref().iter().copied());
 
-			// Method 2: Direct evaluation via multilinear part
-			let h_parts = build_h_parts(&GlobalAllocator, &subspace, r_zhat_prime);
-			let evaluation_point: Vec<F> = [r_j.clone(), r_s.clone()].concat();
+			// Method 2: evaluate the built multilinear at the whole point.
+			let h = build_h(&GlobalAllocator, &subspace, r_zhat_prime);
+			let evaluation_point = [r_j, r_s, r_v].concat();
 			let tensor = eq_ind_partial_eval::<P>(&evaluation_point);
-			let direct_evaluations = h_parts.map(|buf| inner_product_buffers(&buf, &tensor));
+			let direct = inner_product_buffers(&h, &tensor);
 
 			assert_eq!(
-				succinct_evaluations, direct_evaluations,
+				succinct, direct,
 				"H-op evaluation mismatch (test_case={test_case}): succinct != direct",
 			);
 		}

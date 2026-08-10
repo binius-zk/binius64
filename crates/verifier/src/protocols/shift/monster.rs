@@ -193,8 +193,9 @@ where
 			let mut constraint_eval = E::zero();
 			for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 				for svi in operand {
-					let variant = svi.shift_variant as usize;
-					let index = (variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
+					let variant = svi.shift.variant as usize;
+					let index =
+						(variant * Word::BITS + svi.shift.amount as usize) * ARITY + operand_id;
 					constraint_eval += operand_shift_scalars[index].clone()
 						* &r_y_tensor[svi.value_index.segment() as usize]
 							[svi.value_index.index() as usize];
@@ -232,9 +233,9 @@ where
 				let mut constraint_eval = F::ZERO;
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 					for svi in operand {
-						let variant = svi.shift_variant as usize;
+						let variant = svi.shift.variant as usize;
 						let index =
-							(variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
+							(variant * Word::BITS + svi.shift.amount as usize) * ARITY + operand_id;
 						constraint_eval += operand_shift_scalars[index]
 							* r_y_tensor[svi.value_index.segment() as usize]
 								[svi.value_index.index() as usize];
@@ -297,7 +298,7 @@ fn operand_shift_scalar_table<E: FieldOps>(
 mod tests {
 	use binius_core::{
 		ShiftVariant,
-		constraint_system::{AndConstraint, ShiftedValueIndex, ValueIndex},
+		constraint_system::{AndConstraint, Shift, ShiftedValueIndex, ValueIndex},
 	};
 	use binius_field::{BinaryField128bGhash, Field, Random};
 	use binius_math::{
@@ -335,8 +336,10 @@ mod tests {
 					(0..rng.random_range(0..=3))
 						.map(|_| ShiftedValueIndex {
 							value_index: ValueIndex::private(rng.random_range(0..n_words) as u32),
-							shift_variant: shift_variants[rng.random_range(0..SHIFT_VARIANT_COUNT)],
-							amount: rng.random_range(0..Word::BITS) as u8,
+							shift: Shift {
+								variant: shift_variants[rng.random_range(0..SHIFT_VARIANT_COUNT)],
+								amount: rng.random_range(0..Word::BITS) as u8,
+							},
 						})
 						.collect()
 				}))

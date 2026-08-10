@@ -9,13 +9,31 @@ use binius_utils::{
 use bytes::{Buf, BufMut};
 
 use super::{
-	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ShiftVariant,
-	ValueIndex, ValueSegment, ValueVec, ZeroConstraint,
+	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ValueIndex,
+	ValueSegment, ValueVec, ZeroConstraint,
 };
 use crate::{
 	error::{ConstraintSystemError, VerificationError},
 	word::Word,
 };
+
+/// Which of the two value-vector segments holds the inout values.
+///
+/// The constants are always public and the private values always hidden, so this is the only
+/// freedom in where the segment boundary falls. A proving protocol picks the placement that suits
+/// how its verifier learns the inout words, and passes it to every accessor that reports a segment
+/// length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InoutSegment {
+	/// The inout values are public: the verifier knows every one of them, so the reduction reads
+	/// them as shared data and nothing about them is committed.
+	Public,
+	/// The inout values are hidden: they are committed with the private values.
+	///
+	/// This is what a data-parallel protocol needs. Each instance chooses its own inout words, so
+	/// they are not one set of shared values the verifier can evaluate.
+	Hidden,
+}
 
 /// The ConstraintSystem is the core data structure in Binius64 that defines the computational
 /// constraints to be proven in zero-knowledge. It represents a system of equations over 64-bit
@@ -24,8 +42,11 @@ use crate::{
 /// # Value vector shape
 ///
 /// The constraints reference words of a value vector partitioned into two segments. The public
-/// segment holds the constants and the inout values; the hidden segment holds the private values.
-/// Each group of values is followed by padding, so the value vector runs
+/// segment holds the words the verifier evaluates itself; the hidden segment holds the words the
+/// prover commits. The constants are always public and the private values always hidden; the inout
+/// values sit in whichever segment the proving protocol places them in, which every segment-length
+/// accessor takes as an [`InoutSegment`]. Each group of values is followed by padding, so under
+/// [`InoutSegment::Public`] the value vector runs
 ///
 /// ```text
 /// [ constants | inout | pad ][ private | pad ]
@@ -78,12 +99,6 @@ impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
 	pub const SERIALIZATION_VERSION: u32 = 9;
 
-	/// The minimum number of words in the public segment.
-	///
-	/// The public segment is padded up to at least this many words, so that
-	/// [`Self::log_public_words`] is never smaller than its logarithm.
-	pub const MIN_WORDS_PER_SEGMENT: usize = 2;
-
 	/// Returns the number of constants.
 	pub const fn n_const(&self) -> usize {
 		self.constants.len()
@@ -99,44 +114,49 @@ impl ConstraintSystem {
 		self.n_const() + self.n_inout
 	}
 
-	/// Returns the number of words in the public segment, which the proving protocol pads to a
-	/// power of two of at least [`Self::MIN_WORDS_PER_SEGMENT`] words.
+	/// Returns the number of words in the public segment.
 	///
-	/// The padding is the protocol's, not the system's: no [`ValueIndex`] reaches a padding word,
-	/// and the words past [`Self::n_public_values`] are zero.
-	pub const fn n_public_words(&self) -> usize {
-		let n_values = if self.n_public_values() < Self::MIN_WORDS_PER_SEGMENT {
-			Self::MIN_WORDS_PER_SEGMENT
-		} else {
-			self.n_public_values()
-		};
-		n_values.next_power_of_two()
+	/// This is the constants, followed by the inout values when they are placed there.
+	pub const fn n_public_words(&self, inout: InoutSegment) -> usize {
+		match inout {
+			InoutSegment::Public => self.n_public_values(),
+			InoutSegment::Hidden => self.n_const(),
+		}
 	}
 
-	/// Returns the base-2 logarithm of the public segment length in words.
-	pub const fn log_public_words(&self) -> usize {
-		self.n_public_words().trailing_zeros() as usize
+	/// Returns the number of word-index variables the public segment spans.
+	///
+	/// The word count need not be a power of two; the reductions read the words past it as zero.
+	pub const fn log_public_words(&self, inout: InoutSegment) -> usize {
+		log2_ceil_usize(self.n_public_words(inout))
 	}
 
 	/// Returns the number of words in the hidden segment.
 	///
-	/// The hidden segment holds the private values, padded up to the public segment length so
-	/// that [`Self::log_witness_words`] is at least [`Self::log_public_words`] — the shift
-	/// reduction addresses both halves with one set of word-index challenges.
-	pub const fn n_hidden_words(&self) -> usize {
-		if self.n_private < self.n_public_words() {
-			self.n_public_words()
-		} else {
-			self.n_private
+	/// This is the private values, preceded by the inout values when they are placed there.
+	pub const fn n_hidden_words(&self, inout: InoutSegment) -> usize {
+		match inout {
+			InoutSegment::Public => self.n_private,
+			InoutSegment::Hidden => self.n_inout + self.n_private,
 		}
 	}
 
-	/// Returns the base-2 logarithm of the hidden segment length in words, rounded up to a
-	/// power of two.
+	/// Returns the number of word-index variables the hidden segment spans.
+	pub const fn log_witness_words(&self, inout: InoutSegment) -> usize {
+		log2_ceil_usize(self.n_hidden_words(inout))
+	}
+
+	/// Returns the number of word-index variables the shift reduction runs over.
 	///
-	/// This is at least [`Self::log_public_words`].
-	pub const fn log_witness_words(&self) -> usize {
-		log2_ceil_usize(self.n_hidden_words())
+	/// The reduction addresses both segments with one set of word-index challenges, so it needs
+	/// as many as the wider of the two spans. The narrower segment reads the extra coordinates as
+	/// zero.
+	pub const fn log_segment_words(&self, inout: InoutSegment) -> usize {
+		if self.log_public_words(inout) > self.log_witness_words(inout) {
+			self.log_public_words(inout)
+		} else {
+			self.log_witness_words(inout)
+		}
 	}
 
 	/// Returns the number of values the given segment holds, excluding the padding after them.
@@ -154,27 +174,28 @@ impl ConstraintSystem {
 
 	/// Returns the position of the word a [`ValueIndex`] names within the value vector.
 	///
-	/// This is the address the proving protocol reads the word at: the public segment occupies
-	/// the low positions and the hidden segment follows it. Scratch words are not part of a
+	/// This is the address the proving protocol reads the word at: the constants, then the inout
+	/// values, then the private ones. Where the segment boundary falls does not enter, so the
+	/// address is the same under either [`InoutSegment`] placement. Scratch words are not part of a
 	/// constraint system, so a scratch index lands past the last word — [`Self::validate`] rejects
 	/// any constraint naming one.
 	pub const fn word_offset(&self, index: ValueIndex) -> usize {
 		let segment_start = match index.segment() {
 			ValueSegment::Constant => 0,
 			ValueSegment::InOut => self.offset_inout(),
-			ValueSegment::Private => self.n_public_words(),
+			ValueSegment::Private => self.n_public_values(),
 			ValueSegment::Scratch => self.value_vec_len(),
 		};
 		segment_start + index.index() as usize
 	}
 
-	/// Builds a value vector from the words of this system's public and hidden segments.
+	/// Builds a value vector from the inout values and the private values.
 	///
-	/// The words are the values as the circuit declares them, unpadded: the constants followed by
-	/// the inout values, then the private ones. The constant count splits the public words, which
-	/// is what resolves a [`ValueSegment::InOut`] index against the rebuilt vector.
-	pub fn value_vec_from_data(&self, public: &[Word], private: &[Word]) -> ValueVec {
-		ValueVec::new_from_data(self.n_const(), public, private)
+	/// The constants come from the system itself, so a caller supplies only what varies per
+	/// instance — the same split [`Self::validate`] enforces and the verifier takes.
+	pub fn value_vec_from_data(&self, inout: &[Word], private: &[Word]) -> ValueVec {
+		let public = [self.constants.as_slice(), inout].concat();
+		ValueVec::new_from_data(self.n_const(), &public, private)
 	}
 
 	/// Ensures that this constraint system is well-formed and ready for proving.
@@ -303,22 +324,24 @@ impl ConstraintSystem {
 		operand_name: &'static str,
 	) -> Result<(), ConstraintSystemError> {
 		for term in operand {
-			// check canonicity. SLL is the canonical form of the operand.
-			if term.amount == 0 && term.shift_variant != ShiftVariant::Sll {
+			// check canonicity. SLL is the canonical form of the identity.
+			if !term.shift.is_canonical() {
 				return Err(ConstraintSystemError::NonCanonicalShift {
 					constraint_kind,
 					constraint_index,
 					operand_name,
 				});
 			}
-			// Half-word (*32) variants cap at 32, full-width at 64.
-			let max_amount = term.shift_variant.max_amount();
-			if usize::from(term.amount) >= max_amount {
+			// Half-word (*32) variants cap at 32, full-width at 64. `Shift::new` and the
+			// deserializer both enforce this, but the fields are public, so a hand-built term can
+			// still carry an amount the variant cannot represent.
+			let max_amount = term.shift.variant.max_amount();
+			if usize::from(term.shift.amount) >= max_amount {
 				return Err(ConstraintSystemError::ShiftAmountTooLarge {
 					constraint_kind,
 					constraint_index,
 					operand_name,
-					shift_amount: term.amount as usize,
+					shift_amount: term.shift.amount as usize,
 					max_amount,
 				});
 			}
@@ -428,7 +451,7 @@ impl ConstraintSystem {
 
 	/// The total length of the [`ValueVec`] expected by this constraint system.
 	pub const fn value_vec_len(&self) -> usize {
-		self.n_public_words() + self.n_hidden_words()
+		self.n_public_values() + self.n_private
 	}
 }
 
@@ -482,7 +505,7 @@ impl DeserializeBytes for ConstraintSystem {
 mod tests {
 	use super::*;
 	use crate::{
-		constraint_system::{ShiftedValueIndex, ValuesData},
+		constraint_system::{Shift, ShiftVariant, ShiftedValueIndex, ValuesData},
 		error::ConstraintViolation,
 	};
 
@@ -674,41 +697,60 @@ mod tests {
 			..test_shape()
 		};
 		// Typical: more private values than public words, rounded up to a power of two.
-		assert_eq!(cs(60).log_witness_words(), 6);
+		assert_eq!(cs(60).log_witness_words(InoutSegment::Public), 6);
 		// Exact power-of-two private count.
-		assert_eq!(cs(32).log_witness_words(), 5);
+		assert_eq!(cs(32).log_witness_words(InoutSegment::Public), 5);
 	}
 
 	#[test]
-	fn segment_lengths_are_derived_from_the_value_counts() {
-		// Three constants and two inout values are five public words, padded to eight; six
-		// private values are fewer than that, so the hidden segment is padded to eight too.
+	fn segment_lengths_are_the_value_counts() {
+		// Three constants and two inout values are five public words; six private values are six
+		// hidden words. Neither is padded.
 		let cs = test_shape();
 		assert_eq!(cs.n_public_values(), 5);
-		assert_eq!(cs.n_public_words(), 8);
-		assert_eq!(cs.log_public_words(), 3);
-		assert_eq!(cs.n_hidden_words(), 8);
-		assert_eq!(cs.log_witness_words(), 3);
-		assert_eq!(cs.value_vec_len(), 16);
+		assert_eq!(cs.n_public_words(InoutSegment::Public), 5);
+		assert_eq!(cs.n_hidden_words(InoutSegment::Public), 6);
+		assert_eq!(cs.value_vec_len(), 11);
 
-		// A system with more private values than public words pads the hidden segment to the
-		// private count instead, and the two logarithms come apart.
+		// The spans are the counts rounded up, and the reduction runs over the wider of the two.
+		assert_eq!(cs.log_public_words(InoutSegment::Public), 3);
+		assert_eq!(cs.log_witness_words(InoutSegment::Public), 3);
+		assert_eq!(cs.log_segment_words(InoutSegment::Public), 3);
+
+		// A hidden segment wider than the public one sets the span.
 		let wide = ConstraintSystem {
 			n_private: 60,
 			..test_shape()
 		};
-		assert_eq!(wide.n_public_words(), 8);
-		assert_eq!(wide.n_hidden_words(), 60);
-		assert_eq!(wide.log_witness_words(), 6);
+		assert_eq!(wide.log_public_words(InoutSegment::Public), 3);
+		assert_eq!(wide.log_witness_words(InoutSegment::Public), 6);
+		assert_eq!(wide.log_segment_words(InoutSegment::Public), 6);
 
-		// An empty system still meets the minimum segment size.
-		let empty = ConstraintSystem {
-			constants: vec![],
-			n_inout: 0,
-			n_private: 0,
+		// And a public segment wider than the hidden one sets it instead — the case the old
+		// hidden-segment padding existed to rule out.
+		let public_heavy = ConstraintSystem {
+			n_inout: 200,
+			n_private: 4,
 			..test_shape()
 		};
-		assert_eq!(empty.n_public_words(), ConstraintSystem::MIN_WORDS_PER_SEGMENT);
+		assert_eq!(public_heavy.log_public_words(InoutSegment::Public), 8);
+		assert_eq!(public_heavy.log_witness_words(InoutSegment::Public), 2);
+		assert_eq!(public_heavy.log_segment_words(InoutSegment::Public), 8);
+	}
+
+	#[test]
+	fn hidden_inout_moves_the_segment_boundary() {
+		// The same shape as above, read with the inout values in the hidden segment: three
+		// constants are the whole public segment, and the two inout values join the six private
+		// ones.
+		let cs = test_shape();
+		assert_eq!(cs.n_public_words(InoutSegment::Hidden), 3);
+		assert_eq!(cs.n_hidden_words(InoutSegment::Hidden), 8);
+
+		// The value vector is the same either way, so the word addresses are too.
+		assert_eq!(cs.value_vec_len(), 11);
+		assert_eq!(cs.word_offset(ValueIndex::inout(0)), 3);
+		assert_eq!(cs.word_offset(ValueIndex::private(0)), 5);
 	}
 
 	#[test]
@@ -955,8 +997,12 @@ mod tests {
 		cs.and_constraints.push(AndConstraint::abc(
 			vec![ShiftedValueIndex {
 				value_index: ValueIndex::constant(0),
-				shift_variant: ShiftVariant::Sll32,
-				amount: 32,
+				// Built raw: `Shift::new` would reject this amount, and `validate` is what is
+				// under test here.
+				shift: Shift {
+					variant: ShiftVariant::Sll32,
+					amount: 32,
+				},
 			}],
 			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
 			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
@@ -984,24 +1030,25 @@ mod tests {
 	fn test_roundtrip_cs_and_witnesses_reconstruct_valuevec() {
 		let cs = test_shape();
 
-		// Build a value vector and fill every word with a deterministic pattern.
-		let public = (0..cs.n_public_words())
+		// Build a value vector and fill every per-instance word with a deterministic pattern. The
+		// constants come from the system, so they are not supplied here.
+		let inout = (0..cs.n_inout)
 			.map(|i| Word::from_u64(0xA5A5_5A5A ^ (i as u64 * 0x9E37_79B9)))
 			.collect::<Vec<_>>();
-		let private = (0..cs.n_hidden_words())
+		let private = (0..cs.n_private)
 			.map(|i| Word::from_u64(0x5A5A_A5A5 ^ (i as u64 * 0x9E37_79B9)))
 			.collect::<Vec<_>>();
-		let values = cs.value_vec_from_data(&public, &private);
+		let values = cs.value_vec_from_data(&inout, &private);
 
-		// Split into public and non-public witnesses and serialize all artifacts
-		let public_data = ValuesData::from(values.public());
+		// Serialize only what varies per instance, alongside the system itself
+		let inout_data = ValuesData::from(values.inout());
 		let non_public_data = ValuesData::from(values.non_public());
 
 		let mut buf_cs = Vec::new();
 		cs.serialize(&mut buf_cs).unwrap();
 
 		let mut buf_pub = Vec::new();
-		public_data.serialize(&mut buf_pub).unwrap();
+		inout_data.serialize(&mut buf_pub).unwrap();
 
 		let mut buf_non_pub = Vec::new();
 		non_public_data.serialize(&mut buf_non_pub).unwrap();
@@ -1010,8 +1057,8 @@ mod tests {
 		let cs2 = ConstraintSystem::deserialize(&mut buf_cs.as_slice()).unwrap();
 		let pub2 = ValuesData::deserialize(&mut buf_pub.as_slice()).unwrap();
 		let non_pub2 = ValuesData::deserialize(&mut buf_non_pub.as_slice()).unwrap();
-		assert_eq!(cs2.n_public_words(), pub2.len());
-		assert_eq!(cs2.n_hidden_words(), non_pub2.len());
+		assert_eq!(cs2.n_inout, pub2.len());
+		assert_eq!(cs2.n_private, non_pub2.len());
 
 		// Reconstruct ValueVec from deserialized pieces
 		let reconstructed = cs2.value_vec_from_data(&pub2, &non_pub2);
@@ -1083,11 +1130,14 @@ mod tests {
 			zero_constraints: vec![],
 			..test_shape()
 		};
+		// `value_vec_from_data` sources the constants from the system, so it cannot open one to
+		// the wrong word — the vector is built directly to inject the disagreement. A vector the
+		// circuit filled can still carry one, which is what `verify` guards against.
 		let mut public = [Word::ZERO; 8];
 		public[0] = Word::from_u64(1);
 		public[1] = Word::from_u64(42);
 		public[2] = Word::from_u64(0xBAADF00D);
-		let values = cs.value_vec_from_data(&public, &[Word::ZERO; 8]);
+		let values = ValueVec::new_from_data(cs.n_const(), &public, &[Word::ZERO; 8]);
 
 		match cs.verify(&values).unwrap_err() {
 			VerificationError::ConstantMismatch {

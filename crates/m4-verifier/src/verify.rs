@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_core::constraint_system::ConstraintSystem;
+use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_field::{ExtensionField, FieldOps};
 use binius_hash::StdHashSuite;
 use binius_iop::{
@@ -121,12 +121,13 @@ impl IOPVerifier {
 		let trace_oracle = channel.recv_oracle(self.layout.log_witness_elems, true)?;
 
 		// Reduce every instance's constraints to one claim on the committed trace.
-		// The shared constants are the batch's public values; a batch declares no inout values.
+		// A batch hides its inout words, so the public data is the shared constants alone.
 		let reduction = reduce_constraints(
 			&self.cs,
 			Instances::Batch {
 				log_instances: self.layout.log_instances,
 			},
+			InoutSegment::Hidden,
 			&self.cs.constants,
 			channel,
 		)?;

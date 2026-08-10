@@ -76,7 +76,7 @@ pub struct VerifierMerkleTranscriptChannel<T, Challenger_, F, H: HashSuite> {
 }
 
 impl<T, Challenger_, F, H: HashSuite> VerifierMerkleTranscriptChannel<T, Challenger_, F, H> {
-	/// Constructs a channel over the transcript with a non-hiding Merkle tree scheme.
+	/// Constructs a channel over the transcript with a default Merkle tree scheme.
 	pub fn new(transcript: T) -> Self {
 		Self::with_scheme(transcript, BinaryMerkleTreeScheme::new())
 	}
@@ -204,14 +204,13 @@ where
 
 	fn recv_committed_vector(&mut self, commitment: &Self::Commitment) -> Result<Vec<F>, Error> {
 		let len = commitment.leaf_size << commitment.commitment.depth;
-		let mut advice = self.transcript.borrow_mut().decommitment();
-		let data = advice.read_scalar_slice::<F>(len)?;
-		self.scheme.verify_vector(
-			&commitment.commitment.root,
-			&data,
-			commitment.leaf_size,
-			&mut advice,
-		)?;
+		let data = self
+			.transcript
+			.borrow_mut()
+			.decommitment()
+			.read_scalar_slice::<F>(len)?;
+		self.scheme
+			.verify_vector(&commitment.commitment.root, &data, commitment.leaf_size)?;
 		Ok(data)
 	}
 

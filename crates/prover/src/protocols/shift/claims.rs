@@ -82,6 +82,22 @@ pub struct PreparedOperatorClaims<F: Field> {
 	pub binmul: PreparedOperatorData<F>,
 }
 
+impl<F: Field> PreparedOperatorClaims<F> {
+	/// The four operations' claims collapsed into the single value the reduction proves.
+	///
+	/// Each operation's batched evaluation already carries a random factor of its own, drawn for
+	/// it alone, so the four sum directly with no further scaling.
+	///
+	/// This is the claim phase 1 hands its sumcheck, and it is the same value the verifier
+	/// computes from the operand evaluation claims before running its own.
+	pub fn batched_eval(&self) -> F {
+		self.zero.batched_eval
+			+ self.bitand.batched_eval
+			+ self.intmul.batched_eval
+			+ self.binmul.batched_eval
+	}
+}
+
 impl<F: Field> Index<Operation> for PreparedOperatorClaims<F> {
 	type Output = PreparedOperatorData<F>;
 

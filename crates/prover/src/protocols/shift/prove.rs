@@ -1,9 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::borrow::Cow;
-
 use binius_compute::Allocator;
-use binius_core::{ConstraintSystem, word::Word};
+use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, util::powers};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
@@ -144,17 +142,6 @@ impl<F: Field> PreparedOperatorData<F> {
 ///
 /// # Returns
 /// The `SumcheckOutput` with the final challenges and the witness evaluation.
-/// Zero-fills a segment up to a minimum length, borrowing it when it already reaches that.
-fn pad_to_min(words: &[Word], min_words: usize) -> Cow<'_, [Word]> {
-	if words.len() >= min_words {
-		Cow::Borrowed(words)
-	} else {
-		let mut padded = words.to_vec();
-		padded.resize(min_words, Word::ZERO);
-		Cow::Owned(padded)
-	}
-}
-
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
@@ -170,19 +157,12 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	// The segments are passed as the circuit declares them, at whatever length that is: phase 1
+	// The segments are passed as the circuit declares them, at whatever length that is. Phase 1
 	// zips each word with its key range, so a segment shorter than its key ranges stops at its
 	// last value — the words past it carry no keys — and phase 2's `fold_words` zero-pads each
-	// fold up to `log2_ceil(len)` variables. Neither needs a power-of-two segment.
-	//
-	// The one length the folds cannot infer is the minimum segment size, which the constraint
-	// system applies to the public segment and the monster multilinear is therefore built at. A
-	// circuit declaring fewer public values than that (only the all-one constant, say) would fold
-	// to a narrower multilinear than the monster it is checked against, so the floor is applied
-	// here. It costs at most `MIN_WORDS_PER_SEGMENT` words.
-	let public_words = pad_to_min(public_words, ConstraintSystem::MIN_WORDS_PER_SEGMENT);
+	// fold up to `log2_ceil(len)` variables. Neither needs a padded segment.
 	let words = SegmentWords {
-		public: &public_words,
+		public: public_words,
 		hidden: hidden_words,
 	};
 
