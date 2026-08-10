@@ -1,7 +1,10 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b as B8, ExtensionField, FieldOps};
 use binius_hash::StdHashSuite;
 use binius_iop::{
@@ -234,13 +237,22 @@ impl IOPVerifier {
 		};
 
 		// Reduce the operand claims to one witness evaluation.
-		let shift = shift::verify::<B128, _>(cs, &zero, &bitand, &intmul, &binmul, channel)?;
+		let shift = shift::verify::<B128, _>(
+			cs,
+			InoutSegment::Public,
+			&zero,
+			&bitand,
+			&intmul,
+			&binmul,
+			channel,
+		)?;
 
 		// Tie in the shared constants through the public-input consistency check.
 		// The shift evaluates them over the layout's power-of-two word count.
 		// Their count need not be a power of two, so they are passed unpadded.
 		shift::check_eval::<B128, _>(
 			cs,
+			InoutSegment::Public,
 			&cs.constants,
 			&zero,
 			&bitand,

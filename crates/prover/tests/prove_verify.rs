@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueSegment, ValueVec},
+	constraint_system::{ConstraintSystem, InoutSegment, ValueSegment, ValueVec},
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
@@ -439,13 +439,16 @@ fn public_heavy_circuit(n_inout: usize) -> (ConstraintSystem, ValueVec) {
 fn test_prove_verify_public_wider_than_hidden() {
 	let (cs, witness) = public_heavy_circuit(300);
 	assert!(
-		cs.log_public_words() > cs.log_witness_words(),
+		cs.log_public_words(InoutSegment::Public) > cs.log_witness_words(InoutSegment::Public),
 		"public segment ({} words) must be wider than the hidden one ({} words) for this test to \
 		 exercise the extra word-index challenges",
-		cs.n_public_words(),
-		cs.n_hidden_words(),
+		cs.n_public_words(InoutSegment::Public),
+		cs.n_hidden_words(InoutSegment::Public),
 	);
-	assert_eq!(cs.log_segment_words(), cs.log_public_words());
+	assert_eq!(
+		cs.log_segment_words(InoutSegment::Public),
+		cs.log_public_words(InoutSegment::Public)
+	);
 	prove_verify(cs.clone(), &witness);
 	prove_verify_zk(cs, &witness);
 }
@@ -483,8 +486,8 @@ fn test_prove_verify_rejects_violated_zero_constraint() {
 	let victim_word = cs.word_offset(victim);
 	words[victim_word] = words[victim_word] ^ Word::ONE;
 	let corrupted = cs.value_vec_from_data(
-		&words[cs.n_const()..cs.n_public_words()],
-		&words[cs.n_public_words()..],
+		&words[cs.n_const()..cs.n_public_values()],
+		&words[cs.n_public_values()..],
 	);
 	assert!(cs.verify(&corrupted).is_err());
 

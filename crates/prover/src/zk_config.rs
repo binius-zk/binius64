@@ -9,7 +9,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use binius_compute::BufferPool;
-use binius_core::constraint_system::{ConstraintSystem, ValueVec};
+use binius_core::constraint_system::{ConstraintSystem, InoutSegment, ValueVec};
 use binius_field::{BinaryField128bGhash as B128, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
@@ -65,7 +65,10 @@ where
 	pub fn setup(zk_verifier: &ZKVerifier<H>) -> Result<Self, Error> {
 		let key_collection = {
 			let _guard = tracing::debug_span!("Build key collection").entered();
-			build_key_collection(zk_verifier.inner_iop_verifier().constraint_system())
+			build_key_collection(
+				zk_verifier.inner_iop_verifier().constraint_system(),
+				InoutSegment::Public,
+			)
 		};
 		Self::setup_with_key_collection(zk_verifier, key_collection)
 	}
@@ -165,7 +168,7 @@ where
 			let inner_cs = self.inner_iop_prover.constraint_system();
 			let _scope = tracing::debug_span!(
 				"Binius64",
-				n_hidden_words = inner_cs.n_hidden_words(),
+				n_hidden_words = inner_cs.n_hidden_words(InoutSegment::Public),
 				n_bitand = inner_cs.and_constraints.len(),
 				n_intmul = inner_cs.imul_constraints.len(),
 			)

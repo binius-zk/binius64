@@ -2,7 +2,10 @@
 // Copyright 2026 The Binius Developers
 
 use binius_compute::{Allocator, BufferPool, VecLike};
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::StdHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
@@ -297,7 +300,7 @@ impl IOPProver {
 		// The shift folds it against the monster's public part, which is sized to that padded
 		// count. The padding makes the two lengths agree, and matches the zeros the verifier
 		// assumes.
-		let n_public_words = cs.n_public_words();
+		let n_public_words = cs.n_public_words(InoutSegment::Public);
 		// Growing a pooled buffer past the block it was handed would reallocate and free that block
 		// at the element's alignment rather than the pool's, so the fill below must fit exactly.
 		assert!(
@@ -388,7 +391,8 @@ where
 			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
 		// Build the shift keys once from the shared constraint system.
-		let key_collection = build_key_collection(verifier.constraint_system());
+		let key_collection =
+			build_key_collection(verifier.constraint_system(), InoutSegment::Public);
 
 		let iop_prover = IOPProver::new(verifier.iop_verifier().clone(), key_collection);
 

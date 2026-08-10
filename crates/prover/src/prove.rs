@@ -5,7 +5,7 @@ use std::{marker::PhantomData, mem::MaybeUninit};
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
-	constraint_system::{ConstraintSystem, Operand, ValueVec},
+	constraint_system::{ConstraintSystem, InoutSegment, Operand, ValueVec},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
@@ -385,7 +385,8 @@ where
 	///
 	/// See [`Prover`] struct documentation for details.
 	pub fn setup(verifier: Verifier<H>) -> Result<Self, Error> {
-		let key_collection = build_key_collection(verifier.constraint_system());
+		let key_collection =
+			build_key_collection(verifier.constraint_system(), InoutSegment::Public);
 		Self::setup_with_key_collection(verifier, key_collection)
 	}
 
@@ -443,7 +444,7 @@ where
 
 		let _prove_guard = tracing::info_span!(
 			"Prove",
-			n_hidden_words = cs.n_hidden_words(),
+			n_hidden_words = cs.n_hidden_words(InoutSegment::Public),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)

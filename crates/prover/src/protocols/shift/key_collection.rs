@@ -5,7 +5,7 @@ use std::{iter, mem, ops::Range};
 
 use binius_core::{
 	ShiftVariant,
-	constraint_system::{ConstraintSystem, Operand, ShiftedValueIndex},
+	constraint_system::{ConstraintSystem, InoutSegment, Operand, ShiftedValueIndex},
 	word::Word,
 };
 use binius_field::{Field, WideMul};
@@ -412,7 +412,10 @@ fn update_with_constraints<C, const ARITY: usize>(
 }
 
 /// Constructs a `KeyCollection` from a constraint system.
-pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
+///
+/// `inout` is where the proving protocol places the inout values, which is what the two key
+/// segments split along.
+pub fn build_key_collection(cs: &ConstraintSystem, inout: InoutSegment) -> KeyCollection {
 	// Initialize a temporary list of builder keys lists, one for each committed word.
 	let mut builder_key_lists: Vec<Vec<BuilderKey>> =
 		(0..cs.value_vec_len()).map(|_| Vec::new()).collect();
@@ -430,7 +433,7 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 
 	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
 	// per half.
-	let hidden_lists = builder_key_lists.split_off(cs.n_public_words());
+	let hidden_lists = builder_key_lists.split_off(cs.n_public_words(inout));
 	KeyCollection {
 		public: build_key_segment(builder_key_lists),
 		hidden: build_key_segment(hidden_lists),
@@ -713,7 +716,8 @@ mod tests {
 
 	#[test]
 	fn dense_shift_encoding_covers_the_pairs_its_segment_uses() {
-		let key_collection = build_key_collection(&shifted_constraint_system());
+		let key_collection =
+			build_key_collection(&shifted_constraint_system(), InoutSegment::Public);
 
 		let public_pairs = key_collection
 			.public
@@ -742,7 +746,8 @@ mod tests {
 
 	#[test]
 	fn keys_index_their_segments_dense_encoding() {
-		let key_collection = build_key_collection(&shifted_constraint_system());
+		let key_collection =
+			build_key_collection(&shifted_constraint_system(), InoutSegment::Public);
 
 		// The shifts a word's keys name, as its own segment's encoding decodes them.
 		let word_pairs = |segment: &KeySegment, word: usize| {
@@ -772,7 +777,8 @@ mod tests {
 
 	#[test]
 	fn dense_shift_encoding_survives_serialization() {
-		let key_collection = build_key_collection(&shifted_constraint_system());
+		let key_collection =
+			build_key_collection(&shifted_constraint_system(), InoutSegment::Public);
 
 		let mut buf = Vec::new();
 		key_collection.serialize(&mut buf).unwrap();

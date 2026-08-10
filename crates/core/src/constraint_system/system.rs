@@ -17,6 +17,24 @@ use crate::{
 	word::Word,
 };
 
+/// Which of the two value-vector segments holds the inout values.
+///
+/// The constants are always public and the private values always hidden, so this is the only
+/// freedom in where the segment boundary falls. A proving protocol picks the placement that suits
+/// how its verifier learns the inout words, and passes it to every accessor that reports a segment
+/// length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InoutSegment {
+	/// The inout values are public: the verifier knows every one of them, so the reduction reads
+	/// them as shared data and nothing about them is committed.
+	Public,
+	/// The inout values are hidden: they are committed with the private values.
+	///
+	/// This is what a data-parallel protocol needs. Each instance chooses its own inout words, so
+	/// they are not one set of shared values the verifier can evaluate.
+	Hidden,
+}
+
 /// The ConstraintSystem is the core data structure in Binius64 that defines the computational
 /// constraints to be proven in zero-knowledge. It represents a system of equations over 64-bit
 /// words that must be satisfied by a valid values vector [`ValueVec`].
@@ -24,8 +42,11 @@ use crate::{
 /// # Value vector shape
 ///
 /// The constraints reference words of a value vector partitioned into two segments. The public
-/// segment holds the constants and the inout values; the hidden segment holds the private values.
-/// Each group of values is followed by padding, so the value vector runs
+/// segment holds the words the verifier evaluates itself; the hidden segment holds the words the
+/// prover commits. The constants are always public and the private values always hidden; the inout
+/// values sit in whichever segment the proving protocol places them in, which every segment-length
+/// accessor takes as an [`InoutSegment`]. Each group of values is followed by padding, so under
+/// [`InoutSegment::Public`] the value vector runs
 ///
 /// ```text
 /// [ constants | inout | pad ][ private | pad ]
@@ -93,26 +114,36 @@ impl ConstraintSystem {
 		self.n_const() + self.n_inout
 	}
 
-	/// Returns the number of words in the public segment, which is the public values themselves.
-	pub const fn n_public_words(&self) -> usize {
-		self.n_public_values()
+	/// Returns the number of words in the public segment.
+	///
+	/// This is the constants, followed by the inout values when they are placed there.
+	pub const fn n_public_words(&self, inout: InoutSegment) -> usize {
+		match inout {
+			InoutSegment::Public => self.n_public_values(),
+			InoutSegment::Hidden => self.n_const(),
+		}
 	}
 
 	/// Returns the number of word-index variables the public segment spans.
 	///
 	/// The word count need not be a power of two; the reductions read the words past it as zero.
-	pub const fn log_public_words(&self) -> usize {
-		log2_ceil_usize(self.n_public_words())
+	pub const fn log_public_words(&self, inout: InoutSegment) -> usize {
+		log2_ceil_usize(self.n_public_words(inout))
 	}
 
-	/// Returns the number of words in the hidden segment, which is the private values themselves.
-	pub const fn n_hidden_words(&self) -> usize {
-		self.n_private
+	/// Returns the number of words in the hidden segment.
+	///
+	/// This is the private values, preceded by the inout values when they are placed there.
+	pub const fn n_hidden_words(&self, inout: InoutSegment) -> usize {
+		match inout {
+			InoutSegment::Public => self.n_private,
+			InoutSegment::Hidden => self.n_inout + self.n_private,
+		}
 	}
 
 	/// Returns the number of word-index variables the hidden segment spans.
-	pub const fn log_witness_words(&self) -> usize {
-		log2_ceil_usize(self.n_hidden_words())
+	pub const fn log_witness_words(&self, inout: InoutSegment) -> usize {
+		log2_ceil_usize(self.n_hidden_words(inout))
 	}
 
 	/// Returns the number of word-index variables the shift reduction runs over.
@@ -120,11 +151,11 @@ impl ConstraintSystem {
 	/// The reduction addresses both segments with one set of word-index challenges, so it needs
 	/// as many as the wider of the two spans. The narrower segment reads the extra coordinates as
 	/// zero.
-	pub const fn log_segment_words(&self) -> usize {
-		if self.log_public_words() > self.log_witness_words() {
-			self.log_public_words()
+	pub const fn log_segment_words(&self, inout: InoutSegment) -> usize {
+		if self.log_public_words(inout) > self.log_witness_words(inout) {
+			self.log_public_words(inout)
 		} else {
-			self.log_witness_words()
+			self.log_witness_words(inout)
 		}
 	}
 
@@ -143,15 +174,16 @@ impl ConstraintSystem {
 
 	/// Returns the position of the word a [`ValueIndex`] names within the value vector.
 	///
-	/// This is the address the proving protocol reads the word at: the public segment occupies
-	/// the low positions and the hidden segment follows it. Scratch words are not part of a
+	/// This is the address the proving protocol reads the word at: the constants, then the inout
+	/// values, then the private ones. Where the segment boundary falls does not enter, so the
+	/// address is the same under either [`InoutSegment`] placement. Scratch words are not part of a
 	/// constraint system, so a scratch index lands past the last word — [`Self::validate`] rejects
 	/// any constraint naming one.
 	pub const fn word_offset(&self, index: ValueIndex) -> usize {
 		let segment_start = match index.segment() {
 			ValueSegment::Constant => 0,
 			ValueSegment::InOut => self.offset_inout(),
-			ValueSegment::Private => self.n_public_words(),
+			ValueSegment::Private => self.n_public_values(),
 			ValueSegment::Scratch => self.value_vec_len(),
 		};
 		segment_start + index.index() as usize
@@ -419,7 +451,7 @@ impl ConstraintSystem {
 
 	/// The total length of the [`ValueVec`] expected by this constraint system.
 	pub const fn value_vec_len(&self) -> usize {
-		self.n_public_words() + self.n_hidden_words()
+		self.n_public_values() + self.n_private
 	}
 }
 
@@ -665,9 +697,9 @@ mod tests {
 			..test_shape()
 		};
 		// Typical: more private values than public words, rounded up to a power of two.
-		assert_eq!(cs(60).log_witness_words(), 6);
+		assert_eq!(cs(60).log_witness_words(InoutSegment::Public), 6);
 		// Exact power-of-two private count.
-		assert_eq!(cs(32).log_witness_words(), 5);
+		assert_eq!(cs(32).log_witness_words(InoutSegment::Public), 5);
 	}
 
 	#[test]
@@ -676,23 +708,23 @@ mod tests {
 		// hidden words. Neither is padded.
 		let cs = test_shape();
 		assert_eq!(cs.n_public_values(), 5);
-		assert_eq!(cs.n_public_words(), 5);
-		assert_eq!(cs.n_hidden_words(), 6);
+		assert_eq!(cs.n_public_words(InoutSegment::Public), 5);
+		assert_eq!(cs.n_hidden_words(InoutSegment::Public), 6);
 		assert_eq!(cs.value_vec_len(), 11);
 
 		// The spans are the counts rounded up, and the reduction runs over the wider of the two.
-		assert_eq!(cs.log_public_words(), 3);
-		assert_eq!(cs.log_witness_words(), 3);
-		assert_eq!(cs.log_segment_words(), 3);
+		assert_eq!(cs.log_public_words(InoutSegment::Public), 3);
+		assert_eq!(cs.log_witness_words(InoutSegment::Public), 3);
+		assert_eq!(cs.log_segment_words(InoutSegment::Public), 3);
 
 		// A hidden segment wider than the public one sets the span.
 		let wide = ConstraintSystem {
 			n_private: 60,
 			..test_shape()
 		};
-		assert_eq!(wide.log_public_words(), 3);
-		assert_eq!(wide.log_witness_words(), 6);
-		assert_eq!(wide.log_segment_words(), 6);
+		assert_eq!(wide.log_public_words(InoutSegment::Public), 3);
+		assert_eq!(wide.log_witness_words(InoutSegment::Public), 6);
+		assert_eq!(wide.log_segment_words(InoutSegment::Public), 6);
 
 		// And a public segment wider than the hidden one sets it instead — the case the old
 		// hidden-segment padding existed to rule out.
@@ -701,9 +733,24 @@ mod tests {
 			n_private: 4,
 			..test_shape()
 		};
-		assert_eq!(public_heavy.log_public_words(), 8);
-		assert_eq!(public_heavy.log_witness_words(), 2);
-		assert_eq!(public_heavy.log_segment_words(), 8);
+		assert_eq!(public_heavy.log_public_words(InoutSegment::Public), 8);
+		assert_eq!(public_heavy.log_witness_words(InoutSegment::Public), 2);
+		assert_eq!(public_heavy.log_segment_words(InoutSegment::Public), 8);
+	}
+
+	#[test]
+	fn hidden_inout_moves_the_segment_boundary() {
+		// The same shape as above, read with the inout values in the hidden segment: three
+		// constants are the whole public segment, and the two inout values join the six private
+		// ones.
+		let cs = test_shape();
+		assert_eq!(cs.n_public_words(InoutSegment::Hidden), 3);
+		assert_eq!(cs.n_hidden_words(InoutSegment::Hidden), 8);
+
+		// The value vector is the same either way, so the word addresses are too.
+		assert_eq!(cs.value_vec_len(), 11);
+		assert_eq!(cs.word_offset(ValueIndex::inout(0)), 3);
+		assert_eq!(cs.word_offset(ValueIndex::private(0)), 5);
 	}
 
 	#[test]

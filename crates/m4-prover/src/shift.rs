@@ -201,7 +201,10 @@ mod tests {
 	use std::iter;
 
 	use binius_compute::GlobalAllocator;
-	use binius_core::{constraint_system::AndConstraint, word::Word};
+	use binius_core::{
+		constraint_system::{AndConstraint, InoutSegment},
+		word::Word,
+	};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
 		inner_product::inner_product_buffers,
@@ -300,7 +303,7 @@ mod tests {
 
 		let cs = c.circuit.constraint_system().clone();
 		cs.validate().unwrap();
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Public);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
@@ -366,6 +369,7 @@ mod tests {
 		let verifier_bmul = VerifierOperatorData::new(Vec::new(), [B128::ZERO; 6]);
 		let verifier_output = verify(
 			&cs,
+			InoutSegment::Public,
 			&verifier_zero,
 			&verifier_bitand,
 			&verifier_intmul,
@@ -375,6 +379,7 @@ mod tests {
 		.unwrap();
 		check_eval(
 			&cs,
+			InoutSegment::Public,
 			public_words,
 			&verifier_zero,
 			&verifier_bitand,
@@ -434,7 +439,7 @@ mod tests {
 
 		let cs = c.circuit.constraint_system().clone();
 		cs.validate().unwrap();
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Public);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =

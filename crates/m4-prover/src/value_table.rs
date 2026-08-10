@@ -4,7 +4,7 @@ use std::ops::{Index, IndexMut};
 
 use binius_compute::Allocator;
 use binius_core::{
-	constraint_system::{ValueIndex, ValueVec, ValueVecLayout},
+	constraint_system::{InoutSegment, ValueIndex, ValueVec, ValueVecLayout},
 	word::Word,
 };
 use binius_field::PackedField;
@@ -210,7 +210,7 @@ impl ValueTable {
 		// past it stay zero.
 		let start = layout.offset_witness() << log_instances;
 		let end = layout.combined_len() << log_instances;
-		let n_hidden_words = circuit.constraint_system().n_hidden_words();
+		let n_hidden_words = circuit.constraint_system().n_hidden_words(InoutSegment::Public);
 		let mut data = vec![Word::ZERO; n_hidden_words << log_instances];
 		data[..end - start].copy_from_slice(&working[start..end]);
 
@@ -405,7 +405,7 @@ mod tests {
 		let layout = c.circuit.value_vec_layout();
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), 8);
-		let n_hidden_words = c.circuit.constraint_system().n_hidden_words();
+		let n_hidden_words = c.circuit.constraint_system().n_hidden_words(InoutSegment::Public);
 		assert_eq!(table.n_hidden_words(), n_hidden_words);
 		assert_eq!(table.as_words().len(), n_hidden_words * 8);
 		// The committed rows start with the private values the layout stores.
@@ -635,7 +635,7 @@ mod tests {
 		let constants = &c.circuit.constraint_system().constants;
 
 		// Shape: 2^10 instances, one hidden-word row per committed word.
-		let n_hidden_words = c.circuit.constraint_system().n_hidden_words();
+		let n_hidden_words = c.circuit.constraint_system().n_hidden_words(InoutSegment::Public);
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), n_instances);
 		assert_eq!(table.n_hidden_words(), n_hidden_words);

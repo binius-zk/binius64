@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use binius_core::{ConstraintSystem, Operand, ShiftedValueIndex};
+use binius_core::{ConstraintSystem, InoutSegment, Operand, ShiftedValueIndex};
 use itertools::chain;
 use rustc_hash::FxHashSet;
 
@@ -112,7 +112,7 @@ impl CircuitStat {
 		let n_inout = layout.n_inout;
 		// The prover commits only the hidden segment, zero-extended to the word-index space the
 		// shift reduction runs over. That padding is the one the circuit author can still fill.
-		let committed_allocated = 1 << cs.log_segment_words();
+		let committed_allocated = 1 << cs.log_segment_words(InoutSegment::Public);
 
 		Self {
 			n_gates: circuit.n_gates(),

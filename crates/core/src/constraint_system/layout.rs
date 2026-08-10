@@ -94,7 +94,7 @@ impl ValueVecLayout {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use super::{super::InoutSegment, *};
 
 	/// A layout of two constants, two inout values and eight private values.
 	fn test_layout() -> ValueVecLayout {
@@ -140,7 +140,7 @@ mod tests {
 		assert_eq!(cs.n_public_values(), layout.offset_witness());
 
 		// The system pads the segments the protocol commits; the layout stores neither padding.
-		assert_eq!(cs.n_public_words(), 4);
-		assert_eq!(cs.n_hidden_words(), 8);
+		assert_eq!(cs.n_public_words(InoutSegment::Public), 4);
+		assert_eq!(cs.n_hidden_words(InoutSegment::Public), 8);
 	}
 }
