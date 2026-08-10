@@ -16,7 +16,7 @@ pub use constraint::{
 use cranelift_entity::{EntitySet, SecondaryMap};
 use expr::WireExpr;
 pub use expr::WireExprTerm;
-pub use shift::{Shift, ShiftKind, ShiftedWire, WireOperand};
+pub use shift::{ShiftedWire, WireOperand};
 
 use crate::compiler::Wire;
 
