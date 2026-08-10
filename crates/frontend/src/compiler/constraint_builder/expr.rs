@@ -3,10 +3,9 @@
 
 //! The operand expression DSL: build a [`WireExpr`] as an XOR of shifted-wire terms.
 
-use binius_core::constraint_system::Shift;
 use smallvec::{SmallVec, smallvec};
 
-use super::shift::{ShiftedWire, WireOperand};
+use super::shift::{Shift, ShiftedWire, WireOperand};
 use crate::compiler::Wire;
 
 /// An operand under construction: the XOR of its terms.
@@ -49,7 +48,7 @@ impl WireExprTerm {
 		match self {
 			WireExprTerm::Wire(wire) => ShiftedWire {
 				wire,
-				shift: Shift::IDENTITY,
+				shift: Shift::None,
 			},
 			WireExprTerm::Shifted(wire, shift) => ShiftedWire { wire, shift },
 		}
@@ -64,42 +63,42 @@ impl From<Wire> for WireExprTerm {
 
 /// Left-shifts the whole word by `n`.
 pub const fn sll(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::sll(n as usize))
+	WireExprTerm::Shifted(w, Shift::Sll(n))
 }
 
 /// Half-wise left-shifts each 32-bit lane by `n`.
 pub const fn sll32(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::sll32(n as usize))
+	WireExprTerm::Shifted(w, Shift::Sll32(n))
 }
 
 /// Logically right-shifts the whole word by `n`.
 pub const fn srl(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::srl(n as usize))
+	WireExprTerm::Shifted(w, Shift::Srl(n))
 }
 
 /// Half-wise logically right-shifts each 32-bit lane by `n`.
 pub const fn srl32(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::srl32(n as usize))
+	WireExprTerm::Shifted(w, Shift::Srl32(n))
 }
 
 /// Arithmetically right-shifts the whole word by `n`.
 pub const fn sar(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::sar(n as usize))
+	WireExprTerm::Shifted(w, Shift::Sar(n))
 }
 
 /// Half-wise arithmetically right-shifts each 32-bit lane by `n`.
 pub const fn sra32(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::sra32(n as usize))
+	WireExprTerm::Shifted(w, Shift::Sra32(n))
 }
 
 /// Rotates the whole word right by `n`.
 pub const fn rotr(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::rotr(n as usize))
+	WireExprTerm::Shifted(w, Shift::Rotr(n))
 }
 
 /// Half-wise rotates each 32-bit lane right by `n`.
 pub const fn rotr32(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::rotr32(n as usize))
+	WireExprTerm::Shifted(w, Shift::Rotr32(n))
 }
 
 /// XOR of two terms.
