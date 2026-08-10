@@ -25,7 +25,7 @@ use crate::{
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::bitand::{AndCheckOutput, verify_with_channel},
-	reduction::reduce_constraints,
+	reduction::{Instances, reduce_constraints},
 	ring_switch,
 };
 
@@ -134,8 +134,8 @@ impl IOPVerifier {
 		let trace_oracle = channel.recv_oracle(self.log_witness_elems(), true)?;
 
 		// Reduce every constraint to one claim on the committed trace.
-		// A monolithic circuit is a batch of one instance, so there are no instance variables.
-		let reduction = reduce_constraints(self.constraint_system(), 0, public, channel)?;
+		let reduction =
+			reduce_constraints(self.constraint_system(), Instances::Single, public, channel)?;
 
 		// [phase] Ring-Switching + Verify PCS Opening
 		let pcs_guard = tracing::info_span!(

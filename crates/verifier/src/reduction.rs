@@ -4,15 +4,18 @@
 //! The constraint reduction shared by the single-instance and batched Binius64 verifiers.
 //!
 //! One circuit, and `2^k` instances of one circuit, reduce the same way.
-//! The instance count enters as `log_instances`, added to every reduction's row count.
+//! Which of the two it is enters as [`Instances`], and its count joins every row count.
 //!
-//! A batch adds one step that a single instance does not need:
+//! A batch adds one step the monolithic reduction does not have:
 //!
 //! ```text
-//! k > 0   each operation's claims land at its own instance point
-//!         -> one sumcheck transports them onto a shared point
-//! k = 0   every such point is empty, so there is nothing to transport
+//! monolithic   every operand claim already sits at a common point
+//! batch        each operation's claims sit at its own instance point
+//!              -> one sumcheck transports them onto a shared point
 //! ```
+//!
+//! A batch of one instance still runs that sumcheck, over no rounds.
+//! It is the batched protocol either way, because its prover folds a batched witness.
 
 use std::array;
 
@@ -50,12 +53,46 @@ use crate::{
 // TODO: a degree-1 multilinear-eval store evaluator would drop this to 2; none exists yet.
 const RERAND_DEGREE: usize = 3;
 
+/// The instances a reduction runs over.
+///
+/// This picks the protocol, not just a count.
+/// A batch of one instance is still a batch: its prover folds a batched witness, where the
+/// monolithic prover reads packed words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Instances {
+	/// One circuit, with no instance axis at all.
+	Single,
+	/// `2^log_instances` instances of one circuit, sharing its constraint system.
+	Batch {
+		/// The base-2 logarithm of the instance count.
+		log_instances: usize,
+	},
+}
+
+impl Instances {
+	/// The instance variables every reduction's row count includes.
+	pub const fn log_count(self) -> usize {
+		match self {
+			Self::Single => 0,
+			Self::Batch { log_instances } => log_instances,
+		}
+	}
+
+	/// Whether the operand claims need transporting onto a shared instance point.
+	///
+	/// Only a batch does. A batch of one transports over no rounds rather than skipping the step,
+	/// which is what keeps its transcript the same shape at every instance count.
+	const fn transports_claims(self) -> bool {
+		matches!(self, Self::Batch { .. })
+	}
+}
+
 /// What [`reduce_constraints`] leaves for the caller to open against the committed trace.
 #[derive(Debug)]
 pub struct ReductionOutput<F> {
 	/// The instance point every operand claim was transported onto.
 	///
-	/// Empty for a single instance, where there is nothing to transport.
+	/// Empty for the monolithic reduction, which transports nothing.
 	pub r_rho: Vec<F>,
 	/// The shift reduction's output, holding the claimed witness evaluation.
 	pub shift: shift::VerifyOutput<F>,
@@ -68,7 +105,7 @@ impl<F: Clone> ReductionOutput<F> {
 	///
 	/// ```text
 	/// r_j     the bit within a word
-	/// r_rho   the instance, empty for a single instance
+	/// r_rho   the instance, empty for the monolithic reduction
 	/// r_y     the committed word
 	/// ```
 	///
@@ -90,7 +127,7 @@ impl<F: Clone> ReductionOutput<F> {
 /// # Arguments
 ///
 /// - `cs`: the single-instance constraint system every instance satisfies.
-/// - `log_instances`: base-2 logarithm of the instance count; zero for one instance.
+/// - `instances`: whether this is the monolithic reduction or a batch, and how wide.
 /// - `public`: the declared public values, unpadded — the constants, then the inout values.
 /// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.
 ///
@@ -107,7 +144,7 @@ impl<F: Clone> ReductionOutput<F> {
 /// Do not reorder these, and keep the same order in the prover.
 pub fn reduce_constraints<Channel>(
 	cs: &ConstraintSystem,
-	log_instances: usize,
+	instances: Instances,
 	public: &[Word],
 	channel: &mut Channel,
 ) -> Result<ReductionOutput<Channel::Elem>, Error>
@@ -115,6 +152,8 @@ where
 	Channel: IOPVerifierChannel<B128>,
 	Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 {
+	let log_instances = instances.log_count();
+
 	// One base domain shared by the AND-check, the shift, and the operand collapse.
 	// The AND-check's univariate-skip domain spans one dimension above the 64-bit word.
 	let andcheck_domain = BinarySubspace::<B8>::default()
@@ -202,9 +241,10 @@ where
 		binmul_output.map(|output| OperationClaim::from_binmul(output, &lagrange, log_instances));
 
 	// Transport every operand claim onto one shared instance point.
-	// Skipped when there is only one point to begin with: one instance, or no multiplications.
+	// The monolithic reduction has only one point to begin with, and so does a batch with no
+	// multiplication constraints.
 	let needs_rerandomization =
-		log_instances > 0 && (intmul_claim.is_some() || binmul_claim.is_some());
+		instances.transports_claims() && (intmul_claim.is_some() || binmul_claim.is_some());
 	let (r_rho, bitand, intmul, binmul) = if needs_rerandomization {
 		RerandomizedOperations {
 			bitand: bitand_claim,

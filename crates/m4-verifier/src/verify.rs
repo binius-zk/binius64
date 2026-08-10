@@ -16,7 +16,7 @@ use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_verifier::{
 	Error,
 	config::{B1, B128},
-	reduction::reduce_constraints,
+	reduction::{Instances, reduce_constraints},
 	ring_switch::{self, RingSwitchVerifyOutput},
 };
 
@@ -122,8 +122,14 @@ impl IOPVerifier {
 
 		// Reduce every instance's constraints to one claim on the committed trace.
 		// The shared constants are the batch's public values; a batch declares no inout values.
-		let reduction =
-			reduce_constraints(&self.cs, self.layout.log_instances, &self.cs.constants, channel)?;
+		let reduction = reduce_constraints(
+			&self.cs,
+			Instances::Batch {
+				log_instances: self.layout.log_instances,
+			},
+			&self.cs.constants,
+			channel,
+		)?;
 
 		// Ring-switch the reduced claim onto the committed trace.
 		let trace_point = reduction.trace_point();

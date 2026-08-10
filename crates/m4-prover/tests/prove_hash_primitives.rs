@@ -369,9 +369,8 @@ fn prove_integer_multiplication() {
 
 // A batch of one instance, with IMUL constraints.
 //
-// One instance skips the re-randomization on both sides.
-// The IMUL claims must still reach the shift, collapsed from their per-bit form.
-// A zero claim there would drop those constraints silently.
+// The re-randomization still runs here, over no rounds, since a batch of one is still a batch.
+// Nothing else covers that degenerate sumcheck, on either side.
 #[test]
 fn prove_integer_multiplication_single_instance() {
 	let (circuit, inputs) = build_imul_circuit();
