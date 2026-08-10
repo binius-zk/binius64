@@ -82,8 +82,18 @@ where
 	//     masked.
 	let oracle = channel.recv_oracle(table_n_vars, true)?;
 
-	// Run the bare reduction over the same channel, viewed as an IP channel.
-	let output = reduction::verify_reduction::<F, C>(&gamma, table_n_vars, lookers, channel)?;
+	// Run the bare reduction over the same channel, viewed as an IP channel. The reduction takes a
+	// list of tables; this layer commits one pushforward, so it runs it over the one table.
+	let output = reduction::verify_reduction::<F, C>(
+		&gamma,
+		[reduction::TableLookup {
+			n_vars: table_n_vars,
+			lookers: lookers.to_vec(),
+		}],
+		channel,
+	)?;
+	let [table] = <[_; 1]>::try_from(output.tables)
+		.unwrap_or_else(|_| unreachable!("this layer runs the reduction over one table"));
 
 	// Open the pushforward relation through the channel; a deferring channel (e.g. BaseFold)
 	// batches it with every other queued relation in `finish()`.
@@ -95,13 +105,13 @@ where
 	channel.verify_oracle_relations([OracleLinearRelation {
 		oracle,
 		transparent: Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
-		claim: output.pushforward_eval_claim,
+		claim: table.pushforward_claim,
 	}])?;
 
 	Ok(LogupProof {
 		table_eval_point: output.table_eval_point,
-		table_eval_claim: output.table_eval_claim,
+		table_eval_claim: table.eval_claim,
 		index_eval_point: output.index_eval_point,
-		index_eval_claims: output.index_eval_claims,
+		index_eval_claims: table.index_eval_claims,
 	})
 }
