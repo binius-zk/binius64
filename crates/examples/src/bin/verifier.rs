@@ -51,8 +51,8 @@ fn main() -> Result<()> {
 	let pub_bytes = fs::read(&args.pub_witness_path).with_context(|| {
 		format!("Failed to read public values from {}", args.pub_witness_path.display())
 	})?;
-	let public = ValuesData::deserialize(&mut pub_bytes.as_slice())
-		.context("Failed to deserialize public ValuesData")?;
+	let inout = ValuesData::deserialize(&mut pub_bytes.as_slice())
+		.context("Failed to deserialize inout ValuesData")?;
 
 	// Read and deserialize proof
 	let proof_bytes = fs::read(&args.proof_path)
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
 
 	// Verify
 	verifier
-		.verify(public.as_slice(), &mut verifier_transcript)
+		.verify(inout.as_slice(), &mut verifier_transcript)
 		.context("Verification failed")?;
 	verifier_transcript
 		.finalize()

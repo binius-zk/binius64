@@ -808,9 +808,9 @@ where
 		}
 
 		if let Some(path) = pub_witness_path.as_deref() {
-			let data = ValuesData::from(witness.public());
+			let data = ValuesData::from(witness.inout());
 			write_serialized(&data, path)?;
-			tracing::info!("Public witness saved to '{}'", path);
+			tracing::info!("Inout witness saved to '{}'", path);
 		}
 
 		if let Some(path) = non_pub_data_path.as_deref() {

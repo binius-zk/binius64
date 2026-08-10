@@ -168,13 +168,13 @@ impl ConstraintSystem {
 		segment_start + index.index() as usize
 	}
 
-	/// Builds a value vector from the words of this system's public and hidden segments.
+	/// Builds a value vector from the inout values and the private values.
 	///
-	/// The words are the values as the circuit declares them, unpadded: the constants followed by
-	/// the inout values, then the private ones. The constant count splits the public words, which
-	/// is what resolves a [`ValueSegment::InOut`] index against the rebuilt vector.
-	pub fn value_vec_from_data(&self, public: &[Word], private: &[Word]) -> ValueVec {
-		ValueVec::new_from_data(self.n_const(), public, private)
+	/// The constants come from the system itself, so a caller supplies only what varies per
+	/// instance — the same split [`Self::validate`] enforces and the verifier takes.
+	pub fn value_vec_from_data(&self, inout: &[Word], private: &[Word]) -> ValueVec {
+		let public = [self.constants.as_slice(), inout].concat();
+		ValueVec::new_from_data(self.n_const(), &public, private)
 	}
 
 	/// Ensures that this constraint system is well-formed and ready for proving.
@@ -984,24 +984,25 @@ mod tests {
 	fn test_roundtrip_cs_and_witnesses_reconstruct_valuevec() {
 		let cs = test_shape();
 
-		// Build a value vector and fill every word with a deterministic pattern.
-		let public = (0..cs.n_public_words())
+		// Build a value vector and fill every per-instance word with a deterministic pattern. The
+		// constants come from the system, so they are not supplied here.
+		let inout = (0..cs.n_inout)
 			.map(|i| Word::from_u64(0xA5A5_5A5A ^ (i as u64 * 0x9E37_79B9)))
 			.collect::<Vec<_>>();
-		let private = (0..cs.n_hidden_words())
+		let private = (0..cs.n_private)
 			.map(|i| Word::from_u64(0x5A5A_A5A5 ^ (i as u64 * 0x9E37_79B9)))
 			.collect::<Vec<_>>();
-		let values = cs.value_vec_from_data(&public, &private);
+		let values = cs.value_vec_from_data(&inout, &private);
 
-		// Split into public and non-public witnesses and serialize all artifacts
-		let public_data = ValuesData::from(values.public());
+		// Serialize only what varies per instance, alongside the system itself
+		let inout_data = ValuesData::from(values.inout());
 		let non_public_data = ValuesData::from(values.non_public());
 
 		let mut buf_cs = Vec::new();
 		cs.serialize(&mut buf_cs).unwrap();
 
 		let mut buf_pub = Vec::new();
-		public_data.serialize(&mut buf_pub).unwrap();
+		inout_data.serialize(&mut buf_pub).unwrap();
 
 		let mut buf_non_pub = Vec::new();
 		non_public_data.serialize(&mut buf_non_pub).unwrap();
@@ -1010,8 +1011,8 @@ mod tests {
 		let cs2 = ConstraintSystem::deserialize(&mut buf_cs.as_slice()).unwrap();
 		let pub2 = ValuesData::deserialize(&mut buf_pub.as_slice()).unwrap();
 		let non_pub2 = ValuesData::deserialize(&mut buf_non_pub.as_slice()).unwrap();
-		assert_eq!(cs2.n_public_words(), pub2.len());
-		assert_eq!(cs2.n_hidden_words(), non_pub2.len());
+		assert_eq!(cs2.n_inout, pub2.len());
+		assert_eq!(cs2.n_private, non_pub2.len());
 
 		// Reconstruct ValueVec from deserialized pieces
 		let reconstructed = cs2.value_vec_from_data(&pub2, &non_pub2);
@@ -1083,11 +1084,14 @@ mod tests {
 			zero_constraints: vec![],
 			..test_shape()
 		};
+		// `value_vec_from_data` sources the constants from the system, so it cannot open one to
+		// the wrong word — the vector is built directly to inject the disagreement. A vector the
+		// circuit filled can still carry one, which is what `verify` guards against.
 		let mut public = [Word::ZERO; 8];
 		public[0] = Word::from_u64(1);
 		public[1] = Word::from_u64(42);
 		public[2] = Word::from_u64(0xBAADF00D);
-		let values = cs.value_vec_from_data(&public, &[Word::ZERO; 8]);
+		let values = ValueVec::new_from_data(cs.n_const(), &public, &[Word::ZERO; 8]);
 
 		match cs.verify(&values).unwrap_err() {
 			VerificationError::ConstantMismatch {

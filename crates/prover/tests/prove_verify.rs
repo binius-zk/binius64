@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
+	constraint_system::{ConstraintSystem, ValueSegment, ValueVec},
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
@@ -29,7 +29,7 @@ fn prove_verify(cs: ConstraintSystem, witness: &ValueVec) {
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	verifier
-		.verify(witness.public(), &mut verifier_transcript)
+		.verify(witness.inout(), &mut verifier_transcript)
 		.unwrap();
 	verifier_transcript.finalize().unwrap();
 }
@@ -49,7 +49,7 @@ fn prove_verify_zk(cs: ConstraintSystem, witness: &ValueVec) {
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	zk_verifier
-		.verify(witness.public(), &mut verifier_transcript)
+		.verify(witness.inout(), &mut verifier_transcript)
 		.unwrap();
 	verifier_transcript.finalize().unwrap();
 }
@@ -80,7 +80,7 @@ fn prove_verify_zk_serialized(cs: ConstraintSystem, witness: &ValueVec) {
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	zk_verifier
-		.verify(witness.public(), &mut verifier_transcript)
+		.verify(witness.inout(), &mut verifier_transcript)
 		.unwrap();
 	verifier_transcript.finalize().unwrap();
 }
@@ -410,14 +410,18 @@ fn test_prove_verify_rejects_violated_zero_constraint() {
 		.flat_map(|c| &c.0)
 		.flatten()
 		.map(|svi| svi.value_index)
-		.find(|index| !and_words.contains(index) && *index != ValueIndex::constant(0))
-		.expect("some ZERO constraint reads a word no AND constraint does");
+		// The rebuild below sources the constants from the system, so tampering with one would be
+		// undone; the victim has to be a word the caller supplies.
+		.find(|index| !and_words.contains(index) && index.segment() != ValueSegment::Constant)
+		.expect("some ZERO constraint reads a non-constant word no AND constraint does");
 
 	let mut words = witness.combined_witness().to_vec();
 	let victim_word = cs.word_offset(victim);
 	words[victim_word] = words[victim_word] ^ Word::ONE;
-	let corrupted =
-		cs.value_vec_from_data(&words[..cs.n_public_words()], &words[cs.n_public_words()..]);
+	let corrupted = cs.value_vec_from_data(
+		&words[cs.n_const()..cs.n_public_words()],
+		&words[cs.n_public_words()..],
+	);
 	assert!(cs.verify(&corrupted).is_err());
 
 	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
@@ -476,10 +480,10 @@ fn sign_verify(
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	let verify_ok = match verify_message {
 		Some(message) => zk_verifier
-			.verify_sig(witness.public(), message, &mut verifier_transcript)
+			.verify_sig(witness.inout(), message, &mut verifier_transcript)
 			.is_ok(),
 		None => zk_verifier
-			.verify(witness.public(), &mut verifier_transcript)
+			.verify(witness.inout(), &mut verifier_transcript)
 			.is_ok(),
 	};
 	verify_ok && verifier_transcript.finalize().is_ok()
