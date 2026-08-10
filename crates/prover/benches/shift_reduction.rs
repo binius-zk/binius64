@@ -315,7 +315,13 @@ fn bench_shift_phases(c: &mut Criterion) {
 		eval: gamma,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
-		run_phase_1_sumcheck::<F, P, _, _>(g.clone(), h.clone(), &mut transcript, &GlobalAllocator)
+		run_phase_1_sumcheck::<F, P, _, _>(
+			g.clone(),
+			h.clone(),
+			prepared.batched_eval(),
+			&mut transcript,
+			&GlobalAllocator,
+		)
 	};
 	// Split the phase-1 challenges into the bit position, the shift amount and the shift variant.
 	let r_v = r_j.split_off(Word::LOG_BITS * 2);
@@ -349,7 +355,13 @@ fn bench_shift_phases(c: &mut Criterion) {
 			|| (g.clone(), h.clone()),
 			|(g, h)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
-				run_phase_1_sumcheck::<F, P, _, _>(g, h, &mut transcript, &GlobalAllocator)
+				run_phase_1_sumcheck::<F, P, _, _>(
+					g,
+					h,
+					prepared.batched_eval(),
+					&mut transcript,
+					&GlobalAllocator,
+				)
 			},
 			BatchSize::SmallInput,
 		);

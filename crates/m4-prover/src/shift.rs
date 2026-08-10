@@ -78,7 +78,8 @@ where
 		*slot += *add;
 	}
 	let h = build_h::<F, F, _>(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
-	let phase_1_output = run_phase_1_sumcheck::<F, F, _, _>(g, h, channel, alloc);
+	let phase_1_output =
+		run_phase_1_sumcheck::<F, F, _, _>(g, h, prepared.batched_eval(), channel, alloc);
 
 	// Phase 2: split the phase-1 challenges into the bit position `r_j`, the shift amount `r_s`
 	// and the shift variant `r_v`, in increasing order of significance.
