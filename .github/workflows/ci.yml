@@ -5,6 +5,18 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
   merge_group:
+  # Cache warming only — main is already gated by the merge queue, so nothing here re-checks it.
+  #
+  # Actions restores a cache from the current ref, the base branch, and the default branch, but
+  # neither of the triggers above writes to main's scope: pull requests save to `refs/pull/<N>/merge`
+  # and merge-queue runs save to a `gh-readonly-queue` branch that is deleted immediately. With
+  # nothing on main to fall back to, every run compiles the workspace from scratch. A push run
+  # writes the entry both of them then restore.
+  #
+  # Only `rust-checks` participates, and only far enough to populate its cache; see the `if`
+  # conditions below.
+  push:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,6 +32,7 @@ concurrency:
 jobs:
   format:
     name: format
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
@@ -66,6 +79,15 @@ jobs:
             rustflags: "-Ctarget-cpu=native"
             test_args: "-E 'not package(binius-circuits)'"
     name: rust-checks-${{ matrix.arch.name }}
+    # This job also runs on pushes to main, where it stops after Compile and exists only to write a
+    # cache entry that pull-request and merge-queue runs can restore. The verification steps below
+    # are skipped there, since the merge queue already ran them on the same tree.
+    #
+    # The warming runs live inside this job rather than in a workflow of their own so that the cache
+    # keys match by construction. `Swatinem/rust-cache` derives the key from, among other things, the
+    # literal job id and every `CARGO*`/`RUST*` environment variable, so a separate workflow would
+    # have to restate the job id, the per-leg RUSTFLAGS and the workflow-level CARGO_* settings — and
+    # would silently stop matching the moment one of them is edited here.
     runs-on: ${{ matrix.arch.runner }}
     env:
       # Link with lld instead of the default ld.bfd: the rust-checks build links many test and
@@ -80,6 +102,7 @@ jobs:
         with:
           components: clippy
       - name: Install cargo-nextest
+        if: github.event_name != 'push'
         uses: taiki-e/install-action@v2.85.10
         with:
           tool: cargo-nextest
@@ -92,18 +115,23 @@ jobs:
       - name: Compile
         run: cargo build --workspace --lib --bins --tests --examples
       - name: Run platform diagnostics
+        if: github.event_name != 'push'
         run: cargo test -p binius-utils --features platform-diagnostics test_platform_diagnostics -- --nocapture
       - name: Run clippy
+        if: github.event_name != 'push'
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Run tests
+        if: github.event_name != 'push'
         run: cargo nextest run --workspace --no-fail-fast ${{ matrix.arch.test_args }}
       # Must run doctests separately, see https://github.com/nextest-rs/nextest/issues/16
       - name: Run doctests
+        if: github.event_name != 'push'
         run: cargo test --doc --workspace
 
   # Build against wasm32-unknown-unknown target to test that our libraries compile to wasm.
   wasm-vanilla-build:
     name: wasm-vanilla-build
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
@@ -117,6 +145,7 @@ jobs:
 
   wasm-tests:
     name: wasm-tests
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
@@ -134,6 +163,7 @@ jobs:
 
   rust-doc:
     name: rust-doc
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -149,6 +179,7 @@ jobs:
 
   circuits-snapshot:
     name: circuits-snapshot
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
