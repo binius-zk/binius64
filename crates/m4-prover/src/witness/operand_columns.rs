@@ -674,10 +674,10 @@ mod tests {
 
 	fn and_circuit() -> AndCircuit {
 		let builder = CircuitBuilder::new();
-		let x = builder.add_witness();
-		let y = builder.add_witness();
-		let w = builder.add_witness();
-		let z = builder.add_witness();
+		let x = builder.add_inout();
+		let y = builder.add_inout();
+		let w = builder.add_inout();
+		let z = builder.add_inout();
 		let and = builder.band(x, y);
 		let lhs = builder.bxor(and, w);
 		builder.assert_eq("z_eq_x_and_y_xor_w", lhs, z);
@@ -775,13 +775,13 @@ mod tests {
 		assert_eq!(b, b_ref);
 	}
 
-	// A circuit computing one unsigned 64×64→128 product, with both result words committed.
+	// A circuit computing one unsigned 64×64→128 product.
 	//
-	//     inputs : x, y   (witness)
-	//     gate   : (hi, lo) = imul(x, y)   → 1 IMUL constraint (+ 1 AND security check)
+	//     inputs  : x, y                     (inout)
+	//     outputs : hi, lo                   (promoted to inout)
+	//     gate    : (hi, lo) = imul(x, y)   → 1 IMUL constraint (+ 1 AND security check)
 	//
-	// `force_commit` makes `hi` and `lo` hidden words, so the IMUL operands read them from the
-	// table.
+	// The product words are inout, so the IMUL operands read them from the table's committed rows.
 	struct MulCircuit {
 		circuit: Circuit,
 		x: Wire,
@@ -790,11 +790,11 @@ mod tests {
 
 	fn mul_circuit() -> MulCircuit {
 		let builder = CircuitBuilder::new();
-		let x = builder.add_witness();
-		let y = builder.add_witness();
+		let x = builder.add_inout();
+		let y = builder.add_inout();
 		let (hi, lo) = builder.imul(x, y);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
+		builder.mark_inout(hi);
+		builder.mark_inout(lo);
 		MulCircuit {
 			circuit: builder.build(),
 			x,
@@ -859,14 +859,13 @@ mod tests {
 		}
 	}
 
-	// A circuit computing one GHASH-field product `(a_lo, a_hi) * (b_lo, b_hi)`, with both product
-	// words committed.
+	// A circuit computing one GHASH-field product `(a_lo, a_hi) * (b_lo, b_hi)`.
 	//
-	//     inputs : a_lo, a_hi, b_lo, b_hi   (witness)
-	//     gate   : (c_lo, c_hi) = bmul(a_lo, a_hi, b_lo, b_hi)   → 1 BMUL constraint
+	//     inputs  : a_lo, a_hi, b_lo, b_hi   (inout)
+	//     outputs : c_lo, c_hi               (promoted to inout)
+	//     gate    : (c_lo, c_hi) = bmul(a_lo, a_hi, b_lo, b_hi)   → 1 BMUL constraint
 	//
-	// `force_commit` makes `c_lo` and `c_hi` hidden words, so the BMUL operands read them from the
-	// table.
+	// The product words are inout, so the BMUL operands read them from the table's committed rows.
 	struct BinMulCircuit {
 		circuit: Circuit,
 		a_lo: Wire,
@@ -877,13 +876,13 @@ mod tests {
 
 	fn binmul_circuit() -> BinMulCircuit {
 		let builder = CircuitBuilder::new();
-		let a_lo = builder.add_witness();
-		let a_hi = builder.add_witness();
-		let b_lo = builder.add_witness();
-		let b_hi = builder.add_witness();
+		let a_lo = builder.add_inout();
+		let a_hi = builder.add_inout();
+		let b_lo = builder.add_inout();
+		let b_hi = builder.add_inout();
 		let (c_lo, c_hi) = builder.bmul(a_lo, a_hi, b_lo, b_hi);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		builder.mark_inout(c_lo);
+		builder.mark_inout(c_hi);
 		BinMulCircuit {
 			circuit: builder.build(),
 			a_lo,
