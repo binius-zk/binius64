@@ -47,7 +47,6 @@ struct Sha256Inputs {
 /// Builds a circuit for one two-lane SHA-256 compression and force-commits its output.
 ///
 /// Force-committing the output keeps the compression alive under dead-code elimination.
-/// The circuit has no inout wires, as the batch witness table requires.
 fn build_sha256_circuit() -> (Circuit, Sha256Inputs) {
 	let builder = CircuitBuilder::new();
 

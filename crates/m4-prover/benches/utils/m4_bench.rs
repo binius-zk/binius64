@@ -28,7 +28,7 @@ use criterion::{BenchmarkId, Criterion, Throughput};
 ///
 /// - `c`: the Criterion harness.
 /// - `group_name`: the benchmark group name.
-/// - `circuit`: the single-instance circuit; it must have no inout wires.
+/// - `circuit`: the single-instance circuit.
 /// - `log_instances`: base-2 logarithm of the instance count.
 /// - `log_inv_rate`: base-2 logarithm of the inverse Reed-Solomon rate.
 /// - `elements_per_instance`: primitives computed by one instance, used only for the throughput
@@ -37,7 +37,7 @@ use criterion::{BenchmarkId, Criterion, Throughput};
 ///
 /// # Panics
 ///
-/// Panics if the circuit has inout wires or IMUL constraints.
+/// Panics if the circuit has IMUL constraints.
 /// Panics if the correctness gate fails to verify.
 pub fn bench_m4_proving<F>(
 	c: &mut Criterion,

@@ -111,7 +111,6 @@ pub fn crc64_circuit() -> Crc64Circuit {
 /// The instance count is the number of tuples, which must be a power of two.
 /// Each instance's four message words are the corresponding tuple.
 /// Circuit evaluation derives the rest.
-/// The circuit has no inout wires, so it is admissible in the wire-major table.
 pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable {
 	let log_instances = inputs.len().ilog2() as usize;
 	ValueTable::populate(&c.circuit, log_instances, |i, filler| {

@@ -239,7 +239,7 @@ impl IOPVerifier {
 		// Reduce the operand claims to one witness evaluation.
 		let shift = shift::verify::<B128, _>(
 			cs,
-			InoutSegment::Public,
+			InoutSegment::Hidden,
 			&zero,
 			&bitand,
 			&intmul,
@@ -252,7 +252,7 @@ impl IOPVerifier {
 		// Their count need not be a power of two, so they are passed unpadded.
 		shift::check_eval::<B128, _>(
 			cs,
-			InoutSegment::Public,
+			InoutSegment::Hidden,
 			&cs.constants,
 			&zero,
 			&bitand,

@@ -272,17 +272,11 @@ mod tests {
 			let table = populate_crc64_witness(&c, &inputs);
 			let constants = &c.circuit.constraint_system().constants;
 
-			// The committed segment runs from the witness offset to the end of the value vector.
+			// The committed segment runs from the inout offset to the end of the value vector.
 			// Its length fixes the width of the word axis.
-			// The committed rows can run past the private values into the protocol's zero padding,
-			// which these fixtures have none of.
-			let offset = table.layout().offset_witness();
+			let offset = table.layout().offset_inout();
 			let n_committed = table.n_hidden_words();
-			assert_eq!(
-				n_committed,
-				table.layout().combined_len() - offset,
-				"fixture must have no padding"
-			);
+			assert_eq!(n_committed, table.layout().combined_len() - offset);
 			let log_committed = checked_log_2(n_committed);
 
 			// The instance-fold point, and a fresh point over the (bit, word) axes.
