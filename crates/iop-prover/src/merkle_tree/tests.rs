@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use core::slice;
+use std::num::NonZeroUsize;
 
 use binius_field::{
 	BinaryField128bGhash as B128, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
@@ -106,7 +107,7 @@ fn test_binary_merkle_vcs_verify_vector() {
 fn test_binary_merkle_vcs_hiding_commit_prove_open() {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let salt_len = 2;
+	let salt_len = NonZeroUsize::new(2).unwrap();
 	let mt_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::hiding(&mut rng, salt_len);
 
 	let data = random_scalars::<B128>(&mut rng, 16);
@@ -138,7 +139,7 @@ fn test_binary_merkle_vcs_hiding_commit_prove_open() {
 fn test_binary_merkle_vcs_hiding_verify_vector() {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let salt_len = 3;
+	let salt_len = NonZeroUsize::new(3).unwrap();
 	let mt_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::hiding(&mut rng, salt_len);
 
 	let data = random_scalars::<B128>(&mut rng, 8);
@@ -163,7 +164,7 @@ fn test_binary_merkle_vcs_hiding_verify_vector() {
 fn test_binary_merkle_vcs_hiding_prove_open_against_layer() {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let salt_len = 2;
+	let salt_len = NonZeroUsize::new(2).unwrap();
 	let mt_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::hiding(&mut rng, salt_len);
 
 	let data = random_scalars::<B128>(&mut rng, 32);
@@ -197,7 +198,7 @@ fn test_binary_merkle_vcs_hiding_prove_open_against_layer() {
 fn test_binary_merkle_vcs_hiding_batch_size() {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let salt_len = 1;
+	let salt_len = NonZeroUsize::new(1).unwrap();
 	let mt_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::hiding(&mut rng, salt_len);
 
 	let data = random_scalars::<B128>(&mut rng, 32);

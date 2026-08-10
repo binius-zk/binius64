@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, vec};
+use std::{iter, num::NonZeroUsize, vec};
 
 use binius_field::{
 	BinaryField, BinaryField128bGhash as B128, Field, PackedBinaryGhash1x128b, PackedField,
@@ -654,11 +654,14 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 
 /// Runs the FRI prover and returns the proof bytes along with the FRI params and Merkle scheme,
 /// so the caller can check the estimated proof size.
+///
+/// A non-zero `salt_len` runs the whole protocol with a hiding Merkle scheme.
 fn generate_fri_proof<F, P>(
 	log_dimension: usize,
 	log_inv_rate: usize,
 	log_batch_size: usize,
 	arities: &[usize],
+	salt_len: usize,
 ) -> (Vec<u8>, FRIParams<F>, binius_iop::merkle_tree::BinaryMerkleTreeScheme<F, StdHashSuite>)
 where
 	F: BinaryField,
@@ -680,11 +683,20 @@ where
 
 	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref());
 
+	let salt_len = NonZeroUsize::new(salt_len);
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-	let mut prover_channel =
-		ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+	let mut prover_channel = match salt_len {
+		Some(salt_len) => {
+			ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::hiding(
+				&mut prover_transcript,
+				&mut rng,
+				salt_len,
+			)
+		}
+		None => ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
 			&mut prover_transcript,
-		);
+		),
+	};
 	let codeword_commitment =
 		prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
 
@@ -701,7 +713,10 @@ where
 	round_prover.finish_proof(&mut prover_channel);
 	drop(prover_channel);
 
-	let scheme = binius_iop::merkle_tree::BinaryMerkleTreeScheme::new();
+	let scheme = match salt_len {
+		Some(salt_len) => binius_iop::merkle_tree::BinaryMerkleTreeScheme::hiding(salt_len),
+		None => binius_iop::merkle_tree::BinaryMerkleTreeScheme::new(),
+	};
 	let proof_bytes = prover_transcript.finalize();
 	(proof_bytes, params, scheme)
 }
@@ -709,18 +724,28 @@ where
 #[test]
 fn test_proof_size_higher_arity() {
 	let (proof_bytes, params, scheme) =
-		generate_fri_proof::<B128, PackedBinaryGhash1x128b>(8, 2, 0, &[3, 2, 1]);
+		generate_fri_proof::<B128, PackedBinaryGhash1x128b>(8, 2, 0, &[3, 2, 1], 0);
 	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
 }
 
 #[test]
 fn test_proof_size_interleaved() {
-	let (proof_bytes, params, scheme) = generate_fri_proof::<B128, Packed128b>(6, 2, 2, &[3, 2, 1]);
+	let (proof_bytes, params, scheme) =
+		generate_fri_proof::<B128, Packed128b>(6, 2, 2, &[3, 2, 1], 0);
 	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
 }
 
 #[test]
 fn test_proof_size_no_folding() {
-	let (proof_bytes, params, scheme) = generate_fri_proof::<B128, Packed128b>(4, 2, 2, &[]);
+	let (proof_bytes, params, scheme) = generate_fri_proof::<B128, Packed128b>(4, 2, 2, &[], 0);
+	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
+}
+
+#[test]
+fn test_proof_size_hiding() {
+	// A hiding scheme adds one salt per opened leaf, plus one per leaf of the terminal codeword,
+	// so the estimate is only exact if `proof_size` counts both.
+	let (proof_bytes, params, scheme) =
+		generate_fri_proof::<B128, Packed128b>(6, 2, 2, &[3, 2, 1], 3);
 	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
 }

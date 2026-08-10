@@ -12,9 +12,7 @@ use crate::merkle_tree::MerkleTreeScheme;
 /// - **Message channel**: the initial codeword commitment and all round commitments (digests
 ///   observed by Fiat-Shamir).
 /// - **Decommitment channel**: the terminal codeword, Merkle layer digests, per-query branch
-///   digests, and per-query coset field values.
-///
-/// The estimate assumes non-hiding proofs (salt_len = 0).
+///   digests, per-query coset field values, and any Merkle salt a hiding scheme adds.
 pub fn proof_size<F, VCS>(params: &FRIParams<F>, vcs: &VCS) -> usize
 where
 	F: BinaryField,
@@ -23,13 +21,7 @@ where
 	let digest_size = std::mem::size_of::<VCS::Digest>();
 
 	// Serialized byte-size of a single field element.
-	let value_size = {
-		let mut buf = Vec::new();
-		F::default()
-			.serialize(&mut buf)
-			.expect("default element can be serialized to a resizable buffer");
-		buf.len()
-	};
+	let value_size = F::BYTE_SIZE;
 
 	let n_test_queries = params.n_test_queries();
 
@@ -68,6 +60,10 @@ where
 		log_n_cosets -= arity;
 		open(log_n_cosets, arity);
 	}
+
+	// The terminal codeword is never queried, but it is decommitted in full, which under a hiding
+	// scheme reveals the salt of each of its `2^log_inv_rate` leaves.
+	merkle_sizes += vcs.vector_proof_size(1 << log_inv_rate);
 
 	commitment_msg_size + terminate_codeword_size + merkle_sizes + coset_values_size
 }

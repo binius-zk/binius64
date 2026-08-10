@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::sync::Mutex;
+use std::{num::NonZeroUsize, sync::Mutex};
 
 use binius_field::Field;
 use binius_hash::binary_merkle_tree::{self, BinaryMerkleTree, HashSuite};
@@ -22,6 +22,7 @@ pub struct BinaryMerkleTreeProver<T, H: HashSuite> {
 }
 
 impl<T, H: HashSuite> BinaryMerkleTreeProver<T, H> {
+	/// Constructs a non-hiding prover.
 	pub fn new() -> Self {
 		Self {
 			scheme: BinaryMerkleTreeScheme::new(),
@@ -30,7 +31,8 @@ impl<T, H: HashSuite> BinaryMerkleTreeProver<T, H> {
 		}
 	}
 
-	pub fn hiding(mut rng: impl CryptoRng, salt_len: usize) -> Self {
+	/// Constructs a hiding prover, salting each leaf with `salt_len` values drawn from `rng`.
+	pub fn hiding(mut rng: impl CryptoRng, salt_len: NonZeroUsize) -> Self {
 		Self {
 			scheme: BinaryMerkleTreeScheme::hiding(salt_len),
 			salt_rng: Mutex::new(StdRng::from_rng(&mut rng)),

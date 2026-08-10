@@ -11,7 +11,7 @@
 //! opening proofs are written as unobserved decommitment advice bound to the already-observed
 //! roots.
 
-use std::{borrow::BorrowMut, marker::PhantomData};
+use std::{borrow::BorrowMut, marker::PhantomData, num::NonZeroUsize};
 
 use binius_field::{Field, PackedField};
 use binius_hash::binary_merkle_tree::{BinaryMerkleTree, HashSuite};
@@ -100,7 +100,7 @@ impl<T, Challenger_, F, H: HashSuite> ProverMerkleTranscriptChannel<T, Challenge
 
 	/// Constructs a channel over the transcript with a hiding Merkle tree prover, salting each
 	/// leaf with `salt_len` random field elements drawn from `rng`.
-	pub fn hiding(transcript: T, rng: impl CryptoRng, salt_len: usize) -> Self {
+	pub fn hiding(transcript: T, rng: impl CryptoRng, salt_len: NonZeroUsize) -> Self {
 		Self::with_merkle_prover(transcript, BinaryMerkleTreeProver::hiding(rng, salt_len))
 	}
 
@@ -240,6 +240,8 @@ where
 
 #[cfg(test)]
 mod tests {
+	use std::num::NonZeroUsize;
+
 	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash2x128b};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
@@ -310,7 +312,7 @@ mod tests {
 	#[test]
 	fn test_merkle_channel_roundtrip_hiding() {
 		let mut rng = StdRng::seed_from_u64(0);
-		let salt_len = 2;
+		let salt_len = NonZeroUsize::new(2).unwrap();
 
 		let scalars = random_scalars::<B128>(&mut rng, 1 << LOG_LEN);
 		let data = FieldBuffer::<P, _>::from_values(&scalars);
