@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! linear expression graph.
 
 use binius_core::constraint_system::Shift;
@@ -15,16 +16,17 @@ pub enum ConstraintRef {
 	And { index: usize },
 	Imul { index: usize },
 	Bmul { index: usize },
+	Zero { index: usize },
 	Linear { index: usize },
 }
 
 /// Represents the different types of nodes in the Linear Expression Graph.
 #[derive(Debug)]
 pub enum NodeData {
-	/// Root node - represents a use site in a non-linear constraint.
+	/// Root node - represents a use site in a constraint that defines no wire.
 	///
 	/// These nodes are the "sinks" of the graph where linear expressions flow into
-	/// non-linear constraints (AND/IMUL). They have no outgoing edges and represent
+	/// AND/IMUL/BMUL/ZERO constraints. They have no outgoing edges and represent
 	/// the termination points for inlining decisions.
 	///
 	/// # Example
@@ -289,8 +291,8 @@ impl LeGraph {
 		}
 	}
 
-	/// Notes a use of a wire of a linear producer by a non-linear user.
-	fn note_nonlinear_use(&mut self, producer: Wire, shift: Shift, constraint: ConstraintRef) {
+	/// Notes a use of a wire of a linear producer by a user that defines no wire.
+	fn note_root_use(&mut self, producer: Wire, shift: Shift, constraint: ConstraintRef) {
 		let node_p = self.node_of(producer);
 		let root_node = self.pg.add_node(NodeData::Root { constraint });
 		self.roots.push(root_node);
@@ -315,32 +317,36 @@ fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph) {
 	}
 
 	for (index, and) in cb.and_constraints.iter().enumerate() {
-		harvest_nonlin_uses(&and.a, leg, ConstraintRef::And { index });
-		harvest_nonlin_uses(&and.b, leg, ConstraintRef::And { index });
-		harvest_nonlin_uses(&and.c, leg, ConstraintRef::And { index });
+		harvest_root_uses(&and.a, leg, ConstraintRef::And { index });
+		harvest_root_uses(&and.b, leg, ConstraintRef::And { index });
+		harvest_root_uses(&and.c, leg, ConstraintRef::And { index });
 	}
 
 	for (index, mul) in cb.imul_constraints.iter().enumerate() {
-		harvest_nonlin_uses(&mul.a, leg, ConstraintRef::Imul { index });
-		harvest_nonlin_uses(&mul.b, leg, ConstraintRef::Imul { index });
-		harvest_nonlin_uses(&mul.hi, leg, ConstraintRef::Imul { index });
-		harvest_nonlin_uses(&mul.lo, leg, ConstraintRef::Imul { index });
+		harvest_root_uses(&mul.a, leg, ConstraintRef::Imul { index });
+		harvest_root_uses(&mul.b, leg, ConstraintRef::Imul { index });
+		harvest_root_uses(&mul.hi, leg, ConstraintRef::Imul { index });
+		harvest_root_uses(&mul.lo, leg, ConstraintRef::Imul { index });
 	}
 
 	for (index, mul) in cb.bmul_constraints.iter().enumerate() {
-		harvest_nonlin_uses(&mul.a_lo, leg, ConstraintRef::Bmul { index });
-		harvest_nonlin_uses(&mul.a_hi, leg, ConstraintRef::Bmul { index });
-		harvest_nonlin_uses(&mul.b_lo, leg, ConstraintRef::Bmul { index });
-		harvest_nonlin_uses(&mul.b_hi, leg, ConstraintRef::Bmul { index });
-		harvest_nonlin_uses(&mul.c_lo, leg, ConstraintRef::Bmul { index });
-		harvest_nonlin_uses(&mul.c_hi, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(&mul.a_lo, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(&mul.a_hi, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(&mul.b_lo, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(&mul.b_hi, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(&mul.c_lo, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(&mul.c_hi, leg, ConstraintRef::Bmul { index });
+	}
+
+	for (index, zero) in cb.zero_constraints.iter().enumerate() {
+		harvest_root_uses(&zero.val, leg, ConstraintRef::Zero { index });
 	}
 }
 
-fn harvest_nonlin_uses(operand: &WireOperand, leg: &mut LeGraph, constraint: ConstraintRef) {
+fn harvest_root_uses(operand: &WireOperand, leg: &mut LeGraph, constraint: ConstraintRef) {
 	for term in operand {
 		if leg.is_lin_def(term.wire) {
-			leg.note_nonlinear_use(term.wire, term.shift, constraint);
+			leg.note_root_use(term.wire, term.shift, constraint);
 		}
 	}
 }

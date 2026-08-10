@@ -114,6 +114,28 @@ impl WireBmulConstraint {
 	}
 }
 
+/// Zero constraint `VAL == 0`, over a wire operand.
+///
+/// This is an assertion, so it defines no wire. Gate fusion inlines definitions into it the way it
+/// inlines them into an AND operand, but never reads it as a definition of anything.
+pub struct WireZeroConstraint {
+	/// XOR of shifted values that must vanish.
+	pub val: WireOperand,
+}
+
+impl WireZeroConstraint {
+	pub(super) fn into_constraint(
+		self,
+		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
+	) -> ZeroConstraint {
+		ZeroConstraint([self.val.into_value_indices(wire_mapping)])
+	}
+
+	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
+		self.val.mark_used(used_set);
+	}
+}
+
 /// Linear constraint `RHS == DST`, over a wire operand and a destination wire.
 pub struct WireLinearConstraint {
 	/// XOR of shifted values that must equal `dst`.

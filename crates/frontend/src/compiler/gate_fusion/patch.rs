@@ -8,7 +8,7 @@ use crate::compiler::{
 	Wire,
 	constraint_builder::{
 		ConstraintBuilder, ShiftedWire, WireAndConstraint, WireBmulConstraint, WireImulConstraint,
-		WireLinearConstraint, WireOperand,
+		WireLinearConstraint, WireOperand, WireZeroConstraint,
 	},
 	gate_fusion::legraph::ConstraintRef,
 };
@@ -30,6 +30,7 @@ enum AddedConstraint {
 	And(WireAndConstraint),
 	Imul(WireImulConstraint),
 	Bmul(WireBmulConstraint),
+	Zero(WireZeroConstraint),
 	/// A committed linear definition, kept linear so that
 	/// [`ConstraintBuilder::build`](crate::compiler::constraint_builder::ConstraintBuilder::build)
 	/// picks its lowering.
@@ -43,11 +44,13 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	let mut subsumed_and = vec![false; cb.and_constraints.len()];
 	let mut subsumed_imul = vec![false; cb.imul_constraints.len()];
 	let mut subsumed_bmul = vec![false; cb.bmul_constraints.len()];
+	let mut subsumed_zero = vec![false; cb.zero_constraints.len()];
 	let mut subsumed_linear = vec![false; cb.linear_constraints.len()];
 
 	let mut new_and_constraints = Vec::new();
 	let mut new_imul_constraints = Vec::new();
 	let mut new_bmul_constraints = Vec::new();
+	let mut new_zero_constraints = Vec::new();
 	let mut new_linear_constraints = Vec::new();
 
 	// Collect all subsumed constraints and new constraints to add.
@@ -58,6 +61,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 				ConstraintRef::And { index } => subsumed_and[index] = true,
 				ConstraintRef::Imul { index } => subsumed_imul[index] = true,
 				ConstraintRef::Bmul { index } => subsumed_bmul[index] = true,
+				ConstraintRef::Zero { index } => subsumed_zero[index] = true,
 				ConstraintRef::Linear { index } => subsumed_linear[index] = true,
 			}
 		}
@@ -65,6 +69,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 			AddedConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
 			AddedConstraint::Imul(imul_constraint) => new_imul_constraints.push(imul_constraint),
 			AddedConstraint::Bmul(bmul_constraint) => new_bmul_constraints.push(bmul_constraint),
+			AddedConstraint::Zero(zero_constraint) => new_zero_constraints.push(zero_constraint),
 			AddedConstraint::Linear(linear_constraint) => {
 				new_linear_constraints.push(linear_constraint)
 			}
@@ -75,12 +80,14 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	retain_unsubsumed(&mut cb.and_constraints, &subsumed_and);
 	retain_unsubsumed(&mut cb.imul_constraints, &subsumed_imul);
 	retain_unsubsumed(&mut cb.bmul_constraints, &subsumed_bmul);
+	retain_unsubsumed(&mut cb.zero_constraints, &subsumed_zero);
 	retain_unsubsumed(&mut cb.linear_constraints, &subsumed_linear);
 
 	// Add the new constraints
 	cb.and_constraints.extend(new_and_constraints);
 	cb.imul_constraints.extend(new_imul_constraints);
 	cb.bmul_constraints.extend(new_bmul_constraints);
+	cb.zero_constraints.extend(new_zero_constraints);
 	cb.linear_constraints.extend(new_linear_constraints);
 }
 
@@ -100,7 +107,7 @@ fn retain_unsubsumed<T>(constraints: &mut Vec<T>, subsumed: &[bool]) {
 /// NB: patches may have overlapping subsumes.
 pub fn build(cb: &ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
 	let mut patches = vec![];
-	build_non_linear_patches(cb, leg, &mut patches);
+	build_root_patches(cb, leg, &mut patches);
 	for committed in leg.commit_set().iter() {
 		let patch = build_committed_lin_def_patch(cb, leg, committed);
 		patches.push(patch);
@@ -108,8 +115,8 @@ pub fn build(cb: &ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
 	patches
 }
 
-/// Collect patches for the non-linear constraints that inline linear definitions.
-fn build_non_linear_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<Patch>) {
+/// Collect patches for the root constraints that inline linear definitions.
+fn build_root_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<Patch>) {
 	// Collect *distinct* constraint references for each root constraint.
 	let mut constraints = Vec::with_capacity(leg.roots.len());
 	for root in leg.roots.iter() {
@@ -120,16 +127,12 @@ fn build_non_linear_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut
 
 	// Create a patch for each distinct constraint.
 	for constraint_ref in constraints {
-		let patch = build_non_lin_patch(cb, leg, constraint_ref);
+		let patch = build_root_patch(cb, leg, constraint_ref);
 		patches.push(patch);
 	}
 }
 
-fn build_non_lin_patch(
-	cb: &ConstraintBuilder,
-	leg: &LeGraph,
-	constraint_ref: ConstraintRef,
-) -> Patch {
+fn build_root_patch(cb: &ConstraintBuilder, leg: &LeGraph, constraint_ref: ConstraintRef) -> Patch {
 	let mut subsumes = vec![constraint_ref];
 
 	let new_constraint = match constraint_ref {
@@ -162,6 +165,10 @@ fn build_non_lin_patch(
 				c_lo,
 				c_hi,
 			})
+		}
+		ConstraintRef::Zero { index } => {
+			let val = process_operand(cb, leg, &mut subsumes, &cb.zero_constraints[index].val);
+			AddedConstraint::Zero(WireZeroConstraint { val })
 		}
 		ConstraintRef::Linear { .. } => unreachable!(),
 	};
