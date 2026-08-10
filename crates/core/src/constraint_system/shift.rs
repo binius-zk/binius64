@@ -168,6 +168,15 @@ impl ShiftVariant {
 		)
 	}
 
+	/// Whether this variant wraps the bits it moves out, rather than discarding them.
+	///
+	/// A cyclic variant loses nothing, so any two of its shifts compose however far they move;
+	/// every other variant drops what it carries past the end.
+	#[inline]
+	pub const fn is_cyclic(self) -> bool {
+		matches!(self, ShiftVariant::Rotr | ShiftVariant::Rotr32)
+	}
+
 	/// The exclusive upper bound on a valid shift amount for this variant.
 	///
 	/// - Half-word (`*32`) variants read only the lower 5 bits, so amounts run `0..32`.
@@ -333,11 +342,10 @@ impl Shift {
 	///
 	/// Panics if the amount is not below the variant's [`max_amount`](ShiftVariant::max_amount):
 	/// 32 for the half-word (`*32`) variants, 64 for the rest.
-	pub fn new(variant: ShiftVariant, amount: usize) -> Self {
-		assert!(
-			amount < variant.max_amount(),
-			"shift amount n={amount} out of range for {variant:?}"
-		);
+	pub const fn new(variant: ShiftVariant, amount: usize) -> Self {
+		// A const context cannot format, so the amount and variant are left to the panic location
+		// rather than spelled into the message.
+		assert!(amount < variant.max_amount(), "shift amount out of range for this variant");
 		Self {
 			variant,
 			// An amount below 64 always fits in the byte-sized field.
@@ -349,7 +357,7 @@ impl Shift {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn sll(amount: usize) -> Self {
+	pub const fn sll(amount: usize) -> Self {
 		Self::new(ShiftVariant::Sll, amount)
 	}
 
@@ -357,7 +365,7 @@ impl Shift {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn srl(amount: usize) -> Self {
+	pub const fn srl(amount: usize) -> Self {
 		Self::new(ShiftVariant::Slr, amount)
 	}
 
@@ -368,7 +376,7 @@ impl Shift {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn sar(amount: usize) -> Self {
+	pub const fn sar(amount: usize) -> Self {
 		Self::new(ShiftVariant::Sar, amount)
 	}
 
@@ -378,7 +386,7 @@ impl Shift {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn rotr(amount: usize) -> Self {
+	pub const fn rotr(amount: usize) -> Self {
 		Self::new(ShiftVariant::Rotr, amount)
 	}
 
@@ -388,7 +396,7 @@ impl Shift {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn sll32(amount: usize) -> Self {
+	pub const fn sll32(amount: usize) -> Self {
 		Self::new(ShiftVariant::Sll32, amount)
 	}
 
@@ -398,7 +406,7 @@ impl Shift {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn srl32(amount: usize) -> Self {
+	pub const fn srl32(amount: usize) -> Self {
 		Self::new(ShiftVariant::Srl32, amount)
 	}
 
@@ -409,7 +417,7 @@ impl Shift {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn sra32(amount: usize) -> Self {
+	pub const fn sra32(amount: usize) -> Self {
 		Self::new(ShiftVariant::Sra32, amount)
 	}
 
@@ -419,7 +427,7 @@ impl Shift {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn rotr32(amount: usize) -> Self {
+	pub const fn rotr32(amount: usize) -> Self {
 		Self::new(ShiftVariant::Rotr32, amount)
 	}
 
@@ -661,7 +669,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn sll(value_index: ValueIndex, amount: usize) -> Self {
+	pub const fn sll(value_index: ValueIndex, amount: usize) -> Self {
 		Self {
 			value_index,
 			shift: Shift::sll(amount),
@@ -672,7 +680,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn srl(value_index: ValueIndex, amount: usize) -> Self {
+	pub const fn srl(value_index: ValueIndex, amount: usize) -> Self {
 		Self {
 			value_index,
 			shift: Shift::srl(amount),
@@ -686,7 +694,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn sar(value_index: ValueIndex, amount: usize) -> Self {
+	pub const fn sar(value_index: ValueIndex, amount: usize) -> Self {
 		Self {
 			value_index,
 			shift: Shift::sar(amount),
@@ -699,7 +707,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
-	pub fn rotr(value_index: ValueIndex, amount: usize) -> Self {
+	pub const fn rotr(value_index: ValueIndex, amount: usize) -> Self {
 		Self {
 			value_index,
 			shift: Shift::rotr(amount),
@@ -713,7 +721,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn sll32(value_index: ValueIndex, amount: usize) -> Self {
+	pub const fn sll32(value_index: ValueIndex, amount: usize) -> Self {
 		Self {
 			value_index,
 			shift: Shift::sll32(amount),
@@ -727,7 +735,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn srl32(value_index: ValueIndex, amount: usize) -> Self {
+	pub const fn srl32(value_index: ValueIndex, amount: usize) -> Self {
 		Self {
 			value_index,
 			shift: Shift::srl32(amount),
@@ -742,7 +750,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn sra32(value_index: ValueIndex, amount: usize) -> Self {
+	pub const fn sra32(value_index: ValueIndex, amount: usize) -> Self {
 		Self {
 			value_index,
 			shift: Shift::sra32(amount),
@@ -756,7 +764,7 @@ impl ShiftedValueIndex {
 	///
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
-	pub fn rotr32(value_index: ValueIndex, amount: usize) -> Self {
+	pub const fn rotr32(value_index: ValueIndex, amount: usize) -> Self {
 		Self {
 			value_index,
 			shift: Shift::rotr32(amount),
