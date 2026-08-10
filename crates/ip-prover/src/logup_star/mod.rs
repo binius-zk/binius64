@@ -32,6 +32,6 @@ mod prove;
 mod pushforward;
 pub mod witness;
 
-pub use binius_ip::logup_star::LogupOutput;
+pub use binius_ip::logup_star::{LogupOutput, LogupTableOutput};
 
 pub use self::prove::{Looker, TableLookup, prove, prove_reduction};

@@ -8,7 +8,7 @@ use binius_field::{BinaryField, BinaryField1b, ExtensionField, Field, field::Fie
 use binius_iop::{channel::IOPVerifierChannel, logup_star};
 use binius_ip::{
 	channel::IPVerifierChannel,
-	logup_star::LookerClaim,
+	logup_star::{LookerClaim, TableLookup},
 	prodcheck::{self, MultilinearEvalClaim},
 	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
@@ -283,16 +283,27 @@ where
 		})
 		.collect::<Vec<_>>();
 	let log_cols = log2_ceil_usize(N_LIMB_COLUMNS);
-	let logup_proof = logup_star::verify::<F, C>(LIMB_BITS, &looker_claims, channel)?;
+	// Every limb column reads the one shared power table, so the reduction runs over a single-table
+	// list and returns a single table claim.
+	let logup_proof = logup_star::verify::<F, C>(
+		[TableLookup {
+			n_vars: LIMB_BITS,
+			lookers: looker_claims,
+		}],
+		channel,
+	)?;
+	let [table_output] = logup_proof.tables.as_slice() else {
+		unreachable!("the reduction runs over the one power table")
+	};
 
 	// The table is succinct: the verifier evaluates its MLE directly.
 	let expected_table_eval = eval_power_table_mle::<F, C::Elem>(&logup_proof.table_eval_point);
-	channel.assert_zero(expected_table_eval - logup_proof.table_eval_claim)?;
+	channel.assert_zero(expected_table_eval - table_output.eval_claim.clone())?;
 
 	// The reduction hands back the per-column embedded-index claims directly, all at the shared
 	// content point (padding columns read row 0, whose embedding is zero).
 	let index_content_point = logup_proof.index_eval_point.as_slice();
-	let mut padded_column_evals = logup_proof.index_eval_claims.clone();
+	let mut padded_column_evals = table_output.index_eval_claims.clone();
 	padded_column_evals.resize(1 << log_cols, C::Elem::zero());
 
 	// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by sampling
