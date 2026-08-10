@@ -200,14 +200,23 @@ where
 		MerkleScheme: MerkleTreeScheme<F>,
 		Strategy: AritySelectionStrategy,
 	{
-		let (log_batch_size, fold_arities) = choose_batch_size_and_arities::<F, _, _>(
+		assert!(log_batch_size.is_none_or(|b| b <= log_msg_len)); // precondition
+
+		let mut fold_arities = strategy.choose_arities::<F, _>(
 			merkle_scheme,
-			log_msg_len,
-			log_batch_size,
+			log_msg_len - log_batch_size.unwrap_or(0),
 			log_inv_rate,
 			n_test_queries,
-			strategy,
 		);
+		// Without a fixed batch size, the first chosen arity becomes the batch size.
+		let log_batch_size = log_batch_size.unwrap_or_else(|| {
+			// Edge case: no folds were chosen, so batch down to a log_dim = 0 code.
+			if fold_arities.is_empty() {
+				log_msg_len
+			} else {
+				fold_arities.remove(0)
+			}
+		});
 
 		let log_dim = log_msg_len - log_batch_size;
 		let rs_code =
@@ -318,48 +327,6 @@ where
 	/// together, so it equals [`Self::n_fold_rounds`].
 	pub const fn log_msg_len(&self) -> usize {
 		self.max_log_msg_len + self.log_n_oracles
-	}
-}
-
-fn choose_batch_size_and_arities<F, MerkleScheme, Strategy>(
-	merkle_scheme: &MerkleScheme,
-	log_msg_len: usize,
-	log_batch_size: Option<usize>,
-	log_inv_rate: usize,
-	n_test_queries: usize,
-	strategy: &Strategy,
-) -> (usize, Vec<usize>)
-where
-	F: BinaryField,
-	MerkleScheme: MerkleTreeScheme<F>,
-	Strategy: AritySelectionStrategy,
-{
-	match log_batch_size {
-		Some(log_batch_size) => {
-			assert!(log_batch_size <= log_msg_len); // precondition
-			let fold_arities = strategy.choose_arities::<F, _>(
-				merkle_scheme,
-				log_msg_len - log_batch_size,
-				log_inv_rate,
-				n_test_queries,
-			);
-			(log_batch_size, fold_arities)
-		}
-		None => {
-			let mut fold_arities = strategy.choose_arities::<F, _>(
-				merkle_scheme,
-				log_msg_len,
-				log_inv_rate,
-				n_test_queries,
-			);
-			let log_batch_size = if !fold_arities.is_empty() {
-				fold_arities.remove(0)
-			} else {
-				// Edge case: fold to log_dim = 0 code.
-				log_msg_len
-			};
-			(log_batch_size, fold_arities)
-		}
 	}
 }
 
