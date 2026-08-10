@@ -179,22 +179,22 @@ mod tests {
 
 		assert!(
 			val.iter()
-				.any(|svi| svi.value_index == ValueIndex::private(0) && svi.amount == 0),
+				.any(|svi| svi.value_index == ValueIndex::private(0) && svi.shift.amount == 0),
 			"plain(a) from rotr(a, 0)"
 		);
 		assert!(
 			val.iter().any(|svi| {
 				svi.value_index == ValueIndex::private(1)
-					&& svi.amount == 5
-					&& matches!(svi.shift_variant, ShiftVariant::Sll)
+					&& svi.shift.amount == 5
+					&& matches!(svi.shift.variant, ShiftVariant::Sll)
 			}),
 			"native sll(b, 5)"
 		);
 		assert!(
 			val.iter().any(|svi| {
 				svi.value_index == ValueIndex::private(0)
-					&& svi.amount == 12
-					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
+					&& svi.shift.amount == 12
+					&& matches!(svi.shift.variant, ShiftVariant::Rotr)
 			}),
 			"native rotr(a, 12)"
 		);

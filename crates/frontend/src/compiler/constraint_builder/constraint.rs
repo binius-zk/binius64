@@ -194,12 +194,12 @@ mod tests {
 		assert!(
 			bc.c_hi()
 				.iter()
-				.any(|svi| svi.value_index == ValueIndex::private(5) && svi.amount == 0)
+				.any(|svi| svi.value_index == ValueIndex::private(5) && svi.shift.amount == 0)
 		);
 		assert!(bc.c_hi().iter().any(|svi| {
 			svi.value_index == ValueIndex::private(6)
-				&& svi.amount == 5
-				&& matches!(svi.shift_variant, ShiftVariant::Sll)
+				&& svi.shift.amount == 5
+				&& matches!(svi.shift.variant, ShiftVariant::Sll)
 		}));
 	}
 }

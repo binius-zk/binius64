@@ -358,16 +358,11 @@ fn update_with_operand(
 ) {
 	for (constraint_idx, operand_value) in operand_values.enumerate() {
 		// Each operand value is a Vec<ShiftedValueIndex> - multiple shifted word references
-		for ShiftedValueIndex {
-			value_index,
-			shift_variant,
-			amount,
-		} in operand_value.as_ref()
-		{
+		for ShiftedValueIndex { value_index, shift } in operand_value.as_ref() {
 			// The lists are indexed by word position, so resolve the term's segment-relative
 			// index against the segment starts.
 			let builder_keys = &mut builder_key_lists[cs.word_offset(*value_index)];
-			let shift = (*shift_variant, *amount);
+			let shift = (shift.variant, shift.amount);
 
 			// Find existing builder key or create a new one for this (operation, shift) pair
 			let constraint_index = ConstraintIndex {
