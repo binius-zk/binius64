@@ -14,8 +14,13 @@ pub struct LogupOutput<F> {
 	pub table_eval_claim: F,
 	/// The claimed evaluation of the pushforward multilinear `Y` at the table point.
 	pub pushforward_eval_claim: F,
-	/// The `n`-coordinate point shared by the index evaluation claims.
+	/// The point the index evaluation claims are drawn from, of `max_j n_j` coordinates.
+	///
+	/// Looker `j`, whose column has `n_j` variables, is claimed at the **last `n_j`** coordinates.
+	/// Lookers of equal length therefore all share the whole point; a shorter looker's point is a
+	/// suffix of a longer one's, because the batch pads each instance at its low coordinates.
 	pub index_eval_point: Vec<F>,
-	/// The claimed evaluations of the per-looker index multilinears `I_j` at the index point.
+	/// The claimed evaluations of the per-looker index multilinears `I_j`, each at its own suffix
+	/// of [`Self::index_eval_point`].
 	pub index_eval_claims: Vec<F>,
 }

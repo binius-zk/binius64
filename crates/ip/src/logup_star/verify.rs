@@ -2,7 +2,7 @@
 
 //! The top-level logUp* verification routine.
 
-use std::iter;
+use std::{iter, slice};
 
 use binius_field::{BinaryField1b, ExtensionField, Field, field::FieldOps, util::powers};
 use binius_math::{
@@ -39,12 +39,16 @@ pub struct LookerClaim<'a, Elem> {
 /// `gamma^j`, the pushforward is the gamma-weighted sum of the per-looker pushforwards, and the
 /// product check binds `<T, Y>` to the gamma-combination of the claims.
 ///
-/// Every fractional-addition circuit — one per looker over `n` variables, plus the table's over
-/// `m` — is an instance of **one** GKR of `k + max(n, m)` layers, where
-/// `k = ceil(log2(#lookers + 1))`. Its top `k` layers add the per-instance root fractions
-/// together and its lower `max(n, m)` run the instances in a batch, with the shallower side padded
-/// by zero fractions — that leaves a fractional sum unchanged and costs `O(1)` per round, so the
-/// layer count depends only on the deeper side.
+/// Every fractional-addition circuit — one per looker `j` over `n_j` variables, plus the table's
+/// over `m` — is an instance of **one** GKR of `k + max(max_j n_j, m)` layers, where
+/// `k = ceil(log2(#lookers + 1))`. Its top `k` layers add the per-instance root fractions together
+/// and its lower `max(max_j n_j, m)` run the instances in a batch, with every shallower instance
+/// padded by zero fractions — that leaves a fractional sum unchanged and costs `O(1)` per round,
+/// so the layer count depends only on the deepest instance.
+///
+/// The lookers need not agree on a length: a looker over `n_j` variables is simply padded by
+/// `max(max_j n_j, m) - n_j`, and its reduced index claim lands on the **last `n_j`** coordinates
+/// of [`LogupOutput::index_eval_point`].
 ///
 /// The table's fraction enters that sum negated, so the circuit's root is
 /// `sum_j num_j/den_j - num_r/den_r`, whose numerator vanishes exactly when the lookup identity
@@ -61,7 +65,7 @@ pub struct LookerClaim<'a, Elem> {
 ///
 /// * `gamma` - The looker batching challenge, sampled by the caller.
 /// * `table_n_vars` - The number of variables `m` of the table multilinear (`2^m` entries).
-/// * `lookers` - The looker claims; every evaluation point must have the same length `n`.
+/// * `lookers` - The looker claims; their evaluation points may differ in length.
 /// * `channel` - The verifier channel for receiving prover messages and sampling challenges.
 ///
 /// # Transcript layout
@@ -71,7 +75,7 @@ pub struct LookerClaim<'a, Elem> {
 /// ```text
 ///     1. sample c                                  (logUp challenge)
 ///     2. recv den_root                             (the root denominator; its numerator is 0)
-///     3. combined GKR, k + max(n, m) layers        (see fracaddcheck::verify)
+///     3. combined GKR, k + max(max_j n_j, m) layers (see fracaddcheck::verify)
 ///     4. recv per-looker index evaluations, then Y (the non-transparent leaf halves)
 ///     5. pushforward reduction:
 ///        a. sample batch_coeff
@@ -114,11 +118,12 @@ where
 	assert!(!lookers.is_empty(), "at least one looker claim is required");
 
 	let m = table_n_vars;
-	let n = lookers[0].eval_point.len();
-	assert!(
-		lookers.iter().all(|looker| looker.eval_point.len() == n),
-		"every looker evaluation point must have the same length"
-	);
+	// Lookers may differ in length; the batch pads each up to the deepest instance.
+	let max_n = lookers
+		.iter()
+		.map(|looker| looker.eval_point.len())
+		.max()
+		.expect("lookers is non-empty");
 
 	// Sample the logUp challenge c that randomizes the logarithmic-derivative denominators.
 	let c = channel.sample();
@@ -131,12 +136,12 @@ where
 		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
 
 	// One GKR over the whole thing, from that single root fraction down to the leaves: k layers
-	// interpolating the per-instance roots, then max(n, m) more over the instances. The looker
-	// trees have depth n and the table tree depth m, so the shallower side is padded by zero
-	// fractions — the layer count never reveals which is which.
+	// interpolating the per-instance roots, then max(max_n, m) more over the instances. Looker j's
+	// tree has depth n_j and the table tree depth m, so every shallower instance is padded by zero
+	// fractions — the layer count reveals only the deepest one.
 	let n_instances = lookers.len() + 1;
 	let k = n_instances.next_power_of_two().ilog2() as usize;
-	let n_layers = k + n.max(m);
+	let n_layers = k + max_n.max(m);
 	let FracAddEvalClaim {
 		num_eval: leaf_num,
 		den_eval: leaf_den,
@@ -164,28 +169,35 @@ where
 
 	// Rebuild each circuit's padded leaf fraction and check they interpolate to the batch's leaf.
 	//
-	// The node point spans max(n, m) coordinates, so looker j is padded by `max(n, m) - n` and the
-	// table by `max(n, m) - m`; padding scales a numerator by the padding coordinates' equality
-	// weight q and sends a denominator through sel(q, .), so both halves follow from the claims
-	// above.
+	// The node point spans max(max_n, m) coordinates, so an instance over `d` variables is padded
+	// by `max(max_n, m) - d` and its own content is the last `d` coordinates. Padding scales a
+	// numerator by the padding coordinates' equality weight q and sends a denominator through
+	// sel(q, .), so both halves follow from the claims above.
 	let n_node_vars = node_point.len();
-	let (looker_pad, table_pad) = (n_node_vars - n, n_node_vars - m);
-	let looker_content = &node_point[looker_pad..];
-	let table_point = &node_point[table_pad..];
 
-	// Both padding weights are prefixes of the node point, and every looker shares the same one, so
-	// compute each once rather than per tree.
-	let looker_pad_eq = eq_ind_zero::<C::Elem>(&node_point[..looker_pad]);
-	let table_pad_eq = eq_ind_zero::<C::Elem>(&node_point[..table_pad]);
+	// Every instance's padding weight is a prefix of the node point, so accumulate the prefixes
+	// once: `pad_eqs[p] = eq(0^p; node_point[..p])`. With lookers of differing lengths there is one
+	// weight per distinct depth, and this indexes them all in a single pass.
+	let pad_eqs = iter::once(C::Elem::one())
+		.chain(node_point.iter().scan(C::Elem::one(), |acc, coord| {
+			*acc = acc.clone() * eq_ind_zero::<C::Elem>(slice::from_ref(coord));
+			Some(acc.clone())
+		}))
+		.collect::<Vec<_>>();
+
+	let table_pad = n_node_vars - m;
+	let table_point = &node_point[table_pad..];
 
 	// Looker numerators are transparent: gamma^j scales the equality indicator at r_j. The
 	// denominators are c - I_j, from the index evaluations just read.
 	let (mut leaf_nums, mut leaf_dens): (Vec<_>, Vec<_>) =
 		iter::zip(iter::zip(lookers, powers(gamma.clone())), &index_eval_claims)
 			.map(|((looker, power), index_eval)| {
-				let num = power * eq_ind::<C::Elem>(looker.eval_point, looker_content);
+				let pad = n_node_vars - looker.eval_point.len();
+				let content = &node_point[pad..];
+				let num = power * eq_ind::<C::Elem>(looker.eval_point, content);
 				let den = c.clone() - index_eval.clone();
-				fracaddcheck::pad_leaf_fraction((num, den), looker_pad_eq.clone())
+				fracaddcheck::pad_leaf_fraction((num, den), pad_eqs[pad].clone())
 			})
 			.unzip();
 
@@ -194,7 +206,7 @@ where
 	// root numerator vanish.
 	let (table_num, table_den) = fracaddcheck::pad_leaf_fraction(
 		(pushforward_eval.clone(), denominator_eval::<F, C::Elem>(&c, table_point)),
-		table_pad_eq,
+		pad_eqs[table_pad].clone(),
 	);
 	leaf_nums.push(table_num);
 	leaf_dens.push(table_den);
@@ -225,7 +237,9 @@ where
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-		index_eval_point: looker_content.to_vec(),
+		// Spans the deepest looker, not the whole node point: when the table is deeper than every
+		// looker its extra coordinates belong to the table alone. Looker j reads the last n_j.
+		index_eval_point: node_point[n_node_vars - max_n..].to_vec(),
 		index_eval_claims,
 	})
 }
