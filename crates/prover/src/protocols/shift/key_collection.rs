@@ -107,6 +107,14 @@ impl DenseShiftEncoding {
 		self.shifts.iter().copied()
 	}
 
+	/// Where every shift the segment uses sits in the full space of `SHIFT_PAIR_COUNT` shifts, in
+	/// dense index order.
+	///
+	/// The indices are strictly increasing, which is what lets two segments' encodings merge.
+	pub fn shift_indices(&self) -> impl Iterator<Item = usize> + '_ {
+		self.shifts.iter().map(|&shift| shift_index(shift))
+	}
+
 	/// The dense index of every shift, for lookup while the keys are built.
 	///
 	/// The entries of the shifts the segment does not use are meaningless.
