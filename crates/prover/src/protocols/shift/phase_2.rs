@@ -24,7 +24,7 @@ use binius_utils::{
 		task_size::{IndexedParallelIteratorExt, WorkPerItem},
 	},
 };
-use binius_verifier::protocols::shift::evaluate_words_mle;
+use binius_verifier::protocols::shift::evaluate_words_mle_native;
 use tracing::instrument;
 
 use super::{
@@ -297,7 +297,8 @@ where
 	// Round the public word count up to a power of two: the segment spans that many word slots.
 	// The count itself need not be a power of two, and the MLE reads the missing words as zero.
 	let log_public_words = log2_ceil_usize(public_words.len());
-	let public_eval = evaluate_words_mle::<F, F>(public_words, &r_j, &r_y[..log_public_words]);
+	let public_eval =
+		evaluate_words_mle_native::<F, F>(public_words, &r_j, &r_y[..log_public_words]);
 	let padded_public_eval = eq_ind_zero(&r_y[log_public_words..log_half]) * public_eval;
 	let witness_eval =
 		(trace_eval - (F::ONE - r_segment) * padded_public_eval) * r_segment.invert_or_zero();

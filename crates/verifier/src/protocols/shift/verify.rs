@@ -34,14 +34,14 @@ use super::{
 /// bit within a word and the high variables index the word. Words past `words.len()` (up to
 /// `2^r_y.len()`) are treated as zero.
 ///
-/// A verifier reaches its words through a channel, so it uses the `channel_words_mle` sibling
-/// below; this is for a prover mirroring the same evaluation over native words.
+/// A verifier reaches its words through a channel and so uses [`evaluate_words_mle`]; this is the
+/// same evaluation over native words, for a prover mirroring the check.
 ///
 /// ## Preconditions
 ///
 /// * `r_j` has exactly `Word::LOG_BITS` entries
 /// * `words` has at most `2^r_y.len()` entries
-pub fn evaluate_words_mle<F, E>(words: &[Word], r_j: &[E], r_y: &[E]) -> E
+pub fn evaluate_words_mle_native<F, E>(words: &[Word], r_j: &[E], r_y: &[E]) -> E
 where
 	F: BinaryField,
 	E: FieldOps<Scalar = F> + From<F>,
@@ -56,7 +56,7 @@ where
 		.sum()
 }
 
-/// [`evaluate_words_mle`] over a channel's own words.
+/// [`evaluate_words_mle_native`] over a channel's own words.
 ///
 /// A word's contribution is the sum of the bit-index tensor over its set bits, which is what
 /// [`WordIPVerifierChannel::subset_sum`] computes — over concrete bits for a verifier reading a
@@ -66,7 +66,7 @@ where
 ///
 /// * `r_j` has exactly `Word::LOG_BITS` entries
 /// * `words` has at most `2^r_y.len()` entries
-fn channel_words_mle<F, C>(
+pub fn evaluate_words_mle<F, C>(
 	channel: &mut C,
 	words: &[C::Word],
 	r_j: &[C::Elem],
@@ -399,7 +399,7 @@ where
 		.map(|&word| C::Word::from(word))
 		.chain(inout_words.iter().cloned())
 		.collect::<Vec<_>>();
-	let public_eval = channel_words_mle(channel, &public, r_j, &r_y[..log_public_words]);
+	let public_eval = evaluate_words_mle(channel, &public, r_j, &r_y[..log_public_words]);
 
 	// Reconstruct the witness evaluation from its two segments. The public segment is
 	// zero-padded up to the hidden segment length, contributing the eq-zero padding factor.
@@ -707,19 +707,19 @@ mod tests {
 	}
 
 	#[test]
-	fn test_evaluate_words_mle_matches_naive() {
+	fn test_evaluate_words_mle_native_matches_naive() {
 		let (words, r_j, r_y, expected) = words_mle_case();
-		assert_eq!(evaluate_words_mle::<B128, B128>(&words, &r_j, &r_y), expected);
+		assert_eq!(evaluate_words_mle_native::<B128, B128>(&words, &r_j, &r_y), expected);
 	}
 
 	/// The two must agree: the verifier evaluates the public words through its channel and the
 	/// prover mirrors it natively.
 	#[test]
-	fn test_channel_words_mle_matches_the_native_one() {
+	fn test_evaluate_words_mle_matches_the_native_one() {
 		let (words, r_j, r_y, expected) = words_mle_case();
 
 		// A transcript carries concrete words, so this is the same arithmetic reached the long way.
 		let mut channel = VerifierTranscript::new(StdChallenger::default(), Vec::new());
-		assert_eq!(channel_words_mle(&mut channel, &words, &r_j, &r_y), expected);
+		assert_eq!(evaluate_words_mle(&mut channel, &words, &r_j, &r_y), expected);
 	}
 }
