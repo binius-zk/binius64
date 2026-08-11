@@ -370,7 +370,7 @@ where
 		// Reuse the verifier's evaluation domain so both sides agree on the code: its compiler
 		// fixed that domain as the Gao-Mateer basis of this dimension.
 		let domain_context =
-			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_subspace().dim());
+			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
 
 		// Spread the NTT across the available cores.
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;

@@ -344,7 +344,7 @@ where
 		// Rebuild the verifier's evaluation domain, which its compiler fixed as the Gao-Mateer
 		// basis of that dimension.
 		let domain_context =
-			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_subspace().dim());
+			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
 		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and

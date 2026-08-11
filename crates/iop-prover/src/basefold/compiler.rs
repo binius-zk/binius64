@@ -70,7 +70,6 @@ where
 		// oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message ‖
 		// equal-length mask); non-ZK oracles take a flexible batch size.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
-			ntt.domain_context(),
 			merkle_scheme,
 			&oracle_specs,
 			log_inv_rate,

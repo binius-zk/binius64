@@ -402,7 +402,7 @@ where
 		// Rebuild the verifier's evaluation domain, which its compiler fixed as the Gao-Mateer
 		// basis of that dimension.
 		let domain_context =
-			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_subspace().dim());
+			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
 		// FIXME TODO For mobile phones, the number of shares should potentially be more than the
 		// number of threads, because the threads/cores have different performance (but in the NTT
 		// each share has the same amount of work)

@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 
 use binius_field::{BinaryField, Field};
-use binius_math::{ntt::DomainContext, reed_solomon::ReedSolomonCode};
+use binius_math::reed_solomon::ReedSolomonCode;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::{CopyGetters, Getters};
 
@@ -172,7 +172,6 @@ where
 	///
 	/// ## Arguments
 	///
-	/// * `domain_context` - the domain context providing subspaces for the Reed-Solomon code.
 	/// * `merkle_scheme` - the Merkle tree scheme used for commitments.
 	/// * `log_msg_len` - the binary logarithm of the length of the message to commit.
 	/// * `log_batch_size` - if `Some`, fixes the batch size; if `None`, the batch size is chosen
@@ -184,10 +183,7 @@ where
 	/// ## Preconditions
 	///
 	/// * If `log_batch_size` is `Some(b)`, then `b <= log_msg_len`.
-	/// * `domain_context.log_domain_size() >= log_msg_len - log_batch_size.unwrap_or(0) +
-	///   log_inv_rate`.
-	pub fn with_strategy<DC, MerkleScheme, Strategy>(
-		domain_context: &DC,
+	pub fn with_strategy<MerkleScheme, Strategy>(
 		merkle_scheme: &MerkleScheme,
 		log_msg_len: usize,
 		log_batch_size: Option<usize>,
@@ -196,7 +192,6 @@ where
 		strategy: &Strategy,
 	) -> Self
 	where
-		DC: DomainContext<Field = F>,
 		MerkleScheme: MerkleTreeScheme<F>,
 		Strategy: AritySelectionStrategy,
 	{
@@ -219,8 +214,7 @@ where
 		});
 
 		let log_dim = log_msg_len - log_batch_size;
-		let rs_code =
-			ReedSolomonCode::with_domain_context_subspace(domain_context, log_dim, log_inv_rate);
+		let rs_code = ReedSolomonCode::new(log_dim, log_inv_rate);
 		Self::new(rs_code, log_batch_size, fold_arities, n_test_queries)
 	}
 
@@ -234,7 +228,6 @@ where
 	///
 	/// ## Arguments
 	///
-	/// * `domain_context` - the domain context providing subspaces for the Reed-Solomon code.
 	/// * `merkle_scheme` - the Merkle tree scheme used for commitments.
 	/// * `oracles` - the oracles to batch. A ZK oracle commits its message interleaved with an
 	///   equal-length mask (fixed `log_batch_size = 1`); a non-ZK oracle commits the bare message
@@ -245,17 +238,13 @@ where
 	/// ## Preconditions
 	///
 	/// * `oracles` is non-empty.
-	/// * `domain_context.log_domain_size()` is large enough for the chosen reduced dimension plus
-	///   `log_inv_rate`.
-	pub fn optimal_for_batch<DC, MerkleScheme>(
-		domain_context: &DC,
+	pub fn optimal_for_batch<MerkleScheme>(
 		merkle_scheme: &MerkleScheme,
 		oracles: &[OracleSpec],
 		log_inv_rate: usize,
 		n_test_queries: usize,
 	) -> (Self, usize)
 	where
-		DC: DomainContext<Field = F>,
 		MerkleScheme: MerkleTreeScheme<F>,
 	{
 		assert!(!oracles.is_empty()); // precondition
@@ -267,11 +256,7 @@ where
 			fold_arities,
 		} = choose_codeword_specs_for_oracles(merkle_scheme, oracles, log_inv_rate, n_test_queries);
 
-		let rs_code = ReedSolomonCode::with_domain_context_subspace(
-			domain_context,
-			reduced_log_dim,
-			log_inv_rate,
-		);
+		let rs_code = ReedSolomonCode::new(reduced_log_dim, log_inv_rate);
 
 		let params = Self::new_batch(rs_code, oracle_specs, fold_arities, n_test_queries);
 		(params, proof_size)
@@ -810,9 +795,6 @@ impl AritySelectionStrategy for ConstantArityStrategy {
 mod tests {
 	use binius_field::BinaryField128bGhash as B128;
 	use binius_hash::StdHashSuite;
-	use binius_math::ntt::{
-		AdditiveNTT, NeighborsLastReference, domain_context::GaoMateerOnTheFly,
-	};
 
 	use super::*;
 	use crate::{fri::proof_size, merkle_tree::BinaryMerkleTreeScheme};
@@ -834,11 +816,6 @@ mod tests {
 	fn optimizer_estimate_matches_exact_proof_size() {
 		let merkle_scheme = test_merkle_scheme();
 		let digest_size = size_of::<<TestMerkleScheme as MerkleTreeScheme<B128>>::Digest>();
-
-		// Large enough for the widest case below: a ZK oracle commits `log_msg_len + 1`.
-		let ntt = NeighborsLastReference {
-			domain_context: GaoMateerOnTheFly::<B128>::generate(24),
-		};
 
 		// Single oracles across the size range, then shapes that stress the batch layout: lifting,
 		// ZK mixed with flexible, non-power-of-two counts.
@@ -871,7 +848,6 @@ mod tests {
 			for n_test_queries in [32, 128, 232] {
 				for oracles in &batches {
 					let (params, estimate) = FRIParams::optimal_for_batch(
-						ntt.domain_context(),
 						&merkle_scheme,
 						oracles,
 						log_inv_rate,
@@ -930,14 +906,9 @@ mod tests {
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
 
-		let ntt = NeighborsLastReference {
-			domain_context: GaoMateerOnTheFly::<B128>::generate(24 + log_inv_rate),
-		};
-
 		// log_msg_len = 0
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				0,
 				None,
@@ -952,7 +923,6 @@ mod tests {
 		// log_msg_len = 3
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				3,
 				None,
@@ -967,7 +937,6 @@ mod tests {
 		// log_msg_len = 24
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				24,
 				None,
@@ -986,10 +955,6 @@ mod tests {
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
 
-		let ntt = NeighborsLastReference {
-			domain_context: GaoMateerOnTheFly::<B128>::generate(16 + log_inv_rate),
-		};
-
 		// Two masked ZK oracles (fixed batch size 1, committed lengths 10 and 12) and one non-ZK
 		// oracle with a flexible batch size (committed length 16). The ZK oracles lower-bound the
 		// reduced dimension; the flexible oracle folds down to it.
@@ -999,13 +964,8 @@ mod tests {
 			OracleSpec::new(16),
 		];
 
-		let (fri_params, proof_size) = FRIParams::optimal_for_batch(
-			ntt.domain_context(),
-			&merkle_scheme,
-			&oracles,
-			log_inv_rate,
-			n_test_queries,
-		);
+		let (fri_params, proof_size) =
+			FRIParams::optimal_for_batch(&merkle_scheme, &oracles, log_inv_rate, n_test_queries);
 
 		// The reduced oracle dimension is the dimension of the first FRI round oracle, equal to
 		// log_terminal_dim + sum(fold_arities).
@@ -1051,14 +1011,9 @@ mod tests {
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
 
-		let ntt = NeighborsLastReference {
-			domain_context: GaoMateerOnTheFly::<B128>::generate(24 + log_inv_rate),
-		};
-
 		// log_msg_len = 3
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				3,
 				Some(1),
@@ -1073,7 +1028,6 @@ mod tests {
 		// log_msg_len = 24
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				24,
 				Some(1),

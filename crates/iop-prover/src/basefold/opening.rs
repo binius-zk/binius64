@@ -117,11 +117,11 @@ mod test {
 	use binius_ip::channel::IPVerifierChannel;
 	use binius_ip_prover::channel::IPProverChannel;
 	use binius_math::{
-		BinarySubspace, FieldBuffer,
+		FieldBuffer,
 		inner_product::inner_product_buffers,
 		line::extrapolate_line_packed,
 		multilinear::eq::eq_ind_partial_eval,
-		ntt::{AdditiveNTT, NeighborsLastSingleThread, domain_context::GenericOnTheFly},
+		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -159,15 +159,13 @@ mod test {
 
 		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 
-		let subspace = BinarySubspace::with_dim(n_vars + 1 + LOG_INV_RATE);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+		let domain_context = GaoMateerOnTheFly::generate(n_vars + 1 + LOG_INV_RATE);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		// For a single oracle the combined opening params (`optimal_for_batch`) also satisfy
 		// `encode_masked`'s preconditions (`log_batch_size() == 1`, `rs_code().log_dim() ==
 		// n_vars`).
 		let (fri_params, _) = binius_iop::fri::FRIParams::optimal_for_batch(
-			ntt.domain_context(),
 			merkle_prover.scheme(),
 			&[OracleSpec::new_zk(n_vars)],
 			LOG_INV_RATE,
