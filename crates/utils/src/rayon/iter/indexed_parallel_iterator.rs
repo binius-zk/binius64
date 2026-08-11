@@ -314,6 +314,14 @@ where
 	L: IndexedParallelIterator,
 	R: IndexedParallelIterator<Item = L::Item>,
 {
+	#[inline(always)]
+	fn len(&self) -> usize {
+		// An `Either` cannot lend out its inner iterator, so dispatch on the side it holds.
+		match self {
+			itertools::Either::Left(left) => left.len(),
+			itertools::Either::Right(right) => right.len(),
+		}
+	}
 }
 
 #[cfg(test)]
@@ -407,5 +415,28 @@ mod tests {
 		// And collect the results
 		let result = triple_chain.collect::<Vec<_>>();
 		assert_eq!(result, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+	}
+
+	#[test]
+	fn check_either_len() {
+		// A caller that branches on a runtime condition returns one union type, so both sides
+		// must report their own length rather than the union's.
+		//
+		//     Left : 3 elements
+		//     Right: 2 elements
+		fn pick(left: bool) -> impl IndexedParallelIterator<Item = i32> {
+			if left {
+				itertools::Either::Left([1, 2, 3].into_par_iter())
+			} else {
+				itertools::Either::Right([4, 5].into_par_iter())
+			}
+		}
+
+		assert_eq!(pick(true).len(), 3);
+		assert_eq!(pick(false).len(), 2);
+
+		// The length is what downstream indexed operations are built from.
+		assert_eq!(pick(true).enumerate().collect::<Vec<_>>(), vec![(0, 1), (1, 2), (2, 3)]);
+		assert_eq!(pick(false).enumerate().collect::<Vec<_>>(), vec![(0, 4), (1, 5)]);
 	}
 }

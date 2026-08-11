@@ -23,7 +23,7 @@ use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
 
-use crate::merkle_tree::{MerkleTreeProver, commit_field_buffer, prover::BinaryMerkleTreeProver};
+use crate::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
 
 /// An extension of [`WordIPProverChannel`] that can send and open Merkle commitments.
 ///
@@ -184,7 +184,7 @@ where
 	) -> Self::Commitment {
 		assert!(leaf_size.is_power_of_two(), "precondition: leaf_size must be a power of two");
 		let log_leaf_size = checked_log_2(leaf_size);
-		let (commitment, committed) = commit_field_buffer(&self.merkle_prover, data, log_leaf_size);
+		let (commitment, committed) = self.merkle_prover.commit_field_buffer(data, log_leaf_size);
 		self.transcript
 			.borrow_mut()
 			.message()
