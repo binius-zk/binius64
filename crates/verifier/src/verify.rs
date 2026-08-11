@@ -127,7 +127,7 @@ impl IOPVerifier {
 	/// For most users, [`Verifier::verify`] is the simpler interface.
 	pub fn verify<Channel>(&self, inout: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128, Word = Word>,
+		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
 		// The caller passes only the inout values. The constants are already part of the
@@ -142,7 +142,15 @@ impl IOPVerifier {
 
 		// Only the inout values go into Fiat-Shamir: they are what varies per instance, and the
 		// constants are fixed by the constraint system the transcript is already bound to.
-		channel.observe_words(inout);
+		//
+		// The words are lifted into the channel's own word type, so a channel that carries words
+		// as wires still receives them. They arrive here concrete, so such a channel sees the
+		// statement as fixed; taking it symbolically is BINIUS-433.
+		let observed = inout
+			.iter()
+			.map(|&word| Channel::Word::from(word))
+			.collect::<Vec<_>>();
+		channel.observe_words(&observed);
 
 		// The shift reduction reads the whole public segment, which is the constants followed by
 		// the inout values — the order the value vector places them in.
