@@ -9,13 +9,13 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims,
 		monster::{build_h, build_monster_segments},
-		phase_1::{PHASE_1_LOG_LEN, build_g, run_phase_1_sumcheck},
+		phase_1::{SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 	},
 };
@@ -31,8 +31,9 @@ use crate::witness::{FoldedWitness, FoldedWord};
 /// The public words are constants shared by every instance, so they are passed as raw words.
 ///
 /// The two phases call the single-instance prover's own subroutines.
-/// Phase 1 builds the hidden segment's g with [`build_g_from_folded_words`].
-/// It builds the public segment's g with the single-instance `build_g`, then sums the two.
+/// Phase 1 accumulates the hidden segment's g rows with [`build_g_from_folded_words`].
+/// It accumulates the public segment's with the single-instance `build_g`, then collects both
+/// segments' rows into the sparse `g` the phase-1 sumcheck reads.
 /// Phase 2 contracts the hidden witness along its bit axis with [`FoldedWitness::fold_bits`].
 /// It folds the public segment the same way, at the same challenge `r_j`.
 /// It then reuses `build_monster_segments` and `run_sumcheck` unchanged.
@@ -67,16 +68,18 @@ where
 	// SOUNDNESS: `prepare` draws in the order the verifier draws in; do not reorder it.
 	let prepared = claims.prepare(|| channel.sample());
 
-	// Phase 1: build g once per key segment, then add them. The public words are
-	// constants shared by every instance, so the single-instance builder folds them directly from
-	// their bits; the hidden words are already folded over instances. This scalar path drives the
-	// single-instance phase-1 sumcheck.
-	let mut g = build_g::<F, F, _>(alloc, public_words, &key_collection.public, &prepared);
-	let hidden_g =
-		build_g_from_folded_words(alloc, folded_witness.words(), &key_collection.hidden, &prepared);
-	for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
-		*slot += *add;
-	}
+	// Phase 1: accumulate the g rows once per key segment. The public words are constants shared
+	// by every instance, so the single-instance builder folds them directly from their bits; the
+	// hidden words are already folded over instances. This scalar path drives the single-instance
+	// phase-1 sumcheck.
+	let public = build_g::<F, F>(public_words, &key_collection.public, &prepared);
+	let hidden =
+		build_g_from_folded_words(folded_witness.words(), &key_collection.hidden, &prepared);
+	// `g` is the sum of its rows, so the two segments' rows concatenate rather than merge.
+	let g = SparseShiftRows::from_segments([
+		(&public, &key_collection.public.dense_shift_enc),
+		(&hidden, &key_collection.hidden.dense_shift_enc),
+	]);
 	let h = build_h::<F, F, _>(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
 	let phase_1_output =
 		run_phase_1_sumcheck::<F, F, _, _>(g, h, prepared.batched_eval(), channel, alloc);
@@ -119,7 +122,7 @@ where
 	)
 }
 
-/// Constructs the phase-1 "g" multilinear parts, one per shift variant, from instance-folded words.
+/// Accumulates the phase-1 "g" rows of one key segment, from instance-folded words.
 ///
 /// This is the batched analogue of the single-instance [`build_g`].
 /// It consumes a key segment's words already folded over the instance axis.
@@ -131,7 +134,7 @@ where
 ///
 /// Use this for the hidden (committed) segment, whose words are folded over instances.
 /// Use [`build_g`] for the public segment, whose words are shared constants.
-/// Adding the two results gives the complete g multilinear.
+/// Collecting both results' rows gives the complete g multilinear.
 ///
 /// # Arguments
 ///
@@ -143,29 +146,24 @@ where
 ///
 /// # Returns
 ///
-/// One multilinear of [`PHASE_1_LOG_LEN`] variables, holding every shift variant's part.
-///
-/// The segment's dense shift encoding decodes a key's shift index into the variant and the shift
-/// amount. The variant indexes the high variables and the amount the middle ones, so a key names
-/// one run of bit slots:
+/// One row of `Word::BITS` scalars per shift the segment uses, in dense shift index order:
 ///
 /// ```text
-/// g[(variant * Word::BITS + amount) * Word::BITS + bit] += folded_bit * acc(key)
+/// rows[key.dense_shift_idx * Word::BITS + bit] += folded_bit * acc(key)
 /// ```
 ///
 /// where `acc(key)` is the key's lambda-weighted partial evaluation tensor.
-/// Every word carrying that key accumulates into the same slots.
+/// Every word carrying that key accumulates into the same row.
 ///
 /// This scalar implementation ignores the single-instance builder's packing and parallelism.
-pub fn build_g_from_folded_words<F: BinaryField, A: Allocator>(
-	alloc: &A,
+pub fn build_g_from_folded_words<F: BinaryField>(
 	folded_words: &[FoldedWord<F>],
 	segment: &KeySegment,
 	prepared: &PreparedOperatorClaims<F>,
-) -> FieldVec<F, A> {
-	// One zeroed multilinear covering every shift, drawn from the allocator. A key names one
-	// `(variant, amount)` pair, so the scatter below accumulates straight into it.
-	let mut multilinear = FieldBuffer::zeros_in(alloc, PHASE_1_LOG_LEN);
+) -> Box<[F]> {
+	// One zeroed row per shift the segment uses. A key names one such row, so the accumulation
+	// below adds straight into it.
+	let mut rows = vec![F::ZERO; segment.dense_shift_enc.len() * Word::BITS].into_boxed_slice();
 
 	// Each folded word carries the keys named by the segment-relative range at its position.
 	for (word, range) in folded_words.iter().zip(&segment.key_ranges) {
@@ -180,11 +178,8 @@ pub fn build_g_from_folded_words<F: BinaryField, A: Allocator>(
 				&operator_data.lambda_powers,
 			);
 
-			// The key's shift variant indexes the high variables and its shift amount the middle
-			// ones, which together name one run of bit slots.
-			let (variant, amount) = segment.dense_shift_enc.decode(key.dense_shift_idx as usize);
-			let base = (variant as usize * Word::BITS + amount as usize) * Word::BITS;
-			let slots = &mut multilinear.as_mut()[base..base + Word::BITS];
+			let base = key.dense_shift_idx as usize * Word::BITS;
+			let slots = &mut rows[base..base + Word::BITS];
 
 			// Scatter the accumulator across this key's bit slots, scaling each by the folded bit.
 			for (slot, &folded_bit) in iter::zip(slots, word) {
@@ -193,7 +188,7 @@ pub fn build_g_from_folded_words<F: BinaryField, A: Allocator>(
 		}
 	}
 
-	multilinear
+	rows
 }
 
 #[cfg(test)]
@@ -207,12 +202,13 @@ mod tests {
 	};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
-		inner_product::inner_product_buffers,
 		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 		test_utils::random_scalars,
 		univariate::lagrange_evals_scalars,
 	};
-	use binius_prover::protocols::shift::{OperatorData, build_key_collection, monster::build_h};
+	use binius_prover::protocols::shift::{
+		DenseShiftEncoding, OperatorData, build_key_collection, monster::build_h,
+	};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
 		config::{B128, StdChallenger},
@@ -484,26 +480,27 @@ mod tests {
 		};
 		let prepared = claims.prepare(|| B128::random(&mut rng));
 
-		// The g multilinear: the public segment folds from raw constant words via the
-		// single-instance builder, the hidden segment from the instance-folded words. Add them.
-		// The h multilinear comes from the single-instance prover.
-		let mut g = build_g::<B128, B128, _>(
-			&GlobalAllocator,
-			public_words,
-			&key_collection.public,
-			&prepared,
-		);
-		let hidden_g = build_g_from_folded_words(
-			&GlobalAllocator,
-			&hidden_folded,
-			&key_collection.hidden,
-			&prepared,
-		);
-		for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
-			*slot += *add;
-		}
+		// The g rows: the public segment folds from raw constant words via the single-instance
+		// builder, the hidden segment from the instance-folded words. The h multilinear comes
+		// from the single-instance prover.
+		let public = build_g::<B128, B128>(public_words, &key_collection.public, &prepared);
+		let hidden = build_g_from_folded_words(&hidden_folded, &key_collection.hidden, &prepared);
 		let h = build_h::<B128, B128, _>(&GlobalAllocator, &domain_subspace, r_z);
-		let inner_product = inner_product_buffers(&g, &h);
+
+		// `g` is zero outside the rows the segments name, so the inner product is those rows
+		// alone — each sitting at `shift_index * Word::BITS` in the phase-1 layout.
+		let segment_inner_product = |rows: &[B128], enc: &DenseShiftEncoding| {
+			iter::zip(enc.shift_indices(), rows.chunks_exact(Word::BITS))
+				.map(|(shift_index, row)| {
+					let base = shift_index * Word::BITS;
+					iter::zip(row, base..)
+						.map(|(&value, index)| value * h.get(index))
+						.sum::<B128>()
+				})
+				.sum::<B128>()
+		};
+		let inner_product = segment_inner_product(&public, &key_collection.public.dense_shift_enc)
+			+ segment_inner_product(&hidden, &key_collection.hidden.dense_shift_enc);
 
 		// The lambda-powers scaling of the batched AND-check evals, plus the empty intmul claim.
 		let expected = prepared.bitand.batched_eval + prepared.intmul.batched_eval;

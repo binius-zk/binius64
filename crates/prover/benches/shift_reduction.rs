@@ -1,8 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::iter;
-
 use binius_circuits::sha256::sha256_fixed;
 use binius_compute::{BufferPool, GlobalAllocator};
 use binius_core::{
@@ -19,7 +17,7 @@ use binius_prover::{
 	protocols::shift::{
 		OperatorClaims, OperatorData, build_key_collection,
 		monster::{build_h, build_monster_segments},
-		phase_1::{build_g, run_phase_1_sumcheck},
+		phase_1::{SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 		prove,
 	},
@@ -300,17 +298,15 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// here (with a throwaway transcript) to capture each phase's inputs; the setup closures below
 	// then only clone what a phase consumes by value. The specific transcript challenges do not
 	// change the work a phase performs.
-	// `build_g` runs per key segment; the full g multilinear is the sum of the public and
-	// hidden segment ones.
+	// `build_g` runs per key segment; the full g multilinear is the two segments' entries
+	// concatenated, as `prove_phase_1` assembles them.
 	let build_combined_g = || {
-		let mut g =
-			build_g::<F, P, _>(&GlobalAllocator, public_words, &key_collection.public, &prepared);
-		let hidden_g =
-			build_g::<F, P, _>(&GlobalAllocator, hidden_words, &key_collection.hidden, &prepared);
-		for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
-			*slot += *add;
-		}
-		g
+		let public = build_g::<F, P>(public_words, &key_collection.public, &prepared);
+		let hidden = build_g::<F, P>(hidden_words, &key_collection.hidden, &prepared);
+		SparseShiftRows::from_segments([
+			(&public, &key_collection.public.dense_shift_enc),
+			(&hidden, &key_collection.hidden.dense_shift_enc),
+		])
 	};
 
 	let g = build_combined_g();
