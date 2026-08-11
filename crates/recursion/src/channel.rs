@@ -6,25 +6,22 @@ use std::rc::Rc;
 
 use binius_circuits::multiplexer::multi_wire_multiplex;
 use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
-use binius_frontend::{Circuit, CircuitBuilder, Wire};
-use binius_iop::{
-	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-	merkle_channel::{self, MerkleIPVerifierChannel},
-};
+use binius_frontend::{Circuit, Wire};
+use binius_iop::merkle_channel::{self, MerkleIPVerifierChannel};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 
-use crate::{Elem, Word};
+use crate::{Elem, Word, shared::Shared};
 
 /// Number of 64-bit words a SHA-256 digest occupies.
-const DIGEST_WORDS: usize = 4;
+pub(crate) const DIGEST_WORDS: usize = 4;
 
 /// A Merkle commitment received by the builder channel.
 ///
-/// The root is wires rather than bytes, since the prover supplies it in the proof. The shape is
-/// fixed by the protocol, so it stays concrete.
+/// The root is wires, since the prover supplies it in the proof. The shape is fixed by the
+/// protocol, so it stays concrete.
 #[derive(Clone)]
 pub struct Commitment {
-	/// The commitment root, as `DIGEST_WORDS` wires.
+	/// The commitment root.
 	pub root: [Wire; DIGEST_WORDS],
 	/// Field elements in each leaf.
 	pub leaf_size: usize,
@@ -32,83 +29,68 @@ pub struct Commitment {
 	pub depth: usize,
 }
 
+/// A compiled circuit and what a witness for it needs.
+pub struct Recorded {
+	/// The compiled circuit.
+	pub circuit: Circuit,
+	/// The wires the witness must supply, in the order the verifier reached them.
+	pub inputs: Vec<Wire>,
+	/// The wires holding the inner statement.
+	pub inout: Vec<Wire>,
+}
+
 /// A channel that records a verifier run as a Binius64 circuit.
 ///
-/// Drive a verifier written against the channel traits with this in place of a transcript channel
-/// and the result is a circuit rather than a verdict. See the crate docs for what is and is not
-/// constrained yet.
+/// Drive a verifier with this in place of a transcript channel and the result is a circuit rather
+/// than a verdict. Wrap it in a `BaseFoldVerifierChannel` for the oracle layer, exactly as the
+/// transcript channel is wrapped.
 ///
-/// The builder is shared through an [`Rc`] because [`IOPVerifierChannel`] requires
-/// `Elem: 'static`, so an element cannot borrow the builder it was built on. The frontend's
-/// `CircuitBuilder` takes `&self` throughout, so no interior-mutability wrapper is needed on top.
+/// The builder is shared through an [`Rc`] because `IOPVerifierChannel` requires `Elem: 'static`,
+/// so an element cannot borrow the builder it was built on. The frontend's `CircuitBuilder` takes
+/// `&self` throughout, so no interior-mutability wrapper is needed around it.
+///
+/// See the crate docs for what this does and does not constrain.
 pub struct Binius64BuilderChannel {
-	builder: Rc<CircuitBuilder>,
-	/// Wires holding the proof, in the order the verifier reads them.
-	transcript: Vec<Wire>,
-	/// Wires holding the inner statement, which is the recursive circuit's own public input.
+	shared: Rc<Shared>,
 	inout: Vec<Wire>,
-	oracle_specs: Vec<OracleSpec>,
-	next_oracle_index: usize,
 }
 
 impl Binius64BuilderChannel {
-	/// Creates a channel over a fresh builder, expecting the given oracles and an inner statement
-	/// of `n_inout` words.
-	///
-	/// The statement's wires are allocated up front, so the caller can hand them to the verifier
-	/// and read them back with [`Self::inout`].
-	pub fn new(oracle_specs: Vec<OracleSpec>, n_inout: usize) -> Self {
-		let builder = Rc::new(CircuitBuilder::new());
-		let inout = (0..n_inout).map(|_| builder.add_inout()).collect();
-		Self {
-			builder,
-			transcript: Vec::new(),
-			inout,
-			oracle_specs,
-			next_oracle_index: 0,
-		}
+	/// Creates a channel over a fresh builder, with an inner statement of `n_inout` words.
+	pub fn new(n_inout: usize) -> Self {
+		let shared = Rc::new(Shared::new());
+		let inout = (0..n_inout).map(|_| shared.builder().add_inout()).collect();
+		Self { shared, inout }
 	}
 
 	/// The inner statement, as this circuit's public input.
 	pub fn statement(&self) -> Vec<Word> {
 		self.inout
 			.iter()
-			.map(|&wire| Word::wire(&self.builder, wire))
+			.map(|&wire| Word::wire(&self.shared, wire))
 			.collect()
 	}
 
-	/// The wires the inner statement occupies, in order.
-	pub fn inout(&self) -> &[Wire] {
-		&self.inout
-	}
-
-	/// The wires the proof is written into, in read order.
-	pub fn transcript(&self) -> &[Wire] {
-		&self.transcript
-	}
-
-	/// Consumes the channel and compiles the recorded circuit.
+	/// Consumes the channel and compiles what it recorded.
 	///
 	/// Every [`Elem`] and [`Word`] derived from this channel must be dropped first: they hold weak
 	/// handles to the builder, and using one afterwards panics.
-	pub fn build(self) -> Circuit {
-		Rc::try_unwrap(self.builder)
-			.unwrap_or_else(|_| panic!("Elem and Word values hold only weak handles"))
-			.build()
+	pub fn build(self) -> Recorded {
+		let Self { shared, inout } = self;
+		let shared = Rc::try_unwrap(shared)
+			.unwrap_or_else(|_| panic!("Elem and Word values hold only weak handles"));
+		Recorded {
+			inputs: shared.inputs(),
+			circuit: shared.builder().build(),
+			inout,
+		}
 	}
 
-	/// Allocates a witness wire and records it as the next word of the proof.
-	fn recv_word(&mut self) -> Wire {
-		let wire = self.builder.add_witness();
-		self.transcript.push(wire);
-		wire
-	}
-
-	/// Allocates the `(lo, hi)` pair one received field element occupies.
-	fn recv_elem(&mut self) -> Elem {
-		let lo = self.recv_word();
-		let hi = self.recv_word();
-		Elem::wires(&self.builder, lo, hi)
+	/// Allocates the `(lo, hi)` pair one field element occupies, as circuit inputs.
+	fn input_elem(&mut self) -> Elem {
+		let lo = self.shared.input_wire();
+		let hi = self.shared.input_wire();
+		Elem::wires(&self.shared, lo, hi)
 	}
 }
 
@@ -116,22 +98,18 @@ impl IPVerifierChannel<B128> for Binius64BuilderChannel {
 	type Elem = Elem;
 
 	fn recv_one(&mut self) -> Result<Elem, binius_ip::channel::Error> {
-		Ok(self.recv_elem())
+		Ok(self.input_elem())
 	}
 
 	fn sample(&mut self) -> Elem {
-		// UNCONSTRAINED: the challenge must be the Fiat-Shamir state's output, which means running
-		// the challenger's SHA-256 over the observed transcript in-circuit. Until that lands the
-		// challenge is a free witness, so a prover could choose it.
-		let lo = self.builder.add_witness();
-		let hi = self.builder.add_witness();
-		Elem::wires(&self.builder, lo, hi)
+		// UNCONSTRAINED: a challenge is the Fiat-Shamir state's output, which needs the
+		// challenger's hashing in-circuit. Until then it is an input the replay supplies.
+		self.input_elem()
 	}
 
 	fn observe_one(&mut self, _val: B128) -> Elem {
-		// The statement reaches the channel through `observe_words`; this arm exists for protocols
-		// that observe field elements directly, which the Binius64 verifier does not.
-		todo!("observe a field element into the in-circuit Fiat-Shamir state")
+		// UNCONSTRAINED: nothing absorbs the value.
+		self.input_elem()
 	}
 
 	fn assert_zero(&mut self, val: Elem) -> Result<(), binius_ip::channel::Error> {
@@ -145,17 +123,17 @@ impl IPVerifierChannel<B128> for Binius64BuilderChannel {
 				}
 			}
 			Elem::Wires { lo, hi, .. } => {
-				self.builder.assert_zero("channel", lo);
-				self.builder.assert_zero("channel", hi);
+				self.shared.builder().assert_zero("channel", lo);
+				self.shared.builder().assert_zero("channel", hi);
 				Ok(())
 			}
 		}
 	}
 
 	fn compute_public_value(&mut self, inputs: &[Elem], f: impl FieldFn<B128>) -> Elem {
-		// Evaluated symbolically rather than hinted, so the circuit constrains it. The cost is the
-		// caller's: for the constraint system's monster multilinear this is proportional to the
-		// inner circuit's size, which is what an accumulation or Spark argument has to remove.
+		// Evaluated symbolically rather than hinted, so the circuit constrains it. For the
+		// constraint system's monster multilinear that is proportional to the inner circuit's
+		// size, which is what an accumulation or Spark argument would remove.
 		f.call::<Elem>(inputs)
 	}
 }
@@ -164,26 +142,25 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 	type Word = Word;
 
 	fn observe_words(&mut self, _words: &[Word]) {
-		// UNCONSTRAINED: these words are the statement, and they must enter the Fiat-Shamir state
-		// for the circuit to be bound to what it claims to verify.
-		todo!("feed words into the in-circuit Fiat-Shamir state")
+		// UNCONSTRAINED: the statement must reach the Fiat-Shamir state for the circuit to be
+		// bound to what it claims to verify.
 	}
 
 	fn subset_sum(&mut self, elems: &[Elem], word: &Word) -> Elem {
 		assert!(elems.len() <= binius_core::word::Word::BITS); // precondition
 
 		// Each element is kept or dropped by its own bit, and the survivors are summed. The sum is
-		// XOR, which the constraint system absorbs, so the cost is the keep-or-drop: one select
-		// gate per word of each element.
-		let (zero_lo, zero_hi) = Elem::zero().to_wires(&self.builder);
+		// XOR, which the constraint system absorbs, so the cost is the keep-or-drop.
+		let builder = self.shared.builder();
+		let (zero_lo, zero_hi) = Elem::zero().to_wires(builder);
 		(0..elems.len())
 			.map(|bit| {
-				let sel = word.bit_at_msb(&self.builder, bit);
-				let (lo, hi) = elems[bit].to_wires(&self.builder);
+				let sel = word.bit_at_msb(builder, bit);
+				let (lo, hi) = elems[bit].to_wires(builder);
 				Elem::wires(
-					&self.builder,
-					self.builder.select(sel, lo, zero_lo),
-					self.builder.select(sel, hi, zero_hi),
+					&self.shared,
+					builder.select(sel, lo, zero_lo),
+					builder.select(sel, hi, zero_hi),
 				)
 			})
 			.sum()
@@ -192,25 +169,26 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 	fn select(&mut self, elems: &[Elem], word: &Word) -> Elem {
 		assert!(!elems.is_empty() && elems.len().is_power_of_two()); // precondition
 
-		// One multiplexer over the `(lo, hi)` pairs. `multi_wire_multiplex` builds the same
-		// select-gate tree per wire position and reads the index bits itself.
+		// One multiplexer over the `(lo, hi)` pairs, which is the same select-gate tree per wire
+		// position with the index bits read inside.
+		let builder = self.shared.builder();
 		let pairs = elems
 			.iter()
 			.map(|elem| {
-				let (lo, hi) = elem.to_wires(&self.builder);
+				let (lo, hi) = elem.to_wires(builder);
 				[lo, hi]
 			})
 			.collect::<Vec<_>>();
 		let groups = pairs.iter().map(|pair| pair.as_slice()).collect::<Vec<_>>();
-		let sel = word.to_wire(&self.builder);
-		let selected = multi_wire_multiplex(&self.builder, &groups, sel);
-		Elem::wires(&self.builder, selected[0], selected[1])
+		let sel = word.to_wire(builder);
+		let selected = multi_wire_multiplex(builder, &groups, sel);
+		Elem::wires(&self.shared, selected[0], selected[1])
 	}
 
 	fn sample_bits(&mut self, _bits: usize) -> Word {
-		// UNCONSTRAINED, twice over: the index must come from the Fiat-Shamir state, and it must
-		// be masked to `bits` bits, which the FRI code now relies on rather than asserting.
-		Word::wire(&self.builder, self.builder.add_witness())
+		// UNCONSTRAINED, twice over: the index should come from the Fiat-Shamir state, and it
+		// should be masked to `bits` bits, which the FRI code relies on rather than asserting.
+		Word::wire(&self.shared, self.shared.input_wire())
 	}
 }
 
@@ -222,7 +200,7 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 		leaf_size: usize,
 		depth: usize,
 	) -> Result<Commitment, merkle_channel::Error> {
-		let root = std::array::from_fn(|_| self.recv_word());
+		let root = std::array::from_fn(|_| self.shared.input_wire());
 		Ok(Commitment {
 			root,
 			leaf_size,
@@ -235,56 +213,20 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 		commitment: &Commitment,
 		indices: &[Word],
 	) -> Result<Vec<Elem>, merkle_channel::Error> {
-		// The opened values are read here so the wire order matches the proof, but nothing yet
-		// binds them to the commitment.
-		let values = (0..indices.len() * commitment.leaf_size)
-			.map(|_| self.recv_elem())
-			.collect();
-		// UNCONSTRAINED: hash each leaf, climb the path ordering pairs by the index bits, and check
-		// the result against the layer digests and the root.
-		let _ = commitment.root;
-		Ok(values)
+		// UNCONSTRAINED: nothing binds the opened values to the root. Hashing each leaf and
+		// climbing the path is the gadget this skeleton leaves out.
+		Ok((0..indices.len() * commitment.leaf_size)
+			.map(|_| self.input_elem())
+			.collect())
 	}
 
 	fn recv_committed_vector(
 		&mut self,
 		commitment: &Commitment,
 	) -> Result<Vec<Elem>, merkle_channel::Error> {
-		let values = (0..commitment.leaf_size << commitment.depth)
-			.map(|_| self.recv_elem())
-			.collect();
-		// UNCONSTRAINED: rebuild the tree over the whole vector and check it against the root.
-		Ok(values)
-	}
-}
-
-impl IOPVerifierChannel<B128> for Binius64BuilderChannel {
-	type Oracle = usize;
-
-	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs[self.next_oracle_index..]
-	}
-
-	fn recv_oracle(
-		&mut self,
-		_log_msg_len: usize,
-		_is_witness_dependent: bool,
-	) -> Result<usize, binius_iop::channel::Error> {
-		assert!(
-			!self.remaining_oracle_specs().is_empty(),
-			"recv_oracle called but no remaining oracle specs"
-		);
-		let index = self.next_oracle_index;
-		self.next_oracle_index += 1;
-		Ok(index)
-	}
-
-	fn verify_oracle_relations(
-		&mut self,
-		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<usize, Elem>>,
-	) -> Result<(), binius_iop::channel::Error> {
-		// The opening runs through `BaseFoldVerifierChannel`, which drives this channel's Merkle
-		// methods. Wiring that up is what turns the pieces above into a verifier.
-		todo!("hand the queued relations to the BaseFold opening")
+		// UNCONSTRAINED: nothing rebuilds the tree over the vector.
+		Ok((0..commitment.leaf_size << commitment.depth)
+			.map(|_| self.input_elem())
+			.collect())
 	}
 }

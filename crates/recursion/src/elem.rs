@@ -14,6 +14,8 @@ use binius_field::{
 };
 use binius_frontend::{CircuitBuilder, Wire};
 
+use crate::shared::Shared;
+
 /// An element of `GF(2^128)` that is either fixed while the circuit is built or carried by a pair
 /// of wires.
 ///
@@ -28,19 +30,31 @@ use binius_frontend::{CircuitBuilder, Wire};
 pub enum Elem {
 	Constant(B128),
 	Wires {
-		builder: Weak<CircuitBuilder>,
+		shared: Weak<Shared>,
 		lo: Wire,
 		hi: Wire,
 	},
 }
 
 impl Elem {
-	/// Constructs a wire-backed element anchored to a shared builder.
-	pub fn wires(builder: &Rc<CircuitBuilder>, lo: Wire, hi: Wire) -> Self {
+	/// Constructs a wire-backed element anchored to the shared builder.
+	pub fn wires(shared: &Rc<Shared>, lo: Wire, hi: Wire) -> Self {
 		Self::Wires {
-			builder: Rc::downgrade(builder),
+			shared: Rc::downgrade(shared),
 			lo,
 			hi,
+		}
+	}
+
+	/// The shared builder this element is anchored to, if it is wire-backed.
+	pub fn shared(&self) -> Option<Rc<Shared>> {
+		match self {
+			Self::Constant(_) => None,
+			Self::Wires { shared, .. } => Some(
+				shared
+					.upgrade()
+					.expect("an Elem outlived the channel that created it"),
+			),
 		}
 	}
 
@@ -66,15 +80,16 @@ impl Elem {
 		fold: impl Fn(B128, B128) -> B128,
 		gate: impl Fn(&CircuitBuilder, (Wire, Wire), (Wire, Wire)) -> (Wire, Wire),
 	) -> Self {
-		let builder = match (self, rhs) {
+		let shared = match (self, rhs) {
 			(Self::Constant(a), Self::Constant(b)) => return Self::Constant(fold(*a, *b)),
-			(Self::Wires { builder, .. }, _) | (_, Self::Wires { builder, .. }) => builder,
+			(Self::Wires { shared, .. }, _) | (_, Self::Wires { shared, .. }) => shared,
 		};
-		let Some(shared) = builder.upgrade() else {
+		let Some(owner) = shared.upgrade() else {
 			panic!("an Elem outlived the channel that created it");
 		};
-		let (lo, hi) = gate(&shared, self.to_wires(&shared), rhs.to_wires(&shared));
-		Self::wires(&shared, lo, hi)
+		let builder = owner.builder();
+		let (lo, hi) = gate(builder, self.to_wires(builder), rhs.to_wires(builder));
+		Self::wires(&owner, lo, hi)
 	}
 }
 
@@ -195,9 +210,18 @@ impl Square for Elem {
 
 impl InvertOrZero for Elem {
 	fn invert_or_zero(self) -> Self {
-		// The inverse is hinted and then checked, the way the Spartan wrapper does it, so this
-		// needs the hint plumbing rather than a gate.
-		todo!("invert_or_zero: hint the inverse and constrain the product")
+		let Some(owner) = self.shared() else {
+			// A constant inverts while the circuit is built.
+			let Self::Constant(value) = self else {
+				unreachable!("only a constant has no shared builder")
+			};
+			return Self::Constant(value.invert_or_zero());
+		};
+		let builder = owner.builder();
+		let (lo, hi) = self.to_wires(builder);
+		// UNCONSTRAINED: nothing checks that the result is the inverse.
+		let out = builder.call_hint(crate::hints::InvertOrZeroHint, &[], &[lo, hi]);
+		Self::wires(&owner, out[0], out[1])
 	}
 }
 
@@ -218,13 +242,44 @@ impl FieldOps for Elem {
 		Self::Constant(B128::ONE)
 	}
 
-	fn square_transpose<FSub: Field>(_elems: &mut [Self])
+	fn square_transpose<FSub: Field>(elems: &mut [Self])
 	where
 		B128: ExtensionField<FSub>,
 	{
-		// Ring switching calls this over `B1`, where `basis(i) = 1 << i` makes it a 128x128
-		// bit-matrix transpose of the wire pairs: the 64-bit block swap is free rewiring and each
-		// 64x64 block is the standard shift-and-mask network.
-		todo!("square_transpose: bit-matrix transpose gadget")
+		let degree = <B128 as ExtensionField<FSub>>::DEGREE;
+		assert_eq!(elems.len(), degree); // precondition
+		if degree == 1 {
+			return;
+		}
+
+		// All-constant inputs transpose while the circuit is built.
+		let Some(owner) = elems.iter().find_map(Self::shared) else {
+			let mut values = elems
+				.iter()
+				.map(|elem| match elem {
+					Self::Constant(value) => *value,
+					Self::Wires { .. } => unreachable!("no element is wire-backed here"),
+				})
+				.collect::<Vec<_>>();
+			<B128 as ExtensionField<FSub>>::square_transpose(&mut values);
+			for (elem, value) in elems.iter_mut().zip(values) {
+				*elem = Self::Constant(value);
+			}
+			return;
+		};
+
+		let builder = owner.builder();
+		let inputs = elems
+			.iter()
+			.flat_map(|elem| {
+				let (lo, hi) = elem.to_wires(builder);
+				[lo, hi]
+			})
+			.collect::<Vec<_>>();
+		// UNCONSTRAINED: nothing ties the outputs to the inputs.
+		let out = builder.call_hint(crate::hints::SquareTransposeHint, &[degree], &inputs);
+		for (i, elem) in elems.iter_mut().enumerate() {
+			*elem = Self::wires(&owner, out[2 * i], out[2 * i + 1]);
+		}
 	}
 }

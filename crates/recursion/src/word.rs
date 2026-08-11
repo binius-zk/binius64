@@ -9,6 +9,8 @@ use std::{
 
 use binius_frontend::{CircuitBuilder, Wire};
 
+use crate::shared::Shared;
+
 /// A 64-bit word that is either fixed while the circuit is built or carried by a wire.
 ///
 /// This is the `Word` associated type of
@@ -22,17 +24,14 @@ use binius_frontend::{CircuitBuilder, Wire};
 #[derive(Clone)]
 pub enum Word {
 	Constant(binius_core::word::Word),
-	Wire {
-		builder: Weak<CircuitBuilder>,
-		wire: Wire,
-	},
+	Wire { shared: Weak<Shared>, wire: Wire },
 }
 
 impl Word {
-	/// Constructs a wire-backed word anchored to a shared builder.
-	pub fn wire(builder: &Rc<CircuitBuilder>, wire: Wire) -> Self {
+	/// Constructs a wire-backed word anchored to the shared builder.
+	pub fn wire(shared: &Rc<Shared>, wire: Wire) -> Self {
 		Self::Wire {
-			builder: Rc::downgrade(builder),
+			shared: Rc::downgrade(shared),
 			wire,
 		}
 	}
@@ -67,15 +66,12 @@ impl Shr<u32> for Word {
 	fn shr(self, rhs: u32) -> Self {
 		match self {
 			Self::Constant(word) => Self::Constant(word >> rhs),
-			Self::Wire { builder, wire } => {
-				let Some(shared) = builder.upgrade() else {
+			Self::Wire { shared, wire } => {
+				let Some(owner) = shared.upgrade() else {
 					panic!("a Word outlived the channel that created it");
 				};
-				let shifted = shared.shr(wire, rhs);
-				Self::Wire {
-					builder: Rc::downgrade(&shared),
-					wire: shifted,
-				}
+				let shifted = owner.builder().shr(wire, rhs);
+				Self::wire(&owner, shifted)
 			}
 		}
 	}

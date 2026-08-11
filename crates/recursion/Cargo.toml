@@ -14,3 +14,9 @@ binius-field = { path = "../field" }
 binius-frontend = { path = "../frontend" }
 binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }
+
+[dev-dependencies]
+binius-hash = { path = "../hash" }
+binius-prover = { path = "../prover" }
+binius-transcript = { path = "../transcript" }
+binius-verifier = { path = "../verifier" }
