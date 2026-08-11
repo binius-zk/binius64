@@ -14,10 +14,7 @@ use binius_core::{
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, FieldVec};
 use binius_prover::fold_word::fold_words;
-use binius_utils::{
-	checked_arithmetics::log2_ceil_usize,
-	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
-};
+use binius_utils::rayon::{prelude::*, task_size::IndexedParallelIteratorExt};
 use binius_verifier::config::B128;
 
 use crate::ValueTable;
@@ -44,10 +41,10 @@ use crate::ValueTable;
 /// row = local_constraint * n_instances + instance
 /// ```
 ///
-/// The constraint count need not be a power of two.
-///
-/// - The columns are zero-padded up to the next one.
-/// - A zero row satisfies every operation, so the padding needs no further handling.
+/// The constraint count need not be a power of two, and the columns do not round up to one: a
+/// column holds exactly `n_constraints << log_instances` words. Every reduction that consumes them
+/// runs over the constraint axis rounded up to `2^ceil(log2(n_constraints))` and reads the rows
+/// past the columns' end as zero, which satisfies every operation.
 pub struct OperandColumns<A: Allocator, const ARITY: usize> {
 	/// One column per operand position, in the constraint type's storage order.
 	columns: [A::Vec<Word>; ARITY],
@@ -156,17 +153,21 @@ impl<A: Allocator, const ARITY: usize> OperandColumns<A, ARITY> {
 	{
 		let column = &self.columns[operand];
 
+		// Fold each word's bits at the univariate challenge, giving one scalar per row.
+		// Scalars keep the row indexing flat for the constraint fold below.
+		//
+		// `fold_words` rounds the row count up to a power of two and zero-extends to it, so the
+		// result spans the padded constraint axis even though the column itself stops at the last
+		// real constraint. Only the real rows are folded; the padding is never touched.
+		let folded_rows = fold_words::<B128, B128, _>(alloc, column, lagrange);
+		let folded_rows = folded_rows.as_ref();
+
 		// Invariant: the tensor carries one weight per padded constraint row.
 		assert_eq!(
 			r_x_tensor.len() << self.log_instances,
-			column.len(),
+			folded_rows.len(),
 			"the constraint tensor must cover the padded constraint axis"
 		);
-
-		// Fold each word's bits at the univariate challenge, giving one scalar per row.
-		// Scalars keep the row indexing flat for the constraint fold below.
-		let folded_rows = fold_words::<B128, B128, _>(alloc, column, lagrange);
-		let folded_rows = folded_rows.as_ref();
 
 		// One packed element per parallel task, each lane holding one instance.
 		// Lanes past the instance count are the multilinear's zero padding.
@@ -321,35 +322,43 @@ impl<'a> ValueWords<'a> {
 	///
 	/// # Returns
 	///
-	/// The column, its constraint axis zero-padded up to a power of two.
+	/// The column, one stripe per constraint and nothing beyond them.
 	fn build_column<A: Allocator>(
 		&self,
 		operands: impl IndexedParallelIterator<Item = &'a Operand>,
 		alloc: &A,
 	) -> A::Vec<Word> {
-		// The constraint axis is rounded up to a power of two.
-		// The column therefore ends in `(n_padded - n_constraints) << log_instances` zero rows.
+		// The constraint axis is not rounded up: the consuming reduction rounds it up itself and
+		// reads the rows past the column's end as zero.
+		//
+		// An empty constraint set is the one exception. `ConstraintSystem::log_and_constraints`
+		// reports `None` there, which the verifier reads as *zero* constraint variables — one
+		// all-zero row, not zero rows — and the BitAnd check has no skip branch. So an empty set
+		// still gets one stripe. IMUL and BMUL never reach this: their checks run only on a
+		// non-empty constraint set.
 		let n_constraints = operands.len();
-		let total = 1 << (self.log_instances + log2_ceil_usize(n_constraints));
+		let total = n_constraints.max(1) << self.log_instances;
 
 		let mut out = alloc.alloc::<Word>(total);
 		// The allocator may hand back more capacity than asked for.
-		// Bound the spare slice to the row count before splitting off the padding.
-		let (constraint_rows, padding_rows) =
-			out.spare_capacity_mut()[..total].split_at_mut(n_constraints << self.log_instances);
+		// Bound the spare slice to the row count before striping it.
+		let rows = &mut out.spare_capacity_mut()[..total];
 
-		// Zeroing a `MaybeUninit<Word>` initializes it.
-		// `Word` is `repr(transparent)` over `u64`, whose all-zero bit pattern is zero.
-		bytemuck::fill_zeroes(padding_rows);
+		// No operand writes the empty set's stripe, so zero it here.
+		//
+		// Zeroing a `MaybeUninit<Word>` initializes it: `Word` is `repr(transparent)` over `u64`,
+		// whose all-zero bit pattern is zero.
+		if n_constraints == 0 {
+			bytemuck::fill_zeroes(rows);
+		}
 
 		// One stripe per constraint, each holding that constraint's instances.
 		operands
-			.zip(constraint_rows.par_chunks_mut(1 << self.log_instances))
+			.zip(rows.par_chunks_mut(1 << self.log_instances))
 			.for_each(|(operand, stripe)| self.write_operand(stripe, operand));
 
-		// SAFETY: the stripes partition `[0, n_constraints << log_instances)`.
-		// Each is written in full, and everything past them was zeroed above.
-		// So all `total` elements are initialized.
+		// SAFETY: the stripes partition the buffer and each is written in full, except when the
+		// constraint set is empty and the one stripe standing in for it was zeroed above.
 		unsafe { out.set_len(total) };
 		out
 	}
@@ -551,8 +560,10 @@ mod tests {
 			&GlobalAllocator,
 		);
 
+		// The tensor spans the padded constraint axis; the column stops at the last real
+		// constraint.
 		let n_instances = table.n_instances();
-		let n_padded = columns.as_slices()[0].len() / n_instances;
+		let n_padded = (columns.as_slices()[0].len() / n_instances).next_power_of_two();
 
 		// Independent weights per axis, so a swapped index cannot pass by coincidence.
 		let mut rng = StdRng::seed_from_u64(0);
@@ -570,7 +581,11 @@ mod tests {
 			for (rho, &value) in got.iter().enumerate() {
 				let mut expected = B128::ZERO;
 				for (local, &weight) in r_x_tensor.iter().enumerate() {
-					let word = column[local * n_instances + rho];
+					// A row at or past the last real constraint reads as zero.
+					let word = column
+						.get(local * n_instances + rho)
+						.copied()
+						.unwrap_or(Word::ZERO);
 					for (j, &basis) in lagrange.iter().enumerate() {
 						// A set bit contributes both of its axis weights.
 						if (word.0 >> j) & 1 == 1 {
@@ -600,8 +615,9 @@ mod tests {
 		//     rows in the column:  n_padded * n_instances
 		//     weights supplied:    n_padded - 1
 		//
-		// The fold indexes the column by the tensor, so a short one would drop constraint rows.
-		let n_padded = columns.as_slices()[0].len() / table.n_instances();
+		// The fold indexes the folded rows by the tensor, so a short one would drop constraint
+		// rows.
+		let n_padded = (columns.as_slices()[0].len() / table.n_instances()).next_power_of_two();
 		let lagrange = vec![B128::ZERO; Word::BITS];
 		let short = vec![B128::ZERO; n_padded - 1];
 		let _ = columns.rho_multilinear::<P>(0, &lagrange, &short, &GlobalAllocator);
@@ -977,37 +993,101 @@ mod tests {
 	}
 
 	#[test]
-	fn build_zero_pads_a_non_power_of_two_constraint_count() {
+	fn build_stops_at_the_last_constraint_for_a_non_power_of_two_count() {
 		let c = and_circuit();
 
 		// Fixture state: a batch of 2 instances (K = 2).
 		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0)]);
 		let n_instances = table.n_instances();
 
-		// Invariant: the constraint axis is rounded up to a power of two, so 3 constraints yield 4
-		// constraint stripes, the last of which is all zeros.
+		// Invariant: the constraint axis is not rounded up, so 3 constraints yield exactly 3
+		// stripes — not the 4 the consuming reduction runs over.
 		//
-		// All three constraints repeat one whose `A` and `B` are non-zero on every instance.
-		// Every leading stripe therefore carries non-zero words.
-		//
-		// Asserting that pins the split point.
-		// A column zeroed past the wrong offset fails here, rather than passing the zero check.
+		// All three constraints repeat one whose `A` and `B` are non-zero on every instance, so a
+		// column that still carried a padding stripe would show a zero tail here. Asserting that
+		// every word is non-zero is what pins the absence of one.
 		let constraints = vec![all_nonzero_constraint(&c, &table); 3];
 		let columns = OperandColumns::build(&table, constants(&c), &constraints, &GlobalAllocator);
 		let [a, b] = columns.as_slices();
 
 		for col in [&a, &b] {
-			assert_eq!(col.len(), 4 * n_instances);
-			assert!(
-				col[..3 * n_instances]
-					.iter()
-					.all(|&word| word != Word::ZERO)
+			assert_eq!(col.len(), 3 * n_instances);
+			assert!(col.iter().all(|&word| word != Word::ZERO));
+		}
+	}
+
+	#[test]
+	fn unpadded_columns_fold_identically_to_padded_ones() {
+		// Invariant: dropping the padding stripes changes nothing a consumer can observe.
+		//
+		// An `AndConstraint::default()` has empty operands, so its stripe is identically zero —
+		// exactly the padding stripe this module used to materialize. Appending enough of them
+		// reconstructs the old shape, and the two must agree on both the words and the fold.
+		//
+		// Fixture state: 4 instances, 3 constraints, padded up to 4.
+		let (c, table) = four_instance_and_table();
+		let n_instances = table.n_instances();
+
+		let constraints = vec![all_nonzero_constraint(&c, &table); 3];
+		let n_padded = constraints.len().next_power_of_two();
+		let mut padded_constraints = constraints.clone();
+		padded_constraints.resize(n_padded, AndConstraint::default());
+
+		let unpadded =
+			OperandColumns::<_, 2>::build(&table, constants(&c), &constraints, &GlobalAllocator);
+		let padded = OperandColumns::<_, 2>::build(
+			&table,
+			constants(&c),
+			&padded_constraints,
+			&GlobalAllocator,
+		);
+
+		// Random weights on both folded axes, so a coincidence cannot pass for agreement.
+		let mut rng = StdRng::seed_from_u64(0);
+		let lagrange: Vec<B128> = (0..Word::BITS).map(|_| B128::random(&mut rng)).collect();
+		let r_x_tensor: Vec<B128> = (0..n_padded).map(|_| B128::random(&mut rng)).collect();
+
+		for operand in 0..2 {
+			// The unpadded column is the padded one with its zero tail cut off.
+			let short = unpadded.as_slices()[operand];
+			let long = padded.as_slices()[operand];
+			assert_eq!(short.len(), constraints.len() * n_instances);
+			assert_eq!(long.len(), n_padded * n_instances);
+			assert_eq!(short, &long[..short.len()]);
+			assert!(long[short.len()..].iter().all(|&word| word == Word::ZERO));
+
+			// Both fold to the same instance-axis multilinear, at the same tensor width.
+			let from_short =
+				unpadded.rho_multilinear::<P>(operand, &lagrange, &r_x_tensor, &GlobalAllocator);
+			let from_long =
+				padded.rho_multilinear::<P>(operand, &lagrange, &r_x_tensor, &GlobalAllocator);
+			assert_eq!(
+				from_short.iter_scalars().collect::<Vec<_>>(),
+				from_long.iter_scalars().collect::<Vec<_>>(),
+				"operand {operand}"
 			);
-			assert!(
-				col[3 * n_instances..]
-					.iter()
-					.all(|&word| word == Word::ZERO)
-			);
+		}
+	}
+
+	#[test]
+	fn build_gives_an_empty_constraint_set_one_zero_stripe() {
+		let c = and_circuit();
+
+		// Fixture state: a batch of 2 instances (K = 2), and no constraints at all.
+		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0)]);
+		let n_instances = table.n_instances();
+
+		// Invariant: an empty constraint set still gets one all-zero stripe, not an empty column.
+		// `ConstraintSystem::log_and_constraints` reports `None` for an empty AND set and the
+		// verifier reads that as zero constraint variables — one row, over which the BitAnd check
+		// still runs.
+		let columns =
+			OperandColumns::build(&table, constants(&c), &[] as &[AndConstraint], &GlobalAllocator);
+		let [a, b] = columns.as_slices();
+
+		for col in [&a, &b] {
+			assert_eq!(col.len(), n_instances);
+			assert!(col.iter().all(|&word| word == Word::ZERO));
 		}
 	}
 
