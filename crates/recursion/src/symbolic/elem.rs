@@ -3,6 +3,7 @@
 //! The GHASH-field element a circuit-building channel carries.
 
 use std::{
+	array,
 	iter::{Product, Sum},
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 	rc::{Rc, Weak},
@@ -226,10 +227,45 @@ impl InvertOrZero for SymbolicElem {
 		};
 		let builder = owner.builder();
 		let (lo, hi) = self.to_wires(builder);
-		// UNCONSTRAINED: nothing checks that the result is the inverse.
+		// The value still arrives as a hint, since a circuit cannot divide. What follows is what
+		// makes it binding.
 		let out = builder.call_hint(crate::hints::InvertOrZeroHint, &[], &[lo, hi]);
+		constrain_inverse(builder, (lo, hi), (out[0], out[1]));
 		Self::wires(&owner, out[0], out[1])
 	}
+}
+
+/// Pins a hinted inverse to its input, so a prover cannot supply anything else.
+///
+/// # Why both assertions are needed
+///
+/// Write `p` for the product of the value and its claimed inverse, then assert:
+///
+/// ```text
+///     x * p == x        at x != 0 this divides down to x * inv == 1
+///     inv * p == inv    at x == 0 this reads inv * 0 == inv, forcing inv == 0
+/// ```
+///
+/// Neither suffices alone, and the cheaper combined form is unsound:
+///
+/// - Keeping only the first admits any claimed inverse at `x = 0`, since both sides vanish.
+/// - Adding the two into one assertion admits `inv = x`, since in characteristic 2 that also
+///   vanishes on both sides.
+///
+/// # Cost
+///
+/// 3 BMUL constraints, and 4 ZERO constraints for the two asserted wire pairs.
+fn constrain_inverse(builder: &CircuitBuilder, x: (Wire, Wire), inv: (Wire, Wire)) {
+	// The product both assertions are phrased over, computed once and reused.
+	let p = builder.bmul(x.0, x.1, inv.0, inv.1);
+
+	// First assertion: scaling that product by the value returns the value itself.
+	let scaled = builder.bmul(x.0, x.1, p.0, p.1);
+	builder.assert_eq_v("x_times_p", [scaled.0, scaled.1], [x.0, x.1]);
+
+	// Second assertion: scaling it by the claimed inverse returns the claimed inverse.
+	let reflected = builder.bmul(inv.0, inv.1, p.0, p.1);
+	builder.assert_eq_v("inv_times_p", [reflected.0, reflected.1], [inv.0, inv.1]);
 }
 
 impl From<B128> for SymbolicElem {
@@ -258,13 +294,20 @@ impl FieldOps for SymbolicElem {
 		if degree == 1 {
 			return;
 		}
-		// The stand-in hint covers `B1` only, and a hint cannot recover the subfield its caller
-		// had. Reject anything else here rather than transposing it as `B1` and handing a wrong
-		// answer back to a verifier.
+		// The network below reads bit `j` of a wire pair as subfield coefficient `j`, which is only
+		// the decomposition asked for when the subfield is the bit field.
 		assert_eq!(
 			degree,
-			crate::hints::SquareTransposeB1Hint::DEGREE,
-			"the square_transpose stand-in only covers the B1 subfield",
+			B128::ORDER_EXPONENT,
+			"square_transpose over B128 is implemented for the trivial and the bit subfield only"
+		);
+		// That reading also depends on the basis being the monomial one, so confirm it rather than
+		// assume it.
+		assert!(
+			(0..degree).all(|i| {
+				<B128 as ExtensionField<FSub>>::basis(i) == <B128 as From<u128>>::from(1u128 << i)
+			}),
+			"the bit transpose assumes basis(i) = X^i"
 		);
 
 		// All-constant inputs transpose while the circuit is built.
@@ -283,18 +326,222 @@ impl FieldOps for SymbolicElem {
 			return;
 		};
 
-		let builder = owner.builder();
-		let inputs = elems
+		// One subcircuit gathers all 768 constraints under a single path.
+		let builder = owner.builder().subcircuit("square_transpose");
+		// Elements settled at build time become constant rows of the matrix at this point.
+		let words = elems
 			.iter()
-			.flat_map(|elem| {
-				let (lo, hi) = elem.to_wires(builder);
-				[lo, hi]
+			.map(|elem| elem.to_wires(&builder))
+			.collect::<Vec<_>>();
+
+		// Row i of the matrix is element i's 128 bits, so the four 64 x 64 blocks are the low and
+		// high wires of the low and high halves of the input:
+		//
+		//     block 0 = low  wires of elements 0 to 63     = A
+		//     block 1 = high wires of elements 0 to 63     = B
+		//     block 2 = low  wires of elements 64 to 127   = C
+		//     block 3 = high wires of elements 64 to 127   = D
+		let mut blocks: [[Wire; BLOCK]; 4] = array::from_fn(|block| {
+			// Blocks are counted row half first, then which wire of the pair.
+			let (half, part) = (block / 2, block % 2);
+			array::from_fn(|row| {
+				let (lo, hi) = words[half * BLOCK + row];
+				if part == 0 { lo } else { hi }
+			})
+		});
+		// Each block is an independent 64 x 64 transpose over its own 64 wires.
+		for block in &mut blocks {
+			transpose_64(&builder, block);
+		}
+		let [a, b, c, d] = blocks;
+
+		// The off-diagonal blocks trade places, which is only a question of which wire is read:
+		//
+		//     [ A  B ]  ->  [ A^T  C^T ]
+		//     [ C  D ]      [ B^T  D^T ]
+		for row in 0..BLOCK {
+			elems[row] = Self::wires(&owner, a[row], c[row]);
+			elems[BLOCK + row] = Self::wires(&owner, b[row], d[row]);
+		}
+	}
+}
+
+/// Rows in one of the four square blocks the 128 x 128 transpose splits into.
+const BLOCK: usize = binius_core::word::Word::BITS;
+
+/// Transposes in place the 64 x 64 bit matrix whose row `i` is wire `i` and column `j` is bit `j`.
+///
+/// # Algorithm
+///
+/// A `2h x 2h` block transposes by swapping its two off-diagonal `h x h` halves, then transposing
+/// each of its four `h x h` sub-blocks:
+///
+/// ```text
+///     [ P  Q ]  swap   [ P  R ]  recurse   [ P^T  R^T ]
+///     [ R  S ]  ---->  [ Q  S ]  ------>   [ Q^T  S^T ]
+/// ```
+///
+/// Six stages take `h` from 32 down to 1.
+/// Each stage visits every wire pair straddling a block's midline and trades the bits their two
+/// halves must exchange:
+///
+/// ```text
+///     t    = ((row >> h) ^ mate) & MASK      MASK selects bit p where p mod 2h < h
+///     mate = mate ^ t
+///     row  = row ^ (t << h)
+/// ```
+///
+/// # Cost
+///
+/// - The mask is the only non-linear step, so one exchange costs one AND constraint.
+/// - A stage exchanges 32 pairs, so the six stages together cost 192.
+fn transpose_64(builder: &CircuitBuilder, rows: &mut [Wire; BLOCK]) {
+	// Start with the two largest sub-blocks and halve them every stage, down to single bits.
+	let mut h = BLOCK / 2;
+	while h >= 1 {
+		// One mask per stage, shared by all 32 exchanges in it.
+		let mask = builder.add_constant_64(low_mask(h));
+		// Blocks of this stage begin at multiples of 2h, each contributing h straddling pairs.
+		for base in (0..BLOCK).step_by(2 * h) {
+			for row in base..base + h {
+				// A row and its mate h rows down hold the two halves that must change places.
+				let (r0, r1) = (rows[row], rows[row + h]);
+				// Line the upper row's high half up with the lower row, then keep only the bits
+				// belonging to the sub-block being swapped.
+				let exchanged = builder.bxor(builder.shr(r0, h as u32), r1);
+				let t = builder.band(exchanged, mask);
+				// XOR is its own inverse, so folding that difference into both rows swaps them.
+				rows[row] = builder.bxor(r0, builder.shl(t, h as u32));
+				rows[row + h] = builder.bxor(r1, t);
+			}
+		}
+		h /= 2;
+	}
+}
+
+/// The mask selecting bit `p` exactly where `p mod 2h < h`: `h` ones, `h` zeros, repeating.
+///
+/// At `h = 8` this is `0x00ff00ff00ff00ff`, and at `h = 1` it is `0x5555555555555555`.
+const fn low_mask(h: usize) -> u64 {
+	// One run of h ones, at the bottom of the word.
+	let mut mask = (1u64 << h) - 1;
+	// Doubling the stride doubles the number of runs, so the word fills in six steps at worst
+	// rather than one step per run.
+	let mut stride = 2 * h;
+	while stride < BLOCK {
+		mask |= mask << stride;
+		stride *= 2;
+	}
+	mask
+}
+
+#[cfg(test)]
+mod tests {
+	use std::rc::Rc;
+
+	use binius_core::word::Word;
+	use binius_field::BinaryField1b as B1;
+	use binius_frontend::{CircuitStat, PopulateError};
+	use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+	use super::*;
+	use crate::{merkle::element_words, shared::Shared};
+
+	/// Builds the inverse constraints over an inverse the caller chooses, and reports what filling
+	/// said about them.
+	///
+	/// Both sides enter on public wires, so the claimed inverse is the caller's rather than the
+	/// hint's. That is what lets a test play the part of a prover supplying a forgery.
+	fn run_inverse_claim(x: B128, inv: B128) -> Result<(), PopulateError> {
+		let shared = Rc::new(Shared::new());
+		let builder = shared.builder();
+		let x_wires = [builder.add_inout(), builder.add_inout()];
+		let inv_wires = [builder.add_inout(), builder.add_inout()];
+		constrain_inverse(builder, (x_wires[0], x_wires[1]), (inv_wires[0], inv_wires[1]));
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		for (wires, value) in [(x_wires, x), (inv_wires, inv)] {
+			for (wire, word) in wires.iter().zip(element_words(u128::from(value))) {
+				w[*wire] = Word(word);
+			}
+		}
+		circuit.populate_wire_witness(&mut w)
+	}
+
+	#[test]
+	fn the_inverse_constraints_admit_exactly_the_inverse() {
+		// Invariant: the two assertions together pin the inverse, and each rules out a forgery the
+		// other would let through.
+		let mut rng = StdRng::seed_from_u64(0);
+		let x = B128::from(rng.random::<u128>());
+
+		// The honest witness, at a random value and at zero.
+		run_inverse_claim(x, x.invert_or_zero()).expect("the true inverse must be admitted");
+		run_inverse_claim(B128::ZERO, B128::ZERO).expect("zero inverts to zero");
+
+		// Mutation: the two forgeries a weaker scheme admits.
+		//
+		//     inv = 0 at x = 0   the first assertion alone cannot see it, since both sides vanish
+		//     inv = x            the tempting combined assertion cannot see it, for the same reason
+		run_inverse_claim(B128::ZERO, B128::ONE).expect_err("zero has no nonzero inverse");
+		run_inverse_claim(x, x).expect_err("a value is not its own inverse");
+	}
+
+	#[test]
+	fn square_transpose_matches_native_at_one_and_per_exchange() {
+		// Invariant: the in-circuit transpose agrees with the field's own, and the mask on each
+		// exchange is its only non-linear step.
+		//
+		// Fixture state: 128 elements on public wires, six stages of 32 exchanges in each of the
+		// four 64 x 64 blocks.
+		const DEGREE: usize = B128::ORDER_EXPONENT;
+		const EXCHANGES: usize = 6 * (BLOCK / 2) * 4;
+
+		let mut rng = StdRng::seed_from_u64(1);
+		let values = (0..DEGREE)
+			.map(|_| B128::from(rng.random::<u128>()))
+			.collect::<Vec<_>>();
+		// The reference answer, so the circuit is checked against the field rather than itself.
+		let mut expected = values.clone();
+		<B128 as ExtensionField<B1>>::square_transpose(&mut expected);
+
+		let shared = Rc::new(Shared::new());
+		let builder = shared.builder();
+		let mut fill = Vec::new();
+		let mut elems = values
+			.iter()
+			.map(|&value| {
+				let wires = [builder.add_inout(), builder.add_inout()];
+				fill.push((wires, value));
+				SymbolicElem::wires(&shared, wires[0], wires[1])
 			})
 			.collect::<Vec<_>>();
-		// UNCONSTRAINED: nothing ties the outputs to the inputs.
-		let out = builder.call_hint(crate::hints::SquareTransposeB1Hint, &[], &inputs);
-		for (i, elem) in elems.iter_mut().enumerate() {
-			*elem = Self::wires(&owner, out[2 * i], out[2 * i + 1]);
+
+		SymbolicElem::square_transpose::<B1>(&mut elems);
+
+		// Each output is pinned to a public claim, so a wrong transpose fails population rather
+		// than a Rust comparison.
+		for (i, (elem, &want)) in elems.iter().zip(&expected).enumerate() {
+			let (lo, hi) = elem.to_wires(builder);
+			let claimed = [builder.add_inout(), builder.add_inout()];
+			builder.assert_eq_v(format!("transposed[{i}]"), [lo, hi], claimed);
+			fill.push((claimed, want));
 		}
+
+		let circuit = builder.build();
+		let stat = CircuitStat::collect(&circuit);
+		let mut w = circuit.new_witness_filler();
+		for (wires, value) in fill {
+			for (wire, word) in wires.iter().zip(element_words(u128::from(value))) {
+				w[*wire] = Word(word);
+			}
+		}
+		circuit
+			.populate_wire_witness(&mut w)
+			.expect("the transpose must reproduce the native one");
+
+		assert_eq!(stat.n_and_constraints, EXCHANGES);
+		assert_eq!(stat.n_bmul_constraints, 0, "a bit transpose needs no field multiplication");
 	}
 }

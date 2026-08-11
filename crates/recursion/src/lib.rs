@@ -27,22 +27,21 @@
 //!   challenger's output, so nothing ties a challenge to the transcript that produced it.
 //! - **The Merkle openings.** `recv_openings` and `recv_committed_vector` return free wires rather
 //!   than values checked against a commitment root.
-//! - **Two field gadgets.** `invert_or_zero` and `square_transpose` are hints, so they carry the
-//!   right value but nothing pins them to their inputs.
 //!
 //! What *is* constrained is the verifier's arithmetic: the sumcheck folding, the eq-indicator and
-//! Lagrange evaluations, the monster multilinear, and every `assert_zero` along the way.
+//! Lagrange evaluations, the monster multilinear, every `assert_zero` along the way, and both field
+//! gadgets that used to be bare hints.
 //!
 //! So a circuit built here accepts proofs it should reject. It is useful for measuring that
 //! arithmetic and for keeping the pipeline honest while the gadgets are written, not for proving
 //! anything. Each gadget that lands removes entries from the recorded input list; with all of them
 //! in place the only input left is the proof itself.
 //!
-//! The gadget for the first of those bullets now exists in [`challenger`], reproducing the native
+//! The gadget for the first bullet now exists in [`challenger`], reproducing the native
 //! challenger's byte stream over wires.
 //! The gadgets for the second exist in [`merkle`], matching the native binary Merkle scheme.
 //! Driving them from `sample`, `sample_bits`, `recv_openings` and `recv_committed_vector` is what
-//! removes those two bullets.
+//! removes the two remaining bullets.
 
 pub mod challenger;
 mod channel;
