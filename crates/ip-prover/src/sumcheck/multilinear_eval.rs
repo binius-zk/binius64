@@ -1,6 +1,8 @@
 // Copyright 2026 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::iter;
+
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
@@ -50,14 +52,19 @@ where
 	) {
 		// The column arrives split on the round's highest variable.
 		// Its high half is the specialization at `X = 1`.
-		let col = chunk.col(self.col);
+		let hi = chunk.col(self.col).hi.as_ref();
+		let eq_ind = eq_ind.as_ref();
+
+		// The two run in lockstep, so pairing them checks the length once per chunk.
+		// Indexing one by the other's position instead consults a bound on every element.
+		assert_eq!(hi.len(), eq_ind.len());
 
 		// R(1) = <M(.., X = 1), eq(.., z)> over this chunk.
 		// Only the eq multiply is widened.
 		// The wide accumulator is reduced once at the end of the chunk.
 		let mut y_1 = <P as WideMul>::Output::default();
-		for (idx, &eq_i) in eq_ind.as_ref().iter().enumerate() {
-			y_1 += P::wide_mul(col.hi.as_ref()[idx], eq_i);
+		for (&m_i, &eq_i) in iter::zip(hi, eq_ind) {
+			y_1 += P::wide_mul(m_i, eq_i);
 		}
 		RoundEvals([y_1]).add_to(accum);
 	}
