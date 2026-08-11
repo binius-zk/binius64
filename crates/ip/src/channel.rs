@@ -15,13 +15,17 @@
 //! This abstraction allows protocol implementations to be generic over the underlying
 //! communication mechanism, whether it's an actual interactive channel or a non-interactive
 //! transcript using the Fiat-Shamir heuristic.
+//!
+//! [`WordIPVerifierChannel`] extends it for protocols that also carry 64-bit words, such as a
+//! constraint system's public inputs or a code proximity test's query indices.
 
-use std::iter::repeat_with;
+use std::{iter::repeat_with, ops::Shr};
 
+use binius_core::word::Word;
 use binius_field::{Field, field::FieldOps, util::FieldFn};
 use binius_transcript::{
 	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
+	fiat_shamir::{CanSample, CanSampleBits, Challenger},
 };
 
 /// Channel for receiving prover messages and sampling challenges in a public-coin interactive
@@ -110,6 +114,84 @@ pub trait IPVerifierChannel<F: Field> {
 	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem;
 }
 
+/// A verifier channel whose protocol carries 64-bit words alongside field elements.
+///
+/// Some values a verifier handles are words rather than field elements: the public inputs of a
+/// Binius64 constraint system, and the query indices a code proximity test samples. A channel that
+/// symbolically executes a verifier to build a circuit carries those as wires, so protocol code
+/// cannot name a concrete word type and goes through [`Self::Word`] instead.
+///
+/// [`Self::subset_sum`] and [`Self::select`] are how protocol code reaches the bits of a word. A
+/// channel over concrete values reads them directly; a circuit-building one emits a sub-circuit.
+pub trait WordIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
+	/// The word type this channel carries.
+	///
+	/// A channel over concrete values uses [`Word`]. A channel that builds a circuit uses a wire
+	/// type that folds the operations below over a builder.
+	///
+	/// [`From<Word>`](From) lifts a word the protocol description fixes, such as a constraint
+	/// system constant, and [`Shr`] is the index arithmetic a code proximity test performs between
+	/// fold rounds. Both are plain operations on the type rather than channel methods, so protocol
+	/// code writes `word.into()` and `word >> n` whatever the channel is. The shift amount is a
+	/// `u32` to match [`Word`]'s own [`Shl`](std::ops::Shl) and [`Shr`] impls.
+	type Word: Clone + From<Word> + Shr<u32, Output = Self::Word>;
+
+	/// Feeds words into the Fiat-Shamir state, each as eight little-endian bytes.
+	fn observe_words(&mut self, words: &[Self::Word]);
+
+	/// Returns the sum of the `elems` selected by the low bits of `word`, low bit first.
+	///
+	/// This is the inner product of `elems` with the bit decomposition of `word`. Bits of `word`
+	/// at or above `elems.len()` do not contribute.
+	///
+	/// ## Preconditions
+	///
+	/// * `elems.len()` must be at most 64.
+	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem;
+
+	/// Returns the element of `elems` at the index in the low bits of `word`.
+	///
+	/// Bits of `word` at or above `log2(elems.len())` are ignored.
+	///
+	/// ## Preconditions
+	///
+	/// * `elems` must be non-empty and its length must be a power of two.
+	fn select(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem;
+
+	/// Samples a uniform word of the given bit width.
+	///
+	/// The result is masked to `bits` bits. Protocols rely on that bound, so an implementation
+	/// must enforce it rather than assume the sampled value already fits.
+	fn sample_bits(&mut self, bits: usize) -> Self::Word;
+}
+
+/// [`WordIPVerifierChannel::subset_sum`] over a concrete word, for channels carrying [`Word`].
+///
+/// ## Preconditions
+///
+/// * `elems.len()` must be at most 64.
+pub fn subset_sum_word<E: FieldOps>(elems: &[E], word: Word) -> E {
+	assert!(elems.len() <= Word::BITS); // precondition
+
+	elems
+		.iter()
+		.enumerate()
+		.filter(|&(bit, _)| word.extract_bit(bit))
+		.map(|(_, elem)| elem.clone())
+		.sum()
+}
+
+/// [`WordIPVerifierChannel::select`] over a concrete word, for channels carrying [`Word`].
+///
+/// ## Preconditions
+///
+/// * `elems` must be non-empty and its length must be a power of two.
+pub fn select_word<E: FieldOps>(elems: &[E], word: Word) -> E {
+	assert!(!elems.is_empty() && elems.len().is_power_of_two()); // precondition
+
+	elems[word.as_u64() as usize & (elems.len() - 1)].clone()
+}
+
 impl<F, Challenger_> IPVerifierChannel<F> for VerifierTranscript<Challenger_>
 where
 	F: Field,
@@ -155,6 +237,30 @@ where
 
 	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
 		f.call_native(inputs)
+	}
+}
+
+impl<F, Challenger_> WordIPVerifierChannel<F> for VerifierTranscript<Challenger_>
+where
+	F: Field,
+	Challenger_: Challenger,
+{
+	type Word = Word;
+
+	fn observe_words(&mut self, words: &[Word]) {
+		self.observe().write_slice(words);
+	}
+
+	fn subset_sum(&mut self, elems: &[F], word: &Word) -> F {
+		subset_sum_word(elems, *word)
+	}
+
+	fn select(&mut self, elems: &[F], word: &Word) -> F {
+		select_word(elems, *word)
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Word {
+		Word::from_u64(CanSampleBits::<u32>::sample_bits(self, bits) as u64)
 	}
 }
 

@@ -8,12 +8,13 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
+use binius_core::word::Word;
 use binius_field::{
 	ExtensionField, Field, FieldOps,
 	arithmetic_traits::{InvertOrZero, Square},
 	util::FieldFn,
 };
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 
 use crate::channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 
@@ -199,6 +200,26 @@ impl<F: Field> IPVerifierChannel<F> for OracleSetupChannel {
 		// The setup channel performs no real computation; skipping `f` is permitted (see the
 		// `IPVerifierChannel::compute_public_value` contract).
 		DummyElem(PhantomData)
+	}
+}
+
+impl<F: Field> WordIPVerifierChannel<F> for OracleSetupChannel {
+	type Word = Word;
+
+	// The dry run records oracle shapes only, so nothing reaches a Fiat-Shamir state.
+	fn observe_words(&mut self, _words: &[Word]) {}
+
+	fn subset_sum(&mut self, _elems: &[DummyElem<F>], _word: &Word) -> DummyElem<F> {
+		DummyElem(PhantomData)
+	}
+
+	fn select(&mut self, _elems: &[DummyElem<F>], _word: &Word) -> DummyElem<F> {
+		DummyElem(PhantomData)
+	}
+
+	// The recorded oracle shapes do not depend on which leaves a protocol would query.
+	fn sample_bits(&mut self, _bits: usize) -> Word {
+		Word::ZERO
 	}
 }
 

@@ -15,7 +15,7 @@ pub trait ProxTestOracleProver<F: Field> {
 
 	/// Sends the per-oracle batched query openings: the oracle's optimal Merkle layer once,
 	/// followed by each queried coset's values and Merkle opening proof.
-	fn open_queries<Channel>(&self, indices: &[usize], channel: &mut Channel)
+	fn open_queries<Channel>(&self, indices: &[Channel::Word], channel: &mut Channel)
 	where
 		Channel: MerkleIPProverChannel<F, Commitment = Self::Commitment>;
 }
@@ -60,7 +60,7 @@ where
 {
 	type Commitment = C;
 
-	fn open_queries<Channel>(&self, indices: &[usize], channel: &mut Channel)
+	fn open_queries<Channel>(&self, indices: &[Channel::Word], channel: &mut Channel)
 	where
 		Channel: MerkleIPProverChannel<F, Commitment = Self::Commitment>,
 	{
@@ -69,7 +69,7 @@ where
 		// the verifier.
 		let lifted_indices = indices
 			.iter()
-			.map(|&index| index >> self.log_lift)
+			.map(|index| index.clone() >> self.log_lift as u32)
 			.collect::<Vec<_>>();
 		channel.send_openings(&self.commitment, self.codeword.to_ref(), &lifted_indices);
 	}
@@ -105,7 +105,7 @@ where
 {
 	type Commitment = C;
 
-	fn open_queries<Channel>(&self, indices: &[usize], channel: &mut Channel)
+	fn open_queries<Channel>(&self, indices: &[Channel::Word], channel: &mut Channel)
 	where
 		Channel: MerkleIPProverChannel<F, Commitment = Self::Commitment>,
 	{
@@ -155,7 +155,7 @@ where
 {
 	type Commitment = C;
 
-	fn open_queries<Channel>(&self, indices: &[usize], channel: &mut Channel)
+	fn open_queries<Channel>(&self, indices: &[Channel::Word], channel: &mut Channel)
 	where
 		Channel: MerkleIPProverChannel<F, Commitment = Self::Commitment>,
 	{
@@ -213,7 +213,7 @@ where
 	///
 	/// * `indices` - the sampled query indices into the original codeword domain
 	#[instrument(skip_all, name = "fri::FRIQueryProver::prove_queries", level = "debug")]
-	pub fn prove_queries<Channel>(&self, indices: &[usize], channel: &mut Channel)
+	pub fn prove_queries<Channel>(&self, indices: &[Channel::Word], channel: &mut Channel)
 	where
 		Channel: MerkleIPProverChannel<F, Commitment = C>,
 	{
@@ -223,9 +223,10 @@ where
 		// right by the round's arity before opening it.
 		let mut indices = indices.to_vec();
 		for fri_oracle in &self.fri_oracles {
-			for index in &mut indices {
-				*index >>= fri_oracle.coset_log_size();
-			}
+			indices = indices
+				.into_iter()
+				.map(|index| index >> fri_oracle.coset_log_size() as u32)
+				.collect();
 			fri_oracle.open_queries(&indices, channel);
 		}
 	}

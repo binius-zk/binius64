@@ -21,7 +21,7 @@ use binius_iop_prover::{
 	channel::IOPProverChannel,
 	merkle_channel::MerkleIPProverChannel,
 };
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::{FieldSlice, FieldVec, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::{BlindingInfo, WitnessLayout};
 use binius_spartan_verifier::IOPVerifier;
@@ -260,6 +260,28 @@ where
 		let val = self.inner_channel.sample();
 		self.interaction.push(val);
 		val
+	}
+}
+
+impl<F, P, NTT, Channel, ReplayFn, A> WordIPProverChannel<F>
+	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn, A>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
+{
+	type Word = Channel::Word;
+
+	fn observe_words(&mut self, words: &[Self::Word]) {
+		// Only the inner Fiat-Shamir state takes the words. Nothing is recorded for replay, since
+		// the replay channel observes nothing either.
+		self.inner_channel.observe_words(words);
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Self::Word {
+		self.inner_channel.sample_bits(bits)
 	}
 }
 

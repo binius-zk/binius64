@@ -8,9 +8,10 @@ use std::{
 	rc::{Rc, Weak},
 };
 
+use binius_core::word::Word;
 use binius_field::{Field, util::FieldFn};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
 use binius_spartan_frontend::circuit_builder::{CircuitBuilder, ConstraintBuilder};
 
 use super::circuit_elem::CircuitElem;
@@ -121,6 +122,26 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 			builder.hint_varsize(&input_wires, 1, move |vals| vec![f.call_native(vals)])[0]
 		};
 		CircuitElem::wire(&self.builder, out_wire)
+	}
+}
+
+impl<F: Field> WordIPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
+	type Word = Word;
+
+	// The outer verifier rebinds the public inputs, so the wrapper records no Fiat-Shamir state.
+	fn observe_words(&mut self, _words: &[Word]) {}
+
+	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
+		// The word is concrete, so which elements the sum runs over is settled while building.
+		subset_sum_word(elems, *word)
+	}
+
+	fn select(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
+		select_word(elems, *word)
+	}
+
+	fn sample_bits(&mut self, _bits: usize) -> Word {
+		Word::ZERO
 	}
 }
 
