@@ -95,6 +95,15 @@ impl Default for Options {
 	}
 }
 
+/// A chip call named by the wires it passes, before the build assigns them value indices.
+///
+/// A [`ChipCall`] reads its words out of the value vector, and which word a wire holds is only
+/// settled once the circuit is built.
+pub(crate) struct PendingCall {
+	chip: ChipRef,
+	inout: Vec<Wire>,
+}
+
 pub(crate) struct Shared {
 	pub(crate) graph: GateGraph,
 	pub(crate) opts: Options,
@@ -104,15 +113,6 @@ pub(crate) struct Shared {
 	pub(crate) chips: Vec<EmbeddedCircuit>,
 	/// The calls the built circuit makes, in the order they were emitted.
 	pub(crate) chip_calls: Vec<PendingCall>,
-}
-
-/// A chip call named by the wires it passes, before the build assigns them value indices.
-///
-/// A [`ChipCall`] reads its words out of the value vector, and which word a wire holds is only
-/// settled once the circuit is built.
-pub(crate) struct PendingCall {
-	chip: ChipRef,
-	inout: Vec<Wire>,
 }
 
 /// Circuit builder for constructing zero-knowledge proof circuits.

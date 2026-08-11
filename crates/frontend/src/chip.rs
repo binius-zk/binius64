@@ -28,29 +28,6 @@ pub struct EmbeddedCircuit {
 	pub chip_calls: Vec<ChipCall>,
 }
 
-/// A chip of the system a [`CircuitBuilder`](crate::CircuitBuilder) is building.
-///
-/// [`CircuitBuilder::add_chip`](crate::CircuitBuilder::add_chip) returns one for each chip it
-/// registers, and a call site names its callee by it. Registering further chips never moves a chip
-/// already registered, so a reference stays good for the rest of the build.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ChipRef(usize);
-
-impl ChipRef {
-	/// Names the chip at the given index of [`CircuitM4::chips`].
-	pub(crate) const fn new(chip_id: usize) -> Self {
-		Self(chip_id)
-	}
-
-	/// Returns the chip's index in [`CircuitM4::chips`], which is what a [`ChipCall`] names it by.
-	///
-	/// Reading the index out is the only direction: a reference cannot be made from one, so every
-	/// reference names a chip that was registered.
-	pub const fn chip_id(self) -> usize {
-		self.0
-	}
-}
-
 /// A circuit composed of chips, as the circuits that generate their witnesses.
 ///
 /// `main` is the entry point: it calls chips, but no chip ID names it, so nothing calls it. The
@@ -200,6 +177,29 @@ impl CircuitM4 {
 				.map(|(chip, n_active)| (lower(chip), *n_active))
 				.collect(),
 		}
+	}
+}
+
+/// A chip of the system a [`CircuitBuilder`](crate::CircuitBuilder) is building.
+///
+/// [`CircuitBuilder::add_chip`](crate::CircuitBuilder::add_chip) returns one for each chip it
+/// registers, and a call site names its callee by it. Registering further chips never moves a chip
+/// already registered, so a reference stays good for the rest of the build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChipRef(usize);
+
+impl ChipRef {
+	/// Names the chip at the given index of [`CircuitM4::chips`].
+	pub(crate) const fn new(chip_id: usize) -> Self {
+		Self(chip_id)
+	}
+
+	/// Returns the chip's index in [`CircuitM4::chips`], which is what a [`ChipCall`] names it by.
+	///
+	/// Reading the index out is the only direction: a reference cannot be made from one, so every
+	/// reference names a chip that was registered.
+	pub const fn chip_id(self) -> usize {
+		self.0
 	}
 }
 
