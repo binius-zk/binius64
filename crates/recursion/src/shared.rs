@@ -8,9 +8,9 @@ use binius_frontend::{CircuitBuilder, Wire};
 
 /// The circuit under construction, plus the wires whose values the witness must supply.
 ///
-/// Shared between the channel and every [`Elem`](crate::Elem) and [`Word`](crate::Word) derived
-/// from it, so an operation can allocate a wire wherever it happens rather than only where the
-/// channel is in scope.
+/// Shared between the channel and every [`SymbolicElem`](crate::SymbolicElem) and
+/// [`SymbolicWord`](crate::SymbolicWord) derived from it, so an operation can allocate a wire
+/// wherever it happens rather than only where the channel is in scope.
 pub struct Shared {
 	builder: CircuitBuilder,
 	/// Wires the circuit cannot derive, in allocation order.
