@@ -272,6 +272,13 @@ struct ValueWords<'a> {
 }
 
 /// The words one operand term contributes, one per instance of the batch.
+///
+/// A term carries a sequence of two shifts, and the cases below split on how much of it does work.
+///
+/// - A constant is shifted once here and shared, whatever its sequence.
+/// - A hidden row keeps the single-shift streaming path when one slot is degenerate.
+///
+/// So a lone shift costs one pass over the stripe, as it does without a sequence at all.
 enum TermWords<'a> {
 	/// One already-shifted constant, repeated across every instance.
 	Splat(Word),
@@ -285,6 +292,22 @@ enum TermWords<'a> {
 		variant: ShiftVariant,
 		/// How far to shift, always non-zero.
 		amount: u32,
+	},
+	/// One hidden row, shifted twice as it is streamed.
+	///
+	/// The intermediate word lives in a register per instance.
+	/// So no scratch stripe is needed, and the stripe is walked once.
+	///
+	/// Both shifts are resolved per word rather than hoisted out of the loop.
+	/// That costs two predictable branches an instance, paid only by terms needing both slots.
+	/// Composing the pair into a single source-bit map would hoist them back out.
+	DoublyShifted {
+		/// The unshifted row, one word per instance.
+		row: &'a [Word],
+		/// The shift applied first, never the identity.
+		inner: Shift,
+		/// The shift applied to the inner shift's result, never the identity.
+		outer: Shift,
 	},
 }
 
@@ -411,6 +434,12 @@ impl<'a> ValueWords<'a> {
 				variant,
 				amount,
 			} => variant.write_shifted(out, row, amount),
+			TermWords::DoublyShifted { row, inner, outer } => {
+				// Positions line up one to one, so the pair iterator stops at the shorter slice.
+				for (cell, &word) in iter::zip(out, row) {
+					cell.write(outer.apply(inner.apply(word)));
+				}
+			}
 		}
 	}
 
@@ -432,25 +461,25 @@ impl<'a> ValueWords<'a> {
 				variant,
 				amount,
 			} => variant.xor_shifted(out, row, amount),
+			TermWords::DoublyShifted { row, inner, outer } => {
+				for (cell, &word) in iter::zip(out, row) {
+					*cell = *cell ^ outer.apply(inner.apply(word));
+				}
+			}
 		}
 	}
 
 	/// Resolves one term to the words it contributes.
 	fn term_words(&self, term: &ShiftedValueIndex) -> TermWords<'a> {
-		// The stripe carries one shift, so the outer slot must be the identity. Chaining the pair
-		// is what lifts this.
-		debug_assert!(
-			!term.is_doubly_shifted(),
-			"operand materialization applies only the inner shift of a term"
-		);
 		let value_index = term.value_index;
-		let Shift { variant, amount } = term.inner();
+		let [inner, outer] = term.shift_seq;
 
 		let row_index = match value_index.segment() {
-			// A constant names one word, shifted once and shared by every instance.
+			// A constant names one word, shifted once here and shared by every instance.
+			// Both slots are applied, so a sequence on a constant costs nothing per instance.
 			ValueSegment::Constant => {
 				let constant = self.constants[value_index.index() as usize];
-				return TermWords::Splat(variant.apply(constant, amount as usize));
+				return TermWords::Splat(outer.apply(inner.apply(constant)));
 			}
 			// An inout or private index names one wire, whose instances are one contiguous row.
 			// The table stores the hidden segment, so the inout rows lead and the private ones
@@ -465,15 +494,21 @@ impl<'a> ValueWords<'a> {
 			[(row_index << self.log_instances)..((row_index + 1) << self.log_instances)];
 
 		// Invariant: shifting by zero returns the word untouched, whichever variant is named.
-		// So the unshifted case covers every variant.
-		// The shifted case then never sees a zero amount.
-		match u32::from(amount) {
-			0 => TermWords::Plain(row),
-			amount => TermWords::Shifted {
-				row,
-				variant,
-				amount,
-			},
+		// So a degenerate slot drops out, and each case below sees only non-zero amounts.
+		//
+		// A single-shift term keeps the streaming path, rather than paying for a no-op second pass.
+		// The canonical form places a lone shift inner; the outer-only arm costs nothing and keeps
+		// this correct either way.
+		let single = |shift: Shift| TermWords::Shifted {
+			row,
+			variant: shift.variant,
+			amount: u32::from(shift.amount),
+		};
+		match (inner.is_identity(), outer.is_identity()) {
+			(true, true) => TermWords::Plain(row),
+			(false, true) => single(inner),
+			(true, false) => single(outer),
+			(false, false) => TermWords::DoublyShifted { row, inner, outer },
 		}
 	}
 }
@@ -1096,27 +1131,40 @@ mod tests {
 		}
 	}
 
-	// One drawn shift term: which of the circuit's four wires to read, and how to shift it.
-	// The amount stays in `1..max_amount`, so every draw really shifts and stays in range.
-	fn any_shift_term() -> impl Strategy<Value = (usize, ShiftVariant, u8)> {
-		(0usize..4, prop::sample::select(ShiftVariant::ALL.to_vec())).prop_flat_map(
-			|(wire, shift_variant)| {
-				(1..shift_variant.max_amount())
-					.prop_map(move |amount| (wire, shift_variant, amount as u8))
-			},
-		)
+	// One drawn shift: a variant and an amount in `1..max_amount`, so it really shifts and stays in
+	// range for its variant.
+	fn any_shift() -> impl Strategy<Value = Shift> {
+		prop::sample::select(ShiftVariant::ALL.to_vec()).prop_flat_map(|variant| {
+			(1..variant.max_amount()).prop_map(move |amount| Shift::new(variant, amount))
+		})
+	}
+
+	// One drawn shift term: which of the circuit's four wires to read, and the sequence to shift
+	// by.
+	//
+	// The outer slot is the identity in some draws and a working shift in others, so both the
+	// singly and the doubly shifted branches are reached.
+	//
+	// The pair is not filtered for irreducibility: both routes apply whatever sequence they are
+	// given, so a collapsible pair is a perfectly good input.
+	fn any_shift_term() -> impl Strategy<Value = (usize, [Shift; 2])> {
+		(0usize..4, any_shift(), prop::option::of(any_shift()))
+			.prop_map(|(wire, inner, outer)| (wire, [inner, outer.unwrap_or(Shift::IDENTITY)]))
 	}
 
 	proptest! {
-		// Invariant: every batch row equals the single-instance reference, for all eight shifts.
+		// Invariant: every batch row equals the single-instance reference, for every shift sequence.
 		//
 		// The compiler emits only unshifted operands, so the fixed fixtures reach three shifts.
-		// Drawing the shift covers the other five: rotate, and the four half-word forms.
+		// Drawing the sequence covers the other five variants and both slots carrying work.
+		//
+		// The reference applies a term's two shifts in order, so drawing pairs pins the batched
+		// materializer to the single-instance semantics for free.
 		//
 		// Fixture state: 4 instances, 1 constraint.
 		//
-		//     operand A: 1..4 drawn terms  → always initializes its column
-		//     operand B: 0..4 drawn terms  → may be empty, pinning that column at zero
+		//     operand A: 1..4 drawn terms  -> always initializes its column
+		//     operand B: 0..4 drawn terms  -> may be empty, pinning that column at zero
 		#[test]
 		fn shifted_operands_match_the_reference_for_every_variant(
 			inputs in prop::collection::vec((any::<u64>(), any::<u64>(), any::<u64>()), 4),
@@ -1129,12 +1177,10 @@ mod tests {
 			// A drawn wire slot in 0..4 names one of the circuit's four witness words.
 			let wires = [c.x, c.y, c.w, c.z].map(|wire| c.circuit.witness_index(wire));
 			// An operand is the XOR of its terms, so a term list becomes one operand directly.
-			let to_operand = |terms: &[(usize, ShiftVariant, u8)]| -> Operand {
+			let to_operand = |terms: &[(usize, [Shift; 2])]| -> Operand {
 				terms
 					.iter()
-					.map(|&(wire, variant, amount)| {
-						ShiftedValueIndex::single(wires[wire], Shift { variant, amount })
-					})
+					.map(|&(wire, shift_seq)| ShiftedValueIndex::new(wires[wire], shift_seq))
 					.collect()
 			};
 
@@ -1230,6 +1276,22 @@ mod tests {
 				vec![ShiftedValueIndex::srl(y, 5)],
 				vec![ShiftedValueIndex::sar(z, 7)],
 			]),
+			AndConstraint([
+				// Doubly shifted terms, one initializing its stripe and one accumulating into it.
+				// Dropping the low bits then returning the rest is what no single shift does.
+				vec![
+					ShiftedValueIndex::new(x, [Shift::srl(3), Shift::sll(3)]),
+					ShiftedValueIndex::new(y, [Shift::rotr(9), Shift::sll32(4)]),
+				],
+				// A doubly shifted term mixed with a singly and an unshifted one, so all three
+				// term classes run within one operand.
+				vec![
+					ShiftedValueIndex::new(z, [Shift::sar(7), Shift::srl(2)]),
+					ShiftedValueIndex::srl(y, 5),
+					ShiftedValueIndex::plain(x),
+				],
+				Vec::new(),
+			]),
 			// An empty operand set: its column must stay at the zeroed initial value.
 			AndConstraint::default(),
 		];
@@ -1245,10 +1307,15 @@ mod tests {
 			OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
 		let [a, b] = columns.as_slices();
 
-		// `a` and `b` equal the shift-aware value-vec reference for the same constraints.
+		// Both columns equal the shift-aware reference over the real constraint rows.
+		// The constraint axis rounds up to a power of two, so the rows past the true count are the
+		// zero padding and are checked separately.
 		let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
-		assert_eq!(a, a_ref);
-		assert_eq!(b, b_ref);
+		let n_rows = and_constraints.len() << table.log_instances();
+		assert_eq!(&a[..n_rows], a_ref);
+		assert_eq!(&b[..n_rows], b_ref);
+		assert!(a[n_rows..].iter().all(|&word| word == Word::ZERO));
+		assert!(b[n_rows..].iter().all(|&word| word == Word::ZERO));
 	}
 
 	#[test]
