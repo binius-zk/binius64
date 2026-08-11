@@ -10,7 +10,7 @@ use binius_math::{
 };
 
 use super::{
-	claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
+	SegmentWords, claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
 	phase_2::prove_phase_2,
 };
 
@@ -133,7 +133,8 @@ impl<F: Field> PreparedOperatorData<F> {
 ///
 /// # Parameters
 /// - `key_collection`: the prover's key collection for the constraint system.
-/// - `words`: the witness words, which must have a power-of-two length.
+/// - `public_words`: the constants followed by the inout values, as the circuit declares them.
+/// - `hidden_words`: the private values, as the circuit declares them.
 /// - `claims`: the operand evaluation claim of each operation.
 /// - `domain_subspace`: the univariate evaluation domain.
 /// - `channel`: the prover channel driving the interactive protocol.
@@ -143,7 +144,8 @@ impl<F: Field> PreparedOperatorData<F> {
 /// The `SumcheckOutput` with the final challenges and the witness evaluation.
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
-	words: &[Word],
+	public_words: &[Word],
+	hidden_words: &[Word],
 	claims: OperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
@@ -155,6 +157,15 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
+	// The segments are passed as the circuit declares them, at whatever length that is. Phase 1
+	// zips each word with its key range, so a segment shorter than its key ranges stops at its
+	// last value — the words past it carry no keys — and phase 2's `fold_words` zero-pads each
+	// fold up to `log2_ceil(len)` variables. Neither needs a padded segment.
+	let words = SegmentWords {
+		public: public_words,
+		hidden: hidden_words,
+	};
+
 	// One batching coefficient per operation, expanded along with its constraint point.
 	// SOUNDNESS: `prepare` draws in the order the verifier draws in; do not reorder it.
 	let prepared = {

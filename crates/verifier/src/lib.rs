@@ -36,6 +36,7 @@
 pub mod config;
 mod error;
 pub mod protocols;
+pub mod reduction;
 pub mod ring_switch;
 pub mod signature;
 mod verify;

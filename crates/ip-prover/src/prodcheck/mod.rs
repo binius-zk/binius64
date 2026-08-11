@@ -17,11 +17,13 @@ use itertools::izip;
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, bivariate_product_mle,
-		common::{MleCheckProver, SumcheckProver},
-		prove_single_mlecheck,
+		ProveSingleOutput, bivariate_product_mle, common::MleCheckProver, prove_single_mlecheck,
 	},
 };
+
+pub mod one_pad_mle;
+
+use one_pad_mle::OnePadMleCheckProver;
 
 /// Witness-based prover for the product check protocol.
 ///
@@ -103,13 +105,14 @@ where
 		self.layers.len()
 	}
 
-	/// Consumes the prover and returns its single remaining (widest) layer.
+	/// Pops the widest remaining layer and returns it.
 	///
 	/// # Preconditions
-	/// * `self.n_layers() == 1`
-	pub fn into_final_layer(mut self) -> FieldVec<P, A> {
-		assert_eq!(self.layers.len(), 1, "precondition: exactly one remaining layer");
-		self.layers.pop().expect("layers has exactly one element")
+	/// * `self.n_layers() >= 1`
+	pub fn pop_layer(&mut self) -> FieldVec<P, A> {
+		self.layers
+			.pop()
+			.expect("precondition: layers is non-empty")
 	}
 
 	/// Pops the last layer and returns an MLE-check prover for it.
@@ -201,17 +204,6 @@ pub struct BatchProveOutput<F> {
 	pub evals: Vec<F>,
 }
 
-/// Output of [`batch_prove_until_final_layer`].
-///
-/// After running `n_layers - 1` reduction layers, each prover retains its final (widest) layer.
-/// `provers` pairs each remaining prover with its reduced evaluation at `eval_point`.
-pub struct BatchProveUntilFinalLayerOutput<'a, A: Allocator, P: PackedField> {
-	/// The reduced evaluation point shared by all remaining provers.
-	pub eval_point: Vec<P::Scalar>,
-	/// Each remaining prover (with its final layer) paired with its reduced eval at `eval_point`.
-	pub provers: Vec<(P::Scalar, ProdcheckProver<'a, A, P>)>,
-}
-
 /// Runs a batched product check protocol for multiple independent prodcheck provers.
 ///
 /// This combines n provers, each for an $m$-variate multilinear, using multilinear interpolation
@@ -240,8 +232,7 @@ pub struct BatchProveUntilFinalLayerOutput<'a, A: Allocator, P: PackedField> {
 /// * `claimed_products.len() == provers.len()`.
 /// * `content_point.len() == witness.log_len() - n_layers` for each prover.
 ///
-/// This delegates to [`batch_prove_until_final_layer`] and then runs the final retained layer,
-/// returning the reduced per-input-prover evaluations at the reduced evaluation point. The
+/// Returns the reduced per-input-prover evaluations at the reduced evaluation point. The
 /// batched claim is checked by the ordinary `binius_ip::prodcheck::verify` recursion over
 /// `n_layers` layers (the eq(selector)-weighted combination of the returned evaluations), with
 /// the selector coordinates forming the first `k` coordinates of the claim point.
@@ -273,51 +264,10 @@ pub fn batch_prove<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	content_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchProveOutput<F> {
-	let n = provers.len();
-	let k = selector_point.len();
-
-	let BatchProveUntilFinalLayerOutput {
-		eval_point,
-		provers,
-	} = batch_prove_until_final_layer(
-		provers,
-		claimed_products,
-		selector_point,
-		content_point,
-		channel,
-	);
-
-	// Finish the retained final layer: run it exactly as an interior reduction layer does.
-	let (claimed_products, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
-	let (provers, mut evals, eval_point) =
-		batch_prove_layer(provers, claimed_products, &eval_point, k, channel);
-	debug_assert!(provers.is_empty(), "the final layer leaves no provers");
-
-	// Drop the padded (2^k) selector slots, keeping one reduced eval per input prover.
-	evals.truncate(n);
-
-	BatchProveOutput { eval_point, evals }
-}
-
-/// Runs a batched product check up to (but not finishing) the final layer.
-///
-/// Runs `n_layers - 1` of the per-layer reductions, stopping one layer short so that each prover
-/// retains its final (widest) layer. The remaining provers are returned (each paired with its
-/// reduced eval at the shared reduced `eval_point`) rather than combined into a single claim, so
-/// the caller can finish the final layer itself — e.g. [`batch_prove`] runs it directly, or a
-/// caller splices the retained layers into another reduction.
-///
-/// Arguments and preconditions are as for [`batch_prove`].
-pub fn batch_prove_until_final_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
-	provers: Vec<ProdcheckProver<'a, A, P>>,
-	claimed_products: Vec<F>,
-	selector_point: Vec<F>,
-	content_point: Vec<F>,
-	channel: &mut impl IPProverChannel<F>,
-) -> BatchProveUntilFinalLayerOutput<'a, A, P> {
 	assert!(!provers.is_empty()); // precondition
 	assert_eq!(claimed_products.len(), provers.len()); // precondition
 
+	let n = provers.len();
 	let k = selector_point.len();
 	assert!(provers.len() <= (1 << k)); // precondition
 
@@ -330,22 +280,16 @@ pub fn batch_prove_until_final_layer<'a, A: Allocator, F: Field, P: PackedField<
 	// layer this seeds each layer prover with `claim{point: content_point, eval: claimed_product}`.
 	let eval_point = [selector_point, content_point].concat();
 
-	// Run `n_layers - 1` reductions, stopping one layer short so each prover retains its final
-	// (widest) layer for the caller to finish.
-	let (provers, claimed_products, eval_point) = (0..n_layers - 1).fold(
+	let (provers, evals, eval_point) = (0..n_layers).fold(
 		(provers, claimed_products, eval_point),
 		|(provers, claimed_products, eval_point), _| {
 			batch_prove_layer(provers, claimed_products, &eval_point, k, channel)
 		},
 	);
+	debug_assert!(provers.is_empty(), "the final layer leaves no provers");
+	debug_assert_eq!(evals.len(), n);
 
-	// Pair each remaining (single-layer) prover with its reduced eval at `eval_point`.
-	let provers = iter::zip(claimed_products, provers).collect();
-
-	BatchProveUntilFinalLayerOutput {
-		eval_point,
-		provers,
-	}
+	BatchProveOutput { eval_point, evals }
 }
 
 #[allow(clippy::type_complexity)]
@@ -356,11 +300,10 @@ fn batch_prove_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
 ) -> (Vec<ProdcheckProver<'a, A, P>>, Vec<F>, Vec<F>) {
-	// Split eval_point into outer (selector) and inner (content) coordinates.
 	let alloc = provers[0].alloc;
-	let (outer_coords, inner_coords) = eval_point.split_at(k);
+	let inner_coords = &eval_point[k..];
 
-	let (mut layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_products)
+	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_products)
 		.map(|(prover, prod)| {
 			prover.layer_prover(MultilinearEvalClaim {
 				eval: prod,
@@ -368,6 +311,34 @@ fn batch_prove_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 			})
 		})
 		.unzip();
+
+	let (next_claimed_products, next_point) =
+		prove_layer_rounds::<A, F, P>(layer_provers, eval_point, k, alloc, channel);
+	let next_provers = next_provers.into_iter().flatten().collect();
+
+	(next_provers, next_claimed_products, next_point)
+}
+
+/// Runs one batched layer reduction over already-constructed layer provers.
+///
+/// The per-instance reductions run in lockstep, their round polynomials combined with the
+/// eq(selector) weights, followed by the shared selector rounds over the per-instance child
+/// evaluation pairs. This is the layer loop of both [`batch_prove`], whose instances share a layer
+/// count, and [`batch_prove_unequal_depths`], whose don't.
+///
+/// # Returns
+///
+/// Each instance's claim on the next layer, in input order, and the reduced evaluation point.
+fn prove_layer_rounds<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	mut layer_provers: Vec<impl MleCheckProver<F>>,
+	eval_point: &[F],
+	k: usize,
+	alloc: &A,
+	channel: &mut impl IPProverChannel<F>,
+) -> (Vec<F>, Vec<F>) {
+	let n = layer_provers.len();
+	// Split eval_point into outer (selector) and inner (content) coordinates.
+	let (outer_coords, inner_coords) = eval_point.split_at(k);
 
 	// Compute eq weights for batching: eq(i, outer_coords) for all i in B_k.
 	let eq_weights = eq_ind_partial_eval::<F>(outer_coords);
@@ -454,18 +425,159 @@ fn batch_prove_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	next_point.reverse();
 	next_point.push(r);
 
-	// Update claimed products for next iteration.
-	let next_claimed_products = iter::zip(&vals_0, &vals_1)
+	// Update claimed products for next iteration, dropping the padded (2^k) selector slots.
+	let next_claimed_products = iter::zip(&vals_0[..n], &vals_1[..n])
 		.map(|(e0, e1)| extrapolate_line_packed(*e0, *e1, r))
 		.collect();
 
-	let next_provers = next_provers.into_iter().flatten().collect();
-
-	(next_provers, next_claimed_products, next_point)
+	(next_claimed_products, next_point)
 }
+
+/// Output of [`batch_prove_unequal_depths`].
+///
+/// After `n_layers - 1` reduction layers, each tree retains its final (widest) layer, wrapped in
+/// the one-padding prover that corrects it to the batch's depth.
+pub struct BatchProveUnequalDepthsOutput<F, Prover> {
+	/// The reduced evaluation point shared by all remaining provers.
+	pub eval_point: Vec<F>,
+	/// Each input prover's reduced (padded) claim paired with the not-yet-run prover for its final
+	/// layer, in input order.
+	pub provers: Vec<(F, Prover)>,
+}
+
+/// Runs a batched product check for trees of *unequal* depths.
+///
+/// This is [`batch_prove`] without the requirement that every prover have the same layer count.
+/// Each tree shallower than the deepest is proved as a product check over the one-padding of its
+/// witness — the same witness with constant-1 leaves filling the extra depth, which leaves its
+/// product unchanged. The transcript is then exactly that of an equal-depth batch of the maximum
+/// depth: the verifier runs the ordinary [`binius_ip::prodcheck::verify`] over `n_layers` layers
+/// and never learns the individual depths.
+///
+/// Unlike [`batch_prove`], every prover must reduce over *all* of its witness variables, so each
+/// product is a scalar and there is no content point. The one-padding is only worth its
+/// bookkeeping on full trees, and dropping the content dimension keeps that bookkeeping to two
+/// scalars per layer.
+///
+/// The prover does not materialize the padded witnesses. Each layer's per-tree reduction runs
+/// through [`one_pad_mle`], which corrects the unpadded layer's messages in $O(1)$ per round.
+///
+/// The protocol and the round polynomials are specified in the *Batched Product Checks of Unequal
+/// Depths* appendix of the Binius64 whitepaper.
+///
+/// # Arguments
+///
+/// As [`batch_prove`], except that the provers' layer counts may differ and there is no
+/// `content_point`.
+///
+/// # Preconditions
+/// * `provers` must be non-empty.
+/// * Every prover's witness must have exactly `prover.n_layers()` variables, which must be at least
+///   1.
+/// * `2^selector_point.len() >= provers.len()`.
+/// * `claimed_products.len() == provers.len()`.
+///
+/// # Returns
+///
+/// This stops one layer short, returning each tree's reduced claim beside the prover for its
+/// final (widest) layer — the layer whose reduction
+/// dominates the cost, which a caller can therefore batch with other sumchecks. Running those
+/// provers and the selector rounds that follow finishes the check.
+///
+/// The returned claims and, after the final layer, the per-tree leaf evaluations are claims on the
+/// *padded* witnesses. [`binius_ip::prodcheck::unpad_leaf_claim`] reduces one to the claim on the
+/// tree's own witness.
+pub fn batch_prove_unequal_depths<'a, A, F, P, Channel>(
+	mut provers: Vec<ProdcheckProver<'a, A, P>>,
+	claimed_products: Vec<F>,
+	selector_point: Vec<F>,
+	channel: &mut Channel,
+) -> BatchProveUnequalDepthsOutput<F, impl MleCheckProver<F> + use<'a, A, F, P, Channel>>
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+{
+	assert!(!provers.is_empty()); // precondition
+	assert_eq!(claimed_products.len(), provers.len()); // precondition
+
+	let k = selector_point.len();
+	assert!(provers.len() <= (1 << k)); // precondition
+	assert!(provers.iter().all(|prover| prover.n_layers() >= 1)); // precondition
+
+	let alloc = provers[0].alloc;
+	let n_layers = provers
+		.iter()
+		.map(ProdcheckProver::n_layers)
+		.max()
+		.expect("provers is non-empty");
+	// How much depth each tree is padded by.
+	let pad_lens = provers
+		.iter()
+		.map(|prover| n_layers - prover.n_layers())
+		.collect::<Vec<_>>();
+
+	// The tree products stay in hand for the padding layers, which are one-paddings of them; the
+	// input vector itself becomes the running per-tree claims.
+	let products = claimed_products.clone();
+	let mut claims = claimed_products;
+	let mut eval_point = selector_point;
+
+	// Reduce down to the final layer. Iteration `node_len` reduces the layer holding `node_len`
+	// node variables, which is the point's suffix past the selector coordinates.
+	for _ in 0..n_layers - 1 {
+		let layer_provers =
+			layer_provers(&mut provers, &pad_lens, &products, &claims, &eval_point[k..]);
+		let (next_claims, next_point) =
+			prove_layer_rounds::<A, F, P>(layer_provers, &eval_point, k, alloc, channel);
+		claims = next_claims;
+		eval_point = next_point;
+	}
+
+	let provers = layer_provers(&mut provers, &pad_lens, &products, &claims, &eval_point[k..]);
+
+	BatchProveUnequalDepthsOutput {
+		eval_point,
+		provers: iter::zip(claims, provers).collect(),
+	}
+}
+
+/// Builds one padded layer prover per tree, for the layer claimed at `node_point`.
+fn layer_provers<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	provers: &mut [ProdcheckProver<'a, A, P>],
+	pad_lens: &[usize],
+	products: &[F],
+	claims: &[F],
+	node_point: &[F],
+) -> Vec<OnePadMleCheckProver<F, impl MleCheckProver<F> + use<'a, A, F, P>>> {
+	let node_len = node_point.len();
+
+	izip!(provers, pad_lens, products, claims)
+		.map(|(prover, &pad_len, &product, &claim)| {
+			let alloc = prover.alloc;
+			// While the batch is still above this tree, the layer is a one-padding of the tree's
+			// product, whose two children are that product and the constant one. Only once the
+			// batch reaches the tree does it start consuming its layers.
+			let layer = if node_len < pad_len {
+				FieldBuffer::from_values_in(alloc, &[product, F::ONE])
+			} else {
+				let layer = prover.pop_layer();
+				assert_eq!(
+					layer.log_len(),
+					node_len - pad_len + 1,
+					"precondition: the witness has exactly n_layers variables"
+				);
+				layer
+			};
+			one_pad_mle::new(alloc, layer, pad_len.min(node_len), node_point.to_vec(), claim)
+		})
+		.collect()
+}
+
 #[cfg(test)]
 mod tests {
-	use binius_field::PackedField;
+	use binius_field::{PackedField, field::FieldOps};
 	use binius_ip::prodcheck;
 	use binius_math::{
 		inner_product::inner_product,
@@ -787,5 +899,160 @@ mod tests {
 	fn test_batch_prove_with_content() {
 		// 3 provers (non power of 2), 4 layers, content_len = 2.
 		test_batch_prove_with_content_helper::<Packed128b>(4, 3, 2);
+	}
+
+	// ==================== batch_prove_unequal_depths tests ====================
+
+	/// One prover per entry of `depths`, each reducing over all of its witness variables.
+	#[allow(clippy::type_complexity)]
+	fn unequal_depth_provers<'a, P: PackedField>(
+		rng: &mut impl Rng,
+		alloc: &'a GlobalAllocator,
+		depths: &[usize],
+	) -> (Vec<FieldBuffer<P>>, Vec<ProdcheckProver<'a, GlobalAllocator, P>>, Vec<P::Scalar>) {
+		itertools::multiunzip(depths.iter().map(|&depth| {
+			let witness = random_field_buffer::<P>(&mut *rng, depth);
+			let (prover, products) = ProdcheckProver::new(depth, alloc, witness.clone());
+			assert_eq!(products.log_len(), 0);
+			(witness, prover, products.get(0))
+		}))
+	}
+
+	/// The eq(selector)-weighted combination of per-tree claims, as the verifier forms it.
+	fn combine_claims<P: PackedField>(
+		claims: &[P::Scalar],
+		selector_point: &[P::Scalar],
+	) -> P::Scalar {
+		let eq_weights = eq_ind_partial_eval::<P>(selector_point);
+		inner_product(claims.iter().copied(), (0..claims.len()).map(|i| eq_weights.get(i)))
+	}
+
+	/// Proves a batch of unequal-depth trees against the depth-oblivious verifier, then unpads each
+	/// tree's leaf claim and checks it against that tree's own witness.
+	fn test_unequal_depths_helper<P: PackedField>(depths: &[usize]) {
+		let mut rng = StdRng::seed_from_u64(11);
+		let alloc = GlobalAllocator;
+
+		let k = log2_ceil_usize(depths.len());
+		let n_layers = *depths.iter().max().expect("depths is non-empty");
+
+		let (witnesses, provers, claimed_products) =
+			unequal_depth_provers::<P>(&mut rng, &alloc, depths);
+
+		// The verifier's input claim is the eq(selector)-weighted combination of the products.
+		let selector_point = random_scalars::<P::Scalar>(&mut rng, k);
+		let claim = MultilinearEvalClaim {
+			eval: combine_claims::<P>(&claimed_products, &selector_point),
+			point: selector_point.clone(),
+		};
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let BatchProveUnequalDepthsOutput {
+			eval_point,
+			provers,
+		} = batch_prove_unequal_depths(
+			provers,
+			claimed_products,
+			selector_point,
+			&mut prover_transcript,
+		);
+
+		// Finish the retained final layer: run it exactly as an interior reduction layer does.
+		let (_claims, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
+		let (evals, eval_point) =
+			prove_layer_rounds::<_, _, P>(provers, &eval_point, k, &alloc, &mut prover_transcript);
+		assert_eq!(evals.len(), depths.len());
+
+		// The verifier's control flow depends only on the maximum depth.
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output = prodcheck::verify(n_layers, claim, &mut verifier_transcript).unwrap();
+
+		assert_eq!(verifier_output.point, eval_point);
+		assert_eq!(verifier_output.eval, combine_claims::<P>(&evals, &eval_point[..k]));
+
+		// Each tree's reduced claim is on its *padded* witness; unpadding it yields a claim on the
+		// witness itself, at a suffix of the shared node point.
+		for (i, (&depth, witness)) in iter::zip(depths, &witnesses).enumerate() {
+			let leaf = prodcheck::unpad_leaf_claim(evals[i], &eval_point[k..], n_layers - depth);
+			assert_eq!(leaf.point.len(), depth);
+			assert_eq!(leaf.eval, evaluate(witness, &leaf.point), "tree {i}");
+		}
+	}
+
+	#[test]
+	fn test_unequal_depths_mixed() {
+		test_unequal_depths_helper::<Packed128b>(&[2, 4, 5]);
+	}
+
+	#[test]
+	fn test_unequal_depths_single_prover() {
+		test_unequal_depths_helper::<Packed128b>(&[3]);
+	}
+
+	#[test]
+	fn test_unequal_depths_power_of_two_provers() {
+		// The shallowest tree is padded by more than one layer, the deepest not at all.
+		test_unequal_depths_helper::<Packed128b>(&[1, 2, 5, 5]);
+	}
+
+	#[test]
+	fn test_unequal_depths_all_minimal() {
+		// Depth 1 throughout: every tree retains its final layer immediately.
+		test_unequal_depths_helper::<Packed128b>(&[1, 1, 1]);
+	}
+
+	#[test]
+	fn test_unequal_depths_maximal_padding() {
+		// A single-layer tree beside a deep one: all but its last reduction is padding.
+		test_unequal_depths_helper::<Packed128b>(&[1, 6]);
+	}
+
+	/// At equal depths every tree is padded by nothing, so the unequal-depth driver must emit
+	/// byte-for-byte the transcript that [`batch_prove`] does.
+	#[test]
+	fn test_unequal_depths_matches_batch_prove_at_equal_depths() {
+		type P = Packed128b;
+		type F = <P as FieldOps>::Scalar;
+
+		let depths = [4; 3];
+		let k = log2_ceil_usize(depths.len());
+		let alloc = GlobalAllocator;
+
+		let mut rng = StdRng::seed_from_u64(23);
+		let selector_point = random_scalars::<F>(&mut rng, k);
+		// Both drivers see the same trees, so both rebuild them from the same seed.
+		let prover_seed = 24;
+
+		let unequal_proof = {
+			let mut rng = StdRng::seed_from_u64(prover_seed);
+			let (_, provers, claimed_products) =
+				unequal_depth_provers::<P>(&mut rng, &alloc, &depths);
+
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let BatchProveUnequalDepthsOutput {
+				eval_point,
+				provers,
+			} = batch_prove_unequal_depths(
+				provers,
+				claimed_products,
+				selector_point.clone(),
+				&mut transcript,
+			);
+			let (_claims, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
+			prove_layer_rounds::<_, _, P>(provers, &eval_point, k, &alloc, &mut transcript);
+			transcript.finalize()
+		};
+
+		let equal_proof = {
+			let mut rng = StdRng::seed_from_u64(prover_seed);
+			let (_, provers, claimed_products) =
+				unequal_depth_provers::<P>(&mut rng, &alloc, &depths);
+
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			batch_prove(provers, claimed_products, selector_point, Vec::new(), &mut transcript);
+			transcript.finalize()
+		};
+
+		assert_eq!(unequal_proof, equal_proof);
 	}
 }

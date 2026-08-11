@@ -10,11 +10,8 @@ use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
 use itertools::izip;
 
 use super::{
-	common::SumcheckProver,
-	eq_tracker::ChunkedEqTracker,
-	round_evals::{RoundEvals2, WideRoundEvals2},
-	round_state::RoundState,
-	switchover::BinarySwitchover,
+	common::SumcheckProver, eq_tracker::ChunkedEqTracker, round_evals::RoundEvals,
+	round_state::RoundState, switchover::BinarySwitchover,
 };
 
 pub struct Claim<F: Field> {
@@ -140,7 +137,7 @@ where
 			.fold(
 				|| {
 					(
-						vec![RoundEvals2::default(); sums.len()],
+						vec![RoundEvals::<P, 2>::default(); sums.len()],
 						FieldBuffer::<P>::zeros(chunk_vars),
 						FieldBuffer::<P>::zeros(chunk_vars),
 					)
@@ -173,7 +170,8 @@ where
 						// at the end of the chunk. Only the final multiply by `eq_i` is widened;
 						// the `composition` product is reduced as usual because it feeds into that
 						// widening multiply.
-						let mut chunk_wide = WideRoundEvals2::<<P as WideMul>::Output>::default();
+						let mut wide_y_1 = <P as WideMul>::Output::default();
+						let mut wide_y_inf = <P as WideMul>::Output::default();
 						for (&eq_i, &selected_0_i, &selected_1_i, &selector_0_i, &selector_1_i) in izip!(
 							eq_chunk.as_ref(),
 							selected_0_chunk.as_ref(),
@@ -189,10 +187,10 @@ where
 							// @inf: selector * selected (note that lower degree terms are dropped)
 							let y_1_prod = selector_1_i * (selected_1_i - P::one()) + P::one();
 							let y_inf_prod = selector_inf_i * selected_inf_i;
-							chunk_wide.y_1 += P::wide_mul(eq_i, y_1_prod);
-							chunk_wide.y_inf += P::wide_mul(eq_i, y_inf_prod);
+							wide_y_1 += P::wide_mul(eq_i, y_1_prod);
+							wide_y_inf += P::wide_mul(eq_i, y_inf_prod);
 						}
-						let chunk_round_evals = chunk_wide.reduce::<P>();
+						let chunk_round_evals = RoundEvals([wide_y_1, wide_y_inf]).reduce::<P>();
 
 						// Apply the common factor from the outer product representation of the eq
 						// ind
@@ -207,7 +205,7 @@ where
 			// An identity would allocate and zero one accumulator per merge, then add all of it.
 			.reduce_with(|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + &r).collect())
 			// An empty hypercube yields no partials at all, and its round evals are zero.
-			.unwrap_or_else(|| vec![RoundEvals2::<P>::default(); sums.len()]);
+			.unwrap_or_else(|| vec![RoundEvals::<P, 2>::default(); sums.len()]);
 
 		// This prover has multiple evaluation points and cannot implement MleCheckProver.
 		let (prime_coeffs, round_coeffs) = izip!(&self.eq_trackers, sums, packed_prime_evals)

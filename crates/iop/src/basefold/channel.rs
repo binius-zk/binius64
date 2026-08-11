@@ -4,11 +4,11 @@
 
 use binius_field::{BinaryField, util::FieldFn};
 use binius_ip::{
-	channel::IPVerifierChannel,
+	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{self, BatchSumcheckOutput},
 };
 use binius_math::{
-	line::extrapolate_line_packed,
+	line::extrapolate_line,
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
 	univariate::evaluate_univariate,
 };
@@ -41,7 +41,7 @@ pub struct BaseFoldOracle {
 pub struct BaseFoldVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem = F>,
+	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
 	/// The Merkle channel carrying all prover interaction: field elements, challenges,
 	/// commitments, and openings.
@@ -51,14 +51,14 @@ where
 	oracle_commitments: Vec<Channel::Commitment>,
 	/// Oracle relations queued by [`Self::verify_oracle_relations`], opened together in
 	/// [`Self::finish`].
-	queue: Vec<OracleLinearRelation<BaseFoldOracle, F>>,
+	queue: Vec<OracleLinearRelation<BaseFoldOracle, Channel::Elem>>,
 	next_oracle_index: usize,
 }
 
 impl<'a, F, Channel> BaseFoldVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem = F>,
+	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
 	/// Creates a new BaseFold ZK verifier channel over a Merkle channel from precomputed FRI
 	/// parameters.
@@ -90,7 +90,9 @@ where
 	/// (in oracle-index order). Because the whole opening is deferred to this point, every oracle
 	/// is committed and there is a single sumcheck point, so the precomputed combined `FRIParams`
 	/// (`optimal_for_batch` over all oracle specs) serves the opening.
-	pub fn finish(self) -> Result<(), Error> {
+	///
+	/// Returns the Merkle channel, so a caller can still reach what it accumulated.
+	pub fn finish(self) -> Result<Channel, Error> {
 		let Self {
 			mut channel,
 			oracle_specs,
@@ -103,11 +105,17 @@ where
 		let n_remaining = oracle_specs.len() - next_oracle_index;
 		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
 
-		if queue.is_empty() {
-			return Ok(());
+		if !queue.is_empty() {
+			verify_batch_zk_basefold(
+				&mut channel,
+				oracle_specs,
+				fri_params,
+				&oracle_commitments,
+				queue,
+			)?;
 		}
 
-		verify_batch_zk_basefold(&mut channel, oracle_specs, fri_params, &oracle_commitments, queue)
+		Ok(channel)
 	}
 }
 
@@ -133,11 +141,11 @@ fn verify_batch_zk_basefold<F, Channel>(
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
 	oracle_commitments: &[Channel::Commitment],
-	relations: Vec<OracleLinearRelation<BaseFoldOracle, F>>,
+	relations: Vec<OracleLinearRelation<BaseFoldOracle, Channel::Elem>>,
 ) -> Result<(), Error>
 where
 	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem = F>,
+	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
 	let n_committed = oracle_commitments.len();
 
@@ -163,13 +171,13 @@ where
 		.map(|relation| {
 			if oracle_specs[relation.oracle.index].is_zk {
 				let sigma = sigma_iter.next().expect("one σ per ZK oracle");
-				extrapolate_line_packed(
-					relation.claim,
+				extrapolate_line(
+					relation.claim.clone(),
 					sigma,
-					gamma.expect("γ sampled when ZK oracles present"),
+					gamma.clone().expect("γ sampled when ZK oracles present"),
 				)
 			} else {
-				relation.claim
+				relation.claim.clone()
 			}
 		})
 		.collect::<Vec<_>>();
@@ -182,7 +190,7 @@ where
 	} = sumcheck::batch_verify::<F, _>(max_n, 2, &sum_primes, channel)?;
 
 	// Receive the evaluation of each oracle at the challenge point.
-	let alphas: Vec<F> = channel.recv_many(n_committed)?;
+	let alphas = channel.recv_many(n_committed)?;
 
 	// `batch_verify` returns binding-order challenges; reverse to variable-indexed (low-to-high).
 	let mut point = sumcheck_challenges;
@@ -192,7 +200,7 @@ where
 	let contributions = relations
 		.into_iter()
 		.map(|relation| {
-			let alpha_i = alphas[relation.oracle.index];
+			let alpha_i = alphas[relation.oracle.index].clone();
 			let n_i = oracle_specs[relation.oracle.index].log_msg_len;
 			let (eval_coords, padding_coords) = point.split_at(n_i);
 			let pad_eq = eq_ind_zero(padding_coords);
@@ -209,7 +217,7 @@ where
 	// is s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
 	let log_n_oracles = log2_ceil_usize(n_committed);
 	let outer_challenges = channel.sample_many(log_n_oracles);
-	let eq_tensor = eq_ind_partial_eval_scalars::<F>(&outer_challenges);
+	let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
 	// In the combined buffer each oracle is zero-padded over its `log_lift` dims and *repeated*
 	// over the remaining `log_repeat = max_n - n_i - log_lift` high dims, so its evaluation at
 	// `point` picks up the eq-to-zero factor over the lift dims only (the repeat dims contribute
@@ -220,7 +228,7 @@ where
 			let log_lift = fri_oracle.log_lift;
 			eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift])
 		})
-		.sum::<F>();
+		.sum::<Channel::Elem>();
 
 	// The opening routine asserts the final FRI/MLE-check consistency internally.
 	basefold::verify_mlecheck_basefold(
@@ -239,47 +247,71 @@ where
 impl<F, Channel> IPVerifierChannel<F> for BaseFoldVerifierChannel<'_, F, Channel>
 where
 	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem = F>,
+	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
-	type Elem = F;
+	type Elem = Channel::Elem;
 
-	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		self.channel.recv_one()
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::Error> {
+	fn recv_many(&mut self, n: usize) -> Result<Vec<Self::Elem>, binius_ip::channel::Error> {
 		self.channel.recv_many(n)
 	}
 
-	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::Error> {
+	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], binius_ip::channel::Error> {
 		self.channel.recv_array()
 	}
 
-	fn sample(&mut self) -> F {
+	fn sample(&mut self) -> Self::Elem {
 		self.channel.sample()
 	}
 
-	fn observe_one(&mut self, val: F) -> F {
+	fn observe_one(&mut self, val: F) -> Self::Elem {
 		self.channel.observe_one(val)
 	}
 
-	fn observe_many(&mut self, vals: &[F]) -> Vec<F> {
+	fn observe_many(&mut self, vals: &[F]) -> Vec<Self::Elem> {
 		self.channel.observe_many(vals)
 	}
 
-	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		self.channel.assert_zero(val)
 	}
 
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
+	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem {
 		self.channel.compute_public_value(inputs, f)
+	}
+}
+
+impl<F, Channel> WordIPVerifierChannel<F> for BaseFoldVerifierChannel<'_, F, Channel>
+where
+	F: BinaryField,
+	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
+{
+	type Word = Channel::Word;
+
+	fn observe_words(&mut self, words: &[Self::Word]) {
+		self.channel.observe_words(words);
+	}
+
+	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		self.channel.subset_sum(elems, word)
+	}
+
+	fn select(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		self.channel.select(elems, word)
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Self::Word {
+		self.channel.sample_bits(bits)
 	}
 }
 
 impl<'a, F, Channel> IOPVerifierChannel<F> for BaseFoldVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem = F>,
+	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
 	type Oracle = BaseFoldOracle;
 

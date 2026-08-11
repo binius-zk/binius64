@@ -5,18 +5,18 @@
 //!
 //! See [`ReedSolomonCode`] for details.
 
-use std::ptr;
+use std::{marker::PhantomData, ptr};
 
 use binius_field::{BinaryField, PackedField};
 use binius_utils::rayon::{prelude::*, task_size::task_chunk_len};
-use getset::{CopyGetters, Getters};
+use getset::CopyGetters;
 
 use super::{
 	FieldBuffer, FieldSlice, FieldSliceMut, binary_subspace::BinarySubspace, ntt::AdditiveNTT,
 };
 use crate::{
 	bit_reverse::{bit_reverse_indices, bit_reverse_packed},
-	ntt::DomainContext,
+	ntt::{DomainContext, domain_context::GaoMateerOnTheFly},
 };
 
 /// [Reed–Solomon] codes over binary fields.
@@ -28,58 +28,38 @@ use crate::{
 ///
 /// [Reed–Solomon]: <https://en.wikipedia.org/wiki/Reed%E2%80%93Solomon_error_correction>
 /// [LCH14]: <https://arxiv.org/abs/1404.3458>
-#[derive(Debug, Clone, Getters, CopyGetters)]
+#[derive(Debug, Clone, CopyGetters)]
 pub struct ReedSolomonCode<F> {
-	#[get = "pub"]
-	subspace: BinarySubspace<F>,
 	log_dimension: usize,
 	#[get_copy = "pub"]
 	log_inv_rate: usize,
+	_marker: PhantomData<F>,
 }
 
 impl<F: BinaryField> ReedSolomonCode<F> {
-	pub fn new(log_dimension: usize, log_inv_rate: usize) -> Self {
-		let subspace = BinarySubspace::with_dim(log_dimension + log_inv_rate);
-		Self::with_subspace(subspace, log_dimension, log_inv_rate)
-	}
-
-	pub fn with_ntt_subspace(
-		ntt: &impl AdditiveNTT<Field = F>,
-		log_dimension: usize,
-		log_inv_rate: usize,
-	) -> Self {
-		Self::with_domain_context_subspace(ntt.domain_context(), log_dimension, log_inv_rate)
-	}
-
-	pub fn with_domain_context_subspace(
-		domain_context: &impl DomainContext<Field = F>,
-		log_dimension: usize,
-		log_inv_rate: usize,
-	) -> Self {
-		let subspace_dim = log_dimension + log_inv_rate;
-		assert!(
-			subspace_dim <= domain_context.log_domain_size(),
-			"precondition: subspace dimension must not exceed domain context log size"
-		);
-		let subspace = domain_context.subspace(subspace_dim);
-		Self::with_subspace(subspace, log_dimension, log_inv_rate)
-	}
-
-	pub fn with_subspace(
-		subspace: BinarySubspace<F>,
-		log_dimension: usize,
-		log_inv_rate: usize,
-	) -> Self {
-		assert_eq!(
-			subspace.dim(),
-			log_dimension + log_inv_rate,
-			"precondition: subspace dimension must equal log_dimension + log_inv_rate"
-		);
+	/// A code of the given dimension and rate, evaluated over the Gao-Mateer basis.
+	///
+	/// The evaluation domain is not a parameter: it is the Gao-Mateer basis of `log_dimension +
+	/// log_inv_rate`, the same one [`GaoMateerOnTheFly`] and [`GaoMateerPreExpanded`] generate. A
+	/// verifier can therefore rebuild the domain from the code's shape alone, without being told
+	/// which basis the prover encoded over.
+	///
+	/// [`GaoMateerOnTheFly`]: crate::ntt::domain_context::GaoMateerOnTheFly
+	/// [`GaoMateerPreExpanded`]: crate::ntt::domain_context::GaoMateerPreExpanded
+	pub const fn new(log_dimension: usize, log_inv_rate: usize) -> Self {
 		Self {
-			subspace,
 			log_dimension,
 			log_inv_rate,
+			_marker: PhantomData,
 		}
+	}
+
+	/// The evaluation domain: the Gao-Mateer basis of [`Self::log_len`] dimensions.
+	///
+	/// Derived on demand rather than stored, so there is no way for it to disagree with the
+	/// domain a prover or verifier generates from the same dimension.
+	pub fn subspace(&self) -> BinarySubspace<F> {
+		GaoMateerOnTheFly::<F>::generate(self.log_len()).subspace(self.log_len())
 	}
 
 	/// The dimension.
@@ -136,7 +116,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	{
 		assert_eq!(
 			ntt.subspace(self.log_len()),
-			self.subspace,
+			self.subspace(),
 			"precondition: NTT subspace must match code subspace"
 		);
 		assert_eq!(
@@ -270,7 +250,7 @@ mod tests {
 	use crate::{
 		FieldBuffer,
 		bit_reverse::reverse_bits,
-		ntt::{NeighborsLastReference, domain_context::GenericPreExpanded},
+		ntt::{NeighborsLastReference, domain_context::GaoMateerPreExpanded},
 		test_utils::random_field_buffer,
 	};
 
@@ -285,9 +265,8 @@ mod tests {
 
 		let rs_code = ReedSolomonCode::<P::Scalar>::new(log_dim, log_inv_rate);
 
-		// Create NTT with matching subspace
-		let subspace = rs_code.subspace().clone();
-		let domain_context = GenericPreExpanded::<P::Scalar>::generate_from_subspace(&subspace);
+		// The code's domain is the Gao-Mateer basis of its length, so the NTT generates the same.
+		let domain_context = GaoMateerPreExpanded::<P::Scalar>::generate(rs_code.log_len());
 		let ntt = NeighborsLastReference {
 			domain_context: &domain_context,
 		};
@@ -356,24 +335,17 @@ mod tests {
 
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Both codes are derived from a single shared domain context covering the larger code, so
-		// the smaller code's subspace is the prefix the shared NTT twiddles expect.
-		let subspace = BinarySubspace::<P::Scalar>::with_dim(log_dim_large + log_inv_rate);
-		let domain_context = GenericPreExpanded::<P::Scalar>::generate_from_subspace(&subspace);
+		// One shared NTT covers the larger code. Both codes evaluate over the Gao-Mateer basis, and
+		// the smaller one's is a prefix of the larger one's, which is what the shared twiddles
+		// expect -- a property the codes now have by construction rather than by wiring.
+		let domain_context =
+			GaoMateerPreExpanded::<P::Scalar>::generate(log_dim_large + log_inv_rate);
 		let ntt = NeighborsLastReference {
 			domain_context: &domain_context,
 		};
 
-		let rs_small = ReedSolomonCode::with_domain_context_subspace(
-			&domain_context,
-			log_dim_small,
-			log_inv_rate,
-		);
-		let rs_large = ReedSolomonCode::with_domain_context_subspace(
-			&domain_context,
-			log_dim_large,
-			log_inv_rate,
-		);
+		let rs_small = ReedSolomonCode::new(log_dim_small, log_inv_rate);
+		let rs_large = ReedSolomonCode::new(log_dim_large, log_inv_rate);
 
 		// Random message for the small code.
 		let msg_small = random_field_buffer::<P>(&mut rng, log_dim_small);

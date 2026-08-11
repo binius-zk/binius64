@@ -2,6 +2,7 @@
 use binius_core::word::Word;
 use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap, entity_impl};
 use rustc_hash::FxHashMap;
+use smallvec::{SmallVec, smallvec};
 
 use crate::compiler::{
 	gate::opcode::{Opcode, OpcodeShape},
@@ -65,11 +66,6 @@ impl WireKind {
 	}
 }
 
-#[derive(Copy, Clone)]
-pub struct WireData {
-	pub kind: WireKind,
-}
-
 /// Gate ID - identifies a gate in the graph
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Gate(u32);
@@ -103,7 +99,11 @@ pub struct GateData {
 	/// - Scratch
 	///
 	/// The number of input and output wires is specified by the opcode's shape.
-	pub wires: Vec<Wire>,
+	///
+	/// Five slots are held inline, which is every fixed-shape opcode but three.
+	/// Five is chosen over four because `SmallVec` rounds both to the same 32 bytes.
+	/// A wider gate spills to the heap exactly as a vector would.
+	pub wires: SmallVec<[Wire; 5]>,
 
 	/// The immediate parameters of this gate.
 	///
@@ -111,7 +111,10 @@ pub struct GateData {
 	/// byte indices, etc.
 	///
 	/// The length of the immediates is specified by the opcode's shape.
-	pub immediates: Vec<u32>,
+	///
+	/// Two inline slots cover every opcode: `Shift` declares two, `Hint` one, the rest none.
+	/// At that width a `SmallVec` is the same 24 bytes as a vector, so this is free.
+	pub immediates: SmallVec<[u32; 2]>,
 
 	/// The dimensions of this gate.
 	///
@@ -194,7 +197,7 @@ impl GateData {
 pub struct GateGraph {
 	// Primary maps
 	pub gates: PrimaryMap<Gate, GateData>,
-	pub wires: PrimaryMap<Wire, WireData>,
+	pub wires: PrimaryMap<Wire, WireKind>,
 
 	pub path_spec_tree: PathSpecTree,
 	pub gate_origin: SecondaryMap<Gate, PathSpec>,
@@ -260,40 +263,30 @@ impl GateGraph {
 
 	pub fn add_inout(&mut self) -> Wire {
 		self.n_inout += 1;
-		self.wires.push(WireData {
-			kind: WireKind::Inout,
-		})
+		self.wires.push(WireKind::Inout)
 	}
 
 	pub fn add_witness(&mut self) -> Wire {
 		self.n_witness += 1;
-		self.wires.push(WireData {
-			kind: WireKind::Witness,
-		})
+		self.wires.push(WireKind::Witness)
 	}
 
 	pub fn add_internal(&mut self) -> Wire {
 		// Internal wires are treated as witnesses for allocation purposes
 		self.n_witness += 1;
-		self.wires.push(WireData {
-			kind: WireKind::Internal,
-		})
+		self.wires.push(WireKind::Internal)
 	}
 
 	pub fn add_scratch(&mut self) -> Wire {
 		// Scratch wires are temporary storage, not part of witness
-		self.wires.push(WireData {
-			kind: WireKind::Scratch,
-		})
+		self.wires.push(WireKind::Scratch)
 	}
 
 	pub fn add_constant(&mut self, word: Word) -> Wire {
 		if let Some(wire) = self.const_pool.get(word) {
 			return wire;
 		}
-		let wire = self.wires.push(WireData {
-			kind: WireKind::Constant(word),
-		});
+		let wire = self.wires.push(WireKind::Constant(word));
 		self.const_pool.insert(word, wire);
 		wire
 	}
@@ -329,7 +322,7 @@ impl GateGraph {
 			"emit_gate_generic does not handle Opcode::Hint; use emit_hint_gate"
 		);
 		let shape = opcode.shape(dimensions);
-		let mut wires: Vec<Wire> = Vec::with_capacity(
+		let mut wires: SmallVec<[Wire; 5]> = SmallVec::with_capacity(
 			shape.const_in.len() + shape.n_in + shape.n_out + shape.n_aux + shape.n_scratch,
 		);
 		for c in shape.const_in {
@@ -348,7 +341,7 @@ impl GateGraph {
 			opcode,
 			wires,
 			dimensions: dimensions.to_vec(),
-			immediates: immediates.to_vec(),
+			immediates: SmallVec::from_slice(immediates),
 		};
 		// Inline validate_shape: non-hint shape doesn't need a registry.
 		let expected_wires =
@@ -374,14 +367,14 @@ impl GateGraph {
 		inputs: impl IntoIterator<Item = Wire>,
 		outputs: impl IntoIterator<Item = Wire>,
 	) -> Gate {
-		let mut wires: Vec<Wire> = Vec::new();
+		let mut wires: SmallVec<[Wire; 5]> = SmallVec::new();
 		wires.extend(inputs);
 		wires.extend(outputs);
 		let data = GateData {
 			opcode: Opcode::Hint,
 			wires,
 			dimensions: dimensions.to_vec(),
-			immediates: vec![hint_id],
+			immediates: smallvec![hint_id],
 		};
 		let gate = self.gates.push(data);
 		self.gate_origin[gate] = gate_origin;
@@ -485,14 +478,14 @@ impl GateGraph {
 		self.use_edges[run].iter().copied()
 	}
 
-	/// Returns an iterator over all constant wires and their data
-	pub fn iter_const_wires(&self) -> impl Iterator<Item = (Wire, &WireData)> {
-		self.wires.iter().filter(|(_, data)| data.kind.is_const())
+	/// Returns an iterator over all constant wires and their kind
+	pub fn iter_const_wires(&self) -> impl Iterator<Item = (Wire, &WireKind)> {
+		self.wires.iter().filter(|(_, kind)| kind.is_const())
 	}
 
-	/// Gets wire data by reference
-	pub fn wire_data(&self, wire: Wire) -> &WireData {
-		&self.wires[wire]
+	/// Gets the kind of the given wire
+	pub fn wire_kind(&self, wire: Wire) -> WireKind {
+		self.wires[wire]
 	}
 
 	/// Gets gate data by reference
@@ -793,7 +786,7 @@ mod tests {
 		assert!(inputs.contains(&bin));
 		// The constant wire is surfaced first.
 		let const_wire = inputs[0];
-		match graph.wires[const_wire].kind {
+		match graph.wires[const_wire] {
 			WireKind::Constant(word) => assert_eq!(word, Word::ALL_ONE),
 			_ => panic!("Expected constant wire"),
 		}

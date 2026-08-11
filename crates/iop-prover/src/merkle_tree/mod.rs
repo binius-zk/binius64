@@ -120,10 +120,4 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 		index: usize,
 		proof: &mut TranscriptWriter<B>,
 	);
-
-	/// Generate an opening proof for the full committed vector.
-	///
-	/// This writes the binding data that [`MerkleTreeScheme::verify_vector`] reads alongside the
-	/// data itself while recomputing the root — the per-leaf salts, empty for non-hiding trees.
-	fn prove_vector<B: BufMut>(&self, committed: &Self::Committed, proof: &mut TranscriptWriter<B>);
 }

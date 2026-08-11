@@ -37,53 +37,51 @@ const COMPRESSIONS_PER_INSTANCE: u64 = 2;
 /// Each wire packs two independent compressions: lane 0 in the low 32 bits, lane 1 in the high 32
 /// bits. The output is force-committed, so the circuit has no inout wires.
 #[derive(Clone, Copy)]
-struct Sha256Inputs {
+struct Sha256Wires {
 	/// The 8-word input chaining value, two lanes per word.
 	state: [Wire; 8],
 	/// The 16-word message block, two lanes per word.
 	block: [Wire; 16],
 }
 
-/// Builds a circuit for one two-lane SHA-256 compression and force-commits its output.
+/// Builds a circuit for one two-lane SHA-256 compression, with its output state promoted to public
+/// outputs.
 ///
-/// Force-committing the output keeps the compression alive under dead-code elimination.
-/// The circuit has no inout wires, as the batch witness table requires.
-fn build_sha256_circuit() -> (Circuit, Sha256Inputs) {
+/// That promotion keeps the compression alive under dead-code elimination.
+fn build_sha256_circuit() -> (Circuit, Sha256Wires) {
 	let builder = CircuitBuilder::new();
 
-	// Every compression input is a witness wire, filled per instance.
-	let state = array::from_fn(|_| builder.add_witness());
-	let block = array::from_fn(|_| builder.add_witness());
+	// Every compression input is public, filled per instance.
+	let state = array::from_fn(|_| builder.add_inout());
+	let block = array::from_fn(|_| builder.add_inout());
 
-	// Force-commit each output word so the compression survives dead-code elimination.
 	let out = sha256_compress_2x(&builder, State::new(state), block);
 	for wire in out.0 {
-		builder.force_commit(wire);
+		builder.mark_inout(wire);
 	}
 
-	(builder.build(), Sha256Inputs { state, block })
+	(builder.build(), Sha256Wires { state, block })
 }
 
 /// Packs two independent 32-bit lane values into one 64-bit word.
 const fn pack_lanes(lane0: u32, lane1: u32) -> Word {
 	Word((lane0 as u64) | ((lane1 as u64) << 32))
 }
-
 /// Assigns one instance's two-lane SHA-256 inputs from a per-instance seeded RNG.
 ///
 /// Each 64-bit word carries two independent 32-bit lanes, matching the two-lane core.
 /// The compression derives its output from these inputs, so any assignment is valid.
 /// Seeding per instance keeps the data non-degenerate and reproducible.
-fn fill_instance(inputs: &Sha256Inputs, i: usize, w: &mut BatchWitnessFiller<'_, '_>) {
+fn fill_instance(wires: &Sha256Wires, i: usize, w: &mut BatchWitnessFiller<'_, '_>) {
 	// Seed from the instance index so the batch is deterministic and instance-varying.
 	let mut rng = StdRng::seed_from_u64(i as u64);
 
 	// A 32-bit value per chaining-value word, per lane.
-	for wire in inputs.state {
+	for wire in wires.state {
 		w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
 	}
 	// A 32-bit value per message word, per lane.
-	for wire in inputs.block {
+	for wire in wires.block {
 		w[wire] = pack_lanes(rng.next_u32(), rng.next_u32());
 	}
 }

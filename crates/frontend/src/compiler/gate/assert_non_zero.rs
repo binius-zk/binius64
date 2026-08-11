@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Assert that a wire isn't zero.
 //!
 //! Enforces `x ≠ 0`.
@@ -24,7 +25,7 @@
 //!
 //! The gate generates 2 constraints:
 //! - AND: `(x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout`
-//! - AND: `sar(cout, 63) ∧ all-1 = all-1` (forces `MSB(cout) = 1`, i.e. `x ≠ 0`)
+//! - ZERO: `sar(cout, 63) ⊕ all-1 = 0` (forces `MSB(cout) = 1`, i.e. `x ≠ 0`)
 
 use binius_core::word::Word;
 
@@ -65,12 +66,11 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	// (x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
 	builder.and(expr::xor2(*x, cin), expr::xor2(*all_one, cin), expr::xor2(cin, *cout));
 
-	// Constraint 2 (AND): sar(cout, 63) ∧ all_one = all_one, i.e. MSB(cout) = 1 (x ≠ 0).
+	// Constraint 2 (ZERO): sar(cout, 63) ⊕ all_one = 0, i.e. MSB(cout) = 1 (x ≠ 0).
 	// sar(cout, 63) sign-extends the MSB across all 64 bits, so it equals all_one iff
-	// MSB(cout) = 1; the AND with all_one then equals all_one iff MSB(cout) = 1. This is
-	// emitted as an AND (which defines no wire) so gate fusion cannot inline it and
-	// substitute the constant back into Constraint 1, reopening the soundness hole.
-	builder.and(expr::sar(*cout, 63), *all_one, *all_one);
+	// MSB(cout) = 1. This is an assertion, which defines no wire, so gate fusion cannot inline it
+	// and substitute the constant back into Constraint 1, reopening the soundness hole.
+	builder.zero(expr::xor2(expr::sar(*cout, 63), *all_one));
 }
 
 pub fn emit_eval_bytecode(
@@ -183,7 +183,7 @@ mod tests {
 		let mut w = circuit.new_witness_filler();
 		let cs = circuit.constraint_system();
 		for (i, c) in cs.constants.iter().enumerate() {
-			w.value_vec_mut()[ValueIndex(i as u32)] = *c;
+			w.value_vec_mut()[ValueIndex::constant(i as u32)] = *c;
 		}
 
 		// The carry-out constraint is satisfied by the all-zero witness, but the AND

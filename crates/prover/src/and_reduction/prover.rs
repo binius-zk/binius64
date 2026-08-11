@@ -1,4 +1,6 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+
 use std::{marker::PhantomData, ops::Deref};
 
 use binius_compute::Allocator;
@@ -72,11 +74,15 @@ where
 	///
 	/// # Arguments
 	///
-	/// * `log_words` - Base-2 logarithm of the number of words in each column
+	/// * `log_words` - Base-2 logarithm of the constraint axis's length
 	/// * `first_col` - The oblong multilinear polynomial A in the AND constraint A & B ^ C = 0
 	/// * `second_col` - The oblong multilinear polynomial B in the AND constraint
 	/// * `big_field_zerocheck_challenges` - Challenges Z_{k+1},...,Zₙ in the large field FChallenge
 	/// * `prover_message_domain` - The domain for evaluating the univariate polynomial
+	///
+	/// The two columns must have equal length, at most `1 << log_words`. A column shorter than the
+	/// axis has its remaining rows read as zero, in both the round-1 message and the fold; the
+	/// reduction skips them rather than working over them.
 	///
 	/// # Implementation Details
 	///

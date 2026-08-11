@@ -59,7 +59,7 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 					};
 					for (i, &output_wire) in output_wires.iter().enumerate() {
 						// Skip if output is already constant
-						if graph.wire_data(output_wire).kind.is_const() {
+						if graph.wire_kind(output_wire).is_const() {
 							continue;
 						}
 
@@ -105,7 +105,7 @@ fn try_evaluate_gate_with_constants(
 
 	let mut input_constants = Vec::new();
 	for &input_wire in gate_param.inputs {
-		if let WireKind::Constant(val) = graph.wire_data(input_wire).kind {
+		if let WireKind::Constant(val) = graph.wire_kind(input_wire) {
 			input_constants.push(val);
 		} else {
 			// Not all inputs are constant, can't evaluate.
@@ -148,8 +148,8 @@ mod tests {
 		let test_gate = graph.emit_gate(root, Opcode::Bxor, vec![and_out, and_out], vec![test_out]);
 
 		// Initially, xor_out and and_out are not constants
-		assert!(!matches!(graph.wires[xor_out].kind, WireKind::Constant(_)));
-		assert!(!matches!(graph.wires[and_out].kind, WireKind::Constant(_)));
+		assert!(!matches!(graph.wires[xor_out], WireKind::Constant(_)));
+		assert!(!matches!(graph.wires[and_out], WireKind::Constant(_)));
 
 		// Run constant propagation
 		let replaced = constant_propagation(&mut graph, &HintRegistry::new());
@@ -158,15 +158,15 @@ mod tests {
 		assert_eq!(replaced, 3);
 
 		// The original wires remain as witness wires
-		assert!(matches!(graph.wires[xor_out].kind, WireKind::Witness));
-		assert!(matches!(graph.wires[and_out].kind, WireKind::Witness));
+		assert!(matches!(graph.wires[xor_out], WireKind::Witness));
+		assert!(matches!(graph.wires[and_out], WireKind::Witness));
 
 		// But the gates that used them should now use constant wires
 		// Check that and_gate now uses a constant wire with value 6 instead of xor_out
 		let and_gate_data = &graph.gates[and_gate];
 		let and_inputs = and_gate_data.gate_param().inputs;
 		// First input should be a constant with value 6 (5 ^ 3)
-		match graph.wires[and_inputs[0]].kind {
+		match graph.wires[and_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(6)),
 			_ => panic!("Expected and_gate's first input to be constant 6"),
 		}
@@ -175,7 +175,7 @@ mod tests {
 		let test_gate_data = &graph.gates[test_gate];
 		let test_inputs = test_gate_data.gate_param().inputs;
 		// Both inputs should be constants with value 0 (6 & 1)
-		match graph.wires[test_inputs[0]].kind {
+		match graph.wires[test_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(0)),
 			_ => panic!("Expected test_gate's input to be constant 0"),
 		}
@@ -221,13 +221,13 @@ mod tests {
 		assert_eq!(replaced, 3);
 
 		// The original wires remain as witness wires
-		assert!(matches!(graph.wires[shr_out].kind, WireKind::Witness));
-		assert!(matches!(graph.wires[shl_out].kind, WireKind::Witness));
+		assert!(matches!(graph.wires[shr_out], WireKind::Witness));
+		assert!(matches!(graph.wires[shl_out], WireKind::Witness));
 
 		// Check that shl_gate now uses a constant wire with value 4 (16 >> 2)
 		let shl_gate_data = &graph.gates[shl_gate];
 		let shl_inputs = shl_gate_data.gate_param().inputs;
-		match graph.wires[shl_inputs[0]].kind {
+		match graph.wires[shl_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(4)),
 			_ => panic!("Expected shl_gate's input to be constant 4"),
 		}
@@ -235,7 +235,7 @@ mod tests {
 		// Check that test_gate now uses a constant wire with value 8 (4 << 1)
 		let test_gate_data = &graph.gates[test_gate];
 		let test_inputs = test_gate_data.gate_param().inputs;
-		match graph.wires[test_inputs[0]].kind {
+		match graph.wires[test_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(8)),
 			_ => panic!("Expected test_gate's input to be constant 8"),
 		}
@@ -298,16 +298,16 @@ mod tests {
 		assert_eq!(replaced, 4);
 
 		// The original wires remain as witness wires.
-		assert!(matches!(graph.wires[quotient].kind, WireKind::Witness));
-		assert!(matches!(graph.wires[remainder].kind, WireKind::Witness));
+		assert!(matches!(graph.wires[quotient], WireKind::Witness));
+		assert!(matches!(graph.wires[remainder], WireKind::Witness));
 
 		let test_q_inputs = graph.gates[test_q_gate].gate_param().inputs;
-		match graph.wires[test_q_inputs[0]].kind {
+		match graph.wires[test_q_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(14)), // 100 / 7 = 14
 			_ => panic!("Expected test_q_gate's input to be constant 14"),
 		}
 		let test_r_inputs = graph.gates[test_r_gate].gate_param().inputs;
-		match graph.wires[test_r_inputs[0]].kind {
+		match graph.wires[test_r_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(2)), // 100 % 7 = 2
 			_ => panic!("Expected test_r_gate's input to be constant 2"),
 		}

@@ -12,6 +12,12 @@ pub enum Error {
 	Verification(#[from] VerificationError),
 }
 
+impl From<binius_ip::channel::Error> for Error {
+	fn from(err: binius_ip::channel::Error) -> Self {
+		Self::Channel(err.into())
+	}
+}
+
 impl From<merkle_channel::Error> for Error {
 	fn from(err: merkle_channel::Error) -> Self {
 		match err {
@@ -27,27 +33,13 @@ impl From<batch::Error> for Error {
 	fn from(err: batch::Error) -> Self {
 		match err {
 			batch::Error::Channel(err) => err.into(),
-			batch::Error::ClaimMismatch { index } => VerificationError::IncorrectFold {
-				query_round: 0,
-				index,
-			}
-			.into(),
+			batch::Error::IPChannel(err) => Self::Channel(err.into()),
 		}
 	}
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationError {
-	#[error("incorrect codeword folding in query round {query_round} at index {index}")]
-	IncorrectFold { query_round: usize, index: usize },
-	#[error("the size of the query proof is incorrect, expected {expected}")]
-	IncorrectQueryProofLength { expected: usize },
-	#[error(
-		"the number of values in round {round} of the query proof is incorrect, expected {coset_size}"
-	)]
-	IncorrectQueryProofValuesLength { round: usize, coset_size: usize },
-	#[error("The dimension-1 codeword must contain the same values")]
-	IncorrectDegree,
 	#[error("Merkle tree error: {0}")]
 	MerkleError(#[from] merkle_tree::VerificationError),
 }

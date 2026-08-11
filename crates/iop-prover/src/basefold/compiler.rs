@@ -70,7 +70,6 @@ where
 		// oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message ‖
 		// equal-length mask); non-ZK oracles take a flexible batch size.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
-			ntt.domain_context(),
 			merkle_scheme,
 			&oracle_specs,
 			log_inv_rate,
@@ -170,9 +169,9 @@ where
 
 	/// Creates a ZK prover channel over a transcript, for the common case.
 	///
-	/// The transcript (owned or mutably borrowed) is wrapped in a
-	/// [`ProverMerkleTranscriptChannel`] with a non-hiding Merkle tree prover for the given hash
-	/// suite, then passed to [`Self::create_channel`].
+	/// The transcript may be owned or mutably borrowed.
+	/// It is wrapped in a [`ProverMerkleTranscriptChannel`] for the given hash suite.
+	/// That channel is then passed to [`Self::create_channel`].
 	pub fn create_channel_from_transcript<H, Challenger_, T, A>(
 		&self,
 		transcript: T,

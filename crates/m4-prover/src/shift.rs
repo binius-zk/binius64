@@ -2,7 +2,7 @@
 
 //! The batched shift-reduction prover for the data-parallel Binius64 M4 proof system.
 
-use std::{array, iter};
+use std::iter;
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -14,18 +14,13 @@ use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims,
-		monster::{build_h_parts, build_monster_segments},
-		phase_1::{build_g_parts, run_phase_1_sumcheck},
+		monster::{build_h, build_monster_segments},
+		phase_1::{PHASE_1_LOG_LEN, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 	},
 };
-use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
 use crate::witness::{FoldedWitness, FoldedWord};
-
-/// The number of variables in each "g" (and "h") multilinear of phase 1: one 6-bit shift-amount
-/// axis and one 6-bit bit-position axis.
-const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 
 /// Proves the batched shift-reduction, collapsing every operation's claims into one.
 ///
@@ -36,8 +31,8 @@ const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 /// The public words are constants shared by every instance, so they are passed as raw words.
 ///
 /// The two phases call the single-instance prover's own subroutines.
-/// Phase 1 builds the hidden g parts with [`build_g_parts_from_folded_words`].
-/// It builds the public g parts with the single-instance `build_g_parts`, then sums the two.
+/// Phase 1 builds the hidden segment's g with [`build_g_from_folded_words`].
+/// It builds the public segment's g with the single-instance `build_g`, then sums the two.
 /// Phase 2 contracts the hidden witness along its bit axis with [`FoldedWitness::fold_bits`].
 /// It folds the public segment the same way, at the same challenge `r_j`.
 /// It then reuses `build_monster_segments` and `run_sumcheck` unchanged.
@@ -72,33 +67,28 @@ where
 	// SOUNDNESS: `prepare` draws in the order the verifier draws in; do not reorder it.
 	let prepared = claims.prepare(|| channel.sample());
 
-	// Phase 1: build the g parts once per key segment, then add them. The public words are
+	// Phase 1: build g once per key segment, then add them. The public words are
 	// constants shared by every instance, so the single-instance builder folds them directly from
 	// their bits; the hidden words are already folded over instances. This scalar path drives the
 	// single-instance phase-1 sumcheck.
-	let mut g_parts =
-		build_g_parts::<F, F, _>(alloc, public_words, &key_collection.public, &prepared);
-	let hidden_g_parts = build_g_parts_from_folded_words(
-		alloc,
-		folded_witness.words(),
-		&key_collection.hidden,
-		&prepared,
-	);
-	for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
-		for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
-			*slot += *add;
-		}
+	let mut g = build_g::<F, F, _>(alloc, public_words, &key_collection.public, &prepared);
+	let hidden_g =
+		build_g_from_folded_words(alloc, folded_witness.words(), &key_collection.hidden, &prepared);
+	for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
+		*slot += *add;
 	}
-	let h_parts = build_h_parts::<F, F, _>(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
-	let phase_1_output = run_phase_1_sumcheck::<F, F, _, _>(g_parts, h_parts, channel, alloc);
+	let h = build_h::<F, F, _>(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
+	let phase_1_output =
+		run_phase_1_sumcheck::<F, F, _, _>(g, h, prepared.batched_eval(), channel, alloc);
 
-	// Phase 2: split the phase-1 challenges into the bit half `r_j` and the shift half `r_s`.
+	// Phase 2: split the phase-1 challenges into the bit position `r_j`, the shift amount `r_s`
+	// and the shift variant `r_v`, in increasing order of significance.
 	let SumcheckOutput {
-		challenges: mut r_jr_s,
+		challenges: mut r_j,
 		eval: gamma,
 	} = phase_1_output;
-	let r_s = r_jr_s.split_off(Word::LOG_BITS);
-	let r_j = r_jr_s;
+	let r_v = r_j.split_off(Word::LOG_BITS * 2);
+	let r_s = r_j.split_off(Word::LOG_BITS);
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
 	// The witness folded at `r_j`, per segment.
@@ -113,6 +103,7 @@ where
 		domain_subspace,
 		&r_j,
 		&r_s,
+		&r_v,
 	);
 
 	run_sumcheck::<F, P, _, _>(
@@ -130,7 +121,7 @@ where
 
 /// Constructs the phase-1 "g" multilinear parts, one per shift variant, from instance-folded words.
 ///
-/// This is the batched analogue of the single-instance [`build_g_parts`].
+/// This is the batched analogue of the single-instance [`build_g`].
 /// It consumes a key segment's words already folded over the instance axis.
 /// So each word is a [`FoldedWord`], whose bits are field elements rather than a packed `u64`.
 ///
@@ -139,8 +130,8 @@ where
 /// The two coincide when the folded bit is 0 or 1.
 ///
 /// Use this for the hidden (committed) segment, whose words are folded over instances.
-/// Use [`build_g_parts`] for the public segment, whose words are shared constants.
-/// Adding the two results gives the complete g parts.
+/// Use [`build_g`] for the public segment, whose words are shared constants.
+/// Adding the two results gives the complete g multilinear.
 ///
 /// # Arguments
 ///
@@ -152,30 +143,29 @@ where
 ///
 /// # Returns
 ///
-/// `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`] variables, one per shift variant.
+/// One multilinear of [`PHASE_1_LOG_LEN`] variables, holding every shift variant's part.
 ///
 /// The segment's dense shift encoding decodes a key's shift index into the variant and the shift
-/// amount. The variant picks the multilinear, and the amount picks the run of bit slots within it:
+/// amount. The variant indexes the high variables and the amount the middle ones, so a key names
+/// one run of bit slots:
 ///
 /// ```text
-/// g[variant][amount * Word::BITS + bit] += folded_bit * acc(key)
+/// g[(variant * Word::BITS + amount) * Word::BITS + bit] += folded_bit * acc(key)
 /// ```
 ///
 /// where `acc(key)` is the key's lambda-weighted partial evaluation tensor.
 /// Every word carrying that key accumulates into the same slots.
 ///
 /// This scalar implementation ignores the single-instance builder's packing and parallelism.
-pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
+pub fn build_g_from_folded_words<F: BinaryField, A: Allocator>(
 	alloc: &A,
 	folded_words: &[FoldedWord<F>],
 	segment: &KeySegment,
 	prepared: &PreparedOperatorClaims<F>,
-) -> [FieldVec<F, A>; SHIFT_VARIANT_COUNT] {
-	// One zeroed multilinear of LOG_LEN variables per shift variant, drawn from the allocator. A
-	// key belongs to exactly one variant, so the scatter below accumulates straight into these
-	// buffers.
-	let mut multilinears =
-		array::from_fn::<_, SHIFT_VARIANT_COUNT, _>(|_| FieldBuffer::zeros_in(alloc, LOG_LEN));
+) -> FieldVec<F, A> {
+	// One zeroed multilinear covering every shift, drawn from the allocator. A key names one
+	// `(variant, amount)` pair, so the scatter below accumulates straight into it.
+	let mut multilinear = FieldBuffer::zeros_in(alloc, PHASE_1_LOG_LEN);
 
 	// Each folded word carries the keys named by the segment-relative range at its position.
 	for (word, range) in folded_words.iter().zip(&segment.key_ranges) {
@@ -190,12 +180,11 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 				&operator_data.lambda_powers,
 			);
 
-			// The key's shift variant selects the multilinear, and its shift amount the bit slots
-			// within that multilinear.
+			// The key's shift variant indexes the high variables and its shift amount the middle
+			// ones, which together name one run of bit slots.
 			let (variant, amount) = segment.dense_shift_enc.decode(key.dense_shift_idx as usize);
-			let amount_base = amount as usize * Word::BITS;
-			let slots =
-				&mut multilinears[variant as usize].as_mut()[amount_base..amount_base + Word::BITS];
+			let base = (variant as usize * Word::BITS + amount as usize) * Word::BITS;
+			let slots = &mut multilinear.as_mut()[base..base + Word::BITS];
 
 			// Scatter the accumulator across this key's bit slots, scaling each by the folded bit.
 			for (slot, &folded_bit) in iter::zip(slots, word) {
@@ -204,7 +193,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 		}
 	}
 
-	multilinears
+	multilinear
 }
 
 #[cfg(test)]
@@ -212,7 +201,10 @@ mod tests {
 	use std::iter;
 
 	use binius_compute::GlobalAllocator;
-	use binius_core::{constraint_system::AndConstraint, word::Word};
+	use binius_core::{
+		constraint_system::{AndConstraint, InoutSegment},
+		word::Word,
+	};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
 		inner_product::inner_product_buffers,
@@ -220,9 +212,7 @@ mod tests {
 		test_utils::random_scalars,
 		univariate::lagrange_evals_scalars,
 	};
-	use binius_prover::protocols::shift::{
-		OperatorData, build_key_collection, monster::build_h_parts,
-	};
+	use binius_prover::protocols::shift::{OperatorData, build_key_collection, monster::build_h};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
 		config::{B128, StdChallenger},
@@ -268,7 +258,7 @@ mod tests {
 	}
 
 	// Folds a contiguous run of value-vector words over the instance axis, one FoldedWord per word.
-	// This lets the public and hidden segments be folded separately, matching how `build_g_parts`
+	// This lets the public and hidden segments be folded separately, matching how `build_g`
 	// consumes one segment at a time.
 	fn fold_words_over_instances(
 		table: &ValueTable,
@@ -313,7 +303,7 @@ mod tests {
 
 		let cs = c.circuit.constraint_system().clone();
 		cs.validate().unwrap();
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
@@ -330,7 +320,6 @@ mod tests {
 		// public constants.
 		let folded_witness =
 			FoldedWitness::<B128, _>::fold_instances(&table, &r_rho, &GlobalAllocator);
-		let _offset = table.layout().offset_witness;
 		let public_words = &cs.constants;
 
 		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no IMUL constraints, so
@@ -379,6 +368,7 @@ mod tests {
 		let verifier_bmul = VerifierOperatorData::new(Vec::new(), [B128::ZERO; 6]);
 		let verifier_output = verify(
 			&cs,
+			InoutSegment::Hidden,
 			&verifier_zero,
 			&verifier_bitand,
 			&verifier_intmul,
@@ -388,6 +378,7 @@ mod tests {
 		.unwrap();
 		check_eval(
 			&cs,
+			InoutSegment::Hidden,
 			public_words,
 			&verifier_zero,
 			&verifier_bitand,
@@ -425,8 +416,8 @@ mod tests {
 	// The phase-1 identity: summing the g·h inner products over the shift variants reconstructs the
 	// lambda-batched operand evaluation claim.
 	//
-	// The g parts come from the batched build_g_parts on the full folded witness; the h parts come
-	// from the single-instance prover's build_h_parts at the same univariate challenge r_z. Their
+	// The g multilinear comes from the batched build_g on the full folded witness; h comes
+	// from the single-instance prover's build_h at the same univariate challenge r_z. Their
 	// inner product must equal the lambda-powers scaling of the batched AND-check operand evals
 	// (the intmul claim is empty, contributing nothing).
 	#[test]
@@ -447,7 +438,7 @@ mod tests {
 
 		let cs = c.circuit.constraint_system().clone();
 		cs.validate().unwrap();
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
@@ -467,9 +458,10 @@ mod tests {
 			&r_x,
 			&r_rho,
 		);
-		// The hidden segment spans value indices `[offset_witness, combined_len)`.
-		let offset = table.layout().offset_witness;
+		// The hidden segment spans value indices `[offset_inout, combined_len)`.
+		let offset = table.layout().offset_inout();
 		let combined = table.layout().combined_len();
+		assert_eq!(table.n_hidden_words(), combined - offset);
 		let public_words = &cs.constants;
 		let hidden_folded = fold_words_over_instances(&table, constants, &r_rho, offset..combined);
 
@@ -492,32 +484,26 @@ mod tests {
 		};
 		let prepared = claims.prepare(|| B128::random(&mut rng));
 
-		// The g parts: the public segment folds from raw constant words via the single-instance
-		// builder, the hidden segment from the instance-folded words. Add them. The h parts come
-		// from the single-instance prover.
-		let mut g_parts = build_g_parts::<B128, B128, _>(
+		// The g multilinear: the public segment folds from raw constant words via the
+		// single-instance builder, the hidden segment from the instance-folded words. Add them.
+		// The h multilinear comes from the single-instance prover.
+		let mut g = build_g::<B128, B128, _>(
 			&GlobalAllocator,
 			public_words,
 			&key_collection.public,
 			&prepared,
 		);
-		let hidden_g_parts = build_g_parts_from_folded_words(
+		let hidden_g = build_g_from_folded_words(
 			&GlobalAllocator,
 			&hidden_folded,
 			&key_collection.hidden,
 			&prepared,
 		);
-		for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
-			for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
-				*slot += *add;
-			}
+		for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
+			*slot += *add;
 		}
-		let h_parts = build_h_parts::<B128, B128, _>(&GlobalAllocator, &domain_subspace, r_z);
-		let inner_product: B128 = g_parts
-			.iter()
-			.zip(&h_parts)
-			.map(|(g, h)| inner_product_buffers(g, h))
-			.sum();
+		let h = build_h::<B128, B128, _>(&GlobalAllocator, &domain_subspace, r_z);
+		let inner_product = inner_product_buffers(&g, &h);
 
 		// The lambda-powers scaling of the batched AND-check evals, plus the empty intmul claim.
 		let expected = prepared.bitand.batched_eval + prepared.intmul.batched_eval;

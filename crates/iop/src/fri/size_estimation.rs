@@ -1,7 +1,5 @@
 // Copyright 2026 The Binius Developers
 
-use std::iter;
-
 use binius_field::BinaryField;
 
 use super::common::FRIParams;
@@ -15,8 +13,6 @@ use crate::merkle_tree::MerkleTreeScheme;
 ///   observed by Fiat-Shamir).
 /// - **Decommitment channel**: the terminal codeword, Merkle layer digests, per-query branch
 ///   digests, and per-query coset field values.
-///
-/// The estimate assumes non-hiding proofs (salt_len = 0).
 pub fn proof_size<F, VCS>(params: &FRIParams<F>, vcs: &VCS) -> usize
 where
 	F: BinaryField,
@@ -35,39 +31,40 @@ where
 
 	let n_test_queries = params.n_test_queries();
 
-	// Message channel: initial codeword commitment + batched codeword commitment + one per fold
-	// arity.
-	let commitment_msg_size = (2 + params.fold_arities().len()) * digest_size;
+	// One digest per input oracle, one per fold round, one for the terminal codeword.
+	let commitment_msg_size = (params.input_oracles().len() + params.n_oracles()) * digest_size;
 
 	// Terminal codeword sent in the clear: 2^(log_terminal_dim + log_inv_rate) field elements.
 	let log_terminal_dim = params.n_final_challenges();
 	let log_inv_rate = params.rs_code().log_inv_rate();
 	let terminate_codeword_size = (1 << (log_terminal_dim + log_inv_rate)) * value_size;
 
-	// The arities for each oracle: first the batch interleave fold, then each fold arity.
-	let arities: Vec<usize> = iter::once(params.log_batch_size())
-		.chain(params.fold_arities().iter().copied())
-		.collect();
-
-	// Compute the Merkle proof sizes and coset value sizes across all n_oracles non-terminal
-	// oracles.
 	let mut merkle_sizes = 0;
 	let mut coset_values_size = 0;
-	let mut log_n_cosets = params.log_len();
 
-	for &arity in &arities {
-		log_n_cosets -= arity;
-
-		// The optimal layer the verifier decommits once for this oracle's tree.
+	// Per query, an oracle sends one coset of `2^arity` elements and a Merkle branch.
+	// The layer depth must be chosen for the tree it indexes.
+	let mut open = |log_n_cosets: usize, arity: usize| {
 		let layer_depth = vcs.optimal_verify_layer(n_test_queries, log_n_cosets);
-
-		// VCS proof_size covers both the 2^layer_depth layer digests sent once AND the
-		// (tree_depth - layer_depth) * n_test_queries branch digests sent across all queries.
-		let tree_len = 1 << log_n_cosets;
-		merkle_sizes += vcs.proof_size(tree_len, n_test_queries, layer_depth);
-
-		// Each query opens a coset of 2^arity field values for this oracle.
+		merkle_sizes += vcs.proof_size(1 << log_n_cosets, n_test_queries, layer_depth);
 		coset_values_size += n_test_queries * (1 << arity) * value_size;
+	};
+
+	// Input oracles are opened one after another, each against its own commitment.
+	// So a batch of N sends N multi-proofs, not one.
+	//
+	// An oracle's codeword sits `log_lift` below the reduced dimension.
+	let log_dim = params.rs_code().log_dim();
+	for spec in params.input_oracles() {
+		open(log_dim - spec.log_lift + log_inv_rate, spec.log_batch_size());
+	}
+
+	// Then one per fold round.
+	// The outer oracle-combine challenges cost nothing: they recombine values already opened.
+	let mut log_n_cosets = params.index_bits();
+	for &arity in params.fold_arities() {
+		log_n_cosets -= arity;
+		open(log_n_cosets, arity);
 	}
 
 	commitment_msg_size + terminate_codeword_size + merkle_sizes + coset_values_size

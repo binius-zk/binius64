@@ -2,7 +2,7 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
-use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
+use binius_core::constraint_system::{ConstraintSystem, Proof, ValuesData};
 use binius_examples::setup;
 use binius_hash::StdHashSuite;
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
@@ -55,8 +55,8 @@ fn main() -> Result<()> {
 	let pub_bytes = fs::read(&args.pub_witness_path).with_context(|| {
 		format!("Failed to read public values from {}", args.pub_witness_path.display())
 	})?;
-	let public = ValuesData::deserialize(&mut pub_bytes.as_slice())
-		.context("Failed to deserialize public ValuesData")?;
+	let inout = ValuesData::deserialize(&mut pub_bytes.as_slice())
+		.context("Failed to deserialize inout ValuesData")?;
 
 	// Read and deserialize non-public values
 	let non_pub_bytes = fs::read(&args.non_pub_data_path).with_context(|| {
@@ -66,7 +66,7 @@ fn main() -> Result<()> {
 		.context("Failed to deserialize non-public ValuesData")?;
 
 	// Reconstruct the full ValueVec
-	let witness = ValueVec::new_from_data(&public, &non_public);
+	let witness = cs.value_vec_from_data(&inout, &non_public);
 
 	// Setup prover (verifier is not used here)
 	let (_verifier, prover) = setup::<StdHashSuite>(cs, args.log_inv_rate as usize, None)?;

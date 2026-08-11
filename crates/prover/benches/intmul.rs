@@ -18,7 +18,7 @@ use binius_ip_prover::{
 use binius_math::{
 	FieldBuffer,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
-	ntt::{NeighborsLastSingleThread, domain_context::GenericPreExpanded},
+	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerPreExpanded},
 	test_utils::random_scalars,
 };
 use binius_prover::protocols::intmul::{
@@ -52,8 +52,8 @@ const N_TEST_QUERIES: usize = 1;
 /// encoding and Merkle tree construction) is measured; a naive channel would serialize
 /// oracles for free. The final batched opening in `finish` is not measured, since the full
 /// system amortizes it into the single opening shared with the witness trace.
-fn basefold_compiler() -> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GenericPreExpanded<F>>>
-{
+fn basefold_compiler()
+-> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GaoMateerPreExpanded<F>>> {
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
 		&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
 		vec![OracleSpec::new(LIMB_BITS)],
@@ -61,8 +61,7 @@ fn basefold_compiler() -> BaseFoldProverCompiler<P, NeighborsLastSingleThread<Ge
 		N_TEST_QUERIES,
 		&MinProofSizeStrategy,
 	);
-	let domain_context =
-		GenericPreExpanded::generate_from_subspace(verifier_compiler.max_subspace());
+	let domain_context = GaoMateerPreExpanded::generate(verifier_compiler.max_log_domain_size());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 	BaseFoldProverCompiler::from_verifier_compiler(&verifier_compiler, ntt)
 }

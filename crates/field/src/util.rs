@@ -85,6 +85,30 @@ pub fn expand_subset_sums_array<P: PackedField, const N: usize, const N_EXP2: us
 	expanded
 }
 
+/// Expands `elems` into all `2^elems.len()` subset sums, indexed by subset bitmask.
+///
+/// The dynamically sized counterpart of [`expand_subset_sums_array`], for callers whose element
+/// count is only known at run time. Entry `mask` holds the sum of `elems[i]` over every bit `i` set
+/// in `mask`, so entry `0` is zero and entry `2^i` is `elems[i]`.
+///
+/// Each entry costs one addition, where summing a subset directly would cost one per set bit.
+///
+/// ## Preconditions
+///
+/// * `elems.len()` must be less than `usize::BITS`
+pub fn expand_subset_sums<P: PackedField>(elems: &[P]) -> Vec<P> {
+	assert!(elems.len() < usize::BITS as usize); // precondition
+
+	let mut expanded = vec![P::zero(); 1 << elems.len()];
+	for (i, &elem_i) in elems.iter().enumerate() {
+		let (lo_half, hi_half) = expanded[..1 << (i + 1)].split_at_mut(1 << i);
+		for (lo_half_i, hi_half_i) in iter::zip(lo_half, hi_half) {
+			*hi_half_i = *lo_half_i + elem_i;
+		}
+	}
+	expanded
+}
+
 /// Expands `elems` into all `2^N` subset XOR combinations, indexed by subset bitmask.
 ///
 /// Entry `mask` holds the XOR of `elems[i]` over every bit `i` set in `mask`. This is the

@@ -49,13 +49,10 @@ pub fn crc64_iso_reference(words: &[u64; N_INPUT_WORDS]) -> u64 {
 	crc ^ XOR_OUT
 }
 
-/// A circuit computing CRC-64/GO-ISO over four private witness words.
+/// A circuit computing CRC-64/GO-ISO over four message words.
 ///
-/// The four inputs are ordinary witness wires, not public inout wires.
-/// So the whole computation lives in the private witness.
-///
-/// The output wire is force-committed.
-/// Without an assertion or public output reading it, dead-code elimination would prune the CRC.
+/// The message words are inout wires and the CRC is promoted to one, so both are the circuit's
+/// public interface and the private witness holds only the register's intermediate states.
 pub struct Crc64Circuit {
 	pub circuit: Circuit,
 	pub input: [Wire; N_INPUT_WORDS],
@@ -66,8 +63,8 @@ pub struct Crc64Circuit {
 pub fn crc64_circuit() -> Crc64Circuit {
 	let builder = CircuitBuilder::new();
 
-	// The four message words are private witnesses supplied by the prover.
-	let input = std::array::from_fn(|_| builder.add_witness());
+	// The four message words are public inputs.
+	let input = std::array::from_fn(|_| builder.add_inout());
 
 	// The register starts at the all-ones preset and the polynomial is a constant.
 	let mut crc = builder.add_constant_64(INIT);
@@ -93,11 +90,10 @@ pub fn crc64_circuit() -> Crc64Circuit {
 		}
 	}
 
-	// Apply the final output XOR to produce the CRC value.
+	// Apply the final output XOR to produce the CRC value, and promote it to a public output.
+	// That promotion is what keeps the CRC computation alive under dead-code elimination.
 	let output = builder.bxor(crc, builder.add_constant_64(XOR_OUT));
-
-	// Pin the output so the constraint compiler keeps the CRC computation alive.
-	builder.force_commit(output);
+	builder.mark_inout(output);
 
 	Crc64Circuit {
 		circuit: builder.build(),
@@ -110,8 +106,7 @@ pub fn crc64_circuit() -> Crc64Circuit {
 ///
 /// The instance count is the number of tuples, which must be a power of two.
 /// Each instance's four message words are the corresponding tuple.
-/// Circuit evaluation derives the rest.
-/// The circuit has no inout wires, so it is admissible in the wire-major table.
+/// Circuit evaluation derives the rest, including the public CRC.
 pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable {
 	let log_instances = inputs.len().ilog2() as usize;
 	ValueTable::populate(&c.circuit, log_instances, |i, filler| {

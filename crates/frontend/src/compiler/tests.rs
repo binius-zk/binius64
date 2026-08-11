@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use binius_core::{
-	constraint_system::{ShiftedValueIndex, ValueIndex},
+	constraint_system::{Operand, ShiftedValueIndex, ValueIndex, ValueSegment},
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;
@@ -91,7 +91,7 @@ fn test_algebraic_fold_bxor_self_is_zero_in_witness() {
 /// Builds `assert_eq(x ^ y, z)`.
 ///
 /// Gate fusion is off so that the `bxor` gate keeps its own linear constraint instead of being
-/// inlined into the assertion's operand; the assertion itself emits an AND constraint either way.
+/// inlined into the assertion's operand.
 fn build_xor_circuit() -> (Circuit, Wire, Wire, Wire) {
 	let builder = CircuitBuilder::with_opts(Options {
 		enable_gate_fusion: false,
@@ -109,13 +109,14 @@ fn test_linear_constraints_lower_to_zero_constraints() {
 	let (zero_circuit, x, y, z) = build_xor_circuit();
 	let cs = zero_circuit.constraint_system();
 
-	// The `bxor` linear constraint moves to the ZERO set, leaving only the assertion's AND.
-	assert_eq!(cs.n_zero_constraints(), 1);
-	assert_eq!(cs.n_and_constraints(), 1);
+	// Both the `bxor` linear constraint and the assertion land in the ZERO set, so the AND set is
+	// empty.
+	assert_eq!(cs.n_zero_constraints(), 2);
+	assert_eq!(cs.n_and_constraints(), 0);
 
 	// The Zero constraint XORs the linear constraint's terms with its destination, and names no
 	// all-ones constant.
-	let all_one = ValueIndex(0);
+	let all_one = ValueIndex::constant(0);
 	let val = cs.zero_constraints[0].val();
 	assert_eq!(val.len(), 3);
 	assert!(val.iter().all(|svi| svi.value_index != all_one));
@@ -149,14 +150,14 @@ fn test_zero_constraints_reach_a_fused_committed_lin_def() {
 	let zero_cs = zero_circuit.constraint_system();
 
 	// The committed shift pair is a ZERO constraint, and it names no all-ones constant — the AND
-	// set holds only the `band` and the assertion.
-	assert_eq!(zero_cs.n_zero_constraints(), 1);
-	assert_eq!(zero_cs.n_and_constraints(), 2);
+	// set holds only the `band`, since the assertion is a ZERO constraint too.
+	assert_eq!(zero_cs.n_zero_constraints(), 2);
+	assert_eq!(zero_cs.n_and_constraints(), 1);
 	assert!(
 		zero_cs.zero_constraints[0]
 			.val()
 			.iter()
-			.all(|svi| svi.value_index != ValueIndex(0))
+			.all(|svi| svi.value_index != ValueIndex::constant(0))
 	);
 
 	let mut filler = zero_circuit.new_witness_filler();
@@ -786,9 +787,6 @@ fn test_scratch_pooling_preserves_the_committed_witness() {
 	assert_eq!(unpooled_layout.n_inout, pooled_layout.n_inout);
 	assert_eq!(unpooled_layout.n_witness, pooled_layout.n_witness);
 	assert_eq!(unpooled_layout.n_internal, pooled_layout.n_internal);
-	assert_eq!(unpooled_layout.offset_inout, pooled_layout.offset_inout);
-	assert_eq!(unpooled_layout.offset_witness, pooled_layout.offset_witness);
-	assert_eq!(unpooled_layout.n_hidden_words, pooled_layout.n_hidden_words);
 	assert_eq!(unpooled.constraint_system().constants, pooled.constraint_system().constants);
 
 	// Flatten every operand of every constraint into one ordered list.
@@ -866,10 +864,11 @@ fn test_scratch_pooling_rejects_a_bad_assignment() {
 		.populate_wire_witness(&mut w)
 		.expect_err("a perturbed expected value must fail the chain assertion");
 	// Exactly one assertion exists in the fixture, so exactly one failure is reported.
-	assert_eq!(err.total_count, 1);
-	assert_eq!(err.messages.len(), 1);
-	// The message is prefixed with the path of the assertion that failed, naming the chain.
-	assert!(err.messages[0].starts_with(".chain: "), "unexpected message: {}", err.messages[0]);
+	assert_eq!(err.total, 1);
+	assert_eq!(err.failures.len(), 1);
+	// The failure names the path of the assertion that failed, apart from the detail.
+	assert_eq!(err.failures[0].path, ".chain");
+	assert!(!err.failures[0].detail.is_empty());
 }
 
 #[test]
@@ -913,8 +912,8 @@ fn test_scratch_pooling_matches_scalar_per_instance_batched() {
 		.collect();
 
 	// Locate the two public rows, then seed every instance's column before evaluating.
-	let x_row = circuit.witness_index(x).0 as usize;
-	let expected_row = circuit.witness_index(expected).0 as usize;
+	let x_row = circuit.witness_row(x);
+	let expected_row = circuit.witness_row(expected);
 	let mut data = vec![Word::ZERO; full_len * n];
 	let mut view = StridedArray2DViewMut::without_stride(&mut data, full_len, n).unwrap();
 	for (instance, &x_val) in inputs.iter().enumerate() {
@@ -960,37 +959,135 @@ fn test_zero_constant_not_in_binius64_operands() {
 		.map(|(i, _)| i)
 		.collect();
 
-	for constraint in &cs.and_constraints {
-		for operand in &constraint.0 {
+	// Only a constant-segment index can name a constant, so the private and inout words are left
+	// alone however their indices happen to number.
+	let assert_no_zero_constants = |operands: &[Operand], kind: &str| {
+		for operand in operands {
 			for term in operand {
+				let index = term.value_index;
 				assert!(
-					!zero_const_indices.contains(&(term.value_index.0 as usize)),
-					"zero constant at ValueIndex({}) found in AND operand",
-					term.value_index.0
+					index.segment() != ValueSegment::Constant
+						|| !zero_const_indices.contains(&(index.index() as usize)),
+					"zero constant at {index:?} found in {kind} operand",
 				);
 			}
 		}
+	};
+
+	for constraint in &cs.and_constraints {
+		assert_no_zero_constants(&constraint.0, "AND");
 	}
 	for constraint in &cs.imul_constraints {
-		for operand in &constraint.0 {
-			for term in operand {
-				assert!(
-					!zero_const_indices.contains(&(term.value_index.0 as usize)),
-					"zero constant at ValueIndex({}) found in IMUL operand",
-					term.value_index.0
-				);
-			}
-		}
+		assert_no_zero_constants(&constraint.0, "IMUL");
 	}
 	for constraint in &cs.bmul_constraints {
-		for operand in &constraint.0 {
-			for term in operand {
-				assert!(
-					!zero_const_indices.contains(&(term.value_index.0 as usize)),
-					"zero constant at ValueIndex({}) found in BMUL operand",
-					term.value_index.0
-				);
-			}
-		}
+		assert_no_zero_constants(&constraint.0, "BMUL");
+	}
+}
+
+// Promoting a gate output to a public output costs neither a second committed word nor a
+// constraint, unlike declaring an inout wire and asserting the gate output against it.
+//
+// The three circuits below compute the same conjunction and differ only in how its result is
+// exposed. `a & b` is an AND-gate output, so it occupies a committed word in every one of them.
+#[test]
+fn mark_inout_promotes_without_duplicating() {
+	// The inout count, the private count, and the constraint count of one circuit. An equality
+	// assertion is a ZERO constraint and the conjunction is an AND constraint, so the count spans
+	// both sets to stay independent of which one each lands in.
+	let shape = |build: &dyn Fn(&CircuitBuilder)| {
+		let builder = CircuitBuilder::new();
+		build(&builder);
+		let circuit = builder.build();
+		let layout = circuit.value_vec_layout();
+		let cs = circuit.constraint_system();
+		(layout.n_inout, layout.n_private(), cs.and_constraints.len() + cs.zero_constraints.len())
+	};
+
+	// The result kept alive by pinning: private, and not part of the public interface.
+	let (pinned_inout, pinned_private, pinned_constraints) = shape(&|builder| {
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		builder.force_commit(builder.band(a, b));
+	});
+
+	// The result asserted against a separately declared public output.
+	let (asserted_inout, asserted_private, asserted_constraints) = shape(&|builder| {
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		let out = builder.add_inout();
+		builder.assert_eq("out", out, builder.band(a, b));
+	});
+
+	// The result promoted in place.
+	let (promoted_inout, promoted_private, promoted_constraints) = shape(&|builder| {
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		builder.mark_inout(builder.band(a, b));
+	});
+
+	// Asserting duplicates the conjunction: its own committed word, plus the declared output's,
+	// plus the constraint tying them together.
+	assert_eq!(asserted_inout + asserted_private, pinned_inout + pinned_private + 1);
+	assert_eq!(asserted_constraints, pinned_constraints + 1);
+
+	// Promoting costs nothing over pinning — it is the same word, relabelled public.
+	assert_eq!(promoted_inout + promoted_private, pinned_inout + pinned_private);
+	assert_eq!(promoted_constraints, pinned_constraints);
+	assert_eq!(promoted_inout, pinned_inout + 1);
+	assert_eq!(promoted_private, pinned_private - 1);
+}
+
+// A promoted wire is derived by the gate that produces it, so a filler leaves it alone and reads
+// the computed value back — unlike a declared inout wire, which the filler must assign.
+//
+// The XOR is the case promotion has to pin: gate fusion inlines a linear definition into its
+// consumers, which would leave the public word with nothing defining it.
+#[test]
+fn mark_inout_wire_is_derived_by_population() {
+	let builder = CircuitBuilder::new();
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let c = builder.add_inout();
+	// The XOR feeds the AND, so gate fusion has somewhere to inline it — the case promotion has
+	// to pin against.
+	let xor = builder.bxor(a, b);
+	let and = builder.band(xor, c);
+	builder.mark_inout(xor);
+	builder.mark_inout(and);
+	let circuit = builder.build();
+
+	// Both promoted wires are public.
+	assert_eq!(circuit.value_vec_layout().n_inout, 5);
+	for wire in [xor, and] {
+		assert_eq!(circuit.witness_index(wire).segment(), ValueSegment::InOut);
+	}
+
+	// Only the two inputs are assigned; the derived words are left unset.
+	let mut filler = circuit.new_witness_filler();
+	filler[a] = Word(0xF0F0_F0F0_F0F0_F0F0);
+	filler[b] = Word(0xFF00_FF00_FF00_FF00);
+	filler[c] = Word(0xFFFF_0000_FFFF_0000);
+	circuit.populate_wire_witness(&mut filler).unwrap();
+
+	assert_eq!(filler[xor], Word(0x0FF0_0FF0_0FF0_0FF0));
+	assert_eq!(filler[and], Word(0x0FF0_0000_0FF0_0000));
+
+	// Every promoted word is defined by a constraint. This is what pinning buys for the XOR: left
+	// unpinned, gate fusion would inline the linear definition and leave the public word free for
+	// a prover to choose.
+	let cs = circuit.constraint_system();
+	let operands = cs
+		.zero_constraints
+		.iter()
+		.flat_map(|c| c.0.iter())
+		.chain(cs.and_constraints.iter().flat_map(|c| c.0.iter()));
+	let constrained: HashSet<ValueIndex> =
+		operands.flatten().map(|term| term.value_index).collect();
+	for wire in [xor, and] {
+		assert!(
+			constrained.contains(&circuit.witness_index(wire)),
+			"a promoted word must be defined by a constraint"
+		);
 	}
 }

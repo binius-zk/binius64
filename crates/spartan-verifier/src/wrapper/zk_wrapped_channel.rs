@@ -13,13 +13,14 @@
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+use binius_core::word::Word;
 use binius_field::{BinaryField, util::FieldFn};
 use binius_iop::{
 	basefold::channel::{BaseFoldOracle, BaseFoldVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	merkle_channel::MerkleIPVerifierChannel,
 };
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
@@ -224,6 +225,32 @@ where
 			instance_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call_native(vals)])[0]
 		};
 		CircuitElem::wire(&self.instance_gen, out_wire)
+	}
+}
+
+impl<F, Channel> WordIPVerifierChannel<F> for ZKWrappedVerifierChannel<'_, F, Channel>
+where
+	F: BinaryField,
+	Channel: MerkleIPVerifierChannel<F, Elem = F, Word = Word>,
+{
+	type Word = Word;
+
+	fn observe_words(&mut self, words: &[Word]) {
+		// The inner channel holds the Fiat-Shamir state the inner prover mirrors, so the words go
+		// there. The outer verifier recomputes what depends on them from the public segment.
+		self.inner_channel.observe_words(words);
+	}
+
+	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
+		subset_sum_word(elems, *word)
+	}
+
+	fn select(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
+		select_word(elems, *word)
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Word {
+		self.inner_channel.sample_bits(bits)
 	}
 }
 

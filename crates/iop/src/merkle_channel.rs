@@ -14,26 +14,28 @@
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
+use binius_core::word::Word;
 use binius_field::{Field, util::FieldFn};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_ip::channel::IPVerifierChannel;
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSampleBits, Challenger},
-};
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
+use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
 use crate::merkle_tree::{BinaryMerkleTreeScheme, Commitment, MerkleTreeScheme};
 
-/// An extension of [`IPVerifierChannel`] that can receive and open Merkle commitments.
-pub trait MerkleIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
+/// An extension of [`WordIPVerifierChannel`] that can receive and open Merkle commitments.
+///
+/// Query indices are [`Self::Word`](WordIPVerifierChannel::Word)s, since a protocol samples them
+/// with [`WordIPVerifierChannel::sample_bits`] and a channel that builds a circuit carries them as
+/// wires.
+pub trait MerkleIPVerifierChannel<F: Field>: WordIPVerifierChannel<F> {
 	/// A Merkle commitment.
 	type Commitment: Clone;
 
 	/// Receives a Merkle commitment for a tree with the given depth and leaf size.
 	///
-	/// The leaves of the Merkle tree each contain exactly `leaf_size` `F` elements.
+	/// The leaves of the Merkle tree each contain exactly `leaf_size` field elements.
 	fn recv_merkle_commitment(
 		&mut self,
 		leaf_size: usize,
@@ -45,23 +47,21 @@ pub trait MerkleIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// Each commitment is associated with the `leaf_size` and `depth` requested when received with
 	/// [`Self::recv_merkle_commitment`]. All indices must be less than `2^depth`.
 	///
-	/// Returns `indices.len() * leaf_size` field elements, where each chunk of `leaf_size`
+	/// Returns `indices.len() * leaf_size` elements, where each chunk of `leaf_size`
 	/// contiguous elements corresponds to one provided index.
 	fn recv_openings(
 		&mut self,
 		commitment: &Self::Commitment,
-		indices: &[usize],
-	) -> Result<Vec<F>, Error>;
+		indices: &[Self::Word],
+	) -> Result<Vec<Self::Elem>, Error>;
 
 	/// Receives the full committed vector, bound by a Merkle commitment.
 	///
-	/// Returns `leaf_size << depth` field elements, in leaf order.
-	fn recv_committed_vector(&mut self, commitment: &Self::Commitment) -> Result<Vec<F>, Error>;
-
-	/// Samples a uniform integer with the given number of bits.
-	///
-	/// Protocols use this to sample query indices for [`Self::recv_openings`].
-	fn sample_bits(&mut self, bits: usize) -> usize;
+	/// Returns `leaf_size << depth` elements, in leaf order.
+	fn recv_committed_vector(
+		&mut self,
+		commitment: &Self::Commitment,
+	) -> Result<Vec<Self::Elem>, Error>;
 }
 
 /// A [`MerkleIPVerifierChannel`] over a [`VerifierTranscript`], verifying openings with a
@@ -76,7 +76,7 @@ pub struct VerifierMerkleTranscriptChannel<T, Challenger_, F, H: HashSuite> {
 }
 
 impl<T, Challenger_, F, H: HashSuite> VerifierMerkleTranscriptChannel<T, Challenger_, F, H> {
-	/// Constructs a channel over the transcript with a non-hiding Merkle tree scheme.
+	/// Constructs a channel over the transcript with a default Merkle tree scheme.
 	pub fn new(transcript: T) -> Self {
 		Self::with_scheme(transcript, BinaryMerkleTreeScheme::new())
 	}
@@ -148,6 +148,33 @@ where
 	}
 }
 
+impl<F, T, Challenger_, H> WordIPVerifierChannel<F>
+	for VerifierMerkleTranscriptChannel<T, Challenger_, F, H>
+where
+	F: Field,
+	T: BorrowMut<VerifierTranscript<Challenger_>>,
+	Challenger_: Challenger,
+	H: HashSuite,
+{
+	type Word = Word;
+
+	fn observe_words(&mut self, words: &[Word]) {
+		WordIPVerifierChannel::<F>::observe_words(self.transcript.borrow_mut(), words);
+	}
+
+	fn subset_sum(&mut self, elems: &[F], word: &Word) -> F {
+		WordIPVerifierChannel::<F>::subset_sum(self.transcript.borrow_mut(), elems, word)
+	}
+
+	fn select(&mut self, elems: &[F], word: &Word) -> F {
+		WordIPVerifierChannel::<F>::select(self.transcript.borrow_mut(), elems, word)
+	}
+
+	fn sample_bits(&mut self, bits: usize) -> Word {
+		WordIPVerifierChannel::<F>::sample_bits(self.transcript.borrow_mut(), bits)
+	}
+}
+
 impl<F, T, Challenger_, H> MerkleIPVerifierChannel<F>
 	for VerifierMerkleTranscriptChannel<T, Challenger_, F, H>
 where
@@ -174,9 +201,13 @@ where
 	fn recv_openings(
 		&mut self,
 		commitment: &Self::Commitment,
-		indices: &[usize],
+		indices: &[Word],
 	) -> Result<Vec<F>, Error> {
 		let tree_depth = commitment.commitment.depth;
+		let indices = indices
+			.iter()
+			.map(|index| index.as_u64() as usize)
+			.collect::<Vec<_>>();
 		assert!(indices.iter().all(|&index| index < 1 << tree_depth)); // precondition
 
 		// Read and verify the optimal internal layer once, then verify every opening against it.
@@ -187,7 +218,7 @@ where
 			.verify_layer(&commitment.commitment.root, layer_depth, &layer_digests)?;
 
 		let mut values = Vec::with_capacity(indices.len() * commitment.leaf_size);
-		for &index in indices {
+		for &index in &indices {
 			let leaf = advice.read_scalar_slice::<F>(commitment.leaf_size)?;
 			self.scheme.verify_opening(
 				index,
@@ -204,19 +235,14 @@ where
 
 	fn recv_committed_vector(&mut self, commitment: &Self::Commitment) -> Result<Vec<F>, Error> {
 		let len = commitment.leaf_size << commitment.commitment.depth;
-		let mut advice = self.transcript.borrow_mut().decommitment();
-		let data = advice.read_scalar_slice::<F>(len)?;
-		self.scheme.verify_vector(
-			&commitment.commitment.root,
-			&data,
-			commitment.leaf_size,
-			&mut advice,
-		)?;
+		let data = self
+			.transcript
+			.borrow_mut()
+			.decommitment()
+			.read_scalar_slice::<F>(len)?;
+		self.scheme
+			.verify_vector(&commitment.commitment.root, &data, commitment.leaf_size)?;
 		Ok(data)
-	}
-
-	fn sample_bits(&mut self, bits: usize) -> usize {
-		CanSampleBits::sample_bits(self.transcript.borrow_mut(), bits) as usize
 	}
 }
 

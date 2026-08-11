@@ -1,22 +1,24 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, iter};
+use std::{array, borrow::Cow, iter};
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField,
+	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField, Field,
 	PackedAESBinaryField64x8b as Packed64xB8, PackedField, WideMul, util::expand_subset_sums_array,
 };
 use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
-use binius_utils::rayon::prelude::*;
+use binius_utils::rayon::{self, iter::Either, prelude::*};
 use binius_verifier::{
 	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX,
 };
 use itertools::izip;
 
 use super::ntt_lookup::NTTLookup;
-use crate::fold_word::duplicate_to_fixed_chunks;
+
+/// Number of big field zerocheck challenges whose equality indicator is expanded per window.
+const N_FIXED_LARGE_CHALLENGES: usize = 4;
 
 /// Generates a univariate polynomial for the sumcheck protocol in AND constraint reduction.
 ///
@@ -49,12 +51,19 @@ use crate::fold_word::duplicate_to_fixed_chunks;
 ///
 /// # Arguments
 ///
-/// * `log_words` - Base-2 logarithm of the number of words in each column
+/// * `log_words` - Base-2 logarithm of the constraint axis's length
 /// * `a_words` - First multiplicand (a) as a one-bit oblong multilinear polynomial
 /// * `b_words` - Second multiplicand (b) as a one-bit oblong multilinear polynomial
 /// * `eq_ind_big_field_challenges` - Partial equality indicator evaluations for big field variables
 /// * `prover_message_domain` - The NTT domain subspace (dimension `SKIPPED_VARS + 1`) from which
 ///   the low-degree-extension lookup table is built internally
+///
+/// # Preconditions
+///
+/// * The two columns have equal length, at most `1 << log_words`. They need not fill the constraint
+///   axis: a shorter column has its remaining rows read as zero. Such a row forces the derived `C =
+///   A & B` to zero as well, so `A * B - C` vanishes on it at every point of the univariate domain
+///   and it adds nothing to the message.
 ///
 /// # Returns
 ///
@@ -76,14 +85,12 @@ where
 	F: BinaryField + From<B8>,
 {
 	const N_FIXED_SMALL_CHALLENGES: usize = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len();
-	const N_FIXED_LARGE_CHALLENGES: usize = 4;
 
 	const LOG_CHUNK_SIZE: usize = N_FIXED_SMALL_CHALLENGES + N_FIXED_LARGE_CHALLENGES;
 
 	assert_eq!(big_field_challenges.len(), log_words.saturating_sub(N_FIXED_SMALL_CHALLENGES));
-	for col in [a_words, b_words] {
-		assert_eq!(col.len(), 1 << log_words);
-	}
+	assert_eq!(a_words.len(), b_words.len());
+	assert!(a_words.len() <= 1 << log_words);
 
 	let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
 		.in_scope(|| NTTLookup::new(prover_message_domain));
@@ -96,61 +103,22 @@ where
 			.try_into()
 			.expect("PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() == N_FIXED_SMALL_CHALLENGES");
 
-	// We don't actually use fixed large challenges yet, so just take a prefix of the big field
-	// challenges passed in.
-	//
-	// TODO: Use some fixed challenges instead throughout the protocol.
-	let (fixed_large_challenges, extra_challenges) = if big_field_challenges.len()
-		< N_FIXED_LARGE_CHALLENGES
-	{
-		let mut fixed_large_challenges = [F::ZERO; N_FIXED_LARGE_CHALLENGES];
-		fixed_large_challenges[..big_field_challenges.len()].copy_from_slice(big_field_challenges);
-		(fixed_large_challenges, &[][..])
-	} else {
-		let (fixed_large_challenges, extra_challenges) =
-			big_field_challenges.split_at(N_FIXED_LARGE_CHALLENGES);
-		let fixed_large_challenges: [_; N_FIXED_LARGE_CHALLENGES] = fixed_large_challenges
-			.try_into()
-			.expect("big_field_challenges.len() >= N_FIXED_LARGE_CHALLENGES");
-		(fixed_large_challenges, extra_challenges)
-	};
-
-	let eq_ind_fixed_large: [_; 1 << N_FIXED_LARGE_CHALLENGES] =
-		eq_ind_partial_eval::<F>(&fixed_large_challenges)
-			.as_ref()
-			.try_into()
-			.expect("fixed_large_challenges.len() == N_FIXED_LARGE_CHALLENGES");
-
+	let (eq_ind_fixed_large, extra_challenges) = eq_ind_fixed_large(big_field_challenges);
 	let outer_weight_mul_maps = eq_ind_fixed_large.map(B8ToExtMulMap::new);
-
 	let eq_ind_extra = eq_ind_partial_eval::<F>(extra_challenges);
 
-	// Process columns in fixed-length chunks of 8 to assist compiler in loop unrolling.
-	let a_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(a_words);
-	let b_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(b_words);
+	const CHUNK_SIZE: usize = 1 << LOG_CHUNK_SIZE;
 
-	// Accumulate resulting polynomial evals by iterating over each hypercube vertex.
-	(a_col_chunks.as_ref(), b_col_chunks.as_ref())
+	let a_chunks_iter = padded_chunks::<CHUNK_SIZE>(a_words);
+	let b_chunks_iter = padded_chunks::<CHUNK_SIZE>(b_words);
+
+	(a_chunks_iter, b_chunks_iter)
 		.into_par_iter()
 		.map(|(a_chunk, b_chunk)| {
-			// Skip zero-padding windows: their chunks add nothing to the round message.
-			//
-			// Invariant: C is derived as C = A & B.
-			//   A = 0 forces C = 0, so the term A*B - C vanishes.
-			//   B = 0 forces C = 0, so the term A*B - C vanishes.
-			//   A chunk all-zero in either operand sums to exactly 0 over the window.
-			//
-			// A populated chunk stops the scan at its first non-zero word.
-			// Dense inputs therefore pay only a couple of word comparisons.
-			if a_chunk.iter().all(|w| *w == Word::ZERO) || b_chunk.iter().all(|w| *w == Word::ZERO)
-			{
-				return [F::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
-			}
-
 			// Reshape the chunk arrays into arrays of arrays
-			let [a_subchunks, b_subchunks] = [a_chunk, b_chunk].map(|chunk| {
+			let [a_subchunks, b_subchunks] = [&a_chunk, &b_chunk].map(|chunk| {
 				bytemuck::must_cast_ref::<
-					[Word; 1 << LOG_CHUNK_SIZE],
+					[Word; CHUNK_SIZE],
 					[[Word; 1 << N_FIXED_SMALL_CHALLENGES]; 1 << N_FIXED_LARGE_CHALLENGES],
 				>(chunk)
 			});
@@ -197,6 +165,90 @@ where
 		)
 }
 
+/// The equality indicator expansion of the first `N_FIXED_LARGE_CHALLENGES` big field zerocheck
+/// challenges, along with the challenges past them.
+///
+/// The expansion weights the windows' subchunks, while the extra challenges weight the windows
+/// themselves. A challenge vector shorter than `N_FIXED_LARGE_CHALLENGES` is zero-extended to that
+/// length, which leaves no extra challenges: a column that short occupies a single window, whose
+/// unused index bits are the ones the zero challenges cover.
+fn eq_ind_fixed_large<F: Field>(
+	big_field_challenges: &[F],
+) -> ([F; 1 << N_FIXED_LARGE_CHALLENGES], &[F]) {
+	if big_field_challenges.len() < N_FIXED_LARGE_CHALLENGES {
+		let eq_ind_fixed_large = eq_ind_partial_eval::<F>(big_field_challenges);
+		let mut eq_ind_fixed_large_padded = [F::ZERO; 1 << N_FIXED_LARGE_CHALLENGES];
+		eq_ind_fixed_large_padded[..eq_ind_fixed_large.len()]
+			.copy_from_slice(eq_ind_fixed_large.as_ref());
+
+		(eq_ind_fixed_large_padded, &[][..])
+	} else {
+		let (fixed_large_challenges, extra_challenges) =
+			big_field_challenges.split_at(N_FIXED_LARGE_CHALLENGES);
+		let fixed_large_challenges: [_; N_FIXED_LARGE_CHALLENGES] = fixed_large_challenges
+			.try_into()
+			.expect("big_field_challenges.len() >= N_FIXED_LARGE_CHALLENGES");
+
+		let eq_ind_fixed_large: [_; 1 << N_FIXED_LARGE_CHALLENGES] =
+			eq_ind_partial_eval::<F>(&fixed_large_challenges)
+				.as_ref()
+				.try_into()
+				.expect("fixed_large_challenges.len() == N_FIXED_LARGE_CHALLENGES");
+
+		(eq_ind_fixed_large, extra_challenges)
+	}
+}
+
+/// The words as chunks of `CHUNK_SIZE`, the last one padded out if the words run out partway
+/// through it.
+///
+/// A chunk the words fill is borrowed in place; only the partial one is copied. The copy zero-
+/// extends the words to the constraint axis's length, then repeats that axis across the rest of the
+/// chunk. A zero row forces the derived `C = A & B` to zero as well, so `A * B - C` vanishes on it
+/// at every point of the univariate domain and it adds nothing to the round message.
+///
+/// Repetition is a no-op unless the whole axis is shorter than one chunk. In that case the chunk's
+/// index bits past the axis carry the fixed small zerocheck challenges, which are non-zero: summing
+/// a non-zero eq challenge over a duplicated coordinate gives back exactly one copy, whereas
+/// leaving those slots zero would scale the axis by `1 + r`. Repetition is what keeps such a
+/// column's round message equal to the message the verifier reconstructs over the axis's own
+/// variables.
+///
+/// # Preconditions
+///
+/// * `CHUNK_SIZE` is a power of two
+/// * The constraint axis is `words.len()` rounded up to a power of two
+fn padded_chunks<const CHUNK_SIZE: usize>(
+	words: &[Word],
+) -> impl IndexedParallelIterator<Item = Cow<'_, [Word; CHUNK_SIZE]>> {
+	let chunks_iter = words.par_chunks_exact(CHUNK_SIZE);
+	let tail = chunks_iter.remainder();
+
+	let chunks_iter = chunks_iter.map(|chunk| {
+		Cow::Borrowed(
+			<&[Word; CHUNK_SIZE]>::try_from(chunk)
+				.expect("chunks_exact produces slices with len CHUNK_SIZE"),
+		)
+	});
+
+	if tail.is_empty() {
+		Either::Right(chunks_iter)
+	} else {
+		// The axis's rows within one chunk. Both are powers of two, so this divides `CHUNK_SIZE`.
+		let axis_rows = words.len().next_power_of_two().min(CHUNK_SIZE);
+
+		let mut tail_padded = [Word::ZERO; CHUNK_SIZE];
+		tail_padded[..tail.len()].copy_from_slice(tail);
+
+		let (axis, rest) = tail_padded.split_at_mut(axis_rows);
+		for copy in rest.chunks_exact_mut(axis_rows) {
+			copy.copy_from_slice(axis);
+		}
+
+		Either::Left(chunks_iter.chain(rayon::iter::once(Cow::Owned(tail_padded))))
+	}
+}
+
 /// Represents a precomputed multiplication map by an extension field constant for
 /// [`B8`].`
 ///
@@ -233,6 +285,7 @@ mod test {
 		BinarySubspace, FieldBuffer,
 		univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 	};
+	use binius_utils::checked_arithmetics::log2_ceil_usize;
 	use binius_verifier::protocols::bitand::SKIPPED_VARS;
 	use rand::prelude::*;
 
@@ -273,33 +326,43 @@ mod test {
 		assert_round_message_consistent(&mlv_1, &mlv_2, &mut rng);
 	}
 
+	/// The width in words of one round-message window: `2^(3 + 4) = 128`.
+	const WINDOW: usize = 1 << (PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() + 4);
+
+	/// The column lengths covering every windowing regime.
+	fn windowing_shapes() -> [usize; 6] {
+		[
+			// A single-row axis: one window, filled by repetition.
+			1,
+			// A sub-window axis with a real zero tail inside it, then repeated.
+			3,
+			// Exactly one window, no padding at all.
+			WINDOW,
+			// One whole window plus a straddling one, padded up to two.
+			WINDOW + 1,
+			// A whole number of windows, padded up to four.
+			3 * WINDOW,
+			// Whole windows plus a straddling one, padded up to four.
+			3 * WINDOW + 17,
+		]
+	}
+
+	// An unpadded column's round message agrees with the verifier's own fold of that column.
+	//
+	// The padded-vs-unpadded equality above would also hold if both were wrong in the same way.
+	// This pins the message to the independently folded claim at every windowing shape.
 	#[test]
-	fn test_first_round_message_with_zero_padding_windows() {
-		// Different seed from the dense test, so the two exercise different witnesses.
-		let mut rng = StdRng::from_seed([1; 32]);
+	fn test_first_round_message_with_unpadded_columns() {
+		let mut rng = StdRng::from_seed([3; 32]);
 
-		// The round message groups words into fixed windows of 2^(3 + 4) = 128 words.
-		// Size the columns to 2^10 = 1024 words, exactly 8 whole windows.
-		let log_chunk_size = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() + 4;
-		let log_num_words = log_chunk_size + 3;
-
-		let mut mlv_1 = random_words(log_num_words, &mut rng);
-		let mut mlv_2 = random_words(log_num_words, &mut rng);
-
-		// Zero the top 512 words in both operands: the last 4 windows become all-zero.
-		// This is the padding a non-power-of-two AND count leaves after rounding up.
-		//
-		//     words:   [ 0 .. 512 random | 512 .. 1024 zero      ]
-		//     windows: [ w0 w1 w2 w3     | w4 w5 w6 w7 (skipped)  ]
-		let padding_start = (1 << log_num_words) / 2;
-		for words in [&mut mlv_1, &mut mlv_2] {
-			words[padding_start..].fill(Word::ZERO);
+		for n_words in windowing_shapes() {
+			let [a, b] = array::from_fn(|_| {
+				repeat_with(|| Word(rng.random::<u64>()))
+					.take(n_words)
+					.collect::<Vec<_>>()
+			});
+			assert_round_message_consistent(&a, &b, &mut rng);
 		}
-
-		// The skipped windows must contribute exactly zero.
-		// The verifier-side fold recomputes the claim independently.
-		// A window skipped in error would break the equality inside the helper.
-		assert_round_message_consistent(&mlv_1, &mlv_2, &mut rng);
 	}
 
 	/// Asserts the first-round univariate message agrees with the next-round sum claim.
@@ -308,14 +371,23 @@ mod test {
 	/// - Extrapolate the round message at the challenge to get the expected next-round sum.
 	/// - Fold A, B, and C = A & B at the same challenge, then form the sum claim directly.
 	/// - The two values must be equal.
+	///
+	/// The columns need not have a power-of-two length; the constraint axis is then the next power
+	/// of two, and both sides read the rows past the columns' end as zero.
 	fn assert_round_message_consistent(mlv_1: &[Word], mlv_2: &[Word], mut rng: impl Rng) {
 		assert_eq!(mlv_1.len(), mlv_2.len());
-		let log_num_words = mlv_1.len().ilog2() as usize;
+		let log_num_words = log2_ceil_usize(mlv_1.len());
 
-		let small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES;
+		// The prover pins only as many small-field challenges as the axis has coordinates, so an
+		// axis shorter than the fixed set uses a prefix of it.
+		let small_field_zerocheck_challenges = &PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
+			[..log_num_words.min(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len())];
 
 		let big_field_zerocheck_challenges =
-			vec![B128::random(&mut rng); log_num_words - small_field_zerocheck_challenges.len()];
+			vec![
+				B128::random(&mut rng);
+				log_num_words.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len())
+			];
 
 		// The round message derives C = A & B internally.
 		// This materialized copy feeds only the verifier-side transparent fold below.
@@ -363,7 +435,8 @@ mod test {
 		let folded_third_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &mlv_3);
 
 		let upcasted_small_field_challenges: Vec<_> = small_field_zerocheck_challenges
-			.into_iter()
+			.iter()
+			.copied()
 			.map(B128::from)
 			.collect();
 

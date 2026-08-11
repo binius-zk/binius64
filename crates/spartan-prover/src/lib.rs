@@ -48,7 +48,7 @@ use binius_ip_prover::{
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
 	multilinear::eq::eq_ind_partial_eval,
-	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
+	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::evaluate_univariate,
 };
 use binius_spartan_frontend::constraint_system::{
@@ -68,7 +68,7 @@ use rand::CryptoRng;
 
 use crate::wiring::{WiringTranspose, fold_constraints};
 
-type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
+type ProverNTT<F> = NeighborsLastMultiThread<GaoMateerPreExpanded<F>>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -341,9 +341,10 @@ where
 	pub fn setup(verifier: &Verifier<F, H>) -> Result<Self, Error> {
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 
-		// Get the largest subspace from the verifier compiler for NTT creation
-		let subspace = verifier.iop_compiler().max_subspace();
-		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
+		// Rebuild the verifier's evaluation domain, which its compiler fixed as the Gao-Mateer
+		// basis of that dimension.
+		let domain_context =
+			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
 		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and

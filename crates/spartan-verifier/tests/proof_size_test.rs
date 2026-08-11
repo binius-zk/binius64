@@ -42,20 +42,14 @@ fn test_ip_proof_size() {
 
 	let cs = verifier.constraint_system();
 
-	// Create size tracking channel and run verify with dummy public inputs
-	// (SizeTrackingChannel ignores values). The Merkle scheme matches the one the verifier
-	// estimates proof sizes with at setup.
-	let iop_compiler = verifier.iop_compiler();
+	// The size tracker is the Merkle channel, with the real reduction running on top.
+	// So every commitment, branch and leaf the opening asks for is counted as it happens.
 	let merkle_scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
-	let mut channel = SizeTrackingChannel::new(
-		iop_compiler.oracle_specs().to_vec(),
-		std::slice::from_ref(iop_compiler.fri_params()),
-		&merkle_scheme,
-	);
+	let mut channel = verifier
+		.iop_compiler()
+		.create_channel(SizeTrackingChannel::new(&merkle_scheme));
 	let public = vec![B128::default(); 1 << cs.log_public()];
 	let public_elems = channel.observe_many(&public);
-	// SizeTrackingChannel::Oracle = (), but we still bind to exercise the real call pattern.
-	#[allow(clippy::let_unit_value)]
 	let precommit_oracle = channel
 		.recv_oracle(cs.log_precommit() as usize, true)
 		.expect("recv_oracle on size-tracking channel should succeed");
@@ -63,16 +57,20 @@ fn test_ip_proof_size() {
 		.iop_verifier()
 		.verify(precommit_oracle, &public_elems, &mut channel)
 		.expect("verify with size tracking channel should succeed");
-	let proof_size = channel.proof_size();
+	let proof_size = channel
+		.finish()
+		.expect("the opening should verify against all-zero values")
+		.proof_size();
 
 	// Hardcoded expected value to detect proof size regressions.
-	// This measures IP-layer bytes (sumcheck rounds, oracle commitments, evaluations) plus the
-	// single combined FRI proof opening all oracles together. It is a slight underestimate because
-	// it does not account for some smaller BaseFold components (e.g. sumcheck coefficients within
-	// BaseFold, blinding elements for ZK).
 	//
-	// The power chain x^2..x^7 is public-derivable (x and y are inout), so those wires are now
-	// `Derived` and emit no mul constraints — only `assert_eq(x^7, y)` survives — shrinking the
-	// proof relative to the pre-derived-wire baseline of 46848.
-	assert_eq!(proof_size, 46784, "proof size regression");
+	// This is the whole proof, not an estimate of it: every byte is counted by the reduction that
+	// would send it. `size_tracking_matches_real_proof_bytes` in the prover crate pins the count
+	// against an honest transcript.
+	//
+	// The power chain x^2..x^7 is public-derivable (x and y are inout), so those wires are
+	// `Derived` and emit no mul constraints — only `assert_eq(x^7, y)` survives.
+	//
+	// This circuit commits three oracles; FRI opens each against its own commitment.
+	assert_eq!(proof_size, 73936, "proof size regression");
 }

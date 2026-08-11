@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_core::constraint_system::ConstraintSystem;
+use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::config::LOG_WORDS_PER_ELEM;
 
@@ -80,9 +80,22 @@ impl BatchCommitLayout {
 	/// - `cs`: the single-instance constraint system shared by every instance.
 	/// - `log_instances`: base-2 logarithm of the instance count.
 	pub fn for_constraint_system(cs: &ConstraintSystem, log_instances: usize) -> Self {
-		// Only the hidden segment is committed.
+		// Only the hidden segment is committed, which under M4's split is the inout values
+		// followed by the private ones.
 		// The shared constants are known to the verifier, so they stay off the oracle.
-		Self::new(cs.n_hidden_words(), log_instances)
+		let layout = Self::new(cs.n_hidden_words(InoutSegment::Hidden), log_instances);
+
+		// The shift reduction addresses both segments with one set of word-index challenges, and
+		// the ring-switch opens the trace at those challenges. So the committed rows must span
+		// exactly as many word-index variables as the reduction runs over.
+		assert_eq!(
+			layout.log_hidden_words,
+			cs.log_segment_words(InoutSegment::Hidden),
+			"the committed rows must span the reduction's word-index variables; a public segment \
+			 wider than the hidden one would draw challenges the trace has no coordinates for"
+		);
+
+		layout
 	}
 
 	/// The number of hidden-word rows one instance occupies after power-of-two padding.
