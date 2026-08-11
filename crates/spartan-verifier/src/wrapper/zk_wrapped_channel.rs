@@ -14,13 +14,13 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, util::FieldFn};
+use binius_field::{BinaryField, BinaryField1b as B1, ExtensionField, Field, util::FieldFn};
 use binius_iop::{
 	basefold::channel::{BaseFoldOracle, BaseFoldVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	merkle_channel::MerkleIPVerifierChannel,
 };
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word};
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
@@ -28,8 +28,31 @@ use binius_spartan_frontend::{
 
 use crate::{
 	Error, IOPVerifier,
-	wrapper::circuit_elem::{CircuitElem, hinted_subset_sum},
+	wrapper::{circuit_elem::CircuitElem, circuit_word::CircuitWord},
 };
+
+/// The word a statement entry carries.
+///
+/// This channel is the run that has the values, so it reads them back off the wires it wrote them
+/// to. They leave the circuit here — they feed the inner Fiat-Shamir state, which lives outside it.
+fn word_value<F: Field>(word: &CircuitWord<F, InstanceGenerator<F>>) -> Word {
+	match word {
+		CircuitWord::Constant(word) => *word,
+		CircuitWord::Bits(bits) => {
+			let set = |bit: &CircuitElem<F, InstanceGenerator<F>>| match bit {
+				CircuitElem::Constant(value) => *value == F::ONE,
+				CircuitElem::Wire { wire, .. } => wire.value() == Some(F::ONE),
+			};
+			Word::from_u64(
+				bits.iter()
+					.enumerate()
+					.filter(|(_, bit)| set(bit))
+					.map(|(index, _)| 1u64 << index)
+					.sum(),
+			)
+		}
+	}
+}
 
 /// A verifier channel that wraps a [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
 ///
@@ -137,6 +160,29 @@ where
 		CircuitElem::wire(&self.instance_gen, public_wire)
 	}
 
+	/// Allocates the inner statement as the outer circuit's public input, holding `words`.
+	///
+	/// This matches
+	/// [`IronSpartanBuilderChannel::statement`](super::builder_channel::IronSpartanBuilderChannel::statement),
+	/// which allocated the same wires with no values, and must be called at the same point: before
+	/// the verifier this channel drives.
+	pub fn statement(&mut self, words: &[Word]) -> Vec<CircuitWord<F, InstanceGenerator<F>>>
+	where
+		F: ExtensionField<B1>,
+	{
+		words
+			.iter()
+			.map(|&word| {
+				let wire = self.inout_alloc.alloc();
+				let public_wire = self
+					.instance_gen
+					.borrow_mut()
+					.write_inout(wire, CircuitWord::<F, InstanceGenerator<F>>::embed(word));
+				CircuitWord::from_wire(&self.instance_gen, public_wire)
+			})
+			.collect()
+	}
+
 	/// Allocates the next precommit wire (value-less to the verifier) as an element.
 	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, InstanceGenerator<F>> {
 		let wire = self.precommit_alloc.alloc();
@@ -236,25 +282,29 @@ where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem = F, Word = Word>,
 {
-	type Word = Word;
+	type Word = CircuitWord<F, InstanceGenerator<F>>;
 
-	fn observe_words(&mut self, words: &[Word]) {
+	fn observe_words(&mut self, words: &[Self::Word]) {
 		// The inner channel holds the Fiat-Shamir state the inner prover mirrors, so the words go
-		// there. The outer verifier recomputes what depends on them from the public segment.
-		self.inner_channel.observe_words(words);
+		// there as the values they carry — which this run has, being the one with a real statement.
+		// Those values feed a hash outside the circuit and decide nothing the circuit contains,
+		// which is what lets the circuit be built before any statement exists.
+		let values = words.iter().map(word_value).collect::<Vec<_>>();
+		self.inner_channel.observe_words(&values);
 	}
 
-	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		// Hinted to match the symbolic build, which reached this with a dummy statement.
-		hinted_subset_sum(&self.instance_gen, elems, *word)
+	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		word.subset_sum(elems)
 	}
 
-	fn select(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		select_word(elems, *word)
+	fn select(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		word.select(elems)
 	}
 
-	fn sample_bits(&mut self, bits: usize) -> Word {
-		self.inner_channel.sample_bits(bits)
+	// The query indices a code proximity test samples reach this, and that test runs against the
+	// inner channel rather than symbolically, so the value is read outside the circuit.
+	fn sample_bits(&mut self, bits: usize) -> Self::Word {
+		CircuitWord::Constant(self.inner_channel.sample_bits(bits))
 	}
 }
 

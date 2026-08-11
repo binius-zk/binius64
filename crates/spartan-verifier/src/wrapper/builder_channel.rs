@@ -9,12 +9,12 @@ use std::{
 };
 
 use binius_core::word::Word;
-use binius_field::{Field, util::FieldFn};
+use binius_field::{BinaryField1b as B1, ExtensionField, Field, util::FieldFn};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word};
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_spartan_frontend::circuit_builder::{CircuitBuilder, ConstraintBuilder};
 
-use super::circuit_elem::{CircuitElem, hinted_subset_sum};
+use super::{circuit_elem::CircuitElem, circuit_word::CircuitWord};
 
 /// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
 ///
@@ -46,6 +46,23 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 	fn alloc_inout_elem(&self) -> CircuitElem<F, ConstraintBuilder<F>> {
 		let wire = self.builder.borrow_mut().alloc_inout();
 		CircuitElem::wire(&self.builder, wire)
+	}
+
+	/// Allocates the inner statement as this circuit's public input.
+	///
+	/// Pass the result to the verifier this channel drives. The words are wires, so what is
+	/// recorded is a circuit about the inner system rather than about one statement — which it
+	/// could not be anyway, since the build precedes every instance.
+	pub fn statement(&mut self, n_inout: usize) -> Vec<CircuitWord<F, ConstraintBuilder<F>>>
+	where
+		F: ExtensionField<B1>,
+	{
+		(0..n_inout)
+			.map(|_| {
+				let wire = self.builder.borrow_mut().alloc_inout();
+				CircuitWord::from_wire(&self.builder, wire)
+			})
+			.collect()
 	}
 
 	fn alloc_precommit_elem(&self) -> CircuitElem<F, ConstraintBuilder<F>> {
@@ -126,26 +143,23 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 }
 
 impl<F: Field> WordIPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
-	type Word = Word;
+	type Word = CircuitWord<F, ConstraintBuilder<F>>;
 
 	// The outer verifier rebinds the public inputs, so the wrapper records no Fiat-Shamir state.
-	fn observe_words(&mut self, _words: &[Word]) {}
+	fn observe_words(&mut self, _words: &[Self::Word]) {}
 
-	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		// Hinted rather than folded: the statement is a dummy while building. See
-		// `hinted_subset_sum`.
-		hinted_subset_sum(&self.builder, elems, *word)
+	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		word.subset_sum(elems)
 	}
 
-	// Folded rather than hinted, unlike `subset_sum`: the only words reaching this are a code
-	// proximity test's query indices, and that test is not run symbolically here — which is also
-	// why `sample_bits` below can answer with zero.
-	fn select(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		select_word(elems, *word)
+	fn select(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		word.select(elems)
 	}
 
-	fn sample_bits(&mut self, _bits: usize) -> Word {
-		Word::ZERO
+	// A code proximity test's query indices are the only words that reach this, and that test runs
+	// against the inner channel rather than symbolically here, so nothing reads what it returns.
+	fn sample_bits(&mut self, _bits: usize) -> Self::Word {
+		CircuitWord::Constant(Word::ZERO)
 	}
 }
 

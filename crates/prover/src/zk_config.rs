@@ -156,8 +156,9 @@ where
 			{
 				let inner_iop_verifier = &self.inner_iop_verifier;
 				move |replay_channel: &mut ReplayChannel<B128>| {
+					let statement = replay_channel.statement(inout_words);
 					inner_iop_verifier
-						.verify(inout_words, replay_channel)
+						.verify(&statement, replay_channel)
 						.expect("replay verification should not fail");
 				}
 			},

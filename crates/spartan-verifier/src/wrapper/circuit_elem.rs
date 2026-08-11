@@ -28,13 +28,11 @@ use std::{
 	rc::{Rc, Weak},
 };
 
-use binius_core::word::Word;
 use binius_field::{
 	ExtensionField, Field,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
 };
-use binius_ip::channel::subset_sum_word;
 use binius_spartan_frontend::circuit_builder::CircuitBuilder;
 
 use super::gadgets;
@@ -216,40 +214,6 @@ where
 			result.into_iter().map(Self::Constant).collect()
 		}
 	}
-}
-
-/// [`WordIPVerifierChannel::subset_sum`] as a single derived wire.
-///
-/// A concrete word decides *which* elements the sum runs over, so folding it at build time would
-/// write the word's value into the circuit's shape. The wrapper is built once from a dummy
-/// statement and then run again on the real one, so the two runs would allocate different wires
-/// and the second would not fit the first's layout.
-///
-/// A hint keeps the shape fixed and the value free, which is sound here for the same reason
-/// [`IPVerifierChannel::compute_public_value`] is: the outer verifier holds the statement and the
-/// challenges, so it recomputes this itself. Every input is public-derivable, so the output is
-/// too, and it costs no constraint.
-///
-/// [`WordIPVerifierChannel::subset_sum`]: binius_ip::channel::WordIPVerifierChannel::subset_sum
-/// [`IPVerifierChannel::compute_public_value`]: binius_ip::channel::IPVerifierChannel::compute_public_value
-pub fn hinted_subset_sum<F, B>(
-	builder: &Rc<RefCell<B>>,
-	elems: &[CircuitElem<F, B>],
-	word: Word,
-) -> CircuitElem<F, B>
-where
-	F: Field,
-	B: CircuitBuilder<Field = F>,
-{
-	let out_wire = {
-		let mut builder = builder.borrow_mut();
-		let input_wires = elems
-			.iter()
-			.map(|elem| elem.to_wire(&mut builder))
-			.collect::<Vec<_>>();
-		builder.hint_varsize(&input_wires, 1, move |vals| vec![subset_sum_word(vals, word)])[0]
-	};
-	CircuitElem::wire(builder, out_wire)
 }
 
 // In characteristic 2, negation is identity.

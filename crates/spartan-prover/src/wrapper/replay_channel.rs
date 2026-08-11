@@ -11,14 +11,14 @@ use std::{
 };
 
 use binius_core::word::Word;
-use binius_field::{Field, util::FieldFn};
+use binius_field::{BinaryField1b as B1, ExtensionField, Field, util::FieldFn};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word};
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, WireAllocator, WitnessError, WitnessGenerator},
 	constraint_system::{WireKind, Witness, WitnessLayout},
 };
-use binius_spartan_verifier::wrapper::circuit_elem::{CircuitElem, hinted_subset_sum};
+use binius_spartan_verifier::wrapper::{circuit_elem::CircuitElem, circuit_word::CircuitWord};
 
 /// A channel that replays recorded interaction values through a [`WitnessGenerator`], filling
 /// both inout and private wires in the outer witness.
@@ -69,6 +69,29 @@ impl<F: Field> ReplayChannel<F> {
 		let wire = self.inout_alloc.alloc();
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
 		CircuitElem::wire(&self.witness_gen, witness_wire)
+	}
+
+	/// Allocates the inner statement as the outer circuit's public input, holding `words`.
+	///
+	/// This matches
+	/// [`IronSpartanBuilderChannel::statement`](binius_spartan_verifier::wrapper::IronSpartanBuilderChannel::statement),
+	/// which allocated the same wires with no values, and must be called at the same point: before
+	/// the verifier this channel replays.
+	pub fn statement(&mut self, words: &[Word]) -> Vec<CircuitWord<F, WitnessGenerator<F>>>
+	where
+		F: ExtensionField<B1>,
+	{
+		words
+			.iter()
+			.map(|&word| {
+				let wire = self.inout_alloc.alloc();
+				let witness_wire = self
+					.witness_gen
+					.borrow_mut()
+					.write_inout(wire, CircuitWord::<F, WitnessGenerator<F>>::embed(word));
+				CircuitWord::from_wire(&self.witness_gen, witness_wire)
+			})
+			.collect()
 	}
 
 	fn next_precommit_elem(&mut self) -> CircuitElem<F, WitnessGenerator<F>> {
@@ -144,23 +167,22 @@ impl<F: Field> IPVerifierChannel<F> for ReplayChannel<F> {
 }
 
 impl<F: Field> WordIPVerifierChannel<F> for ReplayChannel<F> {
-	type Word = Word;
+	type Word = CircuitWord<F, WitnessGenerator<F>>;
 
 	// The recorded interaction already holds whatever the Fiat-Shamir state produced, so replaying
 	// observes nothing. This mirrors `IronSpartanBuilderChannel::observe_words`.
-	fn observe_words(&mut self, _words: &[Word]) {}
+	fn observe_words(&mut self, _words: &[Self::Word]) {}
 
-	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		// Hinted to match the symbolic build, which reached this with a dummy statement.
-		hinted_subset_sum(&self.witness_gen, elems, *word)
+	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		word.subset_sum(elems)
 	}
 
-	fn select(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		select_word(elems, *word)
+	fn select(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
+		word.select(elems)
 	}
 
-	fn sample_bits(&mut self, _bits: usize) -> Word {
-		Word::ZERO
+	fn sample_bits(&mut self, _bits: usize) -> Self::Word {
+		CircuitWord::Constant(Word::ZERO)
 	}
 }
 

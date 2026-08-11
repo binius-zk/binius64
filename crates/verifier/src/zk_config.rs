@@ -72,15 +72,16 @@ where
 
 		let inner_iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 
-		// Symbolically execute the inner verifier to build the outer constraint system.
-		let dummy_inout_words =
-			vec![Word::from_u64(0); inner_iop_verifier.constraint_system().n_inout];
-
+		// Symbolically execute the inner verifier to build the outer constraint system. The
+		// statement is wires, so the circuit is about the inner system rather than about any one
+		// instance — it is built here, before any instance exists.
 		let outer_builder = {
 			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
 			let mut builder_channel = IronSpartanBuilderChannel::new();
+			let statement =
+				builder_channel.statement(inner_iop_verifier.constraint_system().n_inout);
 			inner_iop_verifier
-				.verify(&dummy_inout_words, &mut builder_channel)
+				.verify(&statement, &mut builder_channel)
 				.expect("symbolic verify should not fail");
 			builder_channel.finish()
 		};
@@ -206,8 +207,11 @@ where
 			)
 			.entered();
 
+			// The statement fills the wires the wrapper circuit was built with, so the outer
+			// verification is about this instance.
+			let statement = wrapped_channel.statement(inout);
 			self.inner_iop_verifier
-				.verify(inout, &mut wrapped_channel)?;
+				.verify(&statement, &mut wrapped_channel)?;
 		};
 
 		// Finish runs the outer spartan verification.

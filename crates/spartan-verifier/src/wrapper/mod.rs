@@ -11,10 +11,12 @@
 
 pub mod builder_channel;
 pub mod circuit_elem;
+pub mod circuit_word;
 pub mod gadgets;
 pub mod zk_wrapped_channel;
 
 pub use builder_channel::IronSpartanBuilderChannel;
+pub use circuit_word::CircuitWord;
 pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 
 #[cfg(test)]
