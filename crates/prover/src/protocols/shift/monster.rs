@@ -127,21 +127,37 @@ where
 	FieldBuffer::from_values_in(alloc, &data)
 }
 
+/// Evaluates the h multilinear at the phase-1 challenges, interpolated over the shift variant.
+///
+/// Phase 1 folded the variant axis into its sumcheck, so the eight h polynomials contribute this
+/// one scalar to phase 2 rather than one evaluation per variant. Every shift key of every
+/// operation is weighted by it, since all four operations share `r_zhat_prime`.
+pub fn evaluate_h<F: BinaryField>(
+	domain_subspace: &BinarySubspace<F>,
+	r_zhat_prime: F,
+	r_j: &[F],
+	r_s: &[F],
+	r_v: &[F],
+) -> F {
+	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
+	let h_ops = evaluate_h_op(l_tilde.as_ref(), r_j, r_s);
+	inner_product(h_ops, eq_ind_partial_eval::<F>(r_v).as_ref().iter().copied())
+}
+
 /// Constructs the "monster multilinear" that combines all shift operations into a single
 /// multilinear.
 ///
 /// This function builds a comprehensive multilinear polynomial that encapsulates the AND, IMUL and
 /// BMUL constraints with their associated shift operations. For each witness word, it computes the
-/// contribution from all constraints involving that word, weighted by the appropriate h-polynomial
-/// evaluations and lambda powers.
+/// contribution from all constraints involving that word, weighted by the h evaluation
+/// ([`evaluate_h`]) and lambda powers.
 ///
 /// # Construction Process
 ///
 /// 1. **Compute lambda powers**: Powers λ^(i+1) for each operand index in both operations
-/// 2. **Evaluate h-polynomials**: Compute h_op evaluations for SLL, SRL, SRA at challenge points
-/// 3. **Build scalar matrix**: Create scalars combining lambda powers, h-evaluations, and r_s
-///    tensor
-/// 4. **Process keys in parallel**: For each word, accumulate contributions from all its
+/// 2. **Build scalar matrix**: Create scalars combining lambda powers, the h evaluation, and the
+///    `r_s` and `r_v` tensors
+/// 3. **Process keys in parallel**: For each word, accumulate contributions from all its
 ///    constraints
 ///
 /// # Formula
@@ -151,9 +167,9 @@ where
 /// ∑_{key ∈ keys[w]} key.accumulate(constraint_indices, tensor, scalars[key.dense_shift_idx])
 /// ```
 /// where `scalars[key.dense_shift_idx]` is the contiguous per-operand chunk encoding
-/// `λ^(operand_idx+1) × h_op[shift_variant] × r_s_tensor[shift_amount]` for operand index
-/// `operand_idx`, and `(shift_variant, shift_amount)` the pair the key's segment decodes its dense
-/// shift index to.
+/// `λ^(operand_idx+1) × h_eval × r_v_tensor[shift_variant] × r_s_tensor[shift_amount]` for operand
+/// index `operand_idx`, and `(shift_variant, shift_amount)` the pair the key's segment decodes its
+/// dense shift index to.
 ///
 /// # Usage
 ///
@@ -166,31 +182,14 @@ pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	key_collection: &KeyCollection,
 	prepared: &PreparedOperatorClaims<F>,
-	domain_subspace: &BinarySubspace<F>,
-	r_j: &[F],
+	h_eval: F,
 	r_s: &[F],
 	r_v: &[F],
 ) -> (FieldVec<P, A>, FieldVec<P, A>)
 where
 	F: BinaryField,
 {
-	// Phase 1 folded the variant axis into the sumcheck, so the h multilinear contributes one
-	// scalar per operation — the interpolation of its eight shift indicators at `r_v` — rather
-	// than one per variant.
 	let r_v_tensor = eq_ind_partial_eval::<F>(r_v);
-
-	let [zero_h_eval, bitand_h_eval, intmul_h_eval, binmul_h_eval] = [
-		prepared.zero.r_zhat_prime,
-		prepared.bitand.r_zhat_prime,
-		prepared.intmul.r_zhat_prime,
-		prepared.binmul.r_zhat_prime,
-	]
-	.map(|r_zhat_prime| {
-		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-		let h_ops = evaluate_h_op(l_tilde.as_ref(), r_j, r_s);
-		inner_product(h_ops, r_v_tensor.as_ref().iter().copied())
-	});
-
 	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
 
 	// The scalars of one operation, laid out with the operand index innermost so that the `arity`
@@ -198,9 +197,9 @@ where
 	// can index directly by operand index.
 	//
 	// A key's shift now selects itself through a pure equality indicator over both of phase 1's
-	// shift axes, and the h evaluation is a single factor shared by every key of the operation.
+	// shift axes, and the h evaluation is a single factor shared by every key.
 	let build_scalars =
-		|arity: usize, lambda_powers: &[F], h_eval: F, dense_shift_enc: &DenseShiftEncoding| {
+		|arity: usize, lambda_powers: &[F], dense_shift_enc: &DenseShiftEncoding| {
 			let mut scalars = vec![F::ZERO; arity * dense_shift_enc.len()];
 			for (dense_shift_idx, (variant, amount)) in dense_shift_enc.iter().enumerate() {
 				let shift_scalar = h_eval
@@ -216,25 +215,10 @@ where
 
 	// Each segment has its own dense shift encoding, so it has its own scalar tables.
 	let build_scalar_tables = |dense_shift_enc: &DenseShiftEncoding| ScalarTables {
-		zero: build_scalars(ZERO_ARITY, &prepared.zero.lambda_powers, zero_h_eval, dense_shift_enc),
-		bitand: build_scalars(
-			BITAND_ARITY,
-			&prepared.bitand.lambda_powers,
-			bitand_h_eval,
-			dense_shift_enc,
-		),
-		intmul: build_scalars(
-			INTMUL_ARITY,
-			&prepared.intmul.lambda_powers,
-			intmul_h_eval,
-			dense_shift_enc,
-		),
-		binmul: build_scalars(
-			BINMUL_ARITY,
-			&prepared.binmul.lambda_powers,
-			binmul_h_eval,
-			dense_shift_enc,
-		),
+		zero: build_scalars(ZERO_ARITY, &prepared.zero.lambda_powers, dense_shift_enc),
+		bitand: build_scalars(BITAND_ARITY, &prepared.bitand.lambda_powers, dense_shift_enc),
+		intmul: build_scalars(INTMUL_ARITY, &prepared.intmul.lambda_powers, dense_shift_enc),
+		binmul: build_scalars(BINMUL_ARITY, &prepared.binmul.lambda_powers, dense_shift_enc),
 	};
 
 	// The scalar for one word of a segment: the accumulated contribution of all its keys. The

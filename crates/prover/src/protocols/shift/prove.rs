@@ -10,8 +10,8 @@ use binius_math::{
 };
 
 use super::{
-	SegmentWords, claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
-	phase_2::prove_phase_2,
+	SegmentWords, claims::OperatorClaims, key_collection::KeyCollection, monster::evaluate_h,
+	phase_1::prove_phase_1, phase_2::prove_phase_2,
 };
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
@@ -173,7 +173,7 @@ where
 		claims.prepare(|| channel.sample())
 	};
 
-	// Phase 1 outputs challenges `r_j || r_s`, and `gamma` as its evaluation (see paper).
+	// Phase 1 outputs challenges `r_j || r_s || r_v`, and `gamma` as its evaluation (see paper).
 	let phase_1_output = prove_phase_1::<_, P, _, _>(
 		key_collection,
 		words,
@@ -183,14 +183,24 @@ where
 		alloc,
 	);
 
+	// The h evaluation phase 2 weights every shift key by. All four operations share
+	// `r_zhat_prime`, so it is drawn from the BitAnd claim, as phase 1's h multilinear is.
+	let h_eval = evaluate_h(
+		domain_subspace,
+		prepared.bitand.r_zhat_prime,
+		&phase_1_output.r_j,
+		&phase_1_output.r_s,
+		&phase_1_output.r_v,
+	);
+
 	// Phase 2 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
 	// the univariate variable `r_j` and the multilinear variable `r_y`.
 	prove_phase_2::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared,
-		domain_subspace,
 		phase_1_output,
+		h_eval,
 		channel,
 		alloc,
 	)

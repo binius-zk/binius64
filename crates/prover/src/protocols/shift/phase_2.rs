@@ -14,7 +14,7 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec,
+	FieldBuffer, FieldVec,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
 use binius_utils::{
@@ -29,7 +29,7 @@ use tracing::instrument;
 
 use super::{
 	SegmentWords, claims::PreparedOperatorClaims, key_collection::KeyCollection,
-	monster::build_monster_segments,
+	monster::build_monster_segments, phase_1::Phase1Output,
 };
 use crate::fold_word::fold_words;
 
@@ -40,11 +40,10 @@ use crate::fold_word::fold_words;
 /// the witness and the monster multilinear polynomial.
 ///
 /// # Protocol Steps
-/// 1. **Challenge Splitting**: Splits phase 1 challenges into `r_j` and `r_s` components
-/// 2. **Segment Folding**: Folds the public and hidden words using the `r_j` challenges
-/// 3. **Monster Multilinear Construction**: Builds the monster segments from the key collection and
+/// 1. **Segment Folding**: Folds the public and hidden words using the `r_j` challenges
+/// 2. **Monster Multilinear Construction**: Builds the monster segments from the key collection and
 ///    the prepared claims
-/// 4. **Sumcheck Execution**: Runs the bivariate product sumcheck with a sparse first round over
+/// 3. **Sumcheck Execution**: Runs the bivariate product sumcheck with a sparse first round over
 ///    the segment selector
 ///
 /// # Parameters
@@ -52,6 +51,7 @@ use crate::fold_word::fold_words;
 /// - `words`: The value vector words
 /// - `prepared`: The prepared claim of each operation, indexed by the operation a key names
 /// - `phase_1_output`: Challenges and evaluation from the first phase
+/// - `h_eval`: The h evaluation weighting every shift key, from [`evaluate_h`]
 /// - `channel`: The prover's channel
 ///
 /// # Returns
@@ -62,8 +62,8 @@ pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
 	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
-	domain_subspace: &BinarySubspace<F>,
-	phase_1_output: SumcheckOutput<F>,
+	phase_1_output: Phase1Output<F>,
+	h_eval: F,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> SumcheckOutput<F>
@@ -72,14 +72,12 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	let SumcheckOutput {
-		challenges: mut r_j,
-		eval: gamma,
+	let Phase1Output {
+		r_j,
+		r_s,
+		r_v,
+		gamma,
 	} = phase_1_output;
-	// Split the challenges as `r_j, r_s, r_v`: the bit position, then the shift amount, then the
-	// shift variant, in increasing order of significance.
-	let r_v = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s = r_j.split_off(Word::LOG_BITS);
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
@@ -89,7 +87,7 @@ where
 	let hidden_folded = fold_words::<_, P, _>(alloc, words.hidden, r_j_tensor.as_ref());
 
 	let (public_monster, hidden_monster) =
-		build_monster_segments(alloc, key_collection, prepared, domain_subspace, &r_j, &r_s, &r_v);
+		build_monster_segments(alloc, key_collection, prepared, h_eval, &r_s, &r_v);
 
 	// Both halves of the sumcheck share one word-index address space, spanning the wider of the
 	// two segments. The hidden segment is normally the wider one, but a system with more public
