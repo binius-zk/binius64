@@ -3,7 +3,7 @@
 //! The committed witness with its instance axis collapsed at a challenge point.
 
 use binius_compute::{Allocator, VecLike};
-use binius_core::word::Word;
+use binius_core::{constraint_system::Shift, word::Word};
 use binius_field::{BinaryField, PackedField};
 use binius_math::{FieldVec, inner_product::inner_product};
 use binius_prover::fold_word::WordFolder;
@@ -15,6 +15,38 @@ use crate::ValueTable;
 ///
 /// Each bit position becomes one element, so the word is carried in oblong form.
 pub type FoldedWord<F> = [F; Word::BITS];
+
+/// Applies a shift to a word whose bits have been folded over the instance axis.
+///
+/// A shift cannot act on field elements the way it acts on bits, but it does not need to.
+/// Every variant reads at most one source bit per output position, so a shift is a permutation with
+/// holes over those positions.
+/// Folding over instances is linear in the bits, so the two commute:
+///
+/// ```text
+/// fold(op(w, s))[k] = fold(w)[source_bits[k]]
+/// ```
+///
+/// which makes this a **gather**: 64 moves, with a zero wherever the output position reads nothing.
+/// Going through the shift indicator would be a 64x64 matrix of field multiplications for the same
+/// answer.
+///
+/// # Arguments
+///
+/// - `word`: the word's bits, already folded over the instance axis.
+/// - `shift`: the shift to apply.
+pub fn shift_folded_word<F: BinaryField>(word: &FoldedWord<F>, shift: Shift) -> FoldedWord<F> {
+	// The common case copies straight through, with no source map to build.
+	if shift.is_identity() {
+		return *word;
+	}
+	let source_bits = shift.source_bits();
+	std::array::from_fn(|out| match source_bits[out] {
+		Some(source) => word[source as usize],
+		// The shift moved a zero into this position, and zero folds to zero whatever the point.
+		None => F::ZERO,
+	})
+}
 
 /// The committed witness of a batch, with its instance axis collapsed at a point.
 ///
@@ -161,7 +193,7 @@ mod tests {
 	use std::iter;
 
 	use binius_compute::GlobalAllocator;
-	use binius_field::PackedBinaryGhash1x128b;
+	use binius_field::{Field, PackedBinaryGhash1x128b, Random};
 	use binius_frontend::{CircuitBuilder, Wire};
 	use binius_math::{
 		multilinear::{
@@ -312,6 +344,133 @@ mod tests {
 
 			assert_eq!(lhs, rhs, "mismatch at log_instances = {log_instances}");
 		}
+	}
+
+	#[test]
+	fn shifting_a_folded_row_matches_folding_the_shifted_words() {
+		// Invariant: shifting a folded row equals folding the shifted words.
+		//
+		// The shift is a permutation with holes over the bit positions, and the fold is linear in
+		// those bits, so the two commute. That is what turns forming an intermediate row into a
+		// gather rather than a 64x64 field product against the shift indicator.
+		//
+		// Every canonical shift is covered, so a wrong source map cannot hide.
+		use binius_core::{ShiftVariant, constraint_system::Shift};
+
+		let mut rng = StdRng::seed_from_u64(4);
+
+		// One word per instance, drawn at random, and the point the instance axis folds at.
+		const LOG_INSTANCES: usize = 4;
+		let words = (0..1 << LOG_INSTANCES)
+			.map(|_| Word(rng.random::<u64>()))
+			.collect::<Vec<_>>();
+		let r_rho = random_scalars::<B128>(&mut rng, LOG_INSTANCES);
+		let eq = eq_ind_partial_eval::<B128>(&r_rho);
+
+		// Folds a batch of words over the instance axis, one field element per bit position.
+		let fold = |words: &[Word]| -> FoldedWord<B128> {
+			let mut folded = [B128::ZERO; Word::BITS];
+			for (word, &weight) in iter::zip(words, eq.as_ref()) {
+				for (bit, slot) in folded.iter_mut().enumerate() {
+					if (word.0 >> bit) & 1 == 1 {
+						*slot += weight;
+					}
+				}
+			}
+			folded
+		};
+
+		let folded = fold(&words);
+		for variant in ShiftVariant::ALL {
+			for amount in 0..variant.max_amount() {
+				let shift = Shift::new(variant, amount);
+
+				// Route A: shift every word, then fold.
+				let shifted_words = words
+					.iter()
+					.map(|&word| shift.apply(word))
+					.collect::<Vec<_>>();
+				let expected = fold(&shifted_words);
+
+				// Route B: fold once, then gather through the shift's source map.
+				let gathered = shift_folded_word(&folded, shift);
+
+				assert_eq!(
+					gathered, expected,
+					"{shift:?} disagrees with folding the shifted words"
+				);
+			}
+		}
+	}
+
+	#[test]
+	#[ignore = "reports a measurement rather than asserting a property"]
+	fn gather_versus_indicator_contraction() {
+		// What the gather buys over contracting against the shift indicator.
+		//
+		//     gather   : read the source map, move 64 elements
+		//     reference: sum shift-ind(k, j, s) * row[j] over all 64 source positions
+		//
+		// The reference is the 64x64 field product the at-most-one-source-bit property lets the
+		// outer phase skip. Both routes form the same row, which is asserted before the timings.
+		use std::time::Instant;
+
+		use binius_core::{ShiftVariant, constraint_system::Shift};
+
+		let mut rng = StdRng::seed_from_u64(9);
+		// One folded row per key the outer phase would touch, at a realistic count for sha256's
+		// private segment.
+		const N_ROWS: usize = 8192;
+		let rows = (0..N_ROWS)
+			.map(|_| std::array::from_fn(|_| B128::random(&mut rng)))
+			.collect::<Vec<FoldedWord<B128>>>();
+		// A spread of variants, so neither route is measured on one alone.
+		let shifts = ShiftVariant::ALL
+			.into_iter()
+			.map(|variant| Shift::new(variant, 7))
+			.collect::<Vec<_>>();
+
+		// The reference: contract the row against the shift indicator over every source position.
+		let by_indicator = |row: &FoldedWord<B128>, shift: Shift| -> FoldedWord<B128> {
+			let source_bits = shift.source_bits();
+			std::array::from_fn(|out| {
+				(0..Word::BITS)
+					.map(|source| {
+						let indicator = if source_bits[out] == Some(source as u8) {
+							B128::ONE
+						} else {
+							B128::ZERO
+						};
+						indicator * row[source]
+					})
+					.sum()
+			})
+		};
+
+		// Time both, touching the results so neither is optimized away.
+		let mut checksum = [B128::ZERO; 2];
+		let mut elapsed = [std::time::Duration::ZERO; 2];
+		for (index, route) in [
+			&by_indicator as &dyn Fn(&FoldedWord<B128>, Shift) -> FoldedWord<B128>,
+			&|row, shift| shift_folded_word(row, shift),
+		]
+		.into_iter()
+		.enumerate()
+		{
+			let start = Instant::now();
+			for (row, &shift) in iter::zip(&rows, shifts.iter().cycle()) {
+				checksum[index] += route(row, shift)[0];
+			}
+			elapsed[index] = start.elapsed();
+		}
+
+		// Both routes must agree, or the timings compare different computations.
+		assert_eq!(checksum[0], checksum[1]);
+		let [indicator, gather] = elapsed;
+		println!("intermediate rows: {N_ROWS}");
+		println!("  indicator contraction: {indicator:?}");
+		println!("  gather:                {gather:?}");
+		println!("  speedup:               {:.1}x", indicator.as_secs_f64() / gather.as_secs_f64());
 	}
 
 	#[test]

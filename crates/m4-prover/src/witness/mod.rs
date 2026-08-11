@@ -16,5 +16,5 @@
 mod instance_fold;
 mod operand_columns;
 
-pub use instance_fold::{FoldedWitness, FoldedWord};
+pub use instance_fold::{FoldedWitness, FoldedWord, shift_folded_word};
 pub use operand_columns::OperandColumns;

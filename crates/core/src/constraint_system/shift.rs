@@ -8,6 +8,12 @@ use bytes::{Buf, BufMut};
 use super::{ValueIndex, ValueVec};
 use crate::word::Word;
 
+/// The width the half-word (`*32`) shift variants act over.
+///
+/// Those variants shift the upper and lower halves of a word independently.
+/// So every rule stated over a word's positions is applied once per half of this width.
+const HALF_WORD_BITS: usize = 32;
+
 /// A different variants of shifting a value.
 ///
 /// Note that there is no shift left arithmetic because it is redundant.
@@ -462,6 +468,79 @@ impl Shift {
 		self.variant.apply(word, self.amount as usize)
 	}
 
+	/// The input bit each output position reads, or `None` where it reads nothing.
+	///
+	/// Every shift variant has the *at-most-one-source-bit* property.
+	/// An output position takes its value from a single input position, or from no input at all
+	/// where the shift moved zeros in.
+	/// Arithmetic right shift is no exception: it makes *many* output positions read the sign bit,
+	/// which is many-to-one, not one-to-many.
+	///
+	/// So a shift is a permutation with holes over the bit positions, and applying it is a gather:
+	///
+	/// ```text
+	/// shifted[k] = source_bits[k].map(|j| word[j]).unwrap_or(0)
+	/// ```
+	///
+	/// That matters wherever a word's bits have been replaced by something a shift cannot act on
+	/// directly.
+	/// Folding a batch of words over its instance axis leaves one field element per bit position.
+	/// Folding is linear in those bits, so the shift and the fold commute:
+	///
+	/// ```text
+	/// fold(op(w, s))[k] = fold(w)[source_bits[k]]
+	/// ```
+	///
+	/// A folded row can therefore be shifted with 64 moves, rather than a 64x64 matrix of field
+	/// multiplications against the shift indicator.
+	///
+	/// ```
+	/// use binius_core::{constraint_system::Shift, word::Word};
+	///
+	/// // `sll(1)` moves bit 0 to bit 1, and bit 0 then reads nothing.
+	/// let map = Shift::sll(1).source_bits();
+	/// assert_eq!(map[0], None);
+	/// assert_eq!(map[1], Some(0));
+	///
+	/// // `sar` piles every position past the shift onto the sign bit.
+	/// let map = Shift::sar(2).source_bits();
+	/// assert_eq!(map[61], Some(63));
+	/// assert_eq!(map[62], Some(63));
+	/// assert_eq!(map[63], Some(63));
+	/// ```
+	pub fn source_bits(self) -> [Option<u8>; Word::BITS] {
+		let amount = self.amount as usize;
+		// Half-word variants run the rule below once per half; full-width ones once over the word.
+		let width = if self.variant.is_half_word() {
+			HALF_WORD_BITS
+		} else {
+			Word::BITS
+		};
+
+		let mut map = [None; Word::BITS];
+		for (half, positions) in map.chunks_exact_mut(width).enumerate() {
+			let base = (half * width) as u8;
+			for (out, slot) in positions.iter_mut().enumerate() {
+				// Which position within this half the output reads, if any.
+				let read = match self.variant {
+					// Moving left, an output reads a position below it; the low ones read nothing.
+					ShiftVariant::Sll | ShiftVariant::Sll32 => out.checked_sub(amount),
+					// Moving right, an output reads a position above it; those past the top read
+					// nothing.
+					ShiftVariant::Slr | ShiftVariant::Srl32 => {
+						Some(out + amount).filter(|&read| read < width)
+					}
+					// The same, except every position past the top reads the sign bit instead.
+					ShiftVariant::Sar | ShiftVariant::Sra32 => Some((out + amount).min(width - 1)),
+					// Rotating loses nothing: the positions past the top wrap around.
+					ShiftVariant::Rotr | ShiftVariant::Rotr32 => Some((out + amount) % width),
+				};
+				*slot = read.map(|read| base + read as u8);
+			}
+		}
+		map
+	}
+
 	/// Classifies the composition of two shifts, `outer` applied to the result of `inner`.
 	///
 	/// This is the merge rule for a shift sequence: it says whether the two collapse to one shift,
@@ -869,42 +948,12 @@ mod tests {
 		}
 	}
 
-	/// The width the half-word (`*32`) variants act over.
-	const HALF_WORD_BITS: usize = 32;
-
-	/// The bit an output position reads, for the positions that read nothing.
-	const READS_ZERO: u8 = u8::MAX;
-
 	/// What a shift does to a word, as one input bit position per output bit position.
 	///
-	/// This is an independent model of a shift's meaning, written from the definitions rather than
-	/// from the composition rules it is used to check. Entry `i` is the input bit that output bit
-	/// `i` reads, or [`READS_ZERO`].
-	fn bit_map(shift: Shift) -> [u8; Word::BITS] {
-		let mut map = [READS_ZERO; Word::BITS];
-		let amount = shift.amount as usize;
-		let width = if shift.variant.is_half_word() {
-			HALF_WORD_BITS
-		} else {
-			Word::BITS
-		};
-		for (half, positions) in map.chunks_exact_mut(width).enumerate() {
-			let base = (half * width) as u8;
-			for (out, slot) in positions.iter_mut().enumerate() {
-				let read = match shift.variant {
-					ShiftVariant::Sll | ShiftVariant::Sll32 => out.checked_sub(amount),
-					ShiftVariant::Slr | ShiftVariant::Srl32 => {
-						Some(out + amount).filter(|&read| read < width)
-					}
-					ShiftVariant::Sar | ShiftVariant::Sra32 => Some((out + amount).min(width - 1)),
-					ShiftVariant::Rotr | ShiftVariant::Rotr32 => Some((out + amount) % width),
-				};
-				if let Some(read) = read {
-					*slot = base + read as u8;
-				}
-			}
-		}
-		map
+	/// The test below pins this against the word operations, independently of the composition rules
+	/// it is then used to check.
+	fn bit_map(shift: Shift) -> [Option<u8>; Word::BITS] {
+		shift.source_bits()
 	}
 
 	/// What composing two shifts denotes, worked out at the bit level.
@@ -914,17 +963,15 @@ mod tests {
 	fn reference_composition(
 		inner: Shift,
 		outer: Shift,
-		by_map: &std::collections::HashMap<[u8; Word::BITS], Shift>,
+		by_map: &std::collections::HashMap<[Option<u8>; Word::BITS], Shift>,
 	) -> Composition {
 		let (inner_map, outer_map) = (bit_map(inner), bit_map(outer));
-		let mut composed = [READS_ZERO; Word::BITS];
+		let mut composed = [None; Word::BITS];
 		for (slot, &read) in iter::zip(&mut composed, &outer_map) {
-			if read != READS_ZERO {
-				*slot = inner_map[read as usize];
-			}
+			*slot = read.and_then(|read| inner_map[read as usize]);
 		}
 
-		if composed == [READS_ZERO; Word::BITS] {
+		if composed == [None; Word::BITS] {
 			return Composition::Zero;
 		}
 		match by_map.get(&composed) {
@@ -958,7 +1005,7 @@ mod tests {
 				let from_map = map
 					.iter()
 					.enumerate()
-					.filter(|&(_, &read)| read as usize == bit)
+					.filter(|&(_, &read)| read == Some(bit as u8))
 					.map(|(out, _)| 1u64 << out)
 					.fold(0u64, |acc, position| acc | position);
 				assert_eq!(from_map, expected, "{shift:?} disagrees on input bit {bit}");
