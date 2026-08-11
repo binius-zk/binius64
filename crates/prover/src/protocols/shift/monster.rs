@@ -4,14 +4,16 @@
 use std::iter;
 
 use binius_compute::{Allocator, VecLike};
-use binius_core::{ShiftVariant, word::Word};
+use binius_core::{ShiftVariant, constraint_system::Shift, word::Word};
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval,
 	univariate::lagrange_evals,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
+use binius_verifier::protocols::shift::{
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, ZERO_ARITY,
+};
 use bytemuck::zeroed_vec;
 use tracing::instrument;
 
@@ -26,13 +28,46 @@ const HALF_WORD_BITS: usize = 32;
 
 /// The phase-2 scalar weights of one key segment, one table per operation.
 ///
-/// A table holds the `arity` weights of each shift the segment uses, in dense shift index order,
-/// so a key's weights are the chunk at `key.dense_shift_idx * arity`.
+/// A table holds the `arity` weights of each shift sequence the segment uses, in dense shift index
+/// order, so a key's weights are the chunk at `key.dense_shift_idx * arity`.
 struct ScalarTables<F> {
 	zero: Vec<F>,
 	bitand: Vec<F>,
 	intmul: Vec<F>,
 	binmul: Vec<F>,
+}
+
+/// The equality-indicator weights of a shift sequence's outer slot.
+///
+/// The sequence weight factorizes across its two slots, so each slot carries its own two tensors:
+/// one over the variant axis, one over the amount axis.
+/// Keeping them apart holds the weights at `2 * SHIFT_COUNT` entries rather than `SHIFT_COUNT^2`.
+struct OuterSlotWeights<F: Field> {
+	/// The equality indicator over the outer variant axis, one weight per shift variant.
+	variant: FieldBuffer<F>,
+	/// The equality indicator over the outer amount axis, one weight per shift amount.
+	amount: FieldBuffer<F>,
+}
+
+impl<F: Field> OuterSlotWeights<F> {
+	/// The weights that select the identity and reject every other outer shift.
+	///
+	/// This is the equality indicator at the all-zero point, where no challenges were drawn over
+	/// the outer axes.
+	/// Every key's outer slot holds [`Shift::IDENTITY`], spelled `(Sll, 0)`.
+	/// So a well-formed key weighs one, and the scalars match what a single-shift reduction builds.
+	fn identity_selecting() -> Self {
+		Self {
+			variant: eq_ind_partial_eval::<F>(&[F::ZERO; LOG_SHIFT_VARIANT_COUNT]),
+			amount: eq_ind_partial_eval::<F>(&[F::ZERO; Word::LOG_BITS]),
+		}
+	}
+
+	/// The weight one outer shift contributes to its sequence's scalar.
+	#[inline]
+	fn weight(&self, shift: Shift) -> F {
+		self.variant.as_ref()[shift.variant as usize] * self.amount.as_ref()[shift.amount as usize]
+	}
 }
 
 /// Fills one row of the phase-1 "h" multilinear: the shift indicator of one `(variant, amount)`
@@ -174,19 +209,31 @@ where
 	let r_v_tensor = eq_ind_partial_eval::<F>(r_v);
 	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
 
+	// Invariant: a key's sequence weight factorizes across its two slots.
+	//
+	//     eq(r_v1, v_1) * eq(r_s1, s_1)  *  eq(r_v2, v_2) * eq(r_s2, s_2)
+	//     \______ inner slot _________/     \______ outer slot ________/
+	//
+	// So one table per slot suffices, at `2 * SHIFT_COUNT` entries instead of `SHIFT_COUNT^2`.
+	//
+	// Challenges are drawn over the inner axes only, so the outer slot sits at the all-zero point.
+	// There the indicator selects the identity, the only outer shift a key may carry.
+	let outer = OuterSlotWeights::<F>::identity_selecting();
+
 	// The scalars of one operation, laid out with the operand index innermost so that the `arity`
 	// weights for one `key.dense_shift_idx` form a contiguous chunk that [`Key::accumulate_wide`]
 	// can index directly by operand index.
 	//
-	// A key's shift now selects itself through a pure equality indicator over both of phase 1's
-	// shift axes, and the h evaluation is a single factor shared by every key.
+	// A key's sequence selects itself through an equality indicator over both slots' axes.
+	// The h evaluation is one factor shared by every key of the operation.
 	let build_scalars =
 		|arity: usize, lambda_powers: &[F], dense_shift_enc: &DenseShiftEncoding| {
 			let mut scalars = vec![F::ZERO; arity * dense_shift_enc.len()];
-			for (dense_shift_idx, (variant, amount)) in dense_shift_enc.iter().enumerate() {
+			for (dense_shift_idx, [inner, outer_shift]) in dense_shift_enc.iter().enumerate() {
 				let shift_scalar = h_eval
-					* r_v_tensor.as_ref()[variant as usize]
-					* r_s_tensor.as_ref()[amount as usize];
+					* r_v_tensor.as_ref()[inner.variant as usize]
+					* r_s_tensor.as_ref()[inner.amount as usize]
+					* outer.weight(outer_shift);
 				for operand_idx in 0..arity {
 					scalars[dense_shift_idx * arity + operand_idx] =
 						lambda_powers[operand_idx] * shift_scalar;

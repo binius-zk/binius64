@@ -450,6 +450,29 @@ impl Shift {
 		!self.is_identity() || matches!(self.variant, ShiftVariant::Sll)
 	}
 
+	/// Where this shift sits in the enumeration of every `(variant, amount)` spelling.
+	///
+	/// The variant indexes runs of `Word::BITS`, and the amount indexes within a run:
+	///
+	/// ```text
+	///     [ Sll 0 .. Sll 63 | Slr 0 .. Slr 63 | ... | Rotr32 0 .. Rotr32 63 ]
+	///       0          63     64         127          448             511
+	/// ```
+	///
+	/// A reduction keying one table entry per spelling addresses it by this index.
+	/// So does the prover's multilinear over the same axis pair, which is what lets the two agree.
+	///
+	/// # Panics
+	///
+	/// Panics if the amount is not below `Word::BITS`.
+	/// Above it a shift would index into the next variant's run, sharing an entry with another
+	/// shift.
+	#[inline]
+	pub const fn index(self) -> usize {
+		assert!((self.amount as usize) < Word::BITS, "shift amount is not below the word width");
+		self.variant as usize * Word::BITS + self.amount as usize
+	}
+
 	/// Applies this shift to a word and returns the result.
 	///
 	/// # Performance
@@ -1282,6 +1305,42 @@ mod tests {
 			deserialize_amount(ShiftVariant::Sll, 63).unwrap(),
 			ShiftedValueIndex::sll(ValueIndex::constant(0), 63)
 		);
+	}
+
+	#[test]
+	fn index_places_a_shift_by_variant_then_amount() {
+		// Runs of `Word::BITS` amounts, one run per variant. A table indexed the other way round
+		// would weight a shifted word by another shift's scalar.
+		//
+		//     [ Sll 0 .. Sll 63 | Slr 0 .. Slr 63 | ... ]
+		//       0          63     64         127
+		assert_eq!(Shift::IDENTITY.index(), 0);
+		assert_eq!(Shift::sll(5).index(), 5);
+		assert_eq!(Shift::srl(0).index(), Word::BITS);
+		assert_eq!(Shift::srl(3).index(), Word::BITS + 3);
+		assert_eq!(Shift::rotr32(31).index(), ShiftVariant::Rotr32 as usize * Word::BITS + 31);
+
+		// Every spelling lands in its own slot, inside the enumeration.
+		let mut seen = vec![false; ShiftVariant::ALL.len() * Word::BITS];
+		for variant in ShiftVariant::ALL {
+			for amount in 0..variant.max_amount() {
+				let index = Shift::new(variant, amount).index();
+				assert!(!seen[index], "{variant:?} {amount} shares an index");
+				seen[index] = true;
+			}
+		}
+	}
+
+	// An amount at the word width would index into the next variant's run, aliasing another shift.
+	// The fields are public, so a hand-built shift can carry one even though `new` rejects it.
+	#[test]
+	#[should_panic(expected = "shift amount is not below the word width")]
+	fn index_rejects_an_amount_at_the_word_width() {
+		let shift = Shift {
+			variant: ShiftVariant::Sll,
+			amount: Word::BITS as u8,
+		};
+		let _ = shift.index();
 	}
 
 	#[test]
