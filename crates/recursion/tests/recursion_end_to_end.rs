@@ -16,9 +16,11 @@
 //! one verifier runs over both channels, reaching the same operations in the same order, and the
 //! circuit the first produced is satisfied by the witness the second filled.
 
+use std::iter;
+
 use binius_core::{constraint_system::ValueVec, word::Word};
 use binius_field::arch::OptimalPackedB128;
-use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, Wire};
+use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, PopulateError, Wire};
 use binius_hash::StdHashSuite;
 use binius_prover::Prover;
 use binius_recursion::{Binius64BuilderChannel, WitnessFillerChannel};
@@ -97,6 +99,34 @@ fn crc64_witness(crc64: &Crc64, message: &[u64; N_INPUT_WORDS]) -> ValueVec {
 
 #[test]
 fn recursive_circuit_is_satisfied_by_a_real_proof() {
+	run_recursion(|inout| inout.to_vec()).expect("the replayed witness satisfies the circuit");
+}
+
+/// The statement is the circuit's public input, and the proof is about one statement, so a
+/// circuit given a different one must fail. This is what says the statement wires are wired in
+/// rather than merely present.
+#[test]
+fn a_statement_the_proof_is_not_about_fails() {
+	let failure = run_recursion(|inout| {
+		let mut corrupted = inout.to_vec();
+		corrupted[0] = corrupted[0] ^ Word::ONE;
+		corrupted
+	})
+	.expect_err("a statement the proof is not about leaves the circuit unsatisfied");
+
+	// The shift reduction's consistency check is where the statement enters the arithmetic.
+	assert!(
+		failure
+			.failures
+			.iter()
+			.all(|f| f.path.starts_with(".assert_zero[")),
+		"the failure should be an assertion, not a missing value: {failure:?}",
+	);
+}
+
+/// Runs the pipeline end to end, filling the recursive circuit's statement wires with what
+/// `statement` returns for the inner circuit's inout words.
+fn run_recursion(statement: impl Fn(&[Word]) -> Vec<Word>) -> Result<(), PopulateError> {
 	// --- the inner circuit and its proof -------------------------------------------------------
 	let crc64 = crc64_circuit();
 	let message = [0x0123456789abcdef, 0xfedcba9876543210, 1, u64::MAX];
@@ -121,12 +151,15 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	// --- the recursive circuit -----------------------------------------------------------------
 	// The verifier runs over the builder channel, wrapped in the same BaseFold layer the transcript
 	// channel gets, and what it records becomes the circuit.
+	// The statement enters as wires, so the circuit is about the inner system rather than about
+	// this one message.
 	let recorded = {
-		let builder_channel = Binius64BuilderChannel::new();
+		let builder_channel = Binius64BuilderChannel::new(witness.inout().len());
+		let statement = builder_channel.statement();
 		let mut channel = verifier.iop_compiler().create_channel(builder_channel);
 		verifier
 			.iop_verifier()
-			.verify(witness.inout(), &mut channel)
+			.verify(&statement, &mut channel)
 			.expect("the symbolic run records rather than checks, so it cannot fail");
 		let builder_channel = channel.finish().unwrap();
 		builder_channel.build()
@@ -147,6 +180,12 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	// The same verifier runs again over the real transcript, and every value the circuit cannot
 	// derive is written into the wire the build recorded for it.
 	let mut filler = recorded.circuit.new_witness_filler();
+
+	// The statement is this circuit's public input, so it is given rather than replayed.
+	for (&wire, word) in iter::zip(&recorded.inout, statement(witness.inout())) {
+		filler[wire] = word;
+	}
+
 	{
 		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		let filler_channel = WitnessFillerChannel::<_, StdChallenger, StdHashSuite>::new(
@@ -162,8 +201,5 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 		channel.finish().unwrap().finish();
 	}
 
-	recorded
-		.circuit
-		.populate_wire_witness(&mut filler)
-		.expect("the recorded circuit is satisfied by the replayed witness");
+	recorded.circuit.populate_wire_witness(&mut filler)
 }

@@ -9,7 +9,7 @@ use binius_core::{
 };
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
 use binius_ip::{
-	channel::IPVerifierChannel,
+	channel::{IPVerifierChannel, WordIPVerifierChannel, subset_sum_word},
 	sumcheck::{SumcheckOutput, verify as verify_sumcheck},
 };
 use binius_math::{
@@ -34,6 +34,9 @@ use super::{
 /// bit within a word and the high variables index the word. Words past `words.len()` (up to
 /// `2^r_y.len()`) are treated as zero.
 ///
+/// A verifier reaches its words through a channel, so it uses the `channel_words_mle` sibling
+/// below; this is for a prover mirroring the same evaluation over native words.
+///
 /// ## Preconditions
 ///
 /// * `r_j` has exactly `Word::LOG_BITS` entries
@@ -49,13 +52,37 @@ where
 	let r_j_tensor = eq_ind_partial_eval_scalars(r_j);
 	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
 	iter::zip(words, r_y_tensor)
-		.map(|(word, weight)| {
-			let word_eval = (0..Word::BITS)
-				.filter(|bit| (word.as_u64() >> bit) & 1 == 1)
-				.map(|bit| &r_j_tensor[bit])
-				.sum::<E>();
-			weight * word_eval
-		})
+		.map(|(&word, weight)| weight * subset_sum_word(&r_j_tensor, word))
+		.sum()
+}
+
+/// [`evaluate_words_mle`] over a channel's own words.
+///
+/// A word's contribution is the sum of the bit-index tensor over its set bits, which is what
+/// [`WordIPVerifierChannel::subset_sum`] computes — over concrete bits for a verifier reading a
+/// transcript, and over a sub-circuit for one building a recursive circuit.
+///
+/// ## Preconditions
+///
+/// * `r_j` has exactly `Word::LOG_BITS` entries
+/// * `words` has at most `2^r_y.len()` entries
+fn channel_words_mle<F, C>(
+	channel: &mut C,
+	words: &[C::Word],
+	r_j: &[C::Elem],
+	r_y: &[C::Elem],
+) -> C::Elem
+where
+	F: BinaryField,
+	C: WordIPVerifierChannel<F>,
+{
+	assert_eq!(r_j.len(), Word::LOG_BITS); // precondition
+	assert!(words.len() <= 1 << r_y.len()); // precondition
+
+	let r_j_tensor = eq_ind_partial_eval_scalars(r_j);
+	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
+	iter::zip(words, r_y_tensor)
+		.map(|(word, weight)| weight * channel.subset_sum(&r_j_tensor, word))
 		.sum()
 }
 
@@ -274,7 +301,7 @@ where
 pub fn check_eval<F, C>(
 	constraint_system: &ConstraintSystem,
 	inout: InoutSegment,
-	public: &[Word],
+	inout_words: &[C::Word],
 	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
@@ -286,9 +313,16 @@ pub fn check_eval<F, C>(
 ) -> Result<(), Error>
 where
 	F: BinaryField,
-	C: IPVerifierChannel<F>,
+	C: WordIPVerifierChannel<F>,
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
+	// The inout words are public only when they sit in the public segment; a batch hides them and
+	// passes none.
+	assert_eq!(
+		inout_words.len(),
+		constraint_system.n_public_words(inout) - constraint_system.n_const()
+	); // precondition
+
 	let VerifyOutput {
 		zero_lambda,
 		bitand_lambda,
@@ -351,17 +385,21 @@ where
 		channel.compute_public_value(&inputs, eval_fn)
 	};
 
-	// The public-half evaluation is a function of the verifier's public words (plaintext) and
-	// public-channel-derived challenges, so it is computed the same way as `monster_eval`.
+	// The public segment is the constraint system's constants followed by the inout words, in the
+	// order the value vector places them. The constants are fixed by the system, so they are
+	// lifted into the channel's word type here rather than being restated by the caller.
+	//
+	// This runs symbolically rather than through `compute_public_value`, unlike `monster_eval`
+	// above: the public segment is small, so a channel that builds a circuit can afford to derive
+	// it, and one that carries the statement as wires has to.
 	let log_public_words = constraint_system.log_public_words(inout);
-	let public_eval = {
-		let inputs: Vec<C::Elem> = r_j
-			.iter()
-			.chain(&r_y[..log_public_words])
-			.cloned()
-			.collect();
-		channel.compute_public_value(&inputs, PublicWordsEvalFn { public })
-	};
+	let public = constraint_system
+		.constants
+		.iter()
+		.map(|&word| C::Word::from(word))
+		.chain(inout_words.iter().cloned())
+		.collect::<Vec<_>>();
+	let public_eval = channel_words_mle(channel, &public, r_j, &r_y[..log_public_words]);
 
 	// Reconstruct the witness evaluation from its two segments. The public segment is
 	// zero-padded up to the hidden segment length, contributing the eq-zero padding factor.
@@ -377,21 +415,6 @@ where
 	channel.assert_zero(expected_eval - eval)?;
 
 	Ok(())
-}
-
-/// The bit-level MLE evaluation of the public words, as a [`FieldFn`] over the inputs
-/// `r_j.. | r_y_low..`: the word-bit challenges followed by the low `log_public_words`
-/// word-index challenges. Computed via the same public-value mechanism as [`MonsterEvalFn`].
-struct PublicWordsEvalFn<'a> {
-	/// The public words of the value vector.
-	public: &'a [Word],
-}
-
-impl<F: BinaryField> FieldFn<F> for PublicWordsEvalFn<'_> {
-	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
-		let (r_j, r_y_low) = vals.split_at(Word::LOG_BITS);
-		evaluate_words_mle(self.public, r_j, r_y_low)
-	}
 }
 
 /// The monster multilinear evaluation, as a [`FieldFn`] over public-channel-derived inputs.
@@ -651,13 +674,14 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 mod tests {
 	use binius_field::Field;
 	use binius_math::test_utils::random_scalars;
+	use binius_transcript::VerifierTranscript;
 	use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::config::B128;
+	use crate::config::{B128, StdChallenger};
 
-	#[test]
-	fn test_evaluate_words_mle_matches_naive() {
+	/// Words, challenges, and the evaluation a naive reader of the definition gets.
+	fn words_mle_case() -> (Vec<Word>, Vec<B128>, Vec<B128>, B128) {
 		let mut rng = StdRng::seed_from_u64(0);
 		let log_words = 3;
 		// A non-power-of-two word count exercises the implicit zero padding.
@@ -679,6 +703,23 @@ mod tests {
 			}
 		}
 
+		(words, r_j, r_y, expected)
+	}
+
+	#[test]
+	fn test_evaluate_words_mle_matches_naive() {
+		let (words, r_j, r_y, expected) = words_mle_case();
 		assert_eq!(evaluate_words_mle::<B128, B128>(&words, &r_j, &r_y), expected);
+	}
+
+	/// The two must agree: the verifier evaluates the public words through its channel and the
+	/// prover mirrors it natively.
+	#[test]
+	fn test_channel_words_mle_matches_the_native_one() {
+		let (words, r_j, r_y, expected) = words_mle_case();
+
+		// A transcript carries concrete words, so this is the same arithmetic reached the long way.
+		let mut channel = VerifierTranscript::new(StdChallenger::default(), Vec::new());
+		assert_eq!(channel_words_mle(&mut channel, &words, &r_j, &r_y), expected);
 	}
 }

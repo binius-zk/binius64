@@ -31,7 +31,10 @@
 //!   right value but nothing pins them to their inputs.
 //!
 //! What *is* constrained is the verifier's arithmetic: the sumcheck folding, the eq-indicator and
-//! Lagrange evaluations, the monster multilinear, and every `assert_zero` along the way.
+//! Lagrange evaluations, the monster multilinear, and every `assert_zero` along the way. The inner
+//! statement is this circuit's public input, so the circuit is about the inner system rather than
+//! about one proof of it, and the shift reduction's public-value check is what ties a proof to the
+//! statement it is offered against.
 //!
 //! So a circuit built here accepts proofs it should reject. It is useful for measuring that
 //! arithmetic and for keeping the pipeline honest while the gadgets are written, not for proving

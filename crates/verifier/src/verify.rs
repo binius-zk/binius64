@@ -125,7 +125,15 @@ impl IOPVerifier {
 	///
 	/// This is the core verification logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Verifier::verify`] is the simpler interface.
-	pub fn verify<Channel>(&self, inout: &[Word], channel: &mut Channel) -> Result<(), Error>
+	///
+	/// The statement arrives as the channel's own word type. A channel over concrete values takes
+	/// [`Word`]s; a channel that builds a recursive circuit takes wires, so the circuit verifies
+	/// every instance of the system rather than the one statement it was built with.
+	pub fn verify<Channel>(
+		&self,
+		inout: &[Channel::Word],
+		channel: &mut Channel,
+	) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
@@ -142,19 +150,7 @@ impl IOPVerifier {
 
 		// Only the inout values go into Fiat-Shamir: they are what varies per instance, and the
 		// constants are fixed by the constraint system the transcript is already bound to.
-		//
-		// The words are lifted into the channel's own word type, so a channel that carries words
-		// as wires still receives them. They arrive here concrete, so such a channel sees the
-		// statement as fixed; taking it symbolically is BINIUS-433.
-		let observed = inout
-			.iter()
-			.map(|&word| Channel::Word::from(word))
-			.collect::<Vec<_>>();
-		channel.observe_words(&observed);
-
-		// The shift reduction reads the whole public segment, which is the constants followed by
-		// the inout values — the order the value vector places them in.
-		let public = [self.constraint_system.constants.as_slice(), inout].concat();
+		channel.observe_words(inout);
 
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -169,7 +165,7 @@ impl IOPVerifier {
 			self.constraint_system(),
 			Instances::Single,
 			InoutSegment::Public,
-			&public,
+			inout,
 			channel,
 		)?;
 

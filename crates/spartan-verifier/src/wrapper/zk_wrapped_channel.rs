@@ -20,13 +20,16 @@ use binius_iop::{
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	merkle_channel::MerkleIPVerifierChannel,
 };
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
 };
 
-use crate::{Error, IOPVerifier, wrapper::circuit_elem::CircuitElem};
+use crate::{
+	Error, IOPVerifier,
+	wrapper::circuit_elem::{CircuitElem, hinted_subset_sum},
+};
 
 /// A verifier channel that wraps a [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
 ///
@@ -242,7 +245,8 @@ where
 	}
 
 	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		subset_sum_word(elems, *word)
+		// Hinted to match the symbolic build, which reached this with a dummy statement.
+		hinted_subset_sum(&self.instance_gen, elems, *word)
 	}
 
 	fn select(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {

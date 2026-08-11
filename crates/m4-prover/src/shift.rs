@@ -376,10 +376,12 @@ mod tests {
 			&mut verifier_transcript,
 		)
 		.unwrap();
+		// A batch hides its inout words, so the public segment is the constants the constraint
+		// system already carries.
 		check_eval(
 			&cs,
 			InoutSegment::Hidden,
-			public_words,
+			&[],
 			&verifier_zero,
 			&verifier_bitand,
 			&verifier_intmul,

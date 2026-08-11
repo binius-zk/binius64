@@ -394,7 +394,7 @@ fn test_shift_prove_and_verify() {
 		check_eval(
 			&cs,
 			InoutSegment::Public,
-			value_vec.public(),
+			value_vec.inout(),
 			&verifier_zero_data,
 			&verifier_bitand_data,
 			&verifier_intmul_data,

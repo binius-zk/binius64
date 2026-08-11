@@ -39,6 +39,8 @@ pub struct Recorded {
 	pub circuit: Circuit,
 	/// The wires the witness must supply, in the order the verifier reached them.
 	pub inputs: Vec<crate::shared::Input>,
+	/// The wires holding the inner statement, which are this circuit's public input.
+	pub inout: Vec<Wire>,
 }
 
 /// A channel that records a verifier run as a Binius64 circuit.
@@ -55,21 +57,32 @@ pub struct Recorded {
 /// See the crate docs for what this does and does not constrain.
 pub struct Binius64BuilderChannel {
 	shared: Rc<Shared>,
+	inout: Vec<Wire>,
 	/// How many assertions have been recorded, so each gets a distinct name.
 	n_assertions: usize,
 }
 
 impl Binius64BuilderChannel {
-	/// Creates a channel over a fresh builder.
-	///
-	/// The inner statement is not among the circuit's inputs yet: `IOPVerifier::verify` lifts it
-	/// through `From<Word>`, so it reaches the channel already concrete and is baked in. Taking it
-	/// as inout wires is BINIUS-433.
-	pub fn new() -> Self {
+	/// Creates a channel over a fresh builder, for an inner statement of `n_inout` words.
+	pub fn new(n_inout: usize) -> Self {
+		let shared = Rc::new(Shared::new());
+		let inout = (0..n_inout).map(|_| shared.builder().add_inout()).collect();
 		Self {
-			shared: Rc::new(Shared::new()),
+			shared,
+			inout,
 			n_assertions: 0,
 		}
+	}
+
+	/// The inner statement, as this circuit's own public input.
+	///
+	/// Pass this to `IOPVerifier::verify`. The circuit it records then verifies any instance of
+	/// the inner system, since nothing about the statement is fixed while building.
+	pub fn statement(&self) -> Vec<SymbolicWord> {
+		self.inout
+			.iter()
+			.map(|&wire| SymbolicWord::wire(&self.shared, wire))
+			.collect()
 	}
 
 	/// Consumes the channel and compiles what it recorded.
@@ -77,12 +90,14 @@ impl Binius64BuilderChannel {
 	/// Every [`SymbolicElem`] and [`SymbolicWord`] derived from this channel must be dropped first:
 	/// they hold weak handles to the builder, and using one afterwards panics.
 	pub fn build(self) -> Recorded {
-		let shared = Rc::try_unwrap(self.shared).unwrap_or_else(|_| {
+		let Self { shared, inout, .. } = self;
+		let shared = Rc::try_unwrap(shared).unwrap_or_else(|_| {
 			panic!("SymbolicElem and SymbolicWord values hold only weak handles")
 		});
 		Recorded {
 			inputs: shared.inputs(),
 			circuit: shared.builder().build(),
+			inout,
 		}
 	}
 
@@ -91,12 +106,6 @@ impl Binius64BuilderChannel {
 		let lo = self.shared.input_wire(kind);
 		let hi = self.shared.input_wire(kind);
 		SymbolicElem::wires(&self.shared, lo, hi)
-	}
-}
-
-impl Default for Binius64BuilderChannel {
-	fn default() -> Self {
-		Self::new()
 	}
 }
 

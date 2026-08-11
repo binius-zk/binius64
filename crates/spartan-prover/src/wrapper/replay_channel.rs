@@ -13,12 +13,12 @@ use std::{
 use binius_core::word::Word;
 use binius_field::{Field, util::FieldFn};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, WireAllocator, WitnessError, WitnessGenerator},
 	constraint_system::{WireKind, Witness, WitnessLayout},
 };
-use binius_spartan_verifier::wrapper::circuit_elem::CircuitElem;
+use binius_spartan_verifier::wrapper::circuit_elem::{CircuitElem, hinted_subset_sum};
 
 /// A channel that replays recorded interaction values through a [`WitnessGenerator`], filling
 /// both inout and private wires in the outer witness.
@@ -151,7 +151,8 @@ impl<F: Field> WordIPVerifierChannel<F> for ReplayChannel<F> {
 	fn observe_words(&mut self, _words: &[Word]) {}
 
 	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		subset_sum_word(elems, *word)
+		// Hinted to match the symbolic build, which reached this with a dummy statement.
+		hinted_subset_sum(&self.witness_gen, elems, *word)
 	}
 
 	fn select(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {

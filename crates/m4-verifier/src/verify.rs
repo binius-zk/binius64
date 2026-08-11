@@ -12,6 +12,7 @@ use binius_iop::{
 	fri::{ConstantArityStrategy, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
+use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_verifier::{
 	Error,
@@ -113,7 +114,7 @@ impl IOPVerifier {
 	/// Returns an error if the reduction, the ring-switch, or the trace opening fails.
 	pub fn verify<Channel>(&self, channel: &mut Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<B128>,
+		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
 		// Receive the trace commitment.
@@ -121,14 +122,15 @@ impl IOPVerifier {
 		let trace_oracle = channel.recv_oracle(self.layout.log_witness_elems, true)?;
 
 		// Reduce every instance's constraints to one claim on the committed trace.
-		// A batch hides its inout words, so the public data is the shared constants alone.
+		// A batch hides its inout words, so the public data is the shared constants alone, which
+		// the reduction reads from the constraint system.
 		let reduction = reduce_constraints(
 			&self.cs,
 			Instances::Batch {
 				log_instances: self.layout.log_instances,
 			},
 			InoutSegment::Hidden,
-			&self.cs.constants,
+			&[],
 			channel,
 		)?;
 

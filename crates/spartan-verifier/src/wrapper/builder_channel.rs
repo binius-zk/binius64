@@ -11,10 +11,10 @@ use std::{
 use binius_core::word::Word;
 use binius_field::{Field, util::FieldFn};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word};
 use binius_spartan_frontend::circuit_builder::{CircuitBuilder, ConstraintBuilder};
 
-use super::circuit_elem::CircuitElem;
+use super::circuit_elem::{CircuitElem, hinted_subset_sum};
 
 /// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
 ///
@@ -132,10 +132,14 @@ impl<F: Field> WordIPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 	fn observe_words(&mut self, _words: &[Word]) {}
 
 	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
-		// The word is concrete, so which elements the sum runs over is settled while building.
-		subset_sum_word(elems, *word)
+		// Hinted rather than folded: the statement is a dummy while building. See
+		// `hinted_subset_sum`.
+		hinted_subset_sum(&self.builder, elems, *word)
 	}
 
+	// Folded rather than hinted, unlike `subset_sum`: the only words reaching this are a code
+	// proximity test's query indices, and that test is not run symbolically here — which is also
+	// why `sample_bits` below can answer with zero.
 	fn select(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
 		select_word(elems, *word)
 	}

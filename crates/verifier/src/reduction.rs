@@ -26,7 +26,7 @@ use binius_core::{
 use binius_field::{AESTowerField8b as B8, FieldOps};
 use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::{
-	channel::IPVerifierChannel,
+	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
 use binius_math::{
@@ -132,7 +132,8 @@ impl<F: Clone> ReductionOutput<F> {
 /// - `cs`: the single-instance constraint system every instance satisfies.
 /// - `instances`: whether this is the monolithic reduction or a batch, and how wide.
 /// - `inout`: which value segment the inout words sit in.
-/// - `public`: the declared public values, unpadded — the constants, then the inout values.
+/// - `inout_words`: the declared inout values, and nothing when they are hidden. The constants are
+///   part of the constraint system, so the caller does not restate them.
 /// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.
 ///
 /// # Errors
@@ -150,11 +151,11 @@ pub fn reduce_constraints<Channel>(
 	cs: &ConstraintSystem,
 	instances: Instances,
 	inout: InoutSegment,
-	public: &[Word],
+	inout_words: &[Channel::Word],
 	channel: &mut Channel,
 ) -> Result<ReductionOutput<Channel::Elem>, Error>
 where
-	Channel: IOPVerifierChannel<B128>,
+	Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 	Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 {
 	let log_instances = instances.log_count();
@@ -290,7 +291,7 @@ where
 		shift::check_eval::<B128, _>(
 			cs,
 			inout,
-			public,
+			inout_words,
 			&zero,
 			&bitand,
 			&intmul,
