@@ -28,11 +28,19 @@ use super::{
 const DOUBLE_SHIFT_UNSUPPORTED: &str =
 	"the two-phase shift reduction reads only the inner shift of a term";
 
-/// Evaluates the three h multilinear polynomials (corresponding to SLL, SRL, SRA) at challenge
-/// points.
+/// Contracts each shift variant's indicator against a weight per output bit position.
 ///
-/// This is the verifier's version of the h-parts evaluation - instead of building
-/// full multilinear polynomials, it directly computes their evaluations.
+/// This is the verifier's version of the h-parts evaluation.
+/// Instead of building full multilinear polynomials, it computes their evaluations directly.
+/// For each variant it returns
+///
+/// ```text
+/// sum_i l_tilde[i] * shift-ind_op(i, r_j, r_s)
+/// ```
+///
+/// The weights are an arbitrary vector over the `Word::BITS` output bit positions.
+/// That is what lets one kernel serve both weight families the reduction needs.
+/// See [`evaluate_inner_h_op`] for the second.
 pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SHIFT_VARIANT_COUNT] {
 	assert_eq!(l_tilde.len(), Word::BITS);
 	assert_eq!(r_j.len(), Word::LOG_BITS);
@@ -96,6 +104,52 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 	);
 
 	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32]
+}
+
+/// Evaluates the inner-phase shift-indicator weight at the intermediate point.
+///
+/// The three-phase reduction carries two weight families, one per shift slot:
+///
+/// ```text
+/// outer   H(K, S_2) = sum_i delta_D(r_ihat, ihat) * shift-ind_op2(i, K, S_2)
+/// inner   h(J, S_1) = shift-ind_op1(r_k, J, S_1)
+/// ```
+///
+/// The outer family contracts against the oblong weights `delta_D(r_ihat, ihat)`.
+/// The inner family is the bare indicator at the intermediate point the outer phase produced.
+/// It carries no oblong factor, because that phase already summed the output bit index out.
+///
+/// Both are the same contraction under different weights.
+/// A multilinear extension in the output-bit argument *is* the equality-weighted sum over it:
+///
+/// ```text
+/// shift-ind~_op1(r_k, J, S_1) = sum_i eq~(r_k, i) * shift-ind_op1(i, J, S_1)
+/// ```
+///
+/// So this is the shared kernel with the equality indicator of `r_k` in place of the Lagrange
+/// weights.
+///
+/// # Arguments
+///
+/// - `r_k`: the intermediate bit point, `Word::LOG_BITS` coordinates, from the outer phase.
+/// - `r_j`: the source bit point, `Word::LOG_BITS` coordinates.
+/// - `r_s`: the inner shift amount point, `Word::LOG_BITS` coordinates.
+///
+/// # Returns
+///
+/// One evaluation per shift variant, in [`ShiftVariant::ALL`](binius_core::ShiftVariant::ALL)
+/// order. The caller folds them over the variant axis, as it folds the outer family's.
+pub fn evaluate_inner_h_op<E: FieldOps>(
+	r_k: &[E],
+	r_j: &[E],
+	r_s: &[E],
+) -> [E; SHIFT_VARIANT_COUNT] {
+	assert_eq!(r_k.len(), Word::LOG_BITS);
+
+	// Weighting by the equality indicator of `r_k` turns the contraction into an evaluation of
+	// the indicator's multilinear extension there.
+	let eq_r_k = eq_ind_partial_eval_scalars(r_k);
+	evaluate_h_op(&eq_r_k, r_j, r_s)
 }
 
 /// A [`FieldFn`] evaluating one operation's monster multilinear polynomial.
@@ -632,6 +686,125 @@ mod tests {
 			assert_eq!(sra32, to_field(expected_sra32), "sra32 failed for i={i}, j={j}, s={s}");
 			assert_eq!(rotr32, to_field(expected_rotr32), "rotr32 failed for i={i}, j={j}, s={s}");
 		}
+	}
+
+	#[test]
+	fn inner_h_op_at_a_vertex_is_the_integer_indicator() {
+		// The inner weight is the indicator's multilinear extension in its output-bit argument. At
+		// a hypercube vertex an extension agrees with the function it extends, so driving all
+		// three points to vertices must reproduce the integer conditions exactly.
+		//
+		// This is the outer family's vertex test with the oblong weights replaced by `eq(r_k, .)`,
+		// which is the one substitution `evaluate_inner_h_op` makes.
+		type F = BinaryField128bGhash;
+		let mut rng = StdRng::seed_from_u64(11);
+
+		for _trial in 0..1024 {
+			let k = rng.random_range(0..64);
+			let j = rng.random_range(0..64);
+			let s = rng.random_range(0..64);
+
+			let r_k = index_to_hypercube_point::<F>(Word::LOG_BITS, k);
+			let r_j = index_to_hypercube_point::<F>(Word::LOG_BITS, j);
+			let r_s = index_to_hypercube_point::<F>(Word::LOG_BITS, s);
+
+			let [sll, srl, sra, rotr, sll32, srl32, sra32, rotr32] =
+				evaluate_inner_h_op(&r_k, &r_j, &r_s);
+
+			// Full-width variants: output position `k` reads source position `j`.
+			let expected_sll = j + s == k;
+			let expected_srl = k + s == j;
+			let expected_sra = (k + s).min(63) == j;
+			let expected_rotr = (k + s) % 64 == j;
+
+			// Half-word variants act within a half and read only the low 5 bits of the amount.
+			let (k_hi, k_lo) = (k / 32, k % 32);
+			let (j_hi, j_lo) = (j / 32, j % 32);
+			let s_lo = s % 32;
+
+			let expected_sll32 = k_hi == j_hi && j_lo + s_lo == k_lo;
+			let expected_srl32 = k_hi == j_hi && k_lo + s_lo == j_lo;
+			let expected_sra32 = k_hi == j_hi && (k_lo + s_lo).min(31) == j_lo;
+			let expected_rotr32 = k_hi == j_hi && (k_lo + s_lo) % 32 == j_lo;
+
+			let to_field = |bit: bool| if bit { F::ONE } else { F::ZERO };
+
+			assert_eq!(sll, to_field(expected_sll), "sll at k={k}, j={j}, s={s}");
+			assert_eq!(srl, to_field(expected_srl), "srl at k={k}, j={j}, s={s}");
+			assert_eq!(sra, to_field(expected_sra), "sra at k={k}, j={j}, s={s}");
+			assert_eq!(rotr, to_field(expected_rotr), "rotr at k={k}, j={j}, s={s}");
+			assert_eq!(sll32, to_field(expected_sll32), "sll32 at k={k}, j={j}, s={s}");
+			assert_eq!(srl32, to_field(expected_srl32), "srl32 at k={k}, j={j}, s={s}");
+			assert_eq!(sra32, to_field(expected_sra32), "sra32 at k={k}, j={j}, s={s}");
+			assert_eq!(rotr32, to_field(expected_rotr32), "rotr32 at k={k}, j={j}, s={s}");
+		}
+	}
+
+	#[test]
+	fn inner_h_op_of_an_identity_shift_is_the_equality_indicator() {
+		// Invariant: an identity shift weights by plain equality between the two bit points.
+		//
+		// A degenerate slot contributes eq(r_k, r_j) and nothing else, so composing it with the
+		// other slot's weight leaves that weight standing alone.
+		//
+		// Every variant is the identity at amount zero, so all eight must agree — including the
+		// half-word forms, which move nothing within either half.
+		type F = BinaryField128bGhash;
+		let mut rng = StdRng::seed_from_u64(13);
+
+		let r_k = random_scalars::<F>(&mut rng, Word::LOG_BITS);
+		let r_j = random_scalars::<F>(&mut rng, Word::LOG_BITS);
+		// The amount point at the hypercube's zero vertex fixes the shift amount to zero.
+		let r_s = vec![F::ZERO; Word::LOG_BITS];
+
+		// eq(r_k, r_j) over `Word::LOG_BITS` coordinates, built independently of the indicator.
+		let expected = iter::zip(&r_k, &r_j)
+			.map(|(&r_k_b, &r_j_b)| r_k_b * r_j_b + (F::ONE - r_k_b) * (F::ONE - r_j_b))
+			.product::<F>();
+
+		for (variant, weight) in iter::zip(ShiftVariant::ALL, evaluate_inner_h_op(&r_k, &r_j, &r_s))
+		{
+			assert_eq!(
+				weight, expected,
+				"{variant:?} at amount zero is not the equality indicator"
+			);
+		}
+	}
+
+	#[test]
+	fn inner_h_op_is_multilinear_in_each_point() {
+		// The reduction binds `r_j` and `r_s` by sumcheck and reads `r_k` from the outer phase, so
+		// the weight has to be multilinear in all three for those bindings to be sound.
+		type F = BinaryField128bGhash;
+		let mut rng = StdRng::seed_from_u64(17);
+
+		let r_k = random_scalars::<F>(&mut rng, Word::LOG_BITS);
+		let r_j = random_scalars::<F>(&mut rng, Word::LOG_BITS);
+		let r_s = random_scalars::<F>(&mut rng, Word::LOG_BITS);
+
+		// Interpolating between a point's two boolean settings must reproduce the point itself.
+		let check_linear_in = |point: &[F], rebuild: &dyn Fn(&[F]) -> [F; SHIFT_VARIANT_COUNT]| {
+			for coordinate in 0..point.len() {
+				let mut at_zero = point.to_vec();
+				at_zero[coordinate] = F::ZERO;
+				let mut at_one = point.to_vec();
+				at_one[coordinate] = F::ONE;
+
+				let [result_0, result_1, result] = [&at_zero[..], &at_one[..], point].map(rebuild);
+				for variant in 0..SHIFT_VARIANT_COUNT {
+					let interpolated = result_0[variant] * (F::ONE - point[coordinate])
+						+ result_1[variant] * point[coordinate];
+					assert_eq!(
+						result[variant], interpolated,
+						"not linear in coordinate {coordinate}"
+					);
+				}
+			}
+		};
+
+		check_linear_in(&r_k, &|r_k| evaluate_inner_h_op(r_k, &r_j, &r_s));
+		check_linear_in(&r_j, &|r_j| evaluate_inner_h_op(&r_k, r_j, &r_s));
+		check_linear_in(&r_s, &|r_s| evaluate_inner_h_op(&r_k, &r_j, r_s));
 	}
 
 	#[test]
