@@ -119,10 +119,10 @@ fn format_operand(
 
 		let value_name = format_value_name(term.value_index, cs);
 
-		if term.shift.is_identity() {
+		if term.is_unshifted() {
 			write!(output, "{}", value_name).unwrap();
 		} else {
-			let shift_op = match term.shift.variant {
+			let shift_op = match term.inner().variant {
 				ShiftVariant::Sll => "≪",
 				ShiftVariant::Slr => "≫",
 				ShiftVariant::Sar => "a≫",
@@ -132,7 +132,7 @@ fn format_operand(
 				ShiftVariant::Sra32 => "a≫32",
 				ShiftVariant::Rotr32 => "≫≫32",
 			};
-			write!(output, "{}{}{}", value_name, shift_op, term.shift.amount).unwrap();
+			write!(output, "{}{}{}", value_name, shift_op, term.inner().amount).unwrap();
 		}
 	}
 }

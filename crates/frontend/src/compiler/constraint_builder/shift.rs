@@ -25,10 +25,8 @@ impl ShiftedWire {
 		self,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> ShiftedValueIndex {
-		ShiftedValueIndex {
-			value_index: wire_mapping[self.wire],
-			shift: self.shift,
-		}
+		// The builder carries one shift per term, which the canonical form places inner.
+		ShiftedValueIndex::single(wire_mapping[self.wire], self.shift)
 	}
 }
 
@@ -153,16 +151,16 @@ mod tests {
 			assert_eq!(val.len(), 3);
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex::private(0) && svi.shift.amount == 0)
+					.any(|svi| svi.value_index == ValueIndex::private(0) && svi.is_unshifted())
 			);
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex::private(1) && svi.shift.amount == 0)
+					.any(|svi| svi.value_index == ValueIndex::private(1) && svi.is_unshifted())
 			);
 			// The destination joins the operand rather than sitting in its own `c`.
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex::private(2) && svi.shift.amount == 0)
+					.any(|svi| svi.value_index == ValueIndex::private(2) && svi.is_unshifted())
 			);
 		}
 
@@ -182,12 +180,12 @@ mod tests {
 			assert_eq!(val.len(), 3);
 			assert!(val.iter().any(|svi| {
 				svi.value_index == ValueIndex::private(0)
-					&& svi.shift.amount == 5
-					&& matches!(svi.shift.variant, ShiftVariant::Rotr)
+					&& svi.inner().amount == 5
+					&& matches!(svi.inner().variant, ShiftVariant::Rotr)
 			}));
 			assert!(
 				val.iter()
-					.any(|svi| svi.value_index == ValueIndex::private(1) && svi.shift.amount == 0)
+					.any(|svi| svi.value_index == ValueIndex::private(1) && svi.is_unshifted())
 			);
 		}
 	}
@@ -218,15 +216,15 @@ mod tests {
 
 			assert_eq!(and_c.a().len(), 1);
 			assert_eq!(and_c.a()[0].value_index, ValueIndex::private(0));
-			assert_eq!(and_c.a()[0].shift.amount, 0);
+			assert_eq!(and_c.a()[0].inner().amount, 0);
 
 			assert_eq!(and_c.b().len(), 1);
 			assert_eq!(and_c.b()[0].value_index, ValueIndex::private(1));
-			assert_eq!(and_c.b()[0].shift.amount, 0);
+			assert_eq!(and_c.b()[0].inner().amount, 0);
 
 			assert_eq!(and_c.c().len(), 1);
 			assert_eq!(and_c.c()[0].value_index, ValueIndex::private(2));
-			assert_eq!(and_c.c()[0].shift.amount, 0);
+			assert_eq!(and_c.c()[0].inner().amount, 0);
 		}
 
 		// a & rotr(b, 8) = c  ->  b keeps native rotr(8).
@@ -241,8 +239,8 @@ mod tests {
 			assert_eq!(and_c.b().len(), 1);
 			assert!(and_c.b().iter().any(|svi| {
 				svi.value_index == ValueIndex::private(1)
-					&& svi.shift.amount == 8
-					&& matches!(svi.shift.variant, ShiftVariant::Rotr)
+					&& svi.inner().amount == 8
+					&& matches!(svi.inner().variant, ShiftVariant::Rotr)
 			}));
 		}
 	}

@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 //! Hosts error definitions for the core crate.
 
-use crate::constraint_system::{ConstraintKind, ValueSegment};
+use crate::constraint_system::{Composition, ConstraintKind, ValueSegment};
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
@@ -15,6 +15,23 @@ pub enum ConstraintSystemError {
 		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
+	},
+	#[error(
+		"{constraint_kind} #{constraint_index} puts a lone shift in the outer slot of its {operand_name} operand; the canonical form places it inner"
+	)]
+	NonCanonicalShiftSequence {
+		constraint_kind: ConstraintKind,
+		constraint_index: usize,
+		operand_name: &'static str,
+	},
+	#[error(
+		"{constraint_kind} #{constraint_index} uses a shift pair in its {operand_name} operand that composes to {composition:?} rather than staying a pair"
+	)]
+	CollapsibleShiftSequence {
+		constraint_kind: ConstraintKind,
+		constraint_index: usize,
+		operand_name: &'static str,
+		composition: Composition,
 	},
 	#[error(
 		"{constraint_kind} #{constraint_index} refers to a scratch value in its {operand_name} operand"

@@ -395,7 +395,7 @@ fn zero_constraint_circuit(
 	assert!(
 		cs.zero_constraints
 			.iter()
-			.any(|c| c.val().iter().any(|svi| !svi.shift.is_identity())),
+			.any(|c| c.val().iter().any(|svi| !svi.is_unshifted())),
 		"the fixture must emit a ZERO constraint with a shifted operand"
 	);
 	let witness = w.into_value_vec();

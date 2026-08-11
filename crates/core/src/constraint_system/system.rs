@@ -9,8 +9,8 @@ use binius_utils::{
 use bytes::{Buf, BufMut};
 
 use super::{
-	AndConstraint, BmulConstraint, ConstraintKind, ImulConstraint, Operand, ValueIndex,
-	ValueSegment, ValueVec, ZeroConstraint,
+	AndConstraint, BmulConstraint, Composition, ConstraintKind, ImulConstraint, Operand, Shift,
+	ValueIndex, ValueSegment, ValueVec, ZeroConstraint,
 };
 use crate::{
 	error::{ConstraintSystemError, VerificationError},
@@ -97,7 +97,7 @@ pub struct ConstraintSystem {
 
 impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
-	pub const SERIALIZATION_VERSION: u32 = 9;
+	pub const SERIALIZATION_VERSION: u32 = 10;
 
 	/// Returns the number of constants.
 	pub const fn n_const(&self) -> usize {
@@ -206,6 +206,8 @@ impl ConstraintSystem {
 	/// - referenced value indices are within their segment.
 	/// - constraints do not reference scratch values.
 	/// - shifts amounts are valid.
+	/// - a lone shift sits in the inner slot of its shift sequence.
+	/// - a genuine shift pair does not collapse to one shift, nor clear the word.
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
 		tracing::debug_span!("Validating constraint system");
 
@@ -324,26 +326,52 @@ impl ConstraintSystem {
 		operand_name: &'static str,
 	) -> Result<(), ConstraintSystemError> {
 		for term in operand {
-			// check canonicity. SLL is the canonical form of the identity.
-			if !term.shift.is_canonical() {
-				return Err(ConstraintSystemError::NonCanonicalShift {
+			for shift in term.shift_seq {
+				// check canonicity. SLL is the canonical form of the identity.
+				if !shift.is_canonical() {
+					return Err(ConstraintSystemError::NonCanonicalShift {
+						constraint_kind,
+						constraint_index,
+						operand_name,
+					});
+				}
+				// Half-word (*32) variants cap at 32, full-width at 64. `Shift::new` and the
+				// deserializer both enforce this, but the fields are public, so a hand-built term
+				// can still carry an amount the variant cannot represent.
+				let max_amount = shift.variant.max_amount();
+				if usize::from(shift.amount) >= max_amount {
+					return Err(ConstraintSystemError::ShiftAmountTooLarge {
+						constraint_kind,
+						constraint_index,
+						operand_name,
+						shift_amount: shift.amount as usize,
+						max_amount,
+					});
+				}
+			}
+			// A lone shift belongs in the inner slot, so an identity there settles the outer one.
+			// Were the outer slot allowed to carry the lone shift, one map would have two
+			// spellings and two terms denoting the same shifted word would not compare equal.
+			if term.is_unshifted() && term.is_doubly_shifted() {
+				return Err(ConstraintSystemError::NonCanonicalShiftSequence {
 					constraint_kind,
 					constraint_index,
 					operand_name,
 				});
 			}
-			// Half-word (*32) variants cap at 32, full-width at 64. `Shift::new` and the
-			// deserializer both enforce this, but the fields are public, so a hand-built term can
-			// still carry an amount the variant cannot represent.
-			let max_amount = term.shift.variant.max_amount();
-			if usize::from(term.shift.amount) >= max_amount {
-				return Err(ConstraintSystemError::ShiftAmountTooLarge {
-					constraint_kind,
-					constraint_index,
-					operand_name,
-					shift_amount: term.shift.amount as usize,
-					max_amount,
-				});
+			// A genuine pair must not collapse. `Single` means the frontend failed to merge two
+			// shifts that compose into one; `Zero` means it emitted a term whose every bit is
+			// cleared, which should have been deleted rather than encoded.
+			if term.is_doubly_shifted() {
+				let composition = Shift::compose(term.inner(), term.outer());
+				if composition != Composition::Pair {
+					return Err(ConstraintSystemError::CollapsibleShiftSequence {
+						constraint_kind,
+						constraint_index,
+						operand_name,
+						composition,
+					});
+				}
 			}
 			// Scratch words are uncommitted temporaries of the circuit that produced this system,
 			// so no constraint may name one.
@@ -577,7 +605,7 @@ mod tests {
 		let deserialized = ConstraintSystem::deserialize(&mut buf.as_slice()).unwrap();
 
 		// Check version
-		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 9);
+		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 10);
 
 		// Check the value vector shape
 		assert_eq!(original.constants, deserialized.constants);
@@ -643,7 +671,7 @@ mod tests {
 		constraint_system.serialize(&mut buf).unwrap();
 
 		// Write to reference file.
-		let test_data_path = std::path::Path::new("test_data/constraint_system_v9.bin");
+		let test_data_path = std::path::Path::new("test_data/constraint_system_v10.bin");
 
 		// Create directory if it doesn't exist
 		if let Some(parent) = test_data_path.parent() {
@@ -660,9 +688,10 @@ mod tests {
 	/// This test will fail if breaking changes are made without incrementing the version.
 	#[test]
 	fn test_deserialize_from_reference_binary_file() {
-		// The v9 format drops the padding counts, which are derived from the value counts now.
-		// Older files carry them as explicit fields, so they are no longer compatible.
-		let binary_data = include_bytes!("../../test_data/constraint_system_v9.bin");
+		// The v10 format widens every shifted value index to a sequence of two shifts, so it
+		// carries one extra byte pair per term. Older files spell one shift per term and no
+		// longer parse.
+		let binary_data = include_bytes!("../../test_data/constraint_system_v10.bin");
 
 		let deserialized = ConstraintSystem::deserialize(&mut binary_data.as_slice()).unwrap();
 
@@ -683,7 +712,7 @@ mod tests {
 		// This is implicitly checked during deserialization, but we can also verify
 		// the file starts with the correct version bytes
 		let version_bytes = &binary_data[0..4]; // First 4 bytes should be version
-		let expected_version_bytes = 9u32.to_le_bytes(); // Version 9 in little-endian
+		let expected_version_bytes = 10u32.to_le_bytes(); // Version 10 in little-endian
 		assert_eq!(
 			version_bytes, expected_version_bytes,
 			"Binary file version mismatch. If you made breaking changes, increment ConstraintSystem::SERIALIZATION_VERSION"
@@ -995,15 +1024,15 @@ mod tests {
 		// A half-word (*32) shift may only use amounts < 32.
 		// 32 is out of range even though it is below the full-width bound of 64.
 		cs.and_constraints.push(AndConstraint::abc(
-			vec![ShiftedValueIndex {
-				value_index: ValueIndex::constant(0),
+			vec![ShiftedValueIndex::single(
+				ValueIndex::constant(0),
 				// Built raw: `Shift::new` would reject this amount, and `validate` is what is
 				// under test here.
-				shift: Shift {
+				Shift {
 					variant: ShiftVariant::Sll32,
 					amount: 32,
 				},
-			}],
+			)],
 			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
 			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
 		));
@@ -1024,6 +1053,156 @@ mod tests {
 			}
 			other => panic!("Expected ShiftAmountTooLarge, got: {:?}", other),
 		}
+	}
+
+	#[test]
+	fn test_validate_checks_the_outer_shift_slot_too() {
+		let mut cs = test_shape();
+
+		// The bound applies to both slots, so an outer half-word shift is checked the same way.
+		// A pair whose inner shift is fine still fails on the outer one.
+		cs.and_constraints.push(AndConstraint::abc(
+			vec![ShiftedValueIndex::new(
+				ValueIndex::constant(0),
+				[
+					Shift::srl(3),
+					// Built raw: `Shift::new` would reject this amount before `validate` sees it.
+					Shift {
+						variant: ShiftVariant::Sll32,
+						amount: 32,
+					},
+				],
+			)],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+		));
+
+		match cs.validate().unwrap_err() {
+			ConstraintSystemError::ShiftAmountTooLarge {
+				constraint_kind,
+				constraint_index,
+				operand_name,
+				shift_amount,
+				max_amount,
+			} => {
+				assert_eq!(constraint_kind, ConstraintKind::And);
+				assert_eq!(constraint_index, 0);
+				assert_eq!(operand_name, "a");
+				assert_eq!(shift_amount, 32);
+				assert_eq!(max_amount, 32);
+			}
+			other => panic!("Expected ShiftAmountTooLarge, got: {:?}", other),
+		}
+	}
+
+	#[test]
+	fn test_validate_rejects_a_lone_shift_in_the_outer_slot() {
+		let mut cs = test_shape();
+
+		// The canonical form places a lone shift inner. Spelling it outer denotes the same map
+		// through a second spelling, so two terms on the same shifted word would not compare equal.
+		cs.and_constraints.push(AndConstraint::abc(
+			vec![ShiftedValueIndex::new(
+				ValueIndex::constant(0),
+				[Shift::IDENTITY, Shift::rotr(5)],
+			)],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+		));
+
+		match cs.validate().unwrap_err() {
+			ConstraintSystemError::NonCanonicalShiftSequence {
+				constraint_kind,
+				constraint_index,
+				operand_name,
+			} => {
+				assert_eq!(constraint_kind, ConstraintKind::And);
+				assert_eq!(constraint_index, 0);
+				assert_eq!(operand_name, "a");
+			}
+			other => panic!("Expected NonCanonicalShiftSequence, got: {:?}", other),
+		}
+	}
+
+	#[test]
+	fn test_validate_rejects_a_pair_that_collapses_to_one_shift() {
+		let mut cs = test_shape();
+
+		// Two rotations of one variant chain, so this pair denotes `rotr(9)` alone. Accepting it
+		// would spend a shift slot the reduction has to pay for on a map that needs only one.
+		cs.and_constraints.push(AndConstraint::abc(
+			vec![ShiftedValueIndex::new(
+				ValueIndex::constant(0),
+				[Shift::rotr(4), Shift::rotr(5)],
+			)],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+		));
+
+		match cs.validate().unwrap_err() {
+			ConstraintSystemError::CollapsibleShiftSequence {
+				constraint_kind,
+				constraint_index,
+				operand_name,
+				composition,
+			} => {
+				assert_eq!(constraint_kind, ConstraintKind::And);
+				assert_eq!(constraint_index, 0);
+				assert_eq!(operand_name, "a");
+				assert_eq!(composition, Composition::Single(Shift::rotr(9)));
+			}
+			other => panic!("Expected CollapsibleShiftSequence, got: {:?}", other),
+		}
+	}
+
+	#[test]
+	fn test_validate_rejects_a_pair_that_clears_the_word() {
+		let mut cs = test_shape();
+
+		// Shifting left 40 then left 30 carries every bit past the end, so the term is identically
+		// zero. The frontend should have deleted it rather than encoded a term that contributes
+		// nothing.
+		cs.and_constraints.push(AndConstraint::abc(
+			vec![ShiftedValueIndex::new(
+				ValueIndex::constant(0),
+				[Shift::sll(40), Shift::sll(30)],
+			)],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+		));
+
+		match cs.validate().unwrap_err() {
+			ConstraintSystemError::CollapsibleShiftSequence {
+				constraint_kind,
+				constraint_index,
+				operand_name,
+				composition,
+			} => {
+				assert_eq!(constraint_kind, ConstraintKind::And);
+				assert_eq!(constraint_index, 0);
+				assert_eq!(operand_name, "a");
+				assert_eq!(composition, Composition::Zero);
+			}
+			other => panic!("Expected CollapsibleShiftSequence, got: {:?}", other),
+		}
+	}
+
+	#[test]
+	fn test_validate_accepts_a_genuine_shift_pair() {
+		let mut cs = test_shape();
+
+		// Clearing the low bits and returning the rest is the canonical irreducible pair: no single
+		// shift both drops bits and leaves the others where they started.
+		cs.and_constraints.push(AndConstraint::abc(
+			vec![ShiftedValueIndex::new(
+				ValueIndex::constant(0),
+				[Shift::srl(3), Shift::sll(3)],
+			)],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(0))],
+		));
+
+		cs.validate().unwrap();
 	}
 
 	#[test]

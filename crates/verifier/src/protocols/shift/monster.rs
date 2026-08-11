@@ -18,6 +18,13 @@ use super::{
 	shift_ind::{partial_eval_phi, partial_eval_sigmas, partial_eval_sigmas_transpose},
 };
 
+/// Why a term's outer shift slot must hold the identity in the two-phase reduction.
+///
+/// A shift key names one shift, so the reduction reads the inner slot and ignores the outer one.
+/// A term carrying both would verify against the wrong shifted word.
+const DOUBLE_SHIFT_UNSUPPORTED: &str =
+	"the two-phase shift reduction reads only the inner shift of a term";
+
 /// Evaluates the three h multilinear polynomials (corresponding to SLL, SRL, SRA) at challenge
 /// points.
 ///
@@ -193,9 +200,10 @@ where
 			let mut constraint_eval = E::zero();
 			for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 				for svi in operand {
-					let variant = svi.shift.variant as usize;
+					assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
+					let variant = svi.inner().variant as usize;
 					let index =
-						(variant * Word::BITS + svi.shift.amount as usize) * ARITY + operand_id;
+						(variant * Word::BITS + svi.inner().amount as usize) * ARITY + operand_id;
 					constraint_eval += operand_shift_scalars[index].clone()
 						* &r_y_tensor[svi.value_index.segment() as usize]
 							[svi.value_index.index() as usize];
@@ -233,9 +241,10 @@ where
 				let mut constraint_eval = F::ZERO;
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 					for svi in operand {
-						let variant = svi.shift.variant as usize;
-						let index =
-							(variant * Word::BITS + svi.shift.amount as usize) * ARITY + operand_id;
+						assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
+						let variant = svi.inner().variant as usize;
+						let index = (variant * Word::BITS + svi.inner().amount as usize) * ARITY
+							+ operand_id;
 						constraint_eval += operand_shift_scalars[index]
 							* r_y_tensor[svi.value_index.segment() as usize]
 								[svi.value_index.index() as usize];
@@ -334,12 +343,17 @@ mod tests {
 			.map(|_| {
 				AndConstraint(std::array::from_fn(|_| {
 					(0..rng.random_range(0..=3))
-						.map(|_| ShiftedValueIndex {
-							value_index: ValueIndex::private(rng.random_range(0..n_words) as u32),
-							shift: Shift {
-								variant: shift_variants[rng.random_range(0..SHIFT_VARIANT_COUNT)],
-								amount: rng.random_range(0..Word::BITS) as u8,
-							},
+						.map(|_| {
+							// The reduction reads the inner slot, so the fixture leaves the outer
+							// one at the identity.
+							ShiftedValueIndex::single(
+								ValueIndex::private(rng.random_range(0..n_words) as u32),
+								Shift {
+									variant: shift_variants
+										[rng.random_range(0..SHIFT_VARIANT_COUNT)],
+									amount: rng.random_range(0..Word::BITS) as u8,
+								},
+							)
 						})
 						.collect()
 				}))

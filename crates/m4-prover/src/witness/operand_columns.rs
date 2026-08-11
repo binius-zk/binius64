@@ -439,10 +439,14 @@ impl<'a> ValueWords<'a> {
 
 	/// Resolves one term to the words it contributes.
 	fn term_words(&self, term: &ShiftedValueIndex) -> TermWords<'a> {
-		let &ShiftedValueIndex {
-			value_index,
-			shift: Shift { variant, amount },
-		} = term;
+		// The stripe carries one shift, so the outer slot must be the identity. Chaining the pair
+		// is what lifts this.
+		debug_assert!(
+			!term.is_doubly_shifted(),
+			"operand materialization applies only the inner shift of a term"
+		);
+		let value_index = term.value_index;
+		let Shift { variant, amount } = term.inner();
 
 		let row_index = match value_index.segment() {
 			// A constant names one word, shifted once and shared by every instance.
@@ -1127,9 +1131,8 @@ mod tests {
 			let to_operand = |terms: &[(usize, ShiftVariant, u8)]| -> Operand {
 				terms
 					.iter()
-					.map(|&(wire, variant, amount)| ShiftedValueIndex {
-						value_index: wires[wire],
-						shift: Shift { variant, amount },
+					.map(|&(wire, variant, amount)| {
+						ShiftedValueIndex::single(wires[wire], Shift { variant, amount })
 					})
 					.collect()
 			};
@@ -1234,7 +1237,7 @@ mod tests {
 		let shifted = and_constraints
 			.iter()
 			.flat_map(|con| [con.a(), con.b()])
-			.any(|op| op.iter().any(|sv| !sv.shift.is_identity()));
+			.any(|op| op.iter().any(|sv| !sv.is_unshifted()));
 		assert!(shifted, "fixture must contain a shifted operand");
 
 		let columns =

@@ -5,7 +5,7 @@ use std::{iter, mem, ops::Range};
 
 use binius_core::{
 	ShiftVariant,
-	constraint_system::{ConstraintSystem, InoutSegment, Operand, ShiftedValueIndex},
+	constraint_system::{ConstraintSystem, InoutSegment, Operand},
 	word::Word,
 };
 use binius_field::{Field, WideMul};
@@ -358,11 +358,18 @@ fn update_with_operand(
 ) {
 	for (constraint_idx, operand_value) in operand_values.enumerate() {
 		// Each operand value is a Vec<ShiftedValueIndex> - multiple shifted word references
-		for ShiftedValueIndex { value_index, shift } in operand_value.as_ref() {
+		for term in operand_value.as_ref() {
+			// The reduction still folds a single shift per key, so the outer slot must be the
+			// identity. Widening the reduction to the pair is what lifts this.
+			debug_assert!(
+				!term.is_doubly_shifted(),
+				"the two-phase shift reduction reads only the inner shift of a term"
+			);
+
 			// The lists are indexed by word position, so resolve the term's segment-relative
 			// index against the segment starts.
-			let builder_keys = &mut builder_key_lists[cs.word_offset(*value_index)];
-			let shift = (shift.variant, shift.amount);
+			let builder_keys = &mut builder_key_lists[cs.word_offset(term.value_index)];
+			let shift = (term.inner().variant, term.inner().amount);
 
 			// Find existing builder key or create a new one for this (operation, shift) pair
 			let constraint_index = ConstraintIndex {
@@ -672,7 +679,7 @@ impl DeserializeBytes for KeyCollection {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::constraint_system::{AndConstraint, ValueIndex};
+	use binius_core::constraint_system::{AndConstraint, ShiftedValueIndex, ValueIndex};
 	use binius_field::{BinaryField128bGhash, Field};
 	use binius_math::FieldBuffer;
 
