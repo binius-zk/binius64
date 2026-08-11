@@ -14,8 +14,8 @@ use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		OperatorClaims, OperatorData, build_key_collection,
-		monster::{build_h, build_monster_segments, evaluate_h},
+		OperatorClaims, OperatorData, ShiftIndSumcheck, build_key_collection,
+		monster::{build_h, build_monster_segments},
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 		prove,
@@ -325,7 +325,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 			&GlobalAllocator,
 		))
 	};
-	let h_eval = evaluate_h(&subspace, prepared.bitand.r_zhat_prime, &r_j, &r_s, &r_v);
+	let h_eval =
+		ShiftIndSumcheck::<P, _>::new(&GlobalAllocator, &subspace, r_zhat_prime, &r_j, &r_s, &r_v)
+			.h_eval();
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());

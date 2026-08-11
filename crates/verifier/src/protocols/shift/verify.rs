@@ -25,7 +25,8 @@ use getset::Getters;
 
 use super::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, OperationEvalFn,
-	SHIFT_VARIANT_COUNT, ZERO_ARITY, encode_operation_input, error::Error, evaluate_h_op,
+	SHIFT_VARIANT_COUNT, ZERO_ARITY, encode_operation_input, error::Error,
+	shift_ind::evaluate_shift_inds,
 };
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
@@ -122,6 +123,13 @@ pub struct VerifyOutput<F> {
 	/// The claimed witness evaluation at the challenge point.
 	#[getset(get = "pub")]
 	pub witness_eval: F,
+	/// The claimed h evaluation, which the monster multilinear is scaled by.
+	h_eval: F,
+	/// Challenge point for the bit index variables the h sumcheck binds (length
+	/// `Word::LOG_BITS`).
+	pub r_i: Vec<F>,
+	/// Final evaluation claim from the h sumcheck.
+	h_sumcheck_eval: F,
 }
 
 impl<F> VerifyOutput<F> {
@@ -158,7 +166,9 @@ impl<F> VerifyOutput<F> {
 /// 2. **First Sumcheck**: Verifies the batched evaluation claim over `Word::LOG_BITS * 2` variables
 /// 3. **Challenge Splitting**: Splits sumcheck challenges into `r_j`, `r_s` and `r_v` components
 /// 4. **Second Sumcheck**: Verifies the gamma claim over `log_word_count` variables
-/// 5. **Monster Multilinear Verification**: Checks that the claimed evaluations match expected
+/// 5. **Shift Indicator Sumcheck**: Verifies the h evaluation the monster multilinear is scaled by,
+///    over the `Word::LOG_BITS` bit-index variables it sums over
+/// 6. **Monster Multilinear Verification**: Checks that the claimed evaluations match expected
 ///    monster multilinear evaluations for AND constraints (bitand), IMUL constraints (intmul) and
 ///    BMUL constraints (binmul)
 ///
@@ -228,6 +238,16 @@ where
 
 	let witness_eval = channel.recv_one()?;
 
+	// The monster multilinear is scaled by one h evaluation, which is itself a sum over the bit
+	// index the shift indicators read. A last sumcheck binds that index, leaving `check_eval` an
+	// evaluation to compute rather than a summation to run.
+	let h_eval = channel.recv_one()?;
+	let SumcheckOutput {
+		eval: h_sumcheck_eval,
+		challenges: mut r_i,
+	} = verify_sumcheck(Word::LOG_BITS, 2, h_eval.clone(), channel)?;
+	r_i.reverse();
+
 	Ok(VerifyOutput {
 		zero_lambda,
 		bitand_lambda,
@@ -240,6 +260,9 @@ where
 		r_v,
 		eval,
 		witness_eval,
+		h_eval,
+		r_i,
+		h_sumcheck_eval,
 	})
 }
 
@@ -258,7 +281,10 @@ where
 /// ```
 ///
 /// where `monster_eval` is the sum of evaluations for AND, IMUL and BMUL constraint polynomials,
-/// and `trace_eval` is the witness evaluation reconstructed from its two segments:
+/// scaled by the h evaluation the shift indicator sumcheck reduced. That sumcheck's own claim is
+/// checked here too, against the two evaluations it reduced to.
+///
+/// `trace_eval` is the witness evaluation reconstructed from its two segments:
 /// ```text
 /// trace_eval = (1 - r_segment) * prod_{k <= i} (1 - r_y_i) * public_eval + r_segment * witness_eval
 /// ```
@@ -280,7 +306,7 @@ pub fn check_eval<F, C>(
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
 	binmul_data: &OperatorData<C::Elem, BINMUL_ARITY>,
 	subspace: &BinarySubspace<F>,
-	r_zhat_prime: C::Elem,
+	r_zhat_prime: &C::Elem,
 	output: &VerifyOutput<C::Elem>,
 	channel: &mut C,
 ) -> Result<(), Error>
@@ -301,26 +327,38 @@ where
 		r_y,
 		r_segment,
 		witness_eval,
+		h_eval,
+		r_i,
+		h_sumcheck_eval,
 	} = output;
 
+	// The h sumcheck reduced its claim to the product of two evaluations at `r_i`: the Lagrange
+	// weights of the univariate challenge, and the shift indicators interpolated over the variant
+	// axis.
+	let l_tilde = lagrange_evals_scalars(subspace, r_zhat_prime);
+	let l_tilde_eval = inner_product_scalars(l_tilde, eq_ind_partial_eval_scalars(r_i));
+	let shift_ind_eval =
+		inner_product_scalars(evaluate_shift_inds(r_i, r_j, r_s), eq_ind_partial_eval_scalars(r_v));
+	channel.assert_zero(h_sumcheck_eval.clone() - l_tilde_eval * shift_ind_eval)?;
+
 	// `monster_eval` is a function of purely public-channel-derived elements
-	// (`r_zhat_prime`, `bitand_lambda`, `intmul_lambda`, the operator data's `r_x_prime`
-	// vectors, `r_j`, `r_s`, `r_y`) plus the constant `subspace` and `constraint_system`.
-	// Trade those Elems for plain field values, run the MLE evaluation in plaintext, and
-	// materialize the result as a single inout wire instead of building the entire
-	// sub-circuit in wrapper channels.
+	// (`bitand_lambda`, `intmul_lambda`, the operator data's `r_x_prime` vectors, `r_s`, `r_v`,
+	// `r_y`) plus the constant `constraint_system`. Trade those Elems for plain field values, run
+	// the MLE evaluation in plaintext, and materialize the result as a single inout wire instead
+	// of building the entire sub-circuit in wrapper channels.
+	//
+	// The h evaluation, which every shift scalar of the monster is scaled by, is a prover message
+	// rather than a public value, so it multiplies the result out here instead.
 	let monster_eval = {
 		let zero_r_x_prime_len = zero_data.r_x_prime.len();
 		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
 		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
 		let binmul_r_x_prime_len = binmul_data.r_x_prime.len();
-		let r_j_len = r_j.len();
 		let r_s_len = r_s.len();
 		let r_v_len = r_v.len();
 		let r_y_len = r_y.len();
 
-		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
-			.chain(iter::once(zero_lambda.clone()))
+		let inputs: Vec<C::Elem> = iter::once(zero_lambda.clone())
 			.chain(iter::once(bitand_lambda.clone()))
 			.chain(iter::once(intmul_lambda.clone()))
 			.chain(iter::once(binmul_lambda.clone()))
@@ -328,7 +366,6 @@ where
 			.chain(bitand_data.r_x_prime.iter().cloned())
 			.chain(intmul_data.r_x_prime.iter().cloned())
 			.chain(binmul_data.r_x_prime.iter().cloned())
-			.chain(r_j.iter().cloned())
 			.chain(r_s.iter().cloned())
 			.chain(r_v.iter().cloned())
 			.chain(r_y.iter().cloned())
@@ -336,19 +373,17 @@ where
 			.collect();
 
 		let eval_fn = MonsterEvalFn {
-			subspace,
 			constraint_system,
 			inout,
 			zero_r_x_prime_len,
 			bitand_r_x_prime_len,
 			intmul_r_x_prime_len,
 			binmul_r_x_prime_len,
-			r_j_len,
 			r_s_len,
 			r_v_len,
 			r_y_len,
 		};
-		channel.compute_public_value(&inputs, eval_fn)
+		h_eval.clone() * channel.compute_public_value(&inputs, eval_fn)
 	};
 
 	// The public-half evaluation is a function of the verifier's public words (plaintext) and
@@ -399,13 +434,14 @@ impl<F: BinaryField> FieldFn<F> for PublicWordsEvalFn<'_> {
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// r_zhat_prime | zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_j.. | r_s.. | r_v.. | r_y..
+/// zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_s.. | r_v.. | r_y..
 /// ```
 ///
 /// The stored lengths recover each variable-length section from that flat slice.
-struct MonsterEvalFn<'a, F: BinaryField> {
-	/// The evaluation subspace for the Lagrange basis over the word bits.
-	subspace: &'a BinarySubspace<F>,
+///
+/// The h evaluation every shift scalar is scaled by is left out: it is a prover message, so
+/// [`check_eval`] multiplies it in outside.
+struct MonsterEvalFn<'a> {
 	/// The AND, IMUL and BMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,
 	/// Which segment holds the inout values, which fixes where the word-index tensor is cut.
@@ -418,8 +454,6 @@ struct MonsterEvalFn<'a, F: BinaryField> {
 	intmul_r_x_prime_len: usize,
 	/// Length of the BinMul operator's `r_x_prime` section.
 	binmul_r_x_prime_len: usize,
-	/// Length of the `r_j` section (the low-order word-bit challenges).
-	r_j_len: usize,
 	/// Length of the `r_s` section (the shift-amount challenges).
 	r_s_len: usize,
 	/// Length of the `r_v` section (the shift-variant challenges).
@@ -438,7 +472,7 @@ struct OperationInputs<E> {
 	binmul: Option<Vec<E>>,
 }
 
-impl<F: BinaryField> MonsterEvalFn<'_, F> {
+impl MonsterEvalFn<'_> {
 	/// Shared setup for [`FieldFn::call`] and [`FieldFn::call_native`]: splits the flat `vals`
 	/// slice, builds the shared shift-scalar and word-index tensors, and re-encodes them (with each
 	/// operation's `r_x'` and `lambda`) into the per-operation [`OperationEvalFn`] input via
@@ -446,10 +480,7 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 	///
 	/// The Zero and BitAnd inputs are always present; the IntMul and BinMul inputs are `None` when
 	/// that operation has no constraints and is skipped.
-	fn operation_inputs<E>(&self, vals: &[E]) -> OperationInputs<E>
-	where
-		E: FieldOps<Scalar = F> + From<F>,
-	{
+	fn operation_inputs<E: FieldOps>(&self, vals: &[E]) -> OperationInputs<E> {
 		// Each operation's `r_x'` section is as long as its reduction has constraint variables, and
 		// [`OperationEvalFn::split_input`] re-derives that length from the constraint count alone.
 		// The two derivations must agree or both sides mis-split the same input. An absent IntMul
@@ -474,12 +505,11 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		);
 
 		// Split the flat input back into its sections, in the order they were concatenated.
-		let r_zhat_prime_v = vals[0].clone();
-		let zero_lambda_v = vals[1].clone();
-		let bitand_lambda_v = vals[2].clone();
-		let intmul_lambda_v = vals[3].clone();
-		let binmul_lambda_v = vals[4].clone();
-		let mut off = 5;
+		let zero_lambda_v = vals[0].clone();
+		let bitand_lambda_v = vals[1].clone();
+		let intmul_lambda_v = vals[2].clone();
+		let binmul_lambda_v = vals[3].clone();
+		let mut off = 4;
 		let zero_r_x_prime_v = &vals[off..off + self.zero_r_x_prime_len];
 		off += self.zero_r_x_prime_len;
 		let bitand_r_x_prime_v = &vals[off..off + self.bitand_r_x_prime_len];
@@ -488,8 +518,6 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		off += self.intmul_r_x_prime_len;
 		let binmul_r_x_prime_v = &vals[off..off + self.binmul_r_x_prime_len];
 		off += self.binmul_r_x_prime_len;
-		let r_j_v = &vals[off..off + self.r_j_len];
-		off += self.r_j_len;
 		let r_s_v = &vals[off..off + self.r_s_len];
 		off += self.r_s_len;
 		let r_v_v = &vals[off..off + self.r_v_len];
@@ -537,22 +565,15 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 				&hidden_tensor[cs.n_inout..cs.n_inout + cs.n_private],
 			],
 		};
-		let l_tilde = lagrange_evals_scalars(self.subspace, &r_zhat_prime_v);
-		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
-
-		// Phase 1 folded the shift variant into its sumcheck, so the h multilinear contributes a
-		// single evaluation here: the multilinear interpolation of the eight shift indicators over
-		// the variant axis.
+		// A key's shift selects itself through a pure equality indicator over both of phase 1's
+		// shift axes. Built once, so the Zero, BitAnd, IntMul and BinMul monster evaluations share
+		// it. Indexed by `variant * Word::BITS + amount`. The h evaluation scaling all of them is
+		// left for `check_eval` to multiply in.
 		let eq_r_v = eq_ind_partial_eval_scalars(r_v_v);
-		let h_eval = inner_product_scalars(h_op_evals, eq_r_v.iter().cloned());
-
-		// A key's shift now selects itself through a pure equality indicator over both shift axes,
-		// scaled by that one h evaluation. Built once, so the Zero, BitAnd, IntMul and BinMul
-		// monster evaluations share it. Indexed by `variant * Word::BITS + amount`.
 		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
 		let shift_scalars =
 			Box::new(array::from_fn::<_, { SHIFT_VARIANT_COUNT * Word::BITS }, _>(|i| {
-				h_eval.clone() * &eq_r_v[i / Word::BITS] * &eq_r_s[i % Word::BITS]
+				eq_r_v[i / Word::BITS].clone() * &eq_r_s[i % Word::BITS]
 			}));
 
 		// Re-encode the shared tensors with each operation's `r_x'` and `lambda`. IntMul and BinMul
@@ -577,7 +598,7 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 	}
 }
 
-impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
+impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
 		let OperationInputs {
 			zero: zero_input,

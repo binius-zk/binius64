@@ -400,7 +400,7 @@ fn test_shift_prove_and_verify() {
 			&verifier_intmul_data,
 			&verifier_binmul_data,
 			&subspace,
-			r_zhat_prime,
+			&r_zhat_prime,
 			&verifier_output,
 			&mut verifier_transcript,
 		)

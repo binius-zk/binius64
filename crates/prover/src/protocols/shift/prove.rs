@@ -10,8 +10,8 @@ use binius_math::{
 };
 
 use super::{
-	SegmentWords, claims::OperatorClaims, key_collection::KeyCollection, monster::evaluate_h,
-	phase_1::prove_phase_1, phase_2::prove_phase_2,
+	SegmentWords, claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
+	phase_2::prove_phase_2, shift_ind::ShiftIndSumcheck,
 };
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
@@ -183,9 +183,11 @@ where
 		alloc,
 	);
 
-	// The h evaluation phase 2 weights every shift key by. All four operations share
-	// `r_zhat_prime`, so it is drawn from the BitAnd claim, as phase 1's h multilinear is.
-	let h_eval = evaluate_h(
+	// The h evaluation phase 2 weights every shift key by, with the multilinears the final
+	// sumcheck proves it from. All four operations share `r_zhat_prime`, so it is drawn from the
+	// BitAnd claim, as phase 1's h multilinear is.
+	let shift_ind = ShiftIndSumcheck::<P, _>::new(
+		alloc,
 		domain_subspace,
 		prepared.bitand.r_zhat_prime,
 		&phase_1_output.r_j,
@@ -195,13 +197,19 @@ where
 
 	// Phase 2 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
 	// the univariate variable `r_j` and the multilinear variable `r_y`.
-	prove_phase_2::<_, P, _, _>(
+	let output = prove_phase_2::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared,
 		phase_1_output,
-		h_eval,
+		shift_ind.h_eval(),
 		channel,
 		alloc,
-	)
+	);
+
+	// The h evaluation phase 2 was proved against is itself a sum over the bit index, which this
+	// last sumcheck binds.
+	shift_ind.prove(channel, alloc);
+
+	output
 }

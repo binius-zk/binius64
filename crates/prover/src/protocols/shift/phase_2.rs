@@ -51,7 +51,8 @@ use crate::fold_word::fold_words;
 /// - `words`: The value vector words
 /// - `prepared`: The prepared claim of each operation, indexed by the operation a key names
 /// - `phase_1_output`: Challenges and evaluation from the first phase
-/// - `h_eval`: The h evaluation weighting every shift key, from [`evaluate_h`]
+/// - `h_eval`: The h evaluation weighting every shift key, from
+///   [`ShiftIndSumcheck`](super::ShiftIndSumcheck)
 /// - `channel`: The prover's channel
 ///
 /// # Returns

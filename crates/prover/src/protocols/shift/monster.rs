@@ -7,13 +7,11 @@ use binius_compute::{Allocator, VecLike};
 use binius_core::{ShiftVariant, word::Word};
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product,
-	multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
+	BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval,
+	univariate::lagrange_evals,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-use binius_verifier::protocols::shift::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY, evaluate_h_op,
-};
+use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
 use bytemuck::zeroed_vec;
 use tracing::instrument;
 
@@ -127,30 +125,13 @@ where
 	FieldBuffer::from_values_in(alloc, &data)
 }
 
-/// Evaluates the h multilinear at the phase-1 challenges, interpolated over the shift variant.
-///
-/// Phase 1 folded the variant axis into its sumcheck, so the eight h polynomials contribute this
-/// one scalar to phase 2 rather than one evaluation per variant. Every shift key of every
-/// operation is weighted by it, since all four operations share `r_zhat_prime`.
-pub fn evaluate_h<F: BinaryField>(
-	domain_subspace: &BinarySubspace<F>,
-	r_zhat_prime: F,
-	r_j: &[F],
-	r_s: &[F],
-	r_v: &[F],
-) -> F {
-	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-	let h_ops = evaluate_h_op(l_tilde.as_ref(), r_j, r_s);
-	inner_product(h_ops, eq_ind_partial_eval::<F>(r_v).as_ref().iter().copied())
-}
-
 /// Constructs the "monster multilinear" that combines all shift operations into a single
 /// multilinear.
 ///
 /// This function builds a comprehensive multilinear polynomial that encapsulates the AND, IMUL and
 /// BMUL constraints with their associated shift operations. For each witness word, it computes the
-/// contribution from all constraints involving that word, weighted by the h evaluation
-/// ([`evaluate_h`]) and lambda powers.
+/// contribution from all constraints involving that word, weighted by the h evaluation and lambda
+/// powers.
 ///
 /// # Construction Process
 ///
@@ -169,7 +150,8 @@ pub fn evaluate_h<F: BinaryField>(
 /// where `scalars[key.dense_shift_idx]` is the contiguous per-operand chunk encoding
 /// `λ^(operand_idx+1) × h_eval × r_v_tensor[shift_variant] × r_s_tensor[shift_amount]` for operand
 /// index `operand_idx`, and `(shift_variant, shift_amount)` the pair the key's segment decodes its
-/// dense shift index to.
+/// dense shift index to. The h evaluation comes from
+/// [`ShiftIndSumcheck`](super::ShiftIndSumcheck), which proves it.
 ///
 /// # Usage
 ///
@@ -296,16 +278,17 @@ mod tests {
 		inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
 		test_utils::random_scalars,
 	};
-	use binius_verifier::protocols::shift::{LOG_SHIFT_VARIANT_COUNT, evaluate_h_op};
+	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 	use rand::{SeedableRng, rngs::StdRng};
 
-	use super::*;
+	use super::{super::ShiftIndSumcheck, *};
 
-	/// The built h multilinear and the succinct `evaluate_h_op` must agree.
+	/// Phase 1's h multilinear and the h evaluation the last sumcheck claims must agree.
 	///
-	/// The variant axis is folded by the sumcheck now, so evaluating the whole multilinear at
-	/// `(r_j, r_s, r_v)` gives the interpolation of the eight succinct evaluations over `r_v` —
-	/// which is exactly the single scalar phase 2 weights its keys by.
+	/// The claim sums the shift indicators over the bit index, weighted by the Lagrange
+	/// evaluations; the multilinear holds those sums over the whole shift axis. So evaluating the
+	/// multilinear at `(r_j, r_s, r_v)` must give the claim — which is the single scalar phase 2
+	/// weights its keys by.
 	#[test]
 	fn h_op_consistency() {
 		type F = BinaryField128bGhash;
@@ -322,12 +305,17 @@ mod tests {
 			let r_s = random_scalars::<F>(&mut rng, Word::LOG_BITS);
 			let r_v = random_scalars::<F>(&mut rng, LOG_SHIFT_VARIANT_COUNT);
 
-			// Method 1: the succinct per-variant evaluations, interpolated over the variant axis.
+			// Method 1: the sum the last sumcheck claims.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
-			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
-			let succinct_evaluations = evaluate_h_op(l_tilde.as_ref(), &r_j, &r_s);
-			let r_v_tensor = eq_ind_partial_eval::<F>(&r_v);
-			let succinct = inner_product(succinct_evaluations, r_v_tensor.as_ref().iter().copied());
+			let claimed = ShiftIndSumcheck::<P, _>::new(
+				&GlobalAllocator,
+				&subspace,
+				r_zhat_prime,
+				&r_j,
+				&r_s,
+				&r_v,
+			)
+			.h_eval();
 
 			// Method 2: evaluate the built multilinear at the whole point.
 			let h = build_h(&GlobalAllocator, &subspace, r_zhat_prime);
@@ -336,8 +324,8 @@ mod tests {
 			let direct = inner_product_buffers(&h, &tensor);
 
 			assert_eq!(
-				succinct, direct,
-				"H-op evaluation mismatch (test_case={test_case}): succinct != direct",
+				claimed, direct,
+				"H-op evaluation mismatch (test_case={test_case}): claimed != direct",
 			);
 		}
 	}

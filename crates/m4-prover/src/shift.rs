@@ -13,8 +13,8 @@ use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims,
-		monster::{build_h, build_monster_segments, evaluate_h},
+		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftIndSumcheck,
+		monster::{build_h, build_monster_segments},
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 	},
@@ -96,17 +96,30 @@ where
 
 	// Phase 2: the h evaluation every shift key is weighted by, then the witness folded at the
 	// bit position challenge `r_j`, per segment.
-	let h_eval = evaluate_h(domain_subspace, prepared.bitand.r_zhat_prime, &r_j, &r_s, &r_v);
+	let shift_ind = ShiftIndSumcheck::<P, _>::new(
+		alloc,
+		domain_subspace,
+		prepared.bitand.r_zhat_prime,
+		&r_j,
+		&r_s,
+		&r_v,
+	);
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	// The public fold is a raw-word fold; the hidden fold contracts the already-oblong bits.
 	let public_folded = fold_words::<F, P, _>(alloc, public_words, r_j_tensor.as_ref());
 	let hidden_folded = folded_witness.fold_bits::<P>(r_j_tensor.as_ref(), alloc);
 
-	let (public_monster, hidden_monster) =
-		build_monster_segments::<F, P, _>(alloc, key_collection, &prepared, h_eval, &r_s, &r_v);
+	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
+		alloc,
+		key_collection,
+		&prepared,
+		shift_ind.h_eval(),
+		&r_s,
+		&r_v,
+	);
 
-	run_sumcheck::<F, P, _, _>(
+	let output = run_sumcheck::<F, P, _, _>(
 		&public_folded,
 		hidden_folded,
 		&public_monster,
@@ -116,7 +129,13 @@ where
 		gamma,
 		channel,
 		alloc,
-	)
+	);
+
+	// The h evaluation phase 2 was proved against is itself a sum over the bit index, which this
+	// last sumcheck binds.
+	shift_ind.prove(channel, alloc);
+
+	output
 }
 
 /// Accumulates the phase-1 "g" rows of one key segment, from instance-folded words.
@@ -378,7 +397,7 @@ mod tests {
 			&verifier_intmul,
 			&verifier_bmul,
 			&domain_subspace,
-			r_z,
+			&r_z,
 			&verifier_output,
 			&mut verifier_transcript,
 		)
