@@ -12,7 +12,7 @@ use binius_recursion::Binius64BuilderChannel;
 
 #[test]
 fn records_received_arithmetic_as_constraints() {
-	let mut channel = Binius64BuilderChannel::new(0);
+	let mut channel = Binius64BuilderChannel::new();
 
 	// Read `a`, `b` and `c` off the proof and record that `a * b == c`.
 	let a = channel.recv_one().unwrap();
@@ -35,7 +35,7 @@ fn records_received_arithmetic_as_constraints() {
 
 #[test]
 fn folds_constants_without_constraints() {
-	let mut channel = Binius64BuilderChannel::new(0);
+	let mut channel = Binius64BuilderChannel::new();
 
 	// A product of build-time constants is decided while building, so it records nothing, and
 	// asserting a zero constant succeeds without a constraint.

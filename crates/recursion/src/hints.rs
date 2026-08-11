@@ -8,7 +8,10 @@
 //! with a real gadget is a local change: keep the hint, add the constraints that pin it.
 
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash as B128, ExtensionField, arithmetic_traits::InvertOrZero};
+use binius_field::{
+	BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField,
+	arithmetic_traits::InvertOrZero,
+};
 use binius_frontend::Hint;
 
 /// Reads a `(lo, hi)` wire pair as a field element.
@@ -41,37 +44,35 @@ impl Hint for InvertOrZeroHint {
 	}
 }
 
-/// The subfield-coefficient transpose ring switching performs.
+/// The `B1` subfield-coefficient transpose ring switching performs.
 ///
-/// `dimensions[0]` is the extension degree, so the hint takes and returns that many elements at
-/// two words each. A real implementation would do this with a bit-matrix transpose over the wire
-/// pairs, which is cheap; this stands in until then.
-pub struct SquareTransposeHint;
+/// A hint cannot be generic over the subfield: it is registered under a name that has to be one
+/// constant, and it receives words rather than typed elements, so it cannot recover the subfield
+/// its caller had. This one is therefore `B1` only, which is what ring switching asks for, and
+/// `SymbolicElem::square_transpose` checks that before reaching it rather than letting another
+/// subfield arrive here and be silently transposed as `B1`.
+///
+/// A real implementation would do this with a bit-matrix transpose over the wire pairs, which is
+/// cheap; this stands in until then.
+pub struct SquareTransposeB1Hint;
 
-impl Hint for SquareTransposeHint {
-	const NAME: &'static str = "binius_recursion::square_transpose";
+impl SquareTransposeB1Hint {
+	/// The extension degree this hint transposes over.
+	pub const DEGREE: usize = <B128 as ExtensionField<B1>>::DEGREE;
+}
 
-	fn shape(&self, dimensions: &[usize]) -> (usize, usize) {
-		let degree = dimensions[0];
-		(2 * degree, 2 * degree)
+impl Hint for SquareTransposeB1Hint {
+	const NAME: &'static str = "binius_recursion::square_transpose_b1";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(2 * Self::DEGREE, 2 * Self::DEGREE)
 	}
 
-	fn execute(&self, dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
-		let degree = dimensions[0];
-		let mut elems = (0..degree)
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		let mut elems = (0..Self::DEGREE)
 			.map(|i| elem_of(&inputs[2 * i..]))
 			.collect::<Vec<_>>();
-
-		// The transpose is over the subfield the degree names. Ring switching only ever asks for
-		// `B1`, which is the case the degree of 128 selects.
-		match degree {
-			d if d == <B128 as ExtensionField<binius_field::BinaryField1b>>::DEGREE => {
-				<B128 as ExtensionField<binius_field::BinaryField1b>>::square_transpose(&mut elems);
-			}
-			1 => {}
-			d => panic!("no transpose for extension degree {d}"),
-		}
-
+		<B128 as ExtensionField<B1>>::square_transpose(&mut elems);
 		for (i, elem) in elems.into_iter().enumerate() {
 			write_elem(elem, &mut outputs[2 * i..]);
 		}

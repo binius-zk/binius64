@@ -20,7 +20,6 @@ use binius_core::{constraint_system::ValueVec, word::Word};
 use binius_field::arch::OptimalPackedB128;
 use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, Wire};
 use binius_hash::StdHashSuite;
-use binius_iop::merkle_channel::VerifierMerkleTranscriptChannel;
 use binius_prover::Prover;
 use binius_recursion::{Binius64BuilderChannel, WitnessFillerChannel};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
@@ -123,7 +122,7 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	// The verifier runs over the builder channel, wrapped in the same BaseFold layer the transcript
 	// channel gets, and what it records becomes the circuit.
 	let recorded = {
-		let builder_channel = Binius64BuilderChannel::new(witness.inout().len());
+		let builder_channel = Binius64BuilderChannel::new();
 		let mut channel = verifier.iop_compiler().create_channel(builder_channel);
 		verifier
 			.iop_verifier()
@@ -148,17 +147,13 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	// The same verifier runs again over the real transcript, and every value the circuit cannot
 	// derive is written into the wire the build recorded for it.
 	let mut filler = recorded.circuit.new_witness_filler();
-	for (wire, &word) in recorded.inout.iter().zip(witness.inout()) {
-		filler[*wire] = word;
-	}
 	{
 		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
-		let merkle_channel =
-			VerifierMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
-				&mut transcript,
-			);
-		let filler_channel =
-			WitnessFillerChannel::new(merkle_channel, &mut filler, recorded.inputs.clone());
+		let filler_channel = WitnessFillerChannel::<_, StdChallenger, StdHashSuite>::new(
+			&mut transcript,
+			&mut filler,
+			recorded.inputs.clone(),
+		);
 		let mut channel = verifier.iop_compiler().create_channel(filler_channel);
 		verifier
 			.iop_verifier()

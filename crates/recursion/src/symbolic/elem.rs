@@ -120,12 +120,19 @@ impl Mul<&Self> for SymbolicElem {
 	type Output = Self;
 
 	fn mul(self, rhs: &Self) -> Self {
-		// A product with a zero factor is zero without a constraint, which is worth catching: the
-		// verifier multiplies by eq-indicator terms that are often zero at build time.
+		// A constant factor of zero or one settles the product without a constraint, which is
+		// worth catching: the verifier multiplies by eq-indicator terms and Lagrange weights that
+		// are often one or zero at build time.
 		if matches!(&self, Self::Constant(c) if *c == B128::ZERO)
 			|| matches!(rhs, Self::Constant(c) if *c == B128::ZERO)
 		{
 			return Self::Constant(B128::ZERO);
+		}
+		if matches!(rhs, Self::Constant(c) if *c == B128::ONE) {
+			return self;
+		}
+		if matches!(&self, Self::Constant(c) if *c == B128::ONE) {
+			return rhs.clone();
 		}
 		self.combine(
 			rhs,
@@ -251,6 +258,14 @@ impl FieldOps for SymbolicElem {
 		if degree == 1 {
 			return;
 		}
+		// The stand-in hint covers `B1` only, and a hint cannot recover the subfield its caller
+		// had. Reject anything else here rather than transposing it as `B1` and handing a wrong
+		// answer back to a verifier.
+		assert_eq!(
+			degree,
+			crate::hints::SquareTransposeB1Hint::DEGREE,
+			"the square_transpose stand-in only covers the B1 subfield",
+		);
 
 		// All-constant inputs transpose while the circuit is built.
 		let Some(owner) = elems.iter().find_map(Self::shared) else {
@@ -277,7 +292,7 @@ impl FieldOps for SymbolicElem {
 			})
 			.collect::<Vec<_>>();
 		// UNCONSTRAINED: nothing ties the outputs to the inputs.
-		let out = builder.call_hint(crate::hints::SquareTransposeHint, &[degree], &inputs);
+		let out = builder.call_hint(crate::hints::SquareTransposeB1Hint, &[], &inputs);
 		for (i, elem) in elems.iter_mut().enumerate() {
 			*elem = Self::wires(&owner, out[2 * i], out[2 * i + 1]);
 		}

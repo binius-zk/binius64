@@ -12,11 +12,13 @@ binius-circuits = { path = "../circuits" }
 binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-frontend = { path = "../frontend" }
+binius-hash = { path = "../hash" }
 binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }
+binius-transcript = { path = "../transcript" }
+binius-utils = { path = "../utils" }
+digest.workspace = true
 
 [dev-dependencies]
-binius-hash = { path = "../hash" }
 binius-prover = { path = "../prover" }
-binius-transcript = { path = "../transcript" }
 binius-verifier = { path = "../verifier" }
