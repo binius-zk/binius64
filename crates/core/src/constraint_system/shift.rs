@@ -648,21 +648,83 @@ fn chained_composition(variant: ShiftVariant, distance: usize) -> Composition {
 /// Similar to [`ValueIndex`], but represents a value that has been shifted.
 ///
 /// This is used in the operands to constraints like [`AndConstraint`](super::AndConstraint).
+///
+/// A term carries a *sequence* of two shifts rather than one. The inner shift, `shift_seq[0]`,
+/// applies to the word first; the outer shift, `shift_seq[1]`, applies to its result. Two shifts
+/// express maps no single shift can: clearing the low bits and returning the rest to where they
+/// started needs both, since no one shift both drops bits and leaves the others in place.
+///
+/// # Canonical form
+///
+/// A lone shift goes in the inner slot, so `shift_seq[0].is_identity()` implies
+/// `shift_seq[1].is_identity()`. That splits every term into three classes:
+///
+/// ```text
+/// unshifted         s_1 = s_2 = 0     spelled Shift::IDENTITY twice
+/// singly shifted    s_2 = 0 != s_1    the lone shift sits inner
+/// doubly shifted    s_2 != 0          both slots carry work
+/// ```
+///
+/// A doubly shifted term must not collapse: [`Shift::compose`] of the two reports
+/// [`Composition::Pair`], never [`Composition::Single`] (the two merge into one shift) or
+/// [`Composition::Zero`] (the two clear every bit, so the term is identically zero).
+/// [`ConstraintSystem::validate`](super::ConstraintSystem::validate) enforces both rules.
+///
+/// The `[Shift; 2]` spelling is not itself canonical as a *map*: per the composition derivation,
+/// 108,571 irreducible spellings denote only 74,341 distinct maps. Nothing in the reduction depends
+/// on that normalization for correctness, and buying it back needs a table far larger than the few
+/// dozen shifts a real constraint system uses.
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ShiftedValueIndex {
 	/// The index of this value in the input values vector.
 	pub value_index: ValueIndex,
-	/// The shift applied to the value.
-	pub shift: Shift,
+	/// The two shifts applied to the value, inner first.
+	pub shift_seq: [Shift; 2],
 }
 
 impl ShiftedValueIndex {
-	/// Create a value index that just uses the specified value, unshifted.
-	pub const fn plain(value_index: ValueIndex) -> Self {
+	/// A value shifted by a sequence of two shifts, `shift_seq[0]` first.
+	pub const fn new(value_index: ValueIndex, shift_seq: [Shift; 2]) -> Self {
 		Self {
 			value_index,
-			shift: Shift::IDENTITY,
+			shift_seq,
 		}
+	}
+
+	/// A value shifted by one shift, which the canonical form places in the inner slot.
+	pub const fn single(value_index: ValueIndex, shift: Shift) -> Self {
+		Self::new(value_index, [shift, Shift::IDENTITY])
+	}
+
+	/// The shift applied first.
+	#[inline]
+	pub const fn inner(&self) -> Shift {
+		self.shift_seq[0]
+	}
+
+	/// The shift applied to the inner shift's result.
+	#[inline]
+	pub const fn outer(&self) -> Shift {
+		self.shift_seq[1]
+	}
+
+	/// Whether this term leaves its word untouched.
+	///
+	/// The canonical form puts a lone shift inner, so an identity inner shift settles it.
+	#[inline]
+	pub const fn is_unshifted(&self) -> bool {
+		self.inner().is_identity()
+	}
+
+	/// Whether this term genuinely needs both shift slots.
+	#[inline]
+	pub const fn is_doubly_shifted(&self) -> bool {
+		!self.outer().is_identity()
+	}
+
+	/// Create a value index that just uses the specified value, unshifted.
+	pub const fn plain(value_index: ValueIndex) -> Self {
+		Self::single(value_index, Shift::IDENTITY)
 	}
 
 	/// Shift Left Logical by the given number of bits.
@@ -670,10 +732,7 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
 	pub const fn sll(value_index: ValueIndex, amount: usize) -> Self {
-		Self {
-			value_index,
-			shift: Shift::sll(amount),
-		}
+		Self::single(value_index, Shift::sll(amount))
 	}
 
 	/// Shift Right Logical by the given number of bits.
@@ -681,10 +740,7 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
 	pub const fn srl(value_index: ValueIndex, amount: usize) -> Self {
-		Self {
-			value_index,
-			shift: Shift::srl(amount),
-		}
+		Self::single(value_index, Shift::srl(amount))
 	}
 
 	/// Shift Right Arithmetic by the given number of bits.
@@ -695,10 +751,7 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
 	pub const fn sar(value_index: ValueIndex, amount: usize) -> Self {
-		Self {
-			value_index,
-			shift: Shift::sar(amount),
-		}
+		Self::single(value_index, Shift::sar(amount))
 	}
 
 	/// Rotate Right by the given number of bits.
@@ -708,10 +761,7 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 64.
 	pub const fn rotr(value_index: ValueIndex, amount: usize) -> Self {
-		Self {
-			value_index,
-			shift: Shift::rotr(amount),
-		}
+		Self::single(value_index, Shift::rotr(amount))
 	}
 
 	/// Shift Left Logical on 32-bit halves by the given number of bits.
@@ -722,10 +772,7 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
 	pub const fn sll32(value_index: ValueIndex, amount: usize) -> Self {
-		Self {
-			value_index,
-			shift: Shift::sll32(amount),
-		}
+		Self::single(value_index, Shift::sll32(amount))
 	}
 
 	/// Shift Right Logical on 32-bit halves by the given number of bits.
@@ -736,10 +783,7 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
 	pub const fn srl32(value_index: ValueIndex, amount: usize) -> Self {
-		Self {
-			value_index,
-			shift: Shift::srl32(amount),
-		}
+		Self::single(value_index, Shift::srl32(amount))
 	}
 
 	/// Shift Right Arithmetic on 32-bit halves by the given number of bits.
@@ -751,10 +795,7 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
 	pub const fn sra32(value_index: ValueIndex, amount: usize) -> Self {
-		Self {
-			value_index,
-			shift: Shift::sra32(amount),
-		}
+		Self::single(value_index, Shift::sra32(amount))
 	}
 
 	/// Rotate Right on 32-bit halves by the given number of bits.
@@ -765,27 +806,28 @@ impl ShiftedValueIndex {
 	/// # Panics
 	/// Panics if the shift amount is greater than or equal to 32.
 	pub const fn rotr32(value_index: ValueIndex, amount: usize) -> Self {
-		Self {
-			value_index,
-			shift: Shift::rotr32(amount),
-		}
+		Self::single(value_index, Shift::rotr32(amount))
 	}
 
 	/// Evaluates this term against a witness.
 	///
-	/// A term names one value and a shift to apply to it.
+	/// A term names one value and a sequence of two shifts to apply to it.
 	/// It contributes one shifted word to the XOR that forms an operand.
 	#[inline]
 	pub fn eval(&self, witness: &ValueVec) -> Word {
-		// Look up the referenced word, then apply this term's shift.
-		self.shift.apply(witness[self.value_index])
+		// Look up the referenced word, then apply the two shifts in sequence, inner first.
+		let [inner, outer] = self.shift_seq;
+		outer.apply(inner.apply(witness[self.value_index]))
 	}
 }
 
 impl SerializeBytes for ShiftedValueIndex {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.value_index.serialize(&mut write_buf)?;
-		self.shift.serialize(write_buf)
+		for shift in &self.shift_seq {
+			shift.serialize(&mut write_buf)?;
+		}
+		Ok(())
 	}
 }
 
@@ -795,8 +837,9 @@ impl DeserializeBytes for ShiftedValueIndex {
 		Self: Sized,
 	{
 		let value_index = ValueIndex::deserialize(&mut read_buf)?;
-		let shift = Shift::deserialize(read_buf)?;
-		Ok(ShiftedValueIndex { value_index, shift })
+		let inner = Shift::deserialize(&mut read_buf)?;
+		let outer = Shift::deserialize(read_buf)?;
+		Ok(ShiftedValueIndex::new(value_index, [inner, outer]))
 	}
 }
 
@@ -1160,9 +1203,9 @@ mod tests {
 
 		let deserialized = ShiftedValueIndex::deserialize(&mut buf.as_slice()).unwrap();
 		assert_eq!(shifted_value_index.value_index, deserialized.value_index);
-		assert_eq!(shifted_value_index.shift.amount, deserialized.shift.amount);
-		match (shifted_value_index.shift.variant, deserialized.shift.variant) {
-			(ShiftVariant::Slr, ShiftVariant::Slr) => {}
+		assert_eq!(shifted_value_index.shift_seq, deserialized.shift_seq);
+		match (deserialized.inner().variant, deserialized.outer().variant) {
+			(ShiftVariant::Slr, ShiftVariant::Sll) => {}
 			_ => panic!("ShiftVariant mismatch"),
 		}
 	}
@@ -1201,8 +1244,9 @@ mod tests {
 		}
 	}
 
-	// Deserializes a raw (variant, amount) buffer, bypassing the constructors.
+	// Deserializes a raw (variant, amount) inner shift, bypassing the constructors.
 	// This lets out-of-range half-word amounts reach the deserialization path.
+	// The outer slot carries the identity, as the canonical form of a lone shift requires.
 	fn deserialize_amount(
 		shift_variant: ShiftVariant,
 		amount: usize,
@@ -1211,6 +1255,7 @@ mod tests {
 		ValueIndex::constant(0).serialize(&mut buf).unwrap();
 		shift_variant.serialize(&mut buf).unwrap();
 		amount.serialize(&mut buf).unwrap();
+		Shift::IDENTITY.serialize(&mut buf).unwrap();
 		ShiftedValueIndex::deserialize(&mut buf.as_slice())
 	}
 
@@ -1219,10 +1264,7 @@ mod tests {
 		// 31 is the largest amount a half-word variant can carry.
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll32, 31).unwrap(),
-			ShiftedValueIndex {
-				value_index: ValueIndex::constant(0),
-				shift: Shift::sll32(31),
-			}
+			ShiftedValueIndex::sll32(ValueIndex::constant(0), 31)
 		);
 		// 32 exceeds the 5-bit range and must be rejected.
 		match deserialize_amount(ShiftVariant::Sll32, 32).unwrap_err() {
@@ -1234,24 +1276,72 @@ mod tests {
 		// A full-width variant still accepts 32 and up to 63.
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll, 32).unwrap(),
-			ShiftedValueIndex {
-				value_index: ValueIndex::constant(0),
-				shift: Shift::sll(32),
-			}
+			ShiftedValueIndex::sll(ValueIndex::constant(0), 32)
 		);
 		assert_eq!(
 			deserialize_amount(ShiftVariant::Sll, 63).unwrap(),
-			ShiftedValueIndex {
-				value_index: ValueIndex::constant(0),
-				shift: Shift::sll(63),
-			}
+			ShiftedValueIndex::sll(ValueIndex::constant(0), 63)
 		);
 	}
 
 	#[test]
+	fn a_term_serialization_round_trips_both_shift_slots() {
+		// The outer slot is on the wire too, so a doubly shifted term survives the round trip.
+		// Clearing the low bits and returning the rest is the canonical example of a genuine pair.
+		let term = ShiftedValueIndex::new(ValueIndex::private(7), [Shift::srl(3), Shift::sll(3)]);
+		assert_eq!(Shift::compose(term.inner(), term.outer()), Composition::Pair);
+
+		let mut buf = Vec::new();
+		term.serialize(&mut buf).unwrap();
+		assert_eq!(ShiftedValueIndex::deserialize(buf.as_slice()).unwrap(), term);
+	}
+
+	#[test]
+	fn a_term_applies_its_two_shifts_inner_first() {
+		// Order matters: `srl(4)` then `sll(4)` clears the word's low nibble, while the reverse
+		// order clears its top one. A term that applied the outer shift first would swap the two.
+		// The fixture sets bits in both nibbles so each pair drops something.
+		let values = ValueVec::new_from_data(0, &[], &[Word::from_u64(0xf000_0000_0000_abcd)]);
+
+		let clear_low =
+			ShiftedValueIndex::new(ValueIndex::private(0), [Shift::srl(4), Shift::sll(4)]);
+		assert_eq!(clear_low.eval(&values), Word::from_u64(0xf000_0000_0000_abc0));
+
+		let clear_top =
+			ShiftedValueIndex::new(ValueIndex::private(0), [Shift::sll(4), Shift::srl(4)]);
+		assert_eq!(clear_top.eval(&values), Word::from_u64(0x0000_0000_0000_abcd));
+
+		// A lone shift sits inner, and the identity outer leaves its result alone.
+		assert_eq!(
+			ShiftedValueIndex::srl(ValueIndex::private(0), 4).eval(&values),
+			Word::from_u64(0x0f00_0000_0000_0abc)
+		);
+	}
+
+	#[test]
+	fn the_term_classes_read_off_the_shift_sequence() {
+		let index = ValueIndex::private(0);
+
+		// Unshifted: the canonical form spells the identity in both slots.
+		let unshifted = ShiftedValueIndex::plain(index);
+		assert!(unshifted.is_unshifted());
+		assert!(!unshifted.is_doubly_shifted());
+
+		// Singly shifted: the lone shift sits inner, so the term is not unshifted.
+		let singly = ShiftedValueIndex::rotr(index, 5);
+		assert!(!singly.is_unshifted());
+		assert!(!singly.is_doubly_shifted());
+
+		// Doubly shifted: the outer slot carries work of its own.
+		let doubly = ShiftedValueIndex::new(index, [Shift::srl(3), Shift::sll(3)]);
+		assert!(!doubly.is_unshifted());
+		assert!(doubly.is_doubly_shifted());
+	}
+
+	#[test]
 	fn shifted_value_index_fits_in_a_word() {
-		// Layout: value_index (u32, 4 bytes) + Shift (variant byte + amount byte).
-		// Padded to the u32 alignment, that is 8 bytes.
+		// Layout: value_index (u32, 4 bytes) + two Shifts (variant byte + amount byte each).
+		// That fills the u32 alignment exactly: 4 + 2 * 2 = 8 bytes.
 		// Holding this at one word matters: systems carry millions of these on the prover hot path.
 		assert_eq!(size_of::<ShiftedValueIndex>(), 8);
 	}
