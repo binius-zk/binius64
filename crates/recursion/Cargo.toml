@@ -22,3 +22,6 @@ digest.workspace = true
 [dev-dependencies]
 binius-prover = { path = "../prover" }
 binius-verifier = { path = "../verifier" }
+proptest.workspace = true
+rand.workspace = true
+sha2.workspace = true

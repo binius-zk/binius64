@@ -37,7 +37,12 @@
 //! arithmetic and for keeping the pipeline honest while the gadgets are written, not for proving
 //! anything. Each gadget that lands removes entries from the recorded input list; with all of them
 //! in place the only input left is the proof itself.
+//!
+//! The gadget for the first of those bullets now exists in [`challenger`], reproducing the native
+//! challenger's byte stream over wires.
+//! Driving it from `sample` and `sample_bits` is what removes that bullet.
 
+pub mod challenger;
 mod channel;
 mod filler;
 mod hints;
