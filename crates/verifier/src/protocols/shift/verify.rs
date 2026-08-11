@@ -4,7 +4,7 @@
 use std::{array, iter};
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, InoutSegment},
+	constraint_system::{ConstraintSystem, InoutSegment, Operand},
 	word::Word,
 };
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
@@ -25,7 +25,8 @@ use getset::Getters;
 
 use super::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, OperationEvalFn,
-	SHIFT_COUNT, ShiftScalars, ZERO_ARITY, encode_operation_input, error::Error, evaluate_h_op,
+	SHIFT_COUNT, SHIFT_VARIANT_COUNT, ShiftScalars, ZERO_ARITY, encode_operation_input,
+	error::Error, evaluate_h_op, evaluate_inner_h_op,
 };
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
@@ -92,6 +93,22 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 	}
 }
 
+/// The point the outer phase of the three-phase reduction bound.
+///
+/// The outer phase peels the sequence's *outer* shift, against the intermediate words.
+/// It closes the operand claim's bit axis, so its weight is the oblong one.
+/// The bit point it produces is the intermediate position the inner phase's indicator is taken at.
+#[derive(Debug, Clone)]
+pub struct OuterPhasePoint<F> {
+	/// The intermediate bit point, which the inner phase's weight is evaluated at.
+	pub r_k: Vec<F>,
+	/// Challenge point for the outer slot's shift-amount variables (length `Word::LOG_BITS`).
+	pub r_s: Vec<F>,
+	/// Challenge point for the outer slot's shift-variant variables (length
+	/// `LOG_SHIFT_VARIANT_COUNT`).
+	pub r_v: Vec<F>,
+}
+
 /// Output of the shift reduction verification protocol.
 ///
 /// Contains all the challenge points, evaluation claims, and random coefficients
@@ -109,10 +126,17 @@ pub struct VerifyOutput<F> {
 	binmul_lambda: F,
 	/// Challenge point for the bit index variables (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
-	/// Challenge point for the shift-amount variables (length `Word::LOG_BITS`).
+	/// Challenge point for the inner slot's shift-amount variables (length `Word::LOG_BITS`).
 	pub r_s: Vec<F>,
-	/// Challenge point for the shift-variant variables (length `LOG_SHIFT_VARIANT_COUNT`).
+	/// Challenge point for the inner slot's shift-variant variables (length
+	/// `LOG_SHIFT_VARIANT_COUNT`).
 	pub r_v: Vec<F>,
+	/// The outer phase's challenge points, absent when the reduction ran without that phase.
+	///
+	/// A system whose every term carries a lone shift needs no outer phase.
+	/// Its weight would be the identity indicator on every key.
+	/// Both sides derive that from the system, so the absence is not something the prover chose.
+	pub outer: Option<OuterPhasePoint<F>>,
 	/// Challenge point for the word index variables (length `log_segment_words`).
 	pub r_y: Vec<F>,
 	/// Challenge for the witness's segment selector variable.
@@ -150,17 +174,23 @@ impl<F> VerifyOutput<F> {
 	}
 }
 
-/// Verifies the shift protocol using a two-phase sumcheck approach.
+/// Verifies the shift protocol, peeling a term's shift sequence from the output end inward.
 ///
 /// # Protocol Overview
 /// 1. **Sampling Phase**: Samples random lambda coefficients for batching bitand, intmul and binmul
 ///    evaluation claims across operands.
-/// 2. **First Sumcheck**: Verifies the batched evaluation claim over `Word::LOG_BITS * 2` variables
-/// 3. **Challenge Splitting**: Splits sumcheck challenges into `r_j`, `r_s` and `r_v` components
-/// 4. **Second Sumcheck**: Verifies the gamma claim over `log_word_count` variables
+/// 2. **Outer Sumcheck**: Only when a term needs both shift slots. Binds `(k, s_2, v_2)` over
+///    `Word::LOG_BITS * 2 + LOG_SHIFT_VARIANT_COUNT` variables, producing the intermediate bit
+///    point `r_k`.
+/// 3. **Inner Sumcheck**: Binds `(j, s_1, v_1)` over the same number of variables. This is the only
+///    slot sumcheck when every term carries a lone shift, and then it closes the bit axis itself.
+/// 4. **Words Sumcheck**: Verifies the gamma claim over `log_word_count` variables
 /// 5. **Monster Multilinear Verification**: Checks that the claimed evaluations match expected
 ///    monster multilinear evaluations for AND constraints (bitand), IMUL constraints (intmul) and
 ///    BMUL constraints (binmul)
+///
+/// Which of the two structures ran is derived from the constraint system by
+/// [`has_double_shift`], so no message tells the verifier which to expect.
 ///
 /// # Parameters
 /// - `constraint_system`: The constraint system containing AND, IMUL and BMUL constraints
@@ -201,18 +231,42 @@ where
 		+ intmul_data.batched_eval(intmul_lambda.clone())
 		+ binmul_data.batched_eval(binmul_lambda.clone());
 
+	// Whether any term needs both shift slots, and so whether the outer phase ran.
+	// The system is public, so this selects the same structure the prover followed.
+	let three_phase = has_double_shift(constraint_system);
+
+	// A slot-binding phase runs one sumcheck over the bit position and its slot's two shift axes.
+	let slot_phase_vars = Word::LOG_BITS * 2 + LOG_SHIFT_VARIANT_COUNT;
+	let split_slot_point = |mut challenges: Vec<C::Elem>| {
+		challenges.reverse();
+		// Split as the bit position within a word, then the shift amount, then the shift variant,
+		// in increasing order of significance.
+		let r_v = challenges.split_off(Word::LOG_BITS * 2);
+		let r_s = challenges.split_off(Word::LOG_BITS);
+		(challenges, r_s, r_v)
+	};
+
+	// The outer phase, when the system needs it: it binds `(k, s_2, v_2)` and closes the bit axis.
+	let (outer, claim) = if three_phase {
+		let SumcheckOutput {
+			eval: gamma,
+			challenges,
+		} = verify_sumcheck(slot_phase_vars, 2, eval, channel)?;
+		let (r_k, r_s, r_v) = split_slot_point(challenges);
+		(Some(OuterPhasePoint { r_k, r_s, r_v }), gamma)
+	} else {
+		(None, eval)
+	};
+
+	// The inner phase binds `(j, s_1, v_1)`.
+	// Without an outer phase it is the only slot phase, and its weight closes the bit axis too.
 	let SumcheckOutput {
 		eval: gamma,
-		challenges: mut r_j,
-	} = verify_sumcheck(Word::LOG_BITS * 2 + LOG_SHIFT_VARIANT_COUNT, 2, eval, channel)?;
+		challenges,
+	} = verify_sumcheck(slot_phase_vars, 2, claim, channel)?;
+	let (r_j, r_s, r_v) = split_slot_point(challenges);
 
-	r_j.reverse();
-	// Split the challenges as `r_j, r_s, r_v`: the bit position within a word, then the shift
-	// amount, then the shift variant, in increasing order of significance.
-	let r_v = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s = r_j.split_off(Word::LOG_BITS);
-
-	// The second sumcheck runs over the witness: the public segment in the low half-cube and
+	// The words sumcheck runs over the witness: the public segment in the low half-cube and
 	// the hidden segment in the high half-cube, selected by the top word-index variable. Each
 	// half spans the wider of the two segments, which the prover zero-pads the shorter one up
 	// to, so a public segment longer than the hidden one draws the extra word-index challenges.
@@ -238,9 +292,44 @@ where
 		r_segment,
 		r_s,
 		r_v,
+		outer,
 		eval,
 		witness_eval,
 	})
+}
+
+/// Whether any term of the constraint system needs both shift slots.
+///
+/// This selects the reduction's phase structure.
+/// Both sides derive it from the system, so no message says which structure is in use.
+///
+/// A term is doubly shifted when its outer slot carries work.
+/// The canonical form places a lone shift inner, so a system of lone shifts answers false.
+pub fn has_double_shift(constraint_system: &ConstraintSystem) -> bool {
+	let operands = |operand: &Operand| operand.iter().any(|svi| svi.is_doubly_shifted());
+	constraint_system
+		.zero_constraints
+		.iter()
+		.flat_map(|constraint| constraint.as_ref().iter())
+		.chain(
+			constraint_system
+				.and_constraints
+				.iter()
+				.flat_map(|constraint| constraint.as_ref().iter()),
+		)
+		.chain(
+			constraint_system
+				.imul_constraints
+				.iter()
+				.flat_map(|constraint| constraint.as_ref().iter()),
+		)
+		.chain(
+			constraint_system
+				.bmul_constraints
+				.iter()
+				.flat_map(|constraint| constraint.as_ref().iter()),
+		)
+		.any(operands)
 }
 
 /// Validates the evaluation claims from the shift reduction protocol.
@@ -298,6 +387,7 @@ where
 		r_j,
 		r_s,
 		r_v,
+		outer,
 		r_y,
 		r_segment,
 		witness_eval,
@@ -319,6 +409,17 @@ where
 		let r_v_len = r_v.len();
 		let r_y_len = r_y.len();
 
+		// The outer phase's point trails the rest, when that phase ran.
+		// Its three sections have fixed widths, so its presence alone cuts them back apart.
+		let outer_point = outer.iter().flat_map(|outer| {
+			outer
+				.r_k
+				.iter()
+				.chain(&outer.r_s)
+				.chain(&outer.r_v)
+				.cloned()
+		});
+
 		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
 			.chain(iter::once(zero_lambda.clone()))
 			.chain(iter::once(bitand_lambda.clone()))
@@ -333,6 +434,7 @@ where
 			.chain(r_v.iter().cloned())
 			.chain(r_y.iter().cloned())
 			.chain(iter::once(r_segment.clone()))
+			.chain(outer_point)
 			.collect();
 
 		let eval_fn = MonsterEvalFn {
@@ -347,6 +449,7 @@ where
 			r_s_len,
 			r_v_len,
 			r_y_len,
+			three_phase: outer.is_some(),
 		};
 		channel.compute_public_value(&inputs, eval_fn)
 	};
@@ -426,6 +529,10 @@ struct MonsterEvalFn<'a, F: BinaryField> {
 	r_v_len: usize,
 	/// Length of the `r_y` section (the column challenges).
 	r_y_len: usize,
+	/// Whether the outer phase's point trails the input, which is whether that phase ran.
+	///
+	/// Its three sections have fixed widths, so no lengths need storing alongside.
+	three_phase: bool,
 }
 
 /// The per-operation [`OperationEvalFn`] inputs [`MonsterEvalFn::operation_inputs`] splits out of
@@ -499,6 +606,15 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		// `r_segment` is the top word-index coordinate, appended after `r_y`; it selects the public
 		// (0) vs hidden (1) segment.
 		let r_segment = vals[off].clone();
+		off += 1;
+		// The outer phase's point trails it, at its three fixed widths, when that phase ran.
+		let outer_point = self.three_phase.then(|| {
+			let r_k = &vals[off..off + Word::LOG_BITS];
+			let r_s2 = &vals[off + Word::LOG_BITS..off + Word::LOG_BITS * 2];
+			let r_v2 =
+				&vals[off + Word::LOG_BITS * 2..off + Word::LOG_BITS * 2 + LOG_SHIFT_VARIANT_COUNT];
+			(r_k, r_s2, r_v2)
+		});
 
 		// Build the word-index equality tensor over the value vector: public words in the low
 		// segment, hidden words in the high segment.
@@ -537,17 +653,49 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 				&hidden_tensor[cs.n_inout..cs.n_inout + cs.n_private],
 			],
 		};
-		let l_tilde = lagrange_evals_scalars(self.subspace, &r_zhat_prime_v);
-		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
-
-		// Phase 1 folded the shift variant into its sumcheck, so the h multilinear contributes a
-		// single evaluation here: the multilinear interpolation of the eight shift indicators over
-		// the variant axis.
+		// A slot phase folded the shift variant into its sumcheck, so each `h` contributes a single
+		// evaluation here: the multilinear interpolation of the eight shift indicators over the
+		// variant axis.
 		let eq_r_v = eq_ind_partial_eval_scalars(r_v_v);
-		let h_eval = inner_product_scalars(h_op_evals, eq_r_v.iter().cloned());
+		let fold_over_variants = |h_ops: [E; SHIFT_VARIANT_COUNT], eq_r_v: &[E]| {
+			inner_product_scalars(h_ops, eq_r_v.iter().cloned())
+		};
 
-		// A key's sequence selects itself through an equality indicator over both slots' axes,
-		// scaled by the one h evaluation.
+		// The two slots' `h` evaluations, and where the oblong factor sits.
+		//
+		// The outer phase closes the bit axis, so its weight carries the oblong factor at the
+		// intermediate point.
+		// The inner phase's is the bare indicator at that same point, with no oblong factor.
+		// Without an outer phase there is one slot phase, whose weight carries the factor itself.
+		let (inner_h_eval, outer_h_eval, eq_r_s2, eq_r_v2) = match outer_point {
+			Some((r_k, r_s2, r_v2)) => {
+				let l_tilde = lagrange_evals_scalars(self.subspace, &r_zhat_prime_v);
+				let eq_r_v2 = eq_ind_partial_eval_scalars(r_v2);
+				let outer_h = fold_over_variants(evaluate_h_op(&l_tilde, r_k, r_s2), &eq_r_v2);
+				let inner_h = fold_over_variants(evaluate_inner_h_op(r_k, r_j_v, r_s_v), &eq_r_v);
+				(inner_h, outer_h, eq_ind_partial_eval_scalars(r_s2), eq_r_v2)
+			}
+			None => {
+				let l_tilde = lagrange_evals_scalars(self.subspace, &r_zhat_prime_v);
+				let inner_h = fold_over_variants(evaluate_h_op(&l_tilde, r_j_v, r_s_v), &eq_r_v);
+				// No phase bound the outer axes, so their indicator sits at the all-zero point.
+				// There it selects the identity, the only outer shift a term may carry.
+				//
+				//     index 0 = (Sll, 0) -> one
+				//     every other index  -> zero
+				let zero_amount = vec![E::zero(); Word::LOG_BITS];
+				let zero_variant = vec![E::zero(); LOG_SHIFT_VARIANT_COUNT];
+				(
+					inner_h,
+					E::from(F::ONE),
+					eq_ind_partial_eval_scalars(&zero_amount),
+					eq_ind_partial_eval_scalars(&zero_variant),
+				)
+			}
+		};
+
+		// A key's sequence selects itself through an equality indicator over both slots' axes, each
+		// scaled by its phase's h evaluation.
 		// The weight factorizes, so it is one table per slot rather than one over the sequence
 		// space — see [`ShiftScalars`].
 		//
@@ -555,18 +703,10 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		// Each is indexed by `variant * Word::BITS + amount`.
 		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
 		let inner_shift_scalars = Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
-			h_eval.clone() * &eq_r_v[i / Word::BITS] * &eq_r_s[i % Word::BITS]
+			inner_h_eval.clone() * &eq_r_v[i / Word::BITS] * &eq_r_s[i % Word::BITS]
 		}));
-
-		// The outer slot's table, at the all-zero point: no challenges are drawn over those axes.
-		// There the indicator selects the identity, the only outer shift a term may carry.
-		//
-		//     index 0 = (Sll, 0) -> one
-		//     every other index  -> zero
-		//
-		// So a well-formed term's weight is unchanged.
 		let outer_shift_scalars = Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
-			if i == 0 { E::from(F::ONE) } else { E::zero() }
+			outer_h_eval.clone() * &eq_r_v2[i / Word::BITS] * &eq_r_s2[i % Word::BITS]
 		}));
 		let shift_scalars = ShiftScalars {
 			inner: &inner_shift_scalars,

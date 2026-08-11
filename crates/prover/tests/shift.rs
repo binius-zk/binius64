@@ -7,11 +7,12 @@ use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
 use binius_compute::GlobalAllocator;
 use binius_core::{
 	constraint_system::{
-		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, InoutSegment, ValueVec,
+		AndConstraint, BmulConstraint, Composition, ConstraintSystem, ImulConstraint, InoutSegment,
+		Shift, ShiftedValueIndex, ValueIndex, ValueVec, ZeroConstraint,
 	},
 	word::Word,
 };
-use binius_field::{AESTowerField8b, BinaryField};
+use binius_field::{AESTowerField8b, BinaryField, Field, Random};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_math::{
 	BinarySubspace,
@@ -27,10 +28,13 @@ use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
+	protocols::shift::{
+		LOG_SHIFT_VARIANT_COUNT, OperatorData as VerifierOperatorData, VerifyOutput, check_eval,
+		has_double_shift, verify,
+	},
 };
 use itertools::Itertools;
-use rand::{SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use sha2::{Digest, Sha256 as Sha256Hasher};
 
 pub fn create_sha256_cs_with_witness() -> (ConstraintSystem, ValueVec) {
@@ -428,5 +432,324 @@ fn test_shift_prove_and_verify() {
 		.concat();
 		assert_eq!(prover_output.challenges, eval_point);
 		assert_eq!(prover_output.eval, verifier_output.witness_eval);
+	}
+}
+
+/// The field the double-shift reduction tests run over.
+type DoubleShiftF = binius_field::BinaryField128bGhash;
+/// The packed field those tests instantiate the prover with.
+type DoubleShiftP = binius_field::PackedBinaryGhash2x128b;
+
+/// Every shift-variant pair whose composition genuinely needs two slots.
+///
+/// A pair that collapses would be rejected by validation, so the fixtures below draw from this
+/// list. Amounts are chosen to keep each pair irreducible for its variant combination.
+/// Dropping bits one way and moving them back the other is the shape no single shift has.
+fn irreducible_pairs() -> Vec<[Shift; 2]> {
+	let candidates = [
+		[Shift::srl(3), Shift::sll(3)],
+		[Shift::srl(5), Shift::sll(9)],
+		[Shift::sll(8), Shift::srl(2)],
+		[Shift::sll(17), Shift::srl(11)],
+		[Shift::sar(7), Shift::sll(4)],
+		[Shift::rotr(1), Shift::sll(6)],
+		[Shift::rotr(13), Shift::srl(5)],
+		[Shift::srl32(4), Shift::sll32(11)],
+		[Shift::sll32(6), Shift::srl32(3)],
+		[Shift::sra32(9), Shift::sll32(3)],
+		[Shift::rotr32(5), Shift::srl32(7)],
+		[Shift::rotr32(2), Shift::sll32(8)],
+		// Crossing the two families: a half-word shift after a full-width one.
+		[Shift::srl(33), Shift::sll32(4)],
+		[Shift::sll(35), Shift::srl32(6)],
+	];
+	// Keep only the pairs that really need both slots, so the fixture cannot silently degenerate.
+	let pairs = candidates
+		.into_iter()
+		.filter(|&[inner, outer]| Shift::compose(inner, outer) == Composition::Pair)
+		.collect::<Vec<_>>();
+	assert!(pairs.len() >= 12, "the fixture needs a spread of genuine pairs, got {}", pairs.len());
+	pairs
+}
+
+/// A constraint system whose operands carry genuine shift pairs, with a satisfying value vector.
+///
+/// The frontend does not emit pairs yet, so this is built by hand.
+/// The layout is
+///
+/// ```text
+/// private[0 .. n_sources]   random source words
+/// private[n_sources]        the AND constraint's C operand, set to A & B
+/// private[n_sources + 1]    the ZERO constraint's second term, set to cancel the first
+/// ```
+///
+/// so both constraints are satisfied by construction, whatever the pairs move.
+fn create_double_shift_cs_with_witness() -> (ConstraintSystem, ValueVec) {
+	let pairs = irreducible_pairs();
+	let n_sources = pairs.len();
+	let n_private = n_sources + 2;
+
+	// Spread the pairs over the source words: the first third builds `A`, the next `B`, and one
+	// more drives the ZERO constraint.
+	let split = n_sources / 3;
+	let term =
+		|index: usize| ShiftedValueIndex::new(ValueIndex::private(index as u32), pairs[index]);
+
+	let a_terms = (0..split).map(term).collect::<Vec<_>>();
+	let b_terms = (split..2 * split).map(term).collect::<Vec<_>>();
+	let zero_term = term(2 * split);
+
+	let c_index = ValueIndex::private(n_sources as u32);
+	let zero_cancel_index = ValueIndex::private(n_sources as u32 + 1);
+
+	let cs = ConstraintSystem {
+		constants: Vec::new(),
+		n_inout: 0,
+		n_private,
+		// `val` must vanish: the pair-shifted word XORed with the word holding that same value.
+		zero_constraints: vec![ZeroConstraint::new(vec![
+			zero_term,
+			ShiftedValueIndex::plain(zero_cancel_index),
+		])],
+		// `A & B ^ C = 0`, with `C` the plain word holding the conjunction.
+		and_constraints: vec![AndConstraint([
+			a_terms,
+			b_terms,
+			vec![ShiftedValueIndex::plain(c_index)],
+		])],
+		imul_constraints: Vec::new(),
+		bmul_constraints: Vec::new(),
+	};
+
+	// Random source words, then the two derived words that make the system satisfied.
+	let mut rng = StdRng::seed_from_u64(7);
+	let mut private = (0..n_private)
+		.map(|_| Word(rng.random::<u64>()))
+		.collect::<Vec<_>>();
+	private[n_sources] = Word::ZERO;
+	private[n_sources + 1] = Word::ZERO;
+
+	let mut value_vec = ValueVec::new_from_data(0, &[], &private);
+	let [a_operand, b_operand, _] = cs.and_constraints[0].0.each_ref();
+	let conjunction = value_vec.eval_operand(a_operand) & value_vec.eval_operand(b_operand);
+	value_vec[c_index] = conjunction;
+	let shifted = value_vec.eval_operand(&[zero_term]);
+	value_vec[zero_cancel_index] = shifted;
+
+	cs.validate().unwrap();
+	cs.verify(&value_vec).unwrap();
+	(cs, value_vec)
+}
+
+/// Runs the reduction over one constraint system and returns the verifier's output.
+///
+/// The claims are computed the way the single-shift round trip computes them.
+/// So this exercises the real path rather than a stand-in.
+fn prove_and_verify_reduction(
+	cs: &ConstraintSystem,
+	value_vec: &ValueVec,
+	tamper: bool,
+) -> Result<VerifyOutput<DoubleShiftF>, binius_verifier::protocols::shift::Error> {
+	type F = DoubleShiftF;
+	type P = DoubleShiftP;
+
+	let mut rng = StdRng::seed_from_u64(11);
+	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+	let r_zhat_prime = F::random(&mut rng);
+
+	let point_of = |log_count: Option<usize>| {
+		(0..log_count.unwrap_or(0) as u128)
+			.map(F::new)
+			.collect::<Vec<_>>()
+	};
+	let r_x_prime_zero = point_of(cs.log_zero_constraints());
+	let r_x_prime_bitand = point_of(cs.log_and_constraints());
+	// An unused operation reduces over an empty point, as both sides synthesize for it.
+	// A used one needs its real point, or a key naming its constraints indexes past the tensor.
+	let r_x_prime_intmul = point_of(cs.log_imul_constraints());
+	let r_x_prime_binmul = point_of(cs.log_bmul_constraints());
+
+	// The operand claims, from the images the witness actually produces.
+	let evaluate_at = |image: Vec<Word>, r_x_prime: &[F]| {
+		evaluate_image(&subspace, &image, r_zhat_prime, eq_ind_partial_eval(r_x_prime).as_ref())
+	};
+	let bitand_evals = compute_bitand_images(&cs.and_constraints, value_vec)
+		.map(|image| evaluate_at(image, &r_x_prime_bitand));
+	let intmul_evals: [F; 4] = if cs.imul_constraints.is_empty() {
+		[F::ZERO; 4]
+	} else {
+		compute_intmul_images(&cs.imul_constraints, value_vec)
+			.map(|image| evaluate_at(image, &r_x_prime_intmul))
+	};
+	let binmul_evals: [F; 6] = if cs.bmul_constraints.is_empty() {
+		[F::ZERO; 6]
+	} else {
+		compute_binmul_images(&cs.bmul_constraints, value_vec)
+			.map(|image| evaluate_at(image, &r_x_prime_binmul))
+	};
+
+	// A tampered run claims something the witness does not satisfy.
+	let bitand_evals = if tamper {
+		let mut evals = bitand_evals;
+		evals[0] += F::ONE;
+		evals
+	} else {
+		bitand_evals
+	};
+
+	let zero_data = OperatorData {
+		evals: [F::ZERO],
+		r_zhat_prime,
+		r_x_prime: r_x_prime_zero.clone(),
+	};
+	let bitand_data = OperatorData {
+		evals: bitand_evals,
+		r_zhat_prime,
+		r_x_prime: r_x_prime_bitand.clone(),
+	};
+	let intmul_data = OperatorData {
+		evals: intmul_evals,
+		r_zhat_prime,
+		r_x_prime: r_x_prime_intmul.clone(),
+	};
+	let binmul_data = OperatorData {
+		evals: binmul_evals,
+		r_zhat_prime,
+		r_x_prime: r_x_prime_binmul.clone(),
+	};
+
+	let key_collection = build_key_collection(cs, InoutSegment::Public);
+	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
+	prove::<F, P, _, _>(
+		&key_collection,
+		value_vec.public(),
+		value_vec.non_public(),
+		OperatorClaims {
+			zero: zero_data,
+			bitand: bitand_data,
+			intmul: intmul_data,
+			binmul: binmul_data,
+		},
+		&subspace,
+		&mut prover_transcript,
+		&GlobalAllocator,
+	);
+
+	let mut verifier_transcript = prover_transcript.into_verifier();
+	let verifier_zero = VerifierOperatorData::new(r_x_prime_zero, [F::ZERO]);
+	let verifier_bitand = VerifierOperatorData::new(r_x_prime_bitand, bitand_evals);
+	let verifier_intmul = VerifierOperatorData::new(r_x_prime_intmul, intmul_evals);
+	let verifier_binmul = VerifierOperatorData::new(r_x_prime_binmul, binmul_evals);
+
+	let output = verify(
+		cs,
+		InoutSegment::Public,
+		&verifier_zero,
+		&verifier_bitand,
+		&verifier_intmul,
+		&verifier_binmul,
+		&mut verifier_transcript,
+	)?;
+	check_eval(
+		cs,
+		InoutSegment::Public,
+		value_vec.public(),
+		&verifier_zero,
+		&verifier_bitand,
+		&verifier_intmul,
+		&verifier_binmul,
+		&subspace,
+		r_zhat_prime,
+		&output,
+		&mut verifier_transcript,
+	)?;
+	Ok(output)
+}
+
+#[test]
+fn double_shifted_terms_prove_and_verify() {
+	// Invariant: a system built on genuine shift pairs verifies.
+	//
+	// Terms whose two shifts do not collapse are reduced through the outer phase against the
+	// intermediate words, then the inner phase against the witness.
+	let (cs, value_vec) = create_double_shift_cs_with_witness();
+	let output = prove_and_verify_reduction(&cs, &value_vec, false).unwrap();
+
+	// The outer phase ran, which is what distinguishes this from the two-phase path.
+	let outer = output
+		.outer
+		.as_ref()
+		.expect("a system with genuine shift pairs runs the outer phase");
+	assert_eq!(outer.r_k.len(), Word::LOG_BITS);
+	assert_eq!(outer.r_s.len(), Word::LOG_BITS);
+	assert_eq!(outer.r_v.len(), LOG_SHIFT_VARIANT_COUNT);
+}
+
+#[test]
+fn double_shifted_terms_reject_an_unsatisfied_claim() {
+	// Invariant: a claim the witness does not satisfy must not verify, pairs or not.
+	//
+	// Perturbing the claim is the same thing from the reduction's side as perturbing the witness:
+	// the sum it is handed stops matching the one the witness produces, and that difference
+	// travels to the final evaluation check.
+	let (cs, value_vec) = create_double_shift_cs_with_witness();
+	let result = prove_and_verify_reduction(&cs, &value_vec, true);
+	assert!(result.is_err(), "a claim the witness does not satisfy must not verify");
+}
+
+#[test]
+fn lone_shifts_skip_the_outer_phase() {
+	// Invariant: a system of lone shifts skips the outer phase, and both sides agree it does.
+	//
+	// The phase structure is derived from the constraint system, so no message says which is in
+	// use. That is what leaves a single-shift circuit's transcript unchanged.
+	let (cs, value_vec) = create_slice_cs_with_witness();
+	assert!(
+		!has_double_shift(&cs),
+		"the frontend emits lone shifts, so this system needs no outer phase"
+	);
+
+	let output = prove_and_verify_reduction(&cs, &value_vec, false).unwrap();
+	assert!(output.outer.is_none(), "a system of lone shifts must not run the outer phase");
+}
+
+#[test]
+fn each_irreducible_pair_proves_and_verifies_alone() {
+	// Invariant: every irreducible variant combination survives the reduction on its own.
+	//
+	// Run together, one pair's contribution could mask another's.
+	// One constraint system per pair keeps a mis-handled variant from hiding.
+	for shift_seq in irreducible_pairs() {
+		// `A = pair(w_0)`, `B = w_1`, `C = A & B`, on three private words.
+		let a_term = ShiftedValueIndex::new(ValueIndex::private(0), shift_seq);
+		let cs = ConstraintSystem {
+			constants: Vec::new(),
+			n_inout: 0,
+			n_private: 3,
+			zero_constraints: Vec::new(),
+			and_constraints: vec![AndConstraint([
+				vec![a_term],
+				vec![ShiftedValueIndex::plain(ValueIndex::private(1))],
+				vec![ShiftedValueIndex::plain(ValueIndex::private(2))],
+			])],
+			imul_constraints: Vec::new(),
+			bmul_constraints: Vec::new(),
+		};
+		cs.validate().unwrap();
+
+		let mut rng = StdRng::seed_from_u64(3);
+		let private = vec![
+			Word(rng.random::<u64>()),
+			Word(rng.random::<u64>()),
+			Word::ZERO,
+		];
+		let mut value_vec = ValueVec::new_from_data(0, &[], &private);
+		let conjunction = value_vec.eval_operand(&[a_term]) & private[1];
+		value_vec[ValueIndex::private(2)] = conjunction;
+		cs.verify(&value_vec).unwrap();
+
+		let output = prove_and_verify_reduction(&cs, &value_vec, false)
+			.unwrap_or_else(|error| panic!("{shift_seq:?} failed to verify: {error}"));
+		assert!(output.outer.is_some(), "{shift_seq:?} must run the outer phase");
 	}
 }

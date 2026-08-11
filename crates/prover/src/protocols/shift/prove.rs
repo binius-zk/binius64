@@ -10,8 +10,12 @@ use binius_math::{
 };
 
 use super::{
-	DOUBLE_SHIFT_UNSUPPORTED, SegmentWords, claims::OperatorClaims, key_collection::KeyCollection,
-	phase_1::prove_phase_1, phase_2::prove_phase_2,
+	SegmentWords,
+	claims::OperatorClaims,
+	key_collection::KeyCollection,
+	monster::{SlotWeights, inner_h_eval, outer_h_evals},
+	slot_phase::{prove_inner_phase, prove_outer_phase, prove_slot_phase},
+	words_phase::prove_words_phase,
 };
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
@@ -124,12 +128,20 @@ impl<F: Field> PreparedOperatorData<F> {
 
 /// Proves the shift protocol reduction, collapsing every operation's claims into one.
 ///
-/// The result is a single multilinear evaluation claim on the witness.
+/// The result is a single multilinear evaluation claim on the witness. That output interface does
+/// not depend on how many phases ran, so ring-switching and everything downstream is untouched.
 ///
-/// Two sumcheck phases run in sequence:
+/// A term's shift sequence is peeled from the output end inward:
 ///
-/// 1. phase 1 proves the batched claims over the shift variants and operand positions;
-/// 2. phase 2 reduces those to a witness evaluation, against the monster multilinear.
+/// 1. the **outer** phase binds `(k, s_2, v_2)` against the intermediate words, and produces the
+///    intermediate bit point `r_k`;
+/// 2. the **inner** phase binds `(j, s_1, v_1)` against the witness words, weighted by what the
+///    outer phase closed on;
+/// 3. the **words** phase reduces to a witness evaluation, against the monster multilinear, whose
+///    per-key scalar is now the product of both slots' weights.
+///
+/// The outer phase is skipped when no term needs both slots, which leaves the two-phase reduction
+/// that predates shift sequences. See [`has_double_shift`].
 ///
 /// # Parameters
 /// - `key_collection`: the prover's key collection for the constraint system.
@@ -157,18 +169,11 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	// Invariant: two phases bind one shift slot.
-	// A sequence with work in its outer slot needs a third phase to bind the other.
-	debug_assert!(
-		!key_collection.public.dense_shift_enc.has_outer_shift()
-			&& !key_collection.hidden.dense_shift_enc.has_outer_shift(),
-		"{DOUBLE_SHIFT_UNSUPPORTED}"
-	);
-
-	// The segments are passed as the circuit declares them, at whatever length that is. Phase 1
-	// zips each word with its key range, so a segment shorter than its key ranges stops at its
-	// last value — the words past it carry no keys — and phase 2's `fold_words` zero-pads each
-	// fold up to `log2_ceil(len)` variables. Neither needs a padded segment.
+	// The segments are passed as the circuit declares them, at whatever length that is.
+	// A slot phase zips each word with its key range, so a short segment stops at its last value;
+	// the words past it carry no keys.
+	// The words phase zero-pads each fold up to `log2_ceil(len)` variables.
+	// So neither needs a padded segment.
 	let words = SegmentWords {
 		public: public_words,
 		hidden: hidden_words,
@@ -181,25 +186,110 @@ where
 		claims.prepare(|| channel.sample())
 	};
 
-	// Phase 1 outputs challenges `r_j || r_s`, and `gamma` as its evaluation (see paper).
-	let phase_1_output = prove_phase_1::<_, P, _, _>(
-		key_collection,
-		words,
-		&prepared,
-		domain_subspace,
-		channel,
-		alloc,
-	);
+	// Whether any term needs both shift slots.
+	// The constraint system is public, so the verifier derives the same answer and takes the same
+	// branch; this is protocol, not a choice the prover makes.
+	//
+	// SOUNDNESS: a system of lone shifts runs the two-phase reduction.
+	// Skipping a phase whose weight is the identity indicator on every key changes no claim.
+	let three_phase = has_double_shift(key_collection);
 
-	// Phase 2 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
-	// the univariate variable `r_j` and the multilinear variable `r_y`.
-	prove_phase_2::<_, P, _, _>(
+	let (r_j, claim, operation_scalars, inner, outer) = if three_phase {
+		// The outer phase binds `(k, s_2, v_2)` against the intermediate words.
+		let outer_phase = prove_outer_phase::<_, P, _, _>(
+			key_collection,
+			words,
+			&prepared,
+			domain_subspace,
+			channel,
+			alloc,
+		);
+
+		// The inner phase binds `(j, s_1, v_1)` against the witness words, weighted by what the
+		// outer phase closed on.
+		let inner_phase = prove_inner_phase::<_, P, _, _>(
+			key_collection,
+			words,
+			&prepared,
+			&outer_phase,
+			channel,
+			alloc,
+		);
+
+		// The words phase weights a key by both slots.
+		// The outer slot carries the oblong factor, so its evaluation is the per-operation scalar.
+		// The inner slot's carries none, so it is one value for every operation.
+		let operation_scalars = outer_h_evals(
+			&prepared,
+			domain_subspace,
+			&outer_phase.r_bit,
+			&outer_phase.r_s,
+			&outer_phase.r_v,
+		)
+		.scaled_by(inner_h_eval(
+			&outer_phase.r_bit,
+			&inner_phase.r_bit,
+			&inner_phase.r_s,
+			&inner_phase.r_v,
+		));
+
+		(
+			inner_phase.r_bit.clone(),
+			inner_phase.claim(),
+			operation_scalars,
+			SlotWeights::at(&inner_phase.r_s, &inner_phase.r_v),
+			SlotWeights::at(&outer_phase.r_s, &outer_phase.r_v),
+		)
+	} else {
+		// One slot phase binds `(j, s, v)`, and its `h` closes the bit axis as well.
+		let slot_phase = prove_slot_phase::<_, P, _, _>(
+			key_collection,
+			words,
+			&prepared,
+			domain_subspace,
+			channel,
+			alloc,
+		);
+
+		let operation_scalars = outer_h_evals(
+			&prepared,
+			domain_subspace,
+			&slot_phase.r_bit,
+			&slot_phase.r_s,
+			&slot_phase.r_v,
+		);
+
+		(
+			slot_phase.r_bit.clone(),
+			slot_phase.claim(),
+			operation_scalars,
+			SlotWeights::at(&slot_phase.r_s, &slot_phase.r_v),
+			// No phase bound the outer slot, so its weight selects the identity every key carries.
+			SlotWeights::identity_selecting(),
+		)
+	};
+
+	// The words phase outputs challenges `r_y`, and the witness evaluation at the oblong point
+	// given by the univariate variable `r_j` and the multilinear variable `r_y`.
+	prove_words_phase::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared,
-		domain_subspace,
-		phase_1_output,
+		r_j,
+		claim,
+		operation_scalars,
+		&inner,
+		&outer,
 		channel,
 		alloc,
 	)
+}
+
+/// Whether any of the collection's shift sequences needs both slots.
+///
+/// Both sides of the protocol derive this from the constraint system.
+/// So it selects the same phase structure on each, with nothing sent between them.
+pub fn has_double_shift(key_collection: &KeyCollection) -> bool {
+	key_collection.public.dense_shift_enc.has_outer_shift()
+		|| key_collection.hidden.dense_shift_enc.has_outer_shift()
 }

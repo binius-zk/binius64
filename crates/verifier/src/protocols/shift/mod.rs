@@ -38,4 +38,7 @@ mod error;
 mod verify;
 
 pub use error::Error;
-pub use verify::{OperatorData, VerifyOutput, check_eval, evaluate_words_mle, verify};
+pub use verify::{
+	OperatorData, OuterPhasePoint, VerifyOutput, check_eval, evaluate_words_mle, has_double_shift,
+	verify,
+};

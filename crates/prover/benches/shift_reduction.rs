@@ -12,16 +12,15 @@ use binius_core::{
 };
 use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
-use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		OperatorClaims, OperatorData, build_key_collection,
-		monster::{build_h, build_monster_segments},
-		phase_1::{build_g, run_phase_1_sumcheck},
-		phase_2::run_sumcheck,
+		monster::{SlotWeights, build_h, build_monster_segments, outer_h_evals},
 		prove,
+		slot_phase::{SlotPhaseOutput, build_g, run_slot_sumcheck},
+		words_phase::run_sumcheck,
 	},
 };
 use binius_transcript::ProverTranscript;
@@ -303,10 +302,20 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// `build_g` runs per key segment; the full g multilinear is the sum of the public and
 	// hidden segment ones.
 	let build_combined_g = || {
-		let mut g =
-			build_g::<F, P, _>(&GlobalAllocator, public_words, &key_collection.public, &prepared);
-		let hidden_g =
-			build_g::<F, P, _>(&GlobalAllocator, hidden_words, &key_collection.hidden, &prepared);
+		let mut g = build_g::<F, P, _>(
+			&GlobalAllocator,
+			public_words,
+			&key_collection.public,
+			&prepared,
+			None,
+		);
+		let hidden_g = build_g::<F, P, _>(
+			&GlobalAllocator,
+			hidden_words,
+			&key_collection.hidden,
+			&prepared,
+			None,
+		);
 		for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
 			*slot += *add;
 		}
@@ -315,12 +324,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	let g = build_combined_g();
 	let h = build_h::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime);
-	let SumcheckOutput {
-		challenges: mut r_j,
-		eval: gamma,
-	} = {
+	let slot_phase = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
-		run_phase_1_sumcheck::<F, P, _, _>(
+		run_slot_sumcheck::<F, P, _, _>(
 			g.clone(),
 			h.clone(),
 			prepared.batched_eval(),
@@ -328,27 +334,37 @@ fn bench_shift_phases(c: &mut Criterion) {
 			&GlobalAllocator,
 		)
 	};
-	// Split the phase-1 challenges into the bit position, the shift amount and the shift variant.
-	let r_v = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s = r_j.split_off(Word::LOG_BITS);
+	// The slot phase already split its point into the bit position, the shift amount and the shift
+	// variant.
+	let gamma = slot_phase.claim();
+	let SlotPhaseOutput {
+		r_bit: r_j,
+		r_s,
+		r_v,
+		..
+	} = slot_phase;
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());
+	// The circuits benchmarked here carry lone shifts, so one slot phase bound the inner axes and
+	// the outer slot's weight selects the identity every key carries.
+	let operation_scalars = outer_h_evals(&prepared, &subspace, &r_j, &r_s, &r_v);
+	let inner_weights = SlotWeights::at(&r_s, &r_v);
+	let outer_weights = SlotWeights::identity_selecting();
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		&GlobalAllocator,
 		&key_collection,
 		&prepared,
-		&subspace,
-		&r_j,
-		&r_s,
-		&r_v,
+		operation_scalars,
+		&inner_weights,
+		&outer_weights,
 	);
 
 	let mut group = c.benchmark_group("shift_reduction_phases");
 	group.sample_size(10);
 
 	// Phase 1. `build_g` / `build_h` take their inputs by reference, so no
-	// per-iteration clone is needed; `run_phase_1_sumcheck` consumes `g`/`h` by value.
+	// per-iteration clone is needed; `run_slot_sumcheck` consumes `g`/`h` by value.
 	group.bench_function("phase1_build_g_parts", |b| {
 		b.iter(&build_combined_g);
 	});
@@ -360,7 +376,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			|| (g.clone(), h.clone()),
 			|(g, h)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
-				run_phase_1_sumcheck::<F, P, _, _>(
+				run_slot_sumcheck::<F, P, _, _>(
 					g,
 					h,
 					prepared.batched_eval(),
@@ -380,10 +396,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 				&GlobalAllocator,
 				&key_collection,
 				&prepared,
-				&subspace,
-				&r_j,
-				&r_s,
-				&r_v,
+				operation_scalars,
+				&inner_weights,
+				&outer_weights,
 			)
 		});
 	});

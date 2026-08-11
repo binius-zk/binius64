@@ -21,13 +21,6 @@ use super::{
 	shift_ind::{partial_eval_phi, partial_eval_sigmas, partial_eval_sigmas_transpose},
 };
 
-/// Why a term's outer shift slot must hold the identity in the two-phase reduction.
-///
-/// A shift key names one shift, so the reduction reads the inner slot and ignores the outer one.
-/// A term carrying both would verify against the wrong shifted word.
-const DOUBLE_SHIFT_UNSUPPORTED: &str =
-	"the two-phase shift reduction reads only the inner shift of a term";
-
 /// Contracts each shift variant's indicator against a weight per output bit position.
 ///
 /// This is the verifier's version of the h-parts evaluation.
@@ -312,7 +305,6 @@ where
 			let mut constraint_eval = E::zero();
 			for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 				for svi in operand {
-					debug_assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
 					let inner = shift_index(svi.inner()) * ARITY + operand_id;
 					let outer = shift_index(svi.outer());
 					constraint_eval += operand_shift_scalars[inner].clone()
@@ -353,7 +345,6 @@ where
 				let mut constraint_eval = F::ZERO;
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 					for svi in operand {
-						debug_assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
 						let inner = shift_index(svi.inner()) * ARITY + operand_id;
 						let outer = shift_index(svi.outer());
 						constraint_eval += operand_shift_scalars[inner]

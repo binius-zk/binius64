@@ -14,9 +14,9 @@ use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims,
-		monster::{build_h, build_monster_segments},
-		phase_1::{PHASE_1_LOG_LEN, build_g, run_phase_1_sumcheck},
-		phase_2::run_sumcheck,
+		monster::{SlotWeights, build_h, build_monster_segments, outer_h_evals},
+		slot_phase::{SLOT_PHASE_LOG_LEN, SlotPhaseOutput, build_g, run_slot_sumcheck},
+		words_phase::run_sumcheck,
 	},
 };
 
@@ -67,28 +67,27 @@ where
 	// SOUNDNESS: `prepare` draws in the order the verifier draws in; do not reorder it.
 	let prepared = claims.prepare(|| channel.sample());
 
-	// Phase 1: build g once per key segment, then add them. The public words are
+	// The slot phase: build g once per key segment, then add them. The public words are
 	// constants shared by every instance, so the single-instance builder folds them directly from
 	// their bits; the hidden words are already folded over instances. This scalar path drives the
-	// single-instance phase-1 sumcheck.
-	let mut g = build_g::<F, F, _>(alloc, public_words, &key_collection.public, &prepared);
+	// single-instance slot sumcheck.
+	let mut g = build_g::<F, F, _>(alloc, public_words, &key_collection.public, &prepared, None);
 	let hidden_g =
 		build_g_from_folded_words(alloc, folded_witness.words(), &key_collection.hidden, &prepared);
 	for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
 		*slot += *add;
 	}
 	let h = build_h::<F, F, _>(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
-	let phase_1_output =
-		run_phase_1_sumcheck::<F, F, _, _>(g, h, prepared.batched_eval(), channel, alloc);
+	let slot_phase = run_slot_sumcheck::<F, F, _, _>(g, h, prepared.batched_eval(), channel, alloc);
 
-	// Phase 2: split the phase-1 challenges into the bit position `r_j`, the shift amount `r_s`
-	// and the shift variant `r_v`, in increasing order of significance.
-	let SumcheckOutput {
-		challenges: mut r_j,
-		eval: gamma,
-	} = phase_1_output;
-	let r_v = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s = r_j.split_off(Word::LOG_BITS);
+	// The words phase runs at the bit point the slot phase bound, against the monster multilinear.
+	let claim = slot_phase.claim();
+	let SlotPhaseOutput {
+		r_bit: r_j,
+		r_s,
+		r_v,
+		..
+	} = slot_phase;
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
 	// The witness folded at `r_j`, per segment.
@@ -96,14 +95,19 @@ where
 	let public_folded = fold_words::<F, P, _>(alloc, public_words, r_j_tensor.as_ref());
 	let hidden_folded = folded_witness.fold_bits::<P>(r_j_tensor.as_ref(), alloc);
 
+	// One slot phase bound the inner axes, so its `h` carries the oblong factor and the outer
+	// slot's weight selects the identity every key carries.
+	let operation_scalars = outer_h_evals(&prepared, domain_subspace, &r_j, &r_s, &r_v);
+	let inner = SlotWeights::at(&r_s, &r_v);
+	let outer = SlotWeights::identity_selecting();
+
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		alloc,
 		key_collection,
 		&prepared,
-		domain_subspace,
-		&r_j,
-		&r_s,
-		&r_v,
+		operation_scalars,
+		&inner,
+		&outer,
 	);
 
 	run_sumcheck::<F, P, _, _>(
@@ -113,7 +117,7 @@ where
 		hidden_monster,
 		public_words,
 		r_j,
-		gamma,
+		claim,
 		channel,
 		alloc,
 	)
@@ -143,7 +147,7 @@ where
 ///
 /// # Returns
 ///
-/// One multilinear of [`PHASE_1_LOG_LEN`] variables, holding every shift variant's part.
+/// One multilinear of [`SLOT_PHASE_LOG_LEN`] variables, holding every shift variant's part.
 ///
 /// The segment's dense shift encoding decodes a key's shift index into the variant and the shift
 /// amount. The variant indexes the high variables and the amount the middle ones, so a key names
@@ -165,7 +169,7 @@ pub fn build_g_from_folded_words<F: BinaryField, A: Allocator>(
 ) -> FieldVec<F, A> {
 	// One zeroed multilinear covering every shift, drawn from the allocator. A key names one
 	// `(variant, amount)` pair, so the scatter below accumulates straight into it.
-	let mut multilinear = FieldBuffer::zeros_in(alloc, PHASE_1_LOG_LEN);
+	let mut multilinear = FieldBuffer::zeros_in(alloc, SLOT_PHASE_LOG_LEN);
 
 	// Each folded word carries the keys named by the segment-relative range at its position.
 	for (word, range) in folded_words.iter().zip(&segment.key_ranges) {
@@ -497,6 +501,7 @@ mod tests {
 			public_words,
 			&key_collection.public,
 			&prepared,
+			None,
 		);
 		let hidden_g = build_g_from_folded_words(
 			&GlobalAllocator,

@@ -6,7 +6,6 @@ use std::{iter, ops::Range};
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
-use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{ProveSingleOutput, bivariate_product_prover, prove_single},
@@ -25,50 +24,210 @@ use super::{
 	SegmentWords,
 	claims::PreparedOperatorClaims,
 	key_collection::{KeyCollection, KeySegment, ShiftSlot, SlotRows},
-	monster::build_h,
+	monster::{SlotWeights, build_h, build_inner_h},
 };
 
 /// The number of variables in the g (and h) multilinear of phase 1.
 ///
 /// The axes run, from the low index positions up: the bit position within a word, the shift
 /// amount, and the shift variant.
-pub const PHASE_1_LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS + LOG_SHIFT_VARIANT_COUNT;
+pub const SLOT_PHASE_LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS + LOG_SHIFT_VARIANT_COUNT;
 
-/// Proves the first phase of the shift reduction.
+/// What one slot-binding phase produces.
 ///
-/// Builds the g and h multilinears and runs one sumcheck over their product.
-#[instrument(skip_all, name = "prover_phase_1")]
-pub fn prove_phase_1<F, P, Channel, A>(
+/// A phase binds three axes: the bit position, and its slot's amount and variant.
+/// It hands the next phase the point it reached, with both multilinears' evaluations there.
+///
+/// The factors are kept apart rather than only their product:
+///
+/// - the `h` evaluation becomes a weight on the next phase's keys;
+/// - the product is the claim that phase proves.
+pub struct SlotPhaseOutput<F> {
+	/// The bit point the phase bound: `r_j` for the inner slot, `r_k` for the outer one.
+	pub r_bit: Vec<F>,
+	/// The amount point of the slot this phase bound.
+	pub r_s: Vec<F>,
+	/// The variant point of the slot this phase bound.
+	pub r_v: Vec<F>,
+	/// The `g` (or `G`) multilinear's evaluation at that point.
+	pub g_eval: F,
+	/// The `h` (or `H`) multilinear's evaluation at that point.
+	pub h_eval: F,
+}
+
+impl<F: Field> SlotPhaseOutput<F> {
+	/// The claim the next phase proves: the product of the two evaluations.
+	pub fn claim(&self) -> F {
+		self.g_eval * self.h_eval
+	}
+}
+
+/// Proves the outer phase of the three-phase shift reduction.
+///
+/// This binds the sequence's *outer* slot, against the intermediate words.
+/// Its multilinear scatters `op1(w[y], s_1)` rather than `w[y]`, so the sum over the source bit
+/// index is already done and only the outer indicator remains.
+/// Its weight is the oblong one.
+///
+/// # Why this order is forced
+///
+/// The oblong factor `delta_D(r_ihat, ihat)` attaches to the *output* bit index.
+/// That index couples to the rest of the sum only through the outer indicator.
+/// Summing it out therefore yields a function of `(k, s_2)` alone — one 15-variate sumcheck.
+///
+/// Binding the inner shift first would leave an output-side factor still depending on `s_2`, and
+/// the sumcheck would run over `(j, s_1, s_2)` instead: 18 variates.
+#[instrument(skip_all, name = "prove_outer_phase")]
+pub fn prove_outer_phase<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,
-) -> SumcheckOutput<F>
+) -> SlotPhaseOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	// Build the g multilinear for the public and hidden segments separately, then sum them. The
-	// public words are the prefix of `words`, and each segment's key ranges are segment-relative.
-	let mut g = build_g::<_, P, _>(alloc, words.public, &key_collection.public, prepared);
-	let hidden_g = build_g::<_, P, _>(alloc, words.hidden, &key_collection.hidden, prepared);
-	for (slot, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
-		*slot += *add;
-	}
+	let g = sum_segment_multilinears::<F, P, A>(
+		alloc,
+		|segment_words, segment| {
+			build_outer_g::<F, P, A>(alloc, segment_words, segment, prepared, None)
+		},
+		words,
+		key_collection,
+	);
 
 	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
 	let h = build_h(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
 
-	run_phase_1_sumcheck(g, h, prepared.batched_eval(), channel, alloc)
+	run_slot_sumcheck(g, h, prepared.batched_eval(), channel, alloc)
+}
+
+/// Proves the inner phase of the three-phase shift reduction.
+///
+/// This binds the sequence's *inner* slot, against the witness words themselves.
+/// Its weight is the bare shift indicator at the intermediate point the outer phase produced.
+/// There is no oblong factor, since that phase already summed the output bit index out.
+///
+/// The outer phase's evaluations enter as per-key weights:
+///
+/// ```text
+/// key scale = H_eval * eq(r_s2, s_2) * eq(r_v2, v_2)
+/// ```
+///
+/// which is what makes this phase's claim the product the outer sumcheck closed on.
+#[instrument(skip_all, name = "prove_inner_phase")]
+pub fn prove_inner_phase<F, P, Channel, A>(
+	key_collection: &KeyCollection,
+	words: SegmentWords<'_>,
+	prepared: &PreparedOperatorClaims<F>,
+	outer: &SlotPhaseOutput<F>,
+	channel: &mut Channel,
+	alloc: &A,
+) -> SlotPhaseOutput<F>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+	A: Allocator,
+{
+	// The outer slot's weight per sequence, scaled by that phase's own evaluation.
+	// Together they turn this phase's sum into the product the outer sumcheck closed on.
+	let outer_weights = SlotWeights::at(&outer.r_s, &outer.r_v);
+	let scale_of = |segment: &KeySegment| {
+		segment
+			.dense_shift_enc
+			.iter()
+			.map(|[_, outer_shift]| outer.h_eval * outer_weights.weight(outer_shift))
+			.collect::<Vec<_>>()
+	};
+	let public_scale = scale_of(&key_collection.public);
+	let hidden_scale = scale_of(&key_collection.hidden);
+
+	let mut g = build_g::<F, P, A>(
+		alloc,
+		words.public,
+		&key_collection.public,
+		prepared,
+		Some(&public_scale),
+	);
+	let hidden_g = build_g::<F, P, A>(
+		alloc,
+		words.hidden,
+		&key_collection.hidden,
+		prepared,
+		Some(&hidden_scale),
+	);
+	for (entry, add) in iter::zip(g.as_mut(), hidden_g.as_ref()) {
+		*entry += *add;
+	}
+
+	let h = build_inner_h::<F, P, A>(alloc, &outer.r_bit);
+
+	run_slot_sumcheck(g, h, outer.claim(), channel, alloc)
+}
+
+/// Proves the single slot-binding phase of the two-phase shift reduction.
+///
+/// Every sequence is a lone shift here, so there is no outer slot to bind.
+/// The multilinear scatters the witness words, and the weight is the oblong one.
+#[instrument(skip_all, name = "prove_slot_phase")]
+pub fn prove_slot_phase<F, P, Channel, A>(
+	key_collection: &KeyCollection,
+	words: SegmentWords<'_>,
+	prepared: &PreparedOperatorClaims<F>,
+	domain_subspace: &BinarySubspace<F>,
+	channel: &mut Channel,
+	alloc: &A,
+) -> SlotPhaseOutput<F>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+	A: Allocator,
+{
+	let g = sum_segment_multilinears::<F, P, A>(
+		alloc,
+		|segment_words, segment| build_g::<F, P, A>(alloc, segment_words, segment, prepared, None),
+		words,
+		key_collection,
+	);
+
+	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
+	let h = build_h(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
+
+	run_slot_sumcheck(g, h, prepared.batched_eval(), channel, alloc)
+}
+
+/// Builds a phase's multilinear over both value-vector segments and sums the two.
+///
+/// The public and hidden words participate through their own key segment, with segment-relative key
+/// ranges.
+/// So each is built against its matching words, and the two results are added.
+fn sum_segment_multilinears<F, P: PackedField<Scalar = F>, A: Allocator>(
+	_alloc: &A,
+	mut build: impl FnMut(&[Word], &KeySegment) -> FieldVec<P, A>,
+	words: SegmentWords<'_>,
+	key_collection: &KeyCollection,
+) -> FieldVec<P, A>
+where
+	F: BinaryField,
+{
+	let mut combined = build(words.public, &key_collection.public);
+	let hidden = build(words.hidden, &key_collection.hidden);
+	for (entry, add) in iter::zip(combined.as_mut(), hidden.as_ref()) {
+		*entry += *add;
+	}
+	combined
 }
 
 /// Runs the phase 1 sumcheck protocol for shift constraint verification.
 ///
-/// One bivariate-product sumcheck over `g` and `h`, both multilinears of [`PHASE_1_LOG_LEN`]
+/// One bivariate-product sumcheck over `g` and `h`, both multilinears of [`SLOT_PHASE_LOG_LEN`]
 /// variables. The shift variant is the high [`LOG_SHIFT_VARIANT_COUNT`] variables of each, so the
 /// sumcheck folds the variant axis rather than the prover summing a separate claim per variant.
 ///
@@ -88,9 +247,10 @@ where
 ///
 /// # Returns
 ///
-/// `SumcheckOutput` containing the challenge vector and the final evaluation `gamma`.
-#[instrument(skip_all, name = "run_sumcheck")]
-pub fn run_phase_1_sumcheck<
+/// The point the sumcheck reached, split into its three axes, and both multilinears' evaluations
+/// there. See [`SlotPhaseOutput`] for why the two evaluations are kept apart.
+#[instrument(skip_all, name = "run_slot_sumcheck")]
+pub fn run_slot_sumcheck<
 	F: Field,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
@@ -101,7 +261,7 @@ pub fn run_phase_1_sumcheck<
 	sum: F,
 	channel: &mut Channel,
 	alloc: &A,
-) -> SumcheckOutput<F> {
+) -> SlotPhaseOutput<F> {
 	let prover = bivariate_product_prover(alloc, [g, h], sum);
 
 	let ProveSingleOutput {
@@ -114,9 +274,19 @@ pub fn run_phase_1_sumcheck<
 		.try_into()
 		.expect("prover has 2 multilinear polynomials");
 
-	SumcheckOutput {
-		challenges,
-		eval: g_eval * h_eval,
+	// The axis order of both multilinears, least significant first:
+	//
+	//     bit position | shift amount | shift variant
+	let mut r_bit = challenges;
+	let r_v = r_bit.split_off(Word::LOG_BITS * 2);
+	let r_s = r_bit.split_off(Word::LOG_BITS);
+
+	SlotPhaseOutput {
+		r_bit,
+		r_s,
+		r_v,
+		g_eval,
+		h_eval,
 	}
 }
 
@@ -135,8 +305,9 @@ pub fn build_g<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 	words: &[Word],
 	segment: &KeySegment,
 	prepared: &PreparedOperatorClaims<F>,
+	scale: Option<&[F]>,
 ) -> FieldVec<P, A> {
-	build_slot_g(alloc, words, segment, prepared, ShiftSlot::Inner)
+	build_slot_g(alloc, words, segment, prepared, ShiftSlot::Inner, scale)
 }
 
 /// Constructs the outer phase's "G" multilinear for one key segment.
@@ -174,8 +345,9 @@ pub fn build_outer_g<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 	words: &[Word],
 	segment: &KeySegment,
 	prepared: &PreparedOperatorClaims<F>,
+	scale: Option<&[F]>,
 ) -> FieldVec<P, A> {
-	build_slot_g(alloc, words, segment, prepared, ShiftSlot::Outer)
+	build_slot_g(alloc, words, segment, prepared, ShiftSlot::Outer, scale)
 }
 
 /// Constructs one phase's shift multilinear for one key segment.
@@ -213,7 +385,7 @@ pub fn build_outer_g<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 ///
 /// # Returns
 ///
-/// One multilinear of [`PHASE_1_LOG_LEN`] variables holding every shift variant's part: the
+/// One multilinear of [`SLOT_PHASE_LOG_LEN`] variables holding every shift variant's part: the
 /// variant indexes the high [`LOG_SHIFT_VARIANT_COUNT`] variables, and within a variant the rows
 /// of `Word::BITS` scalars run in order of shift amount.
 #[instrument(skip_all, name = "build_slot_g")]
@@ -223,9 +395,15 @@ pub fn build_slot_g<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 	segment: &KeySegment,
 	prepared: &PreparedOperatorClaims<F>,
 	slot: ShiftSlot,
+	scale: Option<&[F]>,
 ) -> FieldVec<P, A> {
 	// One row of `Word::BITS` scalars per shift the chosen slot takes.
 	let slot_rows = segment.dense_shift_enc.slot_rows(slot);
+	// Invariant: a scale carries one factor per shift sequence, indexed as the keys are.
+	debug_assert!(
+		scale.is_none_or(|scale| scale.len() == segment.dense_shift_enc.len()),
+		"a per-sequence scale covers the segment's dense shift encoding"
+	);
 	let row_len = Word::BITS >> P::LOG_WIDTH;
 	let acc_size = slot_rows.len() * row_len;
 
@@ -257,11 +435,16 @@ pub fn build_slot_g<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 				for key in keys {
 					let operator_data = &prepared[key.operation];
 
-					let acc = key.accumulate(
+					let mut acc = key.accumulate(
 						&segment.constraint_indices,
 						operator_data.r_x_prime_tensor.as_ref(),
 						&operator_data.lambda_powers,
 					);
+					// The other slot's weight, when a previous phase bound it: one multiply per
+					// key.
+					if let Some(scale) = scale {
+						acc *= scale[key.dense_shift_idx as usize];
+					}
 					let acc_packed = P::broadcast(acc);
 
 					// The following loop is an optimized version of the following
@@ -358,7 +541,7 @@ fn scatter_shift_rows<P: PackedField, A: Allocator>(
 
 	// A row is a whole number of packed elements, so it copies in at row alignment.
 	let row_len = Word::BITS >> P::LOG_WIDTH;
-	let mut g = FieldBuffer::zeros_in(alloc, PHASE_1_LOG_LEN);
+	let mut g = FieldBuffer::zeros_in(alloc, SLOT_PHASE_LOG_LEN);
 	for (shift, row) in iter::zip(slot_rows.shifts(), multilinears.chunks(row_len)) {
 		// The variant indexes the high variables and the amount the middle ones. A slot's shifts
 		// are distinct, so no two rows land in the same place and each destination is still zero.
@@ -459,7 +642,7 @@ mod tests {
 		segment: &KeySegment,
 		prepared: &PreparedOperatorClaims<B128>,
 	) -> Vec<B128> {
-		let mut reference = vec![B128::ZERO; 1 << PHASE_1_LOG_LEN];
+		let mut reference = vec![B128::ZERO; 1 << SLOT_PHASE_LOG_LEN];
 		for (word, range) in iter::zip(words, &segment.key_ranges) {
 			for key in &segment.keys[range.start as usize..range.end as usize] {
 				let operator_data = &prepared[key.operation];
@@ -524,6 +707,7 @@ mod tests {
 			&words,
 			&key_collection.hidden,
 			&prepared,
+			None,
 		);
 		let reference = reference_outer_g(&words, &key_collection.hidden, &prepared);
 
@@ -558,6 +742,7 @@ mod tests {
 			&words,
 			&key_collection.hidden,
 			&prepared,
+			None,
 		);
 		let reference = reference_outer_g(&words, &key_collection.hidden, &prepared);
 
@@ -591,10 +776,15 @@ mod tests {
 		let outer_keys = build_key_collection(&outer_cs, InoutSegment::Public);
 		let inner_keys = build_key_collection(&inner_cs, InoutSegment::Public);
 
-		let from_outer =
-			build_outer_g::<B128, B128, _>(&GlobalAllocator, &words, &outer_keys.hidden, &prepared);
+		let from_outer = build_outer_g::<B128, B128, _>(
+			&GlobalAllocator,
+			&words,
+			&outer_keys.hidden,
+			&prepared,
+			None,
+		);
 		let from_inner =
-			build_g::<B128, B128, _>(&GlobalAllocator, &words, &inner_keys.hidden, &prepared);
+			build_g::<B128, B128, _>(&GlobalAllocator, &words, &inner_keys.hidden, &prepared, None);
 
 		assert_eq!(from_outer.as_ref(), from_inner.as_ref());
 	}

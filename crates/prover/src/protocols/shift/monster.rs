@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::iter;
+use std::{iter, ops::Index};
 
 use binius_compute::{Allocator, VecLike};
 use binius_core::{ShiftVariant, constraint_system::Shift, word::Word};
@@ -13,6 +13,7 @@ use binius_math::{
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, ZERO_ARITY, evaluate_h_op,
+	evaluate_inner_h_op,
 };
 use bytemuck::zeroed_vec;
 use tracing::instrument;
@@ -20,13 +21,13 @@ use tracing::instrument;
 use super::{
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment, Operation},
-	phase_1::PHASE_1_LOG_LEN,
+	slot_phase::SLOT_PHASE_LOG_LEN,
 };
 
 /// The width the half-word (`*32`) shift variants act over.
 const HALF_WORD_BITS: usize = 32;
 
-/// The phase-2 scalar weights of one key segment, one table per operation.
+/// The words phase's scalar weights of one key segment, one table per operation.
 ///
 /// A table holds the `arity` weights of each shift sequence the segment uses, in dense shift index
 /// order, so a key's weights are the chunk at `key.dense_shift_idx * arity`.
@@ -37,36 +38,96 @@ struct ScalarTables<F> {
 	binmul: Vec<F>,
 }
 
-/// The equality-indicator weights of a shift sequence's outer slot.
+/// The equality-indicator weights of one shift slot, over its two axes.
 ///
-/// The sequence weight factorizes across its two slots, so each slot carries its own two tensors:
+/// A sequence's weight factorizes across its two slots, so each slot carries its own two tensors:
 /// one over the variant axis, one over the amount axis.
 /// Keeping them apart holds the weights at `2 * SHIFT_COUNT` entries rather than `SHIFT_COUNT^2`.
-struct OuterSlotWeights<F: Field> {
-	/// The equality indicator over the outer variant axis, one weight per shift variant.
+/// The cost is one extra multiply per key.
+pub struct SlotWeights<F: Field> {
+	/// The equality indicator over this slot's variant axis, one weight per shift variant.
 	variant: FieldBuffer<F>,
-	/// The equality indicator over the outer amount axis, one weight per shift amount.
+	/// The equality indicator over this slot's amount axis, one weight per shift amount.
 	amount: FieldBuffer<F>,
 }
 
-impl<F: Field> OuterSlotWeights<F> {
-	/// The weights that select the identity and reject every other outer shift.
+impl<F: Field> SlotWeights<F> {
+	/// The weights at the amount and variant points a phase bound for this slot.
 	///
-	/// This is the equality indicator at the all-zero point, where no challenges were drawn over
-	/// the outer axes.
-	/// Every key's outer slot holds [`Shift::IDENTITY`], spelled `(Sll, 0)`.
-	/// So a well-formed key weighs one, and the scalars match what a single-shift reduction builds.
-	fn identity_selecting() -> Self {
+	/// # Panics
+	///
+	/// Panics if the points are not the widths of the two axes.
+	pub fn at(r_s: &[F], r_v: &[F]) -> Self {
+		assert_eq!(r_s.len(), Word::LOG_BITS);
+		assert_eq!(r_v.len(), LOG_SHIFT_VARIANT_COUNT);
+		Self {
+			variant: eq_ind_partial_eval::<F>(r_v),
+			amount: eq_ind_partial_eval::<F>(r_s),
+		}
+	}
+
+	/// The weights that select the identity and reject every other shift in the slot.
+	///
+	/// This is the equality indicator at the all-zero point, where a reduction stands on a slot it
+	/// never bound: no challenges were drawn over those axes.
+	/// Every key's shift there is [`Shift::IDENTITY`], spelled `(Sll, 0)`.
+	/// So a well-formed key weighs one, and the scalars match what a single-slot reduction builds.
+	pub fn identity_selecting() -> Self {
 		Self {
 			variant: eq_ind_partial_eval::<F>(&[F::ZERO; LOG_SHIFT_VARIANT_COUNT]),
 			amount: eq_ind_partial_eval::<F>(&[F::ZERO; Word::LOG_BITS]),
 		}
 	}
 
-	/// The weight one outer shift contributes to its sequence's scalar.
+	/// The weight one shift in this slot contributes to its sequence's scalar.
 	#[inline]
-	fn weight(&self, shift: Shift) -> F {
+	pub fn weight(&self, shift: Shift) -> F {
 		self.variant.as_ref()[shift.variant as usize] * self.amount.as_ref()[shift.amount as usize]
+	}
+}
+
+/// One scalar per operation, as the words phase weights that operation's keys by.
+///
+/// Every key of an operation shares the weight of the phase that closed the operand claim's bit
+/// axis.
+/// So it is a single factor rather than part of the per-shift tables.
+#[derive(Debug, Clone, Copy)]
+pub struct OperationScalars<F> {
+	/// The scalar shared by every ZERO key.
+	pub zero: F,
+	/// The scalar shared by every AND key.
+	pub bitand: F,
+	/// The scalar shared by every IMUL key.
+	pub intmul: F,
+	/// The scalar shared by every BMUL key.
+	pub binmul: F,
+}
+
+impl<F: Field> OperationScalars<F> {
+	/// Scales every operation's scalar by a factor the whole reduction shares.
+	///
+	/// The inner phase's weight carries no oblong factor.
+	/// So it is one value for all four operations, and folds in here rather than per shift.
+	pub fn scaled_by(self, factor: F) -> Self {
+		Self {
+			zero: self.zero * factor,
+			bitand: self.bitand * factor,
+			intmul: self.intmul * factor,
+			binmul: self.binmul * factor,
+		}
+	}
+}
+
+impl<F> Index<Operation> for OperationScalars<F> {
+	type Output = F;
+
+	fn index(&self, operation: Operation) -> &F {
+		match operation {
+			Operation::Zero => &self.zero,
+			Operation::BitwiseAnd => &self.bitand,
+			Operation::IntegerMul => &self.intmul,
+			Operation::BinMul => &self.binmul,
+		}
 	}
 }
 
@@ -122,19 +183,52 @@ fn fill_h_row<F: Field>(variant: ShiftVariant, amount: usize, row: &mut [F], l_t
 	}
 }
 
-/// Constructs the "h" multilinear for shift operations at a univariate challenge point.
+/// Constructs the "h" multilinear of a phase from its per-output-bit weights.
 ///
 /// See the paper for the definition of the h polynomials. There is one per shift variant, and this
-/// returns all of them as a single multilinear over [`PHASE_1_LOG_LEN`] variables: the shift
+/// returns all of them as a single multilinear over [`SLOT_PHASE_LOG_LEN`] variables: the shift
 /// variant occupies the high
 /// [`LOG_SHIFT_VARIANT_COUNT`](binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT)
 /// variables, the shift amount the middle
 /// [`Word::LOG_BITS`], and the bit position the low [`Word::LOG_BITS`].
 ///
+/// Both phases contract each variant's shift indicator against a weight per output bit position.
+/// Only the weights differ.
+/// The verifier evaluates the same object succinctly rather than building it.
+///
 /// # Usage in Protocol
 ///
-/// Phase 1 runs one sumcheck over this multilinear and its "g" counterpart, so the variant axis is
+/// A phase runs one sumcheck over this multilinear and its "g" counterpart, so the variant axis is
 /// folded by the sumcheck rather than summed across separate provers.
+#[instrument(skip_all, name = "build_h_from_weights")]
+pub fn build_h_from_weights<F, P: PackedField<Scalar = F>, A: Allocator>(
+	alloc: &A,
+	l_tilde: &[F],
+) -> FieldVec<P, A>
+where
+	F: BinaryField,
+{
+	assert_eq!(l_tilde.len(), Word::BITS);
+
+	// One row of `Word::BITS` scalars per `(variant, amount)`, variant most significant.
+	let mut data = zeroed_vec::<F>(1 << SLOT_PHASE_LOG_LEN);
+	for (variant, block) in
+		iter::zip(ShiftVariant::ALL, data.chunks_exact_mut(Word::BITS * Word::BITS))
+	{
+		for (amount, row) in block.chunks_exact_mut(Word::BITS).enumerate() {
+			fill_h_row(variant, amount, row, l_tilde);
+		}
+	}
+
+	FieldBuffer::from_values_in(alloc, &data)
+}
+
+/// Constructs the outer phase's "H" multilinear at a univariate challenge point.
+///
+/// The weights are the oblong factor `delta_D(r_zhat_prime, .)`: the Lagrange basis of the bit axis
+/// at the univariate challenge.
+/// This closes the operand claim's bit axis, which is why it belongs to the phase binding the
+/// *output* end of the shift sequence.
 #[instrument(skip_all, name = "build_h")]
 pub fn build_h<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
@@ -145,19 +239,78 @@ where
 	F: BinaryField,
 {
 	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-	let l_tilde = l_tilde.as_ref();
+	build_h_from_weights(alloc, l_tilde.as_ref())
+}
 
-	// One row of `Word::BITS` scalars per `(variant, amount)`, variant most significant.
-	let mut data = zeroed_vec::<F>(1 << PHASE_1_LOG_LEN);
-	for (variant, block) in
-		iter::zip(ShiftVariant::ALL, data.chunks_exact_mut(Word::BITS * Word::BITS))
-	{
-		for (amount, row) in block.chunks_exact_mut(Word::BITS).enumerate() {
-			fill_h_row(variant, amount, row, l_tilde);
-		}
+/// Constructs the inner phase's "h" multilinear at the intermediate point the outer phase produced.
+///
+/// The weights are the equality indicator of the intermediate point, so this is the bare shift
+/// indicator there.
+/// It carries no oblong factor, since the outer phase already summed the output bit index out.
+///
+/// # Panics
+///
+/// Panics if `r_k` does not have `Word::LOG_BITS` coordinates.
+#[instrument(skip_all, name = "build_inner_h")]
+pub fn build_inner_h<F, P: PackedField<Scalar = F>, A: Allocator>(
+	alloc: &A,
+	r_k: &[F],
+) -> FieldVec<P, A>
+where
+	F: BinaryField,
+{
+	assert_eq!(r_k.len(), Word::LOG_BITS);
+	let eq_r_k = eq_ind_partial_eval::<F>(r_k);
+	build_h_from_weights(alloc, eq_r_k.as_ref())
+}
+
+/// The outer phase's `H` evaluation for each operation, at the point that phase bound.
+///
+/// This weight carries the oblong factor `delta_D(r_zhat_prime, .)`.
+/// Each operation claims at its own univariate challenge, so there is one evaluation per operation
+/// rather than one shared value.
+///
+/// # Arguments
+///
+/// - `r_out`: the bit point the phase bound. Without an outer phase this is the source bit point,
+///   since one phase then closes both the bit axis and the words.
+/// - `r_s`, `r_v`: the amount and variant points of the slot that phase bound.
+pub fn outer_h_evals<F: BinaryField>(
+	prepared: &PreparedOperatorClaims<F>,
+	domain_subspace: &BinarySubspace<F>,
+	r_out: &[F],
+	r_s: &[F],
+	r_v: &[F],
+) -> OperationScalars<F> {
+	// The phase folded the variant axis into its sumcheck.
+	// So the weight is one scalar per operation: its eight indicators interpolated at `r_v`.
+	let r_v_tensor = eq_ind_partial_eval::<F>(r_v);
+	let eval_at = |r_zhat_prime: F| {
+		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
+		let h_ops = evaluate_h_op(l_tilde.as_ref(), r_out, r_s);
+		inner_product(h_ops, r_v_tensor.as_ref().iter().copied())
+	};
+	OperationScalars {
+		zero: eval_at(prepared.zero.r_zhat_prime),
+		bitand: eval_at(prepared.bitand.r_zhat_prime),
+		intmul: eval_at(prepared.intmul.r_zhat_prime),
+		binmul: eval_at(prepared.binmul.r_zhat_prime),
 	}
+}
 
-	FieldBuffer::from_values_in(alloc, &data)
+/// The inner phase's `h` evaluation, at the point that phase bound.
+///
+/// This carries no oblong factor, since the outer phase already summed the output bit index out.
+/// So it is one value shared by every operation, folded into the per-operation scalars.
+///
+/// # Arguments
+///
+/// - `r_k`: the intermediate bit point the outer phase produced.
+/// - `r_j`, `r_s`, `r_v`: the source bit point and the inner slot's amount and variant points.
+pub fn inner_h_eval<F: BinaryField>(r_k: &[F], r_j: &[F], r_s: &[F], r_v: &[F]) -> F {
+	let r_v_tensor = eq_ind_partial_eval::<F>(r_v);
+	let h_ops = evaluate_inner_h_op(r_k, r_j, r_s);
+	inner_product(h_ops, r_v_tensor.as_ref().iter().copied())
 }
 
 /// Constructs the "monster multilinear" that combines all shift operations into a single
@@ -183,14 +336,22 @@ where
 /// ```text
 /// ∑_{key ∈ keys[w]} key.accumulate(constraint_indices, tensor, scalars[key.dense_shift_idx])
 /// ```
-/// where `scalars[key.dense_shift_idx]` is the contiguous per-operand chunk encoding
-/// `λ^(operand_idx+1) × h_op[shift_variant] × r_s_tensor[shift_amount]` for operand index
-/// `operand_idx`, and `(shift_variant, shift_amount)` the pair the key's segment decodes its dense
-/// shift index to.
+/// where a key's entry is the contiguous per-operand chunk encoding
+///
+/// ```text
+/// lambda^(operand + 1) * operation_scalar * inner_weight(s_1) * outer_weight(s_2)
+/// ```
+///
+/// with `(s_1, s_2)` the shift sequence the key's segment decodes its dense shift index to.
+///
+/// # Arguments
+///
+/// - `operation_scalars`: the `h` evaluation each operation's claim contributes to all of its keys.
+/// - `inner`, `outer`: the equality weights of the two shift slots, at the points the phases bound.
 ///
 /// # Usage
 ///
-/// Used in phase 2 of the shift protocol. The two returned buffers are the segments of the
+/// Used in the words phase of the shift protocol. The two returned buffers are the segments of the
 /// witness's monster multilinear: the public piece over `log_public_words` variables and the
 /// hidden piece over `log_witness_words` variables (the hidden words at the base, zeros above).
 /// The sparse first sumcheck round consumes them without materializing the combined buffer.
@@ -199,44 +360,13 @@ pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	key_collection: &KeyCollection,
 	prepared: &PreparedOperatorClaims<F>,
-	domain_subspace: &BinarySubspace<F>,
-	r_j: &[F],
-	r_s: &[F],
-	r_v: &[F],
+	operation_scalars: OperationScalars<F>,
+	inner: &SlotWeights<F>,
+	outer: &SlotWeights<F>,
 ) -> (FieldVec<P, A>, FieldVec<P, A>)
 where
 	F: BinaryField,
 {
-	// Phase 1 folded the variant axis into the sumcheck, so the h multilinear contributes one
-	// scalar per operation — the interpolation of its eight shift indicators at `r_v` — rather
-	// than one per variant.
-	let r_v_tensor = eq_ind_partial_eval::<F>(r_v);
-
-	let [zero_h_eval, bitand_h_eval, intmul_h_eval, binmul_h_eval] = [
-		prepared.zero.r_zhat_prime,
-		prepared.bitand.r_zhat_prime,
-		prepared.intmul.r_zhat_prime,
-		prepared.binmul.r_zhat_prime,
-	]
-	.map(|r_zhat_prime| {
-		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-		let h_ops = evaluate_h_op(l_tilde.as_ref(), r_j, r_s);
-		inner_product(h_ops, r_v_tensor.as_ref().iter().copied())
-	});
-
-	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
-
-	// Invariant: a key's sequence weight factorizes across its two slots.
-	//
-	//     eq(r_v1, v_1) * eq(r_s1, s_1)  *  eq(r_v2, v_2) * eq(r_s2, s_2)
-	//     \______ inner slot _________/     \______ outer slot ________/
-	//
-	// So one table per slot suffices, at `2 * SHIFT_COUNT` entries instead of `SHIFT_COUNT^2`.
-	//
-	// Challenges are drawn over the inner axes only, so the outer slot sits at the all-zero point.
-	// There the indicator selects the identity, the only outer shift a key may carry.
-	let outer = OuterSlotWeights::<F>::identity_selecting();
-
 	// The scalars of one operation, laid out with the operand index innermost so that the `arity`
 	// weights for one `key.dense_shift_idx` form a contiguous chunk that [`Key::accumulate_wide`]
 	// can index directly by operand index.
@@ -246,11 +376,9 @@ where
 	let build_scalars =
 		|arity: usize, lambda_powers: &[F], h_eval: F, dense_shift_enc: &DenseShiftEncoding| {
 			let mut scalars = vec![F::ZERO; arity * dense_shift_enc.len()];
-			for (dense_shift_idx, [inner, outer_shift]) in dense_shift_enc.iter().enumerate() {
-				let shift_scalar = h_eval
-					* r_v_tensor.as_ref()[inner.variant as usize]
-					* r_s_tensor.as_ref()[inner.amount as usize]
-					* outer.weight(outer_shift);
+			for (dense_shift_idx, shift_seq) in dense_shift_enc.iter().enumerate() {
+				let [inner_shift, outer_shift] = shift_seq;
+				let shift_scalar = h_eval * inner.weight(inner_shift) * outer.weight(outer_shift);
 				for operand_idx in 0..arity {
 					scalars[dense_shift_idx * arity + operand_idx] =
 						lambda_powers[operand_idx] * shift_scalar;
@@ -261,23 +389,28 @@ where
 
 	// Each segment has its own dense shift encoding, so it has its own scalar tables.
 	let build_scalar_tables = |dense_shift_enc: &DenseShiftEncoding| ScalarTables {
-		zero: build_scalars(ZERO_ARITY, &prepared.zero.lambda_powers, zero_h_eval, dense_shift_enc),
+		zero: build_scalars(
+			ZERO_ARITY,
+			&prepared.zero.lambda_powers,
+			operation_scalars.zero,
+			dense_shift_enc,
+		),
 		bitand: build_scalars(
 			BITAND_ARITY,
 			&prepared.bitand.lambda_powers,
-			bitand_h_eval,
+			operation_scalars.bitand,
 			dense_shift_enc,
 		),
 		intmul: build_scalars(
 			INTMUL_ARITY,
 			&prepared.intmul.lambda_powers,
-			intmul_h_eval,
+			operation_scalars.intmul,
 			dense_shift_enc,
 		),
 		binmul: build_scalars(
 			BINMUL_ARITY,
 			&prepared.binmul.lambda_powers,
-			binmul_h_eval,
+			operation_scalars.binmul,
 			dense_shift_enc,
 		),
 	};

@@ -14,7 +14,7 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec,
+	FieldBuffer, FieldVec,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
 use binius_utils::{
@@ -28,42 +28,48 @@ use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
 use super::{
-	SegmentWords, claims::PreparedOperatorClaims, key_collection::KeyCollection,
-	monster::build_monster_segments,
+	SegmentWords,
+	claims::PreparedOperatorClaims,
+	key_collection::KeyCollection,
+	monster::{OperationScalars, SlotWeights, build_monster_segments},
 };
 use crate::fold_word::fold_words;
 
-/// Proves the second phase of the shift protocol reduction.
+/// Proves the words phase of the shift protocol reduction, the last one.
 ///
-/// This function implements phase 2 of the shift protocol prover, which takes the output
-/// from phase 1 and completes the shift reduction by proving the relationship between
-/// the witness and the monster multilinear polynomial.
+/// This takes the point the slot-binding phases reached and completes the shift reduction by
+/// proving the relationship between the witness and the monster multilinear polynomial.
 ///
 /// # Protocol Steps
-/// 1. **Challenge Splitting**: Splits phase 1 challenges into `r_j` and `r_s` components
-/// 2. **Segment Folding**: Folds the public and hidden words using the `r_j` challenges
-/// 3. **Monster Multilinear Construction**: Builds the monster segments from the key collection and
-///    the prepared claims
-/// 4. **Sumcheck Execution**: Runs the bivariate product sumcheck with a sparse first round over
+/// 1. **Segment Folding**: Folds the public and hidden words using the `r_j` challenges
+/// 2. **Monster Multilinear Construction**: Builds the monster segments from the key collection,
+///    the prepared claims and the two slots' weights
+/// 3. **Sumcheck Execution**: Runs the bivariate product sumcheck with a sparse first round over
 ///    the segment selector
 ///
 /// # Parameters
 /// - `key_collection`: Prover's key collection representing the constraint system
 /// - `words`: The value vector words
 /// - `prepared`: The prepared claim of each operation, indexed by the operation a key names
-/// - `phase_1_output`: Challenges and evaluation from the first phase
+/// - `r_j`: the source bit point, which the witness fold closes on
+/// - `claim`: the sum this phase proves, as the last slot phase closed on it
+/// - `operation_scalars`, `inner`, `outer`: the per-operation and per-slot weights of a key
 /// - `channel`: The prover's channel
 ///
 /// # Returns
 /// Returns `SumcheckOutput` containing the combined challenges `[r_j, r_y]` and the witness
 /// evaluation, or an error if the protocol fails.
-#[instrument(skip_all, name = "prove_phase_2")]
-pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
+#[allow(clippy::too_many_arguments)]
+#[instrument(skip_all, name = "prove_words_phase")]
+pub fn prove_words_phase<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
 	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
-	domain_subspace: &BinarySubspace<F>,
-	phase_1_output: SumcheckOutput<F>,
+	r_j: Vec<F>,
+	claim: F,
+	operation_scalars: OperationScalars<F>,
+	inner: &SlotWeights<F>,
+	outer: &SlotWeights<F>,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> SumcheckOutput<F>
@@ -72,15 +78,6 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	let SumcheckOutput {
-		challenges: mut r_j,
-		eval: gamma,
-	} = phase_1_output;
-	// Split the challenges as `r_j, r_s, r_v`: the bit position, then the shift amount, then the
-	// shift variant, in increasing order of significance.
-	let r_v = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s = r_j.split_off(Word::LOG_BITS);
-
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
 	// Fold each segment separately; the combined witness is never materialized. `fold_words`
@@ -89,7 +86,7 @@ where
 	let hidden_folded = fold_words::<_, P, _>(alloc, words.hidden, r_j_tensor.as_ref());
 
 	let (public_monster, hidden_monster) =
-		build_monster_segments(alloc, key_collection, prepared, domain_subspace, &r_j, &r_s, &r_v);
+		build_monster_segments(alloc, key_collection, prepared, operation_scalars, inner, outer);
 
 	// Both halves of the sumcheck share one word-index address space, spanning the wider of the
 	// two segments. The hidden segment is normally the wider one, but a system with more public
@@ -105,7 +102,7 @@ where
 		hidden_monster,
 		words.public,
 		r_j,
-		gamma,
+		claim,
 		channel,
 		alloc,
 	)
