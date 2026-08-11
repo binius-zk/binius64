@@ -5,7 +5,7 @@
 use std::iter;
 
 use binius_compute::Allocator;
-use binius_field::{BinaryField, Divisible, Field, PackedField};
+use binius_field::{BinaryField, Divisible, PackedField};
 use binius_ip::{
 	MultilinearEvalClaim,
 	fracaddcheck::unpad_leaf_claim,
@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
 	channel::IPProverChannel,
-	fracaddcheck::{self, FracAddCheckProver, FracEvalClaim},
+	fracaddcheck::{self, FracAddCheckProver},
 };
 
 /// One looker's column and claim: `(I^* T)(eval_point) = eval_claim` against the table it reads.
@@ -257,7 +257,19 @@ where
 	// t's tree depth m_t, so the batch pads every shallower instance up — the padding costs O(1)
 	// per round and the layer count depends only on that maximum.
 	let gkr_guard = tracing::debug_span!("Combined GKR").entered();
-	let (top_num_claim, _top_den_claim) = top_prover.prove(root_claim(F::ZERO, root_den), channel);
+	let (top_num_claim, _top_den_claim) = top_prover.prove(
+		(
+			MultilinearEvalClaim {
+				eval: F::ZERO,
+				point: Vec::new(),
+			},
+			MultilinearEvalClaim {
+				eval: root_den,
+				point: Vec::new(),
+			},
+		),
+		channel,
+	);
 	let selector_point = top_num_claim.point;
 	let fracaddcheck::BatchProveOutput {
 		eval_point,
@@ -356,20 +368,6 @@ where
 			})
 			.collect(),
 	}
-}
-
-/// The claim on a circuit's root, which is a single fraction over no variables.
-const fn root_claim<F: Field>(num: F, den: F) -> FracEvalClaim<F> {
-	(
-		MultilinearEvalClaim {
-			eval: num,
-			point: Vec::new(),
-		},
-		MultilinearEvalClaim {
-			eval: den,
-			point: Vec::new(),
-		},
-	)
 }
 
 #[cfg(test)]
