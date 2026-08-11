@@ -20,6 +20,7 @@ binius-utils = { path = "../utils" }
 digest.workspace = true
 
 [dev-dependencies]
+binius-iop-prover = { path = "../iop-prover" }
 binius-prover = { path = "../prover" }
 binius-verifier = { path = "../verifier" }
 proptest.workspace = true
