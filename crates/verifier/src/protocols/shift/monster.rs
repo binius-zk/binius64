@@ -200,7 +200,7 @@ where
 			let mut constraint_eval = E::zero();
 			for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 				for svi in operand {
-					debug_assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
+					assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
 					let variant = svi.inner().variant as usize;
 					let index =
 						(variant * Word::BITS + svi.inner().amount as usize) * ARITY + operand_id;
@@ -241,7 +241,7 @@ where
 				let mut constraint_eval = F::ZERO;
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 					for svi in operand {
-						debug_assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
+						assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
 						let variant = svi.inner().variant as usize;
 						let index = (variant * Word::BITS + svi.inner().amount as usize) * ARITY
 							+ operand_id;
