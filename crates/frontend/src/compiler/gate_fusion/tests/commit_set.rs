@@ -25,7 +25,7 @@ fn test_commit_set(
 
 	let mut stat = Stat::default();
 	let mut leg = LeGraph::new(&cb);
-	commit_set::run_decide_commit_set(&mut leg, &mut stat);
+	commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 	let commit_set = leg.commit_set();
 
 	// Verify expected wires are committed
@@ -860,7 +860,7 @@ fn test_a_long_single_term_shift_run_commits_as_often_as_the_width_requires() {
 
 	let mut stat = Stat::default();
 	let mut leg = LeGraph::new(&cb);
-	commit_set::run_decide_commit_set(&mut leg, &mut stat);
+	commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 	// One break covers all 65 links, and it lands on the one the width forces.
 	let committed: Vec<u32> = (1..=n)
