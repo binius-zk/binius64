@@ -154,11 +154,10 @@ impl IOPProver {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
 				OperandColumns::build(table, &cs.constants, &cs.imul_constraints, alloc)
 			};
-			// The constraint axis is rounded up to a power of two and zero-filled, and the table
-			// holds `2^log_instances` instances, so every column has the power-of-two length the
-			// IntMul witness requires.
+			// The columns are built together from one constraint slice, so they are equal-length —
+			// the only shape IntMul requires. It rounds the constraint axis up itself.
 			let output = intmul::prove::<_, _, P, _>(columns.as_slices(), channel, alloc)
-				.expect("the operand columns are equal-length and power-of-two length");
+				.expect("the operand columns are equal-length");
 			(columns, output)
 		});
 
@@ -1279,6 +1278,72 @@ mod tests {
 		// Prove with the wide packing; the verifier is packing-agnostic.
 		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<WideP>::setup(&verifier);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
+	// None of the three operations has a power-of-two constraint count, so each one's operand
+	// columns stop partway through the constraint axis its reduction runs over.
+	//
+	// Every other fixture in this module happens to land on a power of two, where the columns span
+	// the axis exactly and the short-column path is never taken. This is the one that reaches it.
+	#[test]
+	fn protocol_round_trips_with_non_power_of_two_constraint_counts() {
+		use binius_frontend::Wire;
+
+		let builder = CircuitBuilder::new();
+		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
+		// Three standalone AND gates, three integer products, and three GHASH-field products.
+		for pair in inputs.chunks_exact(2).take(3) {
+			builder.mark_inout(builder.band(pair[0], pair[1]));
+		}
+		for pair in inputs.chunks_exact(2).take(3) {
+			let (hi, lo) = builder.imul(pair[0], pair[1]);
+			builder.mark_inout(hi);
+			builder.mark_inout(lo);
+		}
+		for i in 0..3 {
+			let (c_lo, c_hi) = builder.bmul(inputs[i], inputs[i + 1], inputs[i + 2], inputs[i + 3]);
+			builder.mark_inout(c_lo);
+			builder.mark_inout(c_hi);
+		}
+		let circuit = builder.build();
+
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
+		// Confirm the fixture reaches the case it exists for. A power-of-two count would leave
+		// every column spanning its axis exactly, which the other fixtures already cover.
+		for (name, count) in [
+			("AND", cs.n_and_constraints()),
+			("IMUL", cs.n_imul_constraints()),
+			("BMUL", cs.n_bmul_constraints()),
+		] {
+			assert!(
+				!count.is_power_of_two(),
+				"the fixture must give {name} a non-power-of-two constraint count, got {count}"
+			);
+		}
+
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			for &wire in &inputs {
+				w[wire] = Word(rng.next_u64());
+			}
+		})
+		.unwrap();
+
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove(&table, &mut prover_transcript);
