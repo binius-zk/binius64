@@ -46,7 +46,9 @@ use crate::{
 // The field's `Mul`/`Square`/`InvertOrZero`/`WideMul` are the width-one packing's arithmetic,
 // derived by the `binary_field!` macro from [`PackedGhashSq1x256b`] (`PackedPrimitiveType<M256,
 // GhashSq256b>`), whose implementation lives in `packed_ghash_sq`.
-binary_field!(pub GhashSq256b(M256), m256_from_u128s(0, 1));
+// Bit 248 is the lowest single-bit element of trace 1; bit 254 is the only other one. Bit 248 sits
+// at position 120 of the high word.
+binary_field!(pub GhashSq256b(M256), m256_from_u128s(0, 1), m256_from_u128s(0, 1 << 120));
 
 unsafe impl Pod for GhashSq256b {}
 
