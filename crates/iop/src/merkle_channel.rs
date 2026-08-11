@@ -33,7 +33,7 @@ pub trait MerkleIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 
 	/// Receives a Merkle commitment for a tree with the given depth and leaf size.
 	///
-	/// The leaves of the Merkle tree each contain exactly `leaf_size` `F` elements.
+	/// The leaves of the Merkle tree each contain exactly `leaf_size` field elements.
 	fn recv_merkle_commitment(
 		&mut self,
 		leaf_size: usize,
@@ -45,18 +45,21 @@ pub trait MerkleIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// Each commitment is associated with the `leaf_size` and `depth` requested when received with
 	/// [`Self::recv_merkle_commitment`]. All indices must be less than `2^depth`.
 	///
-	/// Returns `indices.len() * leaf_size` field elements, where each chunk of `leaf_size`
+	/// Returns `indices.len() * leaf_size` elements, where each chunk of `leaf_size`
 	/// contiguous elements corresponds to one provided index.
 	fn recv_openings(
 		&mut self,
 		commitment: &Self::Commitment,
 		indices: &[usize],
-	) -> Result<Vec<F>, Error>;
+	) -> Result<Vec<Self::Elem>, Error>;
 
 	/// Receives the full committed vector, bound by a Merkle commitment.
 	///
-	/// Returns `leaf_size << depth` field elements, in leaf order.
-	fn recv_committed_vector(&mut self, commitment: &Self::Commitment) -> Result<Vec<F>, Error>;
+	/// Returns `leaf_size << depth` elements, in leaf order.
+	fn recv_committed_vector(
+		&mut self,
+		commitment: &Self::Commitment,
+	) -> Result<Vec<Self::Elem>, Error>;
 
 	/// Samples a uniform integer with the given number of bits.
 	///
