@@ -160,18 +160,6 @@ impl<F: BinaryField> DomainContext for GenericPreExpanded<F> {
 	}
 }
 
-/// Provides a field element of trace 1.
-pub trait TraceOneElement {
-	/// Returns a field element which has trace 1.
-	fn trace_one_element() -> Self;
-}
-
-impl TraceOneElement for binius_field::BinaryField128bGhash {
-	fn trace_one_element() -> Self {
-		Self::new(1 << 121)
-	}
-}
-
 /// Computes the first `num_basis_elements` Gao-Mateer basis elements of the field.
 ///
 /// ## Preconditions
@@ -179,14 +167,14 @@ impl TraceOneElement for binius_field::BinaryField128bGhash {
 /// - The degree (over $\mathbb{F}_2$) of the field needs to be a tower of two. For example, it does
 ///   **not** work with $\mathbb{F}_{2^3}$, but it works with $\mathbb{F}_{2^4}$.
 /// - `num_basis_elements` must be nonzero
-fn gao_mateer_basis<F: BinaryField + TraceOneElement>(num_basis_elements: usize) -> Vec<F> {
+fn gao_mateer_basis<F: BinaryField>(num_basis_elements: usize) -> Vec<F> {
 	const {
 		assert!(F::N_BITS.is_power_of_two(), "the field degree over F_2 must be a power of two");
 	}
 
 	// this is beta_(F::N_BITS - 1)
 	// e.g. for a 128-bit field, this is beta_127
-	let mut beta = F::trace_one_element();
+	let mut beta = F::TRACE_ONE_ELEMENT;
 
 	// we compute beta_126, then beta_125, etc, by repeatedly applying x |-> x^2 + x
 	for _i in 0..(F::N_BITS - num_basis_elements) {
@@ -240,7 +228,7 @@ pub struct GaoMateerOnTheFly<F> {
 	basis: Vec<F>,
 }
 
-impl<F: BinaryField + TraceOneElement> GaoMateerOnTheFly<F> {
+impl<F: BinaryField> GaoMateerOnTheFly<F> {
 	/// Given the intended size of $S^{(0)}$, computes a "nice" Gao-Mateer [`DomainContext`].
 	///
 	/// This will _not_ precompute the twiddles; instead they will be computed on-the-fly.
@@ -292,7 +280,7 @@ pub struct GaoMateerPreExpanded<F> {
 	expanded: Vec<F>,
 }
 
-impl<F: BinaryField + TraceOneElement> GaoMateerPreExpanded<F> {
+impl<F: BinaryField> GaoMateerPreExpanded<F> {
 	/// Given the intended size of $S^{(0)}$, computes a "nice" Gao-Mateer [`DomainContext`].
 	///
 	/// This will _precompute_ the twiddles.
@@ -343,6 +331,8 @@ impl<F: BinaryField> DomainContext for GaoMateerPreExpanded<F> {
 
 #[cfg(test)]
 mod tests {
+	use binius_field::{AESTowerField8b, GhashSq256b};
+
 	use super::*;
 	use crate::test_utils::B128;
 
@@ -387,6 +377,33 @@ mod tests {
 
 		test_equivalence(&dc_gm_otf, &dc_gm_pre, LOG_SIZE);
 		test_equivalence(&dc_gm_otf, &dc_generic_otf, LOG_SIZE);
+	}
+
+	// Every binary field can seed a Gao-Mateer basis, not just the 128-bit one the old
+	// `TraceOneElement` trait was implemented for.
+	//
+	// `gao_mateer_basis` asserts `beta_0 == ONE`, which holds only if the field's
+	// `TRACE_ONE_ELEMENT` really has trace 1 — so this exercises each constant through the code
+	// that consumes it. The basis must also be linearly independent, which the subspace's
+	// dimension reports.
+	#[test]
+	fn test_gao_mateer_over_every_field() {
+		fn check<F: BinaryField>(log_size: usize) {
+			let dc = GaoMateerPreExpanded::<F>::generate(log_size);
+			let basis = dc.subspace(log_size);
+			assert_eq!(basis.dim(), log_size);
+			assert_eq!(basis.basis()[0], F::ONE);
+
+			// The defining descent: beta_i = beta_{i+1}^2 + beta_{i+1}.
+			for window in basis.basis().windows(2) {
+				assert_eq!(window[0], window[1].square() + window[1]);
+			}
+		}
+
+		// The domain cannot exceed the field's degree over F_2, so each field gets its own size.
+		check::<AESTowerField8b>(8);
+		check::<B128>(5);
+		check::<GhashSq256b>(5);
 	}
 
 	#[test]
