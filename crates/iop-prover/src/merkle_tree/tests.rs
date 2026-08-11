@@ -216,16 +216,17 @@ fn test_binary_merkle_vcs_hiding_batch_size() {
 	}
 }
 
-/// Commits the same scalars through both entry points and requires identical trees.
-///
-/// [`MerkleTreeProver::commit`] reads a flat scalar slice and never sees the packing.
-/// It is therefore an independent reference for the packed path.
 fn check_commit_field_buffer_matches_commit<P: PackedField<Scalar = B128>>() {
 	let mut rng = StdRng::seed_from_u64(0);
 	let prover = BinaryMerkleTreeProver::<B128, StdHashSuite>::new();
 
-	// Sweep both sides of the packing width: a buffer may be narrower than one word, and a leaf
-	// may be narrower, equal, or wider than one word.
+	// Invariant: a packed buffer commits to the tree its flat scalar sequence commits to.
+	//
+	//     reference : flat scalar slice  ->  leaves, packing never involved
+	//     under test: packed buffer      ->  the same leaves, read out of packed words
+	//
+	// Sweep: buffers of 1 to 32 scalars, and every leaf size up to the buffer.
+	// Both ranges cross the packing width, so each branch of the chunker is exercised.
 	for log_len in 0..=5 {
 		let scalars = random_scalars::<B128>(&mut rng, 1 << log_len);
 		let buffer = FieldBuffer::<P, _>::from_values(&scalars);
@@ -242,7 +243,7 @@ fn check_commit_field_buffer_matches_commit<P: PackedField<Scalar = B128>>() {
 
 #[test]
 fn test_commit_field_buffer_matches_commit() {
-	// Two widths so that every leaf size lands on both sides of P::LOG_WIDTH across the sweep.
+	// Two packing widths, so a leaf of 2 scalars lands on either side of a word boundary.
 	check_commit_field_buffer_matches_commit::<PackedBinaryGhash2x128b>();
 	check_commit_field_buffer_matches_commit::<PackedBinaryGhash4x128b>();
 }
@@ -253,7 +254,10 @@ fn test_commit_field_buffer_rejects_oversized_leaf() {
 	let mut rng = StdRng::seed_from_u64(0);
 	let prover = BinaryMerkleTreeProver::<B128, StdHashSuite>::new();
 
-	// A leaf wider than the whole buffer has no valid leaf count.
+	// Fixture state: 4 scalars in the buffer, 2^3 = 8 scalars asked for per leaf.
+	//
+	// A leaf wider than the buffer would need half a leaf to hold it.
+	// No leaf count fits, so the split is rejected up front.
 	let buffer = FieldBuffer::<PackedBinaryGhash4x128b, _>::from_values(&random_scalars::<B128>(
 		&mut rng, 4,
 	));

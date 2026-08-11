@@ -361,10 +361,14 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// chunk i  ->  scalars [i * 2^log_chunk_size, (i+1) * 2^log_chunk_size)
 	/// ```
 	///
-	/// Every chunk has the same iterator type, whatever its size relative to `P::WIDTH`.
-	/// Consumers therefore pay no per-scalar dispatch.
+	/// A chunk takes one of two shapes, chosen once before any scalar is read:
 	///
-	/// [`chunks_par`](Self::chunks_par) instead repacks a sub-width chunk into an owned word.
+	/// ```text
+	/// chunk >= one packed word  ->  a run of whole words
+	/// chunk <  one packed word  ->  a lane range inside a single word
+	/// ```
+	///
+	/// [`chunks_par`](Self::chunks_par) instead repacks a sub-word chunk into an owned word.
 	/// Prefer this method when the consumer only reads scalars.
 	///
 	/// # Preconditions
@@ -379,26 +383,38 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 			"precondition: log_chunk_size must be at most log_len"
 		);
 
-		// Invariant: the chunk count follows the logical length, not the backing word count.
-		// A sub-width buffer's dead lanes therefore never form a chunk of their own.
-		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		let chunk_len = 1usize << log_chunk_size;
 		let words = self.as_ref();
-
-		(0..chunk_count).into_par_iter().map(move |chunk_index| {
-			// Scalars `[start, start + chunk_len)` span these words:
+		if log_chunk_size >= P::LOG_WIDTH {
+			// A chunk is a run of whole words:
 			//
-			//     word_range = start / WIDTH .. ceil((start + chunk_len) / WIDTH)
+			//     store = 2^(log_len - LOG_WIDTH) words
+			//     chunk = 2^(log_chunk_size - LOG_WIDTH) words
 			//
-			// Below the packing width that is one word, and `lane_offset` picks the chunk in it.
-			let start = chunk_index << log_chunk_size;
-			let word_range = (start >> P::LOG_WIDTH)..(start + chunk_len).div_ceil(P::WIDTH);
-			let lane_offset = start & (P::WIDTH - 1);
+			// Both counts are powers of two, so the runs tile the store with none left over.
+			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
+			Either::Left(
+				words
+					.par_chunks(words_per_chunk)
+					.map(|chunk| Either::Left(P::iter_slice(chunk))),
+			)
+		} else {
+			// Several chunks share one word, so the count comes from the logical length:
+			//
+			//     log_len = 1, LOG_WIDTH = 2, log_chunk_size = 0
+			//     word = [s_0, s_1, dead, dead]  ->  chunks [s_0], [s_1]
+			//
+			// A buffer narrower than one word never turns its dead lanes into a chunk.
+			let chunk_count = 1 << (self.log_len - log_chunk_size);
 
-			P::iter_slice(&words[word_range])
-				.skip(lane_offset)
-				.take(chunk_len)
-		})
+			// The chunk index splits in two: high bits pick the word, low bits pick the lanes.
+			let log_chunks_per_word = P::LOG_WIDTH - log_chunk_size;
+			Either::Right((0..chunk_count).into_par_iter().map(move |chunk_index| {
+				let word = words[chunk_index >> log_chunks_per_word];
+				let chunk_subindex = chunk_index & ((1 << log_chunks_per_word) - 1);
+				let lane_offset = chunk_subindex << log_chunk_size;
+				Either::Right((0..1 << log_chunk_size).map(move |i| word.get(lane_offset | i)))
+			}))
+		}
 	}
 
 	/// Splits the buffer in half and returns a pair of borrowed slices.
@@ -1268,11 +1284,13 @@ mod tests {
 
 	#[test]
 	fn test_par_chunk_scalars_ignores_dead_lanes() {
-		// A 2-scalar buffer still occupies one 4-lane word, so two lanes are dead.
+		// Fixture state: 2 scalars occupy one 4-lane word, leaving two lanes dead.
+		//
+		//     word = [s_0, s_1, dead, dead]
 		let values: Vec<F> = (0..2).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
-		// One scalar per chunk yields two chunks, not the four lanes of the backing word.
+		// One scalar per chunk: 2 live scalars give 2 chunks, not the word's 4 lanes.
 		let chunks: Vec<Vec<F>> = buffer
 			.par_chunk_scalars(0)
 			.map(|chunk| chunk.collect())
@@ -1672,8 +1690,8 @@ mod tests {
 		fn par_chunk_scalars_partitions_the_buffer(
 			(log_len, log_chunk_size) in (0usize..=6).prop_flat_map(|n| (Just(n), 0usize..=n)),
 		) {
-			// Invariant: the chunks tile the buffer exactly, at every size either side of
-			// P::LOG_WIDTH.
+			// Invariant: the chunks tile the buffer exactly.
+			// The sweep reaches chunk sizes on both sides of the packing width.
 			let values: Vec<F> = (0..1u128 << log_len).map(F::new).collect();
 			let buffer = FieldBuffer::<P>::from_values(&values);
 
@@ -1682,10 +1700,10 @@ mod tests {
 				.map(|chunk| chunk.collect())
 				.collect();
 
-			// The count follows the logical length, so a sub-word buffer yields no phantom chunks.
+			// The count follows the logical length, not the backing word count.
 			prop_assert_eq!(chunks.len(), 1 << (log_len - log_chunk_size));
 
-			// Every chunk agrees with the already-tested serial `chunk` accessor.
+			// Cross-check: each chunk matches what the serial accessor returns at the same index.
 			for (index, scalars) in chunks.iter().enumerate() {
 				let expected: Vec<F> = buffer.chunk(log_chunk_size, index).iter_scalars().collect();
 				prop_assert_eq!(scalars, &expected);

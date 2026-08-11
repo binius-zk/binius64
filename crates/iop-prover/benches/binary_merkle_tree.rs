@@ -28,7 +28,8 @@ const LOG_ELEMS_IN_LEAF: usize = 4;
 /// ```
 ///
 /// `OptimalPackedB128` widens past `1x128b` only under `RUSTFLAGS="-C target-cpu=native"`.
-/// On a baseline target it collapses to `1x128b` and both cases measure the same path.
+/// On a baseline target it collapses to `1x128b`.
+/// Both cases then measure the same path.
 fn bench_binary_merkle_tree<P, H>(c: &mut Criterion, hash_name: &str, packing_name: impl AsRef<str>)
 where
 	P: PackedField<Scalar = B128>,

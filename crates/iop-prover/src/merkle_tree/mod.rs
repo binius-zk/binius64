@@ -11,7 +11,7 @@ pub mod prover;
 #[cfg(test)]
 mod tests;
 
-/// The digest type that prover `M`'s Merkle tree scheme produces.
+/// The digest type produced by a Merkle tree prover's scheme.
 pub type ProverDigest<T, M> = <<M as MerkleTreeProver<T>>::Scheme as MerkleTreeScheme<T>>::Digest;
 
 /// A Merkle tree prover for a particular scheme.
@@ -55,12 +55,12 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 	/// leaf i  <-  buffer[i * 2^log_leaf_len .. (i+1) * 2^log_leaf_len]
 	/// ```
 	///
-	/// The leaf count is `2^(buffer.log_len() - log_leaf_len)` — always a power of two.
-	/// This satisfies [`commit_iterated`](Self::commit_iterated)'s leaf-count precondition.
+	/// The leaf count is `2^(log_len - log_leaf_len)`, hence a power of two by construction.
+	/// That is what [`commit_iterated`](Self::commit_iterated) requires of it.
 	///
 	/// ## Preconditions
 	///
-	/// * `log_leaf_len` must be at most `buffer.log_len()`.
+	/// * `log_leaf_len` must be at most the buffer's log length.
 	fn commit_field_buffer<P>(
 		&self,
 		buffer: FieldSlice<P>,
@@ -69,8 +69,8 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 	where
 		P: PackedField<Scalar = T>,
 	{
-		// Why: the leaf count follows the buffer's logical length, not its backing word count.
-		// A buffer narrower than one packed word must not commit its dead lanes.
+		// Invariant: leaves are counted in scalar space, never in backing words.
+		// A buffer narrower than one packed word therefore commits no dead lanes.
 		self.commit_iterated(buffer.par_chunk_scalars(log_leaf_len), 1 << log_leaf_len)
 	}
 
