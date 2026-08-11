@@ -25,7 +25,7 @@ use getset::Getters;
 
 use super::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, OperationEvalFn,
-	SHIFT_VARIANT_COUNT, ZERO_ARITY, encode_operation_input, error::Error, evaluate_h_op,
+	SHIFT_COUNT, ShiftScalars, ZERO_ARITY, encode_operation_input, error::Error, evaluate_h_op,
 };
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
@@ -546,26 +546,44 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		let eq_r_v = eq_ind_partial_eval_scalars(r_v_v);
 		let h_eval = inner_product_scalars(h_op_evals, eq_r_v.iter().cloned());
 
-		// A key's shift now selects itself through a pure equality indicator over both shift axes,
-		// scaled by that one h evaluation. Built once, so the Zero, BitAnd, IntMul and BinMul
-		// monster evaluations share it. Indexed by `variant * Word::BITS + amount`.
+		// A key's sequence selects itself through an equality indicator over both slots' axes,
+		// scaled by the one h evaluation.
+		// The weight factorizes, so it is one table per slot rather than one over the sequence
+		// space — see [`ShiftScalars`].
+		//
+		// Both are built once and shared by the Zero, BitAnd, IntMul and BinMul evaluations.
+		// Each is indexed by `variant * Word::BITS + amount`.
 		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
-		let shift_scalars =
-			Box::new(array::from_fn::<_, { SHIFT_VARIANT_COUNT * Word::BITS }, _>(|i| {
-				h_eval.clone() * &eq_r_v[i / Word::BITS] * &eq_r_s[i % Word::BITS]
-			}));
+		let inner_shift_scalars = Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
+			h_eval.clone() * &eq_r_v[i / Word::BITS] * &eq_r_s[i % Word::BITS]
+		}));
+
+		// The outer slot's table, at the all-zero point: no challenges are drawn over those axes.
+		// There the indicator selects the identity, the only outer shift a term may carry.
+		//
+		//     index 0 = (Sll, 0) -> one
+		//     every other index  -> zero
+		//
+		// So a well-formed term's weight is unchanged.
+		let outer_shift_scalars = Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
+			if i == 0 { E::from(F::ONE) } else { E::zero() }
+		}));
+		let shift_scalars = ShiftScalars {
+			inner: &inner_shift_scalars,
+			outer: &outer_shift_scalars,
+		};
 
 		// Re-encode the shared tensors with each operation's `r_x'` and `lambda`. IntMul and BinMul
 		// are skipped (no input built) when they have no constraints.
 		let zero_input =
-			encode_operation_input(zero_r_x_prime_v, zero_lambda_v, &shift_scalars, r_y_tensor);
+			encode_operation_input(zero_r_x_prime_v, zero_lambda_v, shift_scalars, r_y_tensor);
 		let bitand_input =
-			encode_operation_input(bitand_r_x_prime_v, bitand_lambda_v, &shift_scalars, r_y_tensor);
+			encode_operation_input(bitand_r_x_prime_v, bitand_lambda_v, shift_scalars, r_y_tensor);
 		let intmul_input = (!self.constraint_system.imul_constraints.is_empty()).then(|| {
-			encode_operation_input(intmul_r_x_prime_v, intmul_lambda_v, &shift_scalars, r_y_tensor)
+			encode_operation_input(intmul_r_x_prime_v, intmul_lambda_v, shift_scalars, r_y_tensor)
 		});
 		let binmul_input = (!self.constraint_system.bmul_constraints.is_empty()).then(|| {
-			encode_operation_input(binmul_r_x_prime_v, binmul_lambda_v, &shift_scalars, r_y_tensor)
+			encode_operation_input(binmul_r_x_prime_v, binmul_lambda_v, shift_scalars, r_y_tensor)
 		});
 
 		OperationInputs {

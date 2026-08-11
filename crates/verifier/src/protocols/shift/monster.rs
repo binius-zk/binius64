@@ -3,7 +3,10 @@
 
 use std::iter;
 
-use binius_core::{constraint_system::Operand, word::Word};
+use binius_core::{
+	constraint_system::{Operand, Shift},
+	word::Word,
+};
 use binius_field::{
 	BinaryField, FieldOps, WideMul,
 	util::{FieldFn, powers},
@@ -14,7 +17,7 @@ use binius_math::{
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
-	SHIFT_VARIANT_COUNT,
+	SHIFT_COUNT, SHIFT_VARIANT_COUNT,
 	shift_ind::{partial_eval_phi, partial_eval_sigmas, partial_eval_sigmas_transpose},
 };
 
@@ -146,11 +149,15 @@ impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 		}
 	}
 
-	/// Splits the flat [`FieldFn`] input into `(r_x_prime, lambda, shift_scalars, r_y_tensor)`.
+	/// Splits the flat [`FieldFn`] input into its sections.
 	///
 	/// The `r_x'` section has `ceil(log2(constraints.len()))` entries — the reductions run over the
 	/// constraint count rounded up to a power of two — so the split needs no state beyond the
 	/// constraints.
+	///
+	/// Two shift-scalar tables follow, one per slot of a term's shift sequence.
+	/// Each is [`SHIFT_COUNT`] entries wide; see [`ShiftScalars`] for why the weight splits that
+	/// way.
 	///
 	/// The word-index tensor arrives as one run per value segment, in
 	/// [`ValueSegment`](binius_core::constraint_system::ValueSegment) order, and
@@ -161,14 +168,20 @@ impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 	fn split_input<'i, E>(
 		&self,
 		input: &'i [E],
-	) -> (&'i [E], &'i E, &'i [E; SHIFT_VARIANT_COUNT * Word::BITS], [&'i [E]; 3]) {
+	) -> (&'i [E], &'i E, ShiftScalars<'i, E>, [&'i [E]; 3]) {
 		let n_vars = log2_ceil_usize(self.constraints.len());
 		let (r_x_prime, rest) = input.split_at(n_vars);
 		let (lambda, rest) = rest.split_first().expect("input encodes lambda");
-		let (shift_scalars, rest) = rest.split_at(SHIFT_VARIANT_COUNT * Word::BITS);
-		let shift_scalars = shift_scalars
-			.try_into()
-			.expect("input encodes the shift scalars");
+		let (inner, rest) = rest.split_at(SHIFT_COUNT);
+		let (outer, rest) = rest.split_at(SHIFT_COUNT);
+		let shift_scalars = ShiftScalars {
+			inner: inner
+				.try_into()
+				.expect("input encodes the inner shift scalars"),
+			outer: outer
+				.try_into()
+				.expect("input encodes the outer shift scalars"),
+		};
 
 		let (constants, rest) = rest.split_at(self.n_constants);
 		let (inout, rest) = rest.split_at(self.n_inout);
@@ -176,6 +189,48 @@ impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 
 		(r_x_prime, lambda, shift_scalars, [constants, inout, hidden])
 	}
+}
+
+/// The shift-sequence weight tables, one per slot of the sequence.
+///
+/// A term's sequence weight factorizes across its two slots:
+///
+/// ```text
+/// eq(r_v1, v_1) * eq(r_s1, s_1)  *  eq(r_v2, v_2) * eq(r_s2, s_2)
+/// \_______ inner table _______/     \_______ outer table ______/
+/// ```
+///
+/// One table per slot holds the weights at `2 * SHIFT_COUNT` = 1,024 entries.
+/// Keying a single table on the whole sequence would need `SHIFT_COUNT^2` = 262,144.
+/// Fanning that out over the operand batching coefficients reaches roughly 1.5M multiplications at
+/// BMUL's arity of six.
+///
+/// The cost of the split is one extra multiply per term.
+pub struct ShiftScalars<'a, E> {
+	/// The weight of each spelling the inner shift slot can take, with the operand batching
+	/// coefficients yet to be fanned in.
+	pub inner: &'a [E; SHIFT_COUNT],
+	/// The weight of each spelling the outer shift slot can take.
+	pub outer: &'a [E; SHIFT_COUNT],
+}
+
+// Two shared slices copy freely whatever `E` is. Deriving these would demand `E: Copy`, which the
+// generic evaluation path does not have.
+impl<E> Clone for ShiftScalars<'_, E> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<E> Copy for ShiftScalars<'_, E> {}
+
+/// Places a shift in its slot's weight table.
+///
+/// The variant indexes runs of `Word::BITS`, and the amount indexes within a run.
+/// The prover's shift multilinears use the same layout.
+#[inline]
+const fn shift_index(shift: Shift) -> usize {
+	shift.variant as usize * Word::BITS + shift.amount as usize
 }
 
 impl<F, C, const ARITY: usize> FieldFn<F> for OperationEvalFn<'_, C, ARITY>
@@ -187,24 +242,27 @@ where
 		let (r_x_prime, lambda, shift_scalars, r_y_tensor) = self.split_input(input);
 
 		let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
+		// The batching coefficients fan into the inner table only, holding it to
+		// `SHIFT_COUNT * arity`; the outer weight multiplies in per term.
 		let operand_shift_scalars =
-			operand_shift_scalar_table(shift_scalars, lambda.clone(), ARITY);
+			operand_shift_scalar_table(shift_scalars.inner, lambda.clone(), ARITY);
 
-		// Accumulate one contribution per constraint. Within a constraint, each shifted-value term
-		// over all operands is weighted by its operand shift scalar and the word-index tensor
-		// entry; the running sum is then scaled by the constraint-index tensor entry. The tensor
-		// covers the padded constraint count, so the zip stops at the last real constraint; the
-		// padding rows have no operand terms and contribute nothing.
+		// One contribution per constraint.
+		// Each term is weighted by its two slots' shift scalars and its word-index tensor entry.
+		// The running sum then scales by the constraint-index tensor entry.
+		//
+		// The tensor covers the padded constraint count, so the zip stops at the last real
+		// constraint; padding rows carry no operand terms and contribute nothing.
 		let mut eval = E::zero();
 		for (constraint, r_x_prime_entry) in iter::zip(self.constraints, &r_x_prime_tensor) {
 			let mut constraint_eval = E::zero();
 			for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 				for svi in operand {
 					debug_assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
-					let variant = svi.inner().variant as usize;
-					let index =
-						(variant * Word::BITS + svi.inner().amount as usize) * ARITY + operand_id;
-					constraint_eval += operand_shift_scalars[index].clone()
+					let inner = shift_index(svi.inner()) * ARITY + operand_id;
+					let outer = shift_index(svi.outer());
+					constraint_eval += operand_shift_scalars[inner].clone()
+						* &shift_scalars.outer[outer]
 						* &r_y_tensor[svi.value_index.segment() as usize]
 							[svi.value_index.index() as usize];
 				}
@@ -226,7 +284,7 @@ where
 		let (r_x_prime, lambda, shift_scalars, r_y_tensor) = self.split_input(input);
 
 		let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
-		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars, *lambda, ARITY);
+		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars.inner, *lambda, ARITY);
 
 		// One unreduced wide product per constraint. The constraints partition cleanly across
 		// rayon: each produces a single wide element and they are summed, so there is no large
@@ -242,10 +300,10 @@ where
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 					for svi in operand {
 						debug_assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
-						let variant = svi.inner().variant as usize;
-						let index = (variant * Word::BITS + svi.inner().amount as usize) * ARITY
-							+ operand_id;
-						constraint_eval += operand_shift_scalars[index]
+						let inner = shift_index(svi.inner()) * ARITY + operand_id;
+						let outer = shift_index(svi.outer());
+						constraint_eval += operand_shift_scalars[inner]
+							* shift_scalars.outer[outer]
 							* r_y_tensor[svi.value_index.segment() as usize]
 								[svi.value_index.index() as usize];
 					}
@@ -259,23 +317,26 @@ where
 
 /// Builds the flat [`FieldFn`] input consumed by [`OperationEvalFn`].
 ///
-/// Concatenates `r_x_prime ++ [lambda] ++ shift_scalars ++ r_y_tensor`.
-/// `OperationEvalFn::split_input` is the inverse; it recovers the `r_x'` length from the constraint
-/// count, so only `lambda` and the fixed-length shift scalars need a known position.
+/// Concatenates `r_x_prime ++ [lambda] ++ inner_shift_scalars ++ outer_shift_scalars ++
+/// r_y_tensor`. `OperationEvalFn::split_input` is the inverse; it recovers the `r_x'` length from
+/// the constraint count, so only `lambda` and the two fixed-length shift-scalar tables need a known
+/// position.
 pub fn encode_operation_input<E: Clone>(
 	r_x_prime: &[E],
 	lambda: E,
-	shift_scalars: &[E; SHIFT_VARIANT_COUNT * Word::BITS],
+	shift_scalars: ShiftScalars<'_, E>,
 	r_y_tensor: [&[E]; 3],
 ) -> Vec<E> {
 	let n_words = r_y_tensor
 		.iter()
 		.map(|segment| segment.len())
 		.sum::<usize>();
-	let mut input = Vec::with_capacity(r_x_prime.len() + 1 + shift_scalars.len() + n_words);
+	let mut input = Vec::with_capacity(r_x_prime.len() + 1 + 2 * SHIFT_COUNT + n_words);
 	input.extend_from_slice(r_x_prime);
 	input.push(lambda);
-	input.extend_from_slice(shift_scalars);
+	// The inner table leads the outer one, which is the order `split_input` cuts them back apart.
+	input.extend_from_slice(shift_scalars.inner);
+	input.extend_from_slice(shift_scalars.outer);
 	// One run per value segment, in `ValueSegment` order, which is how `split_input` cuts them
 	// back apart.
 	for segment in r_y_tensor {
@@ -284,12 +345,15 @@ pub fn encode_operation_input<E: Clone>(
 	input
 }
 
-/// Folds the operand batching coefficients (λ powers) into the shared shift scalars, producing a
-/// table indexed by `(variant, amount, operand_id)` whose entry is
-/// `shift_scalars[variant * Word::BITS + amount] · λ^{operand_id + 1}` — the scalar that
-/// multiplies each shifted-value term.
+/// Folds the operand batching coefficients (λ powers) into the inner slot's shift scalars,
+/// producing a table indexed by `(variant, amount, operand_id)` whose entry is
+/// `inner[variant * Word::BITS + amount] · λ^{operand_id + 1}`.
+///
+/// The fan-out stays on this one table.
+/// A term's outer-slot weight multiplies in where the term is read.
+/// So the table is `SHIFT_COUNT * arity` entries rather than `SHIFT_COUNT^2 * arity`.
 fn operand_shift_scalar_table<E: FieldOps>(
-	shift_scalars: &[E; SHIFT_VARIANT_COUNT * Word::BITS],
+	shift_scalars: &[E; SHIFT_COUNT],
 	lambda: E,
 	arity: usize,
 ) -> Vec<E> {
@@ -361,6 +425,75 @@ mod tests {
 			.collect()
 	}
 
+	#[test]
+	fn shift_index_places_a_shift_by_variant_then_amount() {
+		// Both slot tables share this layout, and so do the prover's phase-1 multilinears: runs of
+		// `Word::BITS` amounts, one run per variant. A table indexed the other way round would
+		// weight a term by another shift's scalar.
+		assert_eq!(shift_index(Shift::IDENTITY), 0);
+		assert_eq!(shift_index(Shift::sll(5)), 5);
+		assert_eq!(shift_index(Shift::srl(0)), Word::BITS);
+		assert_eq!(shift_index(Shift::srl(3)), Word::BITS + 3);
+		assert_eq!(shift_index(Shift::rotr32(31)), ShiftVariant::Rotr32 as usize * Word::BITS + 31);
+
+		// Every spelling lands inside its table.
+		for variant in ShiftVariant::ALL {
+			for amount in 0..variant.max_amount() {
+				assert!(shift_index(Shift::new(variant, amount)) < SHIFT_COUNT);
+			}
+		}
+	}
+
+	#[test]
+	fn evaluate_monster_scales_by_the_outer_slot_weight() {
+		// Invariant: the outer slot's weight reaches the evaluation, and reaches it as a factor.
+		//
+		// Every term the fixture builds carries an identity outer shift, so index 0 is the only
+		// entry read. Scaling it must scale the whole evaluation by the same factor.
+		type F = BinaryField128bGhash;
+		let mut rng = StdRng::seed_from_u64(7);
+
+		let n_words = 40usize;
+		let constraints = random_and_constraints(&mut rng, 32, n_words);
+		let r_x_prime = random_scalars::<F>(&mut rng, 5);
+		let lambda = F::random(&mut rng);
+		let inner: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
+		let hidden_tensor = random_scalars::<F>(&mut rng, n_words);
+		let r_y_tensor = [&[][..], &[][..], &hidden_tensor[..]];
+
+		let eval_fn = OperationEvalFn::new(&constraints, 0, 0, n_words);
+		let eval_with_outer = |outer: &[F; SHIFT_COUNT]| {
+			let shift_scalars = ShiftScalars {
+				inner: &inner,
+				outer,
+			};
+			let input = encode_operation_input(&r_x_prime, lambda, shift_scalars, r_y_tensor);
+			eval_fn.call_native(&input)
+		};
+
+		// The identity-selecting table, which is what the two-phase reduction supplies.
+		let mut identity_selecting = [F::ZERO; SHIFT_COUNT];
+		identity_selecting[0] = F::ONE;
+		let baseline = eval_with_outer(&identity_selecting);
+		// A non-degenerate fixture, or the scaling below proves nothing.
+		assert_ne!(baseline, F::ZERO);
+
+		// Scaling the entry every term reads scales the evaluation by the same factor.
+		let scale = F::random(&mut rng);
+		let mut scaled = [F::ZERO; SHIFT_COUNT];
+		scaled[0] = scale;
+		assert_eq!(eval_with_outer(&scaled), baseline * scale);
+
+		// Zeroing it kills the evaluation, so no term slipped past the outer factor.
+		assert_eq!(eval_with_outer(&[F::ZERO; SHIFT_COUNT]), F::ZERO);
+
+		// The weight of a shift the fixture never names must not enter. Only index 0 is read, so
+		// filling every other entry changes nothing.
+		let mut noise = [F::random(&mut rng); SHIFT_COUNT];
+		noise[0] = F::ONE;
+		assert_eq!(eval_with_outer(&noise), baseline);
+	}
+
 	/// The native `WideMul` variant must produce exactly the same result as the generic
 	/// evaluation (deferred reduction is `F`-linear). Covers a power-of-two constraint count and a
 	/// non-power-of-two one, whose `r_x'` tensor runs past the last constraint.
@@ -375,13 +508,19 @@ mod tests {
 
 			let r_x_prime = random_scalars::<F>(&mut rng, log2_ceil_usize(n_constraints));
 			let lambda = F::random(&mut rng);
-			let shift_scalars: [F; SHIFT_VARIANT_COUNT * Word::BITS] =
-				std::array::from_fn(|_| F::random(&mut rng));
+			// Both slots draw random weights, so a path that dropped the outer factor, or read
+			// it from the inner table, would disagree with the other.
+			let inner: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
+			let outer: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
+			let shift_scalars = ShiftScalars {
+				inner: &inner,
+				outer: &outer,
+			};
 			let hidden_tensor = random_scalars::<F>(&mut rng, n_words);
 			let r_y_tensor = [&[][..], &[][..], &hidden_tensor[..]];
 
 			let eval_fn = OperationEvalFn::new(&constraints, 0, 0, n_words);
-			let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, r_y_tensor);
+			let input = encode_operation_input(&r_x_prime, lambda, shift_scalars, r_y_tensor);
 			let generic = eval_fn.call::<F>(&input);
 			let native = eval_fn.call_native(&input);
 			assert_eq!(generic, native, "n_constraints = {n_constraints}");
@@ -413,12 +552,16 @@ mod tests {
 
 		let r_x_prime = random_scalars::<F>(&mut rng, log2_ceil_usize(n_constraints));
 		let lambda = F::random(&mut rng);
-		let shift_scalars: [F; SHIFT_VARIANT_COUNT * Word::BITS] =
-			std::array::from_fn(|_| F::random(&mut rng));
+		let inner: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
+		let outer: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
+		let shift_scalars = ShiftScalars {
+			inner: &inner,
+			outer: &outer,
+		};
 		let hidden_tensor = random_scalars::<F>(&mut rng, n_words);
 		let r_y_tensor = [&[][..], &[][..], &hidden_tensor[..]];
 
-		let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, r_y_tensor);
+		let input = encode_operation_input(&r_x_prime, lambda, shift_scalars, r_y_tensor);
 		assert_eq!(
 			OperationEvalFn::new(&constraints, 0, 0, n_words).call::<F>(&input),
 			OperationEvalFn::new(&padded, 0, 0, n_words).call::<F>(&input)

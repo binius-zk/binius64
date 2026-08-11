@@ -181,9 +181,14 @@ pub fn build_g_from_folded_words<F: BinaryField, A: Allocator>(
 			);
 
 			// The key's shift variant indexes the high variables and its shift amount the middle
-			// ones, which together name one run of bit slots.
-			let (variant, amount) = segment.dense_shift_enc.decode(key.dense_shift_idx as usize);
-			let base = (variant as usize * Word::BITS + amount as usize) * Word::BITS;
+			// ones, which together name one run of bit slots. Phase 1 folds one shift axis pair, so
+			// this reads the sequence's inner slot; the outer one holds the identity.
+			let [inner, outer] = segment.dense_shift_enc.decode(key.dense_shift_idx as usize);
+			debug_assert!(
+				outer.is_identity(),
+				"the two-phase shift reduction reads only the inner shift of a sequence"
+			);
+			let base = (inner.variant as usize * Word::BITS + inner.amount as usize) * Word::BITS;
 			let slots = &mut multilinear.as_mut()[base..base + Word::BITS];
 
 			// Scatter the accumulator across this key's bit slots, scaling each by the folded bit.

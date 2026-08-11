@@ -1,12 +1,30 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_core::word::Word;
+
 /// The base-2 logarithm of [`SHIFT_VARIANT_COUNT`].
 ///
 /// Phase 1 folds the shift variant with this many sumcheck variables, in the high index
 /// positions of its two multilinears.
 pub const LOG_SHIFT_VARIANT_COUNT: usize = 3;
 pub const SHIFT_VARIANT_COUNT: usize = 1 << LOG_SHIFT_VARIANT_COUNT;
+
+/// The number of `(variant, amount)` spellings one shift slot can take.
+///
+/// A shift is a variant paired with an amount below `Word::BITS`.
+/// So this is the size of the axis pair a slot-binding phase folds:
+///
+/// ```text
+/// middle variables -> the shift amount
+/// high variables   -> the shift variant
+/// ```
+///
+/// One weight table per shift slot has this many entries.
+/// A term carries two slots, so the sequences it could name number `SHIFT_COUNT^2`.
+/// The weight factorizes across the slots, so two tables of this size replace one of that square.
+pub const SHIFT_COUNT: usize = SHIFT_VARIANT_COUNT * Word::BITS;
+
 pub const ZERO_ARITY: usize = 1;
 pub const BITAND_ARITY: usize = 3;
 pub const INTMUL_ARITY: usize = 4;

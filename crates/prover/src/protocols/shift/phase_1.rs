@@ -22,7 +22,7 @@ use itertools::izip;
 use tracing::instrument;
 
 use super::{
-	SegmentWords,
+	DOUBLE_SHIFT_UNSUPPORTED, SegmentWords,
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment},
 	monster::build_h,
@@ -259,9 +259,14 @@ pub fn build_g<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 
 /// Spreads the rows of a dense phase-1 accumulator over the shift axes of the g multilinear.
 ///
-/// The accumulator holds the rows of `Word::BITS` scalars the segment's keys accumulate into, one
-/// per shift the segment uses and in dense shift index order. Each row lands at the offset its
-/// `(variant, amount)` pair names; every row the segment does not use stays zero.
+/// The accumulator holds one row of `Word::BITS` scalars per shift sequence the segment uses, in
+/// dense shift index order.
+/// Each row lands at the offset its inner shift's `(variant, amount)` names.
+/// Every row the segment does not use stays zero.
+///
+/// Only the inner slot is read, since one shift axis pair is folded.
+/// A term whose outer slot carried work would land on its inner shift's row, against the wrong
+/// shifted word, which the assertion below rules out.
 #[instrument(skip_all, name = "scatter_shift_rows")]
 fn scatter_shift_rows<P: PackedField, A: Allocator>(
 	alloc: &A,
@@ -278,11 +283,13 @@ fn scatter_shift_rows<P: PackedField, A: Allocator>(
 	// A row is a whole number of packed elements, so it copies in at row alignment.
 	let row_len = Word::BITS >> P::LOG_WIDTH;
 	let mut g = FieldBuffer::zeros_in(alloc, PHASE_1_LOG_LEN);
-	for ((variant, amount), row) in iter::zip(dense_shift_enc.iter(), multilinears.chunks(row_len))
-	{
+	for (shift_seq, row) in iter::zip(dense_shift_enc.iter(), multilinears.chunks(row_len)) {
+		let [inner, outer] = shift_seq;
+		debug_assert!(outer.is_identity(), "{DOUBLE_SHIFT_UNSUPPORTED}");
+
 		// The variant indexes the high variables and the amount the middle ones. Dense indices are
 		// distinct, so no two rows land in the same place and each destination is still zero.
-		let offset = (variant as usize * Word::BITS + amount as usize) * row_len;
+		let offset = (inner.variant as usize * Word::BITS + inner.amount as usize) * row_len;
 		g.as_mut()[offset..][..row_len].copy_from_slice(row);
 	}
 	g
