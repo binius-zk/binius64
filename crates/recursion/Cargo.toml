@@ -1,0 +1,15 @@
+[package]
+name = "binius-recursion"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+binius-core = { path = "../core" }
+binius-field = { path = "../field" }
+binius-frontend = { path = "../frontend" }
+binius-iop = { path = "../iop" }
+binius-ip = { path = "../ip" }
