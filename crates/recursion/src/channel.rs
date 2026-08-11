@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 
+use binius_circuits::multiplexer::multi_wire_multiplex;
 use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_iop::{
@@ -42,22 +43,43 @@ pub struct Commitment {
 /// `CircuitBuilder` takes `&self` throughout, so no interior-mutability wrapper is needed on top.
 pub struct Binius64BuilderChannel {
 	builder: Rc<CircuitBuilder>,
-	/// Wires holding the proof, in the order the verifier reads them. Filling a witness means
-	/// writing the proof into these and letting the evaluator derive everything else.
+	/// Wires holding the proof, in the order the verifier reads them.
 	transcript: Vec<Wire>,
+	/// Wires holding the inner statement, which is the recursive circuit's own public input.
+	inout: Vec<Wire>,
 	oracle_specs: Vec<OracleSpec>,
 	next_oracle_index: usize,
 }
 
 impl Binius64BuilderChannel {
-	/// Creates a channel over a fresh builder, expecting the given oracles.
-	pub fn new(oracle_specs: Vec<OracleSpec>) -> Self {
+	/// Creates a channel over a fresh builder, expecting the given oracles and an inner statement
+	/// of `n_inout` words.
+	///
+	/// The statement's wires are allocated up front, so the caller can hand them to the verifier
+	/// and read them back with [`Self::inout`].
+	pub fn new(oracle_specs: Vec<OracleSpec>, n_inout: usize) -> Self {
+		let builder = Rc::new(CircuitBuilder::new());
+		let inout = (0..n_inout).map(|_| builder.add_inout()).collect();
 		Self {
-			builder: Rc::new(CircuitBuilder::new()),
+			builder,
 			transcript: Vec::new(),
+			inout,
 			oracle_specs,
 			next_oracle_index: 0,
 		}
+	}
+
+	/// The inner statement, as this circuit's public input.
+	pub fn statement(&self) -> Vec<Word> {
+		self.inout
+			.iter()
+			.map(|&wire| Word::wire(&self.builder, wire))
+			.collect()
+	}
+
+	/// The wires the inner statement occupies, in order.
+	pub fn inout(&self) -> &[Wire] {
+		&self.inout
 	}
 
 	/// The wires the proof is written into, in read order.
@@ -150,28 +172,39 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 	fn subset_sum(&mut self, elems: &[Elem], word: &Word) -> Elem {
 		assert!(elems.len() <= binius_core::word::Word::BITS); // precondition
 
-		// Each element is kept or dropped by its bit, then the survivors are summed. `select`
-		// against zero is the keep-or-drop, and the sum is XOR, which costs nothing.
+		// Each element is kept or dropped by its own bit, and the survivors are summed. The sum is
+		// XOR, which the constraint system absorbs, so the cost is the keep-or-drop: one select
+		// gate per word of each element.
+		let (zero_lo, zero_hi) = Elem::zero().to_wires(&self.builder);
 		(0..elems.len())
-			.map(|bit| select_elem(&self.builder, &word.bit_mask(bit), &elems[bit], &Elem::zero()))
+			.map(|bit| {
+				let sel = word.bit_at_msb(&self.builder, bit);
+				let (lo, hi) = elems[bit].to_wires(&self.builder);
+				Elem::wires(
+					&self.builder,
+					self.builder.select(sel, lo, zero_lo),
+					self.builder.select(sel, hi, zero_hi),
+				)
+			})
 			.sum()
 	}
 
 	fn select(&mut self, elems: &[Elem], word: &Word) -> Elem {
 		assert!(!elems.is_empty() && elems.len().is_power_of_two()); // precondition
 
-		// Fold the candidates pairwise on one index bit per level, halving each time.
-		let mut level = elems.to_vec();
-		for bit in 0..elems.len().trailing_zeros() as usize {
-			let mask = word.bit_mask(bit);
-			level = level
-				.chunks(2)
-				.map(|pair| select_elem(&self.builder, &mask, &pair[1], &pair[0]))
-				.collect();
-		}
-		level
-			.pop()
-			.expect("a power-of-two slice folds to one element")
+		// One multiplexer over the `(lo, hi)` pairs. `multi_wire_multiplex` builds the same
+		// select-gate tree per wire position and reads the index bits itself.
+		let pairs = elems
+			.iter()
+			.map(|elem| {
+				let (lo, hi) = elem.to_wires(&self.builder);
+				[lo, hi]
+			})
+			.collect::<Vec<_>>();
+		let groups = pairs.iter().map(|pair| pair.as_slice()).collect::<Vec<_>>();
+		let sel = word.to_wire(&self.builder);
+		let selected = multi_wire_multiplex(&self.builder, &groups, sel);
+		Elem::wires(&self.builder, selected[0], selected[1])
 	}
 
 	fn sample_bits(&mut self, _bits: usize) -> Word {
@@ -254,14 +287,4 @@ impl IOPVerifierChannel<B128> for Binius64BuilderChannel {
 		// methods. Wiring that up is what turns the pieces above into a verifier.
 		todo!("hand the queued relations to the BaseFold opening")
 	}
-}
-
-/// `if mask { t } else { f }`, where `mask` is all-ones or all-zeros.
-///
-/// Takes the shared handle rather than a borrow so the result stays anchored to the same builder
-/// the inputs came from.
-fn select_elem(builder: &Rc<CircuitBuilder>, mask: &Wire, t: &Elem, f: &Elem) -> Elem {
-	let (t_lo, t_hi) = t.to_wires(builder);
-	let (f_lo, f_hi) = f.to_wires(builder);
-	Elem::wires(builder, builder.select(*mask, t_lo, f_lo), builder.select(*mask, t_hi, f_hi))
 }

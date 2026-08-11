@@ -45,13 +45,13 @@ impl Word {
 		}
 	}
 
-	/// Returns the bit at position `i` as an all-ones or all-zeros mask word.
+	/// Returns bit `i` moved into the most significant position, where a `select` gate reads it.
 	///
-	/// Masks rather than a single bit because that is what `select` consumes: the frontend's
-	/// `select` gate reads the most significant bit of its condition.
-	pub fn bit_mask(&self, _i: usize) -> Wire {
-		// Needs the bit broadcast to the whole word, which is a gadget rather than a single gate.
-		todo!("bit extraction gadget")
+	/// The bits below it are whatever the shift carried up and are ignored, so this is one gate
+	/// rather than a broadcast. `single_wire_multiplex` selects the same way.
+	pub fn bit_at_msb(&self, builder: &CircuitBuilder, i: usize) -> Wire {
+		let wire = self.to_wire(builder);
+		builder.shl(wire, (binius_core::word::Word::BITS - 1 - i) as u32)
 	}
 }
 

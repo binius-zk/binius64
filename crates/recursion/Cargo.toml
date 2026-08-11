@@ -8,6 +8,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+binius-circuits = { path = "../circuits" }
 binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-frontend = { path = "../frontend" }
