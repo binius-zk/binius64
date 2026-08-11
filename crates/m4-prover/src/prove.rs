@@ -21,7 +21,7 @@ use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product,
 	multilinear::eq::eq_ind_partial_eval_scalars,
-	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
+	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::lagrange_evals_scalars,
 };
 use binius_prover::{
@@ -49,7 +49,7 @@ use crate::{
 };
 
 /// The multithreaded additive NTT used to encode the committed codeword.
-type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
+type ProverNtt = NeighborsLastMultiThread<GaoMateerPreExpanded<B128>>;
 
 /// IOP prover for the M4 constraint reduction of a particular constraint system.
 ///
@@ -367,9 +367,10 @@ where
 	/// The prover encodes the codeword with the multithreaded NTT, spread across the cores.
 	/// Reusing the verifier's compiler keeps both sides on one set of FRI parameters.
 	pub fn setup(verifier: &Verifier) -> Self {
-		// Reuse the verifier's evaluation domain so both sides agree on the code.
+		// Reuse the verifier's evaluation domain so both sides agree on the code: its compiler
+		// fixed that domain as the Gao-Mateer basis of this dimension.
 		let domain_context =
-			GenericPreExpanded::generate_from_subspace(verifier.iop_compiler().max_subspace());
+			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_subspace().dim());
 
 		// Spread the NTT across the available cores.
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;

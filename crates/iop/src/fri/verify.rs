@@ -148,6 +148,9 @@ where
 
 		// All FRI reductions fold cosets of the same Reed–Solomon codeword domain, so they share a
 		// single domain context.
+		// Derived from the subspace the params carry, not regenerated from its dimension: a
+		// `FRIParams` may be built over any subspace, so the verifier cannot assume the
+		// Gao-Mateer basis the BaseFold compiler happens to choose.
 		let domain_context = GenericOnTheFly::generate_from_subspace(params.rs_code().subspace());
 		let mut fri_oracles = Vec::with_capacity(params.fold_arities().len());
 		let mut depth = index_bits;

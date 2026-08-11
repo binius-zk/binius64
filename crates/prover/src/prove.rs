@@ -16,7 +16,7 @@ use binius_ip_prover::channel::WordIPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec,
 	inner_product::inner_product,
-	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
+	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::lagrange_evals,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
@@ -45,7 +45,7 @@ use crate::{
 };
 
 /// Type alias for the prover NTT parameterized by field.
-type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
+type ProverNTT<F> = NeighborsLastMultiThread<GaoMateerPreExpanded<F>>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -399,9 +399,10 @@ where
 	) -> Result<Self, Error> {
 		warn_on_software_field_arithmetic();
 
-		// Get max subspace from verifier's IOP compiler (reuses FRI params)
-		let subspace = verifier.iop_compiler().max_subspace();
-		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
+		// Rebuild the verifier's evaluation domain, which its compiler fixed as the Gao-Mateer
+		// basis of that dimension.
+		let domain_context =
+			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_subspace().dim());
 		// FIXME TODO For mobile phones, the number of shares should potentially be more than the
 		// number of threads, because the threads/cores have different performance (but in the NTT
 		// each share has the same amount of work)
