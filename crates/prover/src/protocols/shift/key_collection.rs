@@ -121,6 +121,111 @@ impl DenseShiftEncoding {
 		// `new` bounds the length, so every index it yields fits.
 		index as u16
 	}
+
+	/// Whether any sequence carries work in its outer slot.
+	///
+	/// False means every sequence is a lone shift.
+	/// The outer phase would then bind axes whose weight is already the identity indicator, so a
+	/// reduction can skip that phase entirely.
+	pub fn has_outer_shift(&self) -> bool {
+		self.shifts
+			.iter()
+			.any(|shift_seq| !shift_seq[ShiftSlot::Outer as usize].is_identity())
+	}
+
+	/// Groups the segment's sequences by the shift one slot of them takes.
+	///
+	/// A phase binds one slot's axes, so its accumulator holds one row per distinct shift *that
+	/// slot* takes — not one per sequence.
+	/// Several sequences can share a slot shift, and their contributions belong in one row:
+	///
+	/// ```text
+	/// [srl(3), sll(3)]  \
+	///                    >  agree on the outer shift -> one row
+	/// [srl(5), sll(3)]  /
+	/// ```
+	///
+	/// This is the map that sends each sequence to its row.
+	pub fn slot_rows(&self, slot: ShiftSlot) -> SlotRows {
+		let shift_of = |shift_seq: &[Shift; 2]| shift_seq[slot as usize];
+
+		// The distinct shifts the slot takes, ascending, one row each.
+		let shifts = self
+			.shifts
+			.iter()
+			.map(shift_of)
+			.collect::<BTreeSet<_>>()
+			.into_iter()
+			.collect::<Vec<_>>();
+
+		// Each sequence's row, found by search over that ordered list.
+		let row_of_sequence = self
+			.shifts
+			.iter()
+			.map(|shift_seq| {
+				let row = shifts
+					.binary_search(&shift_of(shift_seq))
+					.expect("every slot shift is in the list collected from the same sequences");
+				row as u16
+			})
+			.collect();
+
+		SlotRows {
+			shifts,
+			row_of_sequence,
+		}
+	}
+}
+
+/// Which slot of a shift sequence a reduction phase binds.
+///
+/// The discriminant indexes the sequence, so a slot reads its own shift off it directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShiftSlot {
+	/// The shift applied first, which the inner phase binds.
+	Inner = 0,
+	/// The shift applied to the inner shift's result, which the outer phase binds.
+	Outer = 1,
+}
+
+/// The accumulator rows of one slot of a segment's shift sequences.
+///
+/// Built by [`DenseShiftEncoding::slot_rows`].
+/// A builder accumulates a key's contribution into the row its sequence maps to.
+/// The scatter then copies each row to the offset that row's shift names in the multilinear.
+#[derive(Debug, Clone)]
+pub struct SlotRows {
+	/// The distinct shifts this slot takes, ascending. One accumulator row each.
+	shifts: Vec<Shift>,
+	/// The row each dense sequence index accumulates into.
+	row_of_sequence: Vec<u16>,
+}
+
+impl SlotRows {
+	/// The number of accumulator rows, one per distinct shift the slot takes.
+	pub const fn len(&self) -> usize {
+		self.shifts.len()
+	}
+
+	/// Whether the slot takes no shifts at all, which happens when the segment has no keys.
+	pub const fn is_empty(&self) -> bool {
+		self.shifts.is_empty()
+	}
+
+	/// The row a dense sequence index accumulates into.
+	///
+	/// # Panics
+	///
+	/// Panics if the dense index is not one of the encoding's.
+	#[inline]
+	pub fn row(&self, dense_shift_idx: u16) -> usize {
+		self.row_of_sequence[dense_shift_idx as usize] as usize
+	}
+
+	/// The shift each row carries, in row order.
+	pub fn shifts(&self) -> impl Iterator<Item = Shift> + '_ {
+		self.shifts.iter().copied()
+	}
 }
 
 /// A `Key` specifies an operation, a shift sequence, and a range of constraint indices.

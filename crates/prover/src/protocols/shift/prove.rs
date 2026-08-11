@@ -10,8 +10,8 @@ use binius_math::{
 };
 
 use super::{
-	SegmentWords, claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
-	phase_2::prove_phase_2,
+	DOUBLE_SHIFT_UNSUPPORTED, SegmentWords, claims::OperatorClaims, key_collection::KeyCollection,
+	phase_1::prove_phase_1, phase_2::prove_phase_2,
 };
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
@@ -157,6 +157,14 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
+	// Invariant: two phases bind one shift slot.
+	// A sequence with work in its outer slot needs a third phase to bind the other.
+	debug_assert!(
+		!key_collection.public.dense_shift_enc.has_outer_shift()
+			&& !key_collection.hidden.dense_shift_enc.has_outer_shift(),
+		"{DOUBLE_SHIFT_UNSUPPORTED}"
+	);
+
 	// The segments are passed as the circuit declares them, at whatever length that is. Phase 1
 	// zips each word with its key range, so a segment shorter than its key ranges stops at its
 	// last value — the words past it carry no keys — and phase 2's `fold_words` zero-pads each

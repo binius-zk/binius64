@@ -39,6 +39,7 @@ mod prove;
 
 pub use claims::{OperatorClaims, PreparedOperatorClaims};
 pub use key_collection::{
-	DenseShiftEncoding, KeyCollection, KeySegment, Operation, build_key_collection,
+	DenseShiftEncoding, KeyCollection, KeySegment, Operation, ShiftSlot, SlotRows,
+	build_key_collection,
 };
 pub use prove::{OperatorData, PreparedOperatorData, prove};
