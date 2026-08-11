@@ -5,7 +5,10 @@ use std::collections::HashSet;
 
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, InoutSegment, ValueSegment, ValueVec},
+	constraint_system::{
+		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, InoutSegment,
+		ValueSegment, ValueVec,
+	},
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
@@ -182,11 +185,11 @@ fn test_prove_verify_binmul_seventh_power() {
 }
 
 /// Builds a circuit whose AND, IMUL and BMUL constraint counts are all non-powers of two, so every
-/// reduction runs over operand columns whose tail rows are zero padding.
+/// reduction runs over a constraint axis wider than the operand columns it is handed.
 ///
-/// Each asserted `band` contributes two AND constraints (the `band` itself and the equality), each
-/// `imul` gate one IMUL constraint, and each `bmul` gate one BMUL constraint — 6, 3 and 3 in total.
-/// The caller asserts those counts are not powers of two rather than relying on it silently.
+/// Each `band` gate contributes one AND constraint, each `imul` gate one IMUL constraint, and each
+/// `bmul` gate one BMUL constraint. The caller asserts the counts are not powers of two rather
+/// than relying on that silently, since the frontend decides how a gate lowers.
 fn non_power_of_two_constraint_circuit() -> (ConstraintSystem, ValueVec) {
 	const N_AND_GATES: usize = 3;
 	const N_IMUL_GATES: usize = 3;
@@ -266,9 +269,10 @@ fn non_power_of_two_constraint_circuit() -> (ConstraintSystem, ValueVec) {
 }
 
 /// A circuit whose AND, IMUL and BMUL constraint counts are all non-powers of two proves and
-/// verifies. The constraint system keeps those true counts; the prover zero-pads each operand
-/// column up to a power of two, and both sides derive their sumcheck variable counts by rounding
-/// the same true count up.
+/// verifies. The constraint system keeps those true counts, and the prover's operand columns stop
+/// at the last constraint; each reduction rounds its own constraint axis up to a power of two and
+/// reads the rows past a column's end as zero, and both sides derive their sumcheck variable
+/// counts by rounding the same true count up.
 #[test]
 fn test_prove_verify_non_power_of_two_constraint_counts() {
 	let (cs, witness) = non_power_of_two_constraint_circuit();
@@ -285,6 +289,44 @@ fn test_prove_verify_non_power_of_two_constraint_counts() {
 	}
 	prove_verify(cs.clone(), &witness);
 	prove_verify_zk(cs, &witness);
+}
+
+/// Dropping the operand columns' padding rows moves nothing on the wire.
+///
+/// Every constraint type's `Default` has empty operands, so its row is identically zero — exactly
+/// the padding row the prover used to materialize. Padding each constraint list up to a power of
+/// two therefore reconstructs the old column shape without touching the prover, and the two must
+/// produce the same proof byte for byte. The reduction runs over the same axis either way, since
+/// `log2_ceil` of a count and of that count rounded up agree.
+#[test]
+fn test_padded_constraint_lists_produce_an_identical_proof() {
+	let (cs, witness) = non_power_of_two_constraint_circuit();
+
+	let mut padded_cs = cs.clone();
+	padded_cs
+		.and_constraints
+		.resize(cs.n_and_constraints().next_power_of_two(), AndConstraint::default());
+	padded_cs
+		.imul_constraints
+		.resize(cs.n_imul_constraints().next_power_of_two(), ImulConstraint::default());
+	padded_cs
+		.bmul_constraints
+		.resize(cs.n_bmul_constraints().next_power_of_two(), BmulConstraint::default());
+	padded_cs.validate().unwrap();
+
+	assert_eq!(prove_to_bytes(cs, &witness), prove_to_bytes(padded_cs, &witness));
+}
+
+/// Proves `witness` against `cs` and returns the proof bytes.
+fn prove_to_bytes(cs: ConstraintSystem, witness: &ValueVec) -> Vec<u8> {
+	const LOG_INV_RATE: usize = 1;
+
+	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
+	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier).unwrap();
+
+	let mut transcript = ProverTranscript::new(StdChallenger::default());
+	prover.prove(witness, &mut transcript).unwrap();
+	transcript.finalize().to_vec()
 }
 
 /// A SHA-256 circuit uses only AND constraints, so its constraint system has zero IMUL
