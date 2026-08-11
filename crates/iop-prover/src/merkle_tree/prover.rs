@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::Field;
-use binius_hash::binary_merkle_tree::{self, BinaryMerkleTree, HashSuite};
+use binius_hash::binary_merkle_tree::{BinaryMerkleTree, HashSuite};
 use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::iter::IndexedParallelIterator;
@@ -70,8 +70,7 @@ where
 	where
 		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 	{
-		let tree = binary_merkle_tree::build_from_iterator::<F, H, _>(leaves, n_items_per_input)
-			.expect("precondition: the number of leaves must be a power of two");
+		let tree = BinaryMerkleTree::from_leaves::<F, H, _>(leaves, n_items_per_input);
 
 		let commitment = Commitment {
 			root: tree.root(),
