@@ -1,19 +1,19 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Assert that a wire, interpreted as a MSB-bool, is false.
 //! i.e., we are checking whether its most-significant bit is 0. all lower bits get ignored.
 //!
-//! Enforces `x & 0x8000000000000000 = 0` using an AND constraint.
+//! Enforces `MSB(x) = 0` using a ZERO constraint.
 //!
 //! # Algorithm
 //!
-//! Uses the constraint `x ∧ 0x8000000000000000 = 0`.
+//! `sar(x, 63)` broadcasts the most-significant bit across the whole word, so it vanishes exactly
+//! when the bit is clear.
 //!
 //! # Constraints
 //!
-//! The gate generates 1 AND constraint:
-//! - `x ∧ 0x8000000000000000 = 0`
-
-use binius_core::word::Word;
+//! The gate generates 1 ZERO constraint:
+//! - `sar(x, 63) = 0`
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
@@ -25,7 +25,7 @@ use crate::compiler::{
 
 pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::MSB_ONE],
+		const_in: &[],
 		n_in: 1,
 		n_out: 0,
 		n_aux: 0,
@@ -35,14 +35,11 @@ pub const fn shape() -> OpcodeShape {
 }
 
 pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		constants, inputs, ..
-	} = data.gate_param();
-	let [msb_one] = constants else { unreachable!() };
+	let GateParam { inputs, .. } = data.gate_param();
 	let [x] = inputs else { unreachable!() };
 
-	// Constraint: x ∧ msb_one = msb_one
-	builder.and(*x, *msb_one, expr::empty());
+	// Constraint: sar(x, 63) = 0
+	builder.zero(expr::sar(*x, 63));
 }
 
 pub fn emit_eval_bytecode(

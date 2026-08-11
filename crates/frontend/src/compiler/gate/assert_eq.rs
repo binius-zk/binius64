@@ -1,18 +1,17 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Equality assertion.
 //!
-//! Enforces `x = y` using an AND constraint.
+//! Enforces `x = y` using a ZERO constraint.
 //!
 //! # Algorithm
 //!
 //! Uses the property that `x = y` iff `x ^ y = 0`.
-//! This is enforced as `(x ⊕ y) ∧ all-1 = 0`.
 //!
 //! # Constraints
 //!
-//! The gate generates 1 AND constraint:
-//! - `(x ⊕ y) ∧ all-1 = 0`
-use binius_core::word::Word;
+//! The gate generates 1 ZERO constraint:
+//! - `x ⊕ y = 0`
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
@@ -24,7 +23,7 @@ use crate::compiler::{
 
 pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::ALL_ONE],
+		const_in: &[],
 		n_in: 2,
 		n_out: 0,
 		n_aux: 0,
@@ -34,14 +33,11 @@ pub const fn shape() -> OpcodeShape {
 }
 
 pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		constants, inputs, ..
-	} = data.gate_param();
-	let [all_one] = constants else { unreachable!() };
+	let GateParam { inputs, .. } = data.gate_param();
 	let [x, y] = inputs else { unreachable!() };
 
-	// Constraint: (x ⊕ y) ∧ all-1 = 0
-	builder.and(expr::xor2(*x, *y), *all_one, expr::empty());
+	// Constraint: x ⊕ y = 0
+	builder.zero(expr::xor2(*x, *y));
 }
 
 pub fn emit_eval_bytecode(

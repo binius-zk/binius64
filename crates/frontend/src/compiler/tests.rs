@@ -91,7 +91,7 @@ fn test_algebraic_fold_bxor_self_is_zero_in_witness() {
 /// Builds `assert_eq(x ^ y, z)`.
 ///
 /// Gate fusion is off so that the `bxor` gate keeps its own linear constraint instead of being
-/// inlined into the assertion's operand; the assertion itself emits an AND constraint either way.
+/// inlined into the assertion's operand.
 fn build_xor_circuit() -> (Circuit, Wire, Wire, Wire) {
 	let builder = CircuitBuilder::with_opts(Options {
 		enable_gate_fusion: false,
@@ -109,9 +109,10 @@ fn test_linear_constraints_lower_to_zero_constraints() {
 	let (zero_circuit, x, y, z) = build_xor_circuit();
 	let cs = zero_circuit.constraint_system();
 
-	// The `bxor` linear constraint moves to the ZERO set, leaving only the assertion's AND.
-	assert_eq!(cs.n_zero_constraints(), 1);
-	assert_eq!(cs.n_and_constraints(), 1);
+	// Both the `bxor` linear constraint and the assertion land in the ZERO set, so the AND set is
+	// empty.
+	assert_eq!(cs.n_zero_constraints(), 2);
+	assert_eq!(cs.n_and_constraints(), 0);
 
 	// The Zero constraint XORs the linear constraint's terms with its destination, and names no
 	// all-ones constant.
@@ -149,9 +150,9 @@ fn test_zero_constraints_reach_a_fused_committed_lin_def() {
 	let zero_cs = zero_circuit.constraint_system();
 
 	// The committed shift pair is a ZERO constraint, and it names no all-ones constant — the AND
-	// set holds only the `band` and the assertion.
-	assert_eq!(zero_cs.n_zero_constraints(), 1);
-	assert_eq!(zero_cs.n_and_constraints(), 2);
+	// set holds only the `band`, since the assertion is a ZERO constraint too.
+	assert_eq!(zero_cs.n_zero_constraints(), 2);
+	assert_eq!(zero_cs.n_and_constraints(), 1);
 	assert!(
 		zero_cs.zero_constraints[0]
 			.val()
@@ -991,24 +992,27 @@ fn test_zero_constant_not_in_binius64_operands() {
 // exposed. `a & b` is an AND-gate output, so it occupies a committed word in every one of them.
 #[test]
 fn mark_inout_promotes_without_duplicating() {
-	// The inout count, the private count, and the AND-constraint count of one circuit.
+	// The inout count, the private count, and the constraint count of one circuit. An equality
+	// assertion is a ZERO constraint and the conjunction is an AND constraint, so the count spans
+	// both sets to stay independent of which one each lands in.
 	let shape = |build: &dyn Fn(&CircuitBuilder)| {
 		let builder = CircuitBuilder::new();
 		build(&builder);
 		let circuit = builder.build();
 		let layout = circuit.value_vec_layout();
-		(layout.n_inout, layout.n_private(), circuit.constraint_system().and_constraints.len())
+		let cs = circuit.constraint_system();
+		(layout.n_inout, layout.n_private(), cs.and_constraints.len() + cs.zero_constraints.len())
 	};
 
 	// The result kept alive by pinning: private, and not part of the public interface.
-	let (pinned_inout, pinned_private, pinned_and) = shape(&|builder| {
+	let (pinned_inout, pinned_private, pinned_constraints) = shape(&|builder| {
 		let a = builder.add_inout();
 		let b = builder.add_inout();
 		builder.force_commit(builder.band(a, b));
 	});
 
 	// The result asserted against a separately declared public output.
-	let (asserted_inout, asserted_private, asserted_and) = shape(&|builder| {
+	let (asserted_inout, asserted_private, asserted_constraints) = shape(&|builder| {
 		let a = builder.add_inout();
 		let b = builder.add_inout();
 		let out = builder.add_inout();
@@ -1016,20 +1020,20 @@ fn mark_inout_promotes_without_duplicating() {
 	});
 
 	// The result promoted in place.
-	let (promoted_inout, promoted_private, promoted_and) = shape(&|builder| {
+	let (promoted_inout, promoted_private, promoted_constraints) = shape(&|builder| {
 		let a = builder.add_inout();
 		let b = builder.add_inout();
 		builder.mark_inout(builder.band(a, b));
 	});
 
 	// Asserting duplicates the conjunction: its own committed word, plus the declared output's,
-	// plus the AND constraint tying them together.
+	// plus the constraint tying them together.
 	assert_eq!(asserted_inout + asserted_private, pinned_inout + pinned_private + 1);
-	assert_eq!(asserted_and, pinned_and + 1);
+	assert_eq!(asserted_constraints, pinned_constraints + 1);
 
 	// Promoting costs nothing over pinning — it is the same word, relabelled public.
 	assert_eq!(promoted_inout + promoted_private, pinned_inout + pinned_private);
-	assert_eq!(promoted_and, pinned_and);
+	assert_eq!(promoted_constraints, pinned_constraints);
 	assert_eq!(promoted_inout, pinned_inout + 1);
 	assert_eq!(promoted_private, pinned_private - 1);
 }

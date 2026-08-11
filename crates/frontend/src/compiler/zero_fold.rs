@@ -163,9 +163,10 @@ mod tests {
 			crate::CircuitStat::collect(&circuit).n_and_constraints
 		};
 
-		// Folded, only the equality assertion remains; unfolded, the carry chain is paid too.
+		// Folded, only the equality assertion remains, and that is a ZERO constraint; unfolded, the
+		// carry chain is paid in AND constraints.
 		assert!(count_and(true) < count_and(false));
-		assert_eq!(count_and(true), 1);
+		assert_eq!(count_and(true), 0);
 	}
 
 	#[test]

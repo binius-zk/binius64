@@ -5,16 +5,16 @@ Gates & Instructions
 └─ Number of evaluation instructions: 459,115
 
 Constraints
-├─ ZERO constraints: 22,862 used (69.8% of 2^15)
-│  [▓▓▓▓▓▓░░░░] spare: 9,906
-├─ AND constraints: 203,408 used (77.6% of 2^18)
-│  [▓▓▓▓▓▓▓░░░] spare: 58,736
+├─ ZERO constraints: 38,358 used (58.5% of 2^16)
+│  [▓▓▓▓▓░░░░░] spare: 27,178
+├─ AND constraints: 187,912 used (71.7% of 2^18)
+│  [▓▓▓▓▓▓▓░░░] spare: 74,232
 ├─ IMUL constraints: 8,262 used (50.4% of 2^14)
 │  [▓▓▓▓▓░░░░░] spare: 8,122
 ├─ BMUL constraints: 31,716 used (96.8% of 2^15)
 │  [▓▓▓▓▓▓▓▓▓░] spare: 1,052
-└─ Distinct value indices: 546,028
-   ├─ Distinct shifted value indices: 285,423
+└─ Distinct value indices: 546,132
+   ├─ Distinct shifted value indices: 285,527
    └─ Distinct unshifted value indices: 260,605
 
 Value Vector

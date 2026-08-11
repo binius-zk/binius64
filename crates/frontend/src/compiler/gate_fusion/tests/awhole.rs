@@ -297,7 +297,7 @@ fn test_xor_into_assert() {
 	let cs = compile(&b);
 	insta::assert_snapshot!(
 		stringify_constraint_system(&cs),
-		@"AND[0]: (0xe4 ⊕ v[0]) ∧ (all-1) = (0)",
+		@"ZERO[0]: (0xe4 ⊕ v[0]) = 0",
 	);
 }
 
