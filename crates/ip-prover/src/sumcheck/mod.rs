@@ -17,6 +17,7 @@ pub mod round_evals;
 pub mod round_evaluator;
 mod round_state;
 pub mod selector_mle;
+pub mod sparse_dense_product;
 mod switchover;
 pub use bivariate_product_evaluator::bivariate_product_prover;
 pub use mle_to_sumcheck::*;
