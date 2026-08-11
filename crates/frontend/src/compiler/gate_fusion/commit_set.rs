@@ -1,4 +1,6 @@
 // Copyright 2025 Irreducible Inc.
+use std::array;
+
 use binius_core::constraint_system::{Shift, ShiftVariant};
 use petgraph::{
 	Direction,
@@ -21,35 +23,117 @@ use super::{LeGraph, Stat};
 /// It trades committed words against operand size, and both costs are prover-side.
 pub const MAX_DEPTH: usize = 6;
 
-/// Which shift kinds appeared on a path, and how far the path shifts in total.
+/// The largest shift budget any caller of this pass asks for.
 ///
-/// One question is asked of a path, once per graph edge.
-/// Can a further shift compose with every shift already on it?
+/// A shifted term carries a sequence of shifts, and the pass is told how many slots of that
+/// sequence it may fill. Sizing a summary by the largest budget keeps it [`Copy`] and inline.
+const MAX_SHIFT_SLOTS: usize = 2;
+
+/// The slot count standing for "more slots than any budget allows".
 ///
-/// Inlining collapses a whole path into a single shift.
-/// So a further shift meets that collapsed shift, never the individual links.
-/// Two shifts compose only under two conditions.
+/// A path past this point is refused whatever its runs hold, so the runs past the recorded ones
+/// need not be kept.
+const OVER_BUDGET: u8 = MAX_SHIFT_SLOTS as u8 + 1;
+
+/// One run of shifts on a path that collapse into a single slot.
 ///
-/// - One of them is the identity, which composes with anything.
-/// - Both share a kind, and their distances together stay inside the word width.
+/// Two shifts collapse under two conditions.
 ///
-/// So only two facts about the path decide the answer.
+/// - One of them is the identity, which collapses with anything.
+/// - Both share a variant, and their distances together stay inside the word width.
 ///
-/// - Which kinds are present, since a second kind already rules out composing.
-/// - The distance the path accumulates, since that is what a further distance adds to.
+/// So only two facts about a run decide whether a further shift joins it.
 ///
-/// Both fit in an integer, so the summary is [`Copy`] and allocates nothing.
+/// - Which variants are present, since a second variant already rules out collapsing.
+/// - The distance the run accumulates, since that is what a further distance adds to.
 #[derive(Copy, Clone, Default)]
-struct ShiftSummary {
-	/// One bit per shift variant seen, excluding the identity.
+struct Run {
+	/// One bit per shift variant in this run, excluding the identity.
 	///
 	/// A variant's bit is its discriminant.
 	/// There are eight variants, so a byte holds them all.
 	variants: u8,
-	/// Total distance covered by the farthest-shifting path this summary spans.
+	/// Total distance covered by the farthest-shifting path this run spans.
 	///
 	/// Zero when only the identity was seen, which imposes no distance.
-	total_amount: u32,
+	///
+	/// Only the comparison against a variant's width matters, and no width exceeds 64, so a
+	/// saturating byte answers that comparison exactly as a wider counter would.
+	total_amount: u8,
+}
+
+impl Run {
+	/// The run holding one shift.
+	const fn of(shift: Shift) -> Self {
+		Self {
+			variants: bit_of(shift.variant),
+			total_amount: shift.amount,
+		}
+	}
+
+	/// This run with `shift` folded in, or nothing when the shift needs a slot of its own.
+	///
+	/// Collapsing two shifts of one variant adds their distances.
+	/// So a run accumulates the distances of its links:
+	/// ```text
+	///     sll(3) then sll(5) then sll(4)  ->  sll(12)
+	/// ```
+	const fn absorb(self, shift: Shift) -> Option<Self> {
+		// A run of another variant never collapses with this shift. A run of two variants — which
+		// a join over several paths can produce — collapses with nothing at all.
+		if self.variants != bit_of(shift.variant) {
+			return None;
+		}
+
+		// A cyclic variant loses no bits, so its distances wrap and always collapse.
+		// Any other variant drops the bits it shifts out.
+		// So the distance the run already covers plus this one has to stay inside the width.
+		// Saturating keeps an absurdly long run from wrapping back to a small total.
+		let total_amount = self.total_amount.saturating_add(shift.amount);
+		if !shift.variant.is_cyclic() && total_amount as usize >= shift.variant.max_amount() {
+			return None;
+		}
+
+		Some(Self {
+			variants: self.variants,
+			total_amount,
+		})
+	}
+
+	/// The run covering both of these.
+	fn union(self, other: Self) -> Self {
+		// A further shift has to collapse with every path at once.
+		// So the path that shifts farthest is the one that binds:
+		//     path A accumulates sll(10)
+		//     path B accumulates sll(50)   <- binding
+		//     -> a further sll(13) fits A but leaves the width on B, so it is rejected
+		Self {
+			variants: self.variants | other.variants,
+			total_amount: self.total_amount.max(other.total_amount),
+		}
+	}
+}
+
+/// The shifts on a path, grouped into the slots a term needs to spell them.
+///
+/// One question is asked of a path, once per graph edge.
+/// Can a further shift join it without needing more slots than the budget allows?
+///
+/// Inlining collapses each run of the path into one shift, so a further shift meets the innermost
+/// run rather than the individual links. Grouping greedily from the outside in is what inlining
+/// itself does, so the two agree on how many slots a path costs.
+///
+/// The summary is a conservative approximation of [`Shift::compose`]: it may report more slots than
+/// a chain really needs, never fewer. `patch::process_term` rests on that direction alone.
+#[derive(Copy, Clone, Default)]
+struct ShiftSummary {
+	/// The runs, outermost first.
+	///
+	/// Only the entries below `len` are meaningful, and only the first [`MAX_SHIFT_SLOTS`] runs
+	/// are recorded at all.
+	slots: [Run; MAX_SHIFT_SLOTS],
+	/// How many slots this path needs, capped at [`OVER_BUDGET`].
+	len: u8,
 }
 
 impl ShiftSummary {
@@ -58,64 +142,58 @@ impl ShiftSummary {
 		Self::default().with(shift)
 	}
 
-	/// The summary of this path extended by one more shift.
+	/// The summary of this path extended by one more shift, applied inside everything on it.
 	///
 	/// A shift of no distance is the identity whatever variant spells it, so it constrains
 	/// nothing and drops out here.
-	const fn with(self, shift: Shift) -> Self {
+	fn with(self, shift: Shift) -> Self {
 		if shift.is_identity() {
 			return self;
 		}
-		// Composing two shifts of one variant adds their distances.
-		// So walking a path accumulates the distances of its links:
-		//     sll(3) then sll(5) then sll(4)  ->  sll(12)
-		// Saturating keeps an absurdly long chain from wrapping back to a small total.
-		Self {
-			variants: self.variants | bit_of(shift.variant),
-			total_amount: self.total_amount.saturating_add(shift.amount as u32),
+
+		// The pass walks a path from its consumer towards its producer, so the shift arriving
+		// here is applied inside every shift already summarized. It therefore meets the innermost
+		// run first: joining that run costs no slot, and anything else opens one.
+		let mut next = self;
+		if let Some(innermost) = next.innermost_mut()
+			&& let Some(absorbed) = innermost.absorb(shift)
+		{
+			*innermost = absorbed;
+			return next;
 		}
+
+		// Past the recorded runs only the count matters: no budget exceeds `MAX_SHIFT_SLOTS`, so a
+		// path that has opened that many runs is refused whatever the next one holds.
+		if let Some(slot) = next.slots.get_mut(usize::from(next.len)) {
+			*slot = Run::of(shift);
+		}
+		next.len = next.len.saturating_add(1).min(OVER_BUDGET);
+		next
+	}
+
+	/// The innermost run, when the path has one and it is still recorded.
+	fn innermost_mut(&mut self) -> Option<&mut Run> {
+		self.slots.get_mut(usize::from(self.len).checked_sub(1)?)
 	}
 
 	/// The summary covering every path in `summaries`.
 	fn union(summaries: impl Iterator<Item = Self>) -> Self {
-		// A further shift has to compose with every path at once.
-		// So the path that shifts farthest is the one that binds:
-		//     path A accumulates sll(10)
-		//     path B accumulates sll(50)   <- binding
-		//     -> a further sll(13) fits A but leaves the width on B, so it is rejected
+		// Runs line up from the outside in, since that is the end every path shares. A path with
+		// fewer runs than the widest is charged the widest one's count, which can only refuse
+		// inlining the summary would otherwise have allowed.
 		summaries.fold(Self::default(), |acc, s| Self {
-			variants: acc.variants | s.variants,
-			total_amount: acc.total_amount.max(s.total_amount),
+			slots: array::from_fn(|slot| acc.slots[slot].union(s.slots[slot])),
+			len: acc.len.max(s.len),
 		})
 	}
 
-	/// Whether `shift` composes with every shift on this path.
-	const fn composable(self, shift: Shift) -> bool {
-		// The identity composes with anything already seen.
-		if shift.is_identity() {
-			return true;
-		}
-
-		// Only identities were seen, which impose no variant and no distance.
-		if self.variants == 0 {
-			return true;
-		}
-
-		// A second variant on the path can never compose with this one.
-		if self.variants != bit_of(shift.variant) {
-			return false;
-		}
-
-		// A cyclic variant loses no bits, so its distances wrap and always compose.
-		// Any other variant drops the bits it shifts out.
-		// So the distance the path already covers plus this one has to stay inside the width.
-		shift.variant.is_cyclic()
-			|| self.total_amount.saturating_add(shift.amount as u32)
-				< shift.variant.max_amount() as u32
+	/// Whether `shift` joins this path within a budget of `slots` shifts per term.
+	fn composable(self, shift: Shift, slots: usize) -> bool {
+		usize::from(self.with(shift).len) <= slots
 	}
 }
 
-/// The bit standing for one variant in [`ShiftSummary::variants`].
+/// The bit standing for one variant in [`Run::variants`].
 const fn bit_of(variant: ShiftVariant) -> u8 {
 	1 << variant as u8
 }
@@ -140,9 +218,9 @@ impl CommitSetCx {
 		}
 	}
 
-	/// Returns if every shift is composable with the given one.
-	const fn composable(&self, shift: Shift) -> bool {
-		self.shifts.composable(shift)
+	/// Returns if the given shift joins this path within a budget of `slots` shifts per term.
+	fn composable(&self, shift: Shift, slots: usize) -> bool {
+		self.shifts.composable(shift, slots)
 	}
 
 	/// Merge multiple contexts into a single one.
@@ -160,7 +238,7 @@ impl CommitSetCx {
 	}
 
 	/// Create a new context by adding a new shift and incrementing depth.
-	const fn add(&self, out_shift: Shift) -> CommitSetCx {
+	fn add(&self, out_shift: Shift) -> CommitSetCx {
 		Self {
 			shifts: self.shifts.with(out_shift),
 			depth: self.depth + 1,
@@ -186,7 +264,12 @@ impl CommitSetCx {
 ///
 /// Note that this is all-or-nothing decision: if at least one user cannot inline an expression
 /// then no users should inline it.
-pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
+///
+/// # Arguments
+///
+/// - `shift_slots`: how many shifts a term of the lowered constraint system may carry. A path whose
+///   shifts do not fit in that many slots falls under the first case above.
+pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat, shift_slots: usize) {
 	// Context carried for each graph edge during the commit-set decision.
 	//
 	// Edge identifiers are dense integers from zero up to the edge count.
@@ -252,7 +335,7 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 				depth = out_edge_cx.depth.max(depth);
 				for in_edge in incoming.clone() {
 					let in_shift = in_edge.weight().shift;
-					if !out_edge_cx.composable(in_shift) {
+					if !out_edge_cx.composable(in_shift, shift_slots) {
 						composable = false;
 						break 'out;
 					}
@@ -342,12 +425,51 @@ mod tests {
 
 	/// Whether one more shift composes with a chain once that chain has collapsed.
 	///
-	/// This is the predicate the summary stands in for.
+	/// This is the predicate the summary stands in for at a budget of one slot.
 	/// It is the reference the summary is checked against.
 	fn composable_reference(chain: &[Shift], shift: Shift) -> bool {
 		collapse(chain).is_some_and(|collapsed| {
 			matches!(Shift::compose(collapsed, shift), Composition::Single(_))
 		})
+	}
+
+	/// How many slots a chain really needs, grouping it greedily from the outside in.
+	///
+	/// The chain arrives outermost first, the order the pass walks a path in, so each link is
+	/// applied inside the run built so far. This is what inlining does term by term, so it is the
+	/// count the summary stands in for at any budget.
+	///
+	/// Returns nothing when the chain clears the word: that term is dropped rather than spelled,
+	/// so it needs no slots at all.
+	fn greedy_slots(chain: &[Shift]) -> Option<usize> {
+		let mut closed = 0;
+		// The run being built, as the single shift its links have collapsed to so far.
+		let mut open: Option<Shift> = None;
+		for &shift in chain {
+			// An identity link is legal anywhere and fills no slot.
+			if shift.is_identity() {
+				continue;
+			}
+			open = match open {
+				None => Some(shift),
+				Some(run) => match Shift::compose(shift, run) {
+					// A run that has collapsed back to the identity spells nothing.
+					Composition::Single(collapsed) if collapsed.is_identity() => None,
+					Composition::Single(collapsed) => Some(collapsed),
+					Composition::Pair => {
+						closed += 1;
+						Some(shift)
+					}
+					Composition::Zero => return None,
+				},
+			};
+		}
+		Some(closed + usize::from(open.is_some()))
+	}
+
+	/// A chain of arbitrary shifts, as a path that mixes variants carries.
+	fn any_chain() -> impl Strategy<Value = Vec<Shift>> {
+		prop::collection::vec(any_shift(), 1..8)
 	}
 
 	/// The summary of one chain, accumulated link by link the way the pass accumulates it.
@@ -430,7 +552,7 @@ mod tests {
 			// no. That costs inlining, never correctness, and `patch::process_term` panics only
 			// on the direction asserted here.
 			prop_assert!(
-				!summary_of(&chain).composable(query) || composable_reference(&chain, query)
+				!summary_of(&chain).composable(query, 1) || composable_reference(&chain, query)
 			);
 		}
 
@@ -447,7 +569,7 @@ mod tests {
 			// Invariant: extending a summary by one link answers as the longer chain does.
 			// This is the step the pass takes at every graph edge it walks.
 			prop_assert!(
-				!summary_of(head).with(*extra).composable(query)
+				!summary_of(head).with(*extra).composable(query, 1)
 					|| composable_reference(&chain, query)
 			);
 		}
@@ -467,8 +589,45 @@ mod tests {
 
 			// Invariant: a shift joins the spanning summary only when it composes with each path.
 			prop_assert!(
-				!joined.composable(query)
+				!joined.composable(query, 1)
 					|| composable_reference(&left, query) && composable_reference(&right, query)
+			);
+		}
+
+		/// The budget-one properties above pin the rule the pass runs today. These two pin it at
+		/// every budget the summary can be asked about, against a reference that groups with
+		/// `Shift::compose` itself rather than with the summary's variant-and-distance stand-in.
+		#[test]
+		fn a_chain_reported_within_budget_really_fits_it(
+			chain in any_chain(),
+			slots in 1usize..=MAX_SHIFT_SLOTS,
+		) {
+			// Invariant: whatever the summary says fits, the chain really spells in that many
+			// shifts. The converse does not hold and need not: the summary approximates
+			// `Shift::compose` with a variant-and-distance test, so it opens runs that composing
+			// would have collapsed — `slr(3)` inside `sar(5)` is one shift to core and two to the
+			// summary. That costs inlining, never correctness.
+			prop_assert!(
+				usize::from(summary_of(&chain).len) > slots
+					|| greedy_slots(&chain).unwrap_or(0) <= slots
+			);
+		}
+
+		#[test]
+		fn a_permitted_shift_keeps_the_chain_within_budget(
+			chain in any_chain(),
+			query in any_shift(),
+			slots in 1usize..=MAX_SHIFT_SLOTS,
+		) {
+			// The query lands inside everything on the path, which is the innermost end — the end
+			// the summary accumulates at.
+			let extended = [chain.as_slice(), &[query]].concat();
+
+			// Invariant: the shift the summary admits leaves a chain the budget really covers.
+			// This is the direction `patch::process_term` rests on at any budget.
+			prop_assert!(
+				!summary_of(&chain).composable(query, slots)
+					|| greedy_slots(&extended).unwrap_or(0) <= slots
 			);
 		}
 	}

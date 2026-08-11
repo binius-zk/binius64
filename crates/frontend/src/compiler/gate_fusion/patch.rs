@@ -291,7 +291,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		// Verify commit set
 		for &wire in expected_committed {
@@ -399,7 +399,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
@@ -434,7 +434,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
@@ -509,7 +509,7 @@ mod tests {
 				let mut stat = Stat::default();
 				let mut leg = LeGraph::new(&cb);
 				crate::compiler::gate_fusion::commit_set::run_decide_commit_set(
-					&mut leg, &mut stat,
+					&mut leg, &mut stat, 1,
 				);
 				let patches = super::build(&cb, &leg);
 				let mut cb2 = cb;
@@ -931,7 +931,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		// Sanity: y should be committed; t and z should not be
 		assert!(leg.commit_set().contains(w(3)), "y should be committed");
@@ -974,7 +974,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
@@ -1030,7 +1030,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		assert!(leg.commit_set().contains(w(1)), "t_committed should be committed");
 		let patches = super::build(&cb, &leg);
@@ -1081,7 +1081,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		assert!(leg.commit_set().contains(w(1)), "inner t should be committed");
 		let patches = super::build(&cb, &leg);
