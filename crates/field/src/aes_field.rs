@@ -26,7 +26,8 @@ use crate::{ExtensionField, Field, underlier::U1};
 //  - AESTowerField32b is GF(2^32) / (x^2 + x * x_3 + 1), where `x_3` is 0x1000 from
 //    AESTowerField16b.
 //  ...
-binary_field!(pub AESTowerField8b(u8), 0xD0);
+// `1 << 5` is the lowest single-bit element of trace 1; `1 << 7` is the only other one.
+binary_field!(pub AESTowerField8b(u8), 0xD0, 1 << 5);
 
 impl AESTowerField8b {
 	pub const fn new(value: u8) -> Self {
