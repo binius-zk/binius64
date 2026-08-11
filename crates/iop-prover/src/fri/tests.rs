@@ -14,9 +14,9 @@ use binius_iop::{
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, ReedSolomonCode,
+	ReedSolomonCode,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
-	ntt::{AdditiveNTT, NeighborsLastSingleThread, domain_context::GenericOnTheFly},
+	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{Packed128b, random_field_buffer},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -45,8 +45,7 @@ fn test_commit_prove_verify_success<F, P>(
 	let params =
 		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries);
 
-	let subspace = BinarySubspace::with_dim(params.rs_code().log_len());
-	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let domain_context = GaoMateerOnTheFly::generate(params.rs_code().log_len());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	let n_round_commitments = arities.len();
@@ -227,8 +226,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 
 	// The reduced Reed-Solomon code is shared by every input oracle, so the domain only needs to
 	// cover its length.
-	let subspace = BinarySubspace::with_dim(log_dim + log_inv_rate);
-	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let domain_context = GaoMateerOnTheFly::generate(log_dim + log_inv_rate);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Each oracle has RS dimension `log_dim` (no lifting), so every oracle sits at the reduced
@@ -243,8 +241,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 			log_later_batch_size: log_batch_size,
 		})
 		.collect::<Vec<_>>();
-	let rs_code =
-		ReedSolomonCode::with_domain_context_subspace(ntt.domain_context(), log_dim, log_inv_rate);
+	let rs_code = ReedSolomonCode::new(log_dim, log_inv_rate);
 	let params = FRIParams::<F>::new_batch(rs_code, oracle_specs, vec![], n_test_queries);
 	assert_eq!(params.rs_code().log_dim(), log_dim);
 
@@ -365,8 +362,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 
 	// Every oracle reduces to the shared dimension `log_dim`, so no lifting is exercised here — the
 	// focus is the inner-challenge windowing.
-	let subspace = BinarySubspace::with_dim(log_dim + log_inv_rate);
-	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let domain_context = GaoMateerOnTheFly::generate(log_dim + log_inv_rate);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Every oracle sits at the reduced dimension `log_dim` (no lifting). The ZK oracle (batch 1)
@@ -380,8 +376,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 			log_later_batch_size: if is_zk { 0 } else { log_batch_size },
 		})
 		.collect::<Vec<_>>();
-	let rs_code =
-		ReedSolomonCode::with_domain_context_subspace(ntt.domain_context(), log_dim, log_inv_rate);
+	let rs_code = ReedSolomonCode::new(log_dim, log_inv_rate);
 	let params = FRIParams::<F>::new_batch(rs_code, oracle_specs, vec![], n_test_queries);
 	assert_eq!(params.rs_code().log_dim(), log_dim);
 
@@ -522,8 +517,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 
 	// A single shared domain context covers the reduced code; every per-oracle (smaller) code is
 	// derived from it so their subspaces are nested prefixes of the reduced subspace.
-	let subspace = BinarySubspace::with_dim(reduced_log_dim + log_inv_rate);
-	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let domain_context = GaoMateerOnTheFly::generate(reduced_log_dim + log_inv_rate);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Each oracle is lifted from its own RS dimension up to `reduced_log_dim` (`log_lift` is the
@@ -536,11 +530,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 			log_later_batch_size: log_batch_size,
 		})
 		.collect::<Vec<_>>();
-	let rs_code = ReedSolomonCode::with_domain_context_subspace(
-		ntt.domain_context(),
-		reduced_log_dim,
-		log_inv_rate,
-	);
+	let rs_code = ReedSolomonCode::new(reduced_log_dim, log_inv_rate);
 	let params = FRIParams::<F>::new_batch(rs_code, oracle_specs, vec![], n_test_queries);
 	assert_eq!(params.rs_code().log_dim(), reduced_log_dim);
 
@@ -554,11 +544,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	let mut messages = Vec::new();
 	let mut committed_codewords = Vec::new();
 	for (&log_dim, &log_batch_size) in iter::zip(&oracle_log_dims, &log_batch_sizes) {
-		let rs_code = ReedSolomonCode::with_domain_context_subspace(
-			ntt.domain_context(),
-			log_dim,
-			log_inv_rate,
-		);
+		let rs_code = ReedSolomonCode::new(log_dim, log_inv_rate);
 		let oracle_params = FRIParams::new(rs_code, log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
 		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref());
@@ -676,8 +662,7 @@ where
 	let params =
 		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries);
 
-	let subspace = BinarySubspace::with_dim(params.rs_code().log_len());
-	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let domain_context = GaoMateerOnTheFly::generate(params.rs_code().log_len());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());

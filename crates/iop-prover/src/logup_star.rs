@@ -424,7 +424,7 @@ mod tests {
 			basefold::compiler::BaseFoldVerifierCompiler, fri::MinProofSizeStrategy,
 			merkle_tree::BinaryMerkleTreeScheme,
 		};
-		use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};
+		use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly};
 
 		use crate::basefold::compiler::BaseFoldProverCompiler;
 
@@ -455,8 +455,7 @@ mod tests {
 		);
 
 		// Prove: commit the pushforwards with real FRI, run the reduction, open them.
-		let domain_context =
-			GenericOnTheFly::generate_from_subspace(verifier_compiler.max_subspace());
+		let domain_context = GaoMateerOnTheFly::generate(verifier_compiler.max_log_domain_size());
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let prover_compiler =
 			BaseFoldProverCompiler::<BP, _>::from_verifier_compiler(&verifier_compiler, ntt);

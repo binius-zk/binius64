@@ -620,10 +620,10 @@ mod tests {
 		merkle_tree::BinaryMerkleTreeScheme,
 	};
 	use binius_math::{
-		BinarySubspace, FieldBuffer,
+		FieldBuffer,
 		inner_product::inner_product_buffers,
 		multilinear::eq::eq_ind_partial_eval,
-		ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
+		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -642,9 +642,9 @@ mod tests {
 	}
 
 	fn make_ntt(
-		subspace: &BinarySubspace<BinaryField128bGhash>,
-	) -> NeighborsLastSingleThread<GenericOnTheFly<BinaryField128bGhash>> {
-		let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
+		log_domain_size: usize,
+	) -> NeighborsLastSingleThread<GaoMateerOnTheFly<BinaryField128bGhash>> {
+		let domain_context = GaoMateerOnTheFly::generate(log_domain_size);
 		NeighborsLastSingleThread::new(domain_context)
 	}
 
@@ -691,7 +691,7 @@ mod tests {
 		);
 
 		// === PROVER SIDE ===
-		let ntt = make_ntt(verifier_compiler.max_subspace());
+		let ntt = make_ntt(verifier_compiler.max_log_domain_size());
 		let prover_compiler =
 			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
@@ -763,7 +763,7 @@ mod tests {
 		);
 
 		// === PROVER SIDE ===
-		let ntt = make_ntt(verifier_compiler.max_subspace());
+		let ntt = make_ntt(verifier_compiler.max_log_domain_size());
 		let prover_compiler =
 			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
@@ -846,7 +846,7 @@ mod tests {
 		);
 
 		// === PROVER SIDE ===
-		let ntt = make_ntt(verifier_compiler.max_subspace());
+		let ntt = make_ntt(verifier_compiler.max_log_domain_size());
 		let prover_compiler =
 			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
@@ -942,7 +942,7 @@ mod tests {
 			&MinProofSizeStrategy,
 		);
 
-		let ntt = make_ntt(verifier_compiler.max_subspace());
+		let ntt = make_ntt(verifier_compiler.max_log_domain_size());
 		let prover_compiler =
 			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 

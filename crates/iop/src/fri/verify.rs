@@ -5,7 +5,7 @@ use std::iter::{self, repeat_with};
 
 use binius_core::word::Word;
 use binius_field::{BinaryField, FieldOps};
-use binius_math::ntt::domain_context::GenericOnTheFly;
+use binius_math::ntt::domain_context::GaoMateerOnTheFly;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use super::{
@@ -38,7 +38,7 @@ where
 	/// Performs the first, interleaved reduction of the committed codeword(s).
 	codeword_oracle: BatchBrakedownOracle<E, C>,
 	/// Performs each subsequent FRI reduction, one per fold arity.
-	fri_oracles: Vec<FRIOracle<E, C, GenericOnTheFly<F>>>,
+	fri_oracles: Vec<FRIOracle<E, C, GaoMateerOnTheFly<F>>>,
 }
 
 impl<'a, F, E, C> FRIQueryVerifier<'a, F, E, C>
@@ -148,10 +148,10 @@ where
 
 		// All FRI reductions fold cosets of the same Reed–Solomon codeword domain, so they share a
 		// single domain context.
-		// Derived from the subspace the params carry, not regenerated from its dimension: a
-		// `FRIParams` may be built over any subspace, so the verifier cannot assume the
-		// Gao-Mateer basis the BaseFold compiler happens to choose.
-		let domain_context = GenericOnTheFly::generate_from_subspace(params.rs_code().subspace());
+		// `ReedSolomonCode` fixes the evaluation domain as the Gao-Mateer basis of its length, so
+		// the verifier rebuilds it from the code's shape rather than being told which basis the
+		// prover used.
+		let domain_context = GaoMateerOnTheFly::generate(params.rs_code().log_len());
 		let mut fri_oracles = Vec::with_capacity(params.fold_arities().len());
 		let mut depth = index_bits;
 		let mut fold_round = params.log_batch_size();
@@ -238,8 +238,7 @@ where
 
 		// Fold each coset of the terminal codeword and check that the folds are all equal, i.e.
 		// that the codeword has the claimed low degree.
-		let domain_context =
-			GenericOnTheFly::generate_from_subspace(self.params.rs_code().subspace());
+		let domain_context = GaoMateerOnTheFly::generate(self.params.rs_code().log_len());
 		let log_len = n_final_challenges + log_inv_rate;
 		let repetition_codeword = terminate_codeword
 			.chunks(1 << n_final_challenges)

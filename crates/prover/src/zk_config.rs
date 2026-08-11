@@ -97,7 +97,7 @@ where
 		let outer_iop_prover = binius_spartan_prover::IOPProver::new(outer_cs);
 
 		// Build the BaseFold prover compiler from the verifier compiler.
-		let log_domain_size = zk_verifier.basefold_compiler().max_subspace().dim();
+		let log_domain_size = zk_verifier.basefold_compiler().max_log_domain_size();
 		let domain_context = {
 			let _guard = tracing::debug_span!("Precompute NTT domain").entered();
 			GaoMateerPreExpanded::generate(log_domain_size)

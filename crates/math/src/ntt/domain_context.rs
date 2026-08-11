@@ -222,7 +222,7 @@ fn gao_mateer_basis<F: BinaryField>(num_basis_elements: usize) -> Vec<F> {
 /// folding. In both cases, all twiddles will be accessed eventually, so they might as well be
 /// precomputed. But it could possibly be used e.g. in the FRI verifier, which only accesses a few
 /// selected twiddles.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GaoMateerOnTheFly<F> {
 	/// Stores $[\beta_0, ..., \beta_{\ell-1}]$.
 	basis: Vec<F>,
