@@ -113,7 +113,7 @@ where
 		channel: Channel,
 	) -> BaseFoldVerifierChannel<'_, F, Channel>
 	where
-		Channel: MerkleIPVerifierChannel<F, Elem = F>,
+		Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 	{
 		BaseFoldVerifierChannel::new(channel, &self.oracle_specs, &self.fri_params)
 	}

@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_field::BinaryField;
+use binius_field::{BinaryField, FieldOps};
 use binius_math::{line::extrapolate_line, multilinear, ntt::DomainContext};
 
 use crate::merkle_channel::MerkleIPVerifierChannel;
@@ -15,7 +15,10 @@ use crate::merkle_channel::MerkleIPVerifierChannel;
 /// implementation therefore holds a handle to the committed oracle along with the folding
 /// challenges, and receives openings over a Merkle channel in order to evaluate the virtual oracle
 /// at queried locations.
-pub trait ProxTestOracle<F: BinaryField> {
+///
+/// The oracle is parameterized by the element type `E` of the channel it is opened over, since the
+/// folding challenges it holds were sampled from that channel.
+pub trait ProxTestOracle<F: BinaryField, E> {
 	/// The Merkle commitment handle for the committed oracle.
 	type Commitment;
 
@@ -40,16 +43,16 @@ pub trait ProxTestOracle<F: BinaryField> {
 		&self,
 		indices: &[usize],
 		channel: &mut Channel,
-	) -> Result<Vec<F>, Error>
+	) -> Result<Vec<E>, Error>
 	where
-		Channel: MerkleIPVerifierChannel<F, Commitment = Self::Commitment>;
+		Channel: MerkleIPVerifierChannel<F, Commitment = Self::Commitment, Elem = E>;
 }
 
 /// A [ProxTestOracle] implementation for a [Brakedown]-style interleaved code proximity check.
 ///
 /// [Brakedown]: <https://dl.acm.org/doi/10.1007/978-3-031-38545-2_7>
-pub struct BrakedownOracle<F, C> {
-	challenges: Vec<F>,
+pub struct BrakedownOracle<E, C> {
+	challenges: Vec<E>,
 	commitment: C,
 	/// The depth of the committed Merkle tree.
 	depth: usize,
@@ -59,13 +62,13 @@ pub struct BrakedownOracle<F, C> {
 	log_lift: usize,
 }
 
-impl<F: BinaryField, C> BrakedownOracle<F, C> {
+impl<E, C> BrakedownOracle<E, C> {
 	/// Constructs a new oracle from the committed interleaved codeword and the folding challenges.
 	///
 	/// `depth` is the depth of the committed Merkle tree. `log_lift` is the oracle-padding lift
 	/// factor (the committed codeword is virtually duplicated `2^log_lift` times to reach the
 	/// common first-round length); pass `0` when no lifting is needed.
-	pub const fn new(challenges: Vec<F>, commitment: C, depth: usize, log_lift: usize) -> Self {
+	pub const fn new(challenges: Vec<E>, commitment: C, depth: usize, log_lift: usize) -> Self {
 		Self {
 			challenges,
 			commitment,
@@ -75,7 +78,7 @@ impl<F: BinaryField, C> BrakedownOracle<F, C> {
 	}
 }
 
-impl<F: BinaryField, C> ProxTestOracle<F> for BrakedownOracle<F, C> {
+impl<F: BinaryField, E: FieldOps<Scalar = F>, C> ProxTestOracle<F, E> for BrakedownOracle<E, C> {
 	type Commitment = C;
 
 	fn log_len(&self) -> usize {
@@ -88,9 +91,9 @@ impl<F: BinaryField, C> ProxTestOracle<F> for BrakedownOracle<F, C> {
 		&self,
 		indices: &[usize],
 		channel: &mut Channel,
-	) -> Result<Vec<F>, Error>
+	) -> Result<Vec<E>, Error>
 	where
-		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
+		Channel: MerkleIPVerifierChannel<F, Commitment = C, Elem = E>,
 	{
 		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
 		// Translate each query on the virtual lifted oracle into a query on the committed codeword
@@ -118,14 +121,14 @@ impl<F: BinaryField, C> ProxTestOracle<F> for BrakedownOracle<F, C> {
 /// are combined as `\sum_i values_i[q] * outer_tensor[i]`, where
 /// `outer_tensor = eq_ind_partial_eval(outer_challenges)`. This mirrors the prover's
 /// `BatchBrakedownFolder::fold`.
-pub struct BatchBrakedownOracle<F, C> {
-	oracles: Vec<BrakedownOracle<F, C>>,
-	outer_challenges: Vec<F>,
+pub struct BatchBrakedownOracle<E, C> {
+	oracles: Vec<BrakedownOracle<E, C>>,
+	outer_challenges: Vec<E>,
 }
 
-impl<F: BinaryField, C> BatchBrakedownOracle<F, C> {
+impl<E, C> BatchBrakedownOracle<E, C> {
 	/// Constructs a batch oracle from the per-commitment oracles and the batching challenges.
-	pub fn new(oracles: Vec<BrakedownOracle<F, C>>, outer_challenges: Vec<F>) -> Self {
+	pub fn new(oracles: Vec<BrakedownOracle<E, C>>, outer_challenges: Vec<E>) -> Self {
 		assert!(!oracles.is_empty()); // precondition
 		Self {
 			oracles,
@@ -134,7 +137,9 @@ impl<F: BinaryField, C> BatchBrakedownOracle<F, C> {
 	}
 }
 
-impl<F: BinaryField, C> ProxTestOracle<F> for BatchBrakedownOracle<F, C> {
+impl<F: BinaryField, E: FieldOps<Scalar = F>, C> ProxTestOracle<F, E>
+	for BatchBrakedownOracle<E, C>
+{
 	type Commitment = C;
 
 	fn log_len(&self) -> usize {
@@ -143,25 +148,26 @@ impl<F: BinaryField, C> ProxTestOracle<F> for BatchBrakedownOracle<F, C> {
 		debug_assert!(
 			self.oracles
 				.iter()
-				.all(|oracle| oracle.log_len() == self.oracles[0].log_len())
+				.all(|oracle| ProxTestOracle::<F, E>::log_len(oracle)
+					== ProxTestOracle::<F, E>::log_len(&self.oracles[0]))
 		);
-		self.oracles[0].log_len()
+		ProxTestOracle::<F, E>::log_len(&self.oracles[0])
 	}
 
 	fn open_queries<Channel>(
 		&self,
 		indices: &[usize],
 		channel: &mut Channel,
-	) -> Result<Vec<F>, Error>
+	) -> Result<Vec<E>, Error>
 	where
-		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
+		Channel: MerkleIPVerifierChannel<F, Commitment = C, Elem = E>,
 	{
 		// Receive each bundled oracle's openings in commit order (matching the prover), then
 		// combine across oracles by the outer-challenge tensor expansion:
 		// combined[q] = \sum_i values_i[q] * outer_tensor[i].
-		let outer_tensor = multilinear::eq::eq_ind_partial_eval::<F>(&self.outer_challenges);
-		let mut combined = vec![F::ZERO; indices.len()];
-		for (oracle, &scalar) in self.oracles.iter().zip(outer_tensor.as_ref()) {
+		let outer_tensor = multilinear::eq::eq_ind_partial_eval_scalars(&self.outer_challenges);
+		let mut combined = vec![E::zero(); indices.len()];
+		for (oracle, scalar) in self.oracles.iter().zip(&outer_tensor) {
 			let values = oracle.open_queries(indices, channel)?;
 			for (acc, value) in combined.iter_mut().zip(values) {
 				*acc += value * scalar;
@@ -179,27 +185,20 @@ impl<F: BinaryField, C> ProxTestOracle<F> for BatchBrakedownOracle<F, C> {
 ///
 /// Unlike a [`ProxTestOracle`], this reduces *claims* about the base codeword rather than opening
 /// the virtual oracle outright — see [`Self::reduce_queries`].
-pub struct FRIOracle<F, C, DC>
-where
-	DC: DomainContext<Field = F>,
-{
-	challenges: Vec<F>,
+pub struct FRIOracle<E, C, DC> {
+	challenges: Vec<E>,
 	commitment: C,
 	/// The depth of the committed Merkle tree.
 	depth: usize,
 	domain_context: DC,
 }
 
-impl<F, C, DC> FRIOracle<F, C, DC>
-where
-	F: BinaryField,
-	DC: DomainContext<Field = F>,
-{
+impl<E, C, DC> FRIOracle<E, C, DC> {
 	/// Constructs a new oracle from a committed oracle, its folding challenges, and the domain
 	/// context providing the FRI fold twiddles.
 	///
 	/// `depth` is the depth of the committed Merkle tree.
-	pub const fn new(challenges: Vec<F>, commitment: C, depth: usize, domain_context: DC) -> Self {
+	pub const fn new(challenges: Vec<E>, commitment: C, depth: usize, domain_context: DC) -> Self {
 		Self {
 			challenges,
 			commitment,
@@ -217,13 +216,20 @@ where
 	const fn coset_log_size(&self) -> usize {
 		self.challenges.len()
 	}
+}
 
+impl<F, E, C, DC> FRIOracle<E, C, DC>
+where
+	F: BinaryField,
+	E: FieldOps<Scalar = F> + From<F>,
+	DC: DomainContext<Field = F>,
+{
 	/// Folds an opened coset into a single value.
 	///
 	/// The committed oracle's codeword length in log terms is the Merkle tree depth plus the number
 	/// of folding challenges (one coset per leaf), which is the `log_len` consumed by
 	/// [`fold_coset`].
-	fn fold_coset(&self, chunk_index: usize, values: Vec<F>) -> F {
+	fn fold_coset(&self, chunk_index: usize, values: Vec<E>) -> E {
 		fold_coset(
 			&self.domain_context,
 			self.depth + self.challenges.len(),
@@ -243,8 +249,8 @@ where
 	///     low coset_log_size() bits    the offset within that coset
 	/// ```
 	///
-	/// Each query checks the opened coset at its offset against the matching claim.
-	/// The coset then folds into the virtual oracle value.
+	/// Each query checks the opened coset at its offset against the matching claim, which is
+	/// asserted over the channel. The coset then folds into the virtual oracle value.
 	///
 	/// ## Preconditions
 	/// `claims` must have the same length as `indices`, and the indices must lie in the range
@@ -255,11 +261,11 @@ where
 	pub fn reduce_queries<Channel>(
 		&self,
 		indices: &[usize],
-		claims: &[F],
+		claims: &[E],
 		channel: &mut Channel,
-	) -> Result<Vec<F>, Error>
+	) -> Result<Vec<E>, Error>
 	where
-		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
+		Channel: MerkleIPVerifierChannel<F, Commitment = C, Elem = E>,
 	{
 		assert_eq!(indices.len(), claims.len()); // precondition
 		assert!(
@@ -278,11 +284,9 @@ where
 		let values = channel.recv_openings(&self.commitment, &coset_indices)?;
 		iter::zip(values.chunks(1 << coset_log_size), iter::zip(&coset_indices, indices))
 			.zip(claims)
-			.map(|((coset, (&coset_index, &index)), &claim)| {
-				// Verify the claimed base-codeword value against the opened coset.
-				if coset[index & coset_mask] != claim {
-					return Err(Error::ClaimMismatch { index });
-				}
+			.map(|((coset, (&coset_index, &index)), claim)| {
+				// Check the claimed base-codeword value against the opened coset.
+				channel.assert_zero(coset[index & coset_mask].clone() - claim.clone())?;
 				Ok(self.fold_coset(coset_index, coset.to_vec()))
 			})
 			.collect()
@@ -296,42 +300,42 @@ where
 /// to; the twiddle layer is absolute within the full NTT domain and decreases with each challenge.
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>
-pub fn fold_coset<F, DC>(
+pub fn fold_coset<F, E, DC>(
 	domain_context: &DC,
 	mut log_len: usize,
 	chunk_index: usize,
-	challenges: &[F],
-	mut values: Vec<F>,
-) -> F
+	challenges: &[E],
+	mut values: Vec<E>,
+) -> E
 where
 	F: BinaryField,
+	E: FieldOps<Scalar = F> + From<F>,
 	DC: DomainContext<Field = F>,
 {
 	let mut log_size = challenges.len();
-	for &challenge in challenges {
+	for challenge in challenges {
 		for index_offset in 0..1 << (log_size - 1) {
 			// Perform the inverse additive NTT butterfly, then extrapolate the resulting line at
 			// the folding challenge.
-			let mut u = values[index_offset << 1];
-			let mut v = values[(index_offset << 1) | 1];
 			let twiddle =
 				domain_context.twiddle(log_len - 1, (chunk_index << (log_size - 1)) | index_offset);
-			v += u;
-			u += v * twiddle;
-			values[index_offset] = extrapolate_line(u, v, challenge);
+			let mut u = values[index_offset << 1].clone();
+			let v = values[(index_offset << 1) | 1].clone() + &u;
+			u += v.clone() * E::from(twiddle);
+			values[index_offset] = extrapolate_line(u, v, challenge.clone());
 		}
 
 		log_len -= 1;
 		log_size -= 1;
 	}
 
-	values[0]
+	values[0].clone()
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-	#[error("claimed value at index {index} does not match the committed codeword")]
-	ClaimMismatch { index: usize },
 	#[error("Merkle channel error: {0}")]
 	Channel(#[from] crate::merkle_channel::Error),
+	#[error("IP channel error: {0}")]
+	IPChannel(#[from] binius_ip::channel::Error),
 }

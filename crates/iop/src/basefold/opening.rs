@@ -47,15 +47,16 @@ use crate::{
 pub fn verify_mlecheck_basefold<F, Channel>(
 	fri_params: &FRIParams<F>,
 	codeword_commitments: &[Channel::Commitment],
-	eval_claim: F,
-	eval_point: &[F],
-	batch_challenge: Option<F>,
-	outer_challenges: &[F],
+	eval_claim: Channel::Elem,
+	eval_point: &[Channel::Elem],
+	batch_challenge: Option<Channel::Elem>,
+	outer_challenges: &[Channel::Elem],
 	channel: &mut Channel,
 ) -> Result<(), Error>
 where
 	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem = F>,
+	Channel: MerkleIPVerifierChannel<F>,
+	Channel::Elem: From<F>,
 {
 	// The MLE-check round polynomial is degree 1 (the composite is the multilinear itself).
 	const DEGREE: usize = 1;
@@ -87,9 +88,9 @@ where
 	// The first fold consumes its challenges as `[γ] ++ r' ++ fresh_X`, so the outer challenges are
 	// processed here (right after γ) to land in the outer window; the leading standard rounds then
 	// supply each non-ZK oracle's later batch fold.
-	for &outer_challenge in outer_challenges {
+	for outer_challenge in outer_challenges {
 		fri_fold_verifier.process_round(channel)?;
-		challenges.push(outer_challenge);
+		challenges.push(outer_challenge.clone());
 	}
 
 	// Standard rounds: the only sumcheck (MLE-check) rounds, folding the combined codeword at the
@@ -100,7 +101,7 @@ where
 		fri_fold_verifier.process_round(channel)?;
 
 		// MLE-check binds variables high-to-low, so round `i` uses coordinate `eval_point[n-1-i]`.
-		let alpha = eval_point[n_vars - 1 - round];
+		let alpha = eval_point[n_vars - 1 - round].clone();
 		let round_coeffs = round_proof.recover(sum, alpha);
 		let challenge = channel.sample();
 		sum = round_coeffs.evaluate(&challenge);
