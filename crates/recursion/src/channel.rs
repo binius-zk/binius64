@@ -5,12 +5,16 @@
 use std::rc::Rc;
 
 use binius_circuits::multiplexer::multi_wire_multiplex;
+use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
 use binius_frontend::{Circuit, Wire};
 use binius_iop::merkle_channel::{self, MerkleIPVerifierChannel};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 
-use crate::{Elem, Word, shared::Shared};
+use crate::{
+	shared::Shared,
+	symbolic::{SymbolicElem, SymbolicWord},
+};
 
 /// Number of 64-bit words a SHA-256 digest occupies.
 pub(crate) const DIGEST_WORDS: usize = 4;
@@ -45,9 +49,10 @@ pub struct Recorded {
 /// than a verdict. Wrap it in a `BaseFoldVerifierChannel` for the oracle layer, exactly as the
 /// transcript channel is wrapped.
 ///
-/// The builder is shared through an [`Rc`] because `IOPVerifierChannel` requires `Elem: 'static`,
-/// so an element cannot borrow the builder it was built on. The frontend's `CircuitBuilder` takes
-/// `&self` throughout, so no interior-mutability wrapper is needed around it.
+/// The builder is shared through an [`Rc`] because `IOPVerifierChannel` requires `SymbolicElem:
+/// 'static`, so an element cannot borrow the builder it was built on. The frontend's
+/// `CircuitBuilder` takes `&self` throughout, so no interior-mutability wrapper is needed around
+/// it.
 ///
 /// See the crate docs for what this does and does not constrain.
 pub struct Binius64BuilderChannel {
@@ -64,21 +69,22 @@ impl Binius64BuilderChannel {
 	}
 
 	/// The inner statement, as this circuit's public input.
-	pub fn statement(&self) -> Vec<Word> {
+	pub fn statement(&self) -> Vec<SymbolicWord> {
 		self.inout
 			.iter()
-			.map(|&wire| Word::wire(&self.shared, wire))
+			.map(|&wire| SymbolicWord::wire(&self.shared, wire))
 			.collect()
 	}
 
 	/// Consumes the channel and compiles what it recorded.
 	///
-	/// Every [`Elem`] and [`Word`] derived from this channel must be dropped first: they hold weak
-	/// handles to the builder, and using one afterwards panics.
+	/// Every [`SymbolicElem`] and [`SymbolicWord`] derived from this channel must be dropped first:
+	/// they hold weak handles to the builder, and using one afterwards panics.
 	pub fn build(self) -> Recorded {
 		let Self { shared, inout } = self;
-		let shared = Rc::try_unwrap(shared)
-			.unwrap_or_else(|_| panic!("Elem and Word values hold only weak handles"));
+		let shared = Rc::try_unwrap(shared).unwrap_or_else(|_| {
+			panic!("SymbolicElem and SymbolicWord values hold only weak handles")
+		});
 		Recorded {
 			inputs: shared.inputs(),
 			circuit: shared.builder().build(),
@@ -87,42 +93,42 @@ impl Binius64BuilderChannel {
 	}
 
 	/// Allocates the `(lo, hi)` pair one field element occupies, as circuit inputs.
-	fn input_elem(&mut self) -> Elem {
+	fn input_elem(&mut self) -> SymbolicElem {
 		let lo = self.shared.input_wire();
 		let hi = self.shared.input_wire();
-		Elem::wires(&self.shared, lo, hi)
+		SymbolicElem::wires(&self.shared, lo, hi)
 	}
 }
 
 impl IPVerifierChannel<B128> for Binius64BuilderChannel {
-	type Elem = Elem;
+	type Elem = SymbolicElem;
 
-	fn recv_one(&mut self) -> Result<Elem, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<SymbolicElem, binius_ip::channel::Error> {
 		Ok(self.input_elem())
 	}
 
-	fn sample(&mut self) -> Elem {
+	fn sample(&mut self) -> SymbolicElem {
 		// UNCONSTRAINED: a challenge is the Fiat-Shamir state's output, which needs the
 		// challenger's hashing in-circuit. Until then it is an input the replay supplies.
 		self.input_elem()
 	}
 
-	fn observe_one(&mut self, _val: B128) -> Elem {
+	fn observe_one(&mut self, _val: B128) -> SymbolicElem {
 		// UNCONSTRAINED: nothing absorbs the value.
 		self.input_elem()
 	}
 
-	fn assert_zero(&mut self, val: Elem) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, val: SymbolicElem) -> Result<(), binius_ip::channel::Error> {
 		match val {
 			// A build-time constant is decided here; a non-zero one is unsatisfiable.
-			Elem::Constant(c) => {
+			SymbolicElem::Constant(c) => {
 				if c == B128::ZERO {
 					Ok(())
 				} else {
 					Err(binius_ip::channel::Error::InvalidAssert)
 				}
 			}
-			Elem::Wires { lo, hi, .. } => {
+			SymbolicElem::Wires { lo, hi, .. } => {
 				self.shared.builder().assert_zero("channel", lo);
 				self.shared.builder().assert_zero("channel", hi);
 				Ok(())
@@ -130,34 +136,39 @@ impl IPVerifierChannel<B128> for Binius64BuilderChannel {
 		}
 	}
 
-	fn compute_public_value(&mut self, inputs: &[Elem], f: impl FieldFn<B128>) -> Elem {
+	fn compute_public_value(
+		&mut self,
+		inputs: &[SymbolicElem],
+		f: impl FieldFn<B128>,
+	) -> SymbolicElem {
 		// Evaluated symbolically rather than hinted, so the circuit constrains it. For the
 		// constraint system's monster multilinear that is proportional to the inner circuit's
 		// size, which is what an accumulation or Spark argument would remove.
-		f.call::<Elem>(inputs)
+		f.call::<SymbolicElem>(inputs)
 	}
 }
 
 impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
-	type Word = Word;
+	type Word = SymbolicWord;
 
-	fn observe_words(&mut self, _words: &[Word]) {
+	fn observe_words(&mut self, _words: &[SymbolicWord]) {
 		// UNCONSTRAINED: the statement must reach the Fiat-Shamir state for the circuit to be
 		// bound to what it claims to verify.
 	}
 
-	fn subset_sum(&mut self, elems: &[Elem], word: &Word) -> Elem {
-		assert!(elems.len() <= binius_core::word::Word::BITS); // precondition
+	fn subset_sum(&mut self, elems: &[SymbolicElem], word: &SymbolicWord) -> SymbolicElem {
+		assert!(elems.len() <= Word::BITS); // precondition
 
 		// Each element is kept or dropped by its own bit, and the survivors are summed. The sum is
 		// XOR, which the constraint system absorbs, so the cost is the keep-or-drop.
 		let builder = self.shared.builder();
-		let (zero_lo, zero_hi) = Elem::zero().to_wires(builder);
+		let (zero_lo, zero_hi) = SymbolicElem::zero().to_wires(builder);
 		(0..elems.len())
 			.map(|bit| {
-				let sel = word.bit_at_msb(builder, bit);
+				// Move the bit into the most significant position, where `select` reads it.
+				let sel = (word.clone() << (Word::BITS - 1 - bit) as u32).to_wire(builder);
 				let (lo, hi) = elems[bit].to_wires(builder);
-				Elem::wires(
+				SymbolicElem::wires(
 					&self.shared,
 					builder.select(sel, lo, zero_lo),
 					builder.select(sel, hi, zero_hi),
@@ -166,7 +177,7 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 			.sum()
 	}
 
-	fn select(&mut self, elems: &[Elem], word: &Word) -> Elem {
+	fn select(&mut self, elems: &[SymbolicElem], word: &SymbolicWord) -> SymbolicElem {
 		assert!(!elems.is_empty() && elems.len().is_power_of_two()); // precondition
 
 		// One multiplexer over the `(lo, hi)` pairs, which is the same select-gate tree per wire
@@ -182,13 +193,13 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 		let groups = pairs.iter().map(|pair| pair.as_slice()).collect::<Vec<_>>();
 		let sel = word.to_wire(builder);
 		let selected = multi_wire_multiplex(builder, &groups, sel);
-		Elem::wires(&self.shared, selected[0], selected[1])
+		SymbolicElem::wires(&self.shared, selected[0], selected[1])
 	}
 
-	fn sample_bits(&mut self, _bits: usize) -> Word {
+	fn sample_bits(&mut self, _bits: usize) -> SymbolicWord {
 		// UNCONSTRAINED, twice over: the index should come from the Fiat-Shamir state, and it
 		// should be masked to `bits` bits, which the FRI code relies on rather than asserting.
-		Word::wire(&self.shared, self.shared.input_wire())
+		SymbolicWord::wire(&self.shared, self.shared.input_wire())
 	}
 }
 
@@ -211,8 +222,8 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 	fn recv_openings(
 		&mut self,
 		commitment: &Commitment,
-		indices: &[Word],
-	) -> Result<Vec<Elem>, merkle_channel::Error> {
+		indices: &[SymbolicWord],
+	) -> Result<Vec<SymbolicElem>, merkle_channel::Error> {
 		// UNCONSTRAINED: nothing binds the opened values to the root. Hashing each leaf and
 		// climbing the path is the gadget this skeleton leaves out.
 		Ok((0..indices.len() * commitment.leaf_size)
@@ -223,7 +234,7 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 	fn recv_committed_vector(
 		&mut self,
 		commitment: &Commitment,
-	) -> Result<Vec<Elem>, merkle_channel::Error> {
+	) -> Result<Vec<SymbolicElem>, merkle_channel::Error> {
 		// UNCONSTRAINED: nothing rebuilds the tree over the vector.
 		Ok((0..commitment.leaf_size << commitment.depth)
 			.map(|_| self.input_elem())

@@ -39,8 +39,8 @@ fn folds_constants_without_constraints() {
 
 	// A product of build-time constants is decided while building, so it records nothing, and
 	// asserting a zero constant succeeds without a constraint.
-	let two = binius_recursion::Elem::Constant(B128::new(2));
-	let three = binius_recursion::Elem::Constant(B128::new(3));
+	let two = binius_recursion::SymbolicElem::Constant(B128::new(2));
+	let three = binius_recursion::SymbolicElem::Constant(B128::new(3));
 	let product = two * &three;
 	channel
 		.assert_zero(product.clone() - product)

@@ -3,10 +3,11 @@
 //! The 64-bit word a circuit-building channel carries.
 
 use std::{
-	ops::Shr,
+	ops::{Shl, Shr},
 	rc::{Rc, Weak},
 };
 
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use crate::shared::Shared;
@@ -22,12 +23,12 @@ use crate::shared::Shared;
 /// A `Constant` folds while the circuit is built and costs nothing. The FRI query indices, which
 /// arrive from `sample_bits`, are `Wire`s.
 #[derive(Clone)]
-pub enum Word {
-	Constant(binius_core::word::Word),
+pub enum SymbolicWord {
+	Constant(Word),
 	Wire { shared: Weak<Shared>, wire: Wire },
 }
 
-impl Word {
+impl SymbolicWord {
 	/// Constructs a wire-backed word anchored to the shared builder.
 	pub fn wire(shared: &Rc<Shared>, wire: Wire) -> Self {
 		Self::Wire {
@@ -44,35 +45,46 @@ impl Word {
 		}
 	}
 
-	/// Returns bit `i` moved into the most significant position, where a `select` gate reads it.
-	///
-	/// The bits below it are whatever the shift carried up and are ignored, so this is one gate
-	/// rather than a broadcast. `single_wire_multiplex` selects the same way.
-	pub fn bit_at_msb(&self, builder: &CircuitBuilder, i: usize) -> Wire {
-		let wire = self.to_wire(builder);
-		builder.shl(wire, (binius_core::word::Word::BITS - 1 - i) as u32)
+	/// Applies a shift, folding a constant and emitting a gate otherwise.
+	fn shift(
+		self,
+		amount: u32,
+		gate: impl Fn(&CircuitBuilder, Wire, u32) -> Wire,
+		fold: impl Fn(Word, u32) -> Word,
+	) -> Self {
+		match self {
+			Self::Constant(word) => Self::Constant(fold(word, amount)),
+			Self::Wire { shared, wire } => {
+				let Some(owner) = shared.upgrade() else {
+					panic!("a SymbolicWord outlived the channel that created it");
+				};
+				let shifted = gate(owner.builder(), wire, amount);
+				Self::wire(&owner, shifted)
+			}
+		}
 	}
 }
 
-impl From<binius_core::word::Word> for Word {
-	fn from(word: binius_core::word::Word) -> Self {
+impl From<Word> for SymbolicWord {
+	fn from(word: Word) -> Self {
 		Self::Constant(word)
 	}
 }
 
-impl Shr<u32> for Word {
+impl Shr<u32> for SymbolicWord {
 	type Output = Self;
 
 	fn shr(self, rhs: u32) -> Self {
-		match self {
-			Self::Constant(word) => Self::Constant(word >> rhs),
-			Self::Wire { shared, wire } => {
-				let Some(owner) = shared.upgrade() else {
-					panic!("a Word outlived the channel that created it");
-				};
-				let shifted = owner.builder().shr(wire, rhs);
-				Self::wire(&owner, shifted)
-			}
-		}
+		self.shift(rhs, CircuitBuilder::shr, |word, rhs| word >> rhs)
+	}
+}
+
+/// Shifting left is how a caller moves a chosen bit into the most significant position, where a
+/// `select` gate reads it.
+impl Shl<u32> for SymbolicWord {
+	type Output = Self;
+
+	fn shl(self, rhs: u32) -> Self {
+		self.shift(rhs, CircuitBuilder::shl, |word, rhs| word << rhs)
 	}
 }

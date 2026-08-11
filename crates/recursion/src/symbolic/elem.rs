@@ -27,7 +27,7 @@ use crate::shared::Shared;
 /// arithmetic is full of build-time constants — subspace bases, Lagrange weights, eq-indicator
 /// evaluations at fixed points — and folding them costs no constraints at all.
 #[derive(Clone)]
-pub enum Elem {
+pub enum SymbolicElem {
 	Constant(B128),
 	Wires {
 		shared: Weak<Shared>,
@@ -36,7 +36,7 @@ pub enum Elem {
 	},
 }
 
-impl Elem {
+impl SymbolicElem {
 	/// Constructs a wire-backed element anchored to the shared builder.
 	pub fn wires(shared: &Rc<Shared>, lo: Wire, hi: Wire) -> Self {
 		Self::Wires {
@@ -53,7 +53,7 @@ impl Elem {
 			Self::Wires { shared, .. } => Some(
 				shared
 					.upgrade()
-					.expect("an Elem outlived the channel that created it"),
+					.expect("a SymbolicElem outlived the channel that created it"),
 			),
 		}
 	}
@@ -85,7 +85,7 @@ impl Elem {
 			(Self::Wires { shared, .. }, _) | (_, Self::Wires { shared, .. }) => shared,
 		};
 		let Some(owner) = shared.upgrade() else {
-			panic!("an Elem outlived the channel that created it");
+			panic!("a SymbolicElem outlived the channel that created it");
 		};
 		let builder = owner.builder();
 		let (lo, hi) = gate(builder, self.to_wires(builder), rhs.to_wires(builder));
@@ -94,7 +94,7 @@ impl Elem {
 }
 
 // In characteristic 2 negation is the identity.
-impl Neg for Elem {
+impl Neg for SymbolicElem {
 	type Output = Self;
 
 	fn neg(self) -> Self {
@@ -102,7 +102,7 @@ impl Neg for Elem {
 	}
 }
 
-impl Add<&Self> for Elem {
+impl Add<&Self> for SymbolicElem {
 	type Output = Self;
 
 	fn add(self, rhs: &Self) -> Self {
@@ -116,7 +116,7 @@ impl Add<&Self> for Elem {
 	}
 }
 
-impl Mul<&Self> for Elem {
+impl Mul<&Self> for SymbolicElem {
 	type Output = Self;
 
 	fn mul(self, rhs: &Self) -> Self {
@@ -135,7 +135,7 @@ impl Mul<&Self> for Elem {
 	}
 }
 
-impl Sub<&Self> for Elem {
+impl Sub<&Self> for SymbolicElem {
 	type Output = Self;
 
 	// Subtraction is addition in characteristic 2, which is what the shared `combine` records.
@@ -147,7 +147,7 @@ impl Sub<&Self> for Elem {
 
 macro_rules! by_value {
 	($trait:ident, $method:ident) => {
-		impl $trait for Elem {
+		impl $trait for SymbolicElem {
 			type Output = Self;
 
 			fn $method(self, rhs: Self) -> Self {
@@ -162,12 +162,12 @@ by_value!(Mul, mul);
 
 macro_rules! assign {
 	($trait:ident, $method:ident, $op:ident) => {
-		impl $trait for Elem {
+		impl $trait for SymbolicElem {
 			fn $method(&mut self, rhs: Self) {
 				*self = self.clone().$op(&rhs);
 			}
 		}
-		impl $trait<&Self> for Elem {
+		impl $trait<&Self> for SymbolicElem {
 			fn $method(&mut self, rhs: &Self) {
 				*self = self.clone().$op(rhs);
 			}
@@ -178,37 +178,37 @@ assign!(AddAssign, add_assign, add);
 assign!(SubAssign, sub_assign, sub);
 assign!(MulAssign, mul_assign, mul);
 
-impl Sum for Elem {
+impl Sum for SymbolicElem {
 	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
 		iter.fold(Self::Constant(B128::ZERO), |acc, x| acc + x)
 	}
 }
 
-impl<'a> Sum<&'a Self> for Elem {
+impl<'a> Sum<&'a Self> for SymbolicElem {
 	fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
 		iter.fold(Self::Constant(B128::ZERO), |acc, x| acc + x)
 	}
 }
 
-impl Product for Elem {
+impl Product for SymbolicElem {
 	fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
 		iter.fold(Self::Constant(B128::ONE), |acc, x| acc * x)
 	}
 }
 
-impl<'a> Product<&'a Self> for Elem {
+impl<'a> Product<&'a Self> for SymbolicElem {
 	fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
 		iter.fold(Self::Constant(B128::ONE), |acc, x| acc * x)
 	}
 }
 
-impl Square for Elem {
+impl Square for SymbolicElem {
 	fn square(self) -> Self {
 		self.clone() * &self
 	}
 }
 
-impl InvertOrZero for Elem {
+impl InvertOrZero for SymbolicElem {
 	fn invert_or_zero(self) -> Self {
 		let Some(owner) = self.shared() else {
 			// A constant inverts while the circuit is built.
@@ -225,13 +225,13 @@ impl InvertOrZero for Elem {
 	}
 }
 
-impl From<B128> for Elem {
+impl From<B128> for SymbolicElem {
 	fn from(value: B128) -> Self {
 		Self::Constant(value)
 	}
 }
 
-impl FieldOps for Elem {
+impl FieldOps for SymbolicElem {
 	type Scalar = B128;
 
 	fn zero() -> Self {

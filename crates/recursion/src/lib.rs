@@ -3,9 +3,10 @@
 //! Building a Binius64 circuit that verifies a Binius64 proof.
 //!
 //! A verifier written against the channel traits does not name a concrete field element or word
-//! type: it reads [`Elem`]s and [`Word`]s off a channel and asks the channel to do what it cannot
-//! express itself. Running such a verifier against [`Binius64BuilderChannel`] therefore produces,
-//! instead of an accept or a reject, a circuit that records what the verifier did.
+//! type: it reads [`SymbolicElem`]s and [`SymbolicWord`]s off a channel and asks the channel to do
+//! what it cannot express itself. Running such a verifier against [`Binius64BuilderChannel`]
+//! therefore produces, instead of an accept or a reject, a circuit that records what the verifier
+//! did.
 //!
 //! ```text
 //!   verifier + builder channel  ->  circuit
@@ -38,13 +39,11 @@
 //! in place the only input left is the proof itself.
 
 mod channel;
-mod elem;
 mod filler;
 mod hints;
 mod shared;
-mod word;
+pub mod symbolic;
 
 pub use channel::{Binius64BuilderChannel, Commitment, Recorded};
-pub use elem::Elem;
 pub use filler::WitnessFillerChannel;
-pub use word::Word;
+pub use symbolic::{SymbolicElem, SymbolicWord};
