@@ -78,6 +78,7 @@ where
 		r_s,
 		r_v,
 		gamma,
+		g_eval: _,
 	} = phase_1_output;
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);

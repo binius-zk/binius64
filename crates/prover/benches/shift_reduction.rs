@@ -315,15 +315,16 @@ fn bench_shift_phases(c: &mut Criterion) {
 		r_s,
 		r_v,
 		gamma,
+		g_eval: _,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
-		Phase1Output::split(run_phase_1_sumcheck::<F, P, _, _>(
+		run_phase_1_sumcheck::<F, P, _, _>(
 			g.clone(),
 			h.clone(),
 			prepared.batched_eval(),
 			&mut transcript,
 			&GlobalAllocator,
-		))
+		)
 	};
 	let h_eval =
 		ShiftIndSumcheck::<P, _>::new(&GlobalAllocator, &subspace, r_zhat_prime, &r_j, &r_s, &r_v)

@@ -86,13 +86,8 @@ where
 		r_s,
 		r_v,
 		gamma,
-	} = Phase1Output::split(run_phase_1_sumcheck::<F, F, _, _>(
-		g,
-		h,
-		prepared.batched_eval(),
-		channel,
-		alloc,
-	));
+		g_eval: _,
+	} = run_phase_1_sumcheck::<F, F, _, _>(g, h, prepared.batched_eval(), channel, alloc);
 
 	// Phase 2: the h evaluation every shift key is weighted by, then the witness folded at the
 	// bit position challenge `r_j`, per segment.
