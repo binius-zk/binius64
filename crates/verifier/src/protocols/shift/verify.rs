@@ -17,7 +17,8 @@ use binius_math::{
 	inner_product::inner_product_scalars,
 	line::extrapolate_line,
 	multilinear::eq::{
-		eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var, scaled_eq_ind_partial_eval_scalars,
+		eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var, scaled_eq_ind_partial_eval,
+		scaled_eq_ind_partial_eval_scalars,
 	},
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
@@ -433,7 +434,16 @@ impl MonsterEvalFn<'_> {
 	///
 	/// The Zero and BitAnd inputs are always present; the IntMul and BinMul inputs are `None` when
 	/// that operation has no constraints and is skipped.
-	fn operation_inputs<E: FieldOps>(&self, vals: &[E]) -> OperationInputs<E> {
+	///
+	/// The scaled word-index expansion is supplied by the caller:
+	///
+	/// - That axis spans the whole trace, so it is the expansion worth threading.
+	/// - Only a concrete field element can cross threads, so the generic path stays serial.
+	fn operation_inputs<E: FieldOps>(
+		&self,
+		vals: &[E],
+		scaled_expand: impl Fn(&[E], E) -> Vec<E>,
+	) -> OperationInputs<E> {
 		// Each operation's `r_x'` section is as long as its reduction has constraint variables, and
 		// [`OperationEvalFn::split_input`] re-derives that length from the constraint count alone.
 		// The two derivations must agree or both sides mis-split the same input. An absent IntMul
@@ -497,9 +507,8 @@ impl MonsterEvalFn<'_> {
 
 		let public_scale =
 			eq_one_var(r_segment.clone(), E::zero()) * eq_ind_zero(&r_y_v[log_public_words..]);
-		let public_tensor =
-			scaled_eq_ind_partial_eval_scalars(&r_y_v[..log_public_words], public_scale);
-		let hidden_tensor = scaled_eq_ind_partial_eval_scalars(r_y_v, r_segment);
+		let public_tensor = scaled_expand(&r_y_v[..log_public_words], public_scale);
+		let hidden_tensor = scaled_expand(r_y_v, r_segment);
 
 		// Cut the two indicators into one run per value segment, which is what an operand term's
 		// `(segment, index)` pair reads against. The constants lead the public indicator and the
@@ -575,7 +584,7 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_> {
 			bitand: bitand_input,
 			intmul: intmul_input,
 			binmul: binmul_input,
-		} = self.operation_inputs(vals);
+		} = self.operation_inputs(vals, scaled_eq_ind_partial_eval_scalars);
 		let cs = &self.constraint_system;
 
 		let zero =
@@ -610,7 +619,11 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_> {
 			bitand: bitand_input,
 			intmul: intmul_input,
 			binmul: binmul_input,
-		} = self.operation_inputs(vals);
+		} = self.operation_inputs(vals, |point, scale| {
+			// The packed expansion threads the tensor's multiplications.
+			// It applies over the base field, which is its own single-element packing.
+			scaled_eq_ind_partial_eval::<F>(point, scale).take_data()
+		});
 		let cs = &self.constraint_system;
 
 		let zero =
