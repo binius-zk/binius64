@@ -41,7 +41,7 @@ use binius_iop::{
 	basefold,
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{
-		IOPVerifierChannel, OracleLinearRelation, OracleSpec,
+		IOPVerifierChannel, OracleSpec,
 		oracle_setup::{DummyElem, OracleSetupChannel},
 	},
 	fri::{self, MinProofSizeStrategy},
@@ -236,23 +236,9 @@ impl<F: Field> IOPVerifier<F> {
 		let mask_transparent = mask_transparent(cs, &r_x);
 
 		// Verify all oracle relations
-		channel.verify_oracle_relations([
-			OracleLinearRelation {
-				oracle: precommit_oracle,
-				transparent: precommit_transparent,
-				claim: precommit_claim,
-			},
-			OracleLinearRelation {
-				oracle: private_oracle,
-				transparent: private_transparent,
-				claim: private_claim,
-			},
-			OracleLinearRelation {
-				oracle: mask_oracle,
-				transparent: mask_transparent,
-				claim: mask_eval,
-			},
-		])?;
+		channel.verify_oracle_relation(precommit_oracle, precommit_transparent, precommit_claim)?;
+		channel.verify_oracle_relation(private_oracle, private_transparent, private_claim)?;
+		channel.verify_oracle_relation(mask_oracle, mask_transparent, mask_eval)?;
 
 		Ok(())
 	}

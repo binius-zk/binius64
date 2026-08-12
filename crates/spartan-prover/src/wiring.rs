@@ -417,9 +417,7 @@ mod tests {
 	#[test]
 	fn test_wiring_prove_verify() {
 		use binius_hash::StdDigest;
-		use binius_iop::channel::{
-			IOPVerifierChannel, OracleLinearRelation, OracleSpec, naive::NaiveVerifierChannel,
-		};
+		use binius_iop::channel::{IOPVerifierChannel, OracleSpec, naive::NaiveVerifierChannel};
 		use binius_iop_prover::channel::{IOPProverChannel, naive::NaiveProverChannel};
 		use binius_ip::channel::IPVerifierChannel;
 		use binius_ip_prover::channel::IPProverChannel;
@@ -504,12 +502,8 @@ mod tests {
 		);
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relations([(
-			witness_oracle,
-			private_buf,
-			wiring_poly.clone(),
-			trace_claim,
-		)]);
+		prover_channel.prove_oracle_relation(witness_oracle, wiring_poly.clone(), trace_claim);
+		prover_channel.finalize_oracle(witness_oracle, private_buf);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -543,11 +537,7 @@ mod tests {
 
 		// Finish verification.
 		verifier_channel
-			.verify_oracle_relations([OracleLinearRelation {
-				oracle: witness_oracle,
-				transparent,
-				claim: verifier_trace_claim,
-			}])
-			.expect("verify_oracle_relations should succeed (inner product verified)");
+			.verify_oracle_relation(witness_oracle, transparent, verifier_trace_claim)
+			.expect("verify_oracle_relation should succeed (inner product verified)");
 	}
 }

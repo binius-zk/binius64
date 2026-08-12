@@ -317,12 +317,18 @@ impl<F: Field> IOPProver<F> {
 		let libra_eval_tensor =
 			zk_mlecheck::expand_libra_eval::<A, P>(alloc, &r_x, n_vars, mask_degree, m_n, m_d);
 
-		// Prove all oracle relations.
-		channel.prove_oracle_relations([
-			(precommit_oracle, precommit_packed, precommit_wiring_poly, precommit_claim),
-			(private_oracle, private_packed, private_wiring_poly, private_claim),
-			(mask_oracle, masks_buffer, libra_eval_tensor, mask_eval),
-		]);
+		// Prove all oracle relations, handing the channel each committed buffer for the combined
+		// opening.
+		channel.prove_oracle_relation(
+			precommit_oracle.clone(),
+			precommit_wiring_poly,
+			precommit_claim,
+		);
+		channel.finalize_oracle(precommit_oracle, precommit_packed);
+		channel.prove_oracle_relation(private_oracle.clone(), private_wiring_poly, private_claim);
+		channel.finalize_oracle(private_oracle, private_packed);
+		channel.prove_oracle_relation(mask_oracle.clone(), libra_eval_tensor, mask_eval);
+		channel.finalize_oracle(mask_oracle, masks_buffer);
 
 		Ok(())
 	}

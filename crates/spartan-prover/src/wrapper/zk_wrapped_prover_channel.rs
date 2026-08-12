@@ -310,22 +310,23 @@ where
 		self.inner_channel.send_oracle(buffer)
 	}
 
-	fn prove_oracle_relations(
+	fn prove_oracle_relation(
 		&mut self,
-		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldVec<P, A>, FieldVec<P, A>, P::Scalar),
-		>,
+		oracle: Self::Oracle,
+		transparent: FieldVec<P, A>,
+		claim: P::Scalar,
 	) {
-		let oracle_relations = oracle_relations.into_iter().collect::<Vec<_>>();
-
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.
-		for (_, _, _, claim) in &oracle_relations {
-			self.inner_channel.send_one(*claim);
-			self.interaction.push(*claim);
-		}
+		self.inner_channel.send_one(claim);
+		self.interaction.push(claim);
 
-		self.inner_channel.prove_oracle_relations(oracle_relations)
+		self.inner_channel
+			.prove_oracle_relation(oracle, transparent, claim)
+	}
+
+	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
+		self.inner_channel.finalize_oracle(oracle, buffer)
 	}
 }

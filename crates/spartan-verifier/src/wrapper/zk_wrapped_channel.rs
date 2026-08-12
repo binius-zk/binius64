@@ -17,7 +17,7 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, util::FieldFn};
 use binius_iop::{
 	basefold::channel::{BaseFoldOracle, BaseFoldVerifierChannel},
-	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	channel::{IOPVerifierChannel, OracleSpec, TransparentEvalFn},
 	merkle_channel::MerkleIPVerifierChannel,
 };
 use binius_ip::channel::{
@@ -39,9 +39,9 @@ use crate::{Error, IOPVerifier, wrapper::circuit_elem::CircuitElem};
 /// them); arithmetic over public values produces derived public values, and mixing with a precommit
 /// key (as `recv_one` arranges via `inout - key`) yields a value-less private result.
 ///
-/// `transparent` closures supplied via [`OracleLinearRelation`] must depend only on public inputs
-/// (constants and sampled challenges), never on private ones — `verify_oracle_relations` panics
-/// otherwise.
+/// `transparent` closures supplied to [`IOPVerifierChannel::verify_oracle_relation`] must depend
+/// only on public inputs (constants and sampled challenges), never on private ones — that method
+/// panics otherwise.
 pub struct ZKWrappedVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
@@ -287,57 +287,47 @@ where
 			.recv_oracle(log_msg_len, is_witness_dependent)
 	}
 
-	fn verify_oracle_relations(
+	fn verify_oracle_relation(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
+		oracle: Self::Oracle,
+		transparent: TransparentEvalFn<Self::Elem>,
+		claim: Self::Elem,
 	) -> Result<(), binius_iop::channel::Error> {
-		let mut inner_relations = Vec::new();
-		for OracleLinearRelation {
-			oracle,
-			transparent,
-			claim,
-		} in oracle_relations
-		{
-			// For each oracle opening, the prover sends the decrypted evaluation. Allocate it as an
-			// inout wire (written into the public segment) and attest `claim == decrypted_claim`,
-			// exactly as the symbolic `IronSpartanBuilderChannel` does. The assertion is a no-op on
-			// values here, but evaluating `claim - decrypted_claim` keeps the instance generator's
-			// wire allocation aligned with the symbolic constraint system. Rebuild the relation
-			// with the decrypted value for the inner channel.
-			let decrypted_value = self.inner_channel.recv_one()?;
-			let decrypted_claim = self.alloc_inout_elem(decrypted_value);
-			self.assert_zero(claim - decrypted_claim)?;
+		// For each oracle opening, the prover sends the decrypted evaluation. Allocate it as an
+		// inout wire (written into the public segment) and attest `claim == decrypted_claim`,
+		// exactly as the symbolic `IronSpartanBuilderChannel` does. The assertion is a no-op on
+		// values here, but evaluating `claim - decrypted_claim` keeps the instance generator's
+		// wire allocation aligned with the symbolic constraint system. The relation is passed on
+		// to the inner channel with the decrypted value.
+		let decrypted_value = self.inner_channel.recv_one()?;
+		let decrypted_claim = self.alloc_inout_elem(decrypted_value);
+		self.assert_zero(claim - decrypted_claim)?;
 
-			// Wrap the sumcheck challenge coordinates for the transparent closure (which expects
-			// `CircuitElem`s). The closure can do further arithmetic; results are required to be
-			// value-known (public), never private.
-			//
-			// HACK: the coordinates are sampled challenges, so they are wrapped as `Constant`s
-			// rather than builder-backed wires. This frees the closure from holding a reference to
-			// the instance generator, and is sound only because the symbolic outer circuit
-			// (`IronSpartanBuilderChannel`) never invokes the transparent closure — it attests only
-			// `claim == decrypted_claim`, with the transparent evaluation performed out of circuit.
-			// This F->CircuitElem->F bridge should eventually be replaced by an F-level transparent
-			// evaluator.
-			let eval_fn = move |vals: &[F]| {
-				let wrapped_vals = vals
-					.iter()
-					.map(|val| CircuitElem::Constant(*val))
-					.collect::<Vec<_>>();
+		// Wrap the sumcheck challenge coordinates for the transparent closure (which expects
+		// `CircuitElem`s). The closure can do further arithmetic; results are required to be
+		// value-known (public), never private.
+		//
+		// HACK: the coordinates are sampled challenges, so they are wrapped as `Constant`s
+		// rather than builder-backed wires. This frees the closure from holding a reference to
+		// the instance generator, and is sound only because the symbolic outer circuit
+		// (`IronSpartanBuilderChannel`) never invokes the transparent closure — it attests only
+		// `claim == decrypted_claim`, with the transparent evaluation performed out of circuit.
+		// This F->CircuitElem->F bridge should eventually be replaced by an F-level transparent
+		// evaluator.
+		let eval_fn = move |vals: &[F]| {
+			let wrapped_vals = vals
+				.iter()
+				.map(|val| CircuitElem::Constant(*val))
+				.collect::<Vec<_>>();
 
-				match transparent(&wrapped_vals) {
-					CircuitElem::Constant(val) => val,
-					CircuitElem::Wire { wire, .. } => wire.value().expect(
-						"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)",
-					),
-				}
-			};
-			inner_relations.push(OracleLinearRelation {
-				oracle,
-				claim: decrypted_value,
-				transparent: Box::new(eval_fn),
-			});
-		}
-		self.inner_channel.verify_oracle_relations(inner_relations)
+			match transparent(&wrapped_vals) {
+				CircuitElem::Constant(val) => val,
+				CircuitElem::Wire { wire, .. } => wire.value().expect(
+					"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)",
+				),
+			}
+		};
+		self.inner_channel
+			.verify_oracle_relation(oracle, Box::new(eval_fn), decrypted_value)
 	}
 }

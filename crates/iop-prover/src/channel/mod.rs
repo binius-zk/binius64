@@ -21,8 +21,9 @@ use binius_math::{FieldSlice, FieldVec};
 /// # Contract
 ///
 /// The caller must call `send_oracle()` exactly `remaining_oracle_specs().len()` times before
-/// calling `prove_oracle_relations()`. Each oracle buffer must match the corresponding
-/// specification.
+/// calling `prove_oracle_relation()`. Each oracle buffer must match the corresponding
+/// specification. Every committed oracle must be handed back to the channel exactly once with
+/// `finalize_oracle()`.
 pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Scalar> {
 	type Oracle: Clone;
 
@@ -39,26 +40,35 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	/// * `buffer.log_len()` must match the expected length from the next oracle spec.
 	fn send_oracle(&mut self, buffer: FieldSlice<P>) -> Self::Oracle;
 
-	/// Generates opening proofs for all oracle linear relations.
+	/// Generates an opening proof for one oracle linear relation.
 	///
-	/// Each item is `(oracle, message, transparent_poly, eval_claim)` where `message` is
-	/// the same buffer that was passed to `send_oracle()` for this oracle. Callers provide
-	/// the message here so the channel does not need to store it internally.
+	/// The relation asserts that `<oracle_poly, transparent> = claim`. An oracle may carry any
+	/// number of relations.
 	///
-	/// The channel owns each message and transparent multilinear until the opening runs, so both
-	/// are drawn from the caller's allocator `A` — a pooled buffer stays pooled all the way
-	/// through the opening.
+	/// The channel owns the transparent multilinear until the opening runs, so it is drawn from
+	/// the caller's allocator `A` — a pooled buffer stays pooled all the way through the opening.
 	///
 	/// # Preconditions
 	///
 	/// * `remaining_oracle_specs()` must be empty (all oracles committed).
-	/// * All oracle handles in `oracle_relations` must be valid handles returned by
-	///   `send_oracle()`.
-	/// * Each `message` must match the buffer previously committed via `send_oracle()`.
-	fn prove_oracle_relations(
+	/// * `oracle` must be a valid handle returned by `send_oracle()`.
+	/// * `transparent.log_len()` must match the oracle's message length.
+	fn prove_oracle_relation(
 		&mut self,
-		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldVec<P, A>, FieldVec<P, A>, P::Scalar),
-		>,
+		oracle: Self::Oracle,
+		transparent: FieldVec<P, A>,
+		claim: P::Scalar,
 	);
+
+	/// Gives ownership of the oracle buffer to the channel.
+	///
+	/// The [`Self::send_oracle`] method takes a borrowed reference to an oracle buffer and returns
+	/// a handle to it. In order to prove the oracle relations without unnecessarily cloning the
+	/// buffer, some channel implementations require ownership of the buffer.
+	///
+	/// # Preconditions
+	///
+	/// * `oracle` must be a valid handle returned by `send_oracle()`, not already finalized.
+	/// * `buffer` must equal the buffer previously committed via `send_oracle()`.
+	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>);
 }

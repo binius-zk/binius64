@@ -19,7 +19,7 @@ use binius_ip::logup_star as reduction;
 use binius_math::multilinear::eq::eq_ind;
 use itertools::izip;
 
-use crate::channel::{Error as ChannelError, IOPVerifierChannel, OracleLinearRelation};
+use crate::channel::{Error as ChannelError, IOPVerifierChannel};
 
 /// An error raised while verifying a committed logUp* reduction.
 #[derive(Debug, thiserror::Error)]
@@ -108,17 +108,14 @@ where
 	//
 	// BaseFold reduces each inner product to a challenge point, where the transparent is eq(r, .).
 	// A table's own point is the first m coordinates of the shared reduced point.
-	let relations = izip!(oracles, &table_n_vars, &output.tables)
-		.map(|(oracle, &n_vars, table_output)| {
-			let point = output.table_eval_point[..n_vars].to_vec();
-			OracleLinearRelation {
-				oracle,
-				transparent: Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
-				claim: table_output.pushforward_claim.clone(),
-			}
-		})
-		.collect::<Vec<_>>();
-	channel.verify_oracle_relations(relations)?;
+	for (oracle, &n_vars, table_output) in izip!(oracles, &table_n_vars, &output.tables) {
+		let point = output.table_eval_point[..n_vars].to_vec();
+		channel.verify_oracle_relation(
+			oracle,
+			Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
+			table_output.pushforward_claim.clone(),
+		)?;
+	}
 
 	Ok(LogupProof {
 		table_eval_point: output.table_eval_point,
