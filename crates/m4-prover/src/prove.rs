@@ -3,7 +3,7 @@
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
-	constraint_system::{ConstraintSystem, InoutSegment},
+	constraint_system::{ConstraintSystem, InoutSegment, ValueTable},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
@@ -43,8 +43,8 @@ use binius_verifier::{
 };
 
 use crate::{
-	ValueTable,
 	shift::prove as prove_shift,
+	value_table::pack_table,
 	witness::{FoldedWitness, OperandColumns},
 };
 
@@ -118,7 +118,7 @@ impl IOPProver {
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
 		let trace_packed = {
 			let _scope = tracing::debug_span!("Prepare trace").entered();
-			table.pack::<P, _>(alloc)
+			pack_table::<P, _>(table, alloc)
 		};
 		let trace_oracle = {
 			let _scope = tracing::debug_span!("Commit trace").entered();
@@ -745,13 +745,14 @@ mod tests {
 		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit BMUL constraints");
 
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			for &wire in &inputs {
-				w[wire] = Word(rng.next_u64());
-			}
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				for &wire in &inputs {
+					w[wire] = Word(rng.next_u64());
+				}
+			})
+			.unwrap();
 
 		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<P>::setup(&verifier);
@@ -818,13 +819,14 @@ mod tests {
 		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit BMUL constraints");
 
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			for &wire in &inputs {
-				w[wire] = Word(rng.next_u64());
-			}
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				for &wire in &inputs {
+					w[wire] = Word(rng.next_u64());
+				}
+			})
+			.unwrap();
 
 		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<P>::setup(&verifier);
@@ -874,13 +876,14 @@ mod tests {
 		cs.validate().unwrap();
 
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			for &wire in &inputs {
-				w[wire] = Word(rng.next_u64());
-			}
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				for &wire in &inputs {
+					w[wire] = Word(rng.next_u64());
+				}
+			})
+			.unwrap();
 
 		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<P>::setup(&verifier);
@@ -954,12 +957,13 @@ mod tests {
 		// Fill each instance's two multiplicands from a per-instance seed; the circuit derives the
 		// two product words.
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			w[x] = Word(rng.next_u64());
-			w[y] = Word(rng.next_u64());
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				w[x] = Word(rng.next_u64());
+				w[y] = Word(rng.next_u64());
+			})
+			.unwrap();
 
 		// Setup once: the verifier fixes the shape and FRI parameters, the prover inherits them.
 		let verifier = Verifier::setup(&cs, log_instances, 1);
@@ -1009,15 +1013,16 @@ mod tests {
 		// Every instance chooses its own inout words — the reason they cannot be shared public
 		// data.
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			let input_word = rng.next_u64();
-			let secret_word = rng.next_u64();
-			w[input] = Word(input_word);
-			w[secret] = Word(secret_word);
-			w[output] = Word((input_word & secret_word) ^ 0x0123_4567_89ab_cdef);
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				let input_word = rng.next_u64();
+				let secret_word = rng.next_u64();
+				w[input] = Word(input_word);
+				w[secret] = Word(secret_word);
+				w[output] = Word((input_word & secret_word) ^ 0x0123_4567_89ab_cdef);
+			})
+			.unwrap();
 
 		// The committed segment covers the inout words as well as the private ones.
 		assert_eq!(
@@ -1072,24 +1077,25 @@ mod tests {
 
 		// Fill each instance's inputs from a per-instance seed; the compression derives the rest.
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			// A 32-bit value per chaining-value word.
-			for wire in cv {
-				w[wire] = Word(rng.next_u32() as u64);
-			}
-			// A 32-bit value per message word.
-			for wire in block {
-				w[wire] = Word(rng.next_u32() as u64);
-			}
-			// A full 64-bit block counter.
-			w[counter] = Word(rng.next_u64());
-			// A byte length in 0..=64.
-			w[block_len] = Word((rng.next_u32() % 65) as u64);
-			// Arbitrary domain-separation flags.
-			w[flags] = Word(rng.next_u32() as u64);
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				// A 32-bit value per chaining-value word.
+				for wire in cv {
+					w[wire] = Word(rng.next_u32() as u64);
+				}
+				// A 32-bit value per message word.
+				for wire in block {
+					w[wire] = Word(rng.next_u32() as u64);
+				}
+				// A full 64-bit block counter.
+				w[counter] = Word(rng.next_u64());
+				// A byte length in 0..=64.
+				w[block_len] = Word((rng.next_u32() % 65) as u64);
+				// Arbitrary domain-separation flags.
+				w[flags] = Word(rng.next_u32() as u64);
+			})
+			.unwrap();
 
 		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<P>::setup(&verifier);
@@ -1146,13 +1152,14 @@ mod tests {
 		);
 
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			for &wire in &inputs {
-				w[wire] = Word(rng.next_u64());
-			}
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				for &wire in &inputs {
+					w[wire] = Word(rng.next_u64());
+				}
+			})
+			.unwrap();
 
 		// Prove with the wide packing; the verifier is packing-agnostic.
 		let verifier = Verifier::setup(&cs, log_instances, 1);
@@ -1200,12 +1207,13 @@ mod tests {
 		// Fill each instance's multiplicand from a per-instance seed; the circuit derives the two
 		// product words.
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			w[x_lo] = Word(rng.next_u64());
-			w[x_hi] = Word(rng.next_u64());
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				w[x_lo] = Word(rng.next_u64());
+				w[x_hi] = Word(rng.next_u64());
+			})
+			.unwrap();
 
 		// Setup once: the verifier fixes the shape and FRI parameters, the prover inherits them.
 		let verifier = Verifier::setup(&cs, log_instances, 1);
@@ -1273,13 +1281,14 @@ mod tests {
 		);
 
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			for &wire in &inputs {
-				w[wire] = Word(rng.next_u64());
-			}
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				for &wire in &inputs {
+					w[wire] = Word(rng.next_u64());
+				}
+			})
+			.unwrap();
 
 		// Prove with the wide packing; the verifier is packing-agnostic.
 		let verifier = Verifier::setup(&cs, log_instances, 1);
@@ -1340,13 +1349,14 @@ mod tests {
 		}
 
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			for &wire in &inputs {
-				w[wire] = Word(rng.next_u64());
-			}
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				for &wire in &inputs {
+					w[wire] = Word(rng.next_u64());
+				}
+			})
+			.unwrap();
 
 		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<P>::setup(&verifier);
@@ -1410,12 +1420,13 @@ mod tests {
 		cs.validate().unwrap();
 
 		let log_instances = 6;
-		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64 + 1);
-			w[x] = Word(rng.next_u64());
-			w[y] = Word(rng.next_u64());
-		})
-		.unwrap();
+		let table = circuit
+			.populate_batch(log_instances, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64 + 1);
+				w[x] = Word(rng.next_u64());
+				w[y] = Word(rng.next_u64());
+			})
+			.unwrap();
 
 		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<P>::setup(&verifier);

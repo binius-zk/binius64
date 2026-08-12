@@ -15,8 +15,7 @@ use std::{array, env};
 
 use binius_circuits::keccak::permutation::keccak_f1600;
 use binius_core::word::Word;
-use binius_frontend::{Circuit, CircuitBuilder, Wire};
-use binius_m4_prover::BatchWitnessFiller;
+use binius_frontend::{BatchWitnessFiller, Circuit, CircuitBuilder, Wire};
 use criterion::{Criterion, criterion_group, criterion_main};
 use m4_bench::bench_m4_proving;
 

@@ -26,8 +26,8 @@ use std::array;
 
 use binius_circuits::{blake3::blake3_compress_2x, keccak::permutation::keccak_f1600};
 use binius_core::word::Word;
-use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, Wire};
-use binius_m4_prover::{BatchWitnessFiller, Prover, ValueTable};
+use binius_frontend::{BatchWitnessFiller, Circuit, CircuitBuilder, CircuitStat, Wire};
+use binius_m4_prover::Prover;
 use binius_m4_verifier::Verifier;
 use binius_prover::OptimalPackedB128;
 use binius_transcript::ProverTranscript;
@@ -102,7 +102,7 @@ where
 
 	// Generate the single-instance witness in its own span.
 	let table = info_span!("witness_generation", primitive = name)
-		.in_scope(|| ValueTable::populate(circuit, log_instances, fill).unwrap());
+		.in_scope(|| circuit.populate_batch(log_instances, fill).unwrap());
 
 	// Clone and validate the shared single-instance constraint system.
 	let cs = circuit.constraint_system().clone();

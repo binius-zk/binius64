@@ -26,12 +26,16 @@
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
+mod batch;
 pub mod chip;
+mod chip_witness;
 mod compiler;
 pub mod ops;
 pub mod stat;
 
+pub use batch::BatchWitnessFiller;
 pub use chip::{ChipRef, CircuitM4, CircuitM4Error, EmbeddedCircuit};
+pub use chip_witness::PopulateM4Error;
 pub use compiler::{
 	CircuitBuilder, Options, Wire,
 	circuit::{AssertionFailure, Circuit, PopulateError, WitnessFiller},

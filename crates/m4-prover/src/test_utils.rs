@@ -5,10 +5,8 @@
 //! It is shared by the shift-reduction and constraint-reduction tests.
 //! Both need a circuit whose AND-constraint operands carry real shifts.
 
-use binius_core::word::Word;
+use binius_core::{ValueTable, word::Word};
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
-
-use crate::ValueTable;
 
 /// The CRC-64/GO-ISO generator polynomial, in reflected form.
 ///
@@ -109,12 +107,13 @@ pub fn crc64_circuit() -> Crc64Circuit {
 /// Circuit evaluation derives the rest, including the public CRC.
 pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable {
 	let log_instances = inputs.len().ilog2() as usize;
-	ValueTable::populate(&c.circuit, log_instances, |i, filler| {
-		for (wire, &w) in c.input.iter().zip(&inputs[i]) {
-			filler[*wire] = Word(w);
-		}
-	})
-	.unwrap()
+	c.circuit
+		.populate_batch(log_instances, |i, filler| {
+			for (wire, &w) in c.input.iter().zip(&inputs[i]) {
+				filler[*wire] = Word(w);
+			}
+		})
+		.unwrap()
 }
 
 #[cfg(test)]

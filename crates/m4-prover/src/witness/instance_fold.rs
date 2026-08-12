@@ -3,13 +3,11 @@
 //! The committed witness with its instance axis collapsed at a challenge point.
 
 use binius_compute::{Allocator, VecLike};
-use binius_core::word::Word;
+use binius_core::{ValueTable, word::Word};
 use binius_field::{BinaryField, PackedField};
 use binius_math::{FieldVec, inner_product::inner_product};
 use binius_prover::fold_word::WordFolder;
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-
-use crate::ValueTable;
 
 /// One 64-bit word with its bit axis expanded into full field elements.
 ///
@@ -238,13 +236,14 @@ mod tests {
 		let circuit = builder.build();
 
 		// Every instance gets its own seed, so no two instances share an input.
-		ValueTable::populate(&circuit, 3, |i, w| {
-			let mut rng = StdRng::seed_from_u64(i as u64);
-			for &wire in &inputs {
-				w[wire] = Word(rng.random());
-			}
-		})
-		.unwrap()
+		circuit
+			.populate_batch(3, |i, w| {
+				let mut rng = StdRng::seed_from_u64(i as u64);
+				for &wire in &inputs {
+					w[wire] = Word(rng.random());
+				}
+			})
+			.unwrap()
 	}
 
 	#[test]

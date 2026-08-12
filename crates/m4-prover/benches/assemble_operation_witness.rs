@@ -15,7 +15,7 @@ use binius_circuits::keccak::permutation::keccak_f1600;
 use binius_compute::BufferPool;
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
-use binius_m4_prover::{OperandColumns, ValueTable};
+use binius_m4_prover::OperandColumns;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 /// The base-2 logarithm of the instance count: 2^13 = 8192 instances.
@@ -54,12 +54,13 @@ fn bench_assemble_operation_witness(c: &mut Criterion) {
 	let (circuit, input) = build_keccak_circuit();
 
 	// Setup (not timed): populate the wire-major batch table for every instance.
-	let table = ValueTable::populate(&circuit, LOG_INSTANCES, |instance, w| {
-		for lane in 0..STATE_LANES {
-			w[input[lane]] = input_word(instance, lane);
-		}
-	})
-	.unwrap();
+	let table = circuit
+		.populate_batch(LOG_INSTANCES, |instance, w| {
+			for lane in 0..STATE_LANES {
+				w[input[lane]] = input_word(instance, lane);
+			}
+		})
+		.unwrap();
 
 	// The circuit's constants, shared by every instance.
 	let constants = circuit.constraint_system().constants.clone();
