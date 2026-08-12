@@ -18,7 +18,7 @@ use itertools::izip;
 
 use crate::{
 	basefold,
-	channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	channel::{Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn},
 	fri::FRIParams,
 	merkle_channel::MerkleIPVerifierChannel,
 };
@@ -27,6 +27,16 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub struct BaseFoldOracle {
 	index: usize,
+}
+
+/// A committed-oracle relation queued for the single batched opening.
+struct QueuedRelation<Elem> {
+	/// Index of the committed oracle this relation opens.
+	oracle_index: usize,
+	/// Evaluates the transparent multilinear `t_i` at the point the opening reduces to.
+	transparent: TransparentEvalFn<Elem>,
+	/// The claimed inner product `s_i = <pi_i, t_i>`.
+	claim: Elem,
 }
 
 /// A verifier channel that uses ZK BaseFold for all oracle commitments and openings.
@@ -50,9 +60,9 @@ where
 	oracle_specs: &'a [OracleSpec],
 	fri_params: &'a FRIParams<F>,
 	oracle_commitments: Vec<Channel::Commitment>,
-	/// Oracle relations queued by [`Self::verify_oracle_relations`], opened together in
-	/// [`Self::finish`].
-	queue: Vec<OracleLinearRelation<BaseFoldOracle, Channel::Elem>>,
+	/// Oracle relations queued by [`IOPVerifierChannel::verify_oracle_relation`], opened together
+	/// in [`Self::finish`].
+	queue: Vec<QueuedRelation<Channel::Elem>>,
 	next_oracle_index: usize,
 }
 
@@ -85,7 +95,7 @@ where
 	/// oracles.
 	///
 	/// All oracle relations queued by
-	/// [`verify_oracle_relations`](IOPVerifierChannel::verify_oracle_relations) across every call
+	/// [`verify_oracle_relation`](IOPVerifierChannel::verify_oracle_relation) across every call
 	/// are processed here in one batch: masking, one batched sumcheck reducing the masked claims
 	/// to a shared point `r`, then one combined FRI opening over every committed oracle
 	/// (in oracle-index order). Because the whole opening is deferred to this point, every oracle
@@ -142,7 +152,7 @@ fn verify_batch_zk_basefold<F, Channel>(
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
 	oracle_commitments: &[Channel::Commitment],
-	relations: Vec<OracleLinearRelation<BaseFoldOracle, Channel::Elem>>,
+	relations: Vec<QueuedRelation<Channel::Elem>>,
 ) -> Result<(), Error>
 where
 	F: BinaryField,
@@ -170,7 +180,7 @@ where
 	let sum_primes = relations
 		.iter()
 		.map(|relation| {
-			if oracle_specs[relation.oracle.index].is_zk {
+			if oracle_specs[relation.oracle_index].is_zk {
 				let sigma = sigma_iter.next().expect("one σ per ZK oracle");
 				extrapolate_line(
 					relation.claim.clone(),
@@ -201,8 +211,8 @@ where
 	let contributions = relations
 		.into_iter()
 		.map(|relation| {
-			let alpha_i = alphas[relation.oracle.index].clone();
-			let n_i = oracle_specs[relation.oracle.index].log_msg_len;
+			let alpha_i = alphas[relation.oracle_index].clone();
+			let n_i = oracle_specs[relation.oracle_index].log_msg_len;
 			let (eval_coords, padding_coords) = point.split_at(n_i);
 			let pad_eq = eq_ind_zero(padding_coords);
 			let transparent_eval = (relation.transparent)(eval_coords);
@@ -366,21 +376,25 @@ where
 		Ok(BaseFoldOracle { index })
 	}
 
-	fn verify_oracle_relations(
+	fn verify_oracle_relation(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
+		oracle: Self::Oracle,
+		transparent: TransparentEvalFn<Self::Elem>,
+		claim: Self::Elem,
 	) -> Result<(), Error> {
-		// Queue the relations; the actual opening (masking + sumcheck + combined FRI) happens once,
+		// Queue the relation; the actual opening (masking + sumcheck + combined FRI) happens once,
 		// over all committed oracles, in [`Self::finish`].
-		for relation in oracle_relations {
-			assert!(
-				relation.oracle.index < self.oracle_commitments.len(),
-				"oracle index {} out of bounds, expected < {}",
-				relation.oracle.index,
-				self.oracle_commitments.len()
-			);
-			self.queue.push(relation);
-		}
+		assert!(
+			oracle.index < self.oracle_commitments.len(),
+			"oracle index {} out of bounds, expected < {}",
+			oracle.index,
+			self.oracle_commitments.len()
+		);
+		self.queue.push(QueuedRelation {
+			oracle_index: oracle.index,
+			transparent,
+			claim,
+		});
 		Ok(())
 	}
 }

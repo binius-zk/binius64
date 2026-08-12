@@ -112,14 +112,14 @@ where
 	//
 	// A table's own point is the first m coordinates of the shared reduced point.
 	let _open_guard = tracing::debug_span!("Open pushforward relations").entered();
-	let relations = izip!(oracles, pushforwards, &tables, &output.tables)
-		.map(|(oracle, pushforward, table, table_output)| {
-			let m = table.table.log_len();
-			let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point[..m]);
-			(oracle, pushforward, transparent, table_output.pushforward_claim)
-		})
-		.collect::<Vec<_>>();
-	channel.prove_oracle_relations(relations);
+	for (oracle, pushforward, table, table_output) in
+		izip!(oracles, pushforwards, &tables, &output.tables)
+	{
+		let m = table.table.log_len();
+		let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point[..m]);
+		channel.prove_oracle_relation(oracle.clone(), transparent, table_output.pushforward_claim);
+		channel.finalize_oracle(oracle, pushforward);
+	}
 
 	LogupProof {
 		table_eval_point: output.table_eval_point,

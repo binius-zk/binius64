@@ -342,7 +342,8 @@ impl IOPProver {
 
 		// Queue the trace opening against the ring-switch's transparent multilinear.
 		// The final call runs the single combined FRI opening and writes it to the transcript.
-		channel.prove_oracle_relations([(trace_oracle, trace_packed, rs_eq_ind, sumcheck_claim)]);
+		channel.prove_oracle_relation(trace_oracle.clone(), rs_eq_ind, sumcheck_claim);
+		channel.finalize_oracle(trace_oracle, trace_packed);
 	}
 }
 

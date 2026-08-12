@@ -6,9 +6,7 @@ use binius_field::{ExtensionField, FieldOps};
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
-	channel::{
-		IOPVerifierChannel, OracleLinearRelation, OracleSpec, oracle_setup::OracleSetupChannel,
-	},
+	channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel},
 	fri::{ConstantArityStrategy, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
@@ -151,13 +149,13 @@ impl IOPVerifier {
 		// BaseFold reduces to a challenge point where the transparent evaluates as below.
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = trace_point[log_packing..].to_vec();
-		channel.verify_oracle_relations([OracleLinearRelation {
-			oracle: trace_oracle,
-			transparent: Box::new(move |pt: &[Channel::Elem]| {
+		channel.verify_oracle_relation(
+			trace_oracle,
+			Box::new(move |pt: &[Channel::Elem]| {
 				ring_switch::eval_rs_eq(&eval_point_high, pt, &eq_r_double_prime)
 			}),
-			claim: sumcheck_claim,
-		}])?;
+			sumcheck_claim,
+		)?;
 
 		Ok(())
 	}

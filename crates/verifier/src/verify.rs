@@ -11,9 +11,7 @@ use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps}
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
-	channel::{
-		IOPVerifierChannel, OracleLinearRelation, OracleSpec, oracle_setup::OracleSetupChannel,
-	},
+	channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel},
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::BinarySubspace;
@@ -204,11 +202,7 @@ impl IOPVerifier {
 		// Verify oracle relations (runs BaseFold internally and verifies the product check). The
 		// intmul pushforward relation, when the IntMul reduction ran, was already queued inside
 		// phase 5.
-		channel.verify_oracle_relations([OracleLinearRelation {
-			oracle: trace_oracle,
-			transparent,
-			claim: sumcheck_claim,
-		}])?;
+		channel.verify_oracle_relation(trace_oracle, transparent, sumcheck_claim)?;
 
 		drop(pcs_guard);
 

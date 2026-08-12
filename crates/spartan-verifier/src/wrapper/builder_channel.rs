@@ -10,7 +10,7 @@ use std::{
 
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, util::FieldFn};
-use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
+use binius_iop::channel::{IOPVerifierChannel, OracleSpec, TransparentEvalFn};
 use binius_ip::channel::{
 	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
 };
@@ -169,17 +169,17 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		Ok(())
 	}
 
-	fn verify_oracle_relations(
+	fn verify_oracle_relation(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
+		_oracle: Self::Oracle,
+		_transparent: TransparentEvalFn<Self::Elem>,
+		claim: Self::Elem,
 	) -> Result<(), binius_iop::channel::Error> {
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.
-		for relation in oracle_relations {
-			let decrypted_claim = self.alloc_inout_elem();
-			self.assert_zero(relation.claim - decrypted_claim)?;
-		}
+		let decrypted_claim = self.alloc_inout_elem();
+		self.assert_zero(claim - decrypted_claim)?;
 		Ok(())
 	}
 }

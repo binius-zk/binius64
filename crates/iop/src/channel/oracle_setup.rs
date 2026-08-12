@@ -16,7 +16,7 @@ use binius_field::{
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 
-use crate::channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
+use crate::channel::{Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn};
 
 /// A dummy field element for [`OracleSetupChannel`], generic over the field `F` it stands in for.
 ///
@@ -251,9 +251,11 @@ impl<F: Field> IOPVerifierChannel<F> for OracleSetupChannel {
 		Ok(())
 	}
 
-	fn verify_oracle_relations(
+	fn verify_oracle_relation(
 		&mut self,
-		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
+		_oracle: Self::Oracle,
+		_transparent: TransparentEvalFn<Self::Elem>,
+		_claim: Self::Elem,
 	) -> Result<(), Error> {
 		Ok(())
 	}

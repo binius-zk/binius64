@@ -6,7 +6,7 @@ use binius_compute::GlobalAllocator;
 use binius_field::{Field, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, FieldSlice, inner_product::inner_product_buffers};
+use binius_math::{FieldBuffer, FieldSlice};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -152,40 +152,37 @@ where
 		NaiveOracle { index }
 	}
 
-	fn prove_oracle_relations(
+	fn prove_oracle_relation(
 		&mut self,
-		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
-		>,
+		oracle: Self::Oracle,
+		transparent: FieldBuffer<P>,
+		_claim: P::Scalar,
 	) {
-		// For the naive channel, we write the transparent polynomial to the transcript
-		// so the verifier can read it and verify the inner product directly.
-		for (oracle, message, transparent_poly, eval_claim) in oracle_relations {
-			let index = oracle.index;
-			assert!(index < self.n_committed, "oracle index {index} out of bounds");
+		// For the naive channel, we write the transparent polynomial to the transcript so the
+		// verifier can read it and check the inner product against the message it already read.
+		let index = oracle.index;
+		assert!(index < self.n_committed, "oracle index {index} out of bounds");
 
-			let log_msg_len = self.oracle_specs[index].log_msg_len;
-			assert_eq!(
-				message.log_len(),
-				log_msg_len,
-				"oracle message log_len mismatch: expected {log_msg_len}, got {}",
-				message.log_len()
-			);
+		let log_msg_len = self.oracle_specs[index].log_msg_len;
+		assert_eq!(
+			transparent.log_len(),
+			log_msg_len,
+			"transparent log_len mismatch: expected {log_msg_len}, got {}",
+			transparent.log_len()
+		);
 
-			// Write the transparent polynomial to the transcript
-			self.transcript
-				.message()
-				.write_scalar_iter(transparent_poly.iter_scalars());
+		// Write the transparent polynomial to the transcript
+		self.transcript
+			.message()
+			.write_scalar_iter(transparent.iter_scalars());
 
-			// Sample evaluation point challenges (verifier will sample the same)
-			let _point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
-
-			// Debug assertion: prover should provide consistent eval claims
-			let actual_eval: F = inner_product_buffers(&message, &transparent_poly);
-			debug_assert_eq!(
-				actual_eval, eval_claim,
-				"NaiveProverChannel: eval_claim mismatch for oracle {index}"
-			);
-		}
+		// Sample evaluation point challenges (verifier will sample the same)
+		let _point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
 	}
+
+	/// Drops the buffer.
+	///
+	/// `send_oracle` already wrote the message to the transcript, so this channel needs no copy of
+	/// it to open the oracle.
+	fn finalize_oracle(&mut self, _oracle: Self::Oracle, _buffer: FieldBuffer<P>) {}
 }
