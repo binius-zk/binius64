@@ -292,7 +292,7 @@ Use the save subcommand to write selected artifacts to disk. Nothing is written 
 
 Flags:
 - --cs-path PATH: write the constraint system binary
-- --pub-witness-path PATH: write the public witness values binary
+- --pub-witness-path PATH: write the public inout values binary
 - --non-pub-data-path PATH: write the non-public witness values binary
 
 Examples:
@@ -301,20 +301,22 @@ Examples:
 # Save only the constraint system
 cargo run --release --example my_circuit -- save --cs-path out/cs.bin
 
-# Save public values and non-public values
+# Save public inout values and non-public values
 cargo run --release --example my_circuit -- save \
-    --pub-witness-path out/public.bin \
+    --pub-witness-path out/inout.bin \
     --non-pub-data-path out/non_public.bin
 
 # Save all three
 cargo run --release --example my_circuit -- save \
     --cs-path out/cs.bin \
-    --pub-witness-path out/public.bin \
+    --pub-witness-path out/inout.bin \
     --non-pub-data-path out/non_public.bin
 ```
 
 Notes:
 - Public and non-public outputs are serialized using the versioned ValuesData format from core.
+- The public output holds the inout values alone.
+- The circuit's constants live in the constraint system, and are restored when the segment is rebuilt.
 - Parent directories are created automatically if they don’t exist.
 
 ## Adding to Cargo.toml
@@ -339,7 +341,7 @@ The `prover` binary reads a constraint system and witnesses from disk and produc
 
 Arguments:
 - `--cs-path PATH`: path to the constraint system binary
-- `--pub-witness-path PATH`: path to the public values binary (ValuesData)
+- `--pub-witness-path PATH`: path to the public inout values binary (ValuesData)
 - `--non-pub-data-path PATH`: path to the non-public values binary (ValuesData)
 - `--proof-path PATH`: path to write the proof binary
 - `-l, --log-inv-rate N`: log of the inverse rate (default: 1)
@@ -350,13 +352,13 @@ Usage:
 # 1) Generate artifacts from an example circuit (e.g., sha256)
 cargo run --release --example sha256 -- save \
     --cs-path out/sha256/cs.bin \
-    --pub-witness-path out/sha256/public.bin \
+    --pub-witness-path out/sha256/inout.bin \
     --non-pub-data-path out/sha256/non_public.bin
 
 # 2) Produce a proof from those files
 cargo run --release --bin prover -- \
     --cs-path out/sha256/cs.bin \
-    --pub-witness-path out/sha256/public.bin \
+    --pub-witness-path out/sha256/inout.bin \
     --non-pub-data-path out/sha256/non_public.bin \
     --proof-path out/sha256/proof.bin \
     --log-inv-rate 1
@@ -364,11 +366,11 @@ cargo run --release --bin prover -- \
 
 ## Verifier binary
 
-The `verifier` binary reads a constraint system, a public witness, and a proof from disk and verifies the proof. It also checks that the challenger type embedded in the proof matches the verifier's expected challenger (HasherChallenger<Sha256>), returning an error if it doesn't.
+The `verifier` binary reads a constraint system, the public inout values, and a proof from disk and verifies the proof. It also checks that the challenger type embedded in the proof matches the verifier's expected challenger (HasherChallenger<Sha256>), returning an error if it doesn't.
 
 Arguments:
 - `--cs-path PATH`: path to the constraint system binary
-- `--pub-witness-path PATH`: path to the public values binary (ValuesData)
+- `--pub-witness-path PATH`: path to the public inout values binary (ValuesData)
 - `--proof-path PATH`: path to the proof binary
 - `-l, --log-inv-rate N`: log of the inverse rate (default: 1)
 
@@ -378,14 +380,14 @@ Usage:
 # Verify the proof generated above
 cargo run --release --bin verifier -- \
     --cs-path out/sha256/cs.bin \
-    --pub-witness-path out/sha256/public.bin \
+    --pub-witness-path out/sha256/inout.bin \
     --proof-path out/sha256/proof.bin \
     --log-inv-rate 1
 ```
 
 Notes:
 - The verifier fails if the challenger type in the proof is not `HasherChallenger<Sha256>`.
-- The public witness must match the constraint system and the proof’s statement.
+- The inout values must match the constraint system and the proof’s statement.
 
 ## Tips
 

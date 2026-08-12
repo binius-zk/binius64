@@ -533,7 +533,7 @@ impl DeserializeBytes for ConstraintSystem {
 mod tests {
 	use super::*;
 	use crate::{
-		constraint_system::{Shift, ShiftVariant, ShiftedValueIndex, ValuesData},
+		constraint_system::{Shift, ShiftVariant, ShiftedValueIndex, ValuesData, ValuesRef},
 		error::ConstraintViolation,
 	};
 
@@ -1220,27 +1220,28 @@ mod tests {
 		let values = cs.value_vec_from_data(&inout, &private);
 
 		// Serialize only what varies per instance, alongside the system itself
-		let inout_data = ValuesData::from(values.inout());
-		let non_public_data = ValuesData::from(values.non_public());
-
 		let mut buf_cs = Vec::new();
 		cs.serialize(&mut buf_cs).unwrap();
 
-		let mut buf_pub = Vec::new();
-		inout_data.serialize(&mut buf_pub).unwrap();
+		let mut buf_inout = Vec::new();
+		ValuesRef::new(values.inout())
+			.serialize(&mut buf_inout)
+			.unwrap();
 
 		let mut buf_non_pub = Vec::new();
-		non_public_data.serialize(&mut buf_non_pub).unwrap();
+		ValuesRef::new(values.non_public())
+			.serialize(&mut buf_non_pub)
+			.unwrap();
 
 		// Deserialize everything back
 		let cs2 = ConstraintSystem::deserialize(&mut buf_cs.as_slice()).unwrap();
-		let pub2 = ValuesData::deserialize(&mut buf_pub.as_slice()).unwrap();
+		let inout2 = ValuesData::deserialize(&mut buf_inout.as_slice()).unwrap();
 		let non_pub2 = ValuesData::deserialize(&mut buf_non_pub.as_slice()).unwrap();
-		assert_eq!(cs2.n_inout, pub2.len());
+		assert_eq!(cs2.n_inout, inout2.len());
 		assert_eq!(cs2.n_private, non_pub2.len());
 
 		// Reconstruct ValueVec from deserialized pieces
-		let reconstructed = cs2.value_vec_from_data(&pub2, &non_pub2);
+		let reconstructed = cs2.value_vec_from_data(&inout2, &non_pub2);
 
 		assert_eq!(reconstructed.combined_witness(), values.combined_witness());
 	}

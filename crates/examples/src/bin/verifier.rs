@@ -12,18 +12,18 @@ use binius_verifier::{
 };
 use clap::Parser;
 
-/// Verifier CLI: load CS, public witness and proof, then verify.
+/// Verifier CLI: load CS, public inout values and proof, then verify.
 #[derive(Debug, Parser)]
 #[command(
 	name = "verifier",
-	about = "Verify a proof from a constraint system, public witness, and proof binary"
+	about = "Verify a proof from a constraint system, public inout values, and proof binary"
 )]
 struct Args {
 	/// Path to the constraint system binary
 	#[arg(long = "cs-path")]
 	cs_path: PathBuf,
 
-	/// Path to the public values (ValuesData) binary
+	/// Path to the public inout values (ValuesData) binary
 	#[arg(long = "pub-witness-path")]
 	pub_witness_path: PathBuf,
 
@@ -47,11 +47,12 @@ fn main() -> Result<()> {
 	let cs = ConstraintSystem::deserialize(&mut cs_bytes.as_slice())
 		.context("Failed to deserialize ConstraintSystem")?;
 
-	// Read and deserialize public values
-	let pub_bytes = fs::read(&args.pub_witness_path).with_context(|| {
-		format!("Failed to read public values from {}", args.pub_witness_path.display())
+	// The constants come from the constraint system, not from this file.
+	// So the inout values are all the verifier reads here.
+	let inout_bytes = fs::read(&args.pub_witness_path).with_context(|| {
+		format!("Failed to read public inout values from {}", args.pub_witness_path.display())
 	})?;
-	let inout = ValuesData::deserialize(&mut pub_bytes.as_slice())
+	let inout = ValuesData::deserialize(&mut inout_bytes.as_slice())
 		.context("Failed to deserialize inout ValuesData")?;
 
 	// Read and deserialize proof
@@ -80,7 +81,7 @@ fn main() -> Result<()> {
 
 	// Verify
 	verifier
-		.verify(inout.as_slice(), &mut verifier_transcript)
+		.verify(&inout, &mut verifier_transcript)
 		.context("Verification failed")?;
 	verifier_transcript
 		.finalize()
