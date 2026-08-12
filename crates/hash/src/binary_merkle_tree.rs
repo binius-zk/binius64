@@ -36,16 +36,42 @@ pub trait HashSuite {
 		+ Default;
 }
 
+/// Reason a Merkle tree operation rejects its arguments.
+///
+/// Every variant carries the numbers that failed the check alongside the bound they broke.
+/// A log line therefore says which call was malformed without the reader rerunning it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-	#[error("Index exceeds Merkle tree base size: {max}")]
-	IndexOutOfRange { max: usize },
-	#[error("values length must be a multiple of the batch size")]
-	IncorrectBatchSize,
-	#[error("The argument length must be a power of two.")]
-	PowerOfTwoLengthRequired,
-	#[error("The layer does not exist in the Merkle tree")]
-	IncorrectLayerDepth,
+	/// A committed batch of values does not split into whole leaves.
+	#[error("{n_values} values do not split into leaves of {batch_size}")]
+	IncorrectBatchSize {
+		/// The number of values handed over for commitment.
+		n_values: usize,
+		/// The number of values every leaf must hold.
+		batch_size: usize,
+	},
+	/// The leaves a commitment splits into do not span a binary tree.
+	#[error("the leaf count {n_leaves} is not a power of two")]
+	PowerOfTwoLengthRequired {
+		/// The number of leaves the values split into.
+		n_leaves: usize,
+	},
+	/// A layer is asked for below the leaves of the tree.
+	#[error("layer depth {layer_depth} exceeds the tree depth {log_len}")]
+	IncorrectLayerDepth {
+		/// The depth asked for, counted from the root.
+		layer_depth: usize,
+		/// The depth of the tree, which is its deepest valid layer.
+		log_len: usize,
+	},
+	/// A branch is asked for at a leaf the tree does not have.
+	#[error("leaf index {index} is outside the 2^{log_len} leaves")]
+	IndexOutOfRange {
+		/// The leaf position asked for.
+		index: usize,
+		/// Base-2 logarithm of the number of leaves the tree has.
+		log_len: usize,
+	},
 }
 
 /// A binary Merkle tree that commits batches of vectors.
@@ -82,14 +108,18 @@ impl<N: ArraySize> BinaryMerkleTree<Array<u8, N>> {
 		H: HashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
 	{
 		// Every leaf holds the same number of values, so the split has to come out even.
-		if !elements.len().is_multiple_of(batch_size) {
-			return Err(Error::IncorrectBatchSize);
+		// An empty leaf divides no value count, so it is rejected here rather than dividing by it.
+		if batch_size == 0 || !elements.len().is_multiple_of(batch_size) {
+			return Err(Error::IncorrectBatchSize {
+				n_values: elements.len(),
+				batch_size,
+			});
 		}
 
 		// A binary tree only spans a power-of-two number of leaves.
 		let len = elements.len() / batch_size;
 		if !len.is_power_of_two() {
-			return Err(Error::PowerOfTwoLengthRequired);
+			return Err(Error::PowerOfTwoLengthRequired { n_leaves: len });
 		}
 
 		// Hand the leaves over one contiguous chunk at a time.
@@ -184,6 +214,7 @@ impl<N: ArraySize> BinaryMerkleTree<Array<u8, N>> {
 }
 
 impl<D: Clone> BinaryMerkleTree<D> {
+	/// Clones the root digest, which sits last in the flattened layers.
 	pub fn root(&self) -> D {
 		self.inner_nodes
 			.last()
@@ -191,22 +222,40 @@ impl<D: Clone> BinaryMerkleTree<D> {
 			.clone()
 	}
 
+	/// Borrows one whole layer of the tree, counting depth from the root.
+	///
+	/// # Errors
+	///
+	/// * The depth lies below the leaves.
 	pub fn layer(&self, layer_depth: usize) -> Result<&[D], Error> {
 		if layer_depth > self.log_len {
-			return Err(Error::IncorrectLayerDepth);
+			return Err(Error::IncorrectLayerDepth {
+				layer_depth,
+				log_len: self.log_len,
+			});
 		}
 		let range_start = self.inner_nodes.len() + 1 - (1 << (layer_depth + 1));
 
 		Ok(&self.inner_nodes[range_start..range_start + (1 << layer_depth)])
 	}
 
-	/// Get a Merkle branch for the given index
+	/// Collects the sibling digests opening a leaf up to the layer at `layer_depth`.
 	///
-	/// Throws if the index is out of range
+	/// # Errors
+	///
+	/// * The leaf index lies outside the tree.
+	/// * The depth lies below the leaves.
 	pub fn branch(&self, index: usize, layer_depth: usize) -> Result<Vec<D>, Error> {
-		if index >= 1 << self.log_len || layer_depth > self.log_len {
+		if index >= 1 << self.log_len {
 			return Err(Error::IndexOutOfRange {
-				max: (1 << self.log_len) - 1,
+				index,
+				log_len: self.log_len,
+			});
+		}
+		if layer_depth > self.log_len {
+			return Err(Error::IncorrectLayerDepth {
+				layer_depth,
+				log_len: self.log_len,
 			});
 		}
 
@@ -218,5 +267,137 @@ impl<D: Clone> BinaryMerkleTree<D> {
 			.collect();
 
 		Ok(branch)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::BinaryField128bGhash as B128;
+
+	use super::*;
+	use crate::sha256::Sha256HashSuite;
+
+	/// Commits `n_values` distinct field elements in leaves of `batch_size` values each.
+	fn commit(
+		n_values: usize,
+		batch_size: usize,
+	) -> Result<BinaryMerkleTree<Output<sha2::Sha256>>, Error> {
+		let elements = (0..n_values)
+			.map(|i| B128::new(i as u128))
+			.collect::<Vec<_>>();
+		BinaryMerkleTree::new::<B128, Sha256HashSuite>(&elements, batch_size)
+	}
+
+	#[test]
+	fn test_new_rejects_a_ragged_final_leaf() {
+		// 7 values leave a partial leaf behind once 3 whole leaves of 2 are cut.
+		let err = commit(7, 2).unwrap_err();
+
+		let Error::IncorrectBatchSize {
+			n_values,
+			batch_size,
+		} = err
+		else {
+			panic!("expected IncorrectBatchSize, got {err}");
+		};
+		assert_eq!(n_values, 7);
+		assert_eq!(batch_size, 2);
+	}
+
+	#[test]
+	fn test_new_rejects_an_empty_leaf() {
+		// A leaf holding no value divides no value count, so the check runs before the division.
+		let err = commit(0, 0).unwrap_err();
+
+		let Error::IncorrectBatchSize {
+			n_values,
+			batch_size,
+		} = err
+		else {
+			panic!("expected IncorrectBatchSize, got {err}");
+		};
+		assert_eq!(n_values, 0);
+		assert_eq!(batch_size, 0);
+	}
+
+	#[test]
+	fn test_new_rejects_a_leaf_count_off_the_power_of_two_grid() {
+		// 6 values in leaves of 2 split evenly, but 3 leaves do not span a binary tree.
+		let err = commit(6, 2).unwrap_err();
+
+		let Error::PowerOfTwoLengthRequired { n_leaves } = err else {
+			panic!("expected PowerOfTwoLengthRequired, got {err}");
+		};
+		assert_eq!(n_leaves, 3);
+	}
+
+	#[test]
+	fn test_layer_spans_the_root_down_to_the_leaves() {
+		// 8 values in leaves of 2 give 4 leaves, so the tree is 2 layers deep.
+		let tree = commit(8, 2).unwrap();
+		assert_eq!(tree.log_len, 2);
+
+		// Layer d holds 2^d digests, from the single root down to the 4 leaves.
+		assert_eq!(tree.layer(0).unwrap(), &[tree.root()]);
+		assert_eq!(tree.layer(1).unwrap().len(), 2);
+		assert_eq!(tree.layer(2).unwrap().len(), 4);
+
+		// One layer past the leaves is the first depth the tree does not hold.
+		let err = tree.layer(3).unwrap_err();
+
+		let Error::IncorrectLayerDepth {
+			layer_depth,
+			log_len,
+		} = err
+		else {
+			panic!("expected IncorrectLayerDepth, got {err}");
+		};
+		assert_eq!(layer_depth, 3);
+		assert_eq!(log_len, 2);
+	}
+
+	#[test]
+	fn test_branch_opens_every_leaf_up_to_the_named_layer() {
+		let tree = commit(8, 2).unwrap();
+
+		// Opening a leaf to the root names one sibling per layer crossed.
+		for index in 0..4 {
+			assert_eq!(tree.branch(index, 0).unwrap().len(), 2);
+			assert_eq!(tree.branch(index, 1).unwrap().len(), 1);
+			assert_eq!(tree.branch(index, 2).unwrap().len(), 0);
+		}
+
+		// Sibling leaves cross the same inner node, so their top sibling agrees.
+		assert_eq!(tree.branch(0, 0).unwrap()[1], tree.branch(1, 0).unwrap()[1]);
+	}
+
+	#[test]
+	fn test_branch_rejects_a_leaf_past_the_last_one() {
+		// 4 leaves are indexed 0..=3, so 4 is the first index outside the tree.
+		let tree = commit(8, 2).unwrap();
+		let err = tree.branch(4, 0).unwrap_err();
+
+		let Error::IndexOutOfRange { index, log_len } = err else {
+			panic!("expected IndexOutOfRange, got {err}");
+		};
+		assert_eq!(index, 4);
+		assert_eq!(log_len, 2);
+	}
+
+	#[test]
+	fn test_branch_blames_the_depth_when_the_leaf_is_valid() {
+		// The index is in range, so the depth is the argument the diagnostic must name.
+		let tree = commit(8, 2).unwrap();
+		let err = tree.branch(0, 3).unwrap_err();
+
+		let Error::IncorrectLayerDepth {
+			layer_depth,
+			log_len,
+		} = err
+		else {
+			panic!("expected IncorrectLayerDepth, got {err}");
+		};
+		assert_eq!(layer_depth, 3);
+		assert_eq!(log_len, 2);
 	}
 }
