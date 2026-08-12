@@ -11,9 +11,11 @@ use std::{
 };
 
 use binius_core::word::Word;
-use binius_field::{Field, util::FieldFn};
+use binius_field::{BinaryField, Field, util::FieldFn};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
+use binius_ip::channel::{
+	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
+};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, WireAllocator, WitnessError, WitnessGenerator},
 	constraint_system::{WireKind, Witness, WitnessLayout},
@@ -143,12 +145,14 @@ impl<F: Field> IPVerifierChannel<F> for ReplayChannel<F> {
 	}
 }
 
-impl<F: Field> WordIPVerifierChannel<F> for ReplayChannel<F> {
+impl<F: BinaryField> WordIPVerifierChannel<F> for ReplayChannel<F> {
 	type Word = Word;
 
 	// The recorded interaction already holds whatever the Fiat-Shamir state produced, so replaying
 	// observes nothing. This mirrors `IronSpartanBuilderChannel::observe_words`.
-	fn observe_words(&mut self, _words: &[Word]) {}
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
+		words.to_vec()
+	}
 
 	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
 		subset_sum_word(elems, *word)
@@ -160,6 +164,10 @@ impl<F: Field> WordIPVerifierChannel<F> for ReplayChannel<F> {
 
 	fn sample_bits(&mut self, _bits: usize) -> Word {
 		Word::ZERO
+	}
+
+	fn pack_words(&mut self, words: &[Word]) -> Vec<Self::Elem> {
+		pack_words_concrete::<F, Self::Elem>(words)
 	}
 }
 

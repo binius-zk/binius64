@@ -26,7 +26,7 @@ use binius_core::{
 use binius_field::{AESTowerField8b as B8, ExtensionField, FieldOps};
 use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::{
-	channel::IPVerifierChannel,
+	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{BatchSumcheckOutput, SumcheckOutput, batch_verify, verify as verify_sumcheck},
 };
 use binius_math::{
@@ -136,7 +136,8 @@ impl<F: Clone> ReductionOutput<F> {
 /// - `cs`: the single-instance constraint system every instance satisfies.
 /// - `instances`: whether this is the monolithic reduction or a batch, and how wide.
 /// - `inout`: which value segment the inout words sit in.
-/// - `public`: the declared public values, unpadded — the constants, then the inout values.
+/// - `public`: the declared public values as the channel carries them, unpadded — the constants,
+///   then the inout values.
 /// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.
 ///
 /// # Errors
@@ -154,11 +155,11 @@ pub fn reduce_constraints<Channel>(
 	cs: &ConstraintSystem,
 	instances: Instances,
 	inout: InoutSegment,
-	public: &[Word],
+	public: &[Channel::Word],
 	channel: &mut Channel,
 ) -> Result<ReductionOutput<Channel::Elem>, Error>
 where
-	Channel: IOPVerifierChannel<B128>,
+	Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 	Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 {
 	let log_instances = instances.log_count();
@@ -340,12 +341,12 @@ where
 fn verify_public_eval<Channel>(
 	cs: &ConstraintSystem,
 	inout: InoutSegment,
-	public: &[Word],
+	public: &[Channel::Word],
 	shift: &shift::VerifyOutput<Channel::Elem>,
 	channel: &mut Channel,
 ) -> Result<Channel::Elem, Error>
 where
-	Channel: IPVerifierChannel<B128>,
+	Channel: WordIPVerifierChannel<B128>,
 	Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 {
 	// The claim is over the packed segment, so it spans whole field elements: a segment shorter
@@ -375,9 +376,9 @@ where
 	// Close it out against the two factors, both of which the verifier computes: the packed
 	// segment's multilinear, over the words it already holds, and the ring-switching indicator.
 	let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
-	let packed_public = pack_words(public)
+	let packed_public = channel
+		.pack_words(public)
 		.into_iter()
-		.map(Channel::Elem::from)
 		// The words past the segment's end read as zero, so the elements past its packed length do
 		// too, up to the power-of-two span the sumcheck ran over.
 		.chain(iter::repeat_with(Channel::Elem::zero))
@@ -390,23 +391,6 @@ where
 	// Extend the claim from the segment's own span to the shift's whole word-index space. Every
 	// word above the segment is zero, so each extra coordinate contributes its eq-zero factor.
 	Ok(eq_ind_zero(&r_y[log_packed_words..]) * public_eval)
-}
-
-/// Packs words into field elements, two words to an element.
-///
-/// Word `2i` takes the low half of element `i` and word `2i + 1` the high half. That is the layout
-/// the committed trace is packed in, so a bit of the packed segment sits where the shift's
-/// bit-index challenges address it: `r_j` over the bit within a word, then the word's parity.
-///
-/// An odd word count leaves a final element whose high half is zero, which is the missing word read
-/// as zero — the same reading the shift gives the words past the segment's end.
-fn pack_words(words: &[Word]) -> Vec<B128> {
-	let (pairs, remainder) = words.as_chunks::<2>();
-	pairs
-		.iter()
-		.map(|[w0, w1]| B128::new(((w1.as_u64() as u128) << 64) | w0.as_u64() as u128))
-		.chain(remainder.iter().map(|w0| B128::new(w0.as_u64() as u128)))
-		.collect()
 }
 
 /// An operation's operand data, or a zero claim at an empty point when it is absent.

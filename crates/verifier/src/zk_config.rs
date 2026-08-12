@@ -27,6 +27,7 @@ use binius_iop::{
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
+use binius_ip::channel::WordIPVerifierChannel;
 use binius_spartan_frontend::{
 	compiler::compile,
 	constraint_system::{BlindingInfo, WitnessLayout},
@@ -206,8 +207,11 @@ where
 			)
 			.entered();
 
+			// The statement is observed here, and what comes back is what the IOP verifies
+			// against — the same split the transparent verifier makes.
+			let inout = wrapped_channel.observe_words(inout);
 			self.inner_iop_verifier
-				.verify(inout, &mut wrapped_channel)?;
+				.verify(&inout, &mut wrapped_channel)?;
 		};
 
 		// Finish runs the outer spartan verification.

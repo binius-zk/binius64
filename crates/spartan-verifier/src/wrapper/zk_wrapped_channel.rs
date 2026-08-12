@@ -20,7 +20,9 @@ use binius_iop::{
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	merkle_channel::MerkleIPVerifierChannel,
 };
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
+use binius_ip::channel::{
+	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
+};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
@@ -235,10 +237,10 @@ where
 {
 	type Word = Word;
 
-	fn observe_words(&mut self, words: &[Word]) {
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
 		// The inner channel holds the Fiat-Shamir state the inner prover mirrors, so the words go
 		// there. The outer verifier recomputes what depends on them from the public segment.
-		self.inner_channel.observe_words(words);
+		self.inner_channel.observe_words(words)
 	}
 
 	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Word) -> Self::Elem {
@@ -251,6 +253,11 @@ where
 
 	fn sample_bits(&mut self, bits: usize) -> Word {
 		self.inner_channel.sample_bits(bits)
+	}
+
+	fn pack_words(&mut self, words: &[Word]) -> Vec<Self::Elem> {
+		// The words are concrete, so the packed elements are constants of the wrapper circuit.
+		pack_words_concrete::<F, Self::Elem>(words)
 	}
 }
 
