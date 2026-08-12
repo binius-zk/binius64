@@ -49,7 +49,7 @@ use crate::{
 };
 
 /// The multithreaded additive NTT used to encode the committed codeword.
-type ProverNtt = NeighborsLastMultiThread<GaoMateerPreExpanded<B128>>;
+pub(crate) type ProverNtt = NeighborsLastMultiThread<GaoMateerPreExpanded<B128>>;
 
 /// IOP prover for the M4 constraint reduction of a particular constraint system.
 ///

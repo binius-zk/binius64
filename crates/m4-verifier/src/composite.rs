@@ -11,7 +11,7 @@ use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleSpec},
-	fri::{ConstantArityStrategy, calculate_n_test_queries},
+	fri::{MinProofSizeStrategy, calculate_n_test_queries},
 };
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
@@ -146,10 +146,8 @@ impl IOPVerifierM4 {
 ///
 /// See [`IOPVerifierM4`] for what a composite proof does and does not establish.
 ///
-/// The hash suite is fixed to [`StdHashSuite`], as it is for a
-/// single-chip [`Verifier`](crate::Verifier). The Binius64 verifier takes it as a parameter, but a
-/// composite proof commits every sub-system on one channel, so there is only ever one suite to
-/// pick.
+/// The hash suite is fixed to [`StdHashSuite`], as it is for a single-chip
+/// [`Verifier`](crate::Verifier). The Binius64 verifier takes it as a parameter instead.
 pub struct VerifierM4 {
 	/// The IOP verifier, holding the sub-verifier for every sub-system.
 	iop_verifier: IOPVerifierM4,
@@ -173,10 +171,9 @@ impl VerifierM4 {
 
 		let iop_verifier = IOPVerifierM4::new(cs);
 
-		// One channel commits every sub-system's oracles into one codeword. Sizing that codeword is
-		// the compiler's job: it batches the specs and chooses the fold arities that minimize proof
-		// size, so the arity strategy passed below is not consulted and nothing here needs to know
-		// which sub-system commits the longest oracle.
+		// One channel commits every sub-system's oracles into one codeword, and sizing that
+		// codeword is the compiler's job: it batches the specs over all of them. So nothing here
+		// needs to know which sub-system commits the longest oracle.
 		let oracle_specs = iop_verifier.oracle_specs();
 
 		// The query count is fixed by the rate and the soundness target.
@@ -187,7 +184,7 @@ impl VerifierM4 {
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,
-			&ConstantArityStrategy::new(1),
+			&MinProofSizeStrategy,
 		);
 
 		Ok(Self {
