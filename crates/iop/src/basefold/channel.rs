@@ -31,11 +31,9 @@ pub struct BaseFoldOracle {
 
 /// A committed-oracle relation queued for the single batched opening.
 struct QueuedRelation<Elem> {
-	/// Index of the committed oracle this relation opens.
-	oracle_index: usize,
-	/// Evaluates the transparent multilinear `t_i` at the point the opening reduces to.
+	/// Evaluates the transparent multilinear `t` at the point the opening reduces to.
 	transparent: TransparentEvalFn<Elem>,
-	/// The claimed inner product `s_i = <pi_i, t_i>`.
+	/// The claimed inner product `s = <pi, t>`.
 	claim: Elem,
 }
 
@@ -60,10 +58,10 @@ where
 	oracle_specs: &'a [OracleSpec],
 	fri_params: &'a FRIParams<F>,
 	oracle_commitments: Vec<Channel::Commitment>,
-	/// Oracle relations queued by [`IOPVerifierChannel::verify_oracle_relation`], opened together
-	/// in [`Self::finish`].
-	queue: Vec<QueuedRelation<Channel::Elem>>,
-	next_oracle_index: usize,
+	/// Oracle relations queued by [`IOPVerifierChannel::verify_oracle_relation`], indexed by
+	/// oracle index and opened together in [`Self::finish`]. One entry per received oracle, so its
+	/// length is also the number of oracles received so far.
+	queue: Vec<Vec<QueuedRelation<Channel::Elem>>>,
 }
 
 impl<'a, F, Channel> BaseFoldVerifierChannel<'a, F, Channel>
@@ -87,7 +85,6 @@ where
 			fri_params,
 			oracle_commitments: Vec::new(),
 			queue: Vec::new(),
-			next_oracle_index: 0,
 		}
 	}
 
@@ -110,13 +107,12 @@ where
 			fri_params,
 			oracle_commitments,
 			queue,
-			next_oracle_index,
 		} = self;
 
-		let n_remaining = oracle_specs.len() - next_oracle_index;
+		let n_remaining = oracle_specs.len() - queue.len();
 		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
 
-		if !queue.is_empty() {
+		if !queue.iter().all(Vec::is_empty) {
 			verify_batch_zk_basefold(
 				&mut channel,
 				oracle_specs,
@@ -138,11 +134,9 @@ where
 /// point `r`, then opens all committed oracles together with a single combined FRI over the
 /// piecewise-concatenated oracle.
 ///
-/// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
-/// each reduced eval lines up with its batched-claim coefficient), while the per-oracle evaluations
-/// α_i are indexed by oracle index. Each relation carries its oracle's index, so the two orders are
-/// reconciled by indexing rather than by sorting the relations; `oracle_specs` and
-/// `oracle_commitments` are indexed by oracle index.
+/// Everything runs in oracle-index order: `relations` arrives indexed by oracle, as do
+/// `oracle_specs`, `oracle_commitments`, the masking inner products σ_i and the reduced
+/// evaluations α_i.
 ///
 /// Phase B collapses the oracle-index variables up front at sampled batching challenges `r'`: the
 /// combined target is `s' = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j)` with `e = eq_ind_partial_eval(r')`,
@@ -152,13 +146,20 @@ fn verify_batch_zk_basefold<F, Channel>(
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
 	oracle_commitments: &[Channel::Commitment],
-	relations: Vec<QueuedRelation<Channel::Elem>>,
+	relations: Vec<Vec<QueuedRelation<Channel::Elem>>>,
 ) -> Result<(), Error>
 where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
 	let n_committed = oracle_commitments.len();
+	assert_eq!(relations.len(), n_committed);
+
+	// The prover's opening assumes every committed oracle is opened; see the matching assert there.
+	assert!(
+		relations.iter().all(|relations| !relations.is_empty()),
+		"expects at least one relation per committed oracle",
+	);
 
 	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
 	let max_n = oracle_specs
@@ -167,20 +168,23 @@ where
 		.max()
 		.expect("at least one oracle");
 
+	// Batch each oracle's claims into one, so everything below runs exactly one relation per
+	// committed oracle.
+	let relations = batch_relations_per_oracle(channel, relations);
+
 	// === Masking step ===
-	// Only ZK oracles are masked: read their σ_i (one per ZK oracle, in relation order) and sample
-	// the single shared γ. With no ZK oracle, γ is never sampled.
-	let n_zk = oracle_specs.iter().filter(|s| s.is_zk).count();
+	// Only ZK oracles are masked: read their σ_i (one per ZK oracle) and sample the single shared
+	// γ. With no ZK oracle, γ is never sampled.
+	let n_zk = oracle_specs.iter().filter(|spec| spec.is_zk).count();
 	let sigmas = channel.recv_many(n_zk)?;
 	let gamma = (!sigmas.is_empty()).then(|| channel.sample());
 
 	// Masked claim per relation: ZK → s_i' = extrapolate_line(claim, σ_i, γ); non-ZK → s_i' =
 	// claim.
 	let mut sigma_iter = sigmas.into_iter();
-	let sum_primes = relations
-		.iter()
-		.map(|relation| {
-			if oracle_specs[relation.oracle_index].is_zk {
+	let sum_primes = izip!(&relations, oracle_specs)
+		.map(|(relation, spec)| {
+			if spec.is_zk {
 				let sigma = sigma_iter.next().expect("one σ per ZK oracle");
 				extrapolate_line(
 					relation.claim.clone(),
@@ -207,16 +211,13 @@ where
 	let mut point = sumcheck_challenges;
 	point.reverse();
 
-	// Reduce the batched claim: each oracle contributes α_i · t_i(ρ_i) · eq(0^extra, padding).
-	let contributions = relations
-		.into_iter()
-		.map(|relation| {
-			let alpha_i = alphas[relation.oracle_index].clone();
-			let n_i = oracle_specs[relation.oracle_index].log_msg_len;
-			let (eval_coords, padding_coords) = point.split_at(n_i);
+	// Reduce the batched claim: each oracle contributes α_i · T_i(ρ_i) · eq(0^extra, padding).
+	let contributions = izip!(relations, oracle_specs, &alphas)
+		.map(|(relation, spec, alpha_i)| {
+			let (eval_coords, padding_coords) = point.split_at(spec.log_msg_len);
 			let pad_eq = eq_ind_zero(padding_coords);
 			let transparent_eval = (relation.transparent)(eval_coords);
-			alpha_i * transparent_eval * pad_eq
+			alpha_i.clone() * transparent_eval * pad_eq
 		})
 		.collect::<Vec<_>>();
 	let expected = evaluate_univariate(&contributions, &sumcheck_batch_coeff);
@@ -253,6 +254,64 @@ where
 	)?;
 
 	Ok(())
+}
+
+/// Batches each oracle's queued relations down to one, in oracle-index order.
+///
+/// An oracle carrying `k > 1` claims has them folded into a single claim against a single
+/// transparent, using a batching challenge λ shared by every oracle:
+///
+/// ```text
+/// T_i = Σ_j λ^j · t_ij     the combined transparent
+/// S_i = Σ_j λ^j · s_ij     the combined claim
+/// ```
+///
+/// The inner product is linear in the transparent, so `⟨π_i, T_i⟩ = S_i` holds exactly when every
+/// `⟨π_i, t_ij⟩ = s_ij` does, except with probability at most `Σ_i (k_i - 1) / |F|` over λ. λ is
+/// drawn after every claim it combines is already bound to the transcript, so no claim can be
+/// chosen as a function of it. The batched per-oracle claims are then combined again by the
+/// sumcheck's own outer batching coefficient.
+///
+/// Mirrors the prover-side batching in `binius_iop_prover::basefold::channel`.
+fn batch_relations_per_oracle<F, Channel>(
+	channel: &mut Channel,
+	relations: Vec<Vec<QueuedRelation<Channel::Elem>>>,
+) -> Vec<QueuedRelation<Channel::Elem>>
+where
+	F: BinaryField,
+	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
+{
+	let lambda = channel.sample();
+
+	relations
+		.into_iter()
+		.map(|mut relations| {
+			// An oracle carrying a single relation folds nothing.
+			if relations.len() <= 1 {
+				return relations
+					.pop()
+					.expect("pre-condition: every committed oracle carries at least one relation");
+			}
+
+			let (transparents, claims): (Vec<_>, Vec<_>) = relations
+				.into_iter()
+				.map(|relation| (relation.transparent, relation.claim))
+				.unzip();
+			let claim = evaluate_univariate(&claims, &lambda);
+			let lambda = lambda.clone();
+
+			QueuedRelation {
+				transparent: Box::new(move |point: &[Channel::Elem]| {
+					let evals = transparents
+						.iter()
+						.map(|transparent| transparent(point))
+						.collect::<Vec<_>>();
+					evaluate_univariate(&evals, &lambda)
+				}),
+				claim,
+			}
+		})
+		.collect()
 }
 
 impl<F, Channel> IPVerifierChannel<F> for BaseFoldVerifierChannel<'_, F, Channel>
@@ -331,7 +390,7 @@ where
 	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs[self.next_oracle_index..]
+		&self.oracle_specs[self.queue.len()..]
 	}
 
 	fn recv_oracle(
@@ -346,7 +405,7 @@ where
 			"recv_oracle called but no remaining oracle specs"
 		);
 
-		let index = self.next_oracle_index;
+		let index = self.queue.len();
 
 		// Receive the commitment with its Merkle tree shape, matching the prover-side commit: the
 		// oracle's codeword has dimension `log_dim - log_lift` and one interleaved coset of
@@ -371,7 +430,7 @@ where
 			.recv_merkle_commitment(1 << fri_oracle.log_batch_size(), depth)?;
 
 		self.oracle_commitments.push(commitment);
-		self.next_oracle_index += 1;
+		self.queue.push(Vec::new());
 
 		Ok(BaseFoldOracle { index })
 	}
@@ -382,19 +441,15 @@ where
 		transparent: TransparentEvalFn<Self::Elem>,
 		claim: Self::Elem,
 	) -> Result<(), Error> {
-		// Queue the relation; the actual opening (masking + sumcheck + combined FRI) happens once,
-		// over all committed oracles, in [`Self::finish`].
-		assert!(
-			oracle.index < self.oracle_commitments.len(),
-			"oracle index {} out of bounds, expected < {}",
-			oracle.index,
-			self.oracle_commitments.len()
-		);
-		self.queue.push(QueuedRelation {
-			oracle_index: oracle.index,
-			transparent,
-			claim,
-		});
+		// Queue the relation under its oracle; the actual opening (masking + sumcheck + combined
+		// FRI) happens once, over all committed oracles, in [`Self::finish`].
+		let n_committed = self.queue.len();
+		self.queue
+			.get_mut(oracle.index)
+			.unwrap_or_else(|| {
+				panic!("oracle index {} out of bounds, expected < {n_committed}", oracle.index)
+			})
+			.push(QueuedRelation { transparent, claim });
 		Ok(())
 	}
 }
