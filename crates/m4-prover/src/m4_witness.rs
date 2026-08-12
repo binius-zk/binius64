@@ -2,11 +2,11 @@
 
 //! The witness for an M4 circuit: the main circuit's values and one table per chip.
 
-use std::iter;
+use std::{borrow::Cow, mem};
 
 use binius_core::{
 	ValueVec, VerificationM4Error, Word,
-	m4::{ChipCall, ConstraintSystemM4},
+	m4::{ChipCall, ChipInstances, ConstraintSystemM4},
 };
 use binius_frontend::{BatchPopulateError, CircuitM4, PopulateError, WitnessFiller};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -38,7 +38,8 @@ impl WitnessM4 {
 	///
 	/// # Panics
 	///
-	/// Panics if the system does not pass [`CircuitM4::validate`].
+	/// Panics if the system does not pass [`CircuitM4::validate`], which covers both the ordering
+	/// this walks the chips in and the well-formedness of the operands it evaluates.
 	pub fn generate<F>(circuit: &CircuitM4, fill_main: F) -> Result<Self, PopulateM4Error>
 	where
 		F: FnOnce(&mut WitnessFiller<'_>),
@@ -52,33 +53,17 @@ impl WitnessM4 {
 
 		let main_values = main_witness_filler.into_value_vec();
 
+		// The invocations awaiting each chip, in the order the calls run: main's first, then the
+		// calls of each chip in ID order, instance-major and call-minor. Calls only run to higher
+		// IDs, so a chip's list is complete by the time the pass below reaches it.
+		let mut pending = vec![Vec::new(); circuit.chips.len()];
+		for call in &circuit.main.chip_calls {
+			pending[call.chip_id].push(eval_call(&main_values, call));
+		}
+
 		let mut tables = Vec::<ValueTable>::with_capacity(circuit.chips.len());
 		for (chip_id, (chip, n_active)) in circuit.chips.iter().enumerate() {
-			let mut call_data = Vec::with_capacity(*n_active);
-
-			// Push main's calls.
-			for call in &circuit.main.chip_calls {
-				if call.chip_id == chip_id {
-					call_data.push(eval_call(&main_values, call));
-				}
-			}
-
-			// Push the calls of the chips populated so far. Calls only run to higher IDs, so
-			// zipping against the tables built up to here yields exactly this chip's callers.
-			for ((caller, caller_active), table) in iter::zip(&circuit.chips, &tables) {
-				if !caller.chip_calls.iter().any(|call| call.chip_id == chip_id) {
-					continue;
-				}
-				let constants = &caller.circuit.constraint_system().constants;
-				for instance in 0..*caller_active {
-					let values = table.instance_value_vec(instance, constants);
-					for call in &caller.chip_calls {
-						if call.chip_id == chip_id {
-							call_data.push(eval_call(&values, call));
-						}
-					}
-				}
-			}
+			let call_data = mem::take(&mut pending[chip_id]);
 
 			// Invariants checked in `CircuitM4::validate()`
 			assert_eq!(call_data.len(), *n_active);
@@ -95,6 +80,20 @@ impl WitnessM4 {
 				})
 				.map_err(|source| PopulateM4Error::Chip { chip_id, source })?;
 
+			// Read this chip's own calls off each active instance, for the chips after it to
+			// serve. Building the instance is what costs here — a value vector allocated and
+			// gathered word by word — so each is built once and every call it makes is read off
+			// it, rather than once per callee.
+			if !chip.chip_calls.is_empty() {
+				let constants = &chip.circuit.constraint_system().constants;
+				for instance in 0..*n_active {
+					let values = table.instance_value_vec(instance, constants);
+					for call in &chip.chip_calls {
+						pending[call.chip_id].push(eval_call(&values, call));
+					}
+				}
+			}
+
 			tables.push(table);
 		}
 
@@ -106,24 +105,42 @@ impl WitnessM4 {
 
 	/// Checks that this witness satisfies an M4 constraint system.
 	///
-	/// Each table's instances are materialized as value vectors and handed to
-	/// [`ConstraintSystemM4::verify`], which checks the local constraints of every instance and
-	/// matches every chip call against the instance serving it.
+	/// [`ConstraintSystemM4::verify`] checks the local constraints of every instance and matches
+	/// every chip call against the instance serving it. It reads the instances one at a time, so a
+	/// table is never expanded into value vectors whole: the tables are the witness, and they stay
+	/// the only copy of it.
 	pub fn verify(&self, cs: &ConstraintSystemM4) -> Result<(), VerificationM4Error> {
-		if self.tables.len() != cs.chips.len() {
-			return Err(VerificationM4Error::WrongChipCount {
-				n_witness_chips: self.tables.len(),
-				n_chips: cs.chips.len(),
-			});
-		}
-		let chip_instances = iter::zip(&cs.chips, &self.tables)
-			.map(|((chip, _), table)| {
-				(0..table.n_instances())
-					.map(|instance| table.instance_value_vec(instance, &chip.cs.constants))
-					.collect()
-			})
-			.collect::<Vec<_>>();
-		cs.verify(&self.main, &chip_instances)
+		cs.verify(
+			&self.main,
+			&TableInstances {
+				tables: &self.tables,
+				cs,
+			},
+		)
+	}
+}
+
+/// A witness's tables read as chip instances, each built when it is asked for.
+///
+/// The constants are the one part of an instance a table does not store, so the system is held
+/// alongside to supply them.
+struct TableInstances<'a> {
+	tables: &'a [ValueTable],
+	cs: &'a ConstraintSystemM4,
+}
+
+impl ChipInstances for TableInstances<'_> {
+	fn n_chips(&self) -> usize {
+		self.tables.len()
+	}
+
+	fn n_instances(&self, chip_id: usize) -> usize {
+		self.tables[chip_id].n_instances()
+	}
+
+	fn instance(&self, chip_id: usize, row: usize) -> Cow<'_, ValueVec> {
+		let constants = &self.cs.chips[chip_id].0.cs.constants;
+		Cow::Owned(self.tables[chip_id].instance_value_vec(row, constants))
 	}
 }
 
@@ -151,7 +168,9 @@ pub enum PopulateM4Error {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::ShiftedValueIndex;
+	use std::iter;
+
+	use binius_core::{ShiftedValueIndex, ValueIndex, error::OperandFault};
 	use binius_frontend::{Circuit, CircuitBuilder, CircuitM4Error, EmbeddedCircuit, Wire};
 
 	use super::*;
@@ -172,6 +191,26 @@ mod tests {
 				inout: vec![forward_c.clone(), forward_c],
 			}],
 			circuit,
+		}
+	}
+
+	/// A chip whose inout words are `(a, b, c)`, constrained by `c == a & b`.
+	///
+	/// It calls chip `callee` twice per instance, forwarding `(a, a)` and then `(b, b)`.
+	fn twice_calling_and_chip(callee: usize) -> EmbeddedCircuit {
+		let builder = CircuitBuilder::new();
+		let (a, b, c) = (builder.add_inout(), builder.add_inout(), builder.add_inout());
+		builder.assert_eq("and", builder.band(a, b), c);
+		let circuit = builder.build();
+
+		let call = |wire| ChipCall {
+			chip_id: callee,
+			inout: vec![operand(&circuit, wire), operand(&circuit, wire)],
+		};
+		let chip_calls = vec![call(a), call(b)];
+		EmbeddedCircuit {
+			circuit,
+			chip_calls,
 		}
 	}
 
@@ -372,13 +411,52 @@ mod tests {
 				VerificationM4Error::CallMismatch {
 					chip_id: 0,
 					row: 0,
-					caller_chip: None,
+					caller: None,
 					word: 2,
 					..
 				}
 			),
 			"{err}"
 		);
+	}
+
+	// A caller with several instances making several calls to one callee is what pins the order
+	// generation and verification both walk the calls in: instance-major, call-minor. With one
+	// call per callee the two orders coincide and neither side would notice the other drifting.
+	#[test]
+	fn generate_interleaves_a_callers_instances_before_its_calls() {
+		let (main, inputs) = main_circuit(2);
+		let mut circuit = CircuitM4 {
+			main,
+			chips: vec![(twice_calling_and_chip(1), 0), (eq_chip(), 0)],
+		};
+		circuit.recompute_n_active();
+		circuit.validate().unwrap();
+
+		// Chip 0 serves main's two calls, and each of its instances calls chip 1 twice.
+		assert_eq!(circuit.chips[0].1, 2);
+		assert_eq!(circuit.chips[1].1, 4);
+
+		let words = [(0b1100u64, 0b1010u64), (0xff00, 0x0ff0)];
+		let witness = WitnessM4::generate(&circuit, |filler| {
+			for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
+				filler[a] = Word(a_word);
+				filler[b] = Word(b_word);
+			}
+		})
+		.unwrap();
+
+		// Instance 0's two calls come before instance 1's, each forwarding `(a, a)` then `(b, b)`.
+		let expected = [words[0].0, words[0].1, words[1].0, words[1].1];
+		assert_eq!(witness.tables[1].n_instances(), 4);
+		for (instance, &word) in expected.iter().enumerate() {
+			assert_eq!(
+				instance_inout(&circuit.chips[1].0, &witness.tables[1], instance),
+				vec![word, word]
+			);
+		}
+
+		witness.verify(&circuit.to_constraint_system()).unwrap();
 	}
 
 	#[test]
@@ -473,5 +551,88 @@ mod tests {
 		circuit.main.chip_calls.clear();
 		circuit.recompute_n_active();
 		assert!(matches!(circuit.validate(), Err(CircuitM4Error::NeverCalled { chip_index: 0 })));
+	}
+
+	// An operand past the callee's interface has nowhere to land: generation drops it and
+	// verification never looks at it, so nothing downstream would report it.
+	#[test]
+	fn validate_rejects_a_call_passing_more_operands_than_the_callee_takes() {
+		let (mut circuit, inputs) = system(1);
+		let extra = operand(&circuit.main.circuit, inputs[0].0);
+		circuit.main.chip_calls[0].inout.push(extra);
+		assert!(matches!(
+			circuit.validate(),
+			Err(CircuitM4Error::WrongCallArity {
+				chip_index: None,
+				call_index: 0,
+				chip_id: 0,
+				arity: 4,
+				n_inout: 3,
+			})
+		));
+	}
+
+	// Scratch words are uncommitted temporaries, so a call reading one names a word no instance
+	// holds. `call_chip` pins its wires out of scratch, but `ChipCall` is built by hand too.
+	#[test]
+	fn validate_rejects_a_call_operand_naming_a_scratch_value() {
+		let (mut circuit, _) = system(1);
+		circuit.main.chip_calls[0].inout[2] =
+			vec![ShiftedValueIndex::plain(ValueIndex::scratch(0))];
+		assert!(matches!(
+			circuit.validate(),
+			Err(CircuitM4Error::CallOperand {
+				chip_index: None,
+				call_index: 0,
+				operand_index: 2,
+				source: OperandFault::ScratchValueIndex,
+			})
+		));
+	}
+
+	// Instance counts multiply down the call graph, so a chain of a few dozen chips outgrows a
+	// `usize`. Counting it out unchecked would wrap to a plausible-looking total.
+	#[test]
+	fn validate_rejects_an_instance_count_that_outgrows_a_usize() {
+		// A chain of 70 chips, each calling the next twice, so chip `i` is reached 2^i times.
+		let chip = |callee: Option<usize>| {
+			let builder = CircuitBuilder::new();
+			builder.add_inout();
+			EmbeddedCircuit {
+				circuit: builder.build(),
+				chip_calls: callee
+					.into_iter()
+					.flat_map(|chip_id| {
+						iter::repeat_with(move || ChipCall {
+							chip_id,
+							inout: vec![],
+						})
+						.take(2)
+					})
+					.collect(),
+			}
+		};
+
+		const DEPTH: usize = 70;
+		let mut circuit = CircuitM4 {
+			main: EmbeddedCircuit {
+				circuit: CircuitBuilder::new().build(),
+				chip_calls: vec![ChipCall {
+					chip_id: 0,
+					inout: vec![],
+				}],
+			},
+			chips: (0..DEPTH)
+				.map(|i| (chip((i + 1 < DEPTH).then_some(i + 1)), 0))
+				.collect(),
+		};
+		circuit.recompute_n_active();
+
+		// Chip 63 is reached 2^63 times and calls chip 64 twice, which is where the count leaves
+		// the range.
+		assert!(matches!(
+			circuit.validate(),
+			Err(CircuitM4Error::TooManyInstances { chip_index: 64 })
+		));
 	}
 }

@@ -2,7 +2,10 @@
 
 //! Circuits composed out of chips, each generating the witness of one M4 chip.
 
-use binius_core::m4::{ChipCall, ConstraintSystemM4, EmbeddedConstraintSystem};
+use binius_core::{
+	error::{ChipName, OperandFault},
+	m4::{ChipCall, ConstraintSystemM4, EmbeddedConstraintSystem},
+};
 
 use crate::Circuit;
 
@@ -64,32 +67,26 @@ impl CircuitM4 {
 	///
 	/// Specifically checks that:
 	///
-	/// - every chip call names a chip of this system;
+	/// - every chip call names a chip of this system, passes no more operands than that chip has
+	///   inout values, and reads only committed words of its own caller;
 	/// - the chips are in topological order, each calling only chips with a higher ID, so every
 	///   caller of a chip is populated before the chip itself;
-	/// - each chip's declared active-instance count is the number of invocations that reach it, and
-	///   no chip is left uncalled.
+	/// - each chip's declared active-instance count is the number of invocations that reach it, no
+	///   chip is left uncalled, and no count outgrows a `usize`.
+	///
+	/// A system that passes here lowers to one that passes
+	/// [`ConstraintSystemM4::validate`](binius_core::m4::ConstraintSystemM4::validate). That check
+	/// additionally rejects call-graph cycles, which the ordering requirement here already rules
+	/// out, and validates each chip's compiled constraint system, which the compiler is what keeps
+	/// well-formed. Nothing downstream of this therefore has to run the lowered check to know its
+	/// preconditions hold.
 	pub fn validate(&self) -> Result<(), CircuitM4Error> {
 		let n_chips = self.chips.len();
 
-		for call in &self.main.chip_calls {
-			if call.chip_id >= n_chips {
-				return Err(CircuitM4Error::OutOfRangeChipId {
-					chip_index: None,
-					chip_id: call.chip_id,
-					n_chips,
-				});
-			}
-		}
+		self.validate_calls(None, &self.main)?;
 		for (chip_index, (chip, _)) in self.chips.iter().enumerate() {
+			self.validate_calls(Some(chip_index), chip)?;
 			for call in &chip.chip_calls {
-				if call.chip_id >= n_chips {
-					return Err(CircuitM4Error::OutOfRangeChipId {
-						chip_index: Some(chip_index),
-						chip_id: call.chip_id,
-						n_chips,
-					});
-				}
 				if call.chip_id <= chip_index {
 					return Err(CircuitM4Error::CallOutOfOrder {
 						chip_index,
@@ -102,7 +99,7 @@ impl CircuitM4 {
 		// The invocations reaching each chip, counted the way witness generation gathers them. Only
 		// main and lower-numbered chips call a chip, so a single pass in ID order sees every caller
 		// of chip `i` before it reads chip `i`'s own total.
-		let mut n_calls = vec![0; n_chips];
+		let mut n_calls = vec![0usize; n_chips];
 		for call in &self.main.chip_calls {
 			n_calls[call.chip_id] += 1;
 		}
@@ -120,11 +117,70 @@ impl CircuitM4 {
 
 			// Only the active instances of this chip have their calls enforced, so only they
 			// demand an instance of the callee.
+			//
+			// The counts multiply down the call graph — a chain whose every chip calls the next
+			// twice reaches `2^depth` — so a system of a few dozen chips can outgrow a `usize`.
+			// Counting it out unchecked would wrap to a small total that then agrees with a
+			// `recompute_n_active` that wrapped the same way, and the system would go on to be
+			// populated against a count that is not the number of calls.
 			for call in &chip.chip_calls {
-				n_calls[call.chip_id] += n_active;
+				n_calls[call.chip_id] = n_calls[call.chip_id].checked_add(*n_active).ok_or(
+					CircuitM4Error::TooManyInstances {
+						chip_index: call.chip_id,
+					},
+				)?;
 			}
 		}
 
+		Ok(())
+	}
+
+	/// Checks one caller's calls: that each names a chip of this system, passes no more operands
+	/// than that chip has inout values, and reads only committed words of the caller's own value
+	/// vector.
+	///
+	/// A call may pass fewer operands than the callee takes: the inout values past them are
+	/// constrained to zero.
+	fn validate_calls(
+		&self,
+		chip_index: Option<usize>,
+		caller: &EmbeddedCircuit,
+	) -> Result<(), CircuitM4Error> {
+		let n_chips = self.chips.len();
+		let cs = caller.circuit.constraint_system();
+		for (call_index, call) in caller.chip_calls.iter().enumerate() {
+			if call.chip_id >= n_chips {
+				return Err(CircuitM4Error::OutOfRangeChipId {
+					chip_index,
+					chip_id: call.chip_id,
+					n_chips,
+				});
+			}
+			let n_inout = self.chips[call.chip_id]
+				.0
+				.circuit
+				.constraint_system()
+				.n_inout;
+			if call.inout.len() > n_inout {
+				return Err(CircuitM4Error::WrongCallArity {
+					chip_index,
+					call_index,
+					chip_id: call.chip_id,
+					arity: call.inout.len(),
+					n_inout,
+				});
+			}
+			for (operand_index, operand) in call.inout.iter().enumerate() {
+				if let Some(source) = cs.operand_fault(operand) {
+					return Err(CircuitM4Error::CallOperand {
+						chip_index,
+						call_index,
+						operand_index,
+						source,
+					});
+				}
+			}
+		}
 		Ok(())
 	}
 
@@ -136,13 +192,16 @@ impl CircuitM4 {
 	/// This is what [`Self::validate`] checks the declared counts against, so a system whose call
 	/// sites have just been written or rewritten passes it here rather than counting by hand.
 	///
+	/// A count that outgrows a `usize` saturates rather than wrapping, so it stays too large for
+	/// the invocations that reach the chip and [`Self::validate`] reports it.
+	///
 	/// # Panics
 	///
 	/// Panics if a chip call names a chip this system does not have. Chips out of topological
 	/// order are not detected here: a call to a lower ID counts against a total already written
 	/// back, and [`Self::validate`] is what rejects the result.
 	pub fn recompute_n_active(&mut self) {
-		let mut n_calls = vec![0; self.chips.len()];
+		let mut n_calls = vec![0usize; self.chips.len()];
 		for call in &self.main.chip_calls {
 			n_calls[call.chip_id] += 1;
 		}
@@ -155,7 +214,7 @@ impl CircuitM4 {
 			// Only the active instances of this chip have their calls enforced, so only they
 			// demand an instance of the callee.
 			for call in &self.chips[chip_index].0.chip_calls {
-				n_calls[call.chip_id] += n_active;
+				n_calls[call.chip_id] = n_calls[call.chip_id].saturating_add(n_active);
 			}
 		}
 	}
@@ -203,25 +262,37 @@ impl ChipRef {
 	}
 }
 
-/// Names the circuit of an M4 system that a diagnostic is about.
-///
-/// The main circuit is not one of the numbered chips, so it has no index.
-fn circuit_name(chip_index: Option<usize>) -> String {
-	match chip_index {
-		Some(chip_index) => format!("chip #{chip_index}"),
-		None => "the main circuit".to_string(),
-	}
-}
-
 /// Reason an M4 circuit cannot be populated as it stands.
 #[allow(missing_docs)] // errors are self-documenting
 #[derive(Debug, thiserror::Error)]
 pub enum CircuitM4Error {
-	#[error("{} calls chip {chip_id}, but the system has {n_chips} chips", circuit_name(*chip_index))]
+	#[error("{} calls chip {chip_id}, but the system has {n_chips} chips", ChipName(*chip_index))]
 	OutOfRangeChipId {
 		chip_index: Option<usize>,
 		chip_id: usize,
 		n_chips: usize,
+	},
+	#[error(
+		"{}'s call #{call_index} passes {arity} operands to chip {chip_id}, which has {n_inout} inout values",
+		ChipName(*chip_index)
+	)]
+	WrongCallArity {
+		chip_index: Option<usize>,
+		call_index: usize,
+		chip_id: usize,
+		arity: usize,
+		n_inout: usize,
+	},
+	#[error(
+		"{}'s call #{call_index} has a malformed operand #{operand_index}: {source}",
+		ChipName(*chip_index)
+	)]
+	CallOperand {
+		chip_index: Option<usize>,
+		call_index: usize,
+		operand_index: usize,
+		#[source]
+		source: OperandFault,
 	},
 	#[error("chip #{chip_index} calls chip {callee}, which is not a later chip")]
 	CallOutOfOrder { chip_index: usize, callee: usize },
@@ -233,4 +304,6 @@ pub enum CircuitM4Error {
 	},
 	#[error("chip #{chip_index} is never called")]
 	NeverCalled { chip_index: usize },
+	#[error("more invocations reach chip #{chip_index} than a usize can count")]
+	TooManyInstances { chip_index: usize },
 }

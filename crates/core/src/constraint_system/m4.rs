@@ -1,12 +1,46 @@
 // Copyright 2026 The Binius Developers
 
-use std::iter;
+use std::{borrow::Cow, iter};
 
 use super::{ValueVec, constraint::Operand};
 use crate::{
 	ConstraintSystem, Word,
 	error::{ConstraintSystemError, VerificationM4Error},
 };
+
+/// The chip instances of an M4 witness, addressed by chip ID and row.
+///
+/// [`ConstraintSystemM4::verify`] reads one instance at a time and never holds two, so this is all
+/// it needs of a witness. A witness that stores its instances packed — as the prover's tables do,
+/// one column per instance — can therefore serve them one at a time rather than expanding the whole
+/// witness into value vectors first, which for a system of any size is most of its memory.
+///
+/// Instances are served, not lent, because a packed witness has to build one to hand it over. One
+/// that already holds value vectors lends them and pays nothing.
+pub trait ChipInstances {
+	/// The number of chips the witness covers, which must be the number the system has.
+	fn n_chips(&self) -> usize;
+
+	/// The number of instances of the given chip, which must be at least its active-instance count.
+	fn n_instances(&self, chip_id: usize) -> usize;
+
+	/// The value vector of one instance of one chip.
+	fn instance(&self, chip_id: usize, row: usize) -> Cow<'_, ValueVec>;
+}
+
+impl ChipInstances for [Vec<ValueVec>] {
+	fn n_chips(&self) -> usize {
+		self.len()
+	}
+
+	fn n_instances(&self, chip_id: usize) -> usize {
+		self[chip_id].len()
+	}
+
+	fn instance(&self, chip_id: usize, row: usize) -> Cow<'_, ValueVec> {
+		Cow::Borrowed(&self[chip_id][row])
+	}
+}
 
 /// A constraint system that represents a single chip in a [`ConstraintSystemM4`].
 ///
@@ -157,38 +191,42 @@ impl ConstraintSystemM4 {
 	/// This is the reference the proving protocol's argument is checked against, in the manner of
 	/// [`ConstraintSystem::verify`].
 	///
-	/// Malformed systems are [`Self::validate`]'s to reject; verifying one may panic or
-	/// misreport.
+	/// Instances are read through [`ChipInstances`] one at a time, so a witness that stores them
+	/// packed is never expanded whole. The price is that an instance serving a call is built again
+	/// when the call is checked, having already been built for its own constraints.
+	///
+	/// Malformed systems are [`Self::validate`]'s to reject; verifying one may panic, misreport, or
+	/// pass. In particular a call passing more operands than the callee has inout values — which
+	/// [`Self::validate`] rejects — has the operands past them ignored here.
 	///
 	/// # Errors
 	///
 	/// Reports the first failure found, in the order listed above.
-	pub fn verify(
+	pub fn verify<I: ChipInstances + ?Sized>(
 		&self,
 		main: &ValueVec,
-		chip_instances: &[Vec<ValueVec>],
+		chip_instances: &I,
 	) -> Result<(), VerificationM4Error> {
-		if chip_instances.len() != self.chips.len() {
+		if chip_instances.n_chips() != self.chips.len() {
 			return Err(VerificationM4Error::WrongChipCount {
-				n_witness_chips: chip_instances.len(),
+				n_witness_chips: chip_instances.n_chips(),
 				n_chips: self.chips.len(),
 			});
 		}
 
 		self.main.cs.verify(main)?;
-		for (chip_id, ((chip, n_active), instances)) in
-			iter::zip(&self.chips, chip_instances).enumerate()
-		{
-			if instances.len() < *n_active {
+		for (chip_id, (chip, n_active)) in self.chips.iter().enumerate() {
+			let n_instances = chip_instances.n_instances(chip_id);
+			if n_instances < *n_active {
 				return Err(VerificationM4Error::MissingInstances {
 					chip_id,
-					n_instances: instances.len(),
+					n_instances,
 					n_active: *n_active,
 				});
 			}
-			for (instance, values) in instances.iter().enumerate() {
+			for instance in 0..n_instances {
 				chip.cs
-					.verify(values)
+					.verify(&chip_instances.instance(chip_id, instance))
 					.map_err(|source| VerificationM4Error::ChipInstance {
 						chip_id,
 						instance,
@@ -203,10 +241,11 @@ impl ConstraintSystemM4 {
 		self.check_caller(None, &self.main.chip_calls, main, &mut cursor, chip_instances)?;
 		for (caller_chip, (chip, n_active)) in self.chips.iter().enumerate() {
 			for caller_instance in 0..*n_active {
+				let values = chip_instances.instance(caller_chip, caller_instance);
 				self.check_caller(
 					Some((caller_chip, caller_instance)),
 					&chip.chip_calls,
-					&chip_instances[caller_chip][caller_instance],
+					&values,
 					&mut cursor,
 					chip_instances,
 				)?;
@@ -234,18 +273,14 @@ impl ConstraintSystemM4 {
 	/// `values` is that caller's value vector, which the call operands are evaluated on. A call
 	/// past its chip's active instances is counted but compared to nothing; the caller reports the
 	/// overshoot when the cursors are read back.
-	fn check_caller(
+	fn check_caller<I: ChipInstances + ?Sized>(
 		&self,
 		caller: Option<(usize, usize)>,
 		calls: &[ChipCall],
 		values: &ValueVec,
 		cursor: &mut [usize],
-		chip_instances: &[Vec<ValueVec>],
+		chip_instances: &I,
 	) -> Result<(), VerificationM4Error> {
-		let (caller_chip, caller_instance) = match caller {
-			Some((chip, instance)) => (Some(chip), instance),
-			None => (None, 0),
-		};
 		for (call_index, call) in calls.iter().enumerate() {
 			let chip_id = call.chip_id;
 			let (chip, n_active) = &self.chips[chip_id];
@@ -255,8 +290,11 @@ impl ConstraintSystemM4 {
 				continue;
 			}
 
+			// Only the callee's own inout values are compared. An operand past them is one
+			// `validate` rejects, and nothing here would have a word to compare it to.
 			let n_inout = chip.cs.n_inout;
-			let served = chip_instances[chip_id][row].inout();
+			let instance = chip_instances.instance(chip_id, row);
+			let served = instance.inout();
 			for word in 0..n_inout {
 				let passed = call
 					.inout
@@ -267,8 +305,7 @@ impl ConstraintSystemM4 {
 					return Err(VerificationM4Error::CallMismatch {
 						chip_id,
 						row,
-						caller_chip,
-						caller_instance,
+						caller,
 						call_index,
 						word,
 						passed: passed.as_u64(),
@@ -311,23 +348,27 @@ fn is_acyclic(callees: &[Vec<usize>]) -> bool {
 
 #[cfg(test)]
 mod tests {
+	use proptest::prelude::*;
+
 	use super::{
-		super::{ShiftedValueIndex, ValueIndex, ValueSegment, ValueVecLayout},
+		super::{ShiftedValueIndex, ValueIndex, ValueSegment, ValueVecLayout, ZeroConstraint},
 		*,
 	};
-	use crate::error::OperandFault;
+	use crate::error::{OperandFault, VerificationError};
+
+	/// The value-vector layout every chip in these tests is shaped by.
+	const LAYOUT: ValueVecLayout = ValueVecLayout {
+		n_const: 0,
+		n_inout: 8,
+		n_witness: 8,
+		n_internal: 0,
+		n_scratch: 0,
+	};
 
 	/// A chip that calls each of `callees` once, over a value vector of 8 inout and 8 private
 	/// words.
 	fn chip(callees: &[usize]) -> EmbeddedConstraintSystem {
-		let cs = ValueVecLayout {
-			n_const: 0,
-			n_inout: 8,
-			n_witness: 8,
-			n_internal: 0,
-			n_scratch: 0,
-		}
-		.constraint_system_shape(vec![]);
+		let cs = LAYOUT.constraint_system_shape(vec![]);
 		let chip_calls = callees
 			.iter()
 			.map(|&chip_id| ChipCall {
@@ -336,6 +377,11 @@ mod tests {
 			})
 			.collect();
 		EmbeddedConstraintSystem { cs, chip_calls }
+	}
+
+	/// An all-zero instance of a chip, which satisfies one with no constraints of its own.
+	fn instance() -> ValueVec {
+		ValueVec::new(&LAYOUT)
 	}
 
 	/// A system whose main chip calls each of `main_callees` once, over the given chips.
@@ -429,5 +475,163 @@ mod tests {
 				n_chips: 1,
 			})
 		));
+	}
+
+	// A call passing fewer operands than the callee has inout values constrains the rest to zero,
+	// so an all-zero instance serves a call that passes nothing at all.
+	#[test]
+	fn verify_constrains_the_inout_values_a_call_passes_no_operand_for() {
+		let cs = system(&[0], vec![chip(&[])]);
+		let main = instance();
+		cs.verify(&main, &[vec![instance()]][..]).unwrap();
+
+		// Give the instance a nonzero word where the call passes nothing, and the zero-fill is what
+		// it stops matching.
+		let mut served = instance();
+		served[ValueIndex::inout(3)] = Word::from_u64(0xdead);
+		let err = cs.verify(&main, &[vec![served]][..]).unwrap_err();
+		assert!(
+			matches!(
+				err,
+				VerificationM4Error::CallMismatch {
+					chip_id: 0,
+					row: 0,
+					caller: None,
+					word: 3,
+					passed: 0,
+					served: 0xdead,
+					..
+				}
+			),
+			"{err}"
+		);
+	}
+
+	#[test]
+	fn verify_rejects_a_witness_covering_the_wrong_number_of_chips() {
+		let cs = system(&[0], vec![chip(&[])]);
+		let err = cs.verify(&instance(), &[][..]).unwrap_err();
+		assert!(
+			matches!(
+				err,
+				VerificationM4Error::WrongChipCount {
+					n_witness_chips: 0,
+					n_chips: 1,
+				}
+			),
+			"{err}"
+		);
+	}
+
+	#[test]
+	fn verify_rejects_a_chip_with_fewer_instances_than_active_ones() {
+		let cs = system(&[0], vec![chip(&[])]);
+		let err = cs.verify(&instance(), &[vec![]][..]).unwrap_err();
+		assert!(
+			matches!(
+				err,
+				VerificationM4Error::MissingInstances {
+					chip_id: 0,
+					n_instances: 0,
+					n_active: 1,
+				}
+			),
+			"{err}"
+		);
+	}
+
+	// The call-to-instance map is a bijection, not just an injection: a chip reached by more
+	// invocations than it has active instances has calls that no row answers for.
+	#[test]
+	fn verify_rejects_more_invocations_than_a_chip_has_active_instances() {
+		// Main calls chip 0 twice, but the chip declares one active instance.
+		let cs = system(&[0, 0], vec![chip(&[])]);
+		let err = cs.verify(&instance(), &[vec![instance()]][..]).unwrap_err();
+		assert!(
+			matches!(
+				err,
+				VerificationM4Error::WrongInvocationCount {
+					chip_id: 0,
+					n_invocations: 2,
+					n_active: 1,
+				}
+			),
+			"{err}"
+		);
+	}
+
+	#[test]
+	fn verify_reports_the_instance_whose_own_constraints_fail() {
+		let mut cs = system(&[0], vec![chip(&[])]);
+		// The chip requires its first inout value to vanish, and the padding instance holds a word
+		// that does not. Every instance is committed, so padding is checked like the rest.
+		cs.chips[0]
+			.0
+			.cs
+			.zero_constraints
+			.push(ZeroConstraint::plain([ValueIndex::inout(0)]));
+
+		let mut padding = instance();
+		padding[ValueIndex::inout(0)] = Word::ONE;
+		let err = cs
+			.verify(&instance(), &[vec![instance(), padding]][..])
+			.unwrap_err();
+		assert!(
+			matches!(
+				err,
+				VerificationM4Error::ChipInstance {
+					chip_id: 0,
+					instance: 1,
+					source: VerificationError::Unsatisfied { .. },
+				}
+			),
+			"{err}"
+		);
+	}
+
+	/// Whether the call graph is acyclic, by a three-colour depth-first search.
+	///
+	/// A chip on the stack that is reached again closes a cycle. This is the independent reference
+	/// [`is_acyclic`]'s Kahn's algorithm is checked against.
+	fn acyclic_by_depth_first_search(callees: &[Vec<usize>]) -> bool {
+		#[derive(Clone, Copy, PartialEq)]
+		enum Colour {
+			Unvisited,
+			OnStack,
+			Done,
+		}
+
+		fn visit(chip: usize, callees: &[Vec<usize>], colour: &mut [Colour]) -> bool {
+			match colour[chip] {
+				Colour::OnStack => return false,
+				Colour::Done => return true,
+				Colour::Unvisited => {}
+			}
+			colour[chip] = Colour::OnStack;
+			for &callee in &callees[chip] {
+				if !visit(callee, callees, colour) {
+					return false;
+				}
+			}
+			colour[chip] = Colour::Done;
+			true
+		}
+
+		let mut colour = vec![Colour::Unvisited; callees.len()];
+		(0..callees.len()).all(|chip| visit(chip, callees, &mut colour))
+	}
+
+	proptest! {
+		// Kahn's algorithm and a depth-first search decide acyclicity by unrelated means, so
+		// agreeing on random graphs covers what the cases above are each written for one of:
+		// multi-edges, diamonds, self-loops and components nothing reaches.
+		#[test]
+		fn is_acyclic_agrees_with_a_depth_first_search(
+			graph in (1usize..7).prop_flat_map(|n_chips| {
+				prop::collection::vec(prop::collection::vec(0..n_chips, 0..4), n_chips)
+			})
+		) {
+			prop_assert_eq!(is_acyclic(&graph), acyclic_by_depth_first_search(&graph));
+		}
 	}
 }

@@ -2,65 +2,21 @@
 // Copyright 2026 The Binius Developers
 //! Hosts error definitions for the core crate.
 
+use std::fmt;
+
 use crate::constraint_system::{Composition, ConstraintKind, ValueSegment};
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
 #[derive(Debug, thiserror::Error)]
 pub enum ConstraintSystemError {
-	#[error(
-		"{constraint_kind} #{constraint_index} uses non canonical shift in its {operand_name} operand"
-	)]
-	NonCanonicalShift {
+	#[error("{constraint_kind} #{constraint_index} operand {operand_name} is malformed: {source}")]
+	ConstraintOperand {
 		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
-	},
-	#[error(
-		"{constraint_kind} #{constraint_index} puts a lone shift in the outer slot of its {operand_name} operand; the canonical form places it inner"
-	)]
-	NonCanonicalShiftSequence {
-		constraint_kind: ConstraintKind,
-		constraint_index: usize,
-		operand_name: &'static str,
-	},
-	#[error(
-		"{constraint_kind} #{constraint_index} uses a shift pair in its {operand_name} operand that composes to {composition:?} rather than staying a pair"
-	)]
-	CollapsibleShiftSequence {
-		constraint_kind: ConstraintKind,
-		constraint_index: usize,
-		operand_name: &'static str,
-		composition: Composition,
-	},
-	#[error(
-		"{constraint_kind} #{constraint_index} refers to a scratch value in its {operand_name} operand"
-	)]
-	ScratchValueIndex {
-		constraint_kind: ConstraintKind,
-		operand_name: &'static str,
-		constraint_index: usize,
-	},
-	#[error(
-		"{constraint_kind} #{constraint_index} uses shift amount n={shift_amount}>={max_amount} in {operand_name} operand"
-	)]
-	ShiftAmountTooLarge {
-		constraint_kind: ConstraintKind,
-		constraint_index: usize,
-		operand_name: &'static str,
-		shift_amount: usize,
-		max_amount: usize,
-	},
-	#[error(
-		"{constraint_kind} #{constraint_index} refers to out-of-range value index in {operand_name} operand ({segment:?} index {value_index} >= segment length {segment_len})"
-	)]
-	OutOfRangeValueIndex {
-		constraint_kind: ConstraintKind,
-		constraint_index: usize,
-		operand_name: &'static str,
-		segment: ValueSegment,
-		value_index: u32,
-		segment_len: usize,
+		#[source]
+		source: OperandFault,
 	},
 	#[error("chip call #{call_index} has a malformed operand #{operand_index}: {source}")]
 	ChipCallOperand {
@@ -69,7 +25,7 @@ pub enum ConstraintSystemError {
 		#[source]
 		source: OperandFault,
 	},
-	#[error("{} calls chip {chip_id}, but the system has {n_chips} chips", chip_name(*chip_index))]
+	#[error("{} calls chip {chip_id}, but the system has {n_chips} chips", ChipName(*chip_index))]
 	OutOfRangeChipId {
 		chip_index: Option<usize>,
 		chip_id: usize,
@@ -77,7 +33,7 @@ pub enum ConstraintSystemError {
 	},
 	#[error(
 		"{}'s call #{call_index} passes {arity} operands to chip {chip_id}, which has {n_inout} inout values",
-		chip_name(*chip_index)
+		ChipName(*chip_index)
 	)]
 	WrongCallArity {
 		chip_index: Option<usize>,
@@ -90,13 +46,19 @@ pub enum ConstraintSystemError {
 	CyclicChipCalls,
 }
 
-/// Names the chip of an M4 constraint system that a diagnostic is about.
+/// Names the chip of an M4 system that a diagnostic is about: `chip #3`, or `the main chip`.
 ///
-/// The main chip is not one of the numbered chips, so it has no index.
-fn chip_name(chip_index: Option<usize>) -> String {
-	match chip_index {
-		Some(chip_index) => format!("chip #{chip_index}"),
-		None => "the main chip".to_string(),
+/// The main chip is not one of the numbered chips, so it has no index. The frontend's circuit form
+/// numbers its chips the same way, so its diagnostics name them through this too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChipName(pub Option<usize>);
+
+impl fmt::Display for ChipName {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self.0 {
+			Some(chip_index) => write!(f, "chip #{chip_index}"),
+			None => f.write_str("the main chip"),
+		}
 	}
 }
 
@@ -225,13 +187,18 @@ pub enum VerificationError {
 	},
 }
 
-/// Names the chip instance an M4 diagnostic blames a call on.
+/// Names the chip instance an M4 diagnostic blames a call on, by chip index and instance.
 ///
-/// The main chip runs once, so only a numbered chip's instance is worth naming.
-fn caller_name(chip_index: Option<usize>, instance: usize) -> String {
-	match chip_index {
-		Some(chip_index) => format!("chip #{chip_index} instance #{instance}"),
-		None => "the main chip".to_string(),
+/// The main chip runs once, so only a numbered chip's instance is worth naming. Unlike
+/// [`ChipName`], nothing outside this module names a caller, so this stays private to it.
+struct CallerName(Option<(usize, usize)>);
+
+impl fmt::Display for CallerName {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self.0 {
+			Some((chip_index, instance)) => write!(f, "chip #{chip_index} instance #{instance}"),
+			None => f.write_str("the main chip"),
+		}
 	}
 }
 
@@ -274,13 +241,13 @@ pub enum VerificationM4Error {
 	#[error(
 		"call #{call_index} of {} reaches chip #{chip_id} as invocation #{row}, passing {passed:016x} \
 		 as inout value {word}, but the instance holds {served:016x}",
-		caller_name(*caller_chip, *caller_instance)
+		CallerName(*caller)
 	)]
 	CallMismatch {
 		chip_id: usize,
 		row: usize,
-		caller_chip: Option<usize>,
-		caller_instance: usize,
+		/// The calling chip instance, or `None` for the main chip.
+		caller: Option<(usize, usize)>,
 		call_index: usize,
 		word: usize,
 		passed: u64,
