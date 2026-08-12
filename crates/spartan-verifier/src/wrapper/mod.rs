@@ -106,15 +106,26 @@ mod tests {
 	}
 
 	#[test]
-	fn test_invert_or_zero_creates_constraints() {
+	fn test_invert_creates_constraints() {
 		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
 		let elem = alloc_private_wire(&rc);
 
-		let _inv = elem.invert_or_zero();
+		// SAFETY: nothing constrains the wire, so the contract is vacuous here; the test only
+		// counts the constraints the inverse emits.
+		let _inv = unsafe { elem.invert() };
 		let (cs, _layout) = Rc::try_unwrap(rc).unwrap().into_inner().build().finalize();
-		// InvertOrZero creates: a mul constraint (wire * inv) and a zero constraint
+		// The inverse creates: a mul constraint (wire * inv) and a zero constraint
 		// (product ^ one), both of which become mul constraints after finalization.
 		assert!(cs.mul_constraints().len() >= 2);
+	}
+
+	#[test]
+	#[should_panic(expected = "the wrapper inverts only values argued non-zero")]
+	fn test_invert_or_zero_is_unimplemented() {
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
+		let elem = alloc_private_wire(&rc);
+
+		let _ = elem.invert_or_zero();
 	}
 
 	#[test]
