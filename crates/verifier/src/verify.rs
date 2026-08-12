@@ -114,10 +114,9 @@ impl IOPVerifier {
 	/// `verify`, rather than duplicating it here.
 	pub fn oracle_specs(&self, is_zk: bool) -> Vec<OracleSpec> {
 		let mut channel = OracleSetupChannel::new(is_zk);
-		let inout = WordIPVerifierChannel::<B128>::observe_words(
-			&mut channel,
-			&vec![Word::ZERO; self.constraint_system.n_inout],
-		);
+		// The setup channel carries concrete words, so the statement it verifies against is just
+		// words — handing them through `observe_words` to get them back buys nothing.
+		let inout = vec![Word::ZERO; self.constraint_system.n_inout];
 		// The result is discarded: the setup channel performs no real verification (all `recv_*`
 		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle specs.
 		let _ = self.verify(&inout, &mut channel);
