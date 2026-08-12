@@ -1,17 +1,16 @@
 // Copyright 2026 The Binius Developers
 
-//! Stand-ins for the field gadgets the skeleton does not build.
+//! Values a circuit cannot compute, supplied at witness time.
 //!
-//! Each computes the right value at witness time and constrains nothing. A hint is the right shape
-//! for the stand-in because the evaluator derives it from wires the circuit already holds, so the
-//! result is not a circuit input and the replay does not have to know it exists. Replacing one
-//! with a real gadget is a local change: keep the hint, add the constraints that pin it.
+//! A circuit has no division, so an inverse arrives as a hint.
+//! The evaluator derives it from wires the circuit already holds, which keeps it out of the
+//! circuit's inputs and out of the replay's way.
+//!
+//! A hint on its own constrains nothing, so whoever calls one owes the constraints that pin its
+//! result. The inverse gadget does that where it calls this.
 
 use binius_core::word::Word;
-use binius_field::{
-	BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField,
-	arithmetic_traits::InvertOrZero,
-};
+use binius_field::{BinaryField128bGhash as B128, arithmetic_traits::InvertOrZero};
 use binius_frontend::Hint;
 
 /// Reads a `(lo, hi)` wire pair as a field element.
@@ -41,40 +40,5 @@ impl Hint for InvertOrZeroHint {
 
 	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
 		write_elem(elem_of(inputs).invert_or_zero(), outputs);
-	}
-}
-
-/// The `B1` subfield-coefficient transpose ring switching performs.
-///
-/// A hint cannot be generic over the subfield: it is registered under a name that has to be one
-/// constant, and it receives words rather than typed elements, so it cannot recover the subfield
-/// its caller had. This one is therefore `B1` only, which is what ring switching asks for, and
-/// `SymbolicElem::square_transpose` checks that before reaching it rather than letting another
-/// subfield arrive here and be silently transposed as `B1`.
-///
-/// A real implementation would do this with a bit-matrix transpose over the wire pairs, which is
-/// cheap; this stands in until then.
-pub struct SquareTransposeB1Hint;
-
-impl SquareTransposeB1Hint {
-	/// The extension degree this hint transposes over.
-	pub const DEGREE: usize = <B128 as ExtensionField<B1>>::DEGREE;
-}
-
-impl Hint for SquareTransposeB1Hint {
-	const NAME: &'static str = "binius_recursion::square_transpose_b1";
-
-	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
-		(2 * Self::DEGREE, 2 * Self::DEGREE)
-	}
-
-	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
-		let mut elems = (0..Self::DEGREE)
-			.map(|i| elem_of(&inputs[2 * i..]))
-			.collect::<Vec<_>>();
-		<B128 as ExtensionField<B1>>::square_transpose(&mut elems);
-		for (i, elem) in elems.into_iter().enumerate() {
-			write_elem(elem, &mut outputs[2 * i..]);
-		}
 	}
 }
