@@ -36,4 +36,4 @@ pub use key_collection::{
 	DenseShiftEncoding, KeyCollection, KeySegment, Operation, build_key_collection,
 };
 pub use prove::{OperatorData, PreparedOperatorData, prove};
-pub use shift_ind::ShiftIndSumcheck;
+pub use shift_ind::{Phase3Output, ShiftIndSumcheck};

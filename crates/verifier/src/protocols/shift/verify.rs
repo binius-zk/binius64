@@ -24,9 +24,8 @@ use binius_math::{
 use getset::Getters;
 
 use super::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, OperationEvalFn,
-	SHIFT_VARIANT_COUNT, ZERO_ARITY, encode_operation_input, error::Error,
-	shift_ind::evaluate_shift_inds,
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperationEvalFn, SHIFT_LOG_VARS, SHIFT_VARIANT_COUNT,
+	ZERO_ARITY, encode_operation_input, error::Error, shift_ind::evaluate_shift_inds,
 };
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
@@ -116,20 +115,15 @@ pub struct VerifyOutput<F> {
 	pub r_v: Vec<F>,
 	/// Challenge point for the word index variables (length `log_segment_words`).
 	pub r_y: Vec<F>,
+	/// Challenge point for the bit index the shift indicators read (length `Word::LOG_BITS`).
+	pub r_i: Vec<F>,
 	/// Challenge for the witness's segment selector variable.
 	pub r_segment: F,
-	/// Final evaluation claim from the second sumcheck.
+	/// Final evaluation claim from the sumcheck.
 	eval: F,
 	/// The claimed witness evaluation at the challenge point.
 	#[getset(get = "pub")]
 	pub witness_eval: F,
-	/// The claimed h evaluation, which the monster multilinear is scaled by.
-	h_eval: F,
-	/// Challenge point for the bit index variables the h sumcheck binds (length
-	/// `Word::LOG_BITS`).
-	pub r_i: Vec<F>,
-	/// Final evaluation claim from the h sumcheck.
-	h_sumcheck_eval: F,
 }
 
 impl<F> VerifyOutput<F> {
@@ -158,18 +152,19 @@ impl<F> VerifyOutput<F> {
 	}
 }
 
-/// Verifies the shift protocol using a two-phase sumcheck approach.
+/// Verifies the shift protocol with a single sumcheck.
 ///
 /// # Protocol Overview
 /// 1. **Sampling Phase**: Samples random lambda coefficients for batching bitand, intmul and binmul
 ///    evaluation claims across operands.
-/// 2. **First Sumcheck**: Verifies the batched evaluation claim over `Word::LOG_BITS * 2` variables
-/// 3. **Challenge Splitting**: Splits sumcheck challenges into `r_j`, `r_s` and `r_v` components
-/// 4. **Second Sumcheck**: Verifies the gamma claim over `log_word_count` variables
-/// 5. **Shift Indicator Sumcheck**: Verifies the h evaluation the monster multilinear is scaled by,
-///    over the `Word::LOG_BITS` bit-index variables it sums over
-/// 6. **Monster Multilinear Verification**: Checks that the claimed evaluations match expected
-///    monster multilinear evaluations for AND constraints (bitand), IMUL constraints (intmul) and
+/// 2. **Sumcheck**: Verifies the batched evaluation claim over all `SHIFT_LOG_VARS +
+///    log_word_count` variables of the claim, degree 2 in each. The rounds bind the shift variant,
+///    then the shift amount, then the bit position within a word, then the bit index the shift
+///    indicators read, and last the word index — the order the prover's four phases need.
+/// 3. **Challenge Splitting**: Splits the challenge point into its `r_v`, `r_s`, `r_j`, `r_i` and
+///    `r_y` runs
+/// 4. **Monster Multilinear Verification**: Checks that the claim the sumcheck reduced to matches
+///    the product of its four factors, for AND constraints (bitand), IMUL constraints (intmul) and
 ///    BMUL constraints (binmul)
 ///
 /// # Parameters
@@ -211,18 +206,7 @@ where
 		+ intmul_data.batched_eval(intmul_lambda.clone())
 		+ binmul_data.batched_eval(binmul_lambda.clone());
 
-	let SumcheckOutput {
-		eval: gamma,
-		challenges: mut r_j,
-	} = verify_sumcheck(Word::LOG_BITS * 2 + LOG_SHIFT_VARIANT_COUNT, 2, eval, channel)?;
-
-	r_j.reverse();
-	// Split the challenges as `r_j, r_s, r_v`: the bit position within a word, then the shift
-	// amount, then the shift variant, in increasing order of significance.
-	let r_v = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s = r_j.split_off(Word::LOG_BITS);
-
-	// The second sumcheck runs over the witness: the public segment in the low half-cube and
+	// The sumcheck runs over the witness as well: the public segment in the low half-cube and
 	// the hidden segment in the high half-cube, selected by the top word-index variable. Each
 	// half spans the wider of the two segments, which the prover zero-pads the shorter one up
 	// to, so a public segment longer than the hidden one draws the extra word-index challenges.
@@ -230,23 +214,23 @@ where
 
 	let SumcheckOutput {
 		eval,
-		challenges: mut r_y,
-	} = verify_sumcheck(log_word_count, 2, gamma, channel)?;
+		challenges: mut point,
+	} = verify_sumcheck(SHIFT_LOG_VARS + log_word_count, 2, eval, channel)?;
 
-	r_y.reverse();
+	// Reverse the challenges into the evaluation point, whose coordinates then run in increasing
+	// order of significance: the word index, the bit index the shift indicators read, the bit
+	// position within a word, the shift amount, and the shift variant. The rounds bind them in
+	// the opposite order — variant first, word index last — which is what admits the prover's
+	// four phases.
+	point.reverse();
+	let r_v = point.split_off(log_word_count + Word::LOG_BITS * 3);
+	let r_s = point.split_off(log_word_count + Word::LOG_BITS * 2);
+	let r_j = point.split_off(log_word_count + Word::LOG_BITS);
+	let r_i = point.split_off(log_word_count);
+	let mut r_y = point;
 	let r_segment = r_y.pop().expect("log_word_count >= 1");
 
 	let witness_eval = channel.recv_one()?;
-
-	// The monster multilinear is scaled by one h evaluation, which is itself a sum over the bit
-	// index the shift indicators read. A last sumcheck binds that index, leaving `check_eval` an
-	// evaluation to compute rather than a summation to run.
-	let h_eval = channel.recv_one()?;
-	let SumcheckOutput {
-		eval: h_sumcheck_eval,
-		challenges: mut r_i,
-	} = verify_sumcheck(Word::LOG_BITS, 2, h_eval.clone(), channel)?;
-	r_i.reverse();
 
 	Ok(VerifyOutput {
 		zero_lambda,
@@ -258,11 +242,9 @@ where
 		r_segment,
 		r_s,
 		r_v,
+		r_i,
 		eval,
 		witness_eval,
-		h_eval,
-		r_i,
-		h_sumcheck_eval,
 	})
 }
 
@@ -281,8 +263,8 @@ where
 /// ```
 ///
 /// where `monster_eval` is the sum of evaluations for AND, IMUL and BMUL constraint polynomials,
-/// scaled by the h evaluation the shift indicator sumcheck reduced. That sumcheck's own claim is
-/// checked here too, against the two evaluations it reduced to.
+/// scaled by the sumcheck's two bit-index factors — the Lagrange weights and the interpolated
+/// shift indicators, both at `r_i`.
 ///
 /// `trace_eval` is the witness evaluation reconstructed from its two segments:
 /// ```text
@@ -329,20 +311,17 @@ where
 		r_v,
 		r_y,
 		r_segment,
-		witness_eval,
-		h_eval,
 		r_i,
-		h_sumcheck_eval,
+		witness_eval,
 	} = output;
 
-	// The h sumcheck reduced its claim to the product of two evaluations at `r_i`: the Lagrange
-	// weights of the univariate challenge, and the shift indicators interpolated over the variant
-	// axis.
+	// Two of the sumcheck's four factors depend on the bit index the middle rounds bound: the
+	// Lagrange weights of the univariate challenge, and the shift indicators interpolated over the
+	// variant axis. Both are evaluated at `r_i` alone.
 	let l_tilde = lagrange_evals_scalars(subspace, r_zhat_prime);
 	let l_tilde_eval = inner_product_scalars(l_tilde, eq_ind_partial_eval_scalars(r_i));
 	let shift_ind_eval =
 		inner_product_scalars(evaluate_shift_inds(r_i, r_j, r_s), eq_ind_partial_eval_scalars(r_v));
-	channel.assert_zero(h_sumcheck_eval.clone() - l_tilde_eval * shift_ind_eval)?;
 
 	// `monster_eval` is a function of purely public-channel-derived elements
 	// (`bitand_lambda`, `intmul_lambda`, the operator data's `r_x_prime` vectors, `r_s`, `r_v`,
@@ -350,8 +329,8 @@ where
 	// the MLE evaluation in plaintext, and materialize the result as a single inout wire instead
 	// of building the entire sub-circuit in wrapper channels.
 	//
-	// The h evaluation, which every shift scalar of the monster is scaled by, is a prover message
-	// rather than a public value, so it multiplies the result out here instead.
+	// The two bit-index factors scale every shift scalar of the monster; they multiply the result
+	// out here rather than entering the function, which keeps its input free of `r_i`.
 	let monster_eval = {
 		let zero_r_x_prime_len = zero_data.r_x_prime.len();
 		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
@@ -386,7 +365,7 @@ where
 			r_v_len,
 			r_y_len,
 		};
-		h_eval.clone() * channel.compute_public_value(&inputs, eval_fn)
+		l_tilde_eval * shift_ind_eval * channel.compute_public_value(&inputs, eval_fn)
 	};
 
 	// Reconstruct the witness evaluation from its two segments.

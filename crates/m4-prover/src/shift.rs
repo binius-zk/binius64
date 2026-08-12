@@ -13,7 +13,8 @@ use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftIndSumcheck,
+		KeyCollection, KeySegment, OperatorClaims, Phase3Output, PreparedOperatorClaims,
+		ShiftIndSumcheck,
 		monster::{build_h, build_monster_segments},
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
@@ -86,19 +87,27 @@ where
 		r_s,
 		r_v,
 		gamma,
-		g_eval: _,
+		g_eval,
 	} = run_phase_1_sumcheck::<F, F, _, _>(g, h, prepared.batched_eval(), channel, alloc);
 
-	// Phase 2: the h evaluation every shift key is weighted by, then the witness folded at the
-	// bit position challenge `r_j`, per segment.
-	let shift_ind = ShiftIndSumcheck::<P, _>::new(
+	// Phase 3 binds the bit index the shift indicators read, carrying phase 1's `g` evaluation
+	// through its rounds as a constant.
+	let phase_3 = ShiftIndSumcheck::<P, _>::new(
 		alloc,
 		domain_subspace,
 		prepared.bitand.r_zhat_prime,
 		&r_j,
 		&r_s,
 		&r_v,
+		g_eval,
 	);
+	debug_assert_eq!(phase_3.beta(), gamma);
+	let Phase3Output {
+		shift_ind_eval,
+		eval: epsilon,
+	} = phase_3.prove(channel, alloc);
+
+	// Phase 4: the witness folded at the bit position challenge `r_j`, per segment.
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	// The public fold is a raw-word fold; the hidden fold contracts the already-oblong bits.
@@ -109,28 +118,22 @@ where
 		alloc,
 		key_collection,
 		&prepared,
-		shift_ind.h_eval(),
+		shift_ind_eval,
 		&r_s,
 		&r_v,
 	);
 
-	let output = run_sumcheck::<F, P, _, _>(
+	run_sumcheck::<F, P, _, _>(
 		&public_folded,
 		hidden_folded,
 		&public_monster,
 		hidden_monster,
 		public_words,
 		r_j,
-		gamma,
+		epsilon,
 		channel,
 		alloc,
-	);
-
-	// The h evaluation phase 2 was proved against is itself a sum over the bit index, which this
-	// last sumcheck binds.
-	shift_ind.prove(channel, alloc);
-
-	output
+	)
 }
 
 /// Accumulates the phase-1 "g" rows of one key segment, from instance-folded words.

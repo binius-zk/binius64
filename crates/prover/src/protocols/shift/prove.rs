@@ -126,10 +126,12 @@ impl<F: Field> PreparedOperatorData<F> {
 ///
 /// The result is a single multilinear evaluation claim on the witness.
 ///
-/// Two sumcheck phases run in sequence:
+/// One sumcheck runs, in four prover phases:
 ///
-/// 1. phase 1 proves the batched claims over the shift variants and operand positions;
-/// 2. phase 2 reduces those to a witness evaluation, against the monster multilinear.
+/// 1. phases 1 and 2 prove the batched claims over the shift variants, the shift amounts and the
+///    bit positions, sparsely and then densely;
+/// 2. phase 3 binds the bit index the shift indicators read;
+/// 3. phase 4 reduces what is left to a witness evaluation, against the monster multilinear.
 ///
 /// # Parameters
 /// - `key_collection`: the prover's key collection for the constraint system.
@@ -173,7 +175,8 @@ where
 		claims.prepare(|| channel.sample())
 	};
 
-	// Phase 1 outputs challenges `r_j || r_s || r_v`, and `gamma` as its evaluation (see paper).
+	// Phases 1 and 2 bind the shift variant, the shift amount and the bit position, outputting
+	// challenges `r_j || r_s || r_v` and the claim `gamma` (see paper).
 	let phase_1_output = prove_phase_1::<_, P, _, _>(
 		key_collection,
 		words,
@@ -183,33 +186,30 @@ where
 		alloc,
 	);
 
-	// The h evaluation phase 2 weights every shift key by, with the multilinears the final
-	// sumcheck proves it from. All four operations share `r_zhat_prime`, so it is drawn from the
-	// BitAnd claim, as phase 1's h multilinear is.
-	let shift_ind = ShiftIndSumcheck::<P, _>::new(
+	// Phase 3 binds the bit index the shift indicators read, carrying phase 1's `g` evaluation
+	// through its rounds as a constant. All four operations share `r_zhat_prime`, so it is drawn
+	// from the BitAnd claim, as phase 1's h multilinear is.
+	let phase_3 = ShiftIndSumcheck::<P, _>::new(
 		alloc,
 		domain_subspace,
 		prepared.bitand.r_zhat_prime,
 		&phase_1_output.r_j,
 		&phase_1_output.r_s,
 		&phase_1_output.r_v,
+		phase_1_output.g_eval,
 	);
+	debug_assert_eq!(phase_3.beta(), phase_1_output.gamma);
+	let phase_3_output = phase_3.prove(channel, alloc);
 
-	// Phase 2 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
+	// Phase 4 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
 	// the univariate variable `r_j` and the multilinear variable `r_y`.
-	let output = prove_phase_2::<_, P, _, _>(
+	prove_phase_2::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared,
 		phase_1_output,
-		shift_ind.h_eval(),
+		phase_3_output,
 		channel,
 		alloc,
-	);
-
-	// The h evaluation phase 2 was proved against is itself a sum over the bit index, which this
-	// last sumcheck binds.
-	shift_ind.prove(channel, alloc);
-
-	output
+	)
 }

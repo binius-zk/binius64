@@ -283,12 +283,12 @@ mod tests {
 
 	use super::{super::ShiftIndSumcheck, *};
 
-	/// Phase 1's h multilinear and the h evaluation the last sumcheck claims must agree.
+	/// Phase 1's h multilinear and the claim phase 3 starts from must agree.
 	///
-	/// The claim sums the shift indicators over the bit index, weighted by the Lagrange
-	/// evaluations; the multilinear holds those sums over the whole shift axis. So evaluating the
-	/// multilinear at `(r_j, r_s, r_v)` must give the claim — which is the single scalar phase 2
-	/// weights its keys by.
+	/// Phase 3 sums the shift indicators over the bit index, weighted by the Lagrange evaluations
+	/// and by the constant it carries; the multilinear holds those sums over the whole shift axis.
+	/// So with the carried constant set to one, evaluating the multilinear at `(r_j, r_s, r_v)`
+	/// must give phase 3's claim.
 	#[test]
 	fn h_op_consistency() {
 		type F = BinaryField128bGhash;
@@ -305,7 +305,7 @@ mod tests {
 			let r_s = random_scalars::<F>(&mut rng, Word::LOG_BITS);
 			let r_v = random_scalars::<F>(&mut rng, LOG_SHIFT_VARIANT_COUNT);
 
-			// Method 1: the sum the last sumcheck claims.
+			// Method 1: the claim phase 3 starts from, with the carried constant set to one.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 			let claimed = ShiftIndSumcheck::<P, _>::new(
 				&GlobalAllocator,
@@ -314,8 +314,9 @@ mod tests {
 				&r_j,
 				&r_s,
 				&r_v,
+				F::ONE,
 			)
-			.h_eval();
+			.beta();
 
 			// Method 2: evaluate the built multilinear at the whole point.
 			let h = build_h(&GlobalAllocator, &subspace, r_zhat_prime);
