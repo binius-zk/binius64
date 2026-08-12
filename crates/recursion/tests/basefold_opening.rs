@@ -47,15 +47,15 @@
 //! Run them with `--nocapture` to see the output.
 //!
 //! At `n_vars = 8`, `log_inv_rate = 1` and 32 queries, over a 13,536-byte proof, the measured cost
-//! is 229,675 AND, 14,887 BMUL, 71,362 ZERO and 524,288 committed words, split as:
+//! is 229,675 AND, 15,463 BMUL, 71,362 ZERO and 524,288 committed words, split as:
 //!
 //! ```text
 //!     phase                          AND     BMUL    AND %
 //!     Merkle openings             212315     9216    92.4%
 //!     Fiat-Shamir challenger        9643        0     4.2%
 //!     terminal codeword             7773        0     3.4%
-//!     FRI folding and equalities       0     5655     0.0%
 //!     MLE-check arithmetic             0       16     0.0%
+//!     FRI folding and equalities       0     6231     0.0%
 //! ```
 //!
 //! So the verifier is SHA-256 and almost nothing else:
@@ -63,7 +63,7 @@
 //! - the three hashing phases are the whole AND column
 //! - Merkle openings alone are 92% of it
 //! - the field arithmetic that the fold and the sum-check actually reduce spends no AND at all,
-//!   only 5,671 BMUL
+//!   only 6,247 BMUL
 //!
 //! The AND column is what binds.
 //!
@@ -136,20 +136,17 @@ use binius_ip::{
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace,
 	inner_product::inner_product_buffers,
 	line::extrapolate_line_packed,
 	multilinear::eq::eq_ind_partial_eval,
-	ntt::{AdditiveNTT, NeighborsLastSingleThread, domain_context::GenericOnTheFly},
+	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_recursion::{
+	SymbolicElem, SymbolicWord,
 	challenger::Sha256Challenger,
-	channel::{
-		ChannelWord, MerkleCommitment, MerkleVerifierChannel, ProofLayout, ProofRead, ReadKind,
-	},
-	elem::Elem,
 	merkle::{self, DIGEST_WORDS, Digest, ELEMENT_WORDS, Element, populate_element},
+	merkle_channel::{MerkleCommitment, MerkleVerifierChannel, ProofLayout, ProofRead, ReadKind},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 use binius_utils::rayon::prelude::*;
@@ -200,7 +197,7 @@ struct Setup {
 	/// The fold layout: code dimension, per-oracle shapes, fold arities and query count.
 	fri_params: FRIParams<B128>,
 	/// The additive NTT the prover encodes with.
-	ntt: NeighborsLastSingleThread<GenericOnTheFly<B128>>,
+	ntt: NeighborsLastSingleThread<GaoMateerOnTheFly<B128>>,
 }
 
 impl Shape {
@@ -217,14 +214,12 @@ impl Shape {
 
 		// The evaluation domain must span the interleaved codeword: one extra variable for the
 		// mask that buys zero-knowledge, plus the rate.
-		let subspace = BinarySubspace::with_dim(self.n_vars + 1 + self.log_inv_rate);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+		let domain_context = GaoMateerOnTheFly::generate(self.n_vars + 1 + self.log_inv_rate);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		// A single zero-knowledge oracle makes the combined batch parameters valid for the masked
 		// encoder too: one interleaved batch dimension, and a code dimension of `n_vars`.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
-			ntt.domain_context(),
 			&scheme,
 			&[OracleSpec::new_zk(self.n_vars)],
 			self.log_inv_rate,
@@ -349,7 +344,6 @@ impl VerifierCircuit {
 		// Two layers of channel: the inner one emits gates, the outer one only takes notes.
 		let builder = CircuitBuilder::new();
 		let mut inner = MerkleVerifierChannel::new(&builder);
-		let mut channel = Recording::new(&mut inner);
 
 		// The statement enters on inout wires, one pair per element for the low and high halves.
 		// As build-time constants these numbers would fold into the gates, tying the circuit to one
@@ -358,11 +352,14 @@ impl VerifierCircuit {
 		let point_wires: Vec<Element> = (0..shape.n_vars)
 			.map(|_| [builder.add_inout(), builder.add_inout()])
 			.collect();
-		let eval_claim = Elem::new(&builder, claim_wires[0], claim_wires[1]);
-		let eval_point: Vec<Elem> = point_wires
+		let eval_claim = inner.elem(claim_wires[0], claim_wires[1]);
+		let eval_point: Vec<SymbolicElem> = point_wires
 			.iter()
-			.map(|&[lo, hi]| Elem::new(&builder, lo, hi))
+			.map(|&[lo, hi]| inner.elem(lo, hi))
 			.collect();
+
+		// Wrapped only once the statement is in hand, since the recorder borrows the channel.
+		let mut channel = Recording::new(&mut inner);
 
 		// The root is read first, so everything the query phase later opens is already observed.
 		let commitment = channel
@@ -518,78 +515,83 @@ impl<'a, 'b> Recording<'a, 'b> {
 }
 
 impl IPVerifierChannel<B128> for Recording<'_, '_> {
-	type Elem = Elem;
+	type Elem = SymbolicElem;
 
-	fn recv_one(&mut self) -> Result<Elem, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<SymbolicElem, binius_ip::channel::Error> {
 		// A message read is hashed as it is consumed, and one element is two proof words.
 		self.observed(ELEMENT_WORDS);
 		self.inner.recv_one()
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<Elem>, binius_ip::channel::Error> {
+	fn recv_many(&mut self, n: usize) -> Result<Vec<SymbolicElem>, binius_ip::channel::Error> {
 		// One read of n elements, so the words are hashed as a single contiguous run.
 		self.observed(n * ELEMENT_WORDS);
 		self.inner.recv_many(n)
 	}
 
-	fn sample(&mut self) -> Elem {
+	fn sample(&mut self) -> SymbolicElem {
 		// A 128-bit draw consumes sixteen sampler bytes, plus any refill they force.
 		self.challenger.push(ChallengerOp::SampleB128);
 		IPVerifierChannel::sample(self.inner)
 	}
 
-	fn observe_one(&mut self, val: B128) -> Elem {
+	fn observe_one(&mut self, val: B128) -> SymbolicElem {
 		// Observing always turns the channel, even with nothing to write, so it is always
 		// recorded.
 		self.challenger.push(ChallengerOp::Observe(ELEMENT_WORDS));
 		self.inner.observe_one(val)
 	}
 
-	fn observe_many(&mut self, vals: &[B128]) -> Vec<Elem> {
+	fn observe_many(&mut self, vals: &[B128]) -> Vec<SymbolicElem> {
 		// Values the verifier computed rather than read, hashed together as one run.
 		self.challenger
 			.push(ChallengerOp::Observe(vals.len() * ELEMENT_WORDS));
 		self.inner.observe_many(vals)
 	}
 
-	fn assert_zero(&mut self, val: Elem) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, val: SymbolicElem) -> Result<(), binius_ip::channel::Error> {
 		// An equality constraint touches neither the tape nor the Fiat-Shamir state.
 		self.inner.assert_zero(val)
 	}
 
 	fn compute_public_value(
 		&mut self,
-		inputs: &[Elem],
+		inputs: &[SymbolicElem],
 		f: impl binius_field::util::FieldFn<B128>,
-	) -> Elem {
+	) -> SymbolicElem {
 		// Arithmetic over wires the verifier already holds, so there is nothing to record.
 		self.inner.compute_public_value(inputs, f)
 	}
 }
 
 impl WordIPVerifierChannel<B128> for Recording<'_, '_> {
-	type Word = ChannelWord;
+	type Word = SymbolicWord;
 
-	fn observe_words(&mut self, words: &[ChannelWord]) {
-		// Words already in circuit form, hashed exactly as they are.
+	fn observe_words(&mut self, words: &[Word]) -> Vec<SymbolicWord> {
+		// The statement, hashed one word at a time off the inout wires it entered on.
 		self.challenger.push(ChallengerOp::Observe(words.len()));
-		self.inner.observe_words(words);
+		self.inner.observe_words(words)
 	}
 
-	fn subset_sum(&mut self, elems: &[Elem], word: &ChannelWord) -> Elem {
+	fn subset_sum(&mut self, elems: &[SymbolicElem], word: &SymbolicWord) -> SymbolicElem {
 		// A table lookup over existing elements, so it is pure gate work.
 		self.inner.subset_sum(elems, word)
 	}
 
-	fn select(&mut self, elems: &[Elem], word: &ChannelWord) -> Elem {
+	fn select(&mut self, elems: &[SymbolicElem], word: &SymbolicWord) -> SymbolicElem {
 		// Also a lookup, and also invisible to both schedules.
 		self.inner.select(elems, word)
 	}
 
-	fn sample_bits(&mut self, bits: usize) -> ChannelWord {
+	fn sample_bits(&mut self, bits: usize) -> SymbolicWord {
 		// A query index draw, which reads four sampler bytes and masks them down to `bits`.
 		self.challenger.push(ChallengerOp::SampleBits(bits));
 		self.inner.sample_bits(bits)
+	}
+
+	fn pack_words(&mut self, words: &[SymbolicWord]) -> Vec<SymbolicElem> {
+		// Pairing up wires the channel already holds, so neither schedule moves.
+		self.inner.pack_words(words)
 	}
 }
 
@@ -609,8 +611,8 @@ impl MerkleIPVerifierChannel<B128> for Recording<'_, '_> {
 	fn recv_openings(
 		&mut self,
 		commitment: &MerkleCommitment,
-		indices: &[ChannelWord],
-	) -> Result<Vec<Elem>, binius_iop::merkle_channel::Error> {
+		indices: &[SymbolicWord],
+	) -> Result<Vec<SymbolicElem>, binius_iop::merkle_channel::Error> {
 		// Pricing a climb needs all three numbers: leaf size, tree depth, and how many indices
 		// share one decommitted layer.
 		self.merkle.push(MerkleOp::Openings {
@@ -624,7 +626,7 @@ impl MerkleIPVerifierChannel<B128> for Recording<'_, '_> {
 	fn recv_committed_vector(
 		&mut self,
 		commitment: &MerkleCommitment,
-	) -> Result<Vec<Elem>, binius_iop::merkle_channel::Error> {
+	) -> Result<Vec<SymbolicElem>, binius_iop::merkle_channel::Error> {
 		// A vector read in the clear is priced by the tree rebuilt over it, which the shape fixes.
 		self.merkle.push(MerkleOp::Vector {
 			leaf_size: commitment.leaf_size,
@@ -1114,8 +1116,10 @@ fn merkle_cost(ops: &[MerkleOp], keep: impl Fn(&MerkleOp) -> bool) -> Cost {
 /// times.
 fn mlecheck_cost(n_vars: usize) -> Cost {
 	let builder = CircuitBuilder::new();
+	// A channel only for the element type it anchors: nothing is read off a proof here.
+	let channel = MerkleVerifierChannel::new(&builder);
 	// Every value in this loop is a fresh witness, since only the arithmetic shape is being priced.
-	let elem = || Elem::new(&builder, builder.add_witness(), builder.add_witness());
+	let elem = || channel.elem(builder.add_witness(), builder.add_witness());
 
 	let mut sum = elem();
 	for _ in 0..n_vars {
@@ -1128,7 +1132,7 @@ fn mlecheck_cost(n_vars: usize) -> Cost {
 	}
 
 	// The final sum is pinned, or the whole chain is dead code.
-	let (lo, hi) = sum.words(&builder);
+	let (lo, hi) = sum.to_wires(&builder);
 	let claimed = [builder.add_inout(), builder.add_inout()];
 	builder.assert_eq_v("sum", [lo, hi], claimed);
 	Cost::of(&builder.build())

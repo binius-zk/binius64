@@ -48,6 +48,7 @@ mod channel;
 mod filler;
 mod hints;
 pub mod merkle;
+pub mod merkle_channel;
 mod shared;
 pub mod symbolic;
 

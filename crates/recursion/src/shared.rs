@@ -34,8 +34,15 @@ pub struct Shared {
 
 impl Shared {
 	pub fn new() -> Self {
+		Self::with_builder(CircuitBuilder::new())
+	}
+
+	/// Anchors on a builder the caller already holds.
+	///
+	/// A `CircuitBuilder` is a handle, so a clone emits into the same circuit.
+	pub const fn with_builder(builder: CircuitBuilder) -> Self {
 		Self {
-			builder: CircuitBuilder::new(),
+			builder,
 			inputs: RefCell::new(Vec::new()),
 		}
 	}

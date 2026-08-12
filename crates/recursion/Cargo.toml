@@ -18,6 +18,7 @@ binius-ip = { path = "../ip" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
 digest.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 binius-compute = { path = "../compute" }

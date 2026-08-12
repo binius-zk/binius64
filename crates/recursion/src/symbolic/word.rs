@@ -37,6 +37,16 @@ impl SymbolicWord {
 		}
 	}
 
+	/// The value, when the word was fixed while the circuit was built.
+	///
+	/// A caller reads this to settle an operation in Rust rather than spend gates on it.
+	pub const fn value(&self) -> Option<Word> {
+		match self {
+			Self::Constant(word) => Some(*word),
+			Self::Wire { .. } => None,
+		}
+	}
+
 	/// Lowers to a wire, materializing a `Constant` on the builder.
 	pub fn to_wire(&self, builder: &CircuitBuilder) -> Wire {
 		match self {
