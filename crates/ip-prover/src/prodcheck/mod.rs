@@ -6,7 +6,9 @@ use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
-	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldVec,
+	line::extrapolate_line_packed,
+	multilinear::eq::{eq_ind_partial_eval, eq_one_var},
 };
 use binius_utils::rayon::{
 	prelude::*,
@@ -485,7 +487,7 @@ pub struct BatchProveUnequalDepthsOutput<F, Prover> {
 /// provers and the selector rounds that follow finishes the check.
 ///
 /// The returned claims and, after the final layer, the per-tree leaf evaluations are claims on the
-/// *padded* witnesses. [`binius_ip::prodcheck::unpad_leaf_claim`] reduces one to the claim on the
+/// *padded* witnesses. [`unpad_leaf_claim`] reduces one to the claim on the
 /// tree's own witness.
 pub fn batch_prove_unequal_depths<'a, A, F, P, Channel>(
 	mut provers: Vec<ProdcheckProver<'a, A, P>>,
@@ -573,6 +575,56 @@ fn layer_provers<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 			one_pad_mle::new(alloc, layer, pad_len.min(node_len), node_point.to_vec(), claim)
 		})
 		.collect()
+}
+
+/// Reduces a leaf claim on a one-padded witness to the claim on the witness itself.
+///
+/// A batched product check over trees of unequal depths lifts each shallow tree to the batch's
+/// depth by filling `n_pad_vars` extra leaf positions with ones, which leaves its product
+/// unchanged. [`binius_ip::prodcheck::verify`] is oblivious to that, so the claim it outputs for
+/// such a tree is a claim on the padded witness
+///
+/// $$
+/// M'(X_\text{pad}, X_\text{real}) = 1 + \bigl( M(X_\text{real}) - 1 \bigr) \cdot
+/// \text{eq}(0^\nu; X_\text{pad}),
+/// $$
+///
+/// whose padding variables are the lowest ones. This divides out their equality weight and drops
+/// them from the point, leaving the claim on $M$.
+///
+/// # Arguments
+///
+/// * `eval` - The claimed evaluation of the padded witness.
+/// * `point` - The reduced evaluation point, with the batch's selector coordinates already
+///   stripped.
+/// * `n_pad_vars` - How much depth this tree was padded by: the batch's layer count less the tree's
+///   own.
+///
+/// # Preconditions
+/// * `point.len() >= n_pad_vars`
+///
+/// # Panics
+///
+/// Panics if the padding coordinates' equality weight is zero, which requires one of them to equal
+/// one. They are the verifier's own challenges, so no prover can induce this; it happens with
+/// probability at most $\nu / |K|$.
+pub fn unpad_leaf_claim<F: Field>(
+	eval: F,
+	point: &[F],
+	n_pad_vars: usize,
+) -> MultilinearEvalClaim<F> {
+	assert!(point.len() >= n_pad_vars); // precondition
+
+	let pad_eq = point[..n_pad_vars]
+		.iter()
+		.map(|&coord| eq_one_var(F::ZERO, coord))
+		.product::<F>();
+	assert!(pad_eq != F::ZERO, "a padding coordinate equals one");
+
+	MultilinearEvalClaim {
+		eval: F::ONE + (eval - F::ONE) * pad_eq.invert_or_zero(),
+		point: point[n_pad_vars..].to_vec(),
+	}
 }
 
 #[cfg(test)]
@@ -973,7 +1025,7 @@ mod tests {
 		// Each tree's reduced claim is on its *padded* witness; unpadding it yields a claim on the
 		// witness itself, at a suffix of the shared node point.
 		for (i, (&depth, witness)) in iter::zip(depths, &witnesses).enumerate() {
-			let leaf = prodcheck::unpad_leaf_claim(evals[i], &eval_point[k..], n_layers - depth);
+			let leaf = unpad_leaf_claim(evals[i], &eval_point[k..], n_layers - depth);
 			assert_eq!(leaf.point.len(), depth);
 			assert_eq!(leaf.eval, evaluate(witness, &leaf.point), "tree {i}");
 		}

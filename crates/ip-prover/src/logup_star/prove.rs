@@ -8,7 +8,6 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, PackedField};
 use binius_ip::{
 	MultilinearEvalClaim,
-	fracaddcheck::unpad_leaf_claim,
 	logup_star::{LogupOutput, LogupTableOutput},
 };
 use binius_math::{FieldBuffer, FieldSlice, FieldVec, univariate::evaluate_univariate};
@@ -21,7 +20,7 @@ use super::{
 };
 use crate::{
 	channel::IPProverChannel,
-	fracaddcheck::{self, FracAddCheckProver},
+	fracaddcheck::{self, FracAddCheckProver, unpad_leaf_claim},
 };
 
 /// One looker's column and claim: `(I^* T)(eval_point) = eval_claim` against the table it reads.
