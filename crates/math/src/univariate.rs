@@ -52,6 +52,26 @@ pub fn lagrange_evals<F: BinaryField>(subspace: &BinarySubspace<F>, z: F) -> Fie
 	FieldBuffer::new(subspace.dim(), result)
 }
 
+/// The barycentric weight shared by every point of a binary subspace.
+///
+/// A subspace is an additive subgroup, so the usual per-point weight $\prod_{j \neq i} (d_i -
+/// d_j)^{-1}$ is the same at every point: subtracting $d_i$ permutes the subspace, leaving the
+/// product over its non-zero elements. That product is what this inverts.
+fn subspace_barycentric_weight<F: BinaryField, E: FieldOps + From<F>>(
+	subspace: &BinarySubspace<F>,
+) -> E {
+	let product = subspace
+		.iter()
+		.skip(1)
+		.map(E::from)
+		.fold(E::one(), |acc, d| acc * d);
+	// SAFETY: the product runs over the subspace's non-zero elements — index 0 is the zero
+	// element, which `skip(1)` drops — so it is non-zero by construction, whatever the caller
+	// passes. Inverting without the zero case spares the wrapper channels a constraint that
+	// could never fire.
+	unsafe { product.invert() }
+}
+
 /// Scalar variant of [`lagrange_evals`] that returns a `Vec<E>` instead of a `FieldBuffer`.
 ///
 /// Computes Lagrange polynomial evaluations for a binary subspace domain, converting domain
@@ -68,12 +88,7 @@ pub fn lagrange_evals_scalars<F: BinaryField, E: FieldOps + From<F>>(
 	z: &E,
 ) -> Vec<E> {
 	// The shared barycentric weight of an additive subgroup: w = 1 / prod_{j >= 1} d_j.
-	let w = subspace
-		.iter()
-		.skip(1)
-		.map(E::from)
-		.fold(E::one(), |acc, d| acc * d)
-		.invert_or_zero();
+	let w = subspace_barycentric_weight::<F, E>(subspace);
 
 	// Seed the output with the linear terms t_i = z - d_i.
 	let mut result: Vec<E> = subspace.iter().map(|d| z.clone() - E::from(d)).collect();
@@ -127,12 +142,7 @@ pub fn extrapolate_over_subspace<F: BinaryField, E: FieldOps + From<F>>(
 	assert_eq!(values.len(), n);
 
 	// Compute single barycentric weight for the additive subgroup.
-	let w = subspace
-		.iter()
-		.skip(1)
-		.map(E::from)
-		.fold(E::one(), |acc, d| acc * d)
-		.invert_or_zero();
+	let w = subspace_barycentric_weight::<F, E>(subspace);
 
 	// Accumulate Σ_i values[i] * ∏_{j≠i} (z - domain[j]) using a prefix-product fold.
 	let (acc, _) = izip!(values, subspace.iter()).fold(
