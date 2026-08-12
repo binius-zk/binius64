@@ -150,11 +150,8 @@ where
 	type Word = Word;
 
 	fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
-		// The build allocated one input wire per statement word here, so the replay fills them in
-		// the same order before forwarding to the real Fiat-Shamir state.
-		for &word in words {
-			self.fill_word("observe_words", word);
-		}
+		// The statement is the circuit's public input, so the build recorded no wire to fill here.
+		// `Recorded::populate_statement` writes it, and a replay only forwards it.
 		WordIPVerifierChannel::<B128>::observe_words(self.transcript.borrow_mut(), words)
 	}
 

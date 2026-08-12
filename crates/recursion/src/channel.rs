@@ -7,7 +7,7 @@ use std::{array, rc::Rc};
 use binius_circuits::multiplexer::multi_wire_multiplex;
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
-use binius_frontend::{Circuit, CircuitBuilder};
+use binius_frontend::{Circuit, CircuitBuilder, Wire, WitnessFiller};
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	merkle_channel::{self, MerkleIPVerifierChannel},
@@ -41,6 +41,31 @@ pub struct Recorded {
 	pub circuit: Circuit,
 	/// The wires the witness must supply, in the order the verifier reached them.
 	pub inputs: Vec<crate::shared::Input>,
+	/// The inout wires the inner statement enters on, in observation order.
+	///
+	/// These are the circuit's public interface, so the caller fills them rather than the replay.
+	/// See [`Self::populate_statement`].
+	pub statement: Vec<Wire>,
+}
+
+impl Recorded {
+	/// Writes the inner statement onto the wires it enters the circuit on.
+	///
+	/// # Panics
+	///
+	/// Panics unless the statement is as long as the one the verifier observed.
+	/// A shorter one would leave wires unset.
+	/// A longer one means the caller and the circuit disagree about what is being verified.
+	pub fn populate_statement(&self, w: &mut WitnessFiller, statement: &[Word]) {
+		assert_eq!(
+			statement.len(),
+			self.statement.len(),
+			"precondition: the statement must be the one the circuit verifies"
+		);
+		for (&wire, &word) in self.statement.iter().zip(statement) {
+			w[wire] = word;
+		}
+	}
 }
 
 /// A channel that records a verifier run as a Binius64 circuit.
@@ -67,10 +92,6 @@ pub struct Binius64BuilderChannel {
 
 impl Binius64BuilderChannel {
 	/// Creates a channel over a fresh builder.
-	///
-	/// The inner statement is not among the circuit's inputs yet: `IOPVerifier::verify` lifts it
-	/// through `From<Word>`, so it reaches the channel already concrete and is baked in. Taking it
-	/// as inout wires is BINIUS-433.
 	pub fn new() -> Self {
 		Self {
 			shared: Rc::new(Shared::new()),
@@ -90,6 +111,7 @@ impl Binius64BuilderChannel {
 		});
 		Recorded {
 			inputs: shared.inputs(),
+			statement: shared.statement(),
 			circuit: shared.builder().build(),
 		}
 	}
@@ -190,15 +212,14 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 	type Word = SymbolicWord;
 
 	fn observe_words(&mut self, words: &[Word]) -> Vec<SymbolicWord> {
-		// The statement enters the circuit here, one input wire per word, so everything downstream
-		// reads it symbolically instead of baking it in as constants. That is what makes the
-		// recorded circuit verify a *statement* rather than one fixed instance of it.
+		// The statement enters here, one inout wire per word, read symbolically from then on.
+		// That is what makes the circuit verify a statement rather than one instance of it.
 		//
 		// UNCONSTRAINED: nothing feeds these into a Fiat-Shamir state yet, so the circuit is not
 		// yet bound to the statement it claims to verify.
 		words
 			.iter()
-			.map(|_| SymbolicWord::wire(&self.shared, self.shared.input_wire("observe_words")))
+			.map(|_| SymbolicWord::wire(&self.shared, self.shared.statement_wire()))
 			.collect()
 	}
 

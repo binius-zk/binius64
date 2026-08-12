@@ -197,12 +197,17 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	// The statement reaches the circuit as wires, one per inout word, rather than as constants
 	// baked in while building. That is what makes the recorded circuit verify a statement rather
 	// than one fixed instance of it.
-	let statement_wires = recorded
-		.inputs
-		.iter()
-		.filter(|input| input.kind == "observe_words")
-		.count();
-	assert_eq!(statement_wires, witness.inout().len());
+	assert_eq!(recorded.statement.len(), witness.inout().len());
+
+	// `inputs` is only for what the circuit cannot derive, and a statement is given rather than
+	// derived, so it must not appear there.
+	assert!(
+		!recorded
+			.inputs
+			.iter()
+			.any(|input| input.kind == "observe_words"),
+		"the statement must not be among the wires the replay fills"
+	);
 
 	// The decommitted layer is on wires now, which is what the opened leaves are matched against.
 	assert!(
@@ -214,15 +219,27 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	);
 
 	// --- its witness ---------------------------------------------------------------------------
+	// The statement is supplied by whoever is verifying, so it goes in before the replay runs.
+	let mut filler = recorded.circuit.new_witness_filler();
+	recorded.populate_statement(&mut filler, witness.inout());
+
 	// The same verifier runs again over the real transcript, and every value the circuit cannot
 	// derive is written into the wire the build recorded for it.
-	let mut filler = recorded.circuit.new_witness_filler();
 	replay(&proved, &recorded, &mut filler);
 
 	recorded
 		.circuit
 		.populate_wire_witness(&mut filler)
 		.expect("the recorded circuit is satisfied by the replayed witness");
+
+	// The point of the change: the circuit's public interface *is* the inner statement.
+	// An outer proof can pin what was verified instead of trusting the filler.
+	let public = filler.into_value_vec();
+	assert_eq!(
+		public.inout(),
+		witness.inout(),
+		"the recursive circuit's public values must be the statement it verifies"
+	);
 }
 
 /// Flips one bit of the first recorded wire of `kind`, and returns why the circuit then fails.
@@ -232,6 +249,7 @@ fn reject_tampered(kind: &'static str) -> Vec<String> {
 	let proved = prove_crc64();
 	let recorded = record(&proved);
 	let mut filler = recorded.circuit.new_witness_filler();
+	recorded.populate_statement(&mut filler, proved.witness.inout());
 	replay(&proved, &recorded, &mut filler);
 
 	let input = recorded
