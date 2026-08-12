@@ -37,7 +37,7 @@ type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 /// should use [`Verifier`] instead, which wraps this with a BaseFold compiler.
 ///
 /// Verification composes the AND-check, the shift reduction, and the ring-switching opening on
-/// one transcript, mirroring the prover crate's `IOPProver::prove`:
+/// one transcript, mirroring the prover crate's `IOPProver::prove_chip`:
 ///
 /// 1. The AND-check verifies `A & B == C` over all rows, yielding operand claims at a row point.
 /// 2. That point's low coordinates are the instance index `r_rho`, its high coordinates `r_x`.
@@ -91,7 +91,7 @@ impl IOPVerifier {
 		// `assert_zero` is a no-op — so `verify` cannot fail here; it only records the
 		// `recv_oracle` calls read back below. An error would mean that invariant broke, so
 		// surface it rather than swallowing it.
-		self.verify(&mut channel)
+		self.verify_chip(&mut channel)
 			.expect("verifying against the no-op OracleSetupChannel cannot fail");
 		channel.into_oracle_specs()
 	}
@@ -99,7 +99,7 @@ impl IOPVerifier {
 	/// Verifies one M4 proof using an IOP channel.
 	///
 	/// This is the core verification logic, independent of the specific IOP compilation strategy.
-	/// For most users, [`Verifier::verify`] is the simpler interface.
+	/// For most users, [`Verifier::verify_chip`] is the simpler interface.
 	///
 	/// The reduction ends with a claim about the witness folded over instances at `r_rho`.
 	/// The trace's bit index is `[bit | instance | wire]`.
@@ -110,7 +110,7 @@ impl IOPVerifier {
 	/// # Errors
 	///
 	/// Returns an error if the reduction, the ring-switch, or the trace opening fails.
-	pub fn verify<Channel>(&self, channel: &mut Channel) -> Result<(), Error>
+	pub fn verify_chip<Channel>(&self, channel: &mut Channel) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
@@ -244,13 +244,13 @@ impl Verifier {
 
 	/// Verifies one M4 proof.
 	///
-	/// Creates the IOP channel from the transcript, delegates to [`IOPVerifier::verify`], then
+	/// Creates the IOP channel from the transcript, delegates to [`IOPVerifier::verify_chip`], then
 	/// finishes the channel.
 	///
 	/// # Errors
 	///
 	/// Returns an error if the reduction, the ring-switch, or the trace opening fails.
-	pub fn verify<Challenger_>(
+	pub fn verify_chip<Challenger_>(
 		&self,
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error>
@@ -260,7 +260,7 @@ impl Verifier {
 		let mut channel = self
 			.iop_compiler
 			.create_channel_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
-		self.iop_verifier.verify(&mut channel)?;
+		self.iop_verifier.verify_chip(&mut channel)?;
 		channel.finish()?;
 
 		Ok(())
