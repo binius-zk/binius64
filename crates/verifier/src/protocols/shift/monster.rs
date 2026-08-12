@@ -8,8 +8,14 @@ use binius_field::{
 	BinaryField, FieldOps, WideMul,
 	util::{FieldFn, powers},
 };
-use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_math::multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
+};
 
 use super::SHIFT_COUNT;
 
@@ -196,7 +202,9 @@ where
 	fn call_native(&self, input: &[F]) -> F {
 		let (r_x_prime, lambda, shift_scalars, r_y_tensor) = self.split_input(input);
 
-		let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
+		// The packed expansion threads the tensor's multiplications.
+		// It applies over the base field, which is its own single-element packing.
+		let r_x_prime_tensor = eq_ind_partial_eval::<F>(r_x_prime);
 		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars.inner, *lambda, ARITY);
 
 		// One unreduced wide product per constraint. The constraints partition cleanly across
@@ -204,10 +212,14 @@ where
 		// per-task accumulator. The single final reduction is `F`-linear. The tensor covers the
 		// padded constraint count, so the zip stops at the last real constraint; the padding rows
 		// have no operand terms and contribute nothing.
+		//
+		// A constraint names only a handful of terms.
+		// So a minimum task size keeps each task above rayon's own handoff cost.
 		let eval = self
 			.constraints
 			.par_iter()
-			.zip(r_x_prime_tensor.par_iter())
+			.zip(r_x_prime_tensor.as_ref().par_iter())
+			.with_min_task(WorkPerItem::FieldMuls)
 			.map(|(constraint, &r_x_prime_entry)| {
 				let mut constraint_eval = F::ZERO;
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
