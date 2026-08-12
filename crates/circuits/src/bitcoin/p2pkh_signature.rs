@@ -122,14 +122,17 @@ pub fn compress_pubkey(builder: &CircuitBuilder, x: &BigUint, y: &BigUint) -> Ve
 	// We need to produce 9 words (33 bytes) for sha256_fixed
 	// Each word represents 4 bytes packed in big-endian format
 	let lower_32_bits = |limb| clear_high_bits(builder, limb, 32);
+	// Each packing merges a right-shift (bits below 24) with either the prefix byte (bits 24..32)
+	// or a left-shift-by-24 (bits 24 and up). The two operands occupy disjoint bit ranges, so the
+	// OR carries nothing and lowers to a free XOR instead of an AND.
 	vec![
-		builder.bor(builder.shr(x.limbs[3], 40), prefix_byte),
+		builder.bxor(builder.shr(x.limbs[3], 40), prefix_byte),
 		lower_32_bits(builder.shr(x.limbs[3], 8)),
-		lower_32_bits(builder.bor(builder.shl(x.limbs[3], 24), builder.shr(x.limbs[2], 40))),
+		lower_32_bits(builder.bxor(builder.shl(x.limbs[3], 24), builder.shr(x.limbs[2], 40))),
 		lower_32_bits(builder.shr(x.limbs[2], 8)),
-		lower_32_bits(builder.bor(builder.shl(x.limbs[2], 24), builder.shr(x.limbs[1], 40))),
+		lower_32_bits(builder.bxor(builder.shl(x.limbs[2], 24), builder.shr(x.limbs[1], 40))),
 		lower_32_bits(builder.shr(x.limbs[1], 8)),
-		lower_32_bits(builder.bor(builder.shl(x.limbs[1], 24), builder.shr(x.limbs[0], 40))),
+		lower_32_bits(builder.bxor(builder.shl(x.limbs[1], 24), builder.shr(x.limbs[0], 40))),
 		lower_32_bits(builder.shr(x.limbs[0], 8)),
 		lower_32_bits(builder.shl(x.limbs[0], 24)),
 	]
