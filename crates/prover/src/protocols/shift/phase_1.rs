@@ -620,11 +620,8 @@ pub fn build_g<F: Field, P: PackedField<Scalar = F>>(
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_core::{
-		ShiftVariant,
-		constraint_system::{
-			AndConstraint, ConstraintSystem, InoutSegment, ShiftedValueIndex, ValueIndex,
-		},
+	use binius_core::constraint_system::{
+		AndConstraint, ConstraintSystem, InoutSegment, Shift, ShiftedValueIndex, ValueIndex,
 	};
 	use binius_field::{
 		AESTowerField8b, BinaryField128bGhash, Field, PackedBinaryGhash2x128b, Random,
@@ -723,17 +720,15 @@ mod tests {
 
 		// The public segment's two shifts, then the hidden segment's three. `(Sll, 0)` is the first
 		// row of both, so index 0 appears twice.
-		let shift_index = |variant: ShiftVariant, amount: usize| {
-			variant as u32 * Word::BITS as u32 + amount as u32
-		};
+		let row_index = |shift: Shift| shift.index() as u32;
 		assert_eq!(
 			g.indices,
 			[
-				shift_index(ShiftVariant::Sll, 0),
-				shift_index(ShiftVariant::Slr, 3),
-				shift_index(ShiftVariant::Sll, 0),
-				shift_index(ShiftVariant::Sar, 7),
-				shift_index(ShiftVariant::Rotr, 1),
+				row_index(Shift::IDENTITY),
+				row_index(Shift::srl(3)),
+				row_index(Shift::IDENTITY),
+				row_index(Shift::sar(7)),
+				row_index(Shift::rotr(1)),
 			]
 		);
 
@@ -743,15 +738,13 @@ mod tests {
 			assert!(row(position).iter().all(|&value| value == F::new(expected)));
 		}
 
-		// Where `g` is read, the two rows at `(Sll, 0)` add up.
+		// Where `g` is read, the two rows at the identity add up.
 		let dense = g.scatter(&GlobalAllocator);
-		let at = |variant: ShiftVariant, amount: usize| {
-			dense.get((variant as usize * Word::BITS + amount) * Word::BITS)
-		};
-		assert_eq!(at(ShiftVariant::Sll, 0), F::new(0x100) + F::new(0x200));
-		assert_eq!(at(ShiftVariant::Slr, 3), F::new(0x101));
-		assert_eq!(at(ShiftVariant::Sar, 7), F::new(0x201));
-		assert_eq!(at(ShiftVariant::Rotr, 1), F::new(0x202));
+		let at = |shift: Shift| dense.get(shift.index() * Word::BITS);
+		assert_eq!(at(Shift::IDENTITY), F::new(0x100) + F::new(0x200));
+		assert_eq!(at(Shift::srl(3)), F::new(0x101));
+		assert_eq!(at(Shift::sar(7)), F::new(0x201));
+		assert_eq!(at(Shift::rotr(1)), F::new(0x202));
 	}
 
 	/// The scatter puts every row where its shift index names, and leaves the rest zero.
@@ -774,16 +767,13 @@ mod tests {
 		assert_eq!(g.log_len(), PHASE_1_LOG_LEN);
 
 		// Exactly the named rows are non-zero, and each holds what the merged list held.
-		for (row, (variant, amount)) in hidden_enc.iter().enumerate() {
-			let offset = (variant as usize * Word::BITS + amount as usize) * Word::BITS;
+		for (row, shift_index) in hidden_enc.shift_indices().enumerate() {
+			let offset = shift_index * Word::BITS;
 			for bit in 0..Word::BITS {
 				assert_eq!(g.get(offset + bit), F::new(1 + row as u128));
 			}
 		}
-		let named = hidden_enc
-			.iter()
-			.map(|(variant, amount)| variant as usize * Word::BITS + amount as usize)
-			.collect::<Vec<_>>();
+		let named = hidden_enc.shift_indices().collect::<Vec<_>>();
 		for row in (0..1 << LOG_SHIFT_ROWS).filter(|row| !named.contains(row)) {
 			assert!((0..Word::BITS).all(|bit| g.get(row * Word::BITS + bit) == F::ZERO));
 		}
