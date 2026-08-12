@@ -91,6 +91,16 @@ impl EmbeddedConstraintSystem {
 pub struct ChipCall {
 	/// The ID of the chip being called: its index in [`ConstraintSystemM4::chips`].
 	pub chip_id: usize,
+	/// The instance of the callee that the caller's first instance invokes.
+	///
+	/// A call site runs once per instance of its caller, so it claims the callee's instances
+	/// `first_instance..first_instance + n_active`, where `n_active` is the *caller's* own
+	/// active-instance count: the caller's instance `i` invokes instance `first_instance + i`.
+	/// Main runs once, so each of its calls claims a single instance.
+	///
+	/// Like the active-instance counts, this is denormalized — the call graph already says it, and
+	/// [`ConstraintSystemM4::validate`] holds the two to each other.
+	pub first_instance: usize,
 	/// The words passed as the callee's inout values, positionally, as operands over the caller's
 	/// value vector.
 	///
@@ -107,12 +117,13 @@ pub struct ChipCall {
 ///
 /// Validity invariants:
 /// - all embedded constraint systems in `chips` must have a chip_id value that indexes into `chips`
+/// - the chip calls must claim each chip's active instances exactly once between them
 ///
 /// The chips are in topological order: a chip calls only chips with a higher ID, and main, which
-/// is not one of them, calls any. Call positions are defined by enumerating the chips in ID order
-/// and witness generation walks them the same way, so every caller of a chip is reached before the
-/// chip itself. [`Self::validate`] requires it, which makes the call graph acyclic as a
-/// consequence.
+/// is not one of them, calls any. Enumerating the chips in ID order therefore reaches every caller
+/// of a chip before the chip itself, which is what lets one pass assign the instances and one pass
+/// generate the witness. [`Self::validate`] requires the ordering, which makes the call graph
+/// acyclic as a consequence.
 pub struct ConstraintSystemM4 {
 	/// The entry point of the system. It calls chips, but no chip ID names it, so nothing calls
 	/// it.
@@ -126,7 +137,8 @@ pub struct ConstraintSystemM4 {
 }
 
 impl ConstraintSystemM4 {
-	/// Checks every chip and every chip call, and requires the chips to be in topological order.
+	/// Checks every chip and every chip call, requires the chips to be in topological order, and
+	/// holds the instances the calls name against the ones the call graph gives them.
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
 		self.main.validate()?;
 		self.validate_calls(None, &self.main.chip_calls)?;
@@ -136,7 +148,7 @@ impl ConstraintSystemM4 {
 			self.validate_calls(Some(chip_index), &chip.chip_calls)?;
 		}
 
-		Ok(())
+		self.validate_instances()
 	}
 
 	/// Checks that one caller's calls name existing chips, run only to later chips, and pass no
@@ -181,6 +193,60 @@ impl ConstraintSystemM4 {
 		Ok(())
 	}
 
+	/// Checks that the calls claim each chip's active instances exactly once between them.
+	///
+	/// A call site claims one instance of its callee per instance of its caller, and the claims are
+	/// handed out in the order the chips are populated: main's calls first, then the calls of each
+	/// chip in ID order. Only main and lower-numbered chips call a chip, so one pass in ID order
+	/// settles a chip's own claims before reading them.
+	///
+	/// This runs after [`Self::validate_calls`] has range-checked every `chip_id` and rejected the
+	/// calls that run backwards, both of which it relies on.
+	fn validate_instances(&self) -> Result<(), ConstraintSystemError> {
+		let mut n_claimed = vec![0usize; self.chips.len()];
+		let callers = iter::once((None, &self.main, 1)).chain(
+			self.chips
+				.iter()
+				.enumerate()
+				.map(|(chip_index, (chip, n_active))| (Some(chip_index), chip, *n_active)),
+		);
+		for (chip_index, caller, n_active) in callers {
+			for (call_index, call) in caller.chip_calls.iter().enumerate() {
+				let claimed = &mut n_claimed[call.chip_id];
+				if call.first_instance != *claimed {
+					return Err(ConstraintSystemError::WrongCallInstance {
+						chip_index,
+						call_index,
+						first_instance: call.first_instance,
+						expected: *claimed,
+					});
+				}
+
+				// The claims multiply down the call graph — a chain whose every chip calls the
+				// next twice reaches `2^depth` — so a system of a few dozen chips can outgrow a
+				// `usize`. Counting it out unchecked would wrap to a total that a declared count
+				// could then agree with.
+				*claimed = claimed.checked_add(n_active).ok_or(
+					ConstraintSystemError::TooManyInstances {
+						chip_id: call.chip_id,
+					},
+				)?;
+			}
+		}
+
+		for (chip_id, ((_, n_active), &claimed)) in iter::zip(&self.chips, &n_claimed).enumerate() {
+			if claimed != *n_active {
+				return Err(ConstraintSystemError::WrongActiveInstanceCount {
+					chip_id,
+					declared: *n_active,
+					actual: claimed,
+				});
+			}
+		}
+
+		Ok(())
+	}
+
 	/// Checks that a witness satisfies this system.
 	///
 	/// The witness is the main chip's value vector and, per chip, one value vector per instance.
@@ -189,10 +255,10 @@ impl ConstraintSystemM4 {
 	/// - the main chip's constraints, on `main`;
 	/// - each chip's constraints, on every one of its instances — the instances past the active
 	///   ones included, since every instance is committed;
-	/// - every chip call, by the instance at the call's position: counting main's calls first and
-	///   then the calls of each chip's active instances in ID, instance and call order, invocation
-	///   `i` of a chip passes exactly the inout words its instance `i` holds. An inout value the
-	///   call has no operand for must hold zero.
+	/// - every chip call, by the instance it names: the caller's instance `i` invokes the callee's
+	///   instance [`first_instance`](ChipCall::first_instance) plus `i`, and passes exactly the
+	///   inout words that instance holds. An inout value the call has no operand for must hold
+	///   zero.
 	///
 	/// This is the reference the proving protocol's argument is checked against, in the manner of
 	/// [`ConstraintSystem::verify`].
@@ -241,10 +307,7 @@ impl ConstraintSystemM4 {
 			}
 		}
 
-		// The next instance each chip's calls are served by, advanced call by call so that
-		// invocation `i` lands on instance `i`.
-		let mut cursor = vec![0usize; self.chips.len()];
-		self.check_caller(None, &self.main.chip_calls, main, &mut cursor, chip_instances)?;
+		self.check_caller(None, &self.main.chip_calls, main, chip_instances)?;
 		for (caller_chip, (chip, n_active)) in self.chips.iter().enumerate() {
 			for caller_instance in 0..*n_active {
 				let values = chip_instances.instance(caller_chip, caller_instance);
@@ -252,49 +315,34 @@ impl ConstraintSystemM4 {
 					Some((caller_chip, caller_instance)),
 					&chip.chip_calls,
 					&values,
-					&mut cursor,
 					chip_instances,
 				)?;
-			}
-		}
-
-		for (chip_id, ((_, n_active), &n_invocations)) in
-			iter::zip(&self.chips, &cursor).enumerate()
-		{
-			if n_invocations != *n_active {
-				return Err(VerificationM4Error::WrongInvocationCount {
-					chip_id,
-					n_invocations,
-					n_active: *n_active,
-				});
 			}
 		}
 
 		Ok(())
 	}
 
-	/// Checks one caller's calls against the instances at their positions, advancing the cursors.
+	/// Checks one caller's calls against the instances they name.
 	///
 	/// `caller` names the caller for diagnostics: a chip instance, or `None` for the main chip.
-	/// `values` is that caller's value vector, which the call operands are evaluated on. A call
-	/// past its chip's active instances is counted but compared to nothing; the caller reports the
-	/// overshoot when the cursors are read back.
+	/// `values` is that caller's value vector, which the call operands are evaluated on.
+	///
+	/// The instance a call reaches is its own, offset by which instance of the caller is making it.
+	/// That every one of them exists is [`Self::validate`]'s to establish.
 	fn check_caller<I: ChipInstances + ?Sized>(
 		&self,
 		caller: Option<(usize, usize)>,
 		calls: &[ChipCall],
 		values: &ValueVec,
-		cursor: &mut [usize],
 		chip_instances: &I,
 	) -> Result<(), VerificationM4Error> {
+		// Main runs once, so its calls are the ones its single instance makes.
+		let caller_instance = caller.map_or(0, |(_, instance)| instance);
 		for (call_index, call) in calls.iter().enumerate() {
 			let chip_id = call.chip_id;
-			let (chip, n_active) = &self.chips[chip_id];
-			let row = cursor[chip_id];
-			cursor[chip_id] += 1;
-			if row >= *n_active {
-				continue;
-			}
+			let chip = &self.chips[chip_id].0;
+			let row = call.first_instance + caller_instance;
 
 			// Only the callee's own inout values are compared. An operand past them is one
 			// `validate` rejects, and nothing here would have a word to compare it to.
@@ -343,12 +391,15 @@ mod tests {
 
 	/// A chip that calls each of `callees` once, over a value vector of 8 inout and 8 private
 	/// words.
+	///
+	/// The calls name instance 0 until [`system`] gives them the ones the call graph does.
 	fn chip(callees: &[usize]) -> EmbeddedConstraintSystem {
 		let cs = LAYOUT.constraint_system_shape(vec![]);
 		let chip_calls = callees
 			.iter()
 			.map(|&chip_id| ChipCall {
 				chip_id,
+				first_instance: 0,
 				inout: vec![],
 			})
 			.collect();
@@ -360,14 +411,33 @@ mod tests {
 		ValueVec::new(&LAYOUT)
 	}
 
-	/// A system whose main chip calls each of `main_callees` once, over the given chips.
+	/// A system whose main chip calls each of `main_callees` once, over the given chips, with the
+	/// instances and active-instance counts the call graph gives them.
 	///
-	/// The active-instance counts are not what `validate` checks, so every chip declares one.
+	/// This is the assignment `CircuitM4::recompute_instances` writes in the frontend, redone here
+	/// because these systems are built by hand rather than lowered from a circuit. Like it, this
+	/// panics on a call to a chip the system does not have, so a test wanting one corrupts a
+	/// system built without it.
 	fn system(main_callees: &[usize], chips: Vec<EmbeddedConstraintSystem>) -> ConstraintSystemM4 {
-		ConstraintSystemM4 {
+		let mut cs = ConstraintSystemM4 {
 			main: chip(main_callees),
-			chips: chips.into_iter().map(|chip| (chip, 1)).collect(),
+			chips: chips.into_iter().map(|chip| (chip, 0)).collect(),
+		};
+
+		let mut n_calls = vec![0usize; cs.chips.len()];
+		for call in &mut cs.main.chip_calls {
+			call.first_instance = n_calls[call.chip_id];
+			n_calls[call.chip_id] += 1;
 		}
+		for chip_index in 0..cs.chips.len() {
+			let n_active = n_calls[chip_index];
+			cs.chips[chip_index].1 = n_active;
+			for call in &mut cs.chips[chip_index].0.chip_calls {
+				call.first_instance = n_calls[call.chip_id];
+				n_calls[call.chip_id] = n_calls[call.chip_id].saturating_add(n_active);
+			}
+		}
+		cs
 	}
 
 	#[test]
@@ -447,7 +517,12 @@ mod tests {
 	fn validate_rejects_a_call_to_a_chip_that_does_not_exist() {
 		// Chip 0's first call is to a later chip, so the out-of-range second one is the only
 		// fault and the range check is what has to catch it.
-		let cs = system(&[0], vec![chip(&[1, 7]), chip(&[])]);
+		let mut cs = system(&[0], vec![chip(&[1]), chip(&[])]);
+		cs.chips[0].0.chip_calls.push(ChipCall {
+			chip_id: 7,
+			first_instance: 0,
+			inout: vec![],
+		});
 		assert!(matches!(
 			cs.validate(),
 			Err(ConstraintSystemError::OutOfRangeChipId {
@@ -460,7 +535,8 @@ mod tests {
 
 	#[test]
 	fn validate_rejects_a_main_call_to_a_chip_that_does_not_exist() {
-		let cs = system(&[7], vec![chip(&[])]);
+		let mut cs = system(&[0], vec![chip(&[])]);
+		cs.main.chip_calls[0].chip_id = 7;
 		assert!(matches!(
 			cs.validate(),
 			Err(ConstraintSystemError::OutOfRangeChipId {
@@ -468,6 +544,66 @@ mod tests {
 				chip_id: 7,
 				n_chips: 1,
 			})
+		));
+	}
+
+	// A call site claims one instance of its callee per instance of its caller, so the instance a
+	// call names is the one the calls before it leave free.
+	#[test]
+	fn validate_rejects_a_call_naming_the_wrong_instance() {
+		let mut cs = system(&[0, 0], vec![chip(&[])]);
+		cs.main.chip_calls[1].first_instance = 0;
+		assert!(matches!(
+			cs.validate(),
+			Err(ConstraintSystemError::WrongCallInstance {
+				chip_index: None,
+				call_index: 1,
+				first_instance: 0,
+				expected: 1,
+			})
+		));
+	}
+
+	// The call-to-instance map is a bijection, not just an injection: a chip claimed by more
+	// invocations than it has active instances has calls that no row answers for.
+	#[test]
+	fn validate_rejects_more_invocations_than_a_chip_has_active_instances() {
+		// Main calls chip 0 twice; declaring one active instance leaves the second call unanswered.
+		let mut cs = system(&[0, 0], vec![chip(&[])]);
+		cs.chips[0].1 = 1;
+		assert!(matches!(
+			cs.validate(),
+			Err(ConstraintSystemError::WrongActiveInstanceCount {
+				chip_id: 0,
+				declared: 1,
+				actual: 2,
+			})
+		));
+	}
+
+	// Instance counts multiply down the call graph, so a chain of a few dozen chips outgrows a
+	// `usize`. Counting it out unchecked would wrap to a plausible-looking total.
+	#[test]
+	fn validate_rejects_an_instance_count_that_outgrows_a_usize() {
+		// A chain of 70 chips, each calling the next twice, so chip `i` is reached 2^i times.
+		const DEPTH: usize = 70;
+		let chips = (0..DEPTH)
+			.map(|i| {
+				let callees = if i + 1 < DEPTH {
+					vec![i + 1, i + 1]
+				} else {
+					vec![]
+				};
+				chip(&callees)
+			})
+			.collect();
+
+		// Chip 63 is reached 2^63 times and calls chip 64 twice, which is where the count leaves
+		// the range.
+		let cs = system(&[0], chips);
+		assert!(matches!(
+			cs.validate(),
+			Err(ConstraintSystemError::TooManyInstances { chip_id: 64 })
 		));
 	}
 
@@ -527,26 +663,6 @@ mod tests {
 				VerificationM4Error::MissingInstances {
 					chip_id: 0,
 					n_instances: 0,
-					n_active: 1,
-				}
-			),
-			"{err}"
-		);
-	}
-
-	// The call-to-instance map is a bijection, not just an injection: a chip reached by more
-	// invocations than it has active instances has calls that no row answers for.
-	#[test]
-	fn verify_rejects_more_invocations_than_a_chip_has_active_instances() {
-		// Main calls chip 0 twice, but the chip declares one active instance.
-		let cs = system(&[0, 0], vec![chip(&[])]);
-		let err = cs.verify(&instance(), &[vec![instance()]][..]).unwrap_err();
-		assert!(
-			matches!(
-				err,
-				VerificationM4Error::WrongInvocationCount {
-					chip_id: 0,
-					n_invocations: 2,
 					n_active: 1,
 				}
 			),

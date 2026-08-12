@@ -241,9 +241,9 @@ impl CircuitBuilder {
 	/// into its own run, so the chips stay in the topological order [`CircuitM4::validate`]
 	/// requires.
 	///
-	/// The registered system's active-instance counts are dropped. They say how often its own main
-	/// reached each chip, which says nothing about how often this circuit will;
-	/// [`Self::build_m4`] recounts the whole graph.
+	/// The registered system's active-instance counts are dropped, and the instances its calls name
+	/// are left stale. They say how often its own main reached each chip, which says nothing about
+	/// how often this circuit will; [`Self::build_m4`] recounts the whole graph.
 	///
 	/// Only [`Self::build_m4`] returns the registered chips; [`Self::build`] rejects a builder
 	/// carrying any.
@@ -345,10 +345,13 @@ impl CircuitBuilder {
 		let pending = mem::take(&mut shared.chip_calls);
 		let circuit = Self::compile(shared, &pending);
 
+		// The instances and the active-instance counts are the whole call graph's to settle, so
+		// both are left to `recompute_instances` below.
 		let chip_calls = pending
 			.into_iter()
 			.map(|call| ChipCall {
 				chip_id: call.chip.chip_id(),
+				first_instance: 0,
 				inout: call
 					.inout
 					.iter()
@@ -364,7 +367,7 @@ impl CircuitBuilder {
 			},
 			chips: chips.into_iter().map(|chip| (chip, 0)).collect(),
 		};
-		circuit.recompute_n_active();
+		circuit.recompute_instances();
 		circuit
 	}
 

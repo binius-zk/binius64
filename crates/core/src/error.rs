@@ -44,6 +44,24 @@ pub enum ConstraintSystemError {
 	},
 	#[error("chip #{chip_index} calls chip {callee}, which is not a later chip")]
 	CallOutOfOrder { chip_index: usize, callee: usize },
+	#[error(
+		"{}'s call #{call_index} names instance {first_instance}, but the call graph gives it {expected}",
+		ChipName(*chip_index)
+	)]
+	WrongCallInstance {
+		chip_index: Option<usize>,
+		call_index: usize,
+		first_instance: usize,
+		expected: usize,
+	},
+	#[error("chip #{chip_id} declares {declared} active instances, but {actual} calls claim it")]
+	WrongActiveInstanceCount {
+		chip_id: usize,
+		declared: usize,
+		actual: usize,
+	},
+	#[error("more invocations reach chip #{chip_id} than a usize can count")]
+	TooManyInstances { chip_id: usize },
 }
 
 /// Names the chip of an M4 system that a diagnostic is about: `chip #3`, or `the main chip`.
@@ -206,7 +224,7 @@ impl fmt::Display for CallerName {
 ///
 /// A witness is the main chip's value vector and one list of instance value vectors per chip.
 /// It must satisfy every chip's local constraints on every instance, and serve every chip call
-/// with the instance at the call's position.
+/// with the instance that call names.
 #[allow(missing_docs)] // errors are self-documenting
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationM4Error {
@@ -228,14 +246,6 @@ pub enum VerificationM4Error {
 	MissingInstances {
 		chip_id: usize,
 		n_instances: usize,
-		n_active: usize,
-	},
-	#[error(
-		"{n_invocations} invocations reach chip #{chip_id}, which has {n_active} active instances"
-	)]
-	WrongInvocationCount {
-		chip_id: usize,
-		n_invocations: usize,
 		n_active: usize,
 	},
 	#[error(
