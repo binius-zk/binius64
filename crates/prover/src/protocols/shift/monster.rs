@@ -70,51 +70,52 @@ impl<F: Field> OuterSlotWeights<F> {
 	}
 }
 
-/// Fills one row of the phase-1 "h" multilinear: the shift indicator of one `(variant, amount)`
-/// pair, contracted against the Lagrange evaluations at the univariate challenge.
+/// Fills one row of a shift operator table.
 ///
-/// This is the one place that says what a variant does to the challenge weights:
+/// The row holds, for each bit position, the weight that one `(variant, amount)` pair moves there.
+///
+/// This is the one place that says what a variant does to a weight vector:
 /// - Logical left and logical right move the weights and leave zeros behind.
 /// - Arithmetic right piles every weight that falls off the end onto the sign position.
 /// - Rotate wraps them around instead.
 /// - The half-word forms apply the same rule to each 32-bit half, reading only the low 5 bits of
 ///   the amount.
-fn fill_h_row<F: Field>(variant: ShiftVariant, amount: usize, row: &mut [F], l_tilde: &[F]) {
+fn fill_operator_row<F: Field>(variant: ShiftVariant, amount: usize, row: &mut [F], psi: &[F]) {
 	// A half-word variant repeats the full-width rule over each half, so both share one closure.
 	let halves = |row: &mut [F], rule: fn(usize, &mut [F], &[F])| {
 		let amount = amount % HALF_WORD_BITS;
-		for (row_half, l_tilde_half) in
-			iter::zip(row.chunks_mut(HALF_WORD_BITS), l_tilde.chunks(HALF_WORD_BITS))
+		for (row_half, psi_half) in
+			iter::zip(row.chunks_mut(HALF_WORD_BITS), psi.chunks(HALF_WORD_BITS))
 		{
-			rule(amount, row_half, l_tilde_half);
+			rule(amount, row_half, psi_half);
 		}
 	};
 
-	fn sll<F: Field>(amount: usize, row: &mut [F], l_tilde: &[F]) {
+	fn sll<F: Field>(amount: usize, row: &mut [F], psi: &[F]) {
 		let width = row.len();
-		row[..width - amount].copy_from_slice(&l_tilde[amount..]);
+		row[..width - amount].copy_from_slice(&psi[amount..]);
 	}
-	fn srl<F: Field>(amount: usize, row: &mut [F], l_tilde: &[F]) {
+	fn srl<F: Field>(amount: usize, row: &mut [F], psi: &[F]) {
 		let width = row.len();
-		row[amount..].copy_from_slice(&l_tilde[..width - amount]);
+		row[amount..].copy_from_slice(&psi[..width - amount]);
 	}
-	fn sar<F: Field>(amount: usize, row: &mut [F], l_tilde: &[F]) {
+	fn sar<F: Field>(amount: usize, row: &mut [F], psi: &[F]) {
 		let width = row.len();
-		srl(amount, row, l_tilde);
+		srl(amount, row, psi);
 		// Every position past the shift reads the sign bit, so their weights pile onto it.
-		row[width - 1] += l_tilde[width - amount..].iter().sum::<F>();
+		row[width - 1] += psi[width - amount..].iter().sum::<F>();
 	}
-	fn rotr<F: Field>(amount: usize, row: &mut [F], l_tilde: &[F]) {
+	fn rotr<F: Field>(amount: usize, row: &mut [F], psi: &[F]) {
 		let width = row.len();
-		row[..amount].copy_from_slice(&l_tilde[width - amount..]);
-		row[amount..].copy_from_slice(&l_tilde[..width - amount]);
+		row[..amount].copy_from_slice(&psi[width - amount..]);
+		row[amount..].copy_from_slice(&psi[..width - amount]);
 	}
 
 	match variant {
-		ShiftVariant::Sll => sll(amount, row, l_tilde),
-		ShiftVariant::Slr => srl(amount, row, l_tilde),
-		ShiftVariant::Sar => sar(amount, row, l_tilde),
-		ShiftVariant::Rotr => rotr(amount, row, l_tilde),
+		ShiftVariant::Sll => sll(amount, row, psi),
+		ShiftVariant::Slr => srl(amount, row, psi),
+		ShiftVariant::Sar => sar(amount, row, psi),
+		ShiftVariant::Rotr => rotr(amount, row, psi),
 		ShiftVariant::Sll32 => halves(row, sll),
 		ShiftVariant::Srl32 => halves(row, srl),
 		ShiftVariant::Sra32 => halves(row, sar),
@@ -122,19 +123,78 @@ fn fill_h_row<F: Field>(variant: ShiftVariant, amount: usize, row: &mut [F], l_t
 	}
 }
 
+/// Pushes one weight vector through every shift.
+///
+/// A shift indicator says whether an output bit reads a given input bit at a given amount.
+/// This contracts it on the output index, against the supplied weights:
+///
+/// ```text
+///     T[psi](j, s, o) = sum_k psi(k) * shift-ind_op(o)(k, j, s)
+/// ```
+///
+/// At most one input bit feeds each output bit.
+/// So a slice at fixed `(s, o)` is the weights moved by that shift, not a matrix applied to them.
+///
+/// The reduction contracts the indicator once per slot of a shift sequence.
+/// Both contractions are this operator:
+///
+/// - the first carries the oblong weights to the bits of the intermediate word;
+/// - the second carries that result down to the witness bit.
+///
+/// # Returns
+///
+/// One multilinear over [`PHASE_1_LOG_LEN`] variables, indexed from the low variables up:
+///
+/// ```text
+///     low     Word::LOG_BITS             the bit position
+///     middle  Word::LOG_BITS             the shift amount
+///     high    LOG_SHIFT_VARIANT_COUNT    the shift variant
+/// ```
+///
+/// # Performance
+///
+/// Every entry is one copy or one accumulation.
+/// So the whole table costs `O(2^15)` field operations, and a single slice `O(2^6)`.
+///
+/// # Panics
+///
+/// Panics unless the weights hold one entry per bit position of a word.
+#[instrument(skip_all, name = "shift_operator_table")]
+pub fn shift_operator_table<F, P: PackedField<Scalar = F>, A: Allocator>(
+	alloc: &A,
+	psi: &[F],
+) -> FieldVec<P, A>
+where
+	F: BinaryField,
+{
+	assert_eq!(psi.len(), Word::BITS, "the weights are indexed by bit position");
+
+	// One row of `Word::BITS` weights per `(variant, amount)`, variant most significant.
+	let mut data = zeroed_vec::<F>(1 << PHASE_1_LOG_LEN);
+	for (variant, block) in
+		iter::zip(ShiftVariant::ALL, data.chunks_exact_mut(Word::BITS * Word::BITS))
+	{
+		for (amount, row) in block.chunks_exact_mut(Word::BITS).enumerate() {
+			fill_operator_row(variant, amount, row, psi);
+		}
+	}
+
+	FieldBuffer::from_values_in(alloc, &data)
+}
+
 /// Constructs the "h" multilinear for shift operations at a univariate challenge point.
 ///
-/// See the paper for the definition of the h polynomials. There is one per shift variant, and this
-/// returns all of them as a single multilinear over [`PHASE_1_LOG_LEN`] variables: the shift
-/// variant occupies the high
-/// [`LOG_SHIFT_VARIANT_COUNT`](binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT)
-/// variables, the shift amount the middle
-/// [`Word::LOG_BITS`], and the bit position the low [`Word::LOG_BITS`].
+/// See the paper for the definition of the h polynomials.
+/// There is one per shift variant, and this returns all of them as a single multilinear.
+/// The layout is the one [`shift_operator_table`] documents.
+///
+/// The weights are the Lagrange evaluations at the univariate challenge.
+/// Those are the oblong weights the reduction's first factor carries.
 ///
 /// # Usage in Protocol
 ///
-/// Phase 1 runs one sumcheck over this multilinear and its "g" counterpart, so the variant axis is
-/// folded by the sumcheck rather than summed across separate provers.
+/// Phase 1 runs one sumcheck over this multilinear and its "g" counterpart.
+/// So the variant axis is folded by the sumcheck rather than summed across separate provers.
 #[instrument(skip_all, name = "build_h")]
 pub fn build_h<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
@@ -145,19 +205,7 @@ where
 	F: BinaryField,
 {
 	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-	let l_tilde = l_tilde.as_ref();
-
-	// One row of `Word::BITS` scalars per `(variant, amount)`, variant most significant.
-	let mut data = zeroed_vec::<F>(1 << PHASE_1_LOG_LEN);
-	for (variant, block) in
-		iter::zip(ShiftVariant::ALL, data.chunks_exact_mut(Word::BITS * Word::BITS))
-	{
-		for (amount, row) in block.chunks_exact_mut(Word::BITS).enumerate() {
-			fill_h_row(variant, amount, row, l_tilde);
-		}
-	}
-
-	FieldBuffer::from_values_in(alloc, &data)
+	shift_operator_table(alloc, l_tilde.as_ref())
 }
 
 /// Constructs the "monster multilinear" that combines all shift operations into a single
@@ -326,6 +374,7 @@ mod tests {
 		test_utils::random_scalars,
 	};
 	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
+	use proptest::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::{super::ShiftIndSumcheck, *};
@@ -375,6 +424,107 @@ mod tests {
 				claimed, direct,
 				"H-op evaluation mismatch (test_case={test_case}): claimed != direct",
 			);
+		}
+	}
+
+	/// Whether output bit `k` of `variant` at `amount` reads input bit `j`.
+	///
+	/// Read off the word operation itself.
+	/// Shifting a word with only bit `j` set leaves bits exactly where that bit is read.
+	fn reads_input_bit(variant: ShiftVariant, k: usize, j: usize, amount: usize) -> bool {
+		let shifted = variant.apply(Word(1u64 << j), amount);
+		(shifted.as_u64() >> k) & 1 == 1
+	}
+
+	/// The operator table computed straight from the indicator definition, one entry at a time.
+	fn reference_table<F: Field>(psi: &[F]) -> Vec<F> {
+		let mut table = vec![F::ZERO; 1 << PHASE_1_LOG_LEN];
+		for (variant_idx, variant) in ShiftVariant::ALL.into_iter().enumerate() {
+			for amount in 0..Word::BITS {
+				for j in 0..Word::BITS {
+					// Contract on the indicator's output-bit index, which is the summed one.
+					let entry = (0..Word::BITS)
+						.filter(|&k| reads_input_bit(variant, k, j, amount))
+						.map(|k| psi[k])
+						.sum();
+					table[(variant_idx * Word::BITS + amount) * Word::BITS + j] = entry;
+				}
+			}
+		}
+		table
+	}
+
+	proptest! {
+		// Invariant: every entry is the contraction the definition names.
+		//
+		// The eight variants and all 64 amounts are enumerated in full.
+		// Only the weights are sampled, since the operator is linear in them.
+		//
+		// This is what pins `sra`.
+		// Its vacated positions all read bit 63, so several weights land in one entry.
+		// That is the only slice which is not a plain move of the weights.
+		#[test]
+		fn shift_operator_table_matches_the_indicator_definition(seed: u64) {
+			type F = BinaryField128bGhash;
+
+			let mut rng = StdRng::seed_from_u64(seed);
+			let psi = random_scalars::<F>(&mut rng, Word::BITS);
+
+			let table = shift_operator_table::<F, F, _>(&GlobalAllocator, &psi);
+			let reference = reference_table(&psi);
+			prop_assert_eq!(table.as_ref(), reference.as_slice());
+		}
+
+		// Invariant: the operator is linear in the weights.
+		//
+		//     T[a * psi_1 + b * psi_2] == a * T[psi_1] + b * T[psi_2]
+		//
+		// The reduction folds the weights between its two contractions.
+		// Linearity is what lets it fold first and contract after.
+		#[test]
+		fn shift_operator_table_is_linear_in_the_weights(seed: u64) {
+			type F = BinaryField128bGhash;
+
+			let mut rng = StdRng::seed_from_u64(seed);
+			let psi_1 = random_scalars::<F>(&mut rng, Word::BITS);
+			let psi_2 = random_scalars::<F>(&mut rng, Word::BITS);
+			let (a, b) = (F::random(&mut rng), F::random(&mut rng));
+
+			// The combination pushed through the operator.
+			let combined = iter::zip(&psi_1, &psi_2)
+				.map(|(&x, &y)| a * x + b * y)
+				.collect::<Vec<F>>();
+			let lhs = shift_operator_table::<F, F, _>(&GlobalAllocator, &combined);
+
+			// The two tables combined afterwards.
+			let table_1 = shift_operator_table::<F, F, _>(&GlobalAllocator, &psi_1);
+			let table_2 = shift_operator_table::<F, F, _>(&GlobalAllocator, &psi_2);
+			let rhs = iter::zip(table_1.as_ref(), table_2.as_ref())
+				.map(|(&x, &y)| a * x + b * y)
+				.collect::<Vec<F>>();
+
+			prop_assert_eq!(lhs.as_ref(), rhs.as_slice());
+		}
+	}
+
+	// Invariant: the amount-zero slice hands back the weights untouched.
+	//
+	// A zero amount is the identity for every variant.
+	// That is what makes a single shift the special case of a sequence with a zero outer amount.
+	//
+	// The half-word forms read the amount modulo 32, so they are the identity at zero as well.
+	#[test]
+	fn the_zero_amount_slice_returns_the_weights_unchanged() {
+		type F = BinaryField128bGhash;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let psi = random_scalars::<F>(&mut rng, Word::BITS);
+
+		let table = shift_operator_table::<F, F, _>(&GlobalAllocator, &psi);
+		for (variant_idx, variant) in ShiftVariant::ALL.into_iter().enumerate() {
+			// Amount zero sits at the front of the variant's block of rows.
+			let row = &table.as_ref()[variant_idx * Word::BITS * Word::BITS..][..Word::BITS];
+			assert_eq!(row, psi.as_slice(), "{variant:?} at amount zero is not the identity");
 		}
 	}
 }
