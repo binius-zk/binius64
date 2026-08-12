@@ -115,7 +115,7 @@ impl<P: PackedField, Data: BufferData<P>> SparseDenseProductSumcheckProver<P, Da
 	}
 }
 
-impl<F: Field, P: PackedField<Scalar = F>, Data: BufferData<P>> SumcheckProver<F>
+impl<F: Field, P: PackedField<Scalar = F>, Data: BufferData<P> + Sync> SumcheckProver<F>
 	for SparseDenseProductSumcheckProver<P, Data>
 {
 	fn n_vars(&self) -> usize {
