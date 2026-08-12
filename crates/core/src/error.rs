@@ -42,8 +42,8 @@ pub enum ConstraintSystemError {
 		arity: usize,
 		n_inout: usize,
 	},
-	#[error("the chip call graph has a cycle")]
-	CyclicChipCalls,
+	#[error("chip #{chip_index} calls chip {callee}, which is not a later chip")]
+	CallOutOfOrder { chip_index: usize, callee: usize },
 }
 
 /// Names the chip of an M4 system that a diagnostic is about: `chip #3`, or `the main chip`.

@@ -104,10 +104,11 @@ pub struct ChipCall {
 /// Validity invariants:
 /// - all embedded constraint systems in `chips` must have a chip_id value that indexes into `chips`
 ///
-/// [`Self::validate`] accepts any acyclic call graph, but call positions are defined by
-/// enumerating the chips in ID order, and witness generation walks them the same way — so only a
-/// system whose calls run to higher IDs is provable. The frontend's
-/// `CircuitM4::validate` is what enforces that ordering.
+/// The chips are in topological order: a chip calls only chips with a higher ID, and main, which
+/// is not one of them, calls any. Call positions are defined by enumerating the chips in ID order
+/// and witness generation walks them the same way, so every caller of a chip is reached before the
+/// chip itself. [`Self::validate`] requires it, which makes the call graph acyclic as a
+/// consequence.
 pub struct ConstraintSystemM4 {
 	/// The entry point of the system. It calls chips, but no chip ID names it, so nothing calls
 	/// it.
@@ -121,32 +122,25 @@ pub struct ConstraintSystemM4 {
 }
 
 impl ConstraintSystemM4 {
-	/// Checks every chip and every chip call, and rejects call-graph cycles.
+	/// Checks every chip and every chip call, and requires the chips to be in topological order.
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
-		let n_chips = self.chips.len();
-
 		self.main.validate()?;
 		self.validate_calls(None, &self.main.chip_calls)?;
 
-		// The chips each chip calls, indexed by the caller's chip ID.
-		let mut callees = vec![Vec::new(); n_chips];
 		for (chip_index, (chip, _)) in self.chips.iter().enumerate() {
 			chip.validate()?;
 			self.validate_calls(Some(chip_index), &chip.chip_calls)?;
-			callees[chip_index].extend(chip.chip_calls.iter().map(|call| call.chip_id));
-		}
-
-		if !is_acyclic(&callees) {
-			return Err(ConstraintSystemError::CyclicChipCalls);
 		}
 
 		Ok(())
 	}
 
-	/// Checks that one caller's calls name existing chips and pass no more operands than the
-	/// callee has inout values.
+	/// Checks that one caller's calls name existing chips, run only to later chips, and pass no
+	/// more operands than the callee has inout values.
 	///
 	/// A call may pass fewer: the inout values past its operands are constrained to zero.
+	///
+	/// Main is not one of the numbered chips and runs before all of them, so it may call any.
 	fn validate_calls(
 		&self,
 		chip_index: Option<usize>,
@@ -159,6 +153,14 @@ impl ConstraintSystemM4 {
 					chip_index,
 					chip_id: call.chip_id,
 					n_chips,
+				});
+			}
+			if let Some(caller) = chip_index
+				&& call.chip_id <= caller
+			{
+				return Err(ConstraintSystemError::CallOutOfOrder {
+					chip_index: caller,
+					callee: call.chip_id,
 				});
 			}
 			let n_inout = self.chips[call.chip_id].0.cs.n_inout;
@@ -318,38 +320,8 @@ impl ConstraintSystemM4 {
 	}
 }
 
-/// Checks that the call graph given by the callee list of each chip is acyclic.
-///
-/// This is Kahn's algorithm: chips with no remaining callers are removed one at a time, and any
-/// chip still left when none remain lies on a cycle. A chip that calls itself is a cycle.
-fn is_acyclic(callees: &[Vec<usize>]) -> bool {
-	let mut n_callers = vec![0usize; callees.len()];
-	for &callee in callees.iter().flatten() {
-		n_callers[callee] += 1;
-	}
-
-	let mut uncalled = (0..callees.len())
-		.filter(|&chip| n_callers[chip] == 0)
-		.collect::<Vec<_>>();
-
-	let mut n_removed = 0;
-	while let Some(chip) = uncalled.pop() {
-		n_removed += 1;
-		for &callee in &callees[chip] {
-			n_callers[callee] -= 1;
-			if n_callers[callee] == 0 {
-				uncalled.push(callee);
-			}
-		}
-	}
-
-	n_removed == callees.len()
-}
-
 #[cfg(test)]
 mod tests {
-	use proptest::prelude::*;
-
 	use super::{
 		super::{ShiftedValueIndex, ValueIndex, ValueSegment, ValueVecLayout, ZeroConstraint},
 		*,
@@ -432,34 +404,52 @@ mod tests {
 	}
 
 	#[test]
-	fn validate_accepts_an_acyclic_call_graph() {
-		// Main calls 0, which calls 1 and 2; 1 calls 2, and 2 is a leaf.
+	fn validate_accepts_calls_running_only_to_later_chips() {
+		// Main calls 0, which calls 1 and 2; 1 calls 2, and 2 is a leaf. Main is not one of the
+		// numbered chips, so its call to 0 is not a backward one.
 		let cs = system(&[0], vec![chip(&[1, 2]), chip(&[2]), chip(&[])]);
 		cs.validate().unwrap();
 	}
 
 	#[test]
 	fn validate_rejects_a_chip_that_calls_itself() {
+		// A chip is not later than itself, so self-recursion is out of order rather than a
+		// separate case.
 		let cs = system(&[0], vec![chip(&[0])]);
-		assert!(matches!(cs.validate(), Err(ConstraintSystemError::CyclicChipCalls)));
+		assert!(matches!(
+			cs.validate(),
+			Err(ConstraintSystemError::CallOutOfOrder {
+				chip_index: 0,
+				callee: 0,
+			})
+		));
 	}
 
 	#[test]
-	fn validate_rejects_a_cycle_reachable_from_an_uncalled_chip() {
-		// Chip 0 is called by nobody, so removing it leaves the cycle 1 -> 2 -> 1.
+	fn validate_rejects_a_chip_that_calls_an_earlier_chip() {
+		// Chip 2 calls back to chip 1, which is populated before it. The graph as a whole need not
+		// be cyclic for this to break the one pass over the chips.
 		let cs = system(&[0], vec![chip(&[1]), chip(&[2]), chip(&[1])]);
-		assert!(matches!(cs.validate(), Err(ConstraintSystemError::CyclicChipCalls)));
+		assert!(matches!(
+			cs.validate(),
+			Err(ConstraintSystemError::CallOutOfOrder {
+				chip_index: 2,
+				callee: 1,
+			})
+		));
 	}
 
 	#[test]
 	fn validate_rejects_a_call_to_a_chip_that_does_not_exist() {
-		let cs = system(&[0], vec![chip(&[0, 7])]);
+		// Chip 0's first call is to a later chip, so the out-of-range second one is the only
+		// fault and the range check is what has to catch it.
+		let cs = system(&[0], vec![chip(&[1, 7]), chip(&[])]);
 		assert!(matches!(
 			cs.validate(),
 			Err(ConstraintSystemError::OutOfRangeChipId {
 				chip_index: Some(0),
 				chip_id: 7,
-				n_chips: 1,
+				n_chips: 2,
 			})
 		));
 	}
@@ -587,51 +577,5 @@ mod tests {
 			),
 			"{err}"
 		);
-	}
-
-	/// Whether the call graph is acyclic, by a three-colour depth-first search.
-	///
-	/// A chip on the stack that is reached again closes a cycle. This is the independent reference
-	/// [`is_acyclic`]'s Kahn's algorithm is checked against.
-	fn acyclic_by_depth_first_search(callees: &[Vec<usize>]) -> bool {
-		#[derive(Clone, Copy, PartialEq)]
-		enum Colour {
-			Unvisited,
-			OnStack,
-			Done,
-		}
-
-		fn visit(chip: usize, callees: &[Vec<usize>], colour: &mut [Colour]) -> bool {
-			match colour[chip] {
-				Colour::OnStack => return false,
-				Colour::Done => return true,
-				Colour::Unvisited => {}
-			}
-			colour[chip] = Colour::OnStack;
-			for &callee in &callees[chip] {
-				if !visit(callee, callees, colour) {
-					return false;
-				}
-			}
-			colour[chip] = Colour::Done;
-			true
-		}
-
-		let mut colour = vec![Colour::Unvisited; callees.len()];
-		(0..callees.len()).all(|chip| visit(chip, callees, &mut colour))
-	}
-
-	proptest! {
-		// Kahn's algorithm and a depth-first search decide acyclicity by unrelated means, so
-		// agreeing on random graphs covers what the cases above are each written for one of:
-		// multi-edges, diamonds, self-loops and components nothing reaches.
-		#[test]
-		fn is_acyclic_agrees_with_a_depth_first_search(
-			graph in (1usize..7).prop_flat_map(|n_chips| {
-				prop::collection::vec(prop::collection::vec(0..n_chips, 0..4), n_chips)
-			})
-		) {
-			prop_assert_eq!(is_acyclic(&graph), acyclic_by_depth_first_search(&graph));
-		}
 	}
 }

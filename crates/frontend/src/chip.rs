@@ -75,11 +75,10 @@ impl CircuitM4 {
 	///   chip is left uncalled, and no count outgrows a `usize`.
 	///
 	/// A system that passes here lowers to one that passes
-	/// [`ConstraintSystemM4::validate`](binius_core::m4::ConstraintSystemM4::validate). That check
-	/// additionally rejects call-graph cycles, which the ordering requirement here already rules
-	/// out, and validates each chip's compiled constraint system, which the compiler is what keeps
-	/// well-formed. Nothing downstream of this therefore has to run the lowered check to know its
-	/// preconditions hold.
+	/// [`ConstraintSystemM4::validate`](binius_core::m4::ConstraintSystemM4::validate), which
+	/// requires the same ordering and additionally validates each chip's compiled constraint
+	/// system — the one thing here the compiler rather than this check keeps well-formed. Nothing
+	/// downstream therefore has to run the lowered check to know its preconditions hold.
 	pub fn validate(&self) -> Result<(), CircuitM4Error> {
 		let n_chips = self.chips.len();
 
