@@ -91,9 +91,9 @@ fn write_artifacts(dir: &Path) -> Artifacts {
 	let cs = circuit.constraint_system();
 	write_serialized(cs, &artifacts.cs);
 
-	// Each run of words carries its own version tag, so each becomes a file of its own. The mask
-	// constant is in neither of them: it rides along in the constraint system.
-	write_serialized(&ValuesRef::new(cs.inout_values(values.public())), &artifacts.inout);
+	// Each run of words carries its own version tag, so each becomes a file of its own.
+	// The mask constant is in neither: it rides along in the constraint system.
+	write_serialized(&ValuesRef::new(values.inout()), &artifacts.inout);
 	write_serialized(&ValuesRef::new(values.non_public()), &artifacts.non_public);
 
 	artifacts
@@ -180,14 +180,16 @@ fn verifier_rejects_a_public_segment_from_another_format_version() {
 
 #[test]
 fn verifier_rejects_a_whole_public_segment_in_place_of_the_inout_values() {
-	// Invariant: the file carries the inout values alone, and a longer run is not silently taken
-	// as one. This is what keeps the constants a property of the circuit rather than the instance.
+	// Invariant: the file carries the inout values alone, and a longer run is not taken as one.
+	// Why: that is what keeps the constants a property of the circuit, not of the instance.
 	//
-	// Fixture state: valid artifacts and a valid proof, with the inout file then replaced by the
-	// whole public segment — constants, padding and all.
+	// Fixture state: valid artifacts and a valid proof.
+	//
+	// Mutation: replace the inout file with the whole public segment, constants and all.
 	//
 	//     inout.bin was:  [ output ]
-	//     inout.bin now:  [ 0xFF00 | pad | output | pad ]
+	//     inout.bin now:  [ all_one | 0xFF00 | output ]
+	//     -> 3 words where the shape declares 1 -> reject
 	let dir = scratch_dir("whole-segment");
 	let artifacts = write_artifacts(&dir);
 
@@ -202,7 +204,10 @@ fn verifier_rejects_a_whole_public_segment_in_place_of_the_inout_values() {
 
 	// The failure names the length, so the mistake is legible without reading the bytes.
 	let stderr = String::from_utf8_lossy(&out.stderr);
-	assert!(stderr.contains("inout values must be"), "expected a length error, got: {stderr}");
+	assert!(
+		stderr.contains("incorrect public inputs length"),
+		"expected a length error, got: {stderr}"
+	);
 
 	fs::remove_dir_all(&dir).unwrap();
 }

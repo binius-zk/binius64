@@ -27,7 +27,12 @@ use crate::{
 	underlier::{U1, WithUnderlier},
 };
 
-binary_field!(pub BinaryField128bGhash(M128), M128::from_u128(0x494ef99794d5244f9152df59d87a9186));
+// `1 << 121` is the lowest single-bit element of trace 1; `1 << 127` is the only other one.
+binary_field!(
+	pub BinaryField128bGhash(M128),
+	M128::from_u128(0x494ef99794d5244f9152df59d87a9186),
+	M128::from_u128(1 << 121)
+);
 
 // Convenience `u128` conversions. `binary_field!` already provides `From<M128>`/`From<.. for
 // M128>`; these let callers keep constructing/inspecting `BinaryField128bGhash` via `u128`. `M128`

@@ -14,7 +14,7 @@ use binius_iop::{
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};
+use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
 	circuits::powers,
@@ -114,8 +114,7 @@ fn test_zk_wrapped_prove_verify() {
 		&MinProofSizeStrategy,
 	);
 
-	let subspace = zk_basefold_compiler.max_subspace();
-	let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
+	let domain_context = GaoMateerOnTheFly::generate(zk_basefold_compiler.max_log_domain_size());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 	let zk_basefold_prover: BaseFoldProverCompiler<OptimalPackedB128, _> =
 		BaseFoldProverCompiler::from_verifier_compiler(&zk_basefold_compiler, ntt);

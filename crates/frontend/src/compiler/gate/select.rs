@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Select operation.
 //!
 //! Returns `out = MSB(cond) ? t : f`.
@@ -6,16 +7,18 @@
 //! # Algorithm
 //!
 //! The gate inspects the MSB (Most Significant Bit) of the condition value to select between
-//! two inputs. This is computed using a single AND constraint with the formula:
-//! `out = f ⊕ ((cond ~>> 63) ∧ (t ⊕ f))`
+//! two inputs. Logically shifting the condition right by 63 leaves that bit alone in the word,
+//! so the MSB-bool becomes the GHASH-field scalar `0` or `1` and the selection is the product
+//! `out ⊕ f = (cond >> 63) · (t ⊕ f)`.
 //!
-//! The arithmetic shift right by 63 broadcasts the MSB to all bit positions, creating
-//! an all-ones mask if MSB=1 or all-zeros if MSB=0.
+//! Scaling by `1` is the field identity and scaling by `0` annihilates, so the product needs no
+//! reduction: it stays within the low 64 coefficients its factor occupies. Both factors and the
+//! product therefore have a zero high word.
 //!
 //! # Constraints
 //!
-//! The gate generates 1 AND constraint:
-//! - `(cond >> 63) ∧ (t ⊕ f) = out ⊕ f`
+//! The gate generates 1 BMUL constraint:
+//! - `(cond >> 63) · (t ⊕ f) = out ⊕ f`
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
@@ -44,8 +47,17 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 	// Constraint: Select operation
 	//
-	// (cond >> 63) ∧ (t ⊕ f) = out ⊕ f
-	builder.and(expr::sar(*cond, 63), expr::xor2(*t, *f), expr::xor2(*out, *f));
+	// (cond >> 63) · (t ⊕ f) = out ⊕ f, over the GHASH field.
+	//
+	// Every factor fits in the low word, so each high word is the empty operand.
+	builder.bmul(
+		expr::srl(*cond, 63),
+		expr::empty(),
+		expr::xor2(*t, *f),
+		expr::empty(),
+		expr::xor2(*out, *f),
+		expr::empty(),
+	);
 }
 
 pub fn emit_eval_bytecode(

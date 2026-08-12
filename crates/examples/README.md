@@ -315,7 +315,8 @@ cargo run --release --example my_circuit -- save \
 
 Notes:
 - Public and non-public outputs are serialized using the versioned ValuesData format from core.
-- The public output holds the inout values alone. The circuit's constants and the padding between sections live in the constraint system, and are put back around those values when a segment is rebuilt.
+- The public output holds the inout values alone.
+- The circuit's constants live in the constraint system, and are restored when the segment is rebuilt.
 - Parent directories are created automatically if they don’t exist.
 
 ## Adding to Cargo.toml

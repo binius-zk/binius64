@@ -222,26 +222,26 @@ mod tests {
 		}
 	}
 
-	// A batch of 2^3 instances of a circuit whose committed word count is `3 * n_gates`.
+	// A batch of 2^3 instances of a circuit whose committed word count is `3 * n_gates`: each gate
+	// commits two inputs and the conjunction it promotes to a public output.
 	//
 	// A multiple of three is a power of two only for a hand-picked gate count.
 	// That is what lets a caller choose whether the word axis needs padding.
 	fn and_chain_table(n_gates: usize) -> ValueTable {
-		// Each gate consumes two fresh witness words and commits its result.
+		// Each gate consumes two fresh input words and promotes its result to a public output.
+		// That promotion is what keeps the gate alive under dead-code elimination.
 		let builder = CircuitBuilder::new();
-		let inputs: Vec<Wire> = (0..2 * n_gates).map(|_| builder.add_witness()).collect();
+		let inputs: Vec<Wire> = (0..2 * n_gates).map(|_| builder.add_inout()).collect();
 		for pair in inputs.chunks_exact(2) {
-			let and = builder.band(pair[0], pair[1]);
-			// Pin the output, so dead-code elimination keeps the gate.
-			builder.force_commit(and);
+			builder.mark_inout(builder.band(pair[0], pair[1]));
 		}
 		let circuit = builder.build();
 
-		// Every instance gets its own seed, so no two instances share a witness.
+		// Every instance gets its own seed, so no two instances share an input.
 		ValueTable::populate(&circuit, 3, |i, w| {
 			let mut rng = StdRng::seed_from_u64(i as u64);
 			for &wire in &inputs {
-				w[wire] = Word(rng.next_u64());
+				w[wire] = Word(rng.random());
 			}
 		})
 		.unwrap()
@@ -272,11 +272,11 @@ mod tests {
 			let table = populate_crc64_witness(&c, &inputs);
 			let constants = &c.circuit.constraint_system().constants;
 
-			// The committed segment runs from the witness offset to the end of the value vector.
+			// The committed segment runs from the inout offset to the end of the value vector.
 			// Its length fixes the width of the word axis.
-			let layout = table.layout();
-			let offset = layout.offset_witness;
-			let n_committed = layout.combined_len() - offset;
+			let offset = table.layout().offset_inout();
+			let n_committed = table.n_hidden_words();
+			assert_eq!(n_committed, table.layout().combined_len() - offset);
 			let log_committed = checked_log_2(n_committed);
 
 			// The instance-fold point, and a fresh point over the (bit, word) axes.

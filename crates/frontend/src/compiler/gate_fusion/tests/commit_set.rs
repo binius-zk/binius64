@@ -25,7 +25,7 @@ fn test_commit_set(
 
 	let mut stat = Stat::default();
 	let mut leg = LeGraph::new(&cb);
-	commit_set::run_decide_commit_set(&mut leg, &mut stat);
+	commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 	let commit_set = leg.commit_set();
 
 	// Verify expected wires are committed
@@ -272,7 +272,8 @@ fn test_sar_boundary_63_vs_64() {
 
 #[test]
 fn test_zero_shift_composition() {
-	// Zero shifts still carry their type; mixed types do not compose → commit
+	// A shift of no distance is the identity, whichever variant spells it, so two of them
+	// compose however their variants differ. Nothing here needs committing.
 	test_commit_set(
 		|cb| {
 			// y = sll(x, 0)
@@ -281,8 +282,8 @@ fn test_zero_shift_composition() {
 			cb.linear(expr::srl(w(1), 0), w(2));
 			cb.and(w(2), w(3), w(4));
 		},
-		&[w(1)], // y must be committed (Sll vs Srl are incompatible)
-		&[w(2)],
+		&[],
+		&[w(1), w(2)],
 	);
 
 	// Same-type zero shifts compose trivially
@@ -859,7 +860,7 @@ fn test_a_long_single_term_shift_run_commits_as_often_as_the_width_requires() {
 
 	let mut stat = Stat::default();
 	let mut leg = LeGraph::new(&cb);
-	commit_set::run_decide_commit_set(&mut leg, &mut stat);
+	commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 	// One break covers all 65 links, and it lands on the one the width forces.
 	let committed: Vec<u32> = (1..=n)

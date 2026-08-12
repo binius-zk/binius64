@@ -5,21 +5,25 @@ use std::{marker::PhantomData, mem::MaybeUninit};
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
-	constraint_system::{ConstraintSystem, Operand, ValueVec},
+	constraint_system::{ConstraintSystem, InoutSegment, Operand, ValueVec},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
+use binius_ip_prover::channel::WordIPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec,
 	inner_product::inner_product,
-	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
+	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::lagrange_evals,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{SerializeBytes, rayon::prelude::*};
+use binius_utils::{
+	SerializeBytes,
+	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
+};
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
@@ -41,7 +45,7 @@ use crate::{
 };
 
 /// Type alias for the prover NTT parameterized by field.
-type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
+type ProverNTT<F> = NeighborsLastMultiThread<GaoMateerPreExpanded<F>>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -51,7 +55,6 @@ type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
 #[derive(Debug)]
 pub struct IOPProver {
 	constraint_system: ConstraintSystem,
-	log_public_words: usize,
 	log_witness_elems: usize,
 	key_collection: KeyCollection,
 }
@@ -59,12 +62,10 @@ pub struct IOPProver {
 impl IOPProver {
 	/// Constructs an IOP prover from an IOP verifier and pre-computed keys.
 	pub fn new(iop_verifier: IOPVerifier, key_collection: KeyCollection) -> Self {
-		let log_public_words = iop_verifier.log_public_words();
 		let log_witness_elems = iop_verifier.log_witness_elems();
 		let constraint_system = iop_verifier.into_constraint_system();
 		Self {
 			constraint_system,
-			log_public_words,
 			log_witness_elems,
 			key_collection,
 		}
@@ -95,7 +96,7 @@ impl IOPProver {
 	where
 		A: Allocator,
 		P: PackedField<Scalar = B128>,
-		Channel: IOPProverChannel<P, A>,
+		Channel: IOPProverChannel<P, A> + WordIPProverChannel<B128, Word = Word>,
 	{
 		let cs = &self.constraint_system;
 
@@ -108,17 +109,9 @@ impl IOPProver {
 			pack_witness::<P, _>(alloc, self.log_witness_elems, witness.non_public())?;
 		drop(setup_guard);
 
-		// Observe the public input as B128 elements (includes it in Fiat-Shamir). The packed buffer
-		// is a temporary of this statement, so its pool block is returned immediately rather than
-		// held for the rest of the proof.
-		let public_elems = pack_witness::<P, _>(
-			alloc,
-			self.log_public_words - LOG_WORDS_PER_ELEM,
-			witness.public(),
-		)?
-		.iter_scalars()
-		.collect::<Vec<_>>();
-		channel.observe_many(&public_elems);
+		// Observe the inout words, which includes them in Fiat-Shamir. The constants are fixed by
+		// the constraint system, so only the per-instance values are observed.
+		channel.observe_words(witness.inout());
 
 		// [phase] Witness Commit - witness generation and commitment
 		let witness_commit_guard = tracing::info_span!("Commit witness").entered();
@@ -296,7 +289,8 @@ impl IOPProver {
 			eval: _,
 		} = prove_shift_reduction::<_, P, _, _>(
 			&self.key_collection,
-			witness.combined_witness(),
+			witness.public(),
+			witness.non_public(),
 			OperatorClaims {
 				zero: zero_claim,
 				bitand: bitand_claim,
@@ -309,6 +303,16 @@ impl IOPProver {
 		);
 		drop(shift_guard);
 
+		// Split the shift's final point `r_j || r_y || r_segment` into its three parts. The bit
+		// index `r_j` addresses a bit within a 64-bit word, the segment selector `r_segment` is
+		// the last coordinate, and the word index `r_y` is everything in between.
+		let witness_point = &eval_point[..eval_point.len() - 1];
+		let (r_j, r_y) = witness_point.split_at(Word::LOG_BITS);
+
+		// Prove the public segment's evaluation claim, which the verifier's public-input check
+		// consumes.
+		ring_switch::prove_public_eval::<_, P, _>(alloc, witness.public(), r_j, r_y, &mut *channel);
+
 		// [phase] Ring-Switching + PCS Opening
 		let pcs_guard = tracing::info_span!(
 			"[phase] PCS Opening",
@@ -317,10 +321,8 @@ impl IOPProver {
 		)
 		.entered();
 
-		// Ring-switching reduction of the witness claim. The top challenge is the witness's
-		// segment selector, which the verifier consumes when reconstructing the full witness
-		// evaluation.
-		let witness_point = &eval_point[..eval_point.len() - 1];
+		// Ring-switching reduction of the witness claim, at the point above less its segment
+		// selector — the verifier consumes that when reconstructing the full witness evaluation.
 		let ring_switch::RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
@@ -390,7 +392,8 @@ where
 	///
 	/// See [`Prover`] struct documentation for details.
 	pub fn setup(verifier: Verifier<H>) -> Result<Self, Error> {
-		let key_collection = build_key_collection(verifier.constraint_system());
+		let key_collection =
+			build_key_collection(verifier.constraint_system(), InoutSegment::Public);
 		Self::setup_with_key_collection(verifier, key_collection)
 	}
 
@@ -404,9 +407,10 @@ where
 	) -> Result<Self, Error> {
 		warn_on_software_field_arithmetic();
 
-		// Get max subspace from verifier's IOP compiler (reuses FRI params)
-		let subspace = verifier.iop_compiler().max_subspace();
-		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
+		// Rebuild the verifier's evaluation domain, which its compiler fixed as the Gao-Mateer
+		// basis of that dimension.
+		let domain_context =
+			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
 		// FIXME TODO For mobile phones, the number of shares should potentially be more than the
 		// number of threads, because the threads/cores have different performance (but in the NTT
 		// each share has the same amount of work)
@@ -448,7 +452,7 @@ where
 
 		let _prove_guard = tracing::info_span!(
 			"Prove",
-			n_hidden_words = cs.n_hidden_words(),
+			n_hidden_words = cs.n_hidden_words(InoutSegment::Public),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)
@@ -518,6 +522,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>, A: Allocator>(
 		padded_witness_elems.spare_capacity_mut()[..n_aligned_elems].par_iter_mut(),
 	)
 		.into_par_iter()
+		.with_min_task_bytes::<P>()
 		.for_each(|(word_pairs, out)| {
 			out.write(P::from_scalars(
 				word_pairs
@@ -555,10 +560,17 @@ pub fn pack_witness<P: PackedField<Scalar = B128>, A: Allocator>(
 /// materialized column per operand.
 ///
 /// Column `i` holds operand `i` of every constraint, in the constraint type's storage order — the
-/// order the shift reduction batches operands in. Each column has one row per constraint, in the
-/// same order, followed by zero rows up to `constraints.len().next_power_of_two()`: the reductions
-/// consume power-of-two-length columns, and a zero row satisfies every constraint type. An empty
-/// constraint slice still yields one zero row, since that is the smallest power-of-two length.
+/// order the shift reduction batches operands in. Each column has exactly one row per constraint,
+/// in the same order, and nothing beyond them: every reduction rounds the constraint axis up to
+/// `constraints.len().next_power_of_two()` itself and reads the rows past a column's end as zero,
+/// which satisfies every constraint type.
+///
+/// An empty constraint slice still yields one zero row. [`ConstraintSystem::log_and_constraints`]
+/// reports `None` for an empty AND set and the verifier reads that as *zero* constraint variables —
+/// one all-zero row, not zero rows — and the BitAnd check has no skip branch. The two
+/// multiplication checks run only on a non-empty constraint set, so only AND reaches this.
+///
+/// [`ConstraintSystem::log_and_constraints`]: binius_core::constraint_system::ConstraintSystem::log_and_constraints
 ///
 /// `N_COLS` may be smaller than `ARITY`, in which case the trailing operands are not evaluated. The
 /// BitAnd check uses that to skip its `C` column: on a satisfying witness `C = A & B` holds
@@ -577,24 +589,27 @@ where
 	}
 
 	let n_constraints = constraints.len();
-	let n_rows = n_constraints.next_power_of_two();
+	// One row per constraint, and one standing in for an empty set (see above).
+	let n_rows = n_constraints.max(1);
 	(0..N_COLS)
 		.into_par_iter()
 		.map(|op_idx| {
 			let mut column = alloc.alloc::<Word>(n_rows);
 			// The allocator may hand back more capacity than requested, so bound the spare slice to
-			// the row count before splitting it into the constraint rows and the zero padding.
-			let (constraint_rows, padding_rows) =
-				column.spare_capacity_mut()[..n_rows].split_at_mut(n_constraints);
-			(constraints, &mut *constraint_rows)
+			// the row count.
+			let rows = &mut column.spare_capacity_mut()[..n_rows];
+			// No constraint writes the empty set's row, so zero it here.
+			if n_constraints == 0 {
+				rows.fill(MaybeUninit::new(Word::ZERO));
+			}
+			(constraints, &mut *rows)
 				.into_par_iter()
 				.for_each(|(constraint, out)| {
 					out.write(witness.eval_operand(&constraint.as_ref()[op_idx]));
 				});
-			padding_rows.fill(MaybeUninit::new(Word::ZERO));
-			// Safety: the two halves partition the first `n_rows` entries of `column`; the parallel
-			// loop writes each constraint row exactly once (the zip is over equal-length sides) and
-			// the loop above writes each padding row exactly once.
+			// Safety: the parallel loop writes each of the `n_rows` entries exactly once, since the
+			// zip is over equal-length sides — except when the constraint set is empty and the one
+			// row standing in for it was zeroed above.
 			unsafe { column.set_len(n_rows) };
 			column
 		})
@@ -606,9 +621,75 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
+	use binius_core::constraint_system::AndConstraint;
 	use binius_field::{Field, PackedBinaryGhash2x128b};
+	use binius_frontend::CircuitBuilder;
 
-	use super::{B128, Word, pack_witness};
+	use super::{B128, ValueVec, Word, build_operation_columns, pack_witness};
+
+	/// A circuit of `n_gates` independent AND gates, and a witness satisfying it.
+	///
+	/// One gate yields one AND constraint, so the constraint count is `n_gates` exactly.
+	fn and_gate_witness(n_gates: usize) -> (Vec<AndConstraint>, ValueVec) {
+		let builder = CircuitBuilder::new();
+		let wires: Vec<_> = (0..n_gates)
+			.map(|_| {
+				let x = builder.add_witness();
+				let y = builder.add_witness();
+				builder.force_commit(builder.band(x, y));
+				(x, y)
+			})
+			.collect();
+		let circuit = builder.build();
+
+		let mut w = circuit.new_witness_filler();
+		for (i, &(x, y)) in wires.iter().enumerate() {
+			// Both operands are non-zero on every gate, so a zero row can only be padding.
+			w[x] = Word(0x0123_4567_89AB_CDEF | (i as u64) << 32 | 1);
+			w[y] = Word(0xFEDC_BA98_7654_3210 | (i as u64) | 1);
+		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
+		assert_eq!(cs.n_and_constraints(), n_gates);
+		(cs.and_constraints, w.into_value_vec())
+	}
+
+	/// The columns stop at the last constraint rather than rounding up to a power of two: the
+	/// reductions round the constraint axis up themselves and read the rows past a column's end as
+	/// zero.
+	#[test]
+	fn build_operation_columns_stops_at_the_last_constraint() {
+		let (constraints, witness) = and_gate_witness(3);
+		let columns = build_operation_columns::<AndConstraint, _, 3, 2>(
+			&constraints,
+			&witness,
+			&GlobalAllocator,
+		);
+
+		// Three rows, not the four the reduction runs over. The fixture makes every operand
+		// non-zero, so a surviving padding row would show up as a zero tail.
+		for column in &columns {
+			assert_eq!(column.len(), 3);
+			assert!(column.iter().all(|&word| word != Word::ZERO));
+		}
+	}
+
+	/// An empty constraint set still yields one all-zero row: the verifier reads
+	/// `log_and_constraints() == None` as zero constraint variables, which is one row, and the
+	/// BitAnd check has no skip branch.
+	#[test]
+	fn build_operation_columns_gives_an_empty_set_one_zero_row() {
+		let (_, witness) = and_gate_witness(1);
+		let columns =
+			build_operation_columns::<AndConstraint, _, 3, 2>(&[], &witness, &GlobalAllocator);
+
+		for column in &columns {
+			assert_eq!(column.len(), 1);
+			assert_eq!(column[0], Word::ZERO);
+		}
+	}
 
 	/// The packing `pack_witness` is specified to produce: consecutive little-endian B128 elements
 	/// (low word in bits 0..64, high word in bits 64..128), a final unpaired word in the low half,

@@ -54,11 +54,11 @@ where
 		"precondition: interleaved message length must match the oracle's spec"
 	);
 
-	// Encode this oracle at its own dimension (≤ the batched code's reduced dimension), over the
-	// same subspace and rate as the batched code. `encode_batch` checks the subspace matches the
-	// NTT, which is how the per-oracle codeword stays consistent with the combined fold's lift.
-	let rs_code =
-		ReedSolomonCode::with_ntt_subspace(ntt, oracle_log_dim, params.rs_code().log_inv_rate());
+	// Encode this oracle at its own dimension (≤ the batched code's reduced dimension), at the
+	// same rate as the batched code. Both codes evaluate over the Gao-Mateer basis, the shorter
+	// one over a prefix of the longer's, which is how the per-oracle codeword stays consistent
+	// with the combined fold's lift. `encode_batch` checks the NTT agrees with that domain.
+	let rs_code = ReedSolomonCode::new(oracle_log_dim, params.rs_code().log_inv_rate());
 
 	let _scope = tracing::debug_span!(
 		"Reed–Solomon Encode",
@@ -155,8 +155,7 @@ mod tests {
 	use binius_hash::StdHashSuite;
 	use binius_iop::fri::FRIParams;
 	use binius_math::{
-		BinarySubspace,
-		ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
+		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::random_field_buffer,
 	};
 	use rand::{SeedableRng, rngs::StdRng};
@@ -178,12 +177,10 @@ mod tests {
 
 		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 
-		let subspace = BinarySubspace::with_dim(log_dim + log_inv_rate);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+		let domain_context = GaoMateerOnTheFly::generate(log_dim + log_inv_rate);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		let params = FRIParams::with_strategy(
-			ntt.domain_context(),
 			merkle_prover.scheme(),
 			log_dim + log_batch_size,
 			Some(log_batch_size),

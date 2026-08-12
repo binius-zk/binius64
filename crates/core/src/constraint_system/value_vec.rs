@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 use bytemuck::{Pod, Zeroable};
 
-use super::{ShiftedValueIndex, ValueIndex, ValueVecLayout};
+use super::{ShiftedValueIndex, ValueIndex, ValueSegment, ValueVecLayout};
 use crate::word::Word;
 
 /// A 16-byte-aligned pair of words, the storage block of the aligned word buffer.
@@ -76,19 +76,33 @@ impl DerefMut for AlignedWords {
 /// [`ConstraintSystem`](super::ConstraintSystem). It is the primary data structure for both
 /// constraint evaluation and polynomial commitment.
 ///
-/// The words are the public segment followed by the hidden segment, each of which holds padding
-/// between and after its sections. A vector built with [`Self::new`] carries the circuit's scratch
-/// tail past those two segments; one built with [`Self::new_from_data`] ends with them.
+/// The words are the public values followed by the private ones, stored back to back with no
+/// padding. A vector built with [`Self::new`] carries the circuit's scratch tail past them; one
+/// built with [`Self::new_from_data`] ends with the private values.
 ///
 /// The words live in a buffer that starts on a 16-byte boundary.
 /// That keeps the frequent bulk copies of the vector on the aligned SIMD `memcpy` path.
+///
+/// # Addressing
+///
+/// A [`ValueIndex`] names a word by its segment and its position within that segment, and the
+/// vector stores the two counts that place each segment in the buffer.
+///
+/// These are *storage* positions, and they are deliberately not the positions the proving
+/// protocol reads a word at: the protocol pads the public segment to a power of two and the
+/// hidden segment to at least that width, so it addresses the same word further along. Its
+/// addresses come from
+/// [`ConstraintSystem::word_offset`](super::ConstraintSystem::word_offset) instead. Nothing needs
+/// both, because the prover pads each segment as it packs it into field elements.
 #[derive(Clone, Debug)]
 pub struct ValueVec {
-	/// The number of words in the public segment, which is also where the hidden segment starts.
-	n_public_words: usize,
-	/// The number of words in the hidden segment.
-	n_hidden_words: usize,
-	/// The committed words followed by the scratch tail, 16-byte aligned.
+	/// The number of constants, which is where the inout values start.
+	n_const: usize,
+	/// The number of public values, which is where the private ones start.
+	n_public_values: usize,
+	/// The number of private values.
+	n_private: usize,
+	/// The values followed by the scratch tail, 16-byte aligned.
 	data: AlignedWords,
 }
 
@@ -97,41 +111,91 @@ impl ValueVec {
 	/// including its scratch tail.
 	pub fn new(layout: &ValueVecLayout) -> ValueVec {
 		ValueVec {
-			n_public_words: layout.n_public_words(),
-			n_hidden_words: layout.n_hidden_words,
+			n_const: layout.n_const,
+			n_public_values: layout.offset_witness(),
+			n_private: layout.n_private(),
 			data: AlignedWords::zeroed(layout.combined_len() + layout.n_scratch),
 		}
 	}
 
-	/// Creates a value vector from the words of its public and hidden segments.
+	/// Creates a value vector from the words of its public and private values.
 	///
 	/// The vector has no scratch tail; scratch words only exist while a circuit is evaluated.
-	pub fn new_from_data(public: &[Word], private: &[Word]) -> ValueVec {
-		// Fresh 16-byte-aligned buffer holding the public words followed by the hidden ones.
+	///
+	/// `n_const` splits the public words into the constants and the inout values, which is what
+	/// resolves an [`InOut`](super::ValueSegment::InOut) index. Rebuilding a vector from
+	/// serialized segments therefore needs the system describing them, so prefer
+	/// [`ConstraintSystem::value_vec_from_data`](super::ConstraintSystem::value_vec_from_data),
+	/// which passes it for you.
+	pub fn new_from_data(n_const: usize, public: &[Word], private: &[Word]) -> ValueVec {
+		// Fresh 16-byte-aligned buffer holding the public words followed by the private ones.
 		let mut data = AlignedWords::zeroed(public.len() + private.len());
 		data[..public.len()].copy_from_slice(public);
 		data[public.len()..].copy_from_slice(private);
 
 		ValueVec {
-			n_public_words: public.len(),
-			n_hidden_words: private.len(),
+			n_const,
+			n_public_values: public.len(),
+			n_private: private.len(),
 			data,
 		}
 	}
 
-	/// The total size of the public and committed portions of the vector (excluding scratch).
+	/// Returns one word by its flat position, counting the scratch tail.
+	///
+	/// This is the view for the few readers that address whole segments rather than named values:
+	/// the evaluation form, whose bytecode holds one register per position, and the batch witness,
+	/// which copies a segment across including its padding. Everything else names words by
+	/// [`ValueIndex`], which cannot reach a padding word.
+	#[inline]
+	pub fn word(&self, offset: u32) -> Word {
+		self.data[offset as usize]
+	}
+
+	/// Returns a mutable reference to one word by its flat position, counting the scratch tail.
+	///
+	/// This is the mutable counterpart of [`Self::word`], which documents when to reach for it.
+	#[inline]
+	pub fn word_mut(&mut self, offset: u32) -> &mut Word {
+		&mut self.data[offset as usize]
+	}
+
+	/// The flat position of the word a [`ValueIndex`] names.
+	///
+	/// A vector built by [`Self::new_from_data`] has no scratch tail, so a scratch index lands
+	/// past the last word and panics rather than reading a committed one.
+	#[inline]
+	const fn word_offset(&self, index: ValueIndex) -> usize {
+		let segment_start = match index.segment() {
+			ValueSegment::Constant => 0,
+			ValueSegment::InOut => self.n_const,
+			ValueSegment::Private => self.n_public_values,
+			ValueSegment::Scratch => self.size(),
+		};
+		segment_start + index.index() as usize
+	}
+
+	/// The number of values the vector holds, excluding scratch.
 	pub const fn size(&self) -> usize {
-		self.n_public_words + self.n_hidden_words
+		self.n_public_values + self.n_private
 	}
 
-	/// Returns the public portion of the values vector.
+	/// Returns the public values: the constants followed by the inout values.
+	///
+	/// These are the words as the circuit declares them, unpadded. The prover pads them up to the
+	/// public segment width as it packs them.
 	pub fn public(&self) -> &[Word] {
-		&self.data[..self.n_public_words]
+		&self.data[..self.n_public_values]
 	}
 
-	/// Return all non-public values without scratch space.
+	/// Returns the inout values: the public values past the constants.
+	pub fn inout(&self) -> &[Word] {
+		&self.data[self.n_const..self.n_public_values]
+	}
+
+	/// Returns the private values, unpadded and without scratch space.
 	pub fn non_public(&self) -> &[Word] {
-		&self.data[self.n_public_words..self.size()]
+		&self.data[self.n_public_values..self.size()]
 	}
 
 	/// Returns the combined values vector.
@@ -156,13 +220,14 @@ impl Index<ValueIndex> for ValueVec {
 	type Output = Word;
 
 	fn index(&self, index: ValueIndex) -> &Self::Output {
-		&self.data[index.0 as usize]
+		&self.data[self.word_offset(index)]
 	}
 }
 
 impl IndexMut<ValueIndex> for ValueVec {
 	fn index_mut(&mut self, index: ValueIndex) -> &mut Self::Output {
-		&mut self.data[index.0 as usize]
+		let offset = self.word_offset(index);
+		&mut self.data[offset]
 	}
 }
 
@@ -179,16 +244,13 @@ mod tests {
 			n_inout: 2,
 			n_witness: 2,
 			n_internal: 2,
-			offset_inout: 2,
-			offset_witness: 4,
-			n_hidden_words: 4,
 			n_scratch: 0,
 		};
 		let values = ValueVec::new(&layout);
 
 		let public = values.public();
 		let non_public = values.non_public();
-		let combined = ValueVec::new_from_data(public, non_public);
+		let combined = ValueVec::new_from_data(layout.n_const, public, non_public);
 		assert_eq!(combined.combined_witness(), values.combined_witness());
 	}
 
@@ -247,44 +309,33 @@ mod tests {
 			let public: Vec<Word> = public.into_iter().map(Word).collect();
 			let private: Vec<Word> = (0..n_witness).map(|i| Word::from_u64(0xdead_0000 + i as u64)).collect();
 
-			// The public section is padded to a power of two.
-			// The witness section follows it, then the scratch tail.
+			// The sections sit back to back, then the scratch tail:
 			//
-			//     [0, offset_witness)                            -> public  (power of two)
-			//     [offset_witness, offset_witness + n_hidden_words) -> witness
+			//     [0, public.len())                            -> public
+			//     [public.len(), public.len() + private.len()) -> private
 			//     then the scratch tail
-			let offset_witness = public.len().next_power_of_two();
-			let n_hidden_words = private.len();
 			let layout = ValueVecLayout {
 				n_const: 0,
 				n_inout: public.len(),
 				n_witness: private.len(),
 				n_internal: 0,
-				offset_inout: 0,
-				offset_witness,
-				n_hidden_words,
 				n_scratch,
 			};
-
-			// The public input must fill its whole power-of-two section, so zero-pad it.
-			let mut public_padded = public;
-			public_padded.resize(offset_witness, Word::ZERO);
 
 			// A vector built from the layout carries the scratch tail; one built from its
 			// segments holds only those words.
 			let zeroed = ValueVec::new(&layout);
-			let vv = ValueVec::new_from_data(&public_padded, &private);
+			let vv = ValueVec::new_from_data(layout.n_const, &public, &private);
 
 			// Alignment survives construction for any word count.
 			assert_16_byte_aligned(vv.combined_witness());
 			// Both sections read back byte-for-byte what went in.
-			prop_assert_eq!(vv.public(), &public_padded[..]);
+			prop_assert_eq!(vv.public(), &public[..]);
 			prop_assert_eq!(vv.non_public(), &private[..]);
 
 			// The scratch tail past the committed words is zeroed and addressable.
-			let combined_len = layout.combined_len();
-			for i in combined_len..combined_len + n_scratch {
-				prop_assert_eq!(zeroed[ValueIndex(i as u32)], Word::ZERO);
+			for slot in 0..n_scratch {
+				prop_assert_eq!(zeroed[ValueIndex::scratch(slot as u32)], Word::ZERO);
 			}
 		}
 	}

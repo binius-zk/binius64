@@ -3,14 +3,15 @@
 
 use std::iter::{self, repeat_with};
 
-use binius_field::BinaryField;
-use binius_math::ntt::domain_context::GenericOnTheFly;
+use binius_core::word::Word;
+use binius_field::{BinaryField, FieldOps};
+use binius_math::ntt::domain_context::GaoMateerOnTheFly;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use super::{
 	batch::{BatchBrakedownOracle, BrakedownOracle, FRIOracle, ProxTestOracle, fold_coset},
 	common::FRIParams,
-	error::{Error, VerificationError},
+	error::Error,
 };
 use crate::merkle_channel::MerkleIPVerifierChannel;
 
@@ -25,7 +26,7 @@ use crate::merkle_channel::MerkleIPVerifierChannel;
 /// between these oracles and the final, fully-folded terminal codeword. The oracles are
 /// parameterized by the Merkle commitment handle type `C` of the channel that receives the query
 /// openings.
-pub struct FRIQueryVerifier<'a, F, C>
+pub struct FRIQueryVerifier<'a, F, E, C>
 where
 	F: BinaryField,
 {
@@ -33,23 +34,24 @@ where
 	/// Commitment to the fully-folded terminal codeword, sent in full by the prover.
 	terminal_commitment: C,
 	/// The folding challenges applied after the last committed oracle.
-	final_challenges: &'a [F],
+	final_challenges: &'a [E],
 	/// Performs the first, interleaved reduction of the committed codeword(s).
-	codeword_oracle: BatchBrakedownOracle<F, C>,
+	codeword_oracle: BatchBrakedownOracle<E, C>,
 	/// Performs each subsequent FRI reduction, one per fold arity.
-	fri_oracles: Vec<FRIOracle<F, C, GenericOnTheFly<F>>>,
+	fri_oracles: Vec<FRIOracle<E, C, GaoMateerOnTheFly<F>>>,
 }
 
-impl<'a, F, C> FRIQueryVerifier<'a, F, C>
+impl<'a, F, E, C> FRIQueryVerifier<'a, F, E, C>
 where
 	F: BinaryField,
+	E: FieldOps<Scalar = F> + From<F>,
 	C: Clone,
 {
 	pub fn new(
 		params: &'a FRIParams<F>,
 		codeword_commitment: &C,
 		round_commitments: &[C],
-		challenges: &'a [F],
+		challenges: &'a [E],
 	) -> Self {
 		Self::new_batch(
 			params,
@@ -76,7 +78,7 @@ where
 		params: &'a FRIParams<F>,
 		codeword_commitments: &[C],
 		round_commitments: &[C],
-		challenges: &'a [F],
+		challenges: &'a [E],
 	) -> Self {
 		assert_eq!(
 			codeword_commitments.len(),
@@ -99,7 +101,6 @@ where
 		// holds whenever `log_lift <= log_dim`, so assert it here rather than trusting the
 		// caller.
 		let log_dim = params.rs_code().log_dim();
-		let log_inv_rate = params.rs_code().log_inv_rate();
 		for spec in params.input_oracles() {
 			assert!(
 				spec.log_lift <= log_dim,
@@ -134,24 +135,23 @@ where
 		let later_challenges = &challenges[max_early + log_n_oracles..params.log_batch_size()];
 		let codeword_sub_oracles = iter::zip(codeword_commitments, params.input_oracles())
 			.map(|(commitment, spec)| {
-				// The oracle's own codeword has dimension `log_dim - log_lift`, so its Merkle tree
-				// depth is that plus the inverse rate. It is lifted to the common first-round
-				// length (`index_bits`) by duplicating each entry `2^log_lift` times.
-				let oracle_log_dim = log_dim - spec.log_lift;
-				let depth = oracle_log_dim + log_inv_rate;
-				let log_lift = spec.log_lift;
+				// The oracle is lifted to the common first-round length (`index_bits`) by
+				// duplicating each entry `2^log_lift` times.
 				let early_window = &early_challenges[max_early - spec.log_early_batch_size..];
 				let later_window = &later_challenges[max_later - spec.log_later_batch_size..];
-				let fold_challenges: Vec<F> =
-					early_window.iter().chain(later_window).copied().collect();
-				BrakedownOracle::new(fold_challenges, commitment.clone(), depth, log_lift)
+				let fold_challenges: Vec<E> =
+					early_window.iter().chain(later_window).cloned().collect();
+				BrakedownOracle::new(fold_challenges, commitment.clone(), spec.log_lift)
 			})
 			.collect();
 		let codeword_oracle = BatchBrakedownOracle::new(codeword_sub_oracles, outer_challenges);
 
 		// All FRI reductions fold cosets of the same Reed–Solomon codeword domain, so they share a
 		// single domain context.
-		let domain_context = GenericOnTheFly::generate_from_subspace(params.rs_code().subspace());
+		// `ReedSolomonCode` fixes the evaluation domain as the Gao-Mateer basis of its length, so
+		// the verifier rebuilds it from the code's shape rather than being told which basis the
+		// prover used.
+		let domain_context = GaoMateerOnTheFly::generate(params.rs_code().log_len());
 		let mut fri_oracles = Vec::with_capacity(params.fold_arities().len());
 		let mut depth = index_bits;
 		let mut fold_round = params.log_batch_size();
@@ -186,9 +186,9 @@ where
 		self.params.n_oracles()
 	}
 
-	pub fn verify<Channel>(&self, channel: &mut Channel) -> Result<F, Error>
+	pub fn verify<Channel>(&self, channel: &mut Channel) -> Result<E, Error>
 	where
-		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
+		Channel: MerkleIPVerifierChannel<F, Commitment = C, Elem = E>,
 	{
 		// Sample all query indices up front to facilitate batched Merkle openings.
 		let mut indices = repeat_with(|| channel.sample_bits(self.params.index_bits()))
@@ -198,24 +198,12 @@ where
 		// Open and reduce the queries through each oracle in turn, receiving the per-oracle
 		// batched openings over the channel.
 		let mut claims = self.codeword_oracle.open_queries(&indices, channel)?;
-		for (query_round, (oracle, &arity)) in self
-			.fri_oracles
-			.iter()
-			.zip(self.params.fold_arities())
-			.enumerate()
-		{
-			claims =
-				oracle
-					.reduce_queries(&indices, &claims, channel)
-					.map_err(|err| match err {
-						super::batch::Error::ClaimMismatch { index } => {
-							VerificationError::IncorrectFold { query_round, index }.into()
-						}
-						err => Error::from(err),
-					})?;
-			for index in &mut indices {
-				*index >>= arity;
-			}
+		for (oracle, &arity) in self.fri_oracles.iter().zip(self.params.fold_arities()) {
+			claims = oracle.reduce_queries(&indices, &claims, channel)?;
+			indices = indices
+				.into_iter()
+				.map(|index| index >> arity as u32)
+				.collect();
 		}
 
 		// Check the fully-reduced queries against the terminal codeword sent in full.
@@ -230,12 +218,12 @@ where
 	/// repetition codeword of the claimed low degree, and returns the fully-folded message value.
 	fn verify_terminal_queries<Channel>(
 		&self,
-		claims: &[F],
-		indices: &[usize],
+		claims: &[E],
+		indices: &[Channel::Word],
 		channel: &mut Channel,
-	) -> Result<F, Error>
+	) -> Result<E, Error>
 	where
-		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
+		Channel: MerkleIPVerifierChannel<F, Commitment = C, Elem = E>,
 	{
 		let n_final_challenges = self.params.n_final_challenges();
 		let log_inv_rate = self.params.rs_code().log_inv_rate();
@@ -243,44 +231,39 @@ where
 		let terminate_codeword = channel.recv_committed_vector(&self.terminal_commitment)?;
 
 		// Check the fully-reduced claims against the terminal codeword the verifier holds in full.
-		for (&claim, &index) in iter::zip(claims, indices) {
-			if claim != terminate_codeword[index] {
-				return Err(VerificationError::IncorrectFold {
-					query_round: self.n_oracles() - 1,
-					index,
-				}
-				.into());
-			}
-		}
+		iter::zip(claims, indices).try_for_each(|(claim, index)| {
+			let entry = channel.select(&terminate_codeword, index);
+			channel.assert_zero(claim.clone() - entry)
+		})?;
 
 		// Fold each coset of the terminal codeword and check that the folds are all equal, i.e.
 		// that the codeword has the claimed low degree.
-		let domain_context =
-			GenericOnTheFly::generate_from_subspace(self.params.rs_code().subspace());
+		let domain_context = GaoMateerOnTheFly::generate(self.params.rs_code().log_len());
 		let log_len = n_final_challenges + log_inv_rate;
 		let repetition_codeword = terminate_codeword
 			.chunks(1 << n_final_challenges)
 			.enumerate()
 			.map(|(coset_index, coset)| {
+				// The coset index is fixed by the protocol here rather than sampled, so it is
+				// lifted from a concrete word.
+				let coset_index = Channel::Word::from(Word::from_u64(coset_index as u64));
 				fold_coset(
 					&domain_context,
 					log_len,
-					coset_index,
+					&coset_index,
 					self.final_challenges,
 					coset.to_vec(),
+					channel,
 				)
 			})
 			.collect::<Vec<_>>();
 
-		let final_value = repetition_codeword[0];
+		let final_value = repetition_codeword[0].clone();
 
 		// Check that the fully-folded purported codeword is a repetition codeword.
-		if repetition_codeword[1..]
+		repetition_codeword[1..]
 			.iter()
-			.any(|&entry| entry != final_value)
-		{
-			return Err(VerificationError::IncorrectDegree.into());
-		}
+			.try_for_each(|entry| channel.assert_zero(entry.clone() - final_value.clone()))?;
 
 		Ok(final_value)
 	}

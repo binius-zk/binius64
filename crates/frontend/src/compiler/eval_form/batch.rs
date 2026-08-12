@@ -23,11 +23,11 @@ use binius_core::Word;
 use binius_utils::strided_array::StridedArray2DViewMut;
 
 use super::{
-	assertion::{MAX_ASSERTION_FAILURES, symbolicate},
+	assertion::{MAX_ASSERTION_FAILURES, render_path},
 	exec::EvalContext,
 };
 use crate::compiler::{
-	circuit::PopulateError,
+	circuit::{AssertionFailure, PopulateError},
 	pathspec::{PathSpec, PathSpecTree},
 };
 
@@ -42,11 +42,16 @@ struct InstanceAssertionFailure {
 ///
 /// Serial batched evaluation reports the lowest-indexed failing instance. Parallel batched
 /// evaluation runs over independent stripes, and may report the first failing stripe observed.
-#[derive(Debug)]
+///
+/// The inner [`PopulateError`] is the error's source, so the pair renders as one chain.
+#[derive(Debug, thiserror::Error)]
+#[error("instance {instance} is not satisfied: {source}")]
+#[non_exhaustive]
 pub struct BatchPopulateError {
 	/// The index of the reported failing instance.
 	pub instance: usize,
 	/// The assertion failures recorded for that instance.
+	#[source]
 	pub source: PopulateError,
 }
 
@@ -87,19 +92,22 @@ impl<'a, 'v> BatchExecutionContext<'a, 'v> {
 			return Ok(());
 		};
 
-		// Collect and symbolicate just the reported instance's messages.
-		let mut messages = Vec::new();
-		let mut total_count = 0;
-		for failure in self.failures.into_iter().filter(|f| f.instance == instance) {
-			total_count += 1;
-			messages.push(symbolicate(path_spec_tree, failure.path_spec, failure.message));
-		}
+		// Keep just the reported instance's failures, resolving each path against the tree.
+		let failures: Vec<AssertionFailure> = self
+			.failures
+			.into_iter()
+			.filter(|f| f.instance == instance)
+			.map(|f| AssertionFailure {
+				path: render_path(path_spec_tree, f.path_spec),
+				detail: f.message,
+			})
+			.collect();
 
 		Err(BatchPopulateError {
 			instance,
 			source: PopulateError {
-				messages,
-				total_count,
+				total: failures.len(),
+				failures,
 			},
 		})
 	}
@@ -148,7 +156,7 @@ mod tests {
 	use binius_core::Word;
 	use binius_utils::strided_array::StridedArray2DViewMut;
 
-	use crate::compiler::CircuitBuilder;
+	use crate::compiler::{CircuitBuilder, circuit::AssertionFailure};
 
 	// The batched interpreter must reproduce, for every instance, exactly what the single-instance
 	// interpreter produces for the same inputs. This is the core equivalence guarantee.
@@ -198,8 +206,8 @@ mod tests {
 			.collect();
 
 		// Batched: fill the input rows for every instance, then evaluate all at once.
-		let a_row = circuit.witness_index(a).0 as usize;
-		let b_row = circuit.witness_index(b).0 as usize;
+		let a_row = circuit.witness_row(a);
+		let b_row = circuit.witness_row(b);
 		let mut data = vec![Word::ZERO; full_len * n];
 		let mut view = StridedArray2DViewMut::without_stride(&mut data, full_len, n).unwrap();
 		for (instance, &(x, y)) in inputs.iter().enumerate() {
@@ -236,8 +244,8 @@ mod tests {
 
 		// Instances 2 and 3 violate a == b; instance 2 is the lowest.
 		let inputs = [(1u64, 1u64), (7, 7), (4, 5), (9, 8)];
-		let a_row = circuit.witness_index(a).0 as usize;
-		let b_row = circuit.witness_index(b).0 as usize;
+		let a_row = circuit.witness_row(a);
+		let b_row = circuit.witness_row(b);
 		let mut data = vec![Word::ZERO; full_len * n];
 		let mut view = StridedArray2DViewMut::without_stride(&mut data, full_len, n).unwrap();
 		for (instance, &(x, y)) in inputs.iter().enumerate() {
@@ -249,10 +257,20 @@ mod tests {
 			.populate_wire_witness_batched(&mut view)
 			.expect_err("instances 2 and 3 violate a == b");
 		assert_eq!(err.instance, 2);
-		assert_eq!(err.source.total_count, 1);
+		assert_eq!(err.source.total, 1);
 		assert_eq!(
-			err.source.messages,
-			vec![".a_eq_b: Word(0x0000000000000004) != Word(0x0000000000000005)".to_string()]
+			err.source.failures,
+			vec![AssertionFailure {
+				path: ".a_eq_b".to_string(),
+				detail: "Word(0x0000000000000004) != Word(0x0000000000000005)".to_string(),
+			}]
 		);
+		// thiserror supplies the instance prefix and chains the inner error as the source.
+		let rendered = err.to_string();
+		assert!(rendered.starts_with("instance 2 is not satisfied: "), "{rendered}");
+		assert!(rendered.contains(".a_eq_b: Word(0x0000000000000004)"), "{rendered}");
+		// An error message must not carry its own trailing newline.
+		assert!(!rendered.ends_with('\n'), "{rendered}");
+		assert!(std::error::Error::source(&err).is_some(), "the inner error must be the source");
 	}
 }

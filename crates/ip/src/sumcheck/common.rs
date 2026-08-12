@@ -2,7 +2,7 @@
 
 use std::ops::{Add, AddAssign, Index, Mul, MulAssign};
 
-use binius_field::field::FieldOps;
+use binius_field::{Field, field::FieldOps};
 use binius_math::univariate::evaluate_univariate;
 
 /// A univariate polynomial in monomial basis.
@@ -82,6 +82,34 @@ impl<F: FieldOps> RoundCoeffs<F> {
 		let (r_0, r_1) = self.endpoints();
 		// Line through the endpoints, sampled at alpha: R(0) + alpha * (R(1) - R(0)).
 		r_0.clone() + alpha * (r_1 - r_0)
+	}
+}
+
+impl<F: Field> RoundCoeffs<F> {
+	/// Multiplies this polynomial by the equality factor $\text{eq}(X, \alpha)$.
+	///
+	/// $$
+	/// \text{eq}(X, \alpha) = (1 - \alpha) + (2 \alpha - 1) X
+	/// $$
+	///
+	/// An MLE-check prover interpolates the prime polynomial, which carries no equality factor.
+	/// This multiplies the factor back in.
+	///
+	/// Monomial form makes that one scaling and one shift.
+	/// Sampling the factored polynomial instead would cost an extra evaluation point.
+	///
+	/// The factor is linear, so the result has one more coefficient than `self`.
+	pub fn mul_by_eq(&self, alpha: F) -> Self {
+		// NB: In characteristic 2, eq(X, alpha) simplifies to (1 + alpha) + X.
+		let (by_constant_term, mut by_linear_term) = if F::CHARACTERISTIC == 2 {
+			(self.clone() * (F::ONE + alpha), self.clone())
+		} else {
+			(self.clone() * (F::ONE - alpha), self.clone() * (alpha.double() - F::ONE))
+		};
+
+		// Prepending a zero coefficient multiplies the polynomial by X.
+		by_linear_term.0.insert(0, F::ZERO);
+		by_constant_term + &by_linear_term
 	}
 }
 
@@ -214,7 +242,7 @@ impl<F: FieldOps> RoundProof<F> {
 #[cfg(test)]
 mod tests {
 	use binius_field::{Field, Random, arch::OptimalB128 as B128};
-	use binius_math::test_utils::random_scalars;
+	use binius_math::{multilinear::eq::eq_one_var, test_utils::random_scalars};
 	use rand::prelude::*;
 
 	use super::*;
@@ -262,6 +290,30 @@ mod tests {
 
 			// Evaluate the recovered polynomial at both endpoints and confirm they sum to s.
 			assert_eq!(recovered.evaluate(&B128::ZERO) + recovered.evaluate(&B128::ONE), sum);
+		}
+	}
+
+	#[test]
+	fn mul_by_eq_multiplies_pointwise() {
+		let mut rng = rng();
+		// Invariant: scaling by the equality factor is exact at every point.
+		//
+		//     (R * eq)(x) == R(x) * eq(x, alpha)
+		//
+		// The prover interpolates the prime polynomial and multiplies the factor back in here,
+		// so a discrepancy would send a round polynomial the verifier cannot reproduce.
+		for degree in DEGREES {
+			let coeffs = RoundCoeffs(random_scalars::<B128>(&mut rng, degree + 1));
+			let alpha = B128::random(&mut rng);
+
+			let scaled = coeffs.mul_by_eq(alpha);
+
+			// The equality factor is linear, so the product gains exactly one degree.
+			assert_eq!(scaled.0.len(), coeffs.0.len() + 1);
+			for x in random_scalars::<B128>(&mut rng, 4) {
+				let eq_at_x = eq_one_var(x, alpha);
+				assert_eq!(scaled.evaluate(&x), coeffs.evaluate(&x) * eq_at_x);
+			}
 		}
 	}
 

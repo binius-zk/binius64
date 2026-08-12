@@ -1172,10 +1172,19 @@ where
 
 	#[inline(always)]
 	fn as_inner(&self) -> &Self::Inner {
-		// This is a limitation - we can't return a reference to Either<L::Inner, R::Inner>
-		// from Either<L, R> without storing it. For now, we'll panic.
-		// This method is rarely used in practice.
+		// The inner type is built by wrapping each side, so a borrow of it would have to be
+		// materialized somewhere: `&Either<L, R>` holds no `Either<L::Inner, R::Inner>` to
+		// point at. Every borrowing method is overridden to dispatch on the side instead.
 		unimplemented!("as_inner not supported for Either")
+	}
+
+	#[inline(always)]
+	fn opt_len(&self) -> Option<usize> {
+		// Dispatch on the side rather than going through the inner borrow.
+		match self {
+			Either::Left(left) => left.opt_len(),
+			Either::Right(right) => right.opt_len(),
+		}
 	}
 }
 

@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use binius_core::{ConstraintSystem, Operand, ShiftedValueIndex};
+use binius_core::{ConstraintSystem, InoutSegment, Operand, ShiftedValueIndex};
 use itertools::chain;
 use rustc_hash::FxHashSet;
 
@@ -46,10 +46,10 @@ pub struct CircuitStat {
 	///
 	/// Affects performance of shift reduction phase.
 	pub distinct_unshifted_value_indices: usize,
-	/// Length of the value vector.
+	/// Length of the committed trace in words, a power of two.
 	///
 	/// Affects performance of committing.
-	pub value_vec_len: usize,
+	pub committed_allocated: usize,
 	/// Number of constant values used by the circuit.
 	pub n_const: usize,
 	/// Number of public input values in the circuit.
@@ -77,16 +77,6 @@ pub struct CircuitStat {
 	pub imul_allocated: usize,
 	/// Allocated size for BMUL constraints (power of 2)
 	pub bmul_allocated: usize,
-	/// Allocated size for public section (power of 2)
-	pub public_allocated: usize,
-	/// Allocated size for private section.
-	///
-	/// This is the space available for witness and internal values. Note that unlike
-	/// `public_allocated` and the total committed length, this is NOT necessarily a
-	/// power of two. It's simply the difference between the total committed length
-	/// (power of 2) and the public section size (power of 2). For example, if total
-	/// is 8192 and public is 128, private is 8064.
-	pub private_allocated: usize,
 }
 
 impl CircuitStat {
@@ -115,15 +105,14 @@ impl CircuitStat {
 		let imul_allocated = pad_or_skip(n_imul_constraints);
 		let bmul_allocated = pad_or_skip(n_bmul_constraints);
 
-		// The public section size is already determined by the layout
+		// The value counts come from the layout. Neither segment is padded, so each holds exactly
+		// the values the circuit declared and there is no spare capacity to report against.
 		let layout = circuit.value_vec_layout();
 		let n_const = layout.n_const;
 		let n_inout = layout.n_inout;
-		let public_allocated = layout.offset_witness;
-		// The committed values are not padded to a power of two in the layout, but the prover
-		// commits to a power-of-two-length witness polynomial, so report that padded size.
-		let total_allocated = layout.combined_len().next_power_of_two();
-		let private_allocated = total_allocated - public_allocated;
+		// The prover commits only the hidden segment, zero-extended to the word-index space the
+		// shift reduction runs over. That padding is the one the circuit author can still fill.
+		let committed_allocated = 1 << cs.log_segment_words(InoutSegment::Public);
 
 		Self {
 			n_gates: circuit.n_gates(),
@@ -132,7 +121,7 @@ impl CircuitStat {
 			n_and_constraints,
 			n_imul_constraints,
 			n_bmul_constraints,
-			value_vec_len: total_allocated,
+			committed_allocated,
 			distinct_shifted_value_indices,
 			distinct_unshifted_value_indices,
 			n_const,
@@ -145,8 +134,6 @@ impl CircuitStat {
 			and_allocated,
 			imul_allocated,
 			bmul_allocated,
-			public_allocated,
-			private_allocated,
 		}
 	}
 }
@@ -190,7 +177,6 @@ impl fmt::Display for CircuitStat {
 		// Use pre-calculated values
 		let public_used = self.n_const + self.n_inout;
 		let private_used = self.n_witness + self.n_internal;
-		let total_used = public_used + private_used;
 
 		// Gates & Instructions
 		writeln!(f, "Gates & Instructions")?;
@@ -252,58 +238,34 @@ impl fmt::Display for CircuitStat {
 		// Value Vector
 		writeln!(f, "Value Vector")?;
 
-		// Public Section
-		let public_percent = public_used as f64 / self.public_allocated as f64 * 100.0;
-		let public_spare = self.public_allocated - public_used;
-		writeln!(
-			f,
-			"├─ Public Section: {} used ({:.1}% of 2^{})",
-			fmt_num(public_used),
-			public_percent,
-			log2(self.public_allocated)
-		)?;
-		writeln!(
-			f,
-			"│  {} spare: {}",
-			progress_bar(public_used, self.public_allocated),
-			fmt_num(public_spare)
-		)?;
+		// Public Section. The segment holds exactly the values the circuit declared, and the
+		// verifier knows them, so there is neither padding nor a commitment to measure it against.
+		writeln!(f, "├─ Public Section: {} (not committed)", fmt_num(public_used))?;
 		writeln!(f, "│  ├─ Constants: {}", fmt_num(self.n_const))?;
 		writeln!(f, "│  └─ Inout: {}", fmt_num(self.n_inout))?;
 
-		// Private Section (no allocated size shown since it's not a power of 2)
-		let private_percent = private_used as f64 / self.private_allocated as f64 * 100.0;
-		let private_spare = self.private_allocated - private_used;
-		writeln!(
-			f,
-			"├─ Private Section: {} used ({:.1}%)",
-			fmt_num(private_used),
-			private_percent
-		)?;
-		writeln!(
-			f,
-			"│  {} spare: {}",
-			progress_bar(private_used, self.private_allocated),
-			fmt_num(private_spare)
-		)?;
+		// Private Section, likewise exactly the declared values.
+		writeln!(f, "├─ Private Section: {}", fmt_num(private_used))?;
 		writeln!(f, "│  ├─ Witness: {}", fmt_num(self.n_witness))?;
 		writeln!(f, "│  └─ Internal: {}", fmt_num(self.n_internal))?;
 
-		// Total Committed
-		let total_percent = total_used as f64 / self.value_vec_len as f64 * 100.0;
-		let total_spare = self.value_vec_len - total_used;
+		// Committed Trace: the hidden segment zero-extended to the shift reduction's word-index
+		// space. This is the only padded length left, and the one more values can grow into for
+		// free.
+		let committed_percent = private_used as f64 / self.committed_allocated as f64 * 100.0;
+		let committed_spare = self.committed_allocated - private_used;
 		writeln!(
 			f,
-			"├─ Total Committed: {} used ({:.1}% of 2^{})",
-			fmt_num(total_used),
-			total_percent,
-			log2(self.value_vec_len)
+			"├─ Committed Trace: {} used ({:.1}% of 2^{})",
+			fmt_num(private_used),
+			committed_percent,
+			log2(self.committed_allocated)
 		)?;
 		writeln!(
 			f,
 			"│  {} spare: {}",
-			progress_bar(total_used, self.value_vec_len),
-			fmt_num(total_spare)
+			progress_bar(private_used, self.committed_allocated),
+			fmt_num(committed_spare)
 		)?;
 
 		// Report the segment length alongside the floor it could reach if its slots were shared.
@@ -347,7 +309,7 @@ impl Cx {
 	/// Records every term of one operand.
 	fn visit_operand(&mut self, operand: &Operand) {
 		for term in operand {
-			if term.amount == 0 {
+			if term.is_unshifted() {
 				self.unshifted_terms.insert(*term);
 			} else {
 				self.shifted_terms.insert(*term);

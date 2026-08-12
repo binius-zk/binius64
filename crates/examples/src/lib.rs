@@ -177,7 +177,7 @@ where
 {
 	let challenger = StdChallenger::default();
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof_bytes);
-	verifier.verify(witness.public(), &mut verifier_transcript)?;
+	verifier.verify(witness.inout(), &mut verifier_transcript)?;
 	verifier_transcript.finalize()?;
 	Ok(())
 }
@@ -197,10 +197,8 @@ where
 	let _scope = tracing::info_span!("Verify").entered();
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof_bytes);
 	match message {
-		Some(message) => {
-			verifier.verify_sig(witness.public(), message, &mut verifier_transcript)?
-		}
-		None => verifier.verify(witness.public(), &mut verifier_transcript)?,
+		Some(message) => verifier.verify_sig(witness.inout(), message, &mut verifier_transcript)?,
+		None => verifier.verify(witness.inout(), &mut verifier_transcript)?,
 	}
 	verifier_transcript.finalize()?;
 	Ok(())

@@ -292,7 +292,16 @@ where
 			})
 			.collect::<Vec<_>>();
 		let log_cols = log2_ceil_usize(N_LIMB_COLUMNS);
-		let logup_proof = logup_star::prove(table, &lookers, self.channel, self.alloc);
+		// Every limb column reads the one shared power table, so the reduction runs over a
+		// single-table list.
+		let logup_proof = logup_star::prove(
+			[logup_star::TableLookup { table, lookers }],
+			self.channel,
+			self.alloc,
+		);
+		let [table_output] = logup_proof.tables.as_slice() else {
+			unreachable!("the reduction runs over the one power table")
+		};
 
 		// The index entries are the GF(2)-linear embeddings iota(e) = Σ_u basis(u) · bit_u(e),
 		// materialized by a table of all 2^LIMB_BITS embeddings.
@@ -311,7 +320,7 @@ where
 		// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by
 		// sampling ρ, so the final unification runs over the content variables only.
 		let rho = self.channel.sample_many(log_cols);
-		let mut padded_column_evals = logup_proof.index_eval_claims.clone();
+		let mut padded_column_evals = table_output.index_eval_claims.clone();
 		padded_column_evals.resize(1 << log_cols, F::ZERO);
 		let folded_index_claim =
 			evaluate(&FieldBuffer::<P>::from_values(&padded_column_evals), &rho);

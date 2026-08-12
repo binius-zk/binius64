@@ -3,7 +3,10 @@
 
 use std::marker::PhantomData;
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
@@ -12,10 +15,8 @@ use binius_iop::{
 		IOPVerifierChannel, OracleLinearRelation, OracleSpec, oracle_setup::OracleSetupChannel,
 	},
 };
-use binius_ip::channel::IPVerifierChannel;
-use binius_math::{
-	BinarySubspace, inner_product::inner_product_scalars, univariate::lagrange_evals_scalars,
-};
+use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
+use binius_math::BinarySubspace;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::DeserializeBytes;
 use digest::Output;
@@ -26,13 +27,8 @@ use crate::{
 	config::{B1, B128, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
-	protocols::{
-		binmul::{BinMulOutput, verify as verify_binmul_reduction},
-		bitand::{AndCheckOutput, verify_with_channel},
-		intmul::{IntMulOutput, verify as verify_intmul_reduction},
-		shift::{self, OperatorData},
-		zero,
-	},
+	protocols::bitand::{AndCheckOutput, verify_with_channel},
+	reduction::{Instances, reduce_constraints},
 	ring_switch,
 };
 
@@ -77,11 +73,26 @@ impl IOPVerifier {
 
 	/// Returns log2 of the number of field elements in the packed trace.
 	///
-	/// The trace oracle commits only the witness's hidden segment, padded to the segment
-	/// length; the public segment is a verifier-known polynomial.
+	/// The trace oracle commits only the witness's hidden segment; the public segment is a
+	/// verifier-known polynomial. The shift reduction claims that segment over the shared
+	/// word-index space, which spans the wider of the two segments, so the oracle covers
+	/// `log_segment_words` words. That is the hidden segment's own length for every system
+	/// whose private values outnumber its public ones, and the committed words above the
+	/// hidden segment are zero.
+	///
+	/// ## Preconditions
+	/// * the wider segment spans at least one field element's worth of words, which every system
+	///   with more than one public or private value satisfies
 	pub const fn log_witness_elems(&self) -> usize {
-		let log_witness_words = self.constraint_system.log_witness_words();
-		log_witness_words - LOG_WORDS_PER_ELEM
+		let log_segment_words = self
+			.constraint_system
+			.log_segment_words(InoutSegment::Public);
+		assert!(
+			log_segment_words >= LOG_WORDS_PER_ELEM,
+			"the committed trace is a whole number of field elements, so the wider value \
+			 segment spans at least that many words"
+		);
+		log_segment_words - LOG_WORDS_PER_ELEM
 	}
 
 	/// Returns log2 of the number of words in the committed trace.
@@ -103,10 +114,10 @@ impl IOPVerifier {
 	/// `verify`, rather than duplicating it here.
 	pub fn oracle_specs(&self, is_zk: bool) -> Vec<OracleSpec> {
 		let mut channel = OracleSetupChannel::new(is_zk);
-		let public = vec![Word::ZERO; 1 << self.log_public_words()];
+		let inout = vec![Word::ZERO; self.constraint_system.n_inout];
 		// The result is discarded: the setup channel performs no real verification (all `recv_*`
 		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle specs.
-		let _ = self.verify(&public, &mut channel);
+		let _ = self.verify(&inout, &mut channel);
 		channel.into_oracle_specs()
 	}
 
@@ -114,221 +125,53 @@ impl IOPVerifier {
 	///
 	/// This is the core verification logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Verifier::verify`] is the simpler interface.
-	pub fn verify<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
+	pub fn verify<Channel>(&self, inout: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<B128>,
+		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
-		// Check that the public input length is correct
-		if public.len() != 1 << self.log_public_words() {
+		// The caller passes only the inout values. The constants are already part of the
+		// constraint system, so restating them would be redundant — and a caller that restated
+		// them wrongly would be describing a different system.
+		if inout.len() != self.constraint_system.n_inout {
 			return Err(Error::IncorrectPublicInputLength {
-				expected: 1 << self.log_public_words(),
-				actual: public.len(),
+				expected: self.constraint_system.n_inout,
+				actual: inout.len(),
 			});
 		}
 
-		// Verifier observes the public input (includes it in Fiat-Shamir).
-		channel.observe_many(&encode_public(public));
+		// Only the inout values go into Fiat-Shamir: they are what varies per instance, and the
+		// constants are fixed by the constraint system the transcript is already bound to.
+		//
+		// The words are lifted into the channel's own word type, so a channel that carries words
+		// as wires still receives them. They arrive here concrete, so such a channel sees the
+		// statement as fixed; taking it symbolically is BINIUS-433.
+		let observed = inout
+			.iter()
+			.map(|&word| Channel::Word::from(word))
+			.collect::<Vec<_>>();
+		channel.observe_words(&observed);
+
+		// The shift reduction reads the whole public segment, which is the constants followed by
+		// the inout values — the order the value vector places them in.
+		let public = [self.constraint_system.constants.as_slice(), inout].concat();
 
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
 				.entered();
 
-		let subfield_subspace = BinarySubspace::<B8>::default().isomorphic();
-		let extended_subspace = subfield_subspace.reduce_dim(Word::LOG_BITS + 1);
-		let domain_subspace = extended_subspace.reduce_dim(Word::LOG_BITS);
-
 		// Receive the trace oracle commitment via channel. The trace is the witness, so it is
 		// witness-dependent (masked in a ZK proof).
 		let trace_oracle = channel.recv_oracle(self.log_witness_elems(), true)?;
 
-		// SOUNDNESS: the IntMul reduction must run *before* the BitAnd reduction. The BitAnd
-		// reduction samples the univariate challenge `r_zhat_prime` (the `channel.sample()` in
-		// `bitand::verify_with_channel`), and the IntMul per-bit `a`/`b`/`c_lo`/`c_hi` evaluations
-		// are collapsed at that point via the Lagrange weights `l_tilde(r_zhat_prime)` below. Those
-		// evaluations are bound to the transcript while the IntMul reduction runs, so they must be
-		// committed *before* `r_zhat_prime` is drawn; otherwise a malicious prover could choose
-		// them adaptively as a function of `r_zhat_prime` and satisfy the collapsed claim without
-		// a valid witness. Do not reorder these two reductions, and keep the same order in
-		// `prover::prove`.
-		//
-		// [phase] Verify IntMul Reduction - multiplication constraint verification
-		//
-		// Skipped (no transcript reads) when the constraint system has no IMUL constraints,
-		// mirroring the prover's identical guard so the transcript stays in sync.
-		let intmul_output =
-			if let Some(log_n_constraints) = self.constraint_system.log_imul_constraints() {
-				let intmul_guard = tracing::info_span!(
-					"[phase] Verify IntMul Reduction",
-					phase = "verify_intmul_reduction",
-					perfetto_category = "phase",
-					n_constraints = self.constraint_system.n_imul_constraints()
-				)
-				.entered();
-				let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
-				drop(intmul_guard);
-				Some(intmul_output)
-			} else {
-				None
-			};
-
-		// [phase] Verify BinMul Reduction - GHASH-field multiplication constraint verification
-		//
-		// Runs immediately after the IntMul reduction and before BitAnd, so the transcript stays in
-		// sync with the prover. Skipped (no transcript reads) when there are no BMUL constraints,
-		// mirroring the prover's identical guard. The per-bit operand evaluations are collapsed
-		// below with the shared `r_zhat_prime` challenge that BitAnd draws.
-		let binmul_output =
-			if let Some(log_n_constraints) = self.constraint_system.log_bmul_constraints() {
-				let binmul_guard = tracing::info_span!(
-					"[phase] Verify BinMul Reduction",
-					phase = "verify_binmul_reduction",
-					perfetto_category = "phase",
-					n_constraints = self.constraint_system.n_bmul_constraints()
-				)
-				.entered();
-				let binmul_output = verify_binmul_reduction::<B128, _>(log_n_constraints, channel)?;
-				drop(binmul_guard);
-				Some(binmul_output)
-			} else {
-				None
-			};
-
-		// [phase] Verify BitAnd Reduction - AND constraint verification
-		let bitand_guard = tracing::info_span!(
-			"[phase] Verify BitAnd Reduction",
-			phase = "verify_bitand_reduction",
-			perfetto_category = "phase",
-			n_constraints = self.constraint_system.n_and_constraints()
-		)
-		.entered();
-		// The BitAnd reduction has no skip branch: an empty AND set still reduces, over the single
-		// all-zero padding row, so `None` is zero variables here.
-		let log_n_and = self.constraint_system.log_and_constraints().unwrap_or(0);
-		let (r_zhat_prime, bitand_claim) = {
-			let AndCheckOutput {
-				a_eval,
-				b_eval,
-				c_eval,
-				z_challenge,
-				eval_point,
-			} = verify_bitand_reduction(log_n_and, &extended_subspace, channel)?;
-			(z_challenge, OperatorData::new(eval_point, [a_eval, b_eval, c_eval]))
-		};
-		drop(bitand_guard);
-
-		// Build `OperatorData` for IntMul. The univariate challenge `r_zhat_prime` is
-		// shared with BitAnd (computed above) — sharing it improves prover
-		// ShiftReduction perf and lets the verifier compute `h_op_evals` once for both
-		// operations in `shift::check_eval`. When IntMul was skipped, synthesize a zero claim
-		// (four zero evals at an empty point); it contributes zero to the shift reduction, whose
-		// monster evaluation iterates the (empty) IMUL constraints.
-		let intmul_claim = match intmul_output {
-			Some(IntMulOutput {
-				a_evals,
-				b_evals,
-				c_lo_evals,
-				c_hi_evals,
-				eval_point,
-			}) => {
-				let l_tilde = lagrange_evals_scalars(&domain_subspace, &r_zhat_prime);
-				let make_final_claim =
-					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
-				OperatorData::new(
-					eval_point,
-					[
-						make_final_claim(a_evals),
-						make_final_claim(b_evals),
-						make_final_claim(c_lo_evals),
-						make_final_claim(c_hi_evals),
-					],
-				)
-			}
-			None => OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
-		};
-
-		// Build `OperatorData` for BinMul. It shares the univariate challenge `r_zhat_prime` with
-		// BitAnd and IntMul (computed above), and its six per-bit operand columns are collapsed
-		// identically to IntMul. When BinMul was skipped, synthesize a zero claim (six zero evals
-		// at an empty point); it contributes zero to the shift reduction, whose monster
-		// evaluation iterates the (empty) BMUL constraints.
-		let binmul_claim = match binmul_output {
-			Some(BinMulOutput {
-				eval_point,
-				a_lo_evals,
-				a_hi_evals,
-				b_lo_evals,
-				b_hi_evals,
-				c_lo_evals,
-				c_hi_evals,
-			}) => {
-				let l_tilde = lagrange_evals_scalars(&domain_subspace, &r_zhat_prime);
-				let make_final_claim =
-					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
-				OperatorData::new(
-					eval_point,
-					[
-						make_final_claim(a_lo_evals),
-						make_final_claim(a_hi_evals),
-						make_final_claim(b_lo_evals),
-						make_final_claim(b_hi_evals),
-						make_final_claim(c_lo_evals),
-						make_final_claim(c_hi_evals),
-					],
-				)
-			}
-			None => OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
-		};
-
-		// [phase] Verify Zero Reduction - linear constraint verification
-		//
-		// The reduction reads nothing from the transcript and runs no sumcheck: a ZERO constraint
-		// is linear, so its oblong multilinearization vanishing at one unpredictable point
-		// certifies it. The point is the one the BitAnd sumcheck just output, extended when the
-		// ZERO set has more rows; the prover draws the same extension at the same place. Like
-		// BitAnd, an empty ZERO set still reduces, over the single all-zero padding row.
-		let log_n_zero = self.constraint_system.log_zero_constraints().unwrap_or(0);
-		let zero_point =
-			zero::reduction_point(&bitand_claim.r_x_prime, log_n_zero, || channel.sample());
-		let zero_claim = OperatorData::new(zero_point, [Channel::Elem::zero()]);
-
-		// [phase] Verify Shift Reduction - shift operations and constraint validation
-		let constraint_guard = tracing::info_span!(
-			"[phase] Verify Shift Reduction",
-			phase = "verify_shift_reduction",
-			perfetto_category = "phase"
-		)
-		.entered();
-		let shift_output = shift::verify(
+		// Reduce every constraint to one claim on the committed trace.
+		let reduction = reduce_constraints(
 			self.constraint_system(),
-			&zero_claim,
-			&bitand_claim,
-			&intmul_claim,
-			&binmul_claim,
+			Instances::Single,
+			InoutSegment::Public,
+			&public,
 			channel,
 		)?;
-		drop(constraint_guard);
-
-		// [phase] Verify Public Input - public input verification
-		let public_guard = tracing::info_span!(
-			"[phase] Verify Public Input",
-			phase = "verify_public_input",
-			perfetto_category = "phase"
-		)
-		.entered();
-		shift::check_eval(
-			self.constraint_system(),
-			public,
-			&zero_claim,
-			&bitand_claim,
-			&intmul_claim,
-			&binmul_claim,
-			&domain_subspace,
-			r_zhat_prime,
-			&shift_output,
-			channel,
-		)?;
-		drop(public_guard);
 
 		// [phase] Ring-Switching + Verify PCS Opening
 		let pcs_guard = tracing::info_span!(
@@ -339,11 +182,11 @@ impl IOPVerifier {
 		.entered();
 
 		// Ring-switching verification of the witness claim.
-		let eval_point = [shift_output.r_j(), shift_output.r_y()].concat();
+		let eval_point = reduction.trace_point();
 		let ring_switch::RingSwitchVerifyOutput {
 			eq_r_double_prime,
 			sumcheck_claim,
-		} = ring_switch::verify(shift_output.witness_eval().clone(), &eval_point, channel)?;
+		} = ring_switch::verify(reduction.shift.witness_eval().clone(), &eval_point, channel)?;
 
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = eval_point[log_packing..].to_vec();
@@ -390,10 +233,7 @@ where
 	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
 		constraint_system.validate()?;
 
-		// The validated layout guarantees a power-of-two public segment of at least one full
-		// element.
-		let log_public_words = constraint_system.log_public_words();
-		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
+		let log_public_words = constraint_system.log_public_words(InoutSegment::Public);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 
@@ -467,14 +307,14 @@ where
 
 	pub fn verify<Challenger_: Challenger>(
 		&self,
-		public: &[Word],
+		inout: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		let cs = self.iop_verifier.constraint_system();
 
 		let _verify_scope = tracing::info_span!(
 			"Verify",
-			n_hidden_words = cs.n_hidden_words(),
+			n_hidden_words = cs.n_hidden_words(InoutSegment::Public),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)
@@ -484,7 +324,7 @@ where
 		let mut channel = self
 			.iop_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
-		self.iop_verifier.verify(public, &mut channel)?;
+		self.iop_verifier.verify(inout, &mut channel)?;
 		channel.finish()?;
 		Ok(())
 	}
@@ -532,17 +372,4 @@ where
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
 	verify_with_channel(&zerocheck_challenges, channel, eval_domain)
-}
-
-/// Encode public input words as B128 elements, for compliance with the IOP interface.
-fn encode_public(public: &[Word]) -> Vec<B128> {
-	let (word_pairs, remaining) = public.as_chunks::<2>();
-	assert!(
-		remaining.is_empty(),
-		"ValueVecLayout ensures the public section has a multiple of two number of words"
-	);
-	word_pairs
-		.iter()
-		.map(|[w0, w1]| B128::new(((w1.as_u64() as u128) << 64) | w0.as_u64() as u128))
-		.collect()
 }

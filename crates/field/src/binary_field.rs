@@ -21,24 +21,42 @@ pub trait BinaryField:
 	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierType>
 {
 	const N_BITS: usize = Self::ORDER_EXPONENT;
+
+	/// An element whose absolute trace is 1.
+	///
+	/// The absolute trace is the $\mathbb{F}_2$-linear map
+	///
+	/// $$\operatorname{Tr}(x) = \sum_{i=0}^{n-1} x^{2^i},$$
+	///
+	/// which lands in $\mathbb{F}_2$ and is surjective, so such an element always exists and
+	/// exactly half the field has trace 1. Which one is named here is arbitrary; each field picks
+	/// a single-bit element, the lowest one that qualifies.
+	///
+	/// The NTT's Gao-Mateer domain context seeds its basis with this: the descent
+	/// $\beta_i = \beta_{i+1}^2 + \beta_{i+1}$ reaches $\beta_0 = 1$ exactly when it starts from
+	/// an element of trace 1.
+	const TRACE_ONE_ELEMENT: Self;
 }
 
 /// Generates a binary field type over an underlier `$typ`.
+///
+/// `$gen` is the multiplicative generator and `$trace_one` an element of trace 1, both as raw
+/// underlier values.
 ///
 /// The default form derives the field's arithmetic from its width-one packing.
 /// The `custom_arithmetic` form omits that, for a field that defines its own arithmetic.
 macro_rules! binary_field {
 	// Default: the field's arithmetic is its width-one packing's arithmetic.
-	($vis:vis $name:ident($typ:ty), $gen:expr) => {
-		binary_field!(@base $vis $name($typ), $gen);
+	($vis:vis $name:ident($typ:ty), $gen:expr, $trace_one:expr) => {
+		binary_field!(@base $vis $name($typ), $gen, $trace_one);
 		binary_field!(@arithmetic_via_packed $name, $typ);
 	};
 	// The field provides its own `Mul`/`Square`/`InvertOrZero`/`WideMul` separately.
-	(custom_arithmetic $vis:vis $name:ident($typ:ty), $gen:expr) => {
-		binary_field!(@base $vis $name($typ), $gen);
+	(custom_arithmetic $vis:vis $name:ident($typ:ty), $gen:expr, $trace_one:expr) => {
+		binary_field!(@base $vis $name($typ), $gen, $trace_one);
 	};
 
-	(@base $vis:vis $name:ident($typ:ty), $gen:expr) => {
+	(@base $vis:vis $name:ident($typ:ty), $gen:expr, $trace_one:expr) => {
 		#[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Zeroable, bytemuck::TransparentWrapper)]
 		#[repr(transparent)]
 		$vis struct $name(pub(crate) $typ);
@@ -296,7 +314,9 @@ macro_rules! binary_field {
 			}
 		}
 
-		impl BinaryField for $name {}
+		impl BinaryField for $name {
+			const TRACE_ONE_ELEMENT: Self = $name($trace_one);
+		}
 
 		impl From<$typ> for $name {
 			fn from(val: $typ) -> Self {
@@ -563,7 +583,8 @@ macro_rules! impl_field_extension {
 
 pub(crate) use impl_field_extension;
 
-binary_field!(pub BinaryField1b(U1), U1::new(0x1));
+// The trace over the prime field is the identity here, so `ONE` is the only trace-1 element.
+binary_field!(pub BinaryField1b(U1), U1::new(0x1), U1::new(0x1));
 
 macro_rules! serialize_deserialize {
 	($bin_type:ty) => {
@@ -715,6 +736,44 @@ pub(crate) mod tests {
 		assert!(is_binary_field_valid_generator::<BinaryField1b>());
 		assert!(is_binary_field_valid_generator::<AESTowerField8b>());
 		assert!(is_binary_field_valid_generator::<BinaryField128bGhash>());
+	}
+
+	/// The absolute trace $\operatorname{Tr}(x) = \sum_{i=0}^{n-1} x^{2^i}$, computed by repeated
+	/// squaring rather than by any property of the field's representation.
+	fn trace<F: BinaryField>(x: F) -> F {
+		let mut acc = F::ZERO;
+		let mut square = x;
+		for _ in 0..F::N_BITS {
+			acc += square;
+			square = square.square();
+		}
+		acc
+	}
+
+	/// Every field's declared element really has trace 1.
+	///
+	/// A wrong constant would not fail loudly on its own: the Gao-Mateer basis it seeds asserts
+	/// $\beta_0 = 1$, so it would surface as a panic deep inside NTT setup rather than here.
+	#[test]
+	fn test_trace_one_elements() {
+		fn check<F: BinaryField>() {
+			assert_eq!(trace(F::TRACE_ONE_ELEMENT), F::ONE);
+		}
+		check::<BinaryField1b>();
+		check::<AESTowerField8b>();
+		check::<BinaryField128bGhash>();
+		check::<GhashSq256b>();
+	}
+
+	/// The trace lands in $\mathbb{F}_2$ for every element, not just the declared one. This pins
+	/// the helper above, so a `trace` that silently computed something else could not make the
+	/// previous test pass.
+	#[test]
+	fn test_trace_lands_in_the_prime_subfield() {
+		for value in 0..=u8::MAX {
+			let t = trace(AESTowerField8b::new(value));
+			assert!(t == AESTowerField8b::ZERO || t == AESTowerField8b::ONE, "value {value:#04x}");
+		}
 	}
 
 	#[test]

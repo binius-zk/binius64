@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, ops::DerefMut};
+use std::{cmp::max, iter, ops::DerefMut};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -10,11 +10,11 @@ use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals2,
+		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals,
 	},
 };
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec,
+	FieldBuffer, FieldVec,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
 use binius_utils::{
@@ -28,7 +28,8 @@ use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
 use super::{
-	claims::PreparedOperatorClaims, key_collection::KeyCollection, monster::build_monster_segments,
+	SegmentWords, claims::PreparedOperatorClaims, key_collection::KeyCollection,
+	monster::build_monster_segments, phase_1::Phase1Output, shift_ind::Phase3Output,
 };
 use crate::fold_word::fold_words;
 
@@ -39,11 +40,10 @@ use crate::fold_word::fold_words;
 /// the witness and the monster multilinear polynomial.
 ///
 /// # Protocol Steps
-/// 1. **Challenge Splitting**: Splits phase 1 challenges into `r_j` and `r_s` components
-/// 2. **Segment Folding**: Folds the public and hidden words using the `r_j` challenges
-/// 3. **Monster Multilinear Construction**: Builds the monster segments from the key collection and
+/// 1. **Segment Folding**: Folds the public and hidden words using the `r_j` challenges
+/// 2. **Monster Multilinear Construction**: Builds the monster segments from the key collection and
 ///    the prepared claims
-/// 4. **Sumcheck Execution**: Runs the bivariate product sumcheck with a sparse first round over
+/// 3. **Sumcheck Execution**: Runs the bivariate product sumcheck with a sparse first round over
 ///    the segment selector
 ///
 /// # Parameters
@@ -51,6 +51,8 @@ use crate::fold_word::fold_words;
 /// - `words`: The value vector words
 /// - `prepared`: The prepared claim of each operation, indexed by the operation a key names
 /// - `phase_1_output`: Challenges and evaluation from the first phase
+/// - `h_eval`: The h evaluation weighting every shift key, from
+///   [`ShiftIndSumcheck`](super::ShiftIndSumcheck)
 /// - `channel`: The prover's channel
 ///
 /// # Returns
@@ -59,10 +61,10 @@ use crate::fold_word::fold_words;
 #[instrument(skip_all, name = "prove_phase_2")]
 pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
-	words: &[Word],
+	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
-	domain_subspace: &BinarySubspace<F>,
-	phase_1_output: SumcheckOutput<F>,
+	phase_1_output: Phase1Output<F>,
+	phase_3_output: Phase3Output<F>,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> SumcheckOutput<F>
@@ -71,39 +73,73 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	let SumcheckOutput {
-		challenges: mut r_jr_s,
-		eval: gamma,
+	let Phase1Output {
+		r_j,
+		r_s,
+		r_v,
+		gamma: _,
+		g_eval: _,
 	} = phase_1_output;
-	// Split challenges as r_j,r_s where r_j is the first Word::LOG_BITS
-	// variables and r_s is the last Word::LOG_BITS variables
-	// Thus r_s are the more significant variables.
-	let r_s = r_jr_s.split_off(Word::LOG_BITS);
-	let r_j = r_jr_s;
+	let Phase3Output {
+		shift_ind_eval,
+		eval: epsilon,
+	} = phase_3_output;
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
 	// Fold each segment separately; the combined witness is never materialized. `fold_words`
-	// zero-pads each fold to `log2_ceil(len)` variables, so the hidden fold already has
-	// `log_witness_words` variables (its word count is the hidden segment length).
-	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-	let public_folded = fold_words::<_, P, _>(alloc, public_words, r_j_tensor.as_ref());
-	let hidden_folded = fold_words::<_, P, _>(alloc, hidden_words, r_j_tensor.as_ref());
+	// zero-pads each fold to `log2_ceil(len)` variables, so each fold spans its own segment.
+	let public_folded = fold_words::<_, P, _>(alloc, words.public, r_j_tensor.as_ref());
+	let hidden_folded = fold_words::<_, P, _>(alloc, words.hidden, r_j_tensor.as_ref());
 
 	let (public_monster, hidden_monster) =
-		build_monster_segments(alloc, key_collection, prepared, domain_subspace, &r_j, &r_s);
+		build_monster_segments(alloc, key_collection, prepared, shift_ind_eval, &r_s, &r_v);
+
+	// Both halves of the sumcheck share one word-index address space, spanning the wider of the
+	// two segments. The hidden segment is normally the wider one, but a system with more public
+	// words than private values inverts that, and the hidden half zero-extends to match.
+	let log_segment_words = max(public_folded.log_len(), hidden_folded.log_len());
+	let hidden_folded = zero_extend(alloc, hidden_folded, log_segment_words);
+	let hidden_monster = zero_extend(alloc, hidden_monster, log_segment_words);
 
 	run_sumcheck(
 		&public_folded,
 		hidden_folded,
 		&public_monster,
 		hidden_monster,
-		public_words,
+		words.public,
 		r_j,
-		gamma,
+		epsilon,
 		channel,
 		alloc,
 	)
+}
+
+/// Zero-extends a segment buffer to span `log_len` word-index variables.
+///
+/// Returns the buffer untouched when it already spans that many, which is the common case: the
+/// hidden segment is normally the wider of the two, so no copy happens.
+///
+/// ## Preconditions
+/// * `log_len` is at least `buffer.log_len()`
+fn zero_extend<F, P: PackedField<Scalar = F>, A: Allocator>(
+	alloc: &A,
+	buffer: FieldVec<P, A>,
+	log_len: usize,
+) -> FieldVec<P, A>
+where
+	F: BinaryField,
+{
+	assert!(log_len >= buffer.log_len());
+	if log_len == buffer.log_len() {
+		return buffer;
+	}
+
+	// Whole packed words copy across: a trailing partial word carries zero high lanes, which are
+	// exactly the zeros the extension pads with.
+	let mut extended = FieldVec::<P, A>::zeros_in(alloc, log_len);
+	extended.as_mut()[..buffer.as_ref().len()].copy_from_slice(buffer.as_ref());
+	extended
 }
 
 /// Computes the phase-2 first-round message: the degree-2 round polynomial that binds the segment
@@ -159,7 +195,7 @@ where
 	let y_1 = sum_lanes(wide_dense);
 	let y_inf = y_1 + sum_lanes(wide_low_hidden) + sum_lanes(wide_low_cross);
 
-	RoundEvals2 { y_1, y_inf }.interpolate(gamma)
+	RoundEvals([y_1, y_inf]).interpolate(gamma)
 }
 
 /// Folds the two segment buffers of the witness at the selector challenge.
@@ -223,6 +259,8 @@ pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>, 
 where
 	F: BinaryField,
 {
+	// The hidden pair is the dense one both the first round and `fold_segments` iterate over, so
+	// it spans the whole word-index space and the public pair sits at its base.
 	let log_hidden = hidden_folded.log_len();
 	assert_eq!(hidden_monster.log_len(), log_hidden);
 	assert_eq!(public_monster.log_len(), public_folded.log_len());

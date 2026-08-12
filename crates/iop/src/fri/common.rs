@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 
 use binius_field::{BinaryField, Field};
-use binius_math::{ntt::DomainContext, reed_solomon::ReedSolomonCode};
+use binius_math::reed_solomon::ReedSolomonCode;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::{CopyGetters, Getters};
 
@@ -172,7 +172,6 @@ where
 	///
 	/// ## Arguments
 	///
-	/// * `domain_context` - the domain context providing subspaces for the Reed-Solomon code.
 	/// * `merkle_scheme` - the Merkle tree scheme used for commitments.
 	/// * `log_msg_len` - the binary logarithm of the length of the message to commit.
 	/// * `log_batch_size` - if `Some`, fixes the batch size; if `None`, the batch size is chosen
@@ -184,10 +183,7 @@ where
 	/// ## Preconditions
 	///
 	/// * If `log_batch_size` is `Some(b)`, then `b <= log_msg_len`.
-	/// * `domain_context.log_domain_size() >= log_msg_len - log_batch_size.unwrap_or(0) +
-	///   log_inv_rate`.
-	pub fn with_strategy<DC, MerkleScheme, Strategy>(
-		domain_context: &DC,
+	pub fn with_strategy<MerkleScheme, Strategy>(
 		merkle_scheme: &MerkleScheme,
 		log_msg_len: usize,
 		log_batch_size: Option<usize>,
@@ -196,22 +192,29 @@ where
 		strategy: &Strategy,
 	) -> Self
 	where
-		DC: DomainContext<Field = F>,
 		MerkleScheme: MerkleTreeScheme<F>,
 		Strategy: AritySelectionStrategy,
 	{
-		let (log_batch_size, fold_arities) = choose_batch_size_and_arities::<F, _, _>(
+		assert!(log_batch_size.is_none_or(|b| b <= log_msg_len)); // precondition
+
+		let mut fold_arities = strategy.choose_arities::<F, _>(
 			merkle_scheme,
-			log_msg_len,
-			log_batch_size,
+			log_msg_len - log_batch_size.unwrap_or(0),
 			log_inv_rate,
 			n_test_queries,
-			strategy,
 		);
+		// Without a fixed batch size, the first chosen arity becomes the batch size.
+		let log_batch_size = log_batch_size.unwrap_or_else(|| {
+			// Edge case: no folds were chosen, so batch down to a log_dim = 0 code.
+			if fold_arities.is_empty() {
+				log_msg_len
+			} else {
+				fold_arities.remove(0)
+			}
+		});
 
 		let log_dim = log_msg_len - log_batch_size;
-		let rs_code =
-			ReedSolomonCode::with_domain_context_subspace(domain_context, log_dim, log_inv_rate);
+		let rs_code = ReedSolomonCode::new(log_dim, log_inv_rate);
 		Self::new(rs_code, log_batch_size, fold_arities, n_test_queries)
 	}
 
@@ -225,7 +228,6 @@ where
 	///
 	/// ## Arguments
 	///
-	/// * `domain_context` - the domain context providing subspaces for the Reed-Solomon code.
 	/// * `merkle_scheme` - the Merkle tree scheme used for commitments.
 	/// * `oracles` - the oracles to batch. A ZK oracle commits its message interleaved with an
 	///   equal-length mask (fixed `log_batch_size = 1`); a non-ZK oracle commits the bare message
@@ -236,17 +238,13 @@ where
 	/// ## Preconditions
 	///
 	/// * `oracles` is non-empty.
-	/// * `domain_context.log_domain_size()` is large enough for the chosen reduced dimension plus
-	///   `log_inv_rate`.
-	pub fn optimal_for_batch<DC, MerkleScheme>(
-		domain_context: &DC,
+	pub fn optimal_for_batch<MerkleScheme>(
 		merkle_scheme: &MerkleScheme,
 		oracles: &[OracleSpec],
 		log_inv_rate: usize,
 		n_test_queries: usize,
 	) -> (Self, usize)
 	where
-		DC: DomainContext<Field = F>,
 		MerkleScheme: MerkleTreeScheme<F>,
 	{
 		assert!(!oracles.is_empty()); // precondition
@@ -258,11 +256,7 @@ where
 			fold_arities,
 		} = choose_codeword_specs_for_oracles(merkle_scheme, oracles, log_inv_rate, n_test_queries);
 
-		let rs_code = ReedSolomonCode::with_domain_context_subspace(
-			domain_context,
-			reduced_log_dim,
-			log_inv_rate,
-		);
+		let rs_code = ReedSolomonCode::new(reduced_log_dim, log_inv_rate);
 
 		let params = Self::new_batch(rs_code, oracle_specs, fold_arities, n_test_queries);
 		(params, proof_size)
@@ -318,48 +312,6 @@ where
 	/// together, so it equals [`Self::n_fold_rounds`].
 	pub const fn log_msg_len(&self) -> usize {
 		self.max_log_msg_len + self.log_n_oracles
-	}
-}
-
-fn choose_batch_size_and_arities<F, MerkleScheme, Strategy>(
-	merkle_scheme: &MerkleScheme,
-	log_msg_len: usize,
-	log_batch_size: Option<usize>,
-	log_inv_rate: usize,
-	n_test_queries: usize,
-	strategy: &Strategy,
-) -> (usize, Vec<usize>)
-where
-	F: BinaryField,
-	MerkleScheme: MerkleTreeScheme<F>,
-	Strategy: AritySelectionStrategy,
-{
-	match log_batch_size {
-		Some(log_batch_size) => {
-			assert!(log_batch_size <= log_msg_len); // precondition
-			let fold_arities = strategy.choose_arities::<F, _>(
-				merkle_scheme,
-				log_msg_len - log_batch_size,
-				log_inv_rate,
-				n_test_queries,
-			);
-			(log_batch_size, fold_arities)
-		}
-		None => {
-			let mut fold_arities = strategy.choose_arities::<F, _>(
-				merkle_scheme,
-				log_msg_len,
-				log_inv_rate,
-				n_test_queries,
-			);
-			let log_batch_size = if !fold_arities.is_empty() {
-				fold_arities.remove(0)
-			} else {
-				// Edge case: fold to log_dim = 0 code.
-				log_msg_len
-			};
-			(log_batch_size, fold_arities)
-		}
 	}
 }
 
@@ -599,19 +551,36 @@ where
 		}
 	}
 
+	/// The proof bytes one reduction of the given arity contributes.
+	///
+	/// Each test query sends one opened coset and its Merkle branch:
+	///
+	/// ```text
+	///     coset     2^arity field elements
+	///     branch    one hash per tree level
+	/// ```
+	///
+	/// The oracle commits one coset per leaf.
+	/// So its tree holds `2^(log_code_len - arity)` leaves, not `2^log_code_len`.
+	///
+	/// Sizing the tree by the codeword length would charge `arity` extra hashes per branch.
+	/// The arities chosen would then minimize a proof size no prover produces.
 	fn compute_layer_reduction_size(&self, log_code_len: usize, arity: usize) -> usize {
 		// Each queried coset contains 2^arity values.
 		let leaf_size = F::BYTE_SIZE << arity;
 		// One coset per test query.
 		let leaves_size = leaf_size * self.n_test_queries;
 
+		// One leaf per coset, so the tree is `arity` levels shorter than the codeword.
+		let log_n_cosets = log_code_len - arity;
+
 		// Size of the Merkle multi-proof.
 		let optimal_layer = self
 			.merkle_scheme
-			.optimal_verify_layer(self.n_test_queries, log_code_len);
+			.optimal_verify_layer(self.n_test_queries, log_n_cosets);
 		let merkle_size =
 			self.merkle_scheme
-				.proof_size(1 << log_code_len, self.n_test_queries, optimal_layer);
+				.proof_size(1 << log_n_cosets, self.n_test_queries, optimal_layer);
 
 		leaves_size + merkle_size
 	}
@@ -826,17 +795,76 @@ impl AritySelectionStrategy for ConstantArityStrategy {
 mod tests {
 	use binius_field::BinaryField128bGhash as B128;
 	use binius_hash::StdHashSuite;
-	use binius_math::ntt::{
-		AdditiveNTT, NeighborsLastReference, domain_context::GaoMateerOnTheFly,
-	};
 
 	use super::*;
-	use crate::merkle_tree::BinaryMerkleTreeScheme;
+	use crate::{fri::proof_size, merkle_tree::BinaryMerkleTreeScheme};
 
 	type TestMerkleScheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 
 	fn test_merkle_scheme() -> TestMerkleScheme {
 		BinaryMerkleTreeScheme::new()
+	}
+
+	// Invariant: the size the arity search minimizes is the size a prover actually sends.
+	//
+	//     cost model    what `compute_layer_reduction_size` charges, and the search minimizes
+	//     proof_size    the exact byte count
+	//
+	// The cost model omits the commitment digests, which do not vary with the arity choice.
+	// A batch of N input oracles carries `N + 1 + fold_arities.len()` of them.
+	#[test]
+	fn optimizer_estimate_matches_exact_proof_size() {
+		let merkle_scheme = test_merkle_scheme();
+		let digest_size = size_of::<<TestMerkleScheme as MerkleTreeScheme<B128>>::Digest>();
+
+		// Single oracles across the size range, then shapes that stress the batch layout: lifting,
+		// ZK mixed with flexible, non-power-of-two counts.
+		//
+		// A ZK oracle pins its batch size at 1; a non-ZK oracle takes a flexible one, so the two
+		// exercise different branches of the selection.
+		let mut batches: Vec<Vec<OracleSpec>> = Vec::new();
+		for log_msg_len in [0, 1, 4, 8, 12, 16, 20] {
+			batches.push(vec![OracleSpec::new(log_msg_len)]);
+			batches.push(vec![OracleSpec::new_zk(log_msg_len)]);
+		}
+		batches.extend([
+			vec![OracleSpec::new(16), OracleSpec::new(16)],
+			vec![OracleSpec::new(16), OracleSpec::new(12)],
+			vec![OracleSpec::new_zk(11), OracleSpec::new(16)],
+			vec![
+				OracleSpec::new_zk(9),
+				OracleSpec::new_zk(11),
+				OracleSpec::new(16),
+			],
+			vec![
+				OracleSpec::new(20),
+				OracleSpec::new_zk(15),
+				OracleSpec::new(8),
+				OracleSpec::new_zk(4),
+			],
+		]);
+
+		for log_inv_rate in [1, 2, 3] {
+			for n_test_queries in [32, 128, 232] {
+				for oracles in &batches {
+					let (params, estimate) = FRIParams::optimal_for_batch(
+						&merkle_scheme,
+						oracles,
+						log_inv_rate,
+						n_test_queries,
+					);
+
+					let digests = (oracles.len() + 1 + params.fold_arities().len()) * digest_size;
+					assert_eq!(
+						estimate + digests,
+						proof_size(&params, &merkle_scheme),
+						"oracles={oracles:?} log_inv_rate={log_inv_rate} \
+						 n_test_queries={n_test_queries} arities={:?}",
+						params.fold_arities(),
+					);
+				}
+			}
+		}
 	}
 
 	#[test]
@@ -878,14 +906,9 @@ mod tests {
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
 
-		let ntt = NeighborsLastReference {
-			domain_context: GaoMateerOnTheFly::<B128>::generate(24 + log_inv_rate),
-		};
-
 		// log_msg_len = 0
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				0,
 				None,
@@ -900,7 +923,6 @@ mod tests {
 		// log_msg_len = 3
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				3,
 				None,
@@ -915,7 +937,6 @@ mod tests {
 		// log_msg_len = 24
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				24,
 				None,
@@ -934,10 +955,6 @@ mod tests {
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
 
-		let ntt = NeighborsLastReference {
-			domain_context: GaoMateerOnTheFly::<B128>::generate(16 + log_inv_rate),
-		};
-
 		// Two masked ZK oracles (fixed batch size 1, committed lengths 10 and 12) and one non-ZK
 		// oracle with a flexible batch size (committed length 16). The ZK oracles lower-bound the
 		// reduced dimension; the flexible oracle folds down to it.
@@ -947,13 +964,8 @@ mod tests {
 			OracleSpec::new(16),
 		];
 
-		let (fri_params, proof_size) = FRIParams::optimal_for_batch(
-			ntt.domain_context(),
-			&merkle_scheme,
-			&oracles,
-			log_inv_rate,
-			n_test_queries,
-		);
+		let (fri_params, proof_size) =
+			FRIParams::optimal_for_batch(&merkle_scheme, &oracles, log_inv_rate, n_test_queries);
 
 		// The reduced oracle dimension is the dimension of the first FRI round oracle, equal to
 		// log_terminal_dim + sum(fold_arities).
@@ -986,8 +998,11 @@ mod tests {
 		assert_eq!(fri_params.input_oracles[2].log_lift, 0);
 		assert_eq!(fri_params.input_oracles[2].log_batch_size(), 16 - reduced_log_dim);
 
-		// Pin the estimated proof size to detect unintended changes in the optimizer.
-		assert_eq!(proof_size, 229376);
+		// Pin the estimated proof size, to catch unintended changes in the optimizer.
+		//
+		// This sums one reduction per committed oracle, as the exact byte count does.
+		// `optimizer_estimate_matches_exact_proof_size` ties the two together.
+		assert_eq!(proof_size, 188416);
 	}
 
 	#[test]
@@ -996,14 +1011,9 @@ mod tests {
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
 
-		let ntt = NeighborsLastReference {
-			domain_context: GaoMateerOnTheFly::<B128>::generate(24 + log_inv_rate),
-		};
-
 		// log_msg_len = 3
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				3,
 				Some(1),
@@ -1018,7 +1028,6 @@ mod tests {
 		// log_msg_len = 24
 		{
 			let fri_params = FRIParams::with_strategy(
-				ntt.domain_context(),
 				&merkle_scheme,
 				24,
 				Some(1),

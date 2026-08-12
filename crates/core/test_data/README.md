@@ -4,7 +4,7 @@ This directory contains binary reference files used for testing serialization fo
 
 ## Files
 
-- `constraint_system_v7.bin`: Reference binary serialization of a `ConstraintSystem` using serialization version 7.
+- `constraint_system_v10.bin`: Reference binary serialization of a `ConstraintSystem` using serialization version 10.
 - `values_data_v1.bin`: Reference binary serialization of a `ValuesData` using serialization version 1.
 - `proof_v1.bin`: Reference binary serialization of a `Proof` using serialization version 1.
 
@@ -57,6 +57,9 @@ The binary format uses little-endian encoding and follows this structure:
 1. **Version header** (4 bytes): `u32` serialization version
 2. **Constants**: Vector of `Word` values
 3. **Value vector shape**: the five section counts `n_const_pad`, `n_inout`, `n_inout_pad`, `n_private`, `n_private_pad`
+
+Each `ShiftedValueIndex` within a constraint carries a value index followed by **two** shifts, inner
+first — the sequence the reduction applies in order.
 4. **ZERO constraints**: Vector of `ZeroConstraint` structures
 5. **AND constraints**: Vector of `AndConstraint` structures
 6. **IMUL constraints**: Vector of `ImulConstraint` structures

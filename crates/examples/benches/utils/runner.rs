@@ -145,7 +145,7 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 	let mut verifier_transcript_mem =
 		VerifierTranscript::new(StdChallenger::default(), proof_bytes.clone());
 	verifier
-		.verify(witness.public(), &mut verifier_transcript_mem)
+		.verify(witness.inout(), &mut verifier_transcript_mem)
 		.unwrap();
 	verifier_transcript_mem.finalize().unwrap();
 	let verify_peak_bytes = peak_alloc.get_peak_memory();
@@ -219,7 +219,7 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 				let mut verifier_transcript =
 					VerifierTranscript::new(StdChallenger::default(), proof_bytes.clone());
 				verifier
-					.verify(witness.public(), &mut verifier_transcript)
+					.verify(witness.inout(), &mut verifier_transcript)
 					.unwrap();
 				verifier_transcript.finalize().unwrap()
 			})

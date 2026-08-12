@@ -66,8 +66,8 @@ fn bench_compress(c: &mut Criterion) {
 
 /// Benchmarks [`ParallelDigestAdapter`] over 1 MiB of `B128` elements, varying the number of
 /// elements folded into each leaf digest (`batch_size`). This isolates the leaf-hashing step that
-/// dominates `binary_merkle_tree::build`. The input data size is fixed at 1 MiB, so a larger batch
-/// size means fewer, larger leaves (fewer SHA-256 init/finalize calls).
+/// dominates binary Merkle tree construction. The input data size is fixed at 1 MiB, so a larger
+/// batch size means fewer, larger leaves (fewer SHA-256 init/finalize calls).
 fn bench_digest(c: &mut Criterion) {
 	let mut rng = rng();
 	let elements: Vec<B128> = (0..N_ELEMS).map(|_| B128::random(&mut rng)).collect();

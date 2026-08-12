@@ -12,17 +12,18 @@ use binius_core::constraint_system::{
 };
 pub use constraint::{
 	WireAndConstraint, WireBmulConstraint, WireImulConstraint, WireLinearConstraint,
+	WireZeroConstraint,
 };
 use cranelift_entity::{EntitySet, SecondaryMap};
 use expr::WireExpr;
 pub use expr::WireExprTerm;
-pub use shift::{Shift, ShiftKind, ShiftedWire, WireOperand};
+pub use shift::{ShiftedWire, WireOperand};
 
 use crate::compiler::Wire;
 
 /// Accumulates the constraints a circuit emits, expressed over [`Wire`]s.
 ///
-/// Gates push into the four typed buckets, one method per constraint shape.
+/// Gates push into the five typed buckets, one method per constraint shape.
 ///
 /// Every operand is a parameter of that method:
 ///
@@ -40,6 +41,8 @@ pub struct ConstraintBuilder {
 	pub bmul_constraints: Vec<WireBmulConstraint>,
 	/// Linear constraints `RHS == DST`, lowered by [`build`](Self::build) to Zero constraints.
 	pub linear_constraints: Vec<WireLinearConstraint>,
+	/// Zero constraints `VAL == 0`, which assert rather than define.
+	pub zero_constraints: Vec<WireZeroConstraint>,
 }
 
 impl ConstraintBuilder {
@@ -50,6 +53,7 @@ impl ConstraintBuilder {
 			imul_constraints: Vec::new(),
 			bmul_constraints: Vec::new(),
 			linear_constraints: Vec::new(),
+			zero_constraints: Vec::new(),
 		}
 	}
 
@@ -108,6 +112,16 @@ impl ConstraintBuilder {
 		});
 	}
 
+	/// Appends the assertion `val == 0`.
+	///
+	/// Unlike [`linear`](Self::linear) this defines no wire, so it is the right shape for an
+	/// assertion gate: the equation it states is enforced without naming a value it produces.
+	pub fn zero(&mut self, val: impl Into<WireExpr>) {
+		self.zero_constraints.push(WireZeroConstraint {
+			val: val.into().into_operand(),
+		});
+	}
+
 	/// Lowers every wire-level constraint to its core `ValueIndex` form.
 	///
 	/// A linear constraint lowers to the Zero constraint `RHS ^ DST == 0`, which carries one
@@ -138,6 +152,11 @@ impl ConstraintBuilder {
 			.linear_constraints
 			.into_iter()
 			.map(|c| c.into_zero_constraint(wire_mapping))
+			.chain(
+				self.zero_constraints
+					.into_iter()
+					.map(|c| c.into_constraint(wire_mapping)),
+			)
 			.collect();
 
 		(zero_constraints, and_constraints, imul_constraints, bmul_constraints)
@@ -159,6 +178,9 @@ impl ConstraintBuilder {
 		}
 		for lc in &self.linear_constraints {
 			lc.mark_used(&mut used_set);
+		}
+		for zc in &self.zero_constraints {
+			zc.mark_used(&mut used_set);
 		}
 		used_set
 	}

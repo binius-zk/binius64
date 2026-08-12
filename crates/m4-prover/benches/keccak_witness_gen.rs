@@ -22,19 +22,19 @@ const STATE_LANES: usize = 25;
 /// Candidate instance-stripe widths for parallel [`ValueTable`] witness generation.
 const STRIPE_WIDTHS: [usize; 3] = [256, 512, 1024];
 
-/// Builds a circuit that applies one Keccak-f1600 permutation to a witness-input state and
-/// force-commits the permuted output words. Returns the circuit and the 25 input state wires.
+/// Builds a circuit that applies one Keccak-f1600 permutation to a public input state and promotes
+/// the permuted lanes to public outputs. Returns the circuit and the 25 input state wires.
 fn build_keccak_circuit() -> (Circuit, [Wire; STATE_LANES]) {
 	let builder = CircuitBuilder::new();
-	let input: [Wire; STATE_LANES] = array::from_fn(|_| builder.add_witness());
+	let input: [Wire; STATE_LANES] = array::from_fn(|_| builder.add_inout());
 
 	// Permute a copy of the input wires in place; `state` then holds the output wires.
 	let mut state = input;
 	keccak_f1600(&builder, &mut state);
 
-	// Pin the outputs so dead-code elimination keeps the whole permutation.
+	// Promoting the permuted state keeps the whole permutation alive under dead-code elimination.
 	for wire in state {
-		builder.force_commit(wire);
+		builder.mark_inout(wire);
 	}
 
 	(builder.build(), input)

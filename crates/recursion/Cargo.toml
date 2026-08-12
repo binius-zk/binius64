@@ -1,0 +1,28 @@
+[package]
+name = "binius-recursion"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+binius-circuits = { path = "../circuits" }
+binius-core = { path = "../core" }
+binius-field = { path = "../field" }
+binius-frontend = { path = "../frontend" }
+binius-hash = { path = "../hash" }
+binius-iop = { path = "../iop" }
+binius-ip = { path = "../ip" }
+binius-transcript = { path = "../transcript" }
+binius-utils = { path = "../utils" }
+digest.workspace = true
+
+[dev-dependencies]
+binius-iop-prover = { path = "../iop-prover" }
+binius-prover = { path = "../prover" }
+binius-verifier = { path = "../verifier" }
+proptest.workspace = true
+rand.workspace = true
+sha2.workspace = true

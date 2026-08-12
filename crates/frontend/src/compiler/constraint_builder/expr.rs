@@ -3,9 +3,10 @@
 
 //! The operand expression DSL: build a [`WireExpr`] as an XOR of shifted-wire terms.
 
+use binius_core::constraint_system::Shift;
 use smallvec::{SmallVec, smallvec};
 
-use super::shift::{Shift, ShiftedWire, WireOperand};
+use super::shift::{ShiftedWire, WireOperand};
 use crate::compiler::Wire;
 
 /// An operand under construction: the XOR of its terms.
@@ -48,7 +49,7 @@ impl WireExprTerm {
 		match self {
 			WireExprTerm::Wire(wire) => ShiftedWire {
 				wire,
-				shift: Shift::None,
+				shift: Shift::IDENTITY,
 			},
 			WireExprTerm::Shifted(wire, shift) => ShiftedWire { wire, shift },
 		}
@@ -63,42 +64,42 @@ impl From<Wire> for WireExprTerm {
 
 /// Left-shifts the whole word by `n`.
 pub const fn sll(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::Sll(n))
+	WireExprTerm::Shifted(w, Shift::sll(n as usize))
 }
 
 /// Half-wise left-shifts each 32-bit lane by `n`.
 pub const fn sll32(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::Sll32(n))
+	WireExprTerm::Shifted(w, Shift::sll32(n as usize))
 }
 
 /// Logically right-shifts the whole word by `n`.
 pub const fn srl(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::Srl(n))
+	WireExprTerm::Shifted(w, Shift::srl(n as usize))
 }
 
 /// Half-wise logically right-shifts each 32-bit lane by `n`.
 pub const fn srl32(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::Srl32(n))
+	WireExprTerm::Shifted(w, Shift::srl32(n as usize))
 }
 
 /// Arithmetically right-shifts the whole word by `n`.
 pub const fn sar(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::Sar(n))
+	WireExprTerm::Shifted(w, Shift::sar(n as usize))
 }
 
 /// Half-wise arithmetically right-shifts each 32-bit lane by `n`.
 pub const fn sra32(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::Sra32(n))
+	WireExprTerm::Shifted(w, Shift::sra32(n as usize))
 }
 
 /// Rotates the whole word right by `n`.
 pub const fn rotr(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::Rotr(n))
+	WireExprTerm::Shifted(w, Shift::rotr(n as usize))
 }
 
 /// Half-wise rotates each 32-bit lane right by `n`.
 pub const fn rotr32(w: Wire, n: u32) -> WireExprTerm {
-	WireExprTerm::Shifted(w, Shift::Rotr32(n))
+	WireExprTerm::Shifted(w, Shift::rotr32(n as usize))
 }
 
 /// XOR of two terms.
@@ -149,16 +150,16 @@ mod tests {
 	fn multi_term_xor_expression_lowers_each_term() {
 		// c = rotr(a, 0) ^ sll(b, 5) ^ rotr(a, 12) must lower to three operand terms:
 		// plain(a), native sll(b, 5), native rotr(a, 12).
-		let mut wire_mapping = SecondaryMap::new();
+		let mut wire_mapping = SecondaryMap::with_default(ValueIndex::scratch(0));
 		let wire_a = Wire::new(0);
 		let wire_b = Wire::new(1);
 		let wire_c = Wire::new(2);
 		let all_one_wire = Wire::new(3);
 
-		wire_mapping[wire_a] = ValueIndex(0);
-		wire_mapping[wire_b] = ValueIndex(1);
-		wire_mapping[wire_c] = ValueIndex(2);
-		wire_mapping[all_one_wire] = ValueIndex(3);
+		wire_mapping[wire_a] = ValueIndex::private(0);
+		wire_mapping[wire_b] = ValueIndex::private(1);
+		wire_mapping[wire_c] = ValueIndex::private(2);
+		wire_mapping[all_one_wire] = ValueIndex::private(3);
 
 		let mut builder = ConstraintBuilder::new();
 		builder.linear(
@@ -179,22 +180,22 @@ mod tests {
 
 		assert!(
 			val.iter()
-				.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0),
+				.any(|svi| svi.value_index == ValueIndex::private(0) && svi.is_unshifted()),
 			"plain(a) from rotr(a, 0)"
 		);
 		assert!(
 			val.iter().any(|svi| {
-				svi.value_index == ValueIndex(1)
-					&& svi.amount == 5
-					&& matches!(svi.shift_variant, ShiftVariant::Sll)
+				svi.value_index == ValueIndex::private(1)
+					&& svi.inner().amount == 5
+					&& matches!(svi.inner().variant, ShiftVariant::Sll)
 			}),
 			"native sll(b, 5)"
 		);
 		assert!(
 			val.iter().any(|svi| {
-				svi.value_index == ValueIndex(0)
-					&& svi.amount == 12
-					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
+				svi.value_index == ValueIndex::private(0)
+					&& svi.inner().amount == 12
+					&& matches!(svi.inner().variant, ShiftVariant::Rotr)
 			}),
 			"native rotr(a, 12)"
 		);

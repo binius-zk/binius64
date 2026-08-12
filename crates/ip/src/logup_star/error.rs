@@ -16,14 +16,14 @@ pub enum Error {
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationError {
-	#[error("the two lookup fractional sums are not equal")]
-	LookupSumMismatch,
 	#[error("the eq_r multilinear evaluation is incorrect")]
 	IncorrectXEvaluation,
 	#[error("the index evaluations do not combine to the leaf denominator")]
 	IncorrectIndexEvaluation,
-	#[error("the batched final layer evaluation is incorrect")]
-	FinalLayerMismatch,
+	#[error("the table-side leaf denominator is not the transparent J - c")]
+	IncorrectTableDenominator,
+	#[error("the pushforward reduction evaluation is incorrect")]
+	PushforwardMismatch,
 	#[error("the proof is truncated or empty")]
 	TranscriptIsEmpty,
 }

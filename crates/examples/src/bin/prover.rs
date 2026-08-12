@@ -2,7 +2,7 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
-use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
+use binius_core::constraint_system::{ConstraintSystem, Proof, ValuesData};
 use binius_examples::setup;
 use binius_hash::StdHashSuite;
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
 		format!("Failed to read public inout values from {}", args.pub_witness_path.display())
 	})?;
 	let inout = ValuesData::deserialize(&mut inout_bytes.as_slice())
-		.context("Failed to deserialize public ValuesData")?;
+		.context("Failed to deserialize inout ValuesData")?;
 
 	// Read and deserialize non-public values
 	let non_pub_bytes = fs::read(&args.non_pub_data_path).with_context(|| {
@@ -65,12 +65,8 @@ fn main() -> Result<()> {
 	let non_public = ValuesData::deserialize(&mut non_pub_bytes.as_slice())
 		.context("Failed to deserialize non-public ValuesData")?;
 
-	// Reconstruct the full ValueVec. The constants and the padding come from the shape, so the
-	// inout values are all the public segment needs from the file.
-	let public = cs
-		.public_segment(&inout)
-		.context("Public inout values do not fit the constraint system")?;
-	let witness = ValueVec::new_from_data(&public, &non_public);
+	// Reconstruct the full ValueVec
+	let witness = cs.value_vec_from_data(&inout, &non_public);
 
 	// Setup prover (verifier is not used here)
 	let (_verifier, prover) = setup::<StdHashSuite>(cs, args.log_inv_rate as usize, None)?;

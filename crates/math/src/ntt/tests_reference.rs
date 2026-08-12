@@ -14,9 +14,7 @@ use crate::{
 	field_buffer::FieldSliceMut,
 	ntt::{
 		NeighborsLastMultiThread, NeighborsLastReference, NeighborsLastSingleThread,
-		domain_context::{
-			GaoMateerPreExpanded, GenericOnTheFly, GenericPreExpanded, TraceOneElement,
-		},
+		domain_context::{GaoMateerPreExpanded, GenericOnTheFly, GenericPreExpanded},
 	},
 	test_utils::{B128, Packed128b, random_field_buffer},
 };
@@ -209,7 +207,7 @@ fn test_forward_transform_is_identity(#[case] ntt_factory: impl NTTFactory<B128>
 
 fn test_equivalence_ntts_domain_contexts<P: PackedField>()
 where
-	P::Scalar: BinaryField + TraceOneElement,
+	P::Scalar: BinaryField,
 {
 	let dc_1 = GaoMateerPreExpanded::<P::Scalar>::generate(10);
 	test_equivalence_ntts::<P>(&dc_1);

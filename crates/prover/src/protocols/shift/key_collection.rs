@@ -5,7 +5,7 @@ use std::{iter, mem, ops::Range};
 
 use binius_core::{
 	ShiftVariant,
-	constraint_system::{ConstraintSystem, Operand, ShiftedValueIndex},
+	constraint_system::{ConstraintSystem, InoutSegment, Operand},
 	word::Word,
 };
 use binius_field::{Field, WideMul};
@@ -105,6 +105,14 @@ impl DenseShiftEncoding {
 	/// The shifts the segment uses, in dense index order.
 	pub fn iter(&self) -> impl Iterator<Item = (ShiftVariant, u8)> + '_ {
 		self.shifts.iter().copied()
+	}
+
+	/// Where every shift the segment uses sits in the full space of `SHIFT_PAIR_COUNT` shifts, in
+	/// dense index order.
+	///
+	/// The indices are strictly increasing, which is what lets two segments' encodings merge.
+	pub fn shift_indices(&self) -> impl Iterator<Item = usize> + '_ {
+		self.shifts.iter().map(|&shift| shift_index(shift))
 	}
 
 	/// The dense index of every shift, for lookup while the keys are built.
@@ -353,19 +361,23 @@ fn update_with_operand(
 	operation: Operation,
 	operand_index: usize,
 	operand_values: impl Iterator<Item = impl AsRef<Operand>>,
+	cs: &ConstraintSystem,
 	builder_key_lists: &mut [Vec<BuilderKey>],
 ) {
 	for (constraint_idx, operand_value) in operand_values.enumerate() {
 		// Each operand value is a Vec<ShiftedValueIndex> - multiple shifted word references
-		for ShiftedValueIndex {
-			value_index,
-			shift_variant,
-			amount,
-		} in operand_value.as_ref()
-		{
-			// Access and update the builder keys corresponding to the word index (`value_index.0`)
-			let builder_keys = &mut builder_key_lists[value_index.0 as usize];
-			let shift = (*shift_variant, *amount);
+		for term in operand_value.as_ref() {
+			// The reduction still folds a single shift per key, so the outer slot must be the
+			// identity. Widening the reduction to the pair is what lifts this.
+			debug_assert!(
+				!term.is_doubly_shifted(),
+				"the two-phase shift reduction reads only the inner shift of a term"
+			);
+
+			// The lists are indexed by word position, so resolve the term's segment-relative
+			// index against the segment starts.
+			let builder_keys = &mut builder_key_lists[cs.word_offset(term.value_index)];
+			let shift = (term.inner().variant, term.inner().amount);
 
 			// Find existing builder key or create a new one for this (operation, shift) pair
 			let constraint_index = ConstraintIndex {
@@ -396,6 +408,7 @@ fn update_with_operand(
 fn update_with_constraints<C, const ARITY: usize>(
 	operation: Operation,
 	constraints: &[C],
+	cs: &ConstraintSystem,
 	builder_key_lists: &mut [Vec<BuilderKey>],
 ) where
 	C: AsRef<[Operand; ARITY]>,
@@ -407,26 +420,35 @@ fn update_with_constraints<C, const ARITY: usize>(
 			constraints
 				.iter()
 				.map(|constraint| &constraint.as_ref()[operand_index]),
+			cs,
 			builder_key_lists,
 		);
 	}
 }
 
 /// Constructs a `KeyCollection` from a constraint system.
-pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
+///
+/// `inout` is where the proving protocol places the inout values, which is what the two key
+/// segments split along.
+pub fn build_key_collection(cs: &ConstraintSystem, inout: InoutSegment) -> KeyCollection {
 	// Initialize a temporary list of builder keys lists, one for each committed word.
 	let mut builder_key_lists: Vec<Vec<BuilderKey>> =
 		(0..cs.value_vec_len()).map(|_| Vec::new()).collect();
 
 	// Update the builder keys lists with respect to each operand of each operation.
-	update_with_constraints(Operation::Zero, &cs.zero_constraints, &mut builder_key_lists);
-	update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, &mut builder_key_lists);
-	update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, &mut builder_key_lists);
-	update_with_constraints(Operation::BinMul, &cs.bmul_constraints, &mut builder_key_lists);
+	update_with_constraints(Operation::Zero, &cs.zero_constraints, cs, &mut builder_key_lists);
+	update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, cs, &mut builder_key_lists);
+	update_with_constraints(
+		Operation::IntegerMul,
+		&cs.imul_constraints,
+		cs,
+		&mut builder_key_lists,
+	);
+	update_with_constraints(Operation::BinMul, &cs.bmul_constraints, cs, &mut builder_key_lists);
 
 	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
 	// per half.
-	let hidden_lists = builder_key_lists.split_off(cs.n_public_words());
+	let hidden_lists = builder_key_lists.split_off(cs.n_public_words(inout));
 	KeyCollection {
 		public: build_key_segment(builder_key_lists),
 		hidden: build_key_segment(hidden_lists),
@@ -665,7 +687,7 @@ impl DeserializeBytes for KeyCollection {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::constraint_system::{AndConstraint, ValueIndex};
+	use binius_core::constraint_system::{AndConstraint, ShiftedValueIndex, ValueIndex};
 	use binius_field::{BinaryField128bGhash, Field};
 	use binius_math::FieldBuffer;
 
@@ -682,15 +704,14 @@ mod tests {
 	/// The public segment references `(Sll, 0)` and `(Slr, 3)`; the hidden one references
 	/// `(Sll, 0)`, `(Sar, 7)` and `(Rotr, 1)`.
 	fn shifted_constraint_system() -> ConstraintSystem {
-		let public = ValueIndex(1);
-		let hidden = ValueIndex(5);
+		// The system has four constants and no inout values, so the public segment is the
+		// constants and the hidden one is the private values.
+		let public = ValueIndex::constant(1);
+		let hidden = ValueIndex::private(1);
 		ConstraintSystem {
 			constants: vec![Word::ZERO; 4],
-			n_const_pad: 0,
 			n_inout: 0,
-			n_inout_pad: 0,
 			n_private: 4,
-			n_private_pad: 0,
 			zero_constraints: Vec::new(),
 			and_constraints: vec![AndConstraint([
 				vec![
@@ -710,7 +731,8 @@ mod tests {
 
 	#[test]
 	fn dense_shift_encoding_covers_the_pairs_its_segment_uses() {
-		let key_collection = build_key_collection(&shifted_constraint_system());
+		let key_collection =
+			build_key_collection(&shifted_constraint_system(), InoutSegment::Public);
 
 		let public_pairs = key_collection
 			.public
@@ -739,7 +761,8 @@ mod tests {
 
 	#[test]
 	fn keys_index_their_segments_dense_encoding() {
-		let key_collection = build_key_collection(&shifted_constraint_system());
+		let key_collection =
+			build_key_collection(&shifted_constraint_system(), InoutSegment::Public);
 
 		// The shifts a word's keys name, as its own segment's encoding decodes them.
 		let word_pairs = |segment: &KeySegment, word: usize| {
@@ -769,7 +792,8 @@ mod tests {
 
 	#[test]
 	fn dense_shift_encoding_survives_serialization() {
-		let key_collection = build_key_collection(&shifted_constraint_system());
+		let key_collection =
+			build_key_collection(&shifted_constraint_system(), InoutSegment::Public);
 
 		let mut buf = Vec::new();
 		key_collection.serialize(&mut buf).unwrap();

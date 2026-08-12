@@ -2,7 +2,10 @@
 // Copyright 2026 The Binius Developers
 
 use binius_compute::{Allocator, BufferPool, VecLike};
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::StdHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
@@ -18,7 +21,7 @@ use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product,
 	multilinear::eq::eq_ind_partial_eval_scalars,
-	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
+	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::lagrange_evals_scalars,
 };
 use binius_prover::{
@@ -46,7 +49,7 @@ use crate::{
 };
 
 /// The multithreaded additive NTT used to encode the committed codeword.
-type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
+type ProverNtt = NeighborsLastMultiThread<GaoMateerPreExpanded<B128>>;
 
 /// IOP prover for the M4 constraint reduction of a particular constraint system.
 ///
@@ -151,11 +154,10 @@ impl IOPProver {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
 				OperandColumns::build(table, &cs.constants, &cs.imul_constraints, alloc)
 			};
-			// The constraint axis is rounded up to a power of two and zero-filled, and the table
-			// holds `2^log_instances` instances, so every column has the power-of-two length the
-			// IntMul witness requires.
+			// The columns are built together from one constraint slice, so they are equal-length —
+			// the only shape IntMul requires. It rounds the constraint axis up itself.
 			let output = intmul::prove::<_, _, P, _>(columns.as_slices(), channel, alloc)
-				.expect("the operand columns are equal-length and power-of-two length");
+				.expect("the operand columns are equal-length");
 			(columns, output)
 		});
 
@@ -292,21 +294,11 @@ impl IOPProver {
 			FoldedWitness::<B128, _>::fold_instances(table, &r_rho, alloc)
 		};
 
-		// The public segment is the shared constants, padded with zeros to the layout's
-		// power-of-two word count.
-		// The shift folds it against the monster's public part, which is sized to that padded
-		// count. The padding makes the two lengths agree, and matches the zeros the verifier
-		// assumes.
-		let n_public_words = cs.n_public_words();
-		// Growing a pooled buffer past the block it was handed would reallocate and free that block
-		// at the element's alignment rather than the pool's, so the fill below must fit exactly.
-		assert!(
-			cs.constants.len() <= n_public_words,
-			"the public segment is padded to at least the constant count"
-		);
-		let mut public_words = alloc.alloc::<Word>(n_public_words);
+		// The public segment is the shared constants alone: the inout values are committed, so
+		// nothing else is public. The shift folds it against the monster's public part, which is
+		// sized to the same count.
+		let mut public_words = alloc.alloc::<Word>(cs.constants.len());
 		public_words.extend_from_slice(&cs.constants);
-		public_words.resize(n_public_words, Word::ZERO);
 
 		// Reduce the operand claims to one witness evaluation.
 		let witness_claim = {
@@ -322,20 +314,24 @@ impl IOPProver {
 			)
 		};
 
+		// Split the shift's final point `r_j || r_y || r_segment` into its three parts.
+		// The bit index `r_j` is the low coordinates addressing a bit within a 64-bit word.
+		// The segment selector `r_segment` is the last coordinate, choosing public or hidden
+		// words. The hidden-only trace drops it.
+		// The word index `r_y` is everything in between.
+		let challenges = &witness_claim.challenges;
+		let r_j = &challenges[..Word::LOG_BITS];
+		let r_y = &challenges[Word::LOG_BITS..challenges.len() - 1];
+
+		// Prove the public segment's evaluation claim, which the verifier's public-input check
+		// consumes.
+		ring_switch::prove_public_eval::<_, P, _>(alloc, &public_words, r_j, r_y, channel);
+
 		let RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
 		} = {
 			let _scope = tracing::debug_span!("Ring-switching reduction").entered();
-
-			// Split the shift's final point `r_j || r_y || r_segment` into its three parts.
-			// The bit index `r_j` is the low coordinates addressing a bit within a 64-bit word.
-			// The segment selector `r_segment` is the last coordinate, choosing public or hidden
-			// words. The hidden-only trace drops it.
-			// The word index `r_y` is everything in between.
-			let challenges = &witness_claim.challenges;
-			let r_j = &challenges[..Word::LOG_BITS];
-			let r_y = &challenges[Word::LOG_BITS..challenges.len() - 1];
 
 			// Ring-switch the reduced claim onto the committed trace.
 			// The point is `r_j || r_rho || r_y`.
@@ -375,9 +371,10 @@ where
 	/// The prover encodes the codeword with the multithreaded NTT, spread across the cores.
 	/// Reusing the verifier's compiler keeps both sides on one set of FRI parameters.
 	pub fn setup(verifier: &Verifier) -> Self {
-		// Reuse the verifier's evaluation domain so both sides agree on the code.
+		// Reuse the verifier's evaluation domain so both sides agree on the code: its compiler
+		// fixed that domain as the Gao-Mateer basis of this dimension.
 		let domain_context =
-			GenericPreExpanded::generate_from_subspace(verifier.iop_compiler().max_subspace());
+			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
 
 		// Spread the NTT across the available cores.
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
@@ -388,7 +385,8 @@ where
 			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
 		// Build the shift keys once from the shared constraint system.
-		let key_collection = build_key_collection(verifier.constraint_system());
+		let key_collection =
+			build_key_collection(verifier.constraint_system(), InoutSegment::Hidden);
 
 		let iop_prover = IOPProver::new(verifier.iop_verifier().clone(), key_collection);
 
@@ -730,15 +728,12 @@ mod tests {
 		use binius_frontend::Wire;
 
 		let builder = CircuitBuilder::new();
-		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_witness());
-		let and = builder.band(inputs[0], inputs[1]);
-		builder.force_commit(and);
+		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_inout());
 		let (hi, lo) = builder.imul(inputs[0], inputs[1]);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
 		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		for wire in [builder.band(inputs[0], inputs[1]), hi, lo, c_lo, c_hi] {
+			builder.mark_inout(wire);
+		}
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -804,19 +799,14 @@ mod tests {
 			enable_gate_fusion: false,
 			..Options::default()
 		});
-		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_witness());
+		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_inout());
 		let x = builder.bxor(inputs[0], inputs[1]);
 		let y = builder.bxor(x, inputs[2]);
-		builder.force_commit(x);
-		builder.force_commit(y);
-		let and_out = builder.band(inputs[0], inputs[1]);
-		builder.force_commit(and_out);
 		let (hi, lo) = builder.imul(inputs[0], inputs[1]);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
 		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		for wire in [x, y, builder.band(inputs[0], inputs[1]), hi, lo, c_lo, c_hi] {
+			builder.mark_inout(wire);
+		}
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -867,9 +857,8 @@ mod tests {
 			enable_gate_fusion: false,
 			..Options::default()
 		});
-		let inputs: [Wire; 3] = array::from_fn(|_| builder.add_witness());
-		let x = builder.bxor(inputs[0], inputs[1]);
-		builder.force_commit(x);
+		let inputs: [Wire; 3] = array::from_fn(|_| builder.add_inout());
+		builder.mark_inout(builder.bxor(inputs[0], inputs[1]));
 		let circuit = builder.build();
 
 		let mut cs = circuit.constraint_system().clone();
@@ -949,11 +938,11 @@ mod tests {
 	fn protocol_round_trips_with_mul() {
 		// One product per instance, with both result words committed as hidden words.
 		let builder = CircuitBuilder::new();
-		let x = builder.add_witness();
-		let y = builder.add_witness();
+		let x = builder.add_inout();
+		let y = builder.add_inout();
 		let (hi, lo) = builder.imul(x, y);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
+		builder.mark_inout(hi);
+		builder.mark_inout(lo);
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -989,6 +978,68 @@ mod tests {
 			.expect("no trailing proof data");
 	}
 
+	// A circuit declaring inout wires round-trips through the whole protocol.
+	//
+	// The inout values are committed with the private ones, so they lead the hidden segment and the
+	// public segment is the constants alone. That moves the boundary the shift reduction splits at,
+	// which every stage below it must agree on: the key collection, the word-index tensor, the
+	// committed shape, and the trace point the ring-switch opens at.
+	//
+	// Fixture: a per-instance public input and output either side of a private computation, over
+	// 2^6 instances. A constant keeps the public segment non-empty, so both halves carry words.
+	#[test]
+	fn protocol_round_trips_with_inout_wires() {
+		let builder = CircuitBuilder::new();
+		let input = builder.add_inout();
+		let output = builder.add_inout();
+		let secret = builder.add_witness();
+		let k = builder.add_constant_64(0x0123_4567_89ab_cdef);
+		// output == (input & secret) ^ k, so both inout wires are read by real constraints.
+		let masked = builder.band(input, secret);
+		builder.assert_eq("output", output, builder.bxor(masked, k));
+		let circuit = builder.build();
+
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
+		// Confirm the fixture genuinely exercises the inout path, on both sides of the boundary.
+		assert!(cs.n_inout > 0, "the fixture must declare inout wires");
+		assert!(!cs.constants.is_empty(), "the public segment must hold words of its own");
+
+		// Every instance chooses its own inout words — the reason they cannot be shared public
+		// data.
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			let input_word = rng.next_u64();
+			let secret_word = rng.next_u64();
+			w[input] = Word(input_word);
+			w[secret] = Word(secret_word);
+			w[output] = Word((input_word & secret_word) ^ 0x0123_4567_89ab_cdef);
+		})
+		.unwrap();
+
+		// The committed segment covers the inout words as well as the private ones.
+		assert_eq!(
+			table.n_hidden_words(),
+			cs.n_hidden_words(InoutSegment::Hidden),
+			"the table commits the inout values with the private ones"
+		);
+
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
 	// A circuit whose constant count is not a power of two proves and verifies: the shift evaluates
 	// the constants over the layout's power-of-two word count, treating the words past the constant
 	// count as zero, so no caller padding is needed.
@@ -1001,15 +1052,15 @@ mod tests {
 		use binius_frontend::Wire;
 
 		let builder = CircuitBuilder::new();
-		let cv: [Wire; 8] = array::from_fn(|_| builder.add_witness());
-		let block: [Wire; 16] = array::from_fn(|_| builder.add_witness());
-		let counter = builder.add_witness();
-		let block_len = builder.add_witness();
-		let flags = builder.add_witness();
-		// Force-commit the output so the circuit has no inout wires.
-		let out = blake3_compress(&builder, cv, block, counter, block_len, flags);
-		for wire in out {
-			builder.force_commit(wire);
+		let cv: [Wire; 8] = array::from_fn(|_| builder.add_inout());
+		let block: [Wire; 16] = array::from_fn(|_| builder.add_inout());
+		let counter = builder.add_inout();
+		let block_len = builder.add_inout();
+		let flags = builder.add_inout();
+		// Promoting the output chaining value keeps the compression alive under dead-code
+		// elimination.
+		for wire in blake3_compress(&builder, cv, block, counter, block_len, flags) {
+			builder.mark_inout(wire);
 		}
 		let circuit = builder.build();
 
@@ -1068,17 +1119,16 @@ mod tests {
 		type WideP = PackedBinaryGhash2x128b;
 
 		let builder = CircuitBuilder::new();
-		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_witness());
+		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		// Four standalone AND gates on distinct wires — the AND work is not tied to the products.
 		for pair in inputs.chunks_exact(2) {
-			let and = builder.band(pair[0], pair[1]);
-			builder.force_commit(and);
+			builder.mark_inout(builder.band(pair[0], pair[1]));
 		}
 		// Two products — fewer IMUL constraints than AND constraints.
 		for pair in inputs.chunks_exact(2).take(2) {
 			let (hi, lo) = builder.imul(pair[0], pair[1]);
-			builder.force_commit(hi);
-			builder.force_commit(lo);
+			builder.mark_inout(hi);
+			builder.mark_inout(lo);
 		}
 		let circuit = builder.build();
 
@@ -1134,11 +1184,11 @@ mod tests {
 		// One GHASH-field squaring per instance: `(c_lo, c_hi) = (x_lo, x_hi)^2`, with both result
 		// words committed as hidden words.
 		let builder = CircuitBuilder::new();
-		let x_lo = builder.add_witness();
-		let x_hi = builder.add_witness();
+		let x_lo = builder.add_inout();
+		let x_hi = builder.add_inout();
 		let (c_lo, c_hi) = builder.bmul(x_lo, x_hi, x_lo, x_hi);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		builder.mark_inout(c_lo);
+		builder.mark_inout(c_hi);
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -1188,22 +1238,21 @@ mod tests {
 		type WideP = PackedBinaryGhash2x128b;
 
 		let builder = CircuitBuilder::new();
-		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_witness());
+		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		// Four standalone AND gates on distinct wires.
 		for pair in inputs.chunks_exact(2) {
-			let and = builder.band(pair[0], pair[1]);
-			builder.force_commit(and);
+			builder.mark_inout(builder.band(pair[0], pair[1]));
 		}
 		// Two integer products — fewer IMUL constraints than AND constraints.
 		for pair in inputs.chunks_exact(2).take(2) {
 			let (hi, lo) = builder.imul(pair[0], pair[1]);
-			builder.force_commit(hi);
-			builder.force_commit(lo);
+			builder.mark_inout(hi);
+			builder.mark_inout(lo);
 		}
 		// One GHASH-field product — the fewest of the three operations.
 		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
-		builder.force_commit(c_lo);
-		builder.force_commit(c_hi);
+		builder.mark_inout(c_lo);
+		builder.mark_inout(c_hi);
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();
@@ -1234,6 +1283,72 @@ mod tests {
 		// Prove with the wide packing; the verifier is packing-agnostic.
 		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<WideP>::setup(&verifier);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
+	// None of the three operations has a power-of-two constraint count, so each one's operand
+	// columns stop partway through the constraint axis its reduction runs over.
+	//
+	// Every other fixture in this module happens to land on a power of two, where the columns span
+	// the axis exactly and the short-column path is never taken. This is the one that reaches it.
+	#[test]
+	fn protocol_round_trips_with_non_power_of_two_constraint_counts() {
+		use binius_frontend::Wire;
+
+		let builder = CircuitBuilder::new();
+		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
+		// Three standalone AND gates, three integer products, and three GHASH-field products.
+		for pair in inputs.chunks_exact(2).take(3) {
+			builder.mark_inout(builder.band(pair[0], pair[1]));
+		}
+		for pair in inputs.chunks_exact(2).take(3) {
+			let (hi, lo) = builder.imul(pair[0], pair[1]);
+			builder.mark_inout(hi);
+			builder.mark_inout(lo);
+		}
+		for i in 0..3 {
+			let (c_lo, c_hi) = builder.bmul(inputs[i], inputs[i + 1], inputs[i + 2], inputs[i + 3]);
+			builder.mark_inout(c_lo);
+			builder.mark_inout(c_hi);
+		}
+		let circuit = builder.build();
+
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
+		// Confirm the fixture reaches the case it exists for. A power-of-two count would leave
+		// every column spanning its axis exactly, which the other fixtures already cover.
+		for (name, count) in [
+			("AND", cs.n_and_constraints()),
+			("IMUL", cs.n_imul_constraints()),
+			("BMUL", cs.n_bmul_constraints()),
+		] {
+			assert!(
+				!count.is_power_of_two(),
+				"the fixture must give {name} a non-power-of-two constraint count, got {count}"
+			);
+		}
+
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			for &wire in &inputs {
+				w[wire] = Word(rng.next_u64());
+			}
+		})
+		.unwrap();
+
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove(&table, &mut prover_transcript);
@@ -1283,11 +1398,11 @@ mod tests {
 	#[test]
 	fn tampered_mul_opening_is_rejected() {
 		let builder = CircuitBuilder::new();
-		let x = builder.add_witness();
-		let y = builder.add_witness();
+		let x = builder.add_inout();
+		let y = builder.add_inout();
 		let (hi, lo) = builder.imul(x, y);
-		builder.force_commit(hi);
-		builder.force_commit(lo);
+		builder.mark_inout(hi);
+		builder.mark_inout(lo);
 		let circuit = builder.build();
 
 		let cs = circuit.constraint_system().clone();

@@ -47,16 +47,13 @@ fn main() -> Result<()> {
 	let cs = ConstraintSystem::deserialize(&mut cs_bytes.as_slice())
 		.context("Failed to deserialize ConstraintSystem")?;
 
-	// Read and deserialize the public inout values, then rebuild the segment the protocol wants.
-	// The constants and the padding around them come from the constraint system, not the file.
+	// The constants come from the constraint system, not from this file.
+	// So the inout values are all the verifier reads here.
 	let inout_bytes = fs::read(&args.pub_witness_path).with_context(|| {
 		format!("Failed to read public inout values from {}", args.pub_witness_path.display())
 	})?;
 	let inout = ValuesData::deserialize(&mut inout_bytes.as_slice())
-		.context("Failed to deserialize public ValuesData")?;
-	let public = cs
-		.public_segment(&inout)
-		.context("Public inout values do not fit the constraint system")?;
+		.context("Failed to deserialize inout ValuesData")?;
 
 	// Read and deserialize proof
 	let proof_bytes = fs::read(&args.proof_path)
@@ -84,7 +81,7 @@ fn main() -> Result<()> {
 
 	// Verify
 	verifier
-		.verify(&public, &mut verifier_transcript)
+		.verify(&inout, &mut verifier_transcript)
 		.context("Verification failed")?;
 	verifier_transcript
 		.finalize()

@@ -18,9 +18,9 @@ use crate::word::Word;
 ///     non-public  | witness and internal values  | prover only
 /// ```
 ///
-/// Neither file holds the circuit's constants, nor the padding between sections. Both of those
-/// are the same for every instance, so they stay in the constraint system and are put back by
-/// [`ConstraintSystem::public_segment`](super::ConstraintSystem::public_segment).
+/// Neither file holds the circuit's constants.
+/// Those are fixed for every instance, so they stay in the constraint system.
+/// Rebuilding the public segment puts them back in front of the words a file carries.
 ///
 /// Those two files plus the circuit's constraint system are all another host needs.
 /// From the three it rebuilds the witness and proves against it.

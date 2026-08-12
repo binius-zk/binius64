@@ -37,11 +37,17 @@ mod tests;
 
 use stat::Stat;
 
+/// How many shifts a term of the lowered constraint system may carry.
+///
+/// A [`ShiftedValueIndex`](binius_core::constraint_system::ShiftedValueIndex) names one shift, so
+/// the pass has to collapse every inlined path down to one.
+const LOWERED_SHIFT_SLOTS: usize = 1;
+
 pub fn run_pass(cb: &mut ConstraintBuilder, pinned_wires: &EntitySet<Wire>) {
 	let mut stat = Stat::new(cb);
 
 	let mut leg = LeGraph::new(cb);
-	commit_set::run_decide_commit_set(&mut leg, &mut stat);
+	commit_set::run_decide_commit_set(&mut leg, &mut stat, LOWERED_SHIFT_SLOTS);
 	// Pin force-committed wires that are linear definitions so their values survive as committed
 	// definitions. Pinned wires that are not linear definitions (e.g. AND or IMUL outputs) are
 	// already committed by their own constraints, so they must be excluded here: `patch::build`

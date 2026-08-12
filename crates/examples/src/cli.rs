@@ -816,9 +816,9 @@ where
 		}
 
 		if let Some(path) = pub_witness_path.as_deref() {
-			// Only the inout values: the constants and the padding are already in the shape above.
-			write_serialized(&ValuesRef::new(cs.inout_values(witness.public())), path)?;
-			tracing::info!("Public inout values saved to '{}'", path);
+			// Only the inout values: the constants ride along in the constraint system.
+			write_serialized(&ValuesRef::new(witness.inout()), path)?;
+			tracing::info!("Inout witness saved to '{}'", path);
 		}
 
 		if let Some(path) = non_pub_data_path.as_deref() {
@@ -829,7 +829,10 @@ where
 		// Save KeyCollection if requested
 		if let Some(path) = key_collection_path.as_deref() {
 			let key_collection_scope = tracing::info_span!("Building key collection").entered();
-			let key_collection = binius_prover::protocols::shift::build_key_collection(cs);
+			let key_collection = binius_prover::protocols::shift::build_key_collection(
+				cs,
+				binius_core::constraint_system::InoutSegment::Public,
+			);
 			drop(key_collection_scope);
 			write_serialized(&key_collection, path)?;
 			tracing::info!("Key collection saved to '{}'", path);
@@ -883,9 +886,8 @@ where
 		let non_pub_data: ValuesData = read_deserialized(non_pub_data_path)?;
 		tracing::info!("Non-public data loaded from '{}'", non_pub_data_path);
 
-		// The public segment is the constants and padding from the shape, around these inout
-		// values.
-		let witness = ValueVec::new_from_data(&cs.public_segment(&inout)?, &non_pub_data);
+		// Reconstruct the full witness from its two segments
+		let witness = cs.value_vec_from_data(&inout, &non_pub_data);
 		drop(witness_load_scope);
 
 		match hash_suite {

@@ -13,14 +13,11 @@ pub mod multilinear_eval;
 mod padded;
 mod prove;
 pub mod quadratic_mle_evaluator;
-// `round_evals` is internal implementation, exposed (via `#[doc(hidden)]` `pub mod`) only so
-// `binius-prover` can compute the shift reduction's sparse first sumcheck round with the exact
-// interpolation the in-crate provers use. Not a stable API.
-#[doc(hidden)]
 pub mod round_evals;
 pub mod round_evaluator;
 mod round_state;
 pub mod selector_mle;
+pub mod sparse_dense_product;
 mod switchover;
 pub use bivariate_product_evaluator::bivariate_product_prover;
 pub use mle_to_sumcheck::*;

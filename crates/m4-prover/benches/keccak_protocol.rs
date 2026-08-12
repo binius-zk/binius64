@@ -32,30 +32,29 @@ const STATE_LANES: usize = 25;
 /// Permutations computed per instance.
 const PERMUTATIONS_PER_INSTANCE: u64 = 1;
 
-/// The witness input wires of one Keccak-f[1600] permutation instance.
-///
-/// The output is force-committed, so the circuit has no inout wires.
+/// The public input wires of one Keccak-f[1600] permutation instance.
 #[derive(Clone, Copy)]
-struct KeccakInputs {
+struct KeccakWires {
 	/// The 25-word input state.
 	state: [Wire; STATE_LANES],
 }
 
-/// Builds a circuit for one Keccak-f[1600] permutation and force-commits its output.
+/// Builds a circuit for one Keccak-f[1600] permutation, with its permuted state promoted to public
+/// outputs.
 ///
-/// Force-committing the output keeps the permutation alive under dead-code elimination.
-fn build_keccak_circuit() -> (Circuit, KeccakInputs) {
+/// That promotion keeps the permutation alive under dead-code elimination.
+fn build_keccak_circuit() -> (Circuit, KeccakWires) {
 	let builder = CircuitBuilder::new();
-	let input = array::from_fn(|_| builder.add_witness());
+	let input = array::from_fn(|_| builder.add_inout());
 	let mut state = input;
 
 	keccak_f1600(&builder, &mut state);
 
 	for wire in state {
-		builder.force_commit(wire);
+		builder.mark_inout(wire);
 	}
 
-	(builder.build(), KeccakInputs { state: input })
+	(builder.build(), KeccakWires { state: input })
 }
 
 /// A deterministic, instance- and lane-dependent input word.
@@ -69,9 +68,9 @@ const fn input_word(instance: usize, lane: usize) -> Word {
 }
 
 /// Assigns one instance's Keccak input state.
-fn fill_instance(inputs: &KeccakInputs, i: usize, w: &mut BatchWitnessFiller<'_, '_>) {
+fn fill_instance(wires: &KeccakWires, i: usize, w: &mut BatchWitnessFiller<'_, '_>) {
 	for lane in 0..STATE_LANES {
-		w[inputs.state[lane]] = input_word(i, lane);
+		w[wires.state[lane]] = input_word(i, lane);
 	}
 }
 

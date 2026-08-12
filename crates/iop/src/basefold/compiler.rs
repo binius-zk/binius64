@@ -6,7 +6,6 @@ use std::borrow::BorrowMut;
 
 use binius_field::BinaryField;
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_math::{BinarySubspace, ntt::domain_context::GenericOnTheFly};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
@@ -59,23 +58,11 @@ where
 			"BaseFoldVerifierCompiler requires at least one oracle spec"
 		);
 
-		// ZK oracles add 1 to the message length for the interleaved mask; non-ZK oracles do not.
-		// Compute max code length across all oracles.
-		let max_log_code_len = oracle_specs
-			.iter()
-			.map(|spec| spec.log_msg_len + usize::from(spec.is_zk))
-			.max()
-			.expect("oracle_specs is non-empty")
-			+ log_inv_rate;
-		let subspace = BinarySubspace::with_dim(max_log_code_len);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
-
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
 		// arities to minimize proof size, so `_arity_strategy` is not consulted here. It derives
 		// each oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message
 		// ‖ mask), non-ZK oracles take a flexible batch size.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
-			&domain_context,
 			merkle_scheme,
 			&oracle_specs,
 			log_inv_rate,
@@ -98,9 +85,13 @@ where
 		&self.fri_params
 	}
 
-	/// Returns the Reed-Solomon code subspace of the combined FRI parameters (the largest needed).
-	pub fn max_subspace(&self) -> &BinarySubspace<F> {
-		self.fri_params.rs_code().subspace()
+	/// The dimension of the largest evaluation domain the combined FRI parameters need.
+	///
+	/// A prover builds its NTT domain context from this. The basis is not communicated because
+	/// [`ReedSolomonCode`](binius_math::reed_solomon::ReedSolomonCode) fixes it: the Gao-Mateer
+	/// basis of this dimension.
+	pub fn max_log_domain_size(&self) -> usize {
+		self.fri_params.rs_code().log_len()
 	}
 
 	/// Creates a ZK verifier channel over the given Merkle channel.
@@ -113,16 +104,16 @@ where
 		channel: Channel,
 	) -> BaseFoldVerifierChannel<'_, F, Channel>
 	where
-		Channel: MerkleIPVerifierChannel<F, Elem = F>,
+		Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 	{
 		BaseFoldVerifierChannel::new(channel, &self.oracle_specs, &self.fri_params)
 	}
 
 	/// Creates a ZK verifier channel over a transcript, for the common case.
 	///
-	/// The transcript (owned or mutably borrowed) is wrapped in a
-	/// [`VerifierMerkleTranscriptChannel`] with a non-hiding [`BinaryMerkleTreeScheme`] for the
-	/// given hash suite, then passed to [`Self::create_channel`].
+	/// The transcript may be owned or mutably borrowed.
+	/// It is wrapped in a [`VerifierMerkleTranscriptChannel`] for the given hash suite.
+	/// That channel is then passed to [`Self::create_channel`].
 	pub fn create_channel_from_transcript<H, Challenger_, T>(
 		&self,
 		transcript: T,

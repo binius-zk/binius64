@@ -3,17 +3,20 @@
 
 use binius_circuits::sha256::sha256_fixed;
 use binius_compute::{BufferPool, GlobalAllocator};
-use binius_core::{ValueVec, constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	ValueVec,
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
 use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
-use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		OperatorClaims, OperatorData, build_key_collection,
-		monster::{build_h_parts, build_monster_segments},
-		phase_1::{build_g_parts, run_phase_1_sumcheck},
+		monster::{build_h, build_monster_segments},
+		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 		prove,
 	},
@@ -117,7 +120,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let zero_evals = [F::random(&mut rng)];
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
-		let key_collection = build_key_collection(&cs);
+		let key_collection = build_key_collection(&cs, InoutSegment::Public);
 		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 		let mut group = c.benchmark_group(format!(
@@ -149,7 +152,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				prove::<F, P, _, _>(
 					&key_collection,
-					value_vec.combined_witness(),
+					value_vec.public(),
+					value_vec.non_public(),
 					OperatorClaims {
 						zero: prover_zero_data,
 						bitand: prover_bitand_data,
@@ -184,7 +188,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		prove::<F, P, _, _>(
 			&key_collection,
-			value_vec.combined_witness(),
+			value_vec.public(),
+			value_vec.non_public(),
 			OperatorClaims {
 				zero: prover_zero_data,
 				bitand: prover_bitand_data,
@@ -210,6 +215,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				verify(
 					&cs,
+					InoutSegment::Public,
 					&VerifierOperatorData::new(r_x_prime_zero.clone(), zero_evals),
 					&verifier_bitand_data,
 					&verifier_intmul_data,
@@ -255,8 +261,11 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let bitand_evals = [F::random(&mut rng); 3];
 	let intmul_evals = [F::ZERO; 4];
 
-	let key_collection = build_key_collection(&cs);
-	let words = value_vec.combined_witness();
+	let key_collection = build_key_collection(&cs, InoutSegment::Public);
+	// The phase functions take each segment as the circuit declares it: `build_g` zips the
+	// words with their key ranges and `fold_words` pads each fold to `log2_ceil(len)` variables.
+	let public_words = value_vec.public();
+	let hidden_words = value_vec.non_public();
 	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
@@ -288,80 +297,73 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// here (with a throwaway transcript) to capture each phase's inputs; the setup closures below
 	// then only clone what a phase consumes by value. The specific transcript challenges do not
 	// change the work a phase performs.
-	// `build_g_parts` runs per key segment; the full g parts are the sum of the public and hidden
-	// segment parts.
-	let build_combined_g_parts = || {
-		let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-		let mut g_parts = build_g_parts::<F, P, _>(
-			&GlobalAllocator,
-			public_words,
-			&key_collection.public,
-			&prepared,
-		);
-		let hidden_g_parts = build_g_parts::<F, P, _>(
-			&GlobalAllocator,
-			hidden_words,
-			&key_collection.hidden,
-			&prepared,
-		);
-		for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
-			for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
-				*slot += *add;
-			}
-		}
-		g_parts
+	// `build_g` runs per key segment; the full g multilinear is the two segments' entries
+	// concatenated, as `prove_phase_1` assembles them.
+	let build_combined_g = || {
+		let public = build_g::<F, P>(public_words, &key_collection.public, &prepared);
+		let hidden = build_g::<F, P>(hidden_words, &key_collection.hidden, &prepared);
+		SparseShiftRows::from_segments([
+			(&public, &key_collection.public.dense_shift_enc),
+			(&hidden, &key_collection.hidden.dense_shift_enc),
+		])
 	};
 
-	let g_parts = build_combined_g_parts();
-	let h_parts =
-		build_h_parts::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime);
-	let SumcheckOutput {
-		challenges: mut r_jr_s,
-		eval: gamma,
+	let g = build_combined_g();
+	let h = build_h::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime);
+	let Phase1Output {
+		r_j,
+		r_s,
+		r_v,
+		gamma,
+		g_eval: _,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
 		run_phase_1_sumcheck::<F, P, _, _>(
-			g_parts.clone(),
-			h_parts.clone(),
+			g.clone(),
+			h.clone(),
+			prepared.batched_eval(),
 			&mut transcript,
 			&GlobalAllocator,
 		)
 	};
-	// Split phase-1 challenges into `r_j` (low) and `r_s` (high) halves.
-	let r_s = r_jr_s.split_off(Word::LOG_BITS);
-	let r_j = r_jr_s;
+	// The bit-index phase's rounds are not benchmarked; phase 4 only needs the scalar they reduce
+	// the two bit-index factors to, so a stand-in value serves.
+	let shift_ind_eval = F::random(&mut rng);
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
-	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
 	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		&GlobalAllocator,
 		&key_collection,
 		&prepared,
-		&subspace,
-		&r_j,
+		shift_ind_eval,
 		&r_s,
+		&r_v,
 	);
 
 	let mut group = c.benchmark_group("shift_reduction_phases");
 	group.sample_size(10);
 
-	// Phase 1. `build_g_parts` / `build_h_parts` take their inputs by reference, so no
-	// per-iteration clone is needed; `run_phase_1_sumcheck` consumes `g_parts`/`h_parts` by value.
+	// Phase 1. `build_g` / `build_h` take their inputs by reference, so no
+	// per-iteration clone is needed; `run_phase_1_sumcheck` consumes `g`/`h` by value.
 	group.bench_function("phase1_build_g_parts", |b| {
-		b.iter(&build_combined_g_parts);
+		b.iter(&build_combined_g);
 	});
 	group.bench_function("phase1_build_h_parts", |b| {
-		b.iter(|| {
-			build_h_parts::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime)
-		});
+		b.iter(|| build_h::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime));
 	});
 	group.bench_function("phase1_run_sumcheck", |b| {
 		b.iter_batched(
-			|| (g_parts.clone(), h_parts.clone()),
+			|| (g.clone(), h.clone()),
 			|(g, h)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
-				run_phase_1_sumcheck::<F, P, _, _>(g, h, &mut transcript, &GlobalAllocator)
+				run_phase_1_sumcheck::<F, P, _, _>(
+					g,
+					h,
+					prepared.batched_eval(),
+					&mut transcript,
+					&GlobalAllocator,
+				)
 			},
 			BatchSize::SmallInput,
 		);
@@ -375,9 +377,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 				&GlobalAllocator,
 				&key_collection,
 				&prepared,
-				&subspace,
-				&r_j,
+				shift_ind_eval,
 				&r_s,
+				&r_v,
 			)
 		});
 	});

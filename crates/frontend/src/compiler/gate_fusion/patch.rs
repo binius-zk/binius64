@@ -1,12 +1,14 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
+use binius_core::constraint_system::{Composition, Shift};
+
 use super::legraph::LeGraph;
 use crate::compiler::{
 	Wire,
 	constraint_builder::{
-		ConstraintBuilder, Shift, ShiftedWire, WireAndConstraint, WireBmulConstraint,
-		WireImulConstraint, WireLinearConstraint, WireOperand,
+		ConstraintBuilder, ShiftedWire, WireAndConstraint, WireBmulConstraint, WireImulConstraint,
+		WireLinearConstraint, WireOperand, WireZeroConstraint,
 	},
 	gate_fusion::legraph::ConstraintRef,
 };
@@ -28,6 +30,7 @@ enum AddedConstraint {
 	And(WireAndConstraint),
 	Imul(WireImulConstraint),
 	Bmul(WireBmulConstraint),
+	Zero(WireZeroConstraint),
 	/// A committed linear definition, kept linear so that
 	/// [`ConstraintBuilder::build`](crate::compiler::constraint_builder::ConstraintBuilder::build)
 	/// picks its lowering.
@@ -41,11 +44,13 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	let mut subsumed_and = vec![false; cb.and_constraints.len()];
 	let mut subsumed_imul = vec![false; cb.imul_constraints.len()];
 	let mut subsumed_bmul = vec![false; cb.bmul_constraints.len()];
+	let mut subsumed_zero = vec![false; cb.zero_constraints.len()];
 	let mut subsumed_linear = vec![false; cb.linear_constraints.len()];
 
 	let mut new_and_constraints = Vec::new();
 	let mut new_imul_constraints = Vec::new();
 	let mut new_bmul_constraints = Vec::new();
+	let mut new_zero_constraints = Vec::new();
 	let mut new_linear_constraints = Vec::new();
 
 	// Collect all subsumed constraints and new constraints to add.
@@ -56,6 +61,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 				ConstraintRef::And { index } => subsumed_and[index] = true,
 				ConstraintRef::Imul { index } => subsumed_imul[index] = true,
 				ConstraintRef::Bmul { index } => subsumed_bmul[index] = true,
+				ConstraintRef::Zero { index } => subsumed_zero[index] = true,
 				ConstraintRef::Linear { index } => subsumed_linear[index] = true,
 			}
 		}
@@ -63,6 +69,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 			AddedConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
 			AddedConstraint::Imul(imul_constraint) => new_imul_constraints.push(imul_constraint),
 			AddedConstraint::Bmul(bmul_constraint) => new_bmul_constraints.push(bmul_constraint),
+			AddedConstraint::Zero(zero_constraint) => new_zero_constraints.push(zero_constraint),
 			AddedConstraint::Linear(linear_constraint) => {
 				new_linear_constraints.push(linear_constraint)
 			}
@@ -73,12 +80,14 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	retain_unsubsumed(&mut cb.and_constraints, &subsumed_and);
 	retain_unsubsumed(&mut cb.imul_constraints, &subsumed_imul);
 	retain_unsubsumed(&mut cb.bmul_constraints, &subsumed_bmul);
+	retain_unsubsumed(&mut cb.zero_constraints, &subsumed_zero);
 	retain_unsubsumed(&mut cb.linear_constraints, &subsumed_linear);
 
 	// Add the new constraints
 	cb.and_constraints.extend(new_and_constraints);
 	cb.imul_constraints.extend(new_imul_constraints);
 	cb.bmul_constraints.extend(new_bmul_constraints);
+	cb.zero_constraints.extend(new_zero_constraints);
 	cb.linear_constraints.extend(new_linear_constraints);
 }
 
@@ -98,7 +107,7 @@ fn retain_unsubsumed<T>(constraints: &mut Vec<T>, subsumed: &[bool]) {
 /// NB: patches may have overlapping subsumes.
 pub fn build(cb: &ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
 	let mut patches = vec![];
-	build_non_linear_patches(cb, leg, &mut patches);
+	build_root_patches(cb, leg, &mut patches);
 	for committed in leg.commit_set().iter() {
 		let patch = build_committed_lin_def_patch(cb, leg, committed);
 		patches.push(patch);
@@ -106,8 +115,8 @@ pub fn build(cb: &ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
 	patches
 }
 
-/// Collect patches for the non-linear constraints that inline linear definitions.
-fn build_non_linear_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<Patch>) {
+/// Collect patches for the root constraints that inline linear definitions.
+fn build_root_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<Patch>) {
 	// Collect *distinct* constraint references for each root constraint.
 	let mut constraints = Vec::with_capacity(leg.roots.len());
 	for root in leg.roots.iter() {
@@ -118,16 +127,12 @@ fn build_non_linear_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut
 
 	// Create a patch for each distinct constraint.
 	for constraint_ref in constraints {
-		let patch = build_non_lin_patch(cb, leg, constraint_ref);
+		let patch = build_root_patch(cb, leg, constraint_ref);
 		patches.push(patch);
 	}
 }
 
-fn build_non_lin_patch(
-	cb: &ConstraintBuilder,
-	leg: &LeGraph,
-	constraint_ref: ConstraintRef,
-) -> Patch {
+fn build_root_patch(cb: &ConstraintBuilder, leg: &LeGraph, constraint_ref: ConstraintRef) -> Patch {
 	let mut subsumes = vec![constraint_ref];
 
 	let new_constraint = match constraint_ref {
@@ -160,6 +165,10 @@ fn build_non_lin_patch(
 				c_lo,
 				c_hi,
 			})
+		}
+		ConstraintRef::Zero { index } => {
+			let val = process_operand(cb, leg, &mut subsumes, &cb.zero_constraints[index].val);
+			AddedConstraint::Zero(WireZeroConstraint { val })
 		}
 		ConstraintRef::Linear { .. } => unreachable!(),
 	};
@@ -239,12 +248,16 @@ fn process_term(
 			// Compose shifts: we're applying 'shift' to 'inner_term'
 			// So we need Shift::compose(inner_term.shift, shift)
 			match Shift::compose(inner_term.shift, shift) {
-				Some(composed_shift) => {
+				Composition::Single(composed_shift) => {
 					// Recursively process this term with the composed shift
 					process_term(cb, leg, new_operand, subsumes, inner_term.wire, composed_shift);
 				}
-				None => {
-					// Incompatible shifts - this shouldn't happen if commit set is correct
+				// The two shifts clear the word, so the term is identically zero. An operand is
+				// an XOR, so a zero term contributes nothing and the inlining simply drops it.
+				Composition::Zero => {}
+				// Needing both slots means the commit set inlined a definition it should have
+				// committed: the two passes disagree about what is inlinable.
+				Composition::Pair => {
 					panic!(
 						"Incompatible shifts during inlining: {:?} followed by {:?} for wire {:?}",
 						inner_term.shift, shift, inner_term.wire
@@ -278,7 +291,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		// Verify commit set
 		for &wire in expected_committed {
@@ -336,11 +349,11 @@ mod tests {
 				vec![
 					ShiftedWire {
 						wire: w(0),
-						shift: Shift::Rotr(0),
+						shift: Shift::IDENTITY,
 					},
 					ShiftedWire {
 						wire: w(1),
-						shift: Shift::Rotr(0),
+						shift: Shift::IDENTITY,
 					},
 				],
 			)],
@@ -386,7 +399,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
@@ -421,7 +434,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
@@ -444,60 +457,59 @@ mod tests {
 	#[test]
 	fn test_stress_shift_combinations_no_panic() {
 		// Iterate over a small set of shift pairs; ensure commit_set + build/apply don't panic
-		use crate::compiler::constraint_builder::Shift;
 		fn w(id: u32) -> Wire {
 			Wire::from_u32(id)
 		}
 
+		use binius_core::constraint_system::ShiftVariant;
+
+		use crate::compiler::constraint_builder::WireExprTerm;
+
+		/// The expression term applying one shift to a wire.
+		///
+		/// The identity has no constructor of its own, so it reads the wire plainly.
+		fn shifted_expr(wire: Wire, shift: Shift) -> WireExprTerm {
+			let amount = shift.amount as u32;
+			if shift.is_identity() {
+				return wire.into();
+			}
+			match shift.variant {
+				ShiftVariant::Sll => expr::sll(wire, amount),
+				ShiftVariant::Slr => expr::srl(wire, amount),
+				ShiftVariant::Sar => expr::sar(wire, amount),
+				ShiftVariant::Rotr => expr::rotr(wire, amount),
+				ShiftVariant::Sll32 => expr::sll32(wire, amount),
+				ShiftVariant::Srl32 => expr::srl32(wire, amount),
+				ShiftVariant::Sra32 => expr::sra32(wire, amount),
+				ShiftVariant::Rotr32 => expr::rotr32(wire, amount),
+			}
+		}
+
 		let shifts = [
-			Shift::None,
-			Shift::Sll(5),
-			Shift::Sll32(5),
-			Shift::Srl(5),
-			Shift::Srl32(5),
-			Shift::Sar(5),
-			Shift::Sra32(5),
-			Shift::Rotr(13),
-			Shift::Rotr32(13),
+			Shift::IDENTITY,
+			Shift::sll(5),
+			Shift::sll32(5),
+			Shift::srl(5),
+			Shift::srl32(5),
+			Shift::sar(5),
+			Shift::sra32(5),
+			Shift::rotr(13),
+			Shift::rotr32(13),
 		];
 
 		for (i, s1) in shifts.iter().enumerate() {
 			for (j, s2) in shifts.iter().enumerate() {
 				let mut cb = ConstraintBuilder::new();
 				// y = shift1(x)
-				match s1 {
-					Shift::None => cb.linear(expr::xor2(w(0), w(1)), w(2)),
-					Shift::Sll(n) => cb.linear(expr::sll(w(0), *n), w(2)),
-					Shift::Sll32(n) => cb.linear(expr::sll32(w(0), *n), w(2)),
-					Shift::Srl(n) => cb.linear(expr::srl(w(0), *n), w(2)),
-					Shift::Srl32(n) => cb.linear(expr::srl32(w(0), *n), w(2)),
-					Shift::Sar(n) => {
-						cb.linear(crate::compiler::constraint_builder::expr::sar(w(0), *n), w(2))
-					}
-					Shift::Sra32(n) => cb.linear(expr::sra32(w(0), *n), w(2)),
-					Shift::Rotr(n) => cb.linear(expr::rotr(w(0), *n), w(2)),
-					Shift::Rotr32(n) => cb.linear(expr::rotr32(w(0), *n), w(2)),
-				}
+				cb.linear(shifted_expr(w(0), *s1), w(2));
 				// z = shift2(y)
-				match s2 {
-					Shift::None => cb.linear(expr::xor2(w(2), w(3)), w(4)),
-					Shift::Sll(n) => cb.linear(expr::sll(w(2), *n), w(4)),
-					Shift::Sll32(n) => cb.linear(expr::sll32(w(2), *n), w(4)),
-					Shift::Srl(n) => cb.linear(expr::srl(w(2), *n), w(4)),
-					Shift::Srl32(n) => cb.linear(expr::srl32(w(2), *n), w(4)),
-					Shift::Sar(n) => {
-						cb.linear(crate::compiler::constraint_builder::expr::sar(w(2), *n), w(4))
-					}
-					Shift::Sra32(n) => cb.linear(expr::sra32(w(2), *n), w(4)),
-					Shift::Rotr(n) => cb.linear(expr::rotr(w(2), *n), w(4)),
-					Shift::Rotr32(n) => cb.linear(expr::rotr32(w(2), *n), w(4)),
-				}
+				cb.linear(shifted_expr(w(2), *s2), w(4));
 				cb.and(w(4), w(5), w(6));
 
 				let mut stat = Stat::default();
 				let mut leg = LeGraph::new(&cb);
 				crate::compiler::gate_fusion::commit_set::run_decide_commit_set(
-					&mut leg, &mut stat,
+					&mut leg, &mut stat, 1,
 				);
 				let patches = super::build(&cb, &leg);
 				let mut cb2 = cb;
@@ -517,7 +529,7 @@ mod tests {
 			// Not a linear def - return as is
 			result.push(ShiftedWire {
 				wire,
-				shift: Shift::None,
+				shift: Shift::IDENTITY,
 			});
 			return result;
 		}
@@ -544,8 +556,16 @@ mod tests {
 			// This is a non-committed linear def - expand recursively
 			let inner = leg.lin_def_operand(cb, wire);
 			for term in inner {
-				let composed = Shift::compose(term.shift, shift).unwrap();
-				expand_term_recursive(cb, leg, result, term.wire, composed);
+				match Shift::compose(term.shift, shift) {
+					Composition::Single(composed) => {
+						expand_term_recursive(cb, leg, result, term.wire, composed)
+					}
+					// A term the two shifts clear contributes nothing to the XOR.
+					Composition::Zero => {}
+					Composition::Pair => {
+						panic!("the commit set only inlines definitions whose shifts compose")
+					}
+				}
 			}
 		}
 	}
@@ -592,15 +612,15 @@ mod tests {
 					vec![
 						ShiftedWire {
 							wire: w(0),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(1),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(3),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 					],
 				),
@@ -610,11 +630,11 @@ mod tests {
 					vec![
 						ShiftedWire {
 							wire: w(0),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(1),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 					],
 				),
@@ -642,7 +662,7 @@ mod tests {
 					w(2),
 					vec![ShiftedWire {
 						wire: w(0),
-						shift: Shift::Sll(30),
+						shift: Shift::sll(30),
 					}],
 				),
 				// y should expand to: x << 10
@@ -650,7 +670,7 @@ mod tests {
 					w(1),
 					vec![ShiftedWire {
 						wire: w(0),
-						shift: Shift::Sll(10),
+						shift: Shift::sll(10),
 					}],
 				),
 			],
@@ -678,11 +698,11 @@ mod tests {
 					vec![
 						ShiftedWire {
 							wire: w(0),
-							shift: Shift::Rotr(5),
+							shift: Shift::rotr(5),
 						},
 						ShiftedWire {
 							wire: w(1),
-							shift: Shift::Rotr(5),
+							shift: Shift::rotr(5),
 						},
 					],
 				),
@@ -710,7 +730,7 @@ mod tests {
 					w(2),
 					vec![ShiftedWire {
 						wire: w(1),
-						shift: Shift::Srl(20),
+						shift: Shift::srl(20),
 					}],
 				),
 			],
@@ -738,23 +758,23 @@ mod tests {
 					vec![
 						ShiftedWire {
 							wire: w(0),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(1),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(2),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(4),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 						ShiftedWire {
 							wire: w(5),
-							shift: Shift::None,
+							shift: Shift::IDENTITY,
 						},
 					],
 				),
@@ -792,17 +812,17 @@ mod tests {
 				added: AddedConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(30),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					b: vec![ShiftedWire {
 						wire: w(31),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					c: vec![ShiftedWire {
 						wire: w(32),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 				}),
@@ -812,17 +832,17 @@ mod tests {
 				added: AddedConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(33),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					b: vec![ShiftedWire {
 						wire: w(34),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					c: vec![ShiftedWire {
 						wire: w(35),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 				}),
@@ -832,22 +852,22 @@ mod tests {
 				added: AddedConstraint::Imul(WireImulConstraint {
 					a: vec![ShiftedWire {
 						wire: w(36),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					b: vec![ShiftedWire {
 						wire: w(37),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					lo: vec![ShiftedWire {
 						wire: w(38),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 					hi: vec![ShiftedWire {
 						wire: w(39),
-						shift: Shift::None,
+						shift: Shift::IDENTITY,
 					}]
 					.into(),
 				}),
@@ -911,7 +931,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		// Sanity: y should be committed; t and z should not be
 		assert!(leg.commit_set().contains(w(3)), "y should be committed");
@@ -954,7 +974,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		let patches = super::build(&cb, &leg);
 		let mut cb2 = cb;
@@ -968,23 +988,23 @@ mod tests {
 			&[
 				ShiftedWire {
 					wire: w(0),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(1),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(0),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(1),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(3),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 			],
 			"mul.a",
@@ -1010,7 +1030,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		assert!(leg.commit_set().contains(w(1)), "t_committed should be committed");
 		let patches = super::build(&cb, &leg);
@@ -1023,7 +1043,7 @@ mod tests {
 			&m.a,
 			&[ShiftedWire {
 				wire: w(1),
-				shift: Shift::Sll(30),
+				shift: Shift::sll(30),
 			}],
 			"mul.a (committed)",
 		);
@@ -1032,11 +1052,11 @@ mod tests {
 			&[
 				ShiftedWire {
 					wire: w(3),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(4),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 			],
 			"mul.b (inlinable)",
@@ -1061,7 +1081,7 @@ mod tests {
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		assert!(leg.commit_set().contains(w(1)), "inner t should be committed");
 		let patches = super::build(&cb, &leg);
@@ -1074,7 +1094,7 @@ mod tests {
 			&m.hi,
 			&[ShiftedWire {
 				wire: w(1),
-				shift: Shift::Sll(20),
+				shift: Shift::sll(20),
 			}],
 			"mul.hi (committed)",
 		);
@@ -1083,11 +1103,11 @@ mod tests {
 			&[
 				ShiftedWire {
 					wire: w(3),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 				ShiftedWire {
 					wire: w(4),
-					shift: Shift::None,
+					shift: Shift::IDENTITY,
 				},
 			],
 			"mul.lo (inlinable)",
