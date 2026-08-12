@@ -29,9 +29,11 @@ pub mod phase_1;
 #[doc(hidden)]
 pub mod phase_2;
 mod prove;
+mod shift_ind;
 
 pub use claims::{OperatorClaims, PreparedOperatorClaims};
 pub use key_collection::{
 	DenseShiftEncoding, KeyCollection, KeySegment, Operation, build_key_collection,
 };
 pub use prove::{OperatorData, PreparedOperatorData, prove};
+pub use shift_ind::ShiftIndSumcheck;

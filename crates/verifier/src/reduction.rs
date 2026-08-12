@@ -296,7 +296,7 @@ where
 			&intmul,
 			&binmul,
 			&shift_domain,
-			z_challenge,
+			&z_challenge,
 			&shift,
 			channel,
 		)?;

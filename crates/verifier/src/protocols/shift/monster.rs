@@ -8,15 +8,10 @@ use binius_field::{
 	BinaryField, FieldOps, WideMul,
 	util::{FieldFn, powers},
 };
-use binius_math::{
-	inner_product::inner_product_scalars, multilinear::eq::eq_ind_partial_eval_scalars,
-};
+use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
-use super::{
-	SHIFT_VARIANT_COUNT,
-	shift_ind::{partial_eval_phi, partial_eval_sigmas, partial_eval_sigmas_transpose},
-};
+use super::SHIFT_VARIANT_COUNT;
 
 /// Why a term's outer shift slot must hold the identity in the two-phase reduction.
 ///
@@ -24,76 +19,6 @@ use super::{
 /// A term carrying both would verify against the wrong shifted word.
 const DOUBLE_SHIFT_UNSUPPORTED: &str =
 	"the two-phase shift reduction reads only the inner shift of a term";
-
-/// Evaluates the three h multilinear polynomials (corresponding to SLL, SRL, SRA) at challenge
-/// points.
-///
-/// This is the verifier's version of the h-parts evaluation - instead of building
-/// full multilinear polynomials, it directly computes their evaluations.
-pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SHIFT_VARIANT_COUNT] {
-	assert_eq!(l_tilde.len(), Word::BITS);
-	assert_eq!(r_j.len(), Word::LOG_BITS);
-	assert_eq!(r_s.len(), Word::LOG_BITS);
-
-	// Use helper functions to compute shift indicator helpers for 64-bit shifts
-	let (sigma, sigma_prime) = partial_eval_sigmas(r_j, r_s);
-	let sigma_transpose = partial_eval_sigmas_transpose(r_j, r_s);
-	let phi = partial_eval_phi(r_s);
-	let j_product: E = r_j.iter().cloned().product();
-
-	// Use helper functions to compute shift indicator helpers for 32-bit shifts
-	let (sigma32, sigma32_prime) = partial_eval_sigmas(&r_j[..5], &r_s[..5]);
-	let sigma32_transpose = partial_eval_sigmas_transpose(&r_j[..5], &r_s[..5]);
-	let phi32 = partial_eval_phi(&r_s[..5]);
-	let j_product32: E = r_j[..5].iter().cloned().product();
-
-	// Compute final results
-	let sll = inner_product_scalars(l_tilde.iter().cloned(), sigma_transpose);
-	let srl = inner_product_scalars(l_tilde.iter().cloned(), sigma.iter().cloned());
-	// sra == ∑ᵢ L̃(i) ⋅ (srlᵢ + ∏ₖ rⱼ[k] ⋅ φᵢ)
-	//     == ∑ᵢ L̃(i) ⋅ srlᵢ + ∏ₖ rⱼ[k] ⋅ [ ∑ᵢ L̃(i) ⋅ φᵢ ]
-	//     == srl + ∏ₖ rⱼ[k] ⋅ [ ∑ᵢ L̃(i) ⋅ φᵢ ]
-	let sra = srl.clone() + j_product * inner_product_scalars(l_tilde.iter().cloned(), phi);
-	let rotr = inner_product_scalars(
-		l_tilde.iter().cloned(),
-		iter::zip(&sigma, &sigma_prime).map(|(s_i, s_prime_i)| s_i.clone() + s_prime_i),
-	);
-
-	let r_j_rest_tensor = eq_ind_partial_eval_scalars(&r_j[5..]);
-	let chunk_size = 1 << 5; // 32
-
-	let sll32 = inner_product_scalars(
-		l_tilde.chunks(chunk_size).map(|chunk| {
-			inner_product_scalars(chunk.iter().cloned(), sigma32_transpose.iter().cloned())
-		}),
-		r_j_rest_tensor.iter().cloned(),
-	);
-	let srl32 = inner_product_scalars(
-		l_tilde
-			.chunks(chunk_size)
-			.map(|chunk| inner_product_scalars(chunk.iter().cloned(), sigma32.iter().cloned())),
-		r_j_rest_tensor.iter().cloned(),
-	);
-	let sra32 = srl32.clone()
-		+ inner_product_scalars(
-			l_tilde.chunks(chunk_size).map(|chunk| {
-				j_product32.clone()
-					* inner_product_scalars(chunk.iter().cloned(), phi32.iter().cloned())
-			}),
-			r_j_rest_tensor.iter().cloned(),
-		);
-	let rotr32 = inner_product_scalars(
-		l_tilde.chunks(chunk_size).map(|chunk| {
-			inner_product_scalars(
-				chunk.iter().cloned(),
-				iter::zip(&sigma32, &sigma32_prime).map(|(s_i, s_prime_i)| s_i.clone() + s_prime_i),
-			)
-		}),
-		r_j_rest_tensor,
-	);
-
-	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32]
-}
 
 /// A [`FieldFn`] evaluating one operation's monster multilinear polynomial.
 ///
@@ -309,12 +234,8 @@ mod tests {
 		ShiftVariant,
 		constraint_system::{AndConstraint, Shift, ShiftedValueIndex, ValueIndex},
 	};
-	use binius_field::{BinaryField128bGhash, Field, Random};
-	use binius_math::{
-		BinarySubspace,
-		test_utils::{index_to_hypercube_point, random_scalars},
-		univariate::lagrange_evals_scalars,
-	};
+	use binius_field::{BinaryField128bGhash, Random};
+	use binius_math::test_utils::random_scalars;
 	use rand::prelude::*;
 
 	use super::*;
@@ -427,109 +348,5 @@ mod tests {
 			OperationEvalFn::new(&constraints, 0, 0, n_words).call_native(&input),
 			OperationEvalFn::new(&padded, 0, 0, n_words).call_native(&input)
 		);
-	}
-
-	#[test]
-	fn test_evaluate_h_op_hypercube_vertices() {
-		// Property-based test: for random i, j, s in {0..63}, with challenge being
-		// the i-th element of the subspace, the outputs must match indicator relations
-		// over integers:
-		// - sll == 1 iff j + s == i
-		// - srl == 1 iff i + s == j
-		// - sra == 1 iff i + s == j || i + s >= 64 && j == 63
-		// - rotr == 1 iff (i + s) % 64 == j
-		let mut rng = StdRng::seed_from_u64(0);
-		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(Word::LOG_BITS);
-
-		// Run a reasonable number of random trials
-		for _trial in 0..1024 {
-			let i = rng.random_range(0..64);
-			let j = rng.random_range(0..64);
-			let s = rng.random_range(0..64);
-
-			let challenge = subspace.get(i);
-			let l_tilde = lagrange_evals_scalars(&subspace, &challenge);
-
-			let r_j = index_to_hypercube_point::<BinaryField128bGhash>(Word::LOG_BITS, j);
-			let r_s = index_to_hypercube_point::<BinaryField128bGhash>(Word::LOG_BITS, s);
-
-			let [sll, srl, sra, rotr, sll32, srl32, sra32, rotr32] =
-				evaluate_h_op(&l_tilde, &r_j, &r_s);
-
-			let expected_sll = j + s == i;
-			let expected_srl = i + s == j;
-			let expected_sra = (i + s).min(63) == j;
-			let expected_rotr = (i + s) % 64 == j;
-
-			let i_hi = i / 32;
-			let i_lo = i % 32;
-			let j_hi = j / 32;
-			let j_lo = j % 32;
-			let s_lo = s % 32;
-
-			let expected_sll32 = i_hi == j_hi && j_lo + s_lo == i_lo;
-			let expected_srl32 = i_hi == j_hi && i_lo + s_lo == j_lo;
-			let expected_sra32 = i_hi == j_hi && (i_lo + s_lo).min(31) == j_lo;
-			let expected_rotr32 = i_hi == j_hi && (i_lo + s_lo) % 32 == j_lo;
-
-			let to_field = |b: bool| {
-				if b {
-					BinaryField128bGhash::ONE
-				} else {
-					BinaryField128bGhash::ZERO
-				}
-			};
-
-			assert_eq!(sll, to_field(expected_sll), "sll failed for i={i}, j={j}, s={s}");
-			assert_eq!(srl, to_field(expected_srl), "srl failed for i={i}, j={j}, s={s}");
-			assert_eq!(sra, to_field(expected_sra), "sra failed for i={i}, j={j}, s={s}");
-			assert_eq!(rotr, to_field(expected_rotr), "rotr failed for i={i}, j={j}, s={s}");
-			assert_eq!(sll32, to_field(expected_sll32), "sll32 failed for i={i}, j={j}, s={s}");
-			assert_eq!(srl32, to_field(expected_srl32), "srl32 failed for i={i}, j={j}, s={s}");
-			assert_eq!(sra32, to_field(expected_sra32), "sra32 failed for i={i}, j={j}, s={s}");
-			assert_eq!(rotr32, to_field(expected_rotr32), "rotr32 failed for i={i}, j={j}, s={s}");
-		}
-	}
-
-	#[test]
-	fn test_evaluate_h_op_multilinearity() {
-		// Test that the function is multilinear in each variable
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// Generate random evaluation points
-		let challenge = BinaryField128bGhash::random(&mut rng);
-		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(Word::LOG_BITS);
-		let l_tilde = lagrange_evals_scalars(&subspace, &challenge);
-		let r_j = random_scalars::<BinaryField128bGhash>(&mut rng, Word::LOG_BITS);
-		let r_s = random_scalars::<BinaryField128bGhash>(&mut rng, Word::LOG_BITS);
-
-		// Check linearity in each variable
-		for i in 0..Word::LOG_BITS {
-			// Check r_j[i]
-			let mut r_j_at_0 = r_j.clone();
-			r_j_at_0[i] = BinaryField128bGhash::ZERO;
-			let mut r_j_at_1 = r_j.clone();
-			r_j_at_1[i] = BinaryField128bGhash::ONE;
-			let [result_0, result_1, result_y] = [&r_j_at_0, &r_j_at_1, &r_j]
-				.map(|r_j_variant| evaluate_h_op(&l_tilde, r_j_variant, &r_s));
-			for variant in 0..SHIFT_VARIANT_COUNT {
-				let expected = result_0[variant] * (BinaryField128bGhash::ONE - r_j[i])
-					+ result_1[variant] * r_j[i];
-				assert_eq!(result_y[variant], expected, "Not linear in r_j[{i}]");
-			}
-
-			// Check r_s[i]
-			let mut r_s_at_0 = r_s.clone();
-			r_s_at_0[i] = BinaryField128bGhash::ZERO;
-			let mut r_s_at_1 = r_s.clone();
-			r_s_at_1[i] = BinaryField128bGhash::ONE;
-			let [result_0, result_1, result_y] = [&r_s_at_0, &r_s_at_1, &r_s]
-				.map(|r_s_variant| evaluate_h_op(&l_tilde, &r_j, r_s_variant));
-			for variant in 0..SHIFT_VARIANT_COUNT {
-				let expected = result_0[variant] * (BinaryField128bGhash::ONE - r_s[i])
-					+ result_1[variant] * r_s[i];
-				assert_eq!(result_y[variant], expected, "Not linear in r_s[{i}]");
-			}
-		}
 	}
 }

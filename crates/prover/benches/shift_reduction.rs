@@ -10,14 +10,13 @@ use binius_core::{
 };
 use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
-use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		OperatorClaims, OperatorData, build_key_collection,
+		OperatorClaims, OperatorData, ShiftIndSumcheck, build_key_collection,
 		monster::{build_h, build_monster_segments},
-		phase_1::{SparseShiftRows, build_g, run_phase_1_sumcheck},
+		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 		prove,
 	},
@@ -311,22 +310,24 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	let g = build_combined_g();
 	let h = build_h::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime);
-	let SumcheckOutput {
-		challenges: mut r_j,
-		eval: gamma,
+	let Phase1Output {
+		r_j,
+		r_s,
+		r_v,
+		gamma,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
-		run_phase_1_sumcheck::<F, P, _, _>(
+		Phase1Output::split(run_phase_1_sumcheck::<F, P, _, _>(
 			g.clone(),
 			h.clone(),
 			prepared.batched_eval(),
 			&mut transcript,
 			&GlobalAllocator,
-		)
+		))
 	};
-	// Split the phase-1 challenges into the bit position, the shift amount and the shift variant.
-	let r_v = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s = r_j.split_off(Word::LOG_BITS);
+	let h_eval =
+		ShiftIndSumcheck::<P, _>::new(&GlobalAllocator, &subspace, r_zhat_prime, &r_j, &r_s, &r_v)
+			.h_eval();
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());
@@ -334,8 +335,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		&GlobalAllocator,
 		&key_collection,
 		&prepared,
-		&subspace,
-		&r_j,
+		h_eval,
 		&r_s,
 		&r_v,
 	);
@@ -376,8 +376,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 				&GlobalAllocator,
 				&key_collection,
 				&prepared,
-				&subspace,
-				&r_j,
+				h_eval,
 				&r_s,
 				&r_v,
 			)

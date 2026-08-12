@@ -7,13 +7,11 @@ use binius_compute::{Allocator, VecLike};
 use binius_core::{ShiftVariant, word::Word};
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product,
-	multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
+	BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval,
+	univariate::lagrange_evals,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-use binius_verifier::protocols::shift::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY, evaluate_h_op,
-};
+use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
 use bytemuck::zeroed_vec;
 use tracing::instrument;
 
@@ -132,16 +130,15 @@ where
 ///
 /// This function builds a comprehensive multilinear polynomial that encapsulates the AND, IMUL and
 /// BMUL constraints with their associated shift operations. For each witness word, it computes the
-/// contribution from all constraints involving that word, weighted by the appropriate h-polynomial
-/// evaluations and lambda powers.
+/// contribution from all constraints involving that word, weighted by the h evaluation and lambda
+/// powers.
 ///
 /// # Construction Process
 ///
 /// 1. **Compute lambda powers**: Powers λ^(i+1) for each operand index in both operations
-/// 2. **Evaluate h-polynomials**: Compute h_op evaluations for SLL, SRL, SRA at challenge points
-/// 3. **Build scalar matrix**: Create scalars combining lambda powers, h-evaluations, and r_s
-///    tensor
-/// 4. **Process keys in parallel**: For each word, accumulate contributions from all its
+/// 2. **Build scalar matrix**: Create scalars combining lambda powers, the h evaluation, and the
+///    `r_s` and `r_v` tensors
+/// 3. **Process keys in parallel**: For each word, accumulate contributions from all its
 ///    constraints
 ///
 /// # Formula
@@ -151,9 +148,10 @@ where
 /// ∑_{key ∈ keys[w]} key.accumulate(constraint_indices, tensor, scalars[key.dense_shift_idx])
 /// ```
 /// where `scalars[key.dense_shift_idx]` is the contiguous per-operand chunk encoding
-/// `λ^(operand_idx+1) × h_op[shift_variant] × r_s_tensor[shift_amount]` for operand index
-/// `operand_idx`, and `(shift_variant, shift_amount)` the pair the key's segment decodes its dense
-/// shift index to.
+/// `λ^(operand_idx+1) × h_eval × r_v_tensor[shift_variant] × r_s_tensor[shift_amount]` for operand
+/// index `operand_idx`, and `(shift_variant, shift_amount)` the pair the key's segment decodes its
+/// dense shift index to. The h evaluation comes from
+/// [`ShiftIndSumcheck`](super::ShiftIndSumcheck), which proves it.
 ///
 /// # Usage
 ///
@@ -166,31 +164,14 @@ pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	key_collection: &KeyCollection,
 	prepared: &PreparedOperatorClaims<F>,
-	domain_subspace: &BinarySubspace<F>,
-	r_j: &[F],
+	h_eval: F,
 	r_s: &[F],
 	r_v: &[F],
 ) -> (FieldVec<P, A>, FieldVec<P, A>)
 where
 	F: BinaryField,
 {
-	// Phase 1 folded the variant axis into the sumcheck, so the h multilinear contributes one
-	// scalar per operation — the interpolation of its eight shift indicators at `r_v` — rather
-	// than one per variant.
 	let r_v_tensor = eq_ind_partial_eval::<F>(r_v);
-
-	let [zero_h_eval, bitand_h_eval, intmul_h_eval, binmul_h_eval] = [
-		prepared.zero.r_zhat_prime,
-		prepared.bitand.r_zhat_prime,
-		prepared.intmul.r_zhat_prime,
-		prepared.binmul.r_zhat_prime,
-	]
-	.map(|r_zhat_prime| {
-		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-		let h_ops = evaluate_h_op(l_tilde.as_ref(), r_j, r_s);
-		inner_product(h_ops, r_v_tensor.as_ref().iter().copied())
-	});
-
 	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
 
 	// The scalars of one operation, laid out with the operand index innermost so that the `arity`
@@ -198,9 +179,9 @@ where
 	// can index directly by operand index.
 	//
 	// A key's shift now selects itself through a pure equality indicator over both of phase 1's
-	// shift axes, and the h evaluation is a single factor shared by every key of the operation.
+	// shift axes, and the h evaluation is a single factor shared by every key.
 	let build_scalars =
-		|arity: usize, lambda_powers: &[F], h_eval: F, dense_shift_enc: &DenseShiftEncoding| {
+		|arity: usize, lambda_powers: &[F], dense_shift_enc: &DenseShiftEncoding| {
 			let mut scalars = vec![F::ZERO; arity * dense_shift_enc.len()];
 			for (dense_shift_idx, (variant, amount)) in dense_shift_enc.iter().enumerate() {
 				let shift_scalar = h_eval
@@ -216,25 +197,10 @@ where
 
 	// Each segment has its own dense shift encoding, so it has its own scalar tables.
 	let build_scalar_tables = |dense_shift_enc: &DenseShiftEncoding| ScalarTables {
-		zero: build_scalars(ZERO_ARITY, &prepared.zero.lambda_powers, zero_h_eval, dense_shift_enc),
-		bitand: build_scalars(
-			BITAND_ARITY,
-			&prepared.bitand.lambda_powers,
-			bitand_h_eval,
-			dense_shift_enc,
-		),
-		intmul: build_scalars(
-			INTMUL_ARITY,
-			&prepared.intmul.lambda_powers,
-			intmul_h_eval,
-			dense_shift_enc,
-		),
-		binmul: build_scalars(
-			BINMUL_ARITY,
-			&prepared.binmul.lambda_powers,
-			binmul_h_eval,
-			dense_shift_enc,
-		),
+		zero: build_scalars(ZERO_ARITY, &prepared.zero.lambda_powers, dense_shift_enc),
+		bitand: build_scalars(BITAND_ARITY, &prepared.bitand.lambda_powers, dense_shift_enc),
+		intmul: build_scalars(INTMUL_ARITY, &prepared.intmul.lambda_powers, dense_shift_enc),
+		binmul: build_scalars(BINMUL_ARITY, &prepared.binmul.lambda_powers, dense_shift_enc),
 	};
 
 	// The scalar for one word of a segment: the accumulated contribution of all its keys. The
@@ -312,16 +278,17 @@ mod tests {
 		inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
 		test_utils::random_scalars,
 	};
-	use binius_verifier::protocols::shift::{LOG_SHIFT_VARIANT_COUNT, evaluate_h_op};
+	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 	use rand::{SeedableRng, rngs::StdRng};
 
-	use super::*;
+	use super::{super::ShiftIndSumcheck, *};
 
-	/// The built h multilinear and the succinct `evaluate_h_op` must agree.
+	/// Phase 1's h multilinear and the h evaluation the last sumcheck claims must agree.
 	///
-	/// The variant axis is folded by the sumcheck now, so evaluating the whole multilinear at
-	/// `(r_j, r_s, r_v)` gives the interpolation of the eight succinct evaluations over `r_v` —
-	/// which is exactly the single scalar phase 2 weights its keys by.
+	/// The claim sums the shift indicators over the bit index, weighted by the Lagrange
+	/// evaluations; the multilinear holds those sums over the whole shift axis. So evaluating the
+	/// multilinear at `(r_j, r_s, r_v)` must give the claim — which is the single scalar phase 2
+	/// weights its keys by.
 	#[test]
 	fn h_op_consistency() {
 		type F = BinaryField128bGhash;
@@ -338,12 +305,17 @@ mod tests {
 			let r_s = random_scalars::<F>(&mut rng, Word::LOG_BITS);
 			let r_v = random_scalars::<F>(&mut rng, LOG_SHIFT_VARIANT_COUNT);
 
-			// Method 1: the succinct per-variant evaluations, interpolated over the variant axis.
+			// Method 1: the sum the last sumcheck claims.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
-			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
-			let succinct_evaluations = evaluate_h_op(l_tilde.as_ref(), &r_j, &r_s);
-			let r_v_tensor = eq_ind_partial_eval::<F>(&r_v);
-			let succinct = inner_product(succinct_evaluations, r_v_tensor.as_ref().iter().copied());
+			let claimed = ShiftIndSumcheck::<P, _>::new(
+				&GlobalAllocator,
+				&subspace,
+				r_zhat_prime,
+				&r_j,
+				&r_s,
+				&r_v,
+			)
+			.h_eval();
 
 			// Method 2: evaluate the built multilinear at the whole point.
 			let h = build_h(&GlobalAllocator, &subspace, r_zhat_prime);
@@ -352,8 +324,8 @@ mod tests {
 			let direct = inner_product_buffers(&h, &tensor);
 
 			assert_eq!(
-				succinct, direct,
-				"H-op evaluation mismatch (test_case={test_case}): succinct != direct",
+				claimed, direct,
+				"H-op evaluation mismatch (test_case={test_case}): claimed != direct",
 			);
 		}
 	}

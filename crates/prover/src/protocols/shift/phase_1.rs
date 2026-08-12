@@ -50,6 +50,42 @@ pub const PHASE_1_LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS + LOG_SHIFT_V
 /// amount, then the shift variant.
 pub const LOG_SHIFT_ROWS: usize = PHASE_1_LOG_LEN - Word::LOG_BITS;
 
+/// What phase 1 leaves phase 2: its sumcheck's challenge point, split into the axes it binds,
+/// and the evaluation claim it reduced to.
+#[derive(Debug, Clone)]
+pub struct Phase1Output<F> {
+	/// The bit position within a word.
+	pub r_j: Vec<F>,
+	/// The shift amount.
+	pub r_s: Vec<F>,
+	/// The shift variant.
+	pub r_v: Vec<F>,
+	/// The evaluation claim phase 2 proves, called gamma in the paper.
+	pub gamma: F,
+}
+
+impl<F> Phase1Output<F> {
+	/// Splits the phase-1 sumcheck's output into the axes its challenge point binds: the bit
+	/// position within a word, then the shift amount, then the shift variant, in increasing order
+	/// of significance.
+	pub fn split(output: SumcheckOutput<F>) -> Self {
+		let SumcheckOutput {
+			challenges: mut r_j,
+			eval: gamma,
+		} = output;
+		assert_eq!(r_j.len(), PHASE_1_LOG_LEN);
+
+		let r_v = r_j.split_off(Word::LOG_BITS * 2);
+		let r_s = r_j.split_off(Word::LOG_BITS);
+		Self {
+			r_j,
+			r_s,
+			r_v,
+			gamma,
+		}
+	}
+}
+
 /// Proves the first phase of the shift reduction.
 ///
 /// Builds the g and h multilinears and runs one sumcheck over their product.
@@ -61,7 +97,7 @@ pub fn prove_phase_1<F, P, Channel, A>(
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,
-) -> SumcheckOutput<F>
+) -> Phase1Output<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -80,7 +116,7 @@ where
 	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
 	let h = build_h(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
 
-	run_phase_1_sumcheck(g, h, prepared.batched_eval(), channel, alloc)
+	Phase1Output::split(run_phase_1_sumcheck(g, h, prepared.batched_eval(), channel, alloc))
 }
 
 /// The number of packed elements one row of `Word::BITS` scalars occupies.
