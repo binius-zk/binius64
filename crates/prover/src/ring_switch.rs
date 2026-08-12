@@ -4,6 +4,7 @@
 use std::{iter, ops::Deref};
 
 use binius_compute::{Allocator, VecLike};
+use binius_core::word::Word;
 use binius_field::{
 	ExtensionField, Field, PackedBinaryField128x1b, PackedField, cast_base,
 	linear_transformation::{
@@ -11,16 +12,25 @@ use binius_field::{
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
 	},
 };
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{bivariate_product_prover, prove_single},
+};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product,
 	multilinear::eq::eq_ind_partial_eval, tensor_algebra::TensorAlgebra,
 };
-use binius_utils::rayon::prelude::*;
-use binius_verifier::config::{B1, B128};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_verifier::{
+	config::{B1, B128, LOG_WORDS_PER_ELEM},
+	protocols::shift::evaluate_words_mle,
+};
 use itertools::izip;
 
-use crate::fold_word::{fold_row_group, row_fold_tables};
+use crate::{
+	fold_word::{fold_row_group, row_fold_tables},
+	prove::pack_witness,
+};
 
 /// Base-2 log of the row group one subset-sum table covers.
 ///
@@ -324,6 +334,62 @@ where
 		rs_eq_ind,
 		sumcheck_claim,
 	}
+}
+
+/// Proves the public segment's evaluation claim.
+///
+/// The shift closes over the public segment as a bit matrix, at `r_j` over the bit within a word
+/// and the low coordinates of `r_y` over the word index. The verifier holds the segment but not
+/// its bits, so the claim is stated here and reduced in two steps:
+///
+/// 1. a ring-switch onto the segment's packed form, leaving the claim `sum_x P(x) A(x)` against the
+///    ring-switching indicator;
+/// 2. a sumcheck over the packed segment's own variables, leaving one evaluation of each factor.
+///
+/// Nothing here is committed, so the verifier finishes on its own: it evaluates the packed
+/// segment's multilinear from the words it holds, and the indicator from its succinct formula.
+///
+/// ## Arguments
+///
+/// * `alloc` - the allocator the packed segment and the indicator are drawn from
+/// * `public_words` - the public segment, unpadded
+/// * `r_j` - the bit-index challenges
+/// * `r_y` - the word-index challenges, of which the segment spans the low ones
+/// * `channel` - the prover channel for sending/sampling
+///
+/// ## Preconditions
+///
+/// * `r_y` must have at least as many coordinates as the packed segment spans words
+pub fn prove_public_eval<A, P, Channel>(
+	alloc: &A,
+	public_words: &[Word],
+	r_j: &[B128],
+	r_y: &[B128],
+	channel: &mut Channel,
+) where
+	A: Allocator,
+	P: PackedField<Scalar = B128>,
+	Channel: IPProverChannel<B128>,
+{
+	// The claim is over the packed segment, so it spans whole field elements: a segment shorter
+	// than one still spans one, reading the words past its end as zero.
+	let log_public_elems = log2_ceil_usize(public_words.len()).saturating_sub(LOG_WORDS_PER_ELEM);
+	let r_y_public = &r_y[..log_public_elems + LOG_WORDS_PER_ELEM];
+
+	channel.send_one(evaluate_words_mle::<B128, B128>(public_words, r_j, r_y_public));
+
+	let packed = pack_witness::<P, _>(alloc, log_public_elems, public_words)
+		.expect("the element count is derived from the words being packed");
+	let RingSwitchOutput {
+		rs_eq_ind,
+		sumcheck_claim,
+	} = prove(alloc, packed.to_ref(), &[r_j, r_y_public].concat(), channel);
+
+	// The reduced claim is the sum of the two multilinears' product over the hypercube, which is
+	// what the trace's opening hands to BaseFold. Here it is discharged by the sumcheck alone: the
+	// final evaluations need no message, since the verifier computes both itself.
+	let prover = bivariate_product_prover(alloc, [packed, rs_eq_ind], sumcheck_claim);
+	prove_single(prover, channel);
 }
 
 #[cfg(test)]

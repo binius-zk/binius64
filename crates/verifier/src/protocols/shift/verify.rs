@@ -286,11 +286,14 @@ where
 ///
 /// `trace_eval` is the witness evaluation reconstructed from its two segments:
 /// ```text
-/// trace_eval = (1 - r_segment) * prod_{k <= i} (1 - r_y_i) * public_eval + r_segment * witness_eval
+/// trace_eval = (1 - r_segment) * public_eval + r_segment * witness_eval
 /// ```
-/// The public half is evaluated over the *verifier's* public words, so a prover that used
-/// different public values fails this check with high probability; this subsumes the former
-/// standalone public input check.
+///
+/// `public_eval` is the public segment over the shift's whole index space — `r_j` over the bit
+/// within a word and all of `r_y` over the word — so it already carries the zero-padding above the
+/// segment's own length. Tying it to the public values is the caller's job: the caller reads it
+/// from the prover and reduces it onto the packed public segment, so a prover that used different
+/// public values fails there rather than here.
 ///
 /// # Errors
 ///
@@ -300,7 +303,7 @@ where
 pub fn check_eval<F, C>(
 	constraint_system: &ConstraintSystem,
 	inout: InoutSegment,
-	public: &[Word],
+	public_eval: C::Elem,
 	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
@@ -386,22 +389,8 @@ where
 		h_eval.clone() * channel.compute_public_value(&inputs, eval_fn)
 	};
 
-	// The public-half evaluation is a function of the verifier's public words (plaintext) and
-	// public-channel-derived challenges, so it is computed the same way as `monster_eval`.
-	let log_public_words = constraint_system.log_public_words(inout);
-	let public_eval = {
-		let inputs: Vec<C::Elem> = r_j
-			.iter()
-			.chain(&r_y[..log_public_words])
-			.cloned()
-			.collect();
-		channel.compute_public_value(&inputs, PublicWordsEvalFn { public })
-	};
-
-	// Reconstruct the witness evaluation from its two segments. The public segment is
-	// zero-padded up to the hidden segment length, contributing the eq-zero padding factor.
-	let padded_public_eval = eq_ind_zero(&r_y[log_public_words..]) * public_eval;
-	let trace_eval = extrapolate_line(padded_public_eval, witness_eval.clone(), r_segment.clone());
+	// Reconstruct the witness evaluation from its two segments.
+	let trace_eval = extrapolate_line(public_eval, witness_eval.clone(), r_segment.clone());
 
 	// Check if the reconstructed trace value is satisfying.
 	//
@@ -412,21 +401,6 @@ where
 	channel.assert_zero(expected_eval - eval)?;
 
 	Ok(())
-}
-
-/// The bit-level MLE evaluation of the public words, as a [`FieldFn`] over the inputs
-/// `r_j.. | r_y_low..`: the word-bit challenges followed by the low `log_public_words`
-/// word-index challenges. Computed via the same public-value mechanism as [`MonsterEvalFn`].
-struct PublicWordsEvalFn<'a> {
-	/// The public words of the value vector.
-	public: &'a [Word],
-}
-
-impl<F: BinaryField> FieldFn<F> for PublicWordsEvalFn<'_> {
-	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
-		let (r_j, r_y_low) = vals.split_at(Word::LOG_BITS);
-		evaluate_words_mle(self.public, r_j, r_y_low)
-	}
 }
 
 /// The monster multilinear evaluation, as a [`FieldFn`] over public-channel-derived inputs.

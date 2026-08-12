@@ -303,6 +303,16 @@ impl IOPProver {
 		);
 		drop(shift_guard);
 
+		// Split the shift's final point `r_j || r_y || r_segment` into its three parts. The bit
+		// index `r_j` addresses a bit within a 64-bit word, the segment selector `r_segment` is
+		// the last coordinate, and the word index `r_y` is everything in between.
+		let witness_point = &eval_point[..eval_point.len() - 1];
+		let (r_j, r_y) = witness_point.split_at(Word::LOG_BITS);
+
+		// Prove the public segment's evaluation claim, which the verifier's public-input check
+		// consumes.
+		ring_switch::prove_public_eval::<_, P, _>(alloc, witness.public(), r_j, r_y, &mut *channel);
+
 		// [phase] Ring-Switching + PCS Opening
 		let pcs_guard = tracing::info_span!(
 			"[phase] PCS Opening",
@@ -311,10 +321,8 @@ impl IOPProver {
 		)
 		.entered();
 
-		// Ring-switching reduction of the witness claim. The top challenge is the witness's
-		// segment selector, which the verifier consumes when reconstructing the full witness
-		// evaluation.
-		let witness_point = &eval_point[..eval_point.len() - 1];
+		// Ring-switching reduction of the witness claim, at the point above less its segment
+		// selector — the verifier consumes that when reconstructing the full witness evaluation.
 		let ring_switch::RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
