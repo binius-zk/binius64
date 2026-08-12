@@ -8,8 +8,8 @@
 //! Witness generation is inside the timed unit.
 //! Published Flock figures include it in the proof path, so the measured unit matches.
 
-use binius_frontend::Circuit;
-use binius_m4_prover::{BatchWitnessFiller, Prover, ValueTable};
+use binius_frontend::{BatchWitnessFiller, Circuit};
+use binius_m4_prover::Prover;
 use binius_m4_verifier::Verifier;
 use binius_prover::OptimalPackedB128;
 use binius_transcript::ProverTranscript;
@@ -62,7 +62,8 @@ pub fn bench_m4_proving<F>(
 	// Correctness gate: prove and verify one batch before timing.
 	// A bench that measures a proof of nothing is worse than no bench.
 	{
-		let table = ValueTable::populate_parallel(circuit, log_instances, &fill)
+		let table = circuit
+			.populate_batch_parallel(log_instances, &fill)
 			.expect("witness inputs satisfy the circuit");
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove(&table, &mut prover_transcript);
@@ -88,7 +89,9 @@ pub fn bench_m4_proving<F>(
 	group.bench_function(BenchmarkId::from_parameter(log_instances), |b| {
 		b.iter(|| {
 			// Regenerate the batch witness, then prove it: the per-batch work of a real prover.
-			let table = ValueTable::populate_parallel(circuit, log_instances, &fill).unwrap();
+			let table = circuit
+				.populate_batch_parallel(log_instances, &fill)
+				.unwrap();
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 			prover.prove(&table, &mut prover_transcript);
 			prover_transcript

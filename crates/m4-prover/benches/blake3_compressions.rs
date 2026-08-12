@@ -18,8 +18,7 @@ use std::{array, env};
 
 use binius_circuits::blake3::blake3_compress_2x;
 use binius_core::word::Word;
-use binius_frontend::{Circuit, CircuitBuilder, Wire};
-use binius_m4_prover::BatchWitnessFiller;
+use binius_frontend::{BatchWitnessFiller, Circuit, CircuitBuilder, Wire};
 use criterion::{Criterion, criterion_group, criterion_main};
 use m4_bench::bench_m4_proving;
 use rand::prelude::*;

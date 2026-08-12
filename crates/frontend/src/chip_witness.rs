@@ -1,33 +1,24 @@
 // Copyright 2026 The Binius Developers
 
-//! The witness for an M4 circuit: the main circuit's values and one table per chip.
+//! Generating the witness of an M4 circuit: the main circuit's values and one table per chip.
+//!
+//! The witness itself is [`binius_core`]'s [`WitnessM4`], which is also where one is checked.
+//! Filling one takes circuits to evaluate, which is what puts generation here.
 
-use std::{borrow::Cow, mem};
+use std::mem;
 
 use binius_core::{
-	ValueVec, VerificationM4Error, Word,
-	m4::{ChipCall, ChipInstances, ConstraintSystemM4},
+	ValueTable, ValueVec, Word,
+	m4::{ChipCall, WitnessM4},
 };
-use binius_frontend::{BatchPopulateError, CircuitM4, PopulateError, WitnessFiller};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
-use crate::value_table::ValueTable;
+use crate::{BatchPopulateError, CircuitM4, PopulateError, WitnessFiller};
 
-/// A full M4 witness: the main circuit's values and one [`ValueTable`] per chip of a
-/// [`CircuitM4`].
-///
-/// The tables are indexed by chip ID, so `tables[i]` holds every instance of chip `i`. One row of a
-/// table is one invocation of that chip: the chip's local constraints must hold on the row, and the
-/// row's inout values must be matched by exactly one chip call elsewhere in the system.
-#[derive(Debug)]
-pub struct WitnessM4 {
-	/// The values of the main circuit, which runs once.
-	pub main: ValueVec,
-	/// The instances of each chip, indexed by chip ID.
-	pub tables: Vec<ValueTable>,
-}
-
-impl WitnessM4 {
+// The system's own API lives in `chip`; this block deliberately keeps witness generation in its own
+// module rather than growing that one.
+#[allow(clippy::multiple_inherent_impl)]
+impl CircuitM4 {
 	/// Generates the witness for a whole system from the main circuit's inputs.
 	///
 	/// `fill_main` assigns the witness inputs of the main circuit; every other value in the system
@@ -38,16 +29,15 @@ impl WitnessM4 {
 	///
 	/// # Panics
 	///
-	/// Panics if the system does not pass [`CircuitM4::validate`], which covers both the ordering
-	/// this walks the chips in and the well-formedness of the operands it evaluates.
-	pub fn generate<F>(circuit: &CircuitM4, fill_main: F) -> Result<Self, PopulateM4Error>
+	/// Panics if the system does not pass [`Self::validate`], which covers both the ordering this
+	/// walks the chips in and the well-formedness of the operands it evaluates.
+	pub fn generate_witness<F>(&self, fill_main: F) -> Result<WitnessM4, PopulateM4Error>
 	where
 		F: FnOnce(&mut WitnessFiller<'_>),
 	{
-		let mut main_witness_filler = circuit.main.circuit.new_witness_filler();
+		let mut main_witness_filler = self.main.circuit.new_witness_filler();
 		fill_main(&mut main_witness_filler);
-		circuit
-			.main
+		self.main
 			.circuit
 			.populate_wire_witness(&mut main_witness_filler)?;
 
@@ -56,13 +46,13 @@ impl WitnessM4 {
 		// The invocations awaiting each chip, in the order the calls run: main's first, then the
 		// calls of each chip in ID order, instance-major and call-minor. Calls only run to higher
 		// IDs, so a chip's list is complete by the time the pass below reaches it.
-		let mut pending = vec![Vec::new(); circuit.chips.len()];
-		for call in &circuit.main.chip_calls {
+		let mut pending = vec![Vec::new(); self.chips.len()];
+		for call in &self.main.chip_calls {
 			pending[call.chip_id].push(eval_call(&main_values, call));
 		}
 
-		let mut tables = Vec::<ValueTable>::with_capacity(circuit.chips.len());
-		for (chip_id, (chip, n_active)) in circuit.chips.iter().enumerate() {
+		let mut tables = Vec::<ValueTable>::with_capacity(self.chips.len());
+		for (chip_id, (chip, n_active)) in self.chips.iter().enumerate() {
 			let call_data = mem::take(&mut pending[chip_id]);
 
 			// Invariants checked in `CircuitM4::validate()`
@@ -70,8 +60,9 @@ impl WitnessM4 {
 			assert!(*n_active > 0, "chip {chip_id} is never called");
 
 			let log_instances = log2_ceil_usize(call_data.len());
-			let table =
-				ValueTable::populate_parallel(&chip.circuit, log_instances, |instance, filler| {
+			let table = chip
+				.circuit
+				.populate_batch_parallel(log_instances, |instance, filler| {
 					// Instances past the last invocation repeat it.
 					let inout = &call_data[instance.min(call_data.len() - 1)];
 					for (i, &wire) in chip.circuit.inout().iter().enumerate() {
@@ -97,50 +88,10 @@ impl WitnessM4 {
 			tables.push(table);
 		}
 
-		Ok(Self {
+		Ok(WitnessM4 {
 			main: main_values,
 			tables,
 		})
-	}
-
-	/// Checks that this witness satisfies an M4 constraint system.
-	///
-	/// [`ConstraintSystemM4::verify`] checks the local constraints of every instance and matches
-	/// every chip call against the instance serving it. It reads the instances one at a time, so a
-	/// table is never expanded into value vectors whole: the tables are the witness, and they stay
-	/// the only copy of it.
-	pub fn verify(&self, cs: &ConstraintSystemM4) -> Result<(), VerificationM4Error> {
-		cs.verify(
-			&self.main,
-			&TableInstances {
-				tables: &self.tables,
-				cs,
-			},
-		)
-	}
-}
-
-/// A witness's tables read as chip instances, each built when it is asked for.
-///
-/// The constants are the one part of an instance a table does not store, so the system is held
-/// alongside to supply them.
-struct TableInstances<'a> {
-	tables: &'a [ValueTable],
-	cs: &'a ConstraintSystemM4,
-}
-
-impl ChipInstances for TableInstances<'_> {
-	fn n_chips(&self) -> usize {
-		self.tables.len()
-	}
-
-	fn n_instances(&self, chip_id: usize) -> usize {
-		self.tables[chip_id].n_instances()
-	}
-
-	fn instance(&self, chip_id: usize, row: usize) -> Cow<'_, ValueVec> {
-		let constants = &self.cs.chips[chip_id].0.cs.constants;
-		Cow::Owned(self.tables[chip_id].instance_value_vec(row, constants))
 	}
 }
 
@@ -170,10 +121,10 @@ pub enum PopulateM4Error {
 mod tests {
 	use std::iter;
 
-	use binius_core::{ShiftedValueIndex, ValueIndex, error::OperandFault};
-	use binius_frontend::{Circuit, CircuitBuilder, CircuitM4Error, EmbeddedCircuit, Wire};
+	use binius_core::{ShiftedValueIndex, ValueIndex, VerificationM4Error, error::OperandFault};
 
 	use super::*;
+	use crate::{Circuit, CircuitBuilder, CircuitM4Error, EmbeddedCircuit, Wire};
 
 	/// A chip whose inout words are `(a, b, c)`, constrained by `c == a & b`.
 	///
@@ -325,13 +276,14 @@ mod tests {
 		circuit.validate().unwrap();
 
 		let words = [(0b1100u64, 0b1010u64), (0xff00, 0x0ff0)];
-		let witness = WitnessM4::generate(&circuit, |filler| {
-			for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
-				filler[a] = Word(a_word);
-				filler[b] = Word(b_word);
-			}
-		})
-		.unwrap();
+		let witness = circuit
+			.generate_witness(|filler| {
+				for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
+					filler[a] = Word(a_word);
+					filler[b] = Word(b_word);
+				}
+			})
+			.unwrap();
 
 		assert_eq!(witness.tables[0].n_instances(), 2);
 		for (instance, &(a, b)) in words.iter().enumerate() {
@@ -348,13 +300,14 @@ mod tests {
 		circuit.validate().unwrap();
 
 		let words = [(0b1100u64, 0b1010u64), (0xff00, 0x0ff0)];
-		let witness = WitnessM4::generate(&circuit, |filler| {
-			for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
-				filler[a] = Word(a_word);
-				filler[b] = Word(b_word);
-			}
-		})
-		.unwrap();
+		let witness = circuit
+			.generate_witness(|filler| {
+				for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
+					filler[a] = Word(a_word);
+					filler[b] = Word(b_word);
+				}
+			})
+			.unwrap();
 
 		// Chip 0 serves main's two calls, in call order.
 		let (chip_0, chip_1) = (&circuit.chips[0].0, &circuit.chips[1].0);
@@ -394,7 +347,7 @@ mod tests {
 			instance_inout(&circuit.chips[0].0, &witness.tables[0], 0)
 		};
 
-		let witness = WitnessM4::generate(&circuit, fill).unwrap();
+		let witness = circuit.generate_witness(fill).unwrap();
 		assert_eq!(row(&circuit, &witness), vec![0b1100, 0b1010, 0b1000]);
 		witness.verify(&circuit.to_constraint_system()).unwrap();
 
@@ -402,7 +355,7 @@ mod tests {
 		// succeeds, and the row still holds the conjunction rather than what the call passed — so
 		// the call no longer matches its instance, which is exactly what verification rejects.
 		circuit.main.chip_calls[0].inout[2] = operand(&circuit.main.circuit, a);
-		let witness = WitnessM4::generate(&circuit, fill).unwrap();
+		let witness = circuit.generate_witness(fill).unwrap();
 		assert_eq!(row(&circuit, &witness), vec![0b1100, 0b1010, 0b1000]);
 		let err = witness.verify(&circuit.to_constraint_system()).unwrap_err();
 		assert!(
@@ -438,13 +391,14 @@ mod tests {
 		assert_eq!(circuit.chips[1].1, 4);
 
 		let words = [(0b1100u64, 0b1010u64), (0xff00, 0x0ff0)];
-		let witness = WitnessM4::generate(&circuit, |filler| {
-			for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
-				filler[a] = Word(a_word);
-				filler[b] = Word(b_word);
-			}
-		})
-		.unwrap();
+		let witness = circuit
+			.generate_witness(|filler| {
+				for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
+					filler[a] = Word(a_word);
+					filler[b] = Word(b_word);
+				}
+			})
+			.unwrap();
 
 		// Instance 0's two calls come before instance 1's, each forwarding `(a, a)` then `(b, b)`.
 		let expected = [words[0].0, words[0].1, words[1].0, words[1].1];
@@ -465,13 +419,14 @@ mod tests {
 		circuit.validate().unwrap();
 
 		let words = [(0b1100u64, 0b1010u64), (0xff00, 0x0ff0), (0xabcd, 0xdcba)];
-		let witness = WitnessM4::generate(&circuit, |filler| {
-			for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
-				filler[a] = Word(a_word);
-				filler[b] = Word(b_word);
-			}
-		})
-		.unwrap();
+		let witness = circuit
+			.generate_witness(|filler| {
+				for (&(a, b), &(a_word, b_word)) in iter::zip(&inputs, &words) {
+					filler[a] = Word(a_word);
+					filler[b] = Word(b_word);
+				}
+			})
+			.unwrap();
 
 		// Three calls round up to four instances, the fourth repeating the third.
 		let chip_0 = &circuit.chips[0].0;
@@ -492,11 +447,12 @@ mod tests {
 		let (a, b) = inputs[0];
 		circuit.main.chip_calls[0].inout[2] = operand(&circuit.main.circuit, a);
 
-		let err = WitnessM4::generate(&circuit, |filler| {
-			filler[a] = Word(0b1100);
-			filler[b] = Word(0b1010);
-		})
-		.unwrap_err();
+		let err = circuit
+			.generate_witness(|filler| {
+				filler[a] = Word(0b1100);
+				filler[b] = Word(0b1010);
+			})
+			.unwrap_err();
 		assert!(matches!(err, PopulateM4Error::Chip { chip_id: 0, .. }), "{err}");
 	}
 

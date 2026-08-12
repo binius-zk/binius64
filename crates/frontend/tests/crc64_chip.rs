@@ -6,13 +6,12 @@
 //! Main learns each register state from a hint rather than computing it, so its own constraints
 //! say nothing about the CRC at all — the chip calls are what tie the states together.
 //!
-//! The plain circuit this mirrors is the CRC-64 fixture in this crate's `test_utils`.
+//! The plain circuit this mirrors is the CRC-64 fixture in `binius-m4-prover`'s `test_utils`.
 
 use std::iter;
 
 use binius_core::Word;
 use binius_frontend::{CircuitBuilder, CircuitM4, Wire, hints::Hint};
-use binius_m4_prover::WitnessM4;
 
 /// The CRC-64/GO-ISO generator polynomial, in reflected form.
 const POLY_REFLECTED: u64 = 0xd800_0000_0000_0000;
@@ -130,12 +129,14 @@ fn chip_accelerated_crc64_matches_the_reference() {
 	let cs = c.circuit.to_constraint_system();
 	cs.validate().unwrap();
 
-	let witness = WitnessM4::generate(&c.circuit, |filler| {
-		for (&wire, &word) in iter::zip(&c.input, &words) {
-			filler[wire] = Word(word);
-		}
-	})
-	.unwrap();
+	let witness = c
+		.circuit
+		.generate_witness(|filler| {
+			for (&wire, &word) in iter::zip(&c.input, &words) {
+				filler[wire] = Word(word);
+			}
+		})
+		.unwrap();
 
 	// The hints carried the whole computation, and they carried it correctly.
 	let main = &c.circuit.main.circuit;

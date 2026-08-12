@@ -8,6 +8,10 @@ use crate::{
 	error::{ConstraintSystemError, VerificationM4Error},
 };
 
+mod witness;
+
+pub use witness::WitnessM4;
+
 /// The chip instances of an M4 witness, addressed by chip ID and row.
 ///
 /// [`ConstraintSystemM4::verify`] reads one instance at a time and never holds two, so this is all

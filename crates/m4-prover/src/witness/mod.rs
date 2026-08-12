@@ -1,6 +1,7 @@
 // Copyright 2026 The Binius Developers
 
-//! The projections of a populated [`ValueTable`](crate::ValueTable) that the reductions consume.
+//! The projections of a populated [`ValueTable`](binius_core::ValueTable) that the reductions
+//! consume.
 //!
 //! The table stores raw words, wire-major; no reduction reads it in that form.
 //!

@@ -211,6 +211,7 @@ mod tests {
 
 	use binius_compute::GlobalAllocator;
 	use binius_core::{
+		ValueTable,
 		constraint_system::{AndConstraint, InoutSegment},
 		word::Word,
 	};
@@ -234,7 +235,6 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		ValueTable,
 		test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness},
 		witness::OperandColumns,
 	};

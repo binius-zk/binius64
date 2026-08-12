@@ -7,7 +7,7 @@ use std::{iter, mem::MaybeUninit, ptr};
 
 use binius_compute::{Allocator, VecLike};
 use binius_core::{
-	ValueSegment,
+	ValueSegment, ValueTable,
 	constraint_system::{Operand, Shift, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
@@ -16,8 +16,6 @@ use binius_math::{FieldBuffer, FieldVec};
 use binius_prover::fold_word::fold_words;
 use binius_utils::rayon::{prelude::*, task_size::IndexedParallelIteratorExt};
 use binius_verifier::config::B128;
-
-use crate::ValueTable;
 
 /// The operand columns of one batched fixed-arity operation.
 ///
@@ -719,14 +717,15 @@ mod tests {
 	// So a tuple like `(1, 3, 7)` means `x=1, y=3, w=7`, not `1 & 3 = 7`.
 	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64, u64)]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
-			let (x, y, w) = inputs[i];
-			filler[c.x] = Word(x);
-			filler[c.y] = Word(y);
-			filler[c.w] = Word(w);
-			filler[c.z] = Word((x & y) ^ w);
-		})
-		.unwrap()
+		c.circuit
+			.populate_batch(log_instances, |i, filler| {
+				let (x, y, w) = inputs[i];
+				filler[c.x] = Word(x);
+				filler[c.y] = Word(y);
+				filler[c.w] = Word(w);
+				filler[c.z] = Word((x & y) ^ w);
+			})
+			.unwrap()
 	}
 
 	// The reference for one instance: the core operand evaluator on its reconstructed value vec.
@@ -825,12 +824,13 @@ mod tests {
 	// Populate one instance per input pair; the circuit derives the two product words.
 	fn populate_mul_table(c: &MulCircuit, inputs: &[(u64, u64)]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
-			let (x, y) = inputs[i];
-			filler[c.x] = Word(x);
-			filler[c.y] = Word(y);
-		})
-		.unwrap()
+		c.circuit
+			.populate_batch(log_instances, |i, filler| {
+				let (x, y) = inputs[i];
+				filler[c.x] = Word(x);
+				filler[c.y] = Word(y);
+			})
+			.unwrap()
 	}
 
 	// The four IntMul columns are laid out constraint-major, in the order [A, B, LO, HI].
@@ -915,14 +915,15 @@ mod tests {
 	// Populate one instance per input tuple; the circuit derives the two product words.
 	fn populate_binmul_table(c: &BinMulCircuit, inputs: &[(u64, u64, u64, u64)]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
-			let (a_lo, a_hi, b_lo, b_hi) = inputs[i];
-			filler[c.a_lo] = Word(a_lo);
-			filler[c.a_hi] = Word(a_hi);
-			filler[c.b_lo] = Word(b_lo);
-			filler[c.b_hi] = Word(b_hi);
-		})
-		.unwrap()
+		c.circuit
+			.populate_batch(log_instances, |i, filler| {
+				let (a_lo, a_hi, b_lo, b_hi) = inputs[i];
+				filler[c.a_lo] = Word(a_lo);
+				filler[c.a_hi] = Word(a_hi);
+				filler[c.b_lo] = Word(b_lo);
+				filler[c.b_hi] = Word(b_hi);
+			})
+			.unwrap()
 	}
 
 	// The six BinMul columns are laid out constraint-major, in operand order.
