@@ -5,7 +5,7 @@
 use std::ops::Deref;
 
 use binius_compute::Allocator;
-use binius_field::{BinaryField, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_ip_prover::{
 	channel::{IPProverChannel, WordIPProverChannel},
@@ -358,22 +358,9 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 			// Repeat placement: add scalar · π_i' into the first 2^{n_i} entries of each of the
 			// 2^{log_repeat} chunks of size 2^{n_i + log_lift}.
-			assert!(
-				n_i + log_lift >= P::LOG_WIDTH,
-				"repeat placement requires whole-packed lift blocks",
-			);
-			let scalar_broadcast = P::broadcast(eq_i);
-			let chunk_packed = 1usize << (n_i + log_lift - P::LOG_WIDTH);
 			// Borrow as a slice before the closure: the allocator's buffer type is only `Send`, so
 			// a closure capturing the owned buffer would not be `Sync` as `for_each` requires.
-			let witness_prime = witness_prime.to_ref();
-			combined
-				.as_mut()
-				.par_chunks_mut(chunk_packed)
-				.for_each(|chunk| {
-					let chunk_buf = FieldSliceMut::from_slice(n_i + log_lift, chunk);
-					accumulate_scaled_buffer(chunk_buf, witness_prime.to_ref(), scalar_broadcast);
-				});
+			place_repeated(combined.to_mut(), witness_prime.to_ref(), eq_i, n_i + log_lift);
 
 			// Repeat dims contribute 1; only the lift dims contribute an eq-to-zero factor.
 			s_prime += eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift]);
@@ -456,6 +443,59 @@ where
 			batched
 		})
 		.collect()
+}
+
+/// Adds `scalar · src` into the low `2^src.log_len()` scalars of every `2^log_block`-sized block
+/// of `dst`.
+///
+/// This is the lift/repeat placement of one oracle into the combined buffer: the oracle occupies
+/// the low part of a lift block, and that block repeats across the high dims so the oracle is
+/// constant along them.
+///
+/// A block spanning at least one whole packed element gets a chunk of the buffer to itself. A
+/// narrower block does not: several of them then share one element, and no chunking can express
+/// the placement. The scalars of one element are the same repeating pattern for every element, so
+/// that pattern is built once and added to all of them.
+///
+/// ## Preconditions
+///
+/// * `src.log_len() <= log_block <= dst.log_len()`
+fn place_repeated<P: PackedField>(
+	mut dst: FieldSliceMut<P>,
+	src: FieldSlice<P>,
+	scalar: P::Scalar,
+	log_block: usize,
+) {
+	assert!(src.log_len() <= log_block); // precondition
+	assert!(log_block <= dst.log_len()); // precondition
+
+	let scalar_broadcast = P::broadcast(scalar);
+	if log_block >= P::LOG_WIDTH {
+		let chunk_packed = 1usize << (log_block - P::LOG_WIDTH);
+		dst.as_mut().par_chunks_mut(chunk_packed).for_each(|chunk| {
+			let chunk_buf = FieldSliceMut::from_slice(log_block, chunk);
+			accumulate_scaled_buffer(chunk_buf, src.to_ref(), scalar_broadcast);
+		});
+	} else {
+		// Lane `k` of every element sits at position `k % 2^log_block` of its block, and carries
+		// the oracle only over the low `2^src.log_len()` of them. A buffer shorter than one
+		// element leaves its high lanes out of the pattern, so they stay zero.
+		let block_mask = (1usize << log_block) - 1;
+		let src_len = 1usize << src.log_len();
+		let lanes = P::WIDTH.min(1usize << dst.log_len());
+		let pattern = P::from_scalars((0..lanes).map(|lane| {
+			let position = lane & block_mask;
+			if position < src_len {
+				src.get(position)
+			} else {
+				P::Scalar::ZERO
+			}
+		}));
+		dst.as_mut()
+			.par_iter_mut()
+			.with_min_task(WorkPerItem::FieldMuls)
+			.for_each(|dst_i| *dst_i += scalar_broadcast * pattern);
+	}
 }
 
 fn accumulate_scaled_buffer<P: PackedField>(
@@ -631,7 +671,9 @@ mod tests {
 
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		BinaryField, BinaryField128bGhash, Field, PackedBinaryGhash1x128b, PackedField,
+		BinaryField, BinaryField128bGhash, BinaryField128bGhash as B128, Field,
+		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
+		Random,
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
@@ -650,7 +692,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
-	use super::IOPProverChannel;
+	use super::{IOPProverChannel, place_repeated};
 	use crate::basefold::compiler::BaseFoldProverCompiler;
 
 	type StdChallenger = HasherChallenger<StdDigest>;
@@ -840,9 +882,11 @@ mod tests {
 	/// Runs a full prove/verify cycle of the Batched ZK BaseFold channel over oracles of the given
 	/// sizes. If `tamper`, the verifier's claim on the first oracle is corrupted; verification must
 	/// then fail. Returns whether verification accepted.
-	fn run_zk_channel(n_vars_list: &[usize], tamper: bool) -> bool {
+	fn run_zk_channel<P: PackedField<Scalar = BinaryField128bGhash>>(
+		n_vars_list: &[usize],
+		tamper: bool,
+	) -> bool {
 		type F = BinaryField128bGhash;
-		type P = PackedBinaryGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let data: Vec<(FieldBuffer<P>, FieldBuffer<P>, F)> = n_vars_list
@@ -919,9 +963,11 @@ mod tests {
 
 	/// Like `run_zk_channel` but with per-oracle `(n_vars, is_zk)` flags, exercising the mixed
 	/// ZK/non-ZK opening. If `tamper`, the verifier's claim on the first oracle is corrupted.
-	fn run_mixed_channel(specs: &[(usize, bool)], tamper: bool) -> bool {
+	fn run_mixed_channel<P: PackedField<Scalar = BinaryField128bGhash>>(
+		specs: &[(usize, bool)],
+		tamper: bool,
+	) -> bool {
 		type F = BinaryField128bGhash;
-		type P = PackedBinaryGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let data: Vec<(FieldBuffer<P>, FieldBuffer<P>, F)> = specs
@@ -1006,7 +1052,92 @@ mod tests {
 	fn test_basefold_channel_three_oracles_non_power_of_two() {
 		// 3 oracles (not a power of two) of unequal sizes: exercises oracle padding (Lifted FRI)
 		// and the `⌈log 3⌉ = 2` outer oracle-combine rounds.
-		assert!(run_zk_channel(&[5, 6, 8], false));
+		assert!(run_zk_channel::<PackedBinaryGhash1x128b>(&[5, 6, 8], false));
+	}
+
+	/// A batch whose lift blocks are narrower than one packed field element must still prove.
+	///
+	/// Placing an oracle into the combined buffer chunks that buffer by the lift block. Every
+	/// block is lifted to the combined dimension, so a block narrower than a packed element means
+	/// the whole buffer is — there is no whole-packed chunk to place into, and the placement has
+	/// to write into part of a single element instead.
+	///
+	/// Whether that happens is a function of the packed width alone, so this pins the width rather
+	/// than leaving it to `-Ctarget-cpu=native` and the host: under `PackedBinaryGhash4x128b` the
+	/// `[0, 1]` batch reaches the case on every machine, while the 128-bit type the other tests use
+	/// never does. That batch also lifts its first oracle (`log_lift = 1`), so the sub-packed
+	/// placement is exercised on a lifted block rather than only on an unlifted one.
+	///
+	/// The `[1, 2]` batch sits just the other side of the boundary — its blocks are exactly one
+	/// packed element — and covers the chunked path that the clamp must leave alone.
+	/// [`place_repeated`] must match the definition it implements, at every shape.
+	///
+	/// The two regimes it splits on — a lift block spanning whole packed elements, and several
+	/// blocks sharing one element — are selected by `log_block` against `P::LOG_WIDTH`, so the grid
+	/// runs three packed widths against every `(log_src, log_block, log_dst)` they admit. That
+	/// reaches shapes the FRI parameters do not currently produce, which is the point: the
+	/// placement should not depend on which of them the optimizer happens to choose.
+	#[test]
+	fn place_repeated_matches_the_naive_placement() {
+		fn check<P: PackedField<Scalar = B128>>(log_src: usize, log_block: usize, log_dst: usize) {
+			let mut rng = StdRng::seed_from_u64(0);
+			let src = random_field_buffer::<P>(&mut rng, log_src);
+			let initial = random_field_buffer::<P>(&mut rng, log_dst);
+			let scalar = B128::random(&mut rng);
+
+			// The definition: `scalar * src` lands in the low `2^log_src` scalars of each
+			// `2^log_block`-sized block, and nowhere else.
+			let mut expected = initial.clone();
+			for index in 0..1usize << log_dst {
+				let position = index % (1usize << log_block);
+				if position < 1usize << log_src {
+					expected.set(index, expected.get(index) + scalar * src.get(position));
+				}
+			}
+
+			let mut actual = initial;
+			place_repeated(actual.to_mut(), src.to_ref(), scalar, log_block);
+
+			for index in 0..1usize << log_dst {
+				assert_eq!(
+					actual.get(index),
+					expected.get(index),
+					"P::LOG_WIDTH={}, log_src={log_src}, log_block={log_block}, log_dst={log_dst}, \
+					 index={index}",
+					P::LOG_WIDTH,
+				);
+			}
+		}
+
+		fn check_all_shapes<P: PackedField<Scalar = B128>>() {
+			for log_dst in 0..=4 {
+				for log_block in 0..=log_dst {
+					for log_src in 0..=log_block {
+						check::<P>(log_src, log_block, log_dst);
+					}
+				}
+			}
+		}
+
+		check_all_shapes::<PackedBinaryGhash1x128b>();
+		check_all_shapes::<PackedBinaryGhash2x128b>();
+		check_all_shapes::<PackedBinaryGhash4x128b>();
+	}
+
+	#[test]
+	fn batch_narrower_than_a_packed_element_proves() {
+		const {
+			assert!(
+				PackedBinaryGhash4x128b::LOG_WIDTH > 1,
+				"the fixture needs a packed element wider than the `[0, 1]` batch's lift block"
+			)
+		};
+		for sizes in [[0, 1], [1, 2]] {
+			assert!(
+				run_zk_channel::<PackedBinaryGhash4x128b>(&sizes, false),
+				"batch of {sizes:?}-variable oracles"
+			);
+		}
 	}
 
 	// Heterogeneous mixed/zero-ZK openings: each non-ZK oracle's batch fold is routed to the
@@ -1017,24 +1148,24 @@ mod tests {
 	fn test_basefold_channel_mixed_zk_non_zk() {
 		// One non-ZK oracle (8 vars) and one ZK oracle (6 vars): exercises conditional masking,
 		// the heterogeneous combined-buffer lift/repeat placement, and the non-ZK unmasked commit.
-		assert!(run_mixed_channel(&[(8, false), (6, true)], false));
+		assert!(run_mixed_channel::<PackedBinaryGhash1x128b>(&[(8, false), (6, true)], false));
 	}
 
 	#[test]
 	fn test_basefold_channel_zero_zk() {
 		// All non-ZK oracles: γ must never be sampled and the proof must still verify.
-		assert!(run_mixed_channel(&[(6, false), (8, false)], false));
+		assert!(run_mixed_channel::<PackedBinaryGhash1x128b>(&[(6, false), (8, false)], false));
 	}
 
 	#[test]
 	fn test_basefold_channel_mixed_invalid_proof() {
 		// Tampering the claim on a mixed batch must be rejected.
-		assert!(!run_mixed_channel(&[(8, false), (6, true)], true));
+		assert!(!run_mixed_channel::<PackedBinaryGhash1x128b>(&[(8, false), (6, true)], true));
 	}
 
 	#[test]
 	fn test_basefold_channel_invalid_proof() {
-		assert!(!run_zk_channel(&[6, 8], true));
+		assert!(!run_zk_channel::<PackedBinaryGhash1x128b>(&[6, 8], true));
 	}
 
 	/// Generates a committed buffer of `n_vars` variables together with `n_relations` independent
