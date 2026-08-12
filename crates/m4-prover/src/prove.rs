@@ -314,20 +314,24 @@ impl IOPProver {
 			)
 		};
 
+		// Split the shift's final point `r_j || r_y || r_segment` into its three parts.
+		// The bit index `r_j` is the low coordinates addressing a bit within a 64-bit word.
+		// The segment selector `r_segment` is the last coordinate, choosing public or hidden
+		// words. The hidden-only trace drops it.
+		// The word index `r_y` is everything in between.
+		let challenges = &witness_claim.challenges;
+		let r_j = &challenges[..Word::LOG_BITS];
+		let r_y = &challenges[Word::LOG_BITS..challenges.len() - 1];
+
+		// Prove the public segment's evaluation claim, which the verifier's public-input check
+		// consumes.
+		ring_switch::prove_public_eval::<_, P, _>(alloc, &public_words, r_j, r_y, channel);
+
 		let RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
 		} = {
 			let _scope = tracing::debug_span!("Ring-switching reduction").entered();
-
-			// Split the shift's final point `r_j || r_y || r_segment` into its three parts.
-			// The bit index `r_j` is the low coordinates addressing a bit within a 64-bit word.
-			// The segment selector `r_segment` is the last coordinate, choosing public or hidden
-			// words. The hidden-only trace drops it.
-			// The word index `r_y` is everything in between.
-			let challenges = &witness_claim.challenges;
-			let r_j = &challenges[..Word::LOG_BITS];
-			let r_y = &challenges[Word::LOG_BITS..challenges.len() - 1];
 
 			// Ring-switch the reduced claim onto the committed trace.
 			// The point is `r_j || r_rho || r_y`.

@@ -17,28 +17,31 @@
 //! A batch of one instance still runs that sumcheck, over no rounds.
 //! It is the batched protocol either way, because its prover folds a batched witness.
 
-use std::array;
+use std::{array, iter};
 
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
 	word::Word,
 };
-use binius_field::{AESTowerField8b as B8, FieldOps};
+use binius_field::{AESTowerField8b as B8, ExtensionField, FieldOps};
 use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::{
 	channel::IPVerifierChannel,
-	sumcheck::{BatchSumcheckOutput, batch_verify},
+	sumcheck::{BatchSumcheckOutput, SumcheckOutput, batch_verify, verify as verify_sumcheck},
 };
 use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product_scalars,
-	multilinear::eq::eq_ind,
+	multilinear::{
+		eq::{eq_ind, eq_ind_zero},
+		evaluate::evaluate_inplace_scalars,
+	},
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
 
 use crate::{
 	Error,
-	config::B128,
+	config::{B1, B128, LOG_WORDS_PER_ELEM},
 	protocols::{
 		binmul::{BinMulOutput, verify as verify_binmul_reduction},
 		bitand::AndCheckOutput,
@@ -46,6 +49,7 @@ use crate::{
 		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData},
 		zero,
 	},
+	ring_switch::{self, RingSwitchVerifyOutput, eval_rs_eq},
 	verify_bitand_reduction,
 };
 
@@ -278,7 +282,7 @@ where
 	};
 
 	// Tie in the public values through the public-input consistency check.
-	// The shift evaluates them over the layout's power-of-two word count.
+	// The reduction reads them over the layout's power-of-two word count.
 	// Their count need not be a power of two, so they are passed unpadded.
 	{
 		let _guard = tracing::info_span!(
@@ -287,10 +291,11 @@ where
 			perfetto_category = "phase"
 		)
 		.entered();
+		let public_eval = verify_public_eval(cs, inout, public, &shift, channel)?;
 		shift::check_eval::<B128, _>(
 			cs,
 			inout,
-			public,
+			public_eval,
 			&zero,
 			&bitand,
 			&intmul,
@@ -303,6 +308,105 @@ where
 	}
 
 	Ok(ReductionOutput { r_rho, shift })
+}
+
+/// Reads the public segment's evaluation and reduces it onto the segment's packed form.
+///
+/// The shift closes over the public segment as a bit matrix: its multilinear is claimed at `r_j`
+/// over the bit within a word and the low coordinates of `r_y` over the word index. Evaluating
+/// that here would cost the verifier the bits of every public word. So the prover states the
+/// evaluation instead, and it is reduced in two steps:
+///
+/// 1. a ring-switch onto the packed segment — two words to a field element — leaving the claim
+///    `sum_x P(x) A(x)` against the ring-switching indicator;
+/// 2. a sumcheck over the packed segment's own variables, leaving one evaluation of each factor.
+///
+/// Nothing here is committed, so the verifier finishes on its own, with field arithmetic and no
+/// word bits: it evaluates the packed segment's multilinear from the words it holds, and the
+/// indicator from its succinct formula.
+///
+/// The reduction stands on its own, sharing nothing with the trace's: that one ends in a committed
+/// opening, this one in two evaluations the verifier computes from values it already has.
+///
+/// # Returns
+///
+/// The public segment over the shift's whole index space, which is what [`shift::check_eval`]
+/// reconstructs the trace evaluation from: the claim scaled by the eq-zero factors of the
+/// word-index coordinates above the segment's span.
+///
+/// # Preconditions
+///
+/// * `r_y` must have at least as many coordinates as the packed segment spans words
+fn verify_public_eval<Channel>(
+	cs: &ConstraintSystem,
+	inout: InoutSegment,
+	public: &[Word],
+	shift: &shift::VerifyOutput<Channel::Elem>,
+	channel: &mut Channel,
+) -> Result<Channel::Elem, Error>
+where
+	Channel: IPVerifierChannel<B128>,
+	Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
+{
+	// The claim is over the packed segment, so it spans whole field elements: a segment shorter
+	// than one still spans one, reading the words past its end as zero.
+	let log_public_elems = cs
+		.log_public_words(inout)
+		.saturating_sub(LOG_WORDS_PER_ELEM);
+	let log_packed_words = log_public_elems + LOG_WORDS_PER_ELEM;
+
+	// The claimed evaluation's point: the bit within a word, then the words the segment spans.
+	let r_y = shift.r_y();
+	let eval_point = [shift.r_j(), &r_y[..log_packed_words]].concat();
+
+	let public_eval = channel.recv_one()?;
+	let RingSwitchVerifyOutput {
+		eq_r_double_prime,
+		sumcheck_claim,
+	} = ring_switch::verify(public_eval.clone(), &eval_point, channel)?;
+
+	// Reduce the ring-switched claim to one evaluation of each factor.
+	let SumcheckOutput {
+		eval,
+		challenges: mut r_public,
+	} = verify_sumcheck(log_public_elems, 2, sumcheck_claim, channel)?;
+	r_public.reverse();
+
+	// Close it out against the two factors, both of which the verifier computes: the packed
+	// segment's multilinear, over the words it already holds, and the ring-switching indicator.
+	let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+	let packed_public = pack_words(public)
+		.into_iter()
+		.map(Channel::Elem::from)
+		// The words past the segment's end read as zero, so the elements past its packed length do
+		// too, up to the power-of-two span the sumcheck ran over.
+		.chain(iter::repeat_with(Channel::Elem::zero))
+		.take(1 << log_public_elems)
+		.collect::<Vec<_>>();
+	let packed_eval = evaluate_inplace_scalars(packed_public, &r_public);
+	let rs_eq_eval = eval_rs_eq(&eval_point[log_packing..], &r_public, &eq_r_double_prime);
+	channel.assert_zero(packed_eval * rs_eq_eval - eval)?;
+
+	// Extend the claim from the segment's own span to the shift's whole word-index space. Every
+	// word above the segment is zero, so each extra coordinate contributes its eq-zero factor.
+	Ok(eq_ind_zero(&r_y[log_packed_words..]) * public_eval)
+}
+
+/// Packs words into field elements, two words to an element.
+///
+/// Word `2i` takes the low half of element `i` and word `2i + 1` the high half. That is the layout
+/// the committed trace is packed in, so a bit of the packed segment sits where the shift's
+/// bit-index challenges address it: `r_j` over the bit within a word, then the word's parity.
+///
+/// An odd word count leaves a final element whose high half is zero, which is the missing word read
+/// as zero — the same reading the shift gives the words past the segment's end.
+fn pack_words(words: &[Word]) -> Vec<B128> {
+	let (pairs, remainder) = words.as_chunks::<2>();
+	pairs
+		.iter()
+		.map(|[w0, w1]| B128::new(((w1.as_u64() as u128) << 64) | w0.as_u64() as u128))
+		.chain(remainder.iter().map(|w0| B128::new(w0.as_u64() as u128)))
+		.collect()
 }
 
 /// An operation's operand data, or a zero claim at an empty point when it is absent.

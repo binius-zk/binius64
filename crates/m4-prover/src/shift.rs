@@ -212,7 +212,9 @@ mod tests {
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
 		config::{B128, StdChallenger},
-		protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
+		protocols::shift::{
+			OperatorData as VerifierOperatorData, check_eval, evaluate_words_mle, verify,
+		},
 	};
 	use rand::prelude::*;
 
@@ -372,10 +374,19 @@ mod tests {
 			&mut verifier_transcript,
 		)
 		.unwrap();
+		// The public segment over the shift's whole index space. The full reduction reads this
+		// from the prover and ties it to the constants with a ring-switch; driving the shift
+		// alone, evaluate it here.
+		let public_eval = evaluate_words_mle::<B128, B128>(
+			public_words,
+			verifier_output.r_j(),
+			verifier_output.r_y(),
+		);
+
 		check_eval(
 			&cs,
 			InoutSegment::Hidden,
-			public_words,
+			public_eval,
 			&verifier_zero,
 			&verifier_bitand,
 			&verifier_intmul,

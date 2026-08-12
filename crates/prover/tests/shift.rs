@@ -27,7 +27,9 @@ use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
+	protocols::shift::{
+		OperatorData as VerifierOperatorData, check_eval, evaluate_words_mle, verify,
+	},
 };
 use itertools::Itertools;
 use rand::{SeedableRng, rngs::StdRng};
@@ -390,11 +392,20 @@ fn test_shift_prove_and_verify() {
 		)
 		.unwrap();
 
+		// The public segment over the shift's whole index space. The full reduction reads this
+		// from the prover and ties it to the public words with a ring-switch; driving the shift
+		// alone, evaluate it here.
+		let public_eval = evaluate_words_mle::<F, F>(
+			value_vec.public(),
+			verifier_output.r_j(),
+			verifier_output.r_y(),
+		);
+
 		// Check consistency with verifier output
 		check_eval(
 			&cs,
 			InoutSegment::Public,
-			value_vec.public(),
+			public_eval,
 			&verifier_zero_data,
 			&verifier_bitand_data,
 			&verifier_intmul_data,
