@@ -29,7 +29,7 @@ use tracing::instrument;
 
 use super::{
 	SegmentWords, claims::PreparedOperatorClaims, key_collection::KeyCollection,
-	monster::build_monster_segments, phase_1::Phase1Output,
+	monster::build_monster_segments, phase_1::Phase1Output, shift_ind::Phase3Output,
 };
 use crate::fold_word::fold_words;
 
@@ -64,7 +64,7 @@ pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
 	phase_1_output: Phase1Output<F>,
-	h_eval: F,
+	phase_3_output: Phase3Output<F>,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> SumcheckOutput<F>
@@ -77,8 +77,13 @@ where
 		r_j,
 		r_s,
 		r_v,
-		gamma,
+		gamma: _,
+		g_eval: _,
 	} = phase_1_output;
+	let Phase3Output {
+		shift_ind_eval,
+		eval: epsilon,
+	} = phase_3_output;
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
@@ -88,7 +93,7 @@ where
 	let hidden_folded = fold_words::<_, P, _>(alloc, words.hidden, r_j_tensor.as_ref());
 
 	let (public_monster, hidden_monster) =
-		build_monster_segments(alloc, key_collection, prepared, h_eval, &r_s, &r_v);
+		build_monster_segments(alloc, key_collection, prepared, shift_ind_eval, &r_s, &r_v);
 
 	// Both halves of the sumcheck share one word-index address space, spanning the wider of the
 	// two segments. The hidden segment is normally the wider one, but a system with more public
@@ -104,7 +109,7 @@ where
 		hidden_monster,
 		words.public,
 		r_j,
-		gamma,
+		epsilon,
 		channel,
 		alloc,
 	)

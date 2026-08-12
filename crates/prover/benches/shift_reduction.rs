@@ -14,7 +14,7 @@ use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		OperatorClaims, OperatorData, ShiftIndSumcheck, build_key_collection,
+		OperatorClaims, OperatorData, build_key_collection,
 		monster::{build_h, build_monster_segments},
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
@@ -315,19 +315,20 @@ fn bench_shift_phases(c: &mut Criterion) {
 		r_s,
 		r_v,
 		gamma,
+		g_eval: _,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
-		Phase1Output::split(run_phase_1_sumcheck::<F, P, _, _>(
+		run_phase_1_sumcheck::<F, P, _, _>(
 			g.clone(),
 			h.clone(),
 			prepared.batched_eval(),
 			&mut transcript,
 			&GlobalAllocator,
-		))
+		)
 	};
-	let h_eval =
-		ShiftIndSumcheck::<P, _>::new(&GlobalAllocator, &subspace, r_zhat_prime, &r_j, &r_s, &r_v)
-			.h_eval();
+	// The bit-index phase's rounds are not benchmarked; phase 4 only needs the scalar they reduce
+	// the two bit-index factors to, so a stand-in value serves.
+	let shift_ind_eval = F::random(&mut rng);
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());
@@ -335,7 +336,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		&GlobalAllocator,
 		&key_collection,
 		&prepared,
-		h_eval,
+		shift_ind_eval,
 		&r_s,
 		&r_v,
 	);
@@ -376,7 +377,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 				&GlobalAllocator,
 				&key_collection,
 				&prepared,
-				h_eval,
+				shift_ind_eval,
 				&r_s,
 				&r_v,
 			)

@@ -9,7 +9,7 @@ use std::{
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, WideMul};
-use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};
+use binius_ip::sumcheck::RoundCoeffs;
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
@@ -50,40 +50,23 @@ pub const PHASE_1_LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS + LOG_SHIFT_V
 /// amount, then the shift variant.
 pub const LOG_SHIFT_ROWS: usize = PHASE_1_LOG_LEN - Word::LOG_BITS;
 
-/// What phase 1 leaves phase 2: its sumcheck's challenge point, split into the axes it binds,
-/// and the evaluation claim it reduced to.
+/// What phase 1 leaves the phases after it: its sumcheck's challenge point, split into the axes
+/// it binds, and the two evaluations it reduced to.
 #[derive(Debug, Clone)]
 pub struct Phase1Output<F> {
 	/// The bit position within a word.
 	pub r_j: Vec<F>,
 	/// The shift amount.
 	pub r_s: Vec<F>,
-	/// The shift variant.
+	/// The shift variant, called the operation in the paper.
 	pub r_v: Vec<F>,
-	/// The evaluation claim phase 2 proves, called gamma in the paper.
+	/// The evaluation claim the next phase proves, called gamma in the paper: the product of the
+	/// two evaluations below.
 	pub gamma: F,
-}
-
-impl<F> Phase1Output<F> {
-	/// Splits the phase-1 sumcheck's output into the axes its challenge point binds: the bit
-	/// position within a word, then the shift amount, then the shift variant, in increasing order
-	/// of significance.
-	pub fn split(output: SumcheckOutput<F>) -> Self {
-		let SumcheckOutput {
-			challenges: mut r_j,
-			eval: gamma,
-		} = output;
-		assert_eq!(r_j.len(), PHASE_1_LOG_LEN);
-
-		let r_v = r_j.split_off(Word::LOG_BITS * 2);
-		let r_s = r_j.split_off(Word::LOG_BITS);
-		Self {
-			r_j,
-			r_s,
-			r_v,
-			gamma,
-		}
-	}
+	/// `g(r_j, r_s, r_v)`, the sum over the word index of the constraint matrix against the
+	/// witness. It is the scalar the bit-index phase carries through its rounds, so the sum never
+	/// has to be formed a second time.
+	pub g_eval: F,
 }
 
 /// Proves the first phase of the shift reduction.
@@ -116,7 +99,7 @@ where
 	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
 	let h = build_h(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
 
-	Phase1Output::split(run_phase_1_sumcheck(g, h, prepared.batched_eval(), channel, alloc))
+	run_phase_1_sumcheck(g, h, prepared.batched_eval(), channel, alloc)
 }
 
 /// The number of packed elements one row of `Word::BITS` scalars occupies.
@@ -429,20 +412,30 @@ pub fn run_phase_1_sumcheck<
 	sum: F,
 	channel: &mut Channel,
 	alloc: &A,
-) -> SumcheckOutput<F> {
+) -> Phase1Output<F> {
 	let ProveSingleOutput {
 		multilinear_evals,
 		mut challenges,
 	} = prove_single(Phase1SumcheckProver::new(g, h, sum, alloc), channel);
+	// Reverse the challenges into the evaluation point, then split it into the axes the rounds
+	// bound: the bit position within a word, then the shift amount, then the shift variant, in
+	// increasing order of significance.
 	challenges.reverse();
+	assert_eq!(challenges.len(), PHASE_1_LOG_LEN);
+	let mut r_j = challenges;
+	let r_v = r_j.split_off(Word::LOG_BITS * 2);
+	let r_s = r_j.split_off(Word::LOG_BITS);
 
 	let [g_eval, h_eval] = multilinear_evals
 		.try_into()
 		.expect("prover has 2 multilinear polynomials");
 
-	SumcheckOutput {
-		challenges,
-		eval: g_eval * h_eval,
+	Phase1Output {
+		r_j,
+		r_s,
+		r_v,
+		gamma: g_eval * h_eval,
+		g_eval,
 	}
 }
 
@@ -806,7 +799,7 @@ mod tests {
 		h: FieldVec<P, GlobalAllocator>,
 		sum: F,
 		channel: &mut ProverTranscript<StdChallenger>,
-	) -> SumcheckOutput<F> {
+	) -> (Vec<F>, F) {
 		let prover =
 			bivariate_product_prover(&GlobalAllocator, [g.scatter(&GlobalAllocator), h], sum);
 
@@ -820,10 +813,7 @@ mod tests {
 			.try_into()
 			.expect("prover has 2 multilinear polynomials");
 
-		SumcheckOutput {
-			challenges,
-			eval: g_eval * h_eval,
-		}
+		(challenges, g_eval * h_eval)
 	}
 
 	/// The phase-1 `g` and `h` of a constraint system, at a pseudo-random univariate challenge.
@@ -876,10 +866,13 @@ mod tests {
 		);
 
 		let mut dense_transcript = ProverTranscript::<StdChallenger>::default();
-		let dense = run_dense_reference(&g, h, sum, &mut dense_transcript);
+		let (dense_challenges, dense_eval) = run_dense_reference(&g, h, sum, &mut dense_transcript);
 
-		assert_eq!(sparse.challenges, dense.challenges);
-		assert_eq!(sparse.eval, dense.eval);
+		// The sparse prover splits its challenge point into the axes the rounds bound; the dense
+		// reference leaves it whole.
+		let sparse_challenges = [sparse.r_j, sparse.r_s, sparse.r_v].concat();
+		assert_eq!(sparse_challenges, dense_challenges);
+		assert_eq!(sparse.gamma, dense_eval);
 		assert_eq!(sparse_transcript.finalize(), dense_transcript.finalize());
 	}
 
