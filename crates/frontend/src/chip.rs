@@ -45,7 +45,8 @@ pub struct CircuitM4 {
 	/// power of two.
 	///
 	/// The count is denormalized — it says what the call graph already says, and
-	/// [`Self::recompute_n_active`] derives it. [`Self::validate`] holds the two to each other.
+	/// [`Self::recompute_instances`] derives it, along with the instance each call claims.
+	/// [`Self::validate`] holds the two to each other.
 	pub chips: Vec<(EmbeddedCircuit, usize)>,
 }
 
@@ -72,7 +73,8 @@ impl CircuitM4 {
 	/// - the chips are in topological order, each calling only chips with a higher ID, so every
 	///   caller of a chip is populated before the chip itself;
 	/// - each chip's declared active-instance count is the number of invocations that reach it, no
-	///   chip is left uncalled, and no count outgrows a `usize`.
+	///   chip is left uncalled, and no count outgrows a `usize`;
+	/// - each call names the callee instance the call graph gives it.
 	///
 	/// A system that passes here lowers to one that passes
 	/// [`ConstraintSystemM4::validate`](binius_core::m4::ConstraintSystemM4::validate), which
@@ -95,11 +97,12 @@ impl CircuitM4 {
 			}
 		}
 
-		// The invocations reaching each chip, counted the way witness generation gathers them. Only
-		// main and lower-numbered chips call a chip, so a single pass in ID order sees every caller
-		// of chip `i` before it reads chip `i`'s own total.
+		// The invocations reaching each chip, counted the way [`Self::recompute_instances`] hands
+		// them out. Only main and lower-numbered chips call a chip, so a single pass in ID order
+		// sees every caller of chip `i` before it reads chip `i`'s own total.
 		let mut n_calls = vec![0usize; n_chips];
-		for call in &self.main.chip_calls {
+		for (call_index, call) in self.main.chip_calls.iter().enumerate() {
+			Self::check_call_instance(None, call_index, call, &n_calls)?;
 			n_calls[call.chip_id] += 1;
 		}
 		for (chip_index, (chip, n_active)) in self.chips.iter().enumerate() {
@@ -120,9 +123,10 @@ impl CircuitM4 {
 			// The counts multiply down the call graph — a chain whose every chip calls the next
 			// twice reaches `2^depth` — so a system of a few dozen chips can outgrow a `usize`.
 			// Counting it out unchecked would wrap to a small total that then agrees with a
-			// `recompute_n_active` that wrapped the same way, and the system would go on to be
+			// `recompute_instances` that wrapped the same way, and the system would go on to be
 			// populated against a count that is not the number of calls.
-			for call in &chip.chip_calls {
+			for (call_index, call) in chip.chip_calls.iter().enumerate() {
+				Self::check_call_instance(Some(chip_index), call_index, call, &n_calls)?;
 				n_calls[call.chip_id] = n_calls[call.chip_id].checked_add(*n_active).ok_or(
 					CircuitM4Error::TooManyInstances {
 						chip_index: call.chip_id,
@@ -131,6 +135,25 @@ impl CircuitM4 {
 			}
 		}
 
+		Ok(())
+	}
+
+	/// Checks that one call names the callee instance the invocations counted so far leave it.
+	fn check_call_instance(
+		chip_index: Option<usize>,
+		call_index: usize,
+		call: &ChipCall,
+		n_calls: &[usize],
+	) -> Result<(), CircuitM4Error> {
+		let expected = n_calls[call.chip_id];
+		if call.first_instance != expected {
+			return Err(CircuitM4Error::WrongCallInstance {
+				chip_index,
+				call_index,
+				first_instance: call.first_instance,
+				expected,
+			});
+		}
 		Ok(())
 	}
 
@@ -183,13 +206,17 @@ impl CircuitM4 {
 		Ok(())
 	}
 
-	/// Sets each chip's active-instance count to the number of invocations that reach it.
+	/// Gives each call the callee instances it invokes, and each chip the count of the ones it is
+	/// left with.
 	///
-	/// A chip is invoked once per call site naming it, per active instance of the caller. Main runs
-	/// once, so each of its call sites counts for one.
+	/// A chip is invoked once per call site naming it, per active instance of the caller, and a
+	/// call site's invocations are consecutive instances of the callee: the caller's instance `i`
+	/// invokes the call's [`first_instance`](ChipCall::first_instance) plus `i`. Main runs once, so
+	/// each of its call sites claims a single instance.
 	///
-	/// This is what [`Self::validate`] checks the declared counts against, so a system whose call
-	/// sites have just been written or rewritten passes it here rather than counting by hand.
+	/// This is what [`Self::validate`] checks the declared counts and instances against, so a
+	/// system whose call sites have just been written or rewritten passes it here rather than
+	/// counting by hand.
 	///
 	/// A count that outgrows a `usize` saturates rather than wrapping, so it stays too large for
 	/// the invocations that reach the chip and [`Self::validate`] reports it.
@@ -199,9 +226,10 @@ impl CircuitM4 {
 	/// Panics if a chip call names a chip this system does not have. Chips out of topological
 	/// order are not detected here: a call to a lower ID counts against a total already written
 	/// back, and [`Self::validate`] is what rejects the result.
-	pub fn recompute_n_active(&mut self) {
+	pub fn recompute_instances(&mut self) {
 		let mut n_calls = vec![0usize; self.chips.len()];
-		for call in &self.main.chip_calls {
+		for call in &mut self.main.chip_calls {
+			call.first_instance = n_calls[call.chip_id];
 			n_calls[call.chip_id] += 1;
 		}
 		// Only main and lower-numbered chips call a chip, so one pass in ID order settles chip
@@ -212,7 +240,8 @@ impl CircuitM4 {
 
 			// Only the active instances of this chip have their calls enforced, so only they
 			// demand an instance of the callee.
-			for call in &self.chips[chip_index].0.chip_calls {
+			for call in &mut self.chips[chip_index].0.chip_calls {
+				call.first_instance = n_calls[call.chip_id];
 				n_calls[call.chip_id] = n_calls[call.chip_id].saturating_add(n_active);
 			}
 		}
@@ -295,6 +324,16 @@ pub enum CircuitM4Error {
 	},
 	#[error("chip #{chip_index} calls chip {callee}, which is not a later chip")]
 	CallOutOfOrder { chip_index: usize, callee: usize },
+	#[error(
+		"{}'s call #{call_index} names instance {first_instance}, but the call graph gives it {expected}",
+		ChipName(*chip_index)
+	)]
+	WrongCallInstance {
+		chip_index: Option<usize>,
+		call_index: usize,
+		first_instance: usize,
+		expected: usize,
+	},
 	#[error("chip #{chip_index} declares {declared} active instances, but {actual} calls reach it")]
 	WrongActiveInstanceCount {
 		chip_index: usize,

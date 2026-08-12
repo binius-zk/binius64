@@ -23,9 +23,9 @@ impl CircuitM4 {
 	///
 	/// `fill_main` assigns the witness inputs of the main circuit; every other value in the system
 	/// is derived from them. Each chip's table holds one instance per invocation that reaches it,
-	/// ordered by caller: main's calls first, then the calls of each chip in ID order, and within a
-	/// chip by instance. The instance count is rounded up to a power of two by repeating the last
-	/// invocation, which satisfies the chip because the invocation it copies does.
+	/// each at the row the invoking call names. The instance count is rounded up to a power of two
+	/// by repeating the last invocation, which satisfies the chip because the invocation it copies
+	/// does.
 	///
 	/// # Panics
 	///
@@ -43,20 +43,22 @@ impl CircuitM4 {
 
 		let main_values = main_witness_filler.into_value_vec();
 
-		// The invocations awaiting each chip, in the order the calls run: main's first, then the
-		// calls of each chip in ID order, instance-major and call-minor. Calls only run to higher
-		// IDs, so a chip's list is complete by the time the pass below reaches it.
-		let mut pending = vec![Vec::new(); self.chips.len()];
+		// The instances of each chip, each written by the call that invokes it. Calls only run to
+		// higher IDs, so a chip's instances are all written by the time the pass below reaches it.
+		let mut pending = self
+			.chips
+			.iter()
+			.map(|(_, n_active)| vec![Vec::new(); *n_active])
+			.collect::<Vec<_>>();
 		for call in &self.main.chip_calls {
-			pending[call.chip_id].push(eval_call(&main_values, call));
+			pending[call.chip_id][call.first_instance] = eval_call(&main_values, call);
 		}
 
 		let mut tables = Vec::<ValueTable>::with_capacity(self.chips.len());
 		for (chip_id, (chip, n_active)) in self.chips.iter().enumerate() {
 			let call_data = mem::take(&mut pending[chip_id]);
 
-			// Invariants checked in `CircuitM4::validate()`
-			assert_eq!(call_data.len(), *n_active);
+			// Invariant checked in `CircuitM4::validate()`
 			assert!(*n_active > 0, "chip {chip_id} is never called");
 
 			let log_instances = log2_ceil_usize(call_data.len());
@@ -73,14 +75,15 @@ impl CircuitM4 {
 
 			// Read this chip's own calls off each active instance, for the chips after it to
 			// serve. Building the instance is what costs here — a value vector allocated and
-			// gathered word by word — so each is built once and every call it makes is read off
-			// it, rather than once per callee.
+			// gathered word by word — so the instances are walked on the outside and every call
+			// one makes is read off it, rather than the chip being walked once per callee.
 			if !chip.chip_calls.is_empty() {
 				let constants = &chip.circuit.constraint_system().constants;
 				for instance in 0..*n_active {
 					let values = table.instance_value_vec(instance, constants);
 					for call in &chip.chip_calls {
-						pending[call.chip_id].push(eval_call(&values, call));
+						pending[call.chip_id][call.first_instance + instance] =
+							eval_call(&values, call);
 					}
 				}
 			}
@@ -139,6 +142,7 @@ mod tests {
 		EmbeddedCircuit {
 			chip_calls: vec![ChipCall {
 				chip_id: callee,
+				first_instance: 0,
 				inout: vec![forward_c.clone(), forward_c],
 			}],
 			circuit,
@@ -156,6 +160,7 @@ mod tests {
 
 		let call = |wire| ChipCall {
 			chip_id: callee,
+			first_instance: 0,
 			inout: vec![operand(&circuit, wire), operand(&circuit, wire)],
 		};
 		let chip_calls = vec![call(a), call(b)];
@@ -214,6 +219,7 @@ mod tests {
 		let chip_calls = iter::zip(&inputs, &conjunctions)
 			.map(|(&(a, b), &and)| ChipCall {
 				chip_id: 0,
+				first_instance: 0,
 				inout: vec![
 					operand(&circuit, a),
 					operand(&circuit, b),
@@ -237,7 +243,7 @@ mod tests {
 			main,
 			chips: vec![(and_chip(1), 0), (eq_chip(), 0)],
 		};
-		circuit.recompute_n_active();
+		circuit.recompute_instances();
 		(circuit, inputs)
 	}
 
@@ -373,17 +379,18 @@ mod tests {
 		);
 	}
 
-	// A caller with several instances making several calls to one callee is what pins the order
-	// generation and verification both walk the calls in: instance-major, call-minor. With one
-	// call per callee the two orders coincide and neither side would notice the other drifting.
+	// A caller with several instances making several calls to one callee is what tells the two
+	// apart: each call site claims a contiguous block of the callee's instances, one per instance
+	// of the caller, rather than the caller's instances taking consecutive rows. With one call per
+	// callee the two coincide and nothing would notice generation and verification disagreeing.
 	#[test]
-	fn generate_interleaves_a_callers_instances_before_its_calls() {
+	fn generate_gives_each_call_site_a_contiguous_block_of_instances() {
 		let (main, inputs) = main_circuit(2);
 		let mut circuit = CircuitM4 {
 			main,
 			chips: vec![(twice_calling_and_chip(1), 0), (eq_chip(), 0)],
 		};
-		circuit.recompute_n_active();
+		circuit.recompute_instances();
 		circuit.validate().unwrap();
 
 		// Chip 0 serves main's two calls, and each of its instances calls chip 1 twice.
@@ -400,8 +407,9 @@ mod tests {
 			})
 			.unwrap();
 
-		// Instance 0's two calls come before instance 1's, each forwarding `(a, a)` then `(b, b)`.
-		let expected = [words[0].0, words[0].1, words[1].0, words[1].1];
+		// The first call site forwards `(a, a)` from each of chip 0's two instances, and the second
+		// forwards `(b, b)` from each, so the two blocks are `a`s then `b`s.
+		let expected = [words[0].0, words[1].0, words[0].1, words[1].1];
 		assert_eq!(witness.tables[1].n_instances(), 4);
 		for (instance, &word) in expected.iter().enumerate() {
 			assert_eq!(
@@ -476,6 +484,7 @@ mod tests {
 		// Chip 1 is a leaf; make it call chip 0, which is populated before it.
 		circuit.chips[1].0.chip_calls.push(ChipCall {
 			chip_id: 0,
+			first_instance: 0,
 			inout: vec![],
 		});
 		assert!(matches!(
@@ -501,11 +510,29 @@ mod tests {
 		));
 	}
 
+	// A call site claims one instance of its callee per instance of its caller, so the instance it
+	// names is the one the calls before it leave free. A graph edited without recomputing the
+	// instances leaves a call naming a row another one already claims.
+	#[test]
+	fn validate_rejects_a_call_naming_the_wrong_instance() {
+		let (mut circuit, _) = system(2);
+		circuit.main.chip_calls[1].first_instance = 0;
+		assert!(matches!(
+			circuit.validate(),
+			Err(CircuitM4Error::WrongCallInstance {
+				chip_index: None,
+				call_index: 1,
+				first_instance: 0,
+				expected: 1,
+			})
+		));
+	}
+
 	#[test]
 	fn validate_rejects_a_chip_nothing_calls() {
 		let (mut circuit, _) = system(1);
 		circuit.main.chip_calls.clear();
-		circuit.recompute_n_active();
+		circuit.recompute_instances();
 		assert!(matches!(circuit.validate(), Err(CircuitM4Error::NeverCalled { chip_index: 0 })));
 	}
 
@@ -561,6 +588,7 @@ mod tests {
 					.flat_map(|chip_id| {
 						iter::repeat_with(move || ChipCall {
 							chip_id,
+							first_instance: 0,
 							inout: vec![],
 						})
 						.take(2)
@@ -575,6 +603,7 @@ mod tests {
 				circuit: CircuitBuilder::new().build(),
 				chip_calls: vec![ChipCall {
 					chip_id: 0,
+					first_instance: 0,
 					inout: vec![],
 				}],
 			},
@@ -582,7 +611,7 @@ mod tests {
 				.map(|i| (chip((i + 1 < DEPTH).then_some(i + 1)), 0))
 				.collect(),
 		};
-		circuit.recompute_n_active();
+		circuit.recompute_instances();
 
 		// Chip 63 is reached 2^63 times and calls chip 64 twice, which is where the count leaves
 		// the range.
