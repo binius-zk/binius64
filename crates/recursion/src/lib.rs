@@ -20,28 +20,22 @@
 //!
 //! # Status: a skeleton, and not sound
 //!
-//! The gadgets a real recursive verifier needs are not written. In their place, values that ought
-//! to be derived are left as circuit inputs for the replay to supply:
+//! One gadget is still missing, so a value that ought to be derived is left as a circuit input:
 //!
 //! - **The Fiat-Shamir state.** `sample` and `sample_bits` return free wires rather than the
 //!   challenger's output, so nothing ties a challenge to the transcript that produced it.
-//! - **The Merkle openings.** `recv_openings` and `recv_committed_vector` return free wires rather
-//!   than values checked against a commitment root.
 //!
 //! What *is* constrained is the verifier's arithmetic: the sumcheck folding, the eq-indicator and
 //! Lagrange evaluations, the monster multilinear, every `assert_zero` along the way, and both field
 //! gadgets that used to be bare hints.
 //!
-//! So a circuit built here accepts proofs it should reject. It is useful for measuring that
-//! arithmetic and for keeping the pipeline honest while the gadgets are written, not for proving
-//! anything. Each gadget that lands removes entries from the recorded input list; with all of them
-//! in place the only input left is the proof itself.
+//! The Merkle commitments are constrained too, by [`merkle`].
+//! An opened leaf is hashed and climbed to a decommitted layer the root fixes.
+//! A committed vector has its tree rebuilt over it.
+//! Both keep their values as circuit inputs, since those values are proof data.
 //!
-//! The gadget for the first bullet now exists in [`challenger`], reproducing the native
-//! challenger's byte stream over wires.
-//! The gadgets for the second exist in [`merkle`], matching the native binary Merkle scheme.
-//! Driving them from `sample`, `sample_bits`, `recv_openings` and `recv_committed_vector` is what
-//! removes the two remaining bullets.
+//! A circuit built here still accepts proofs it should reject: a prover picks its own challenges.
+//! Driving [`challenger`] from `sample` and `sample_bits` is what removes the bullet above.
 
 pub mod challenger;
 mod channel;

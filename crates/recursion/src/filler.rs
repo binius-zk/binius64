@@ -2,21 +2,25 @@
 
 //! Filling a recursive circuit's witness by replaying the verifier.
 
-use std::borrow::BorrowMut;
+use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash as B128, util::FieldFn};
 use binius_frontend::WitnessFiller;
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop::merkle_channel::{
-	self, MerkleIPVerifierChannel, TranscriptMerkleCommitment, VerifierMerkleTranscriptChannel,
+use binius_iop::{
+	merkle_channel::{self, MerkleIPVerifierChannel, TranscriptMerkleCommitment},
+	merkle_tree::{BinaryMerkleTreeScheme, MerkleTreeScheme},
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
-use crate::{channel::DIGEST_WORDS, shared::Input};
+use crate::{
+	merkle::{DIGEST_WORDS, digest_words},
+	shared::Input,
+};
 
 /// A channel that runs the verifier for real while writing what it sees into a witness.
 ///
@@ -30,13 +34,20 @@ use crate::{channel::DIGEST_WORDS, shared::Input};
 /// diverging in opposite directions still add up, and every later value would land in the wrong
 /// wire silently.
 ///
-/// It exists because the skeleton leaves the Fiat-Shamir state and the Merkle openings
-/// unconstrained. Every one of those wires is a value the circuit ought to derive, so as gadgets
-/// land the recorded list shrinks, and with all of them in place only the proof itself remains.
+/// It exists because the skeleton leaves the Fiat-Shamir state unconstrained.
+/// Those wires carry values the circuit ought to derive.
+/// As gadgets land the recorded list shrinks, until only the proof itself remains.
+///
+/// The transcript is read directly rather than through a `VerifierMerkleTranscriptChannel`.
+/// That channel consumes the layer and branch digests internally, never handing them back.
+/// A circuit needs them on wires, so they are read here instead.
 pub struct WitnessFillerChannel<'a, 'c, T, Challenger_, H: HashSuite> {
-	inner: VerifierMerkleTranscriptChannel<T, Challenger_, B128, H>,
+	transcript: T,
+	/// Reproduces the layer depth and the native checks the builder's scheme also picks.
+	scheme: BinaryMerkleTreeScheme<B128, H>,
 	filler: &'a mut WitnessFiller<'c>,
 	wires: std::vec::IntoIter<Input>,
+	_challenger_marker: PhantomData<Challenger_>,
 }
 
 impl<'a, 'c, T, Challenger_, H> WitnessFillerChannel<'a, 'c, T, Challenger_, H>
@@ -46,9 +57,11 @@ where
 	/// Replays over a transcript, filling `wires` in the order the build recorded them.
 	pub fn new(transcript: T, filler: &'a mut WitnessFiller<'c>, wires: Vec<Input>) -> Self {
 		Self {
-			inner: VerifierMerkleTranscriptChannel::new(transcript),
+			transcript,
+			scheme: BinaryMerkleTreeScheme::new(),
 			filler,
 			wires: wires.into_iter(),
+			_challenger_marker: PhantomData,
 		}
 	}
 
@@ -77,6 +90,16 @@ where
 		self.fill_word(kind, Word::from_u64(value as u64));
 		self.fill_word(kind, Word::from_u64((value >> 64) as u64));
 	}
+
+	/// Writes one digest, in the packed byte order the hashing gadgets read.
+	fn fill_digest(&mut self, kind: &'static str, digest: &Output<H::LeafHash>) {
+		let bytes = digest.as_slice();
+		assert_eq!(bytes.len(), DIGEST_WORDS * Word::BYTES);
+		let bytes = bytes.try_into().expect("the length is checked above");
+		for word in digest_words(bytes) {
+			self.fill_word(kind, Word(word));
+		}
+	}
 }
 
 impl<T, Challenger_, H> IPVerifierChannel<B128> for WitnessFillerChannel<'_, '_, T, Challenger_, H>
@@ -88,19 +111,19 @@ where
 	type Elem = B128;
 
 	fn recv_one(&mut self) -> Result<B128, binius_ip::channel::Error> {
-		let value = self.inner.recv_one()?;
+		let value = self.transcript.borrow_mut().recv_one()?;
 		self.fill_elem("recv_one", value);
 		Ok(value)
 	}
 
 	fn sample(&mut self) -> B128 {
-		let value = self.inner.sample();
+		let value = IPVerifierChannel::<B128>::sample(self.transcript.borrow_mut());
 		self.fill_elem("sample", value);
 		value
 	}
 
 	fn observe_one(&mut self, val: B128) -> B128 {
-		let value = self.inner.observe_one(val);
+		let value = self.transcript.borrow_mut().observe_one(val);
 		self.fill_elem("observe_one", value);
 		value
 	}
@@ -108,12 +131,12 @@ where
 	fn assert_zero(&mut self, val: B128) -> Result<(), binius_ip::channel::Error> {
 		// The real check still runs, so a bad proof is caught here rather than surfacing as an
 		// unsatisfiable circuit.
-		self.inner.assert_zero(val)
+		self.transcript.borrow_mut().assert_zero(val)
 	}
 
 	fn compute_public_value(&mut self, inputs: &[B128], f: impl FieldFn<B128>) -> B128 {
 		// The builder evaluates this symbolically, so it records no wires and none are filled.
-		self.inner.compute_public_value(inputs, f)
+		self.transcript.borrow_mut().compute_public_value(inputs, f)
 	}
 }
 
@@ -132,26 +155,26 @@ where
 		for &word in words {
 			self.fill_word("observe_words", word);
 		}
-		self.inner.observe_words(words)
+		WordIPVerifierChannel::<B128>::observe_words(self.transcript.borrow_mut(), words)
 	}
 
 	fn subset_sum(&mut self, elems: &[B128], word: &Word) -> B128 {
-		self.inner.subset_sum(elems, word)
+		self.transcript.borrow_mut().subset_sum(elems, word)
 	}
 
 	fn select(&mut self, elems: &[B128], word: &Word) -> B128 {
-		self.inner.select(elems, word)
+		self.transcript.borrow_mut().select(elems, word)
 	}
 
 	fn sample_bits(&mut self, bits: usize) -> Word {
-		let value = self.inner.sample_bits(bits);
+		let value = WordIPVerifierChannel::<B128>::sample_bits(self.transcript.borrow_mut(), bits);
 		self.fill_word("sample_bits", value);
 		value
 	}
 
 	// The build pairs up wires it already has, allocating none, so there is nothing to fill.
 	fn pack_words(&mut self, words: &[Word]) -> Vec<B128> {
-		self.inner.pack_words(words)
+		self.transcript.borrow_mut().pack_words(words)
 	}
 }
 
@@ -171,27 +194,64 @@ where
 		leaf_size: usize,
 		depth: usize,
 	) -> Result<Self::Commitment, merkle_channel::Error> {
-		let commitment = self.inner.recv_merkle_commitment(leaf_size, depth)?;
-
-		// The root goes in as words so the wires hold the digest the prover sent, rather than a
-		// placeholder that would look right until the Merkle gadget started reading it.
-		let bytes = commitment.commitment.root.as_slice();
-		assert_eq!(bytes.len(), DIGEST_WORDS * Word::BYTES);
-		for chunk in bytes.chunks(Word::BYTES) {
-			let word = u64::from_le_bytes(chunk.try_into().expect("chunks of eight bytes"));
-			self.fill_word("merkle_root", Word::from_u64(word));
-		}
-		Ok(commitment)
+		let root: Output<H::LeafHash> = self.transcript.borrow_mut().message().read()?;
+		self.fill_digest("merkle_root", &root);
+		Ok(TranscriptMerkleCommitment {
+			commitment: binius_iop::merkle_tree::Commitment { root, depth },
+			leaf_size,
+		})
 	}
 
+	/// Reads the same advice the native channel reads, and fills the wires the gadget checks.
+	///
+	/// The climb is not repeated natively: the circuit hashes each leaf and matches the layer.
+	/// A forged opening therefore surfaces as an unsatisfied constraint, not an error at this call.
 	fn recv_openings(
 		&mut self,
 		commitment: &Self::Commitment,
 		indices: &[Word],
 	) -> Result<Vec<B128>, merkle_channel::Error> {
-		let values = self.inner.recv_openings(commitment, indices)?;
-		for &value in &values {
-			self.fill_elem("opening", value);
+		let tree_depth = commitment.commitment.depth;
+		let indices = indices
+			.iter()
+			.map(|index| index.as_u64() as usize)
+			.collect::<Vec<_>>();
+		assert!(indices.iter().all(|&index| index < 1 << tree_depth)); // precondition
+
+		let layer_depth = self.scheme.optimal_verify_layer(indices.len(), tree_depth);
+
+		// The reader borrows the transcript for as long as it lives, so the whole batch is read
+		// before any of it is written into wires.
+		let (layer, openings) = {
+			let mut advice = self.transcript.borrow_mut().decommitment();
+			let layer = advice.read_vec::<Output<H::LeafHash>>(1 << layer_depth)?;
+			let mut openings = Vec::with_capacity(indices.len());
+			for _ in &indices {
+				let leaf = advice.read_scalar_slice::<B128>(commitment.leaf_size)?;
+				let branch = advice.read_vec::<Output<H::LeafHash>>(tree_depth - layer_depth)?;
+				openings.push((leaf, branch));
+			}
+			(layer, openings)
+		};
+
+		// The layer folds to the root over concrete digests, so that half stays a native check.
+		self.scheme
+			.verify_layer(&commitment.commitment.root, layer_depth, &layer)?;
+
+		// Filled in the order the build allocated: the shared layer, then a leaf and a branch per
+		// query.
+		for digest in &layer {
+			self.fill_digest("merkle_layer", digest);
+		}
+		let mut values = Vec::with_capacity(indices.len() * commitment.leaf_size);
+		for (leaf, branch) in openings {
+			for &value in &leaf {
+				self.fill_elem("opening", value);
+			}
+			for digest in &branch {
+				self.fill_digest("merkle_branch", digest);
+			}
+			values.extend_from_slice(&leaf);
 		}
 		Ok(values)
 	}
@@ -200,10 +260,19 @@ where
 		&mut self,
 		commitment: &Self::Commitment,
 	) -> Result<Vec<B128>, merkle_channel::Error> {
-		let values = self.inner.recv_committed_vector(commitment)?;
-		for &value in &values {
+		let len = commitment.leaf_size << commitment.commitment.depth;
+		let data = self
+			.transcript
+			.borrow_mut()
+			.decommitment()
+			.read_scalar_slice::<B128>(len)?;
+		// The rebuild runs over concrete values too, so this stays a native check.
+		self.scheme
+			.verify_vector(&commitment.commitment.root, &data, commitment.leaf_size)?;
+
+		for &value in &data {
 			self.fill_elem("committed_vector", value);
 		}
-		Ok(values)
+		Ok(data)
 	}
 }

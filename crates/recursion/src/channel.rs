@@ -2,26 +2,24 @@
 
 //! The channel that turns a verifier run into a circuit.
 
-use std::rc::Rc;
+use std::{array, rc::Rc};
 
 use binius_circuits::multiplexer::multi_wire_multiplex;
 use binius_core::word::Word;
-use binius_field::{BinaryField, BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
-use binius_frontend::{Circuit, Wire};
-use binius_iop::merkle_channel::{self, MerkleIPVerifierChannel};
+use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
+use binius_frontend::{Circuit, CircuitBuilder};
+use binius_hash::StdHashSuite;
+use binius_iop::{
+	merkle_channel::{self, MerkleIPVerifierChannel},
+	merkle_tree::{BinaryMerkleTreeScheme, MerkleTreeScheme},
+};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
 
 use crate::{
+	merkle::{self, Digest, ELEMENT_WORDS, Element},
 	shared::Shared,
 	symbolic::{SymbolicElem, SymbolicWord},
 };
-
-/// Number of 64-bit words a SHA-256 digest occupies.
-pub(crate) const DIGEST_WORDS: usize = 4;
-
-/// Number of 64-bit words one field element holds, which is the two halves a [`SymbolicElem`]
-/// carries.
-const WORDS_PER_ELEM: usize = B128::N_BITS / Word::BITS;
 
 /// A Merkle commitment received by the builder channel.
 ///
@@ -30,7 +28,7 @@ const WORDS_PER_ELEM: usize = B128::N_BITS / Word::BITS;
 #[derive(Clone)]
 pub struct Commitment {
 	/// The commitment root.
-	pub root: [Wire; DIGEST_WORDS],
+	pub root: Digest,
 	/// Field elements in each leaf.
 	pub leaf_size: usize,
 	/// Base-2 logarithm of the number of leaves.
@@ -61,6 +59,10 @@ pub struct Binius64BuilderChannel {
 	shared: Rc<Shared>,
 	/// How many assertions have been recorded, so each gets a distinct name.
 	n_assertions: usize,
+	/// Consulted only for the layer depth an opening decommits to, so no tree is ever built.
+	scheme: BinaryMerkleTreeScheme<B128, StdHashSuite>,
+	/// Merkle verifications emitted so far, used to name subcircuits.
+	n_merkle_checks: usize,
 }
 
 impl Binius64BuilderChannel {
@@ -73,6 +75,8 @@ impl Binius64BuilderChannel {
 		Self {
 			shared: Rc::new(Shared::new()),
 			n_assertions: 0,
+			scheme: BinaryMerkleTreeScheme::new(),
+			n_merkle_checks: 0,
 		}
 	}
 
@@ -91,10 +95,32 @@ impl Binius64BuilderChannel {
 	}
 
 	/// Allocates the `(lo, hi)` pair one field element occupies, as circuit inputs.
+	fn input_element(&mut self, kind: &'static str) -> Element {
+		array::from_fn(|_| self.shared.input_wire(kind))
+	}
+
+	/// Allocates the wires one digest occupies, as circuit inputs.
+	fn input_digest(&mut self, kind: &'static str) -> Digest {
+		array::from_fn(|_| self.shared.input_wire(kind))
+	}
+
+	/// Allocates one field element as circuit inputs, in the form the protocol reads.
 	fn input_elem(&mut self, kind: &'static str) -> SymbolicElem {
-		let lo = self.shared.input_wire(kind);
-		let hi = self.shared.input_wire(kind);
+		let element = self.input_element(kind);
+		self.elem(element)
+	}
+
+	/// Lifts a wire pair to the element type the protocol sees.
+	fn elem(&self, [lo, hi]: Element) -> SymbolicElem {
 		SymbolicElem::wires(&self.shared, lo, hi)
+	}
+
+	/// A subcircuit named for the next Merkle verification.
+	fn merkle_subcircuit(&mut self, what: &str) -> CircuitBuilder {
+		// A distinct name per check keeps a failing assertion traceable to the check that broke.
+		let name = format!("{what}[{}]", self.n_merkle_checks);
+		self.n_merkle_checks += 1;
+		self.shared.builder().subcircuit(name)
 	}
 }
 
@@ -240,7 +266,7 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 		// takes the low half against a zero high half.
 		let builder = self.shared.builder();
 		words
-			.chunks(WORDS_PER_ELEM)
+			.chunks(ELEMENT_WORDS)
 			.map(|chunk| {
 				let lo = chunk[0].to_wire(builder);
 				let hi = chunk
@@ -260,7 +286,7 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 		leaf_size: usize,
 		depth: usize,
 	) -> Result<Commitment, merkle_channel::Error> {
-		let root = std::array::from_fn(|_| self.shared.input_wire("merkle_root"));
+		let root = self.input_digest("merkle_root");
 		Ok(Commitment {
 			root,
 			leaf_size,
@@ -268,25 +294,73 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 		})
 	}
 
+	/// Opens the commitment at every query index, returning the elements the opened leaves hold.
+	///
+	/// The opened values stay circuit inputs, since they are proof data.
+	/// They stop being *free*: each leaf is hashed and climbed to a layer the root fixes.
+	///
+	/// The index is a wire, so no range check is possible while the circuit is built.
+	/// An opening is verified at the index reduced modulo the leaf count.
+	/// Masking the sampled index so that reduction is a no-op is BINIUS-470.
 	fn recv_openings(
 		&mut self,
 		commitment: &Commitment,
 		indices: &[SymbolicWord],
 	) -> Result<Vec<SymbolicElem>, merkle_channel::Error> {
-		// UNCONSTRAINED: nothing binds the opened values to the root. Hashing each leaf and
-		// climbing the path is the gadget this skeleton leaves out.
-		Ok((0..indices.len() * commitment.leaf_size)
-			.map(|_| self.input_elem("opening"))
-			.collect())
+		let tree_depth = commitment.depth;
+		// The same rule the native verifier applies, so both sides stop climbing at the same level.
+		let layer_depth = self.scheme.optimal_verify_layer(indices.len(), tree_depth);
+
+		// One internal layer, folded to the root once and then shared by every climb below.
+		let layer = (0..1 << layer_depth)
+			.map(|_| self.input_digest("merkle_layer"))
+			.collect::<Vec<_>>();
+		let builder = self.merkle_subcircuit("layer");
+		merkle::verify_layer(&builder, commitment.root, &layer);
+
+		// Every query then climbs from its own leaf up to that layer.
+		let mut values = Vec::with_capacity(indices.len() * commitment.leaf_size);
+		for index in indices {
+			let leaf = (0..commitment.leaf_size)
+				.map(|_| self.input_element("opening"))
+				.collect::<Vec<_>>();
+			let branch = (0..tree_depth - layer_depth)
+				.map(|_| self.input_digest("merkle_branch"))
+				.collect::<Vec<_>>();
+
+			// Hashes the leaf, climbs the branch, then matches the layer entry the index addresses.
+			let builder = self.merkle_subcircuit("opening");
+			let index = index.to_wire(&builder);
+			merkle::verify_opening(
+				&builder,
+				index,
+				&leaf,
+				layer_depth,
+				tree_depth,
+				&layer,
+				&branch,
+			);
+			values.extend(leaf.into_iter().map(|element| self.elem(element)));
+		}
+		Ok(values)
 	}
 
+	/// Receives the whole committed vector, checked by rebuilding its tree.
+	///
+	/// The data arrives in the clear, so there is no path to climb: the tree is rebuilt over it.
 	fn recv_committed_vector(
 		&mut self,
 		commitment: &Commitment,
 	) -> Result<Vec<SymbolicElem>, merkle_channel::Error> {
-		// UNCONSTRAINED: nothing rebuilds the tree over the vector.
-		Ok((0..commitment.leaf_size << commitment.depth)
-			.map(|_| self.input_elem("committed_vector"))
-			.collect())
+		// One leaf's worth of elements per leaf, across every leaf of the tree.
+		let len = commitment.leaf_size << commitment.depth;
+		let data = (0..len)
+			.map(|_| self.input_element("committed_vector"))
+			.collect::<Vec<_>>();
+
+		let builder = self.merkle_subcircuit("vector");
+		merkle::verify_vector(&builder, commitment.root, &data, commitment.leaf_size);
+
+		Ok(data.into_iter().map(|element| self.elem(element)).collect())
 	}
 }
