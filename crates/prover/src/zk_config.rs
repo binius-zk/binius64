@@ -13,6 +13,7 @@ use binius_core::constraint_system::{ConstraintSystem, InoutSegment, ValueVec};
 use binius_field::{BinaryField128bGhash as B128, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
+use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
@@ -156,8 +157,11 @@ where
 			{
 				let inner_iop_verifier = &self.inner_iop_verifier;
 				move |replay_channel: &mut ReplayChannel<B128>| {
+					// A faithful replay of the verifier's call sequence, which observes the
+					// statement before delegating.
+					let inout = replay_channel.observe_words(inout_words);
 					inner_iop_verifier
-						.verify(inout_words, replay_channel)
+						.verify(&inout, replay_channel)
 						.expect("replay verification should not fail");
 				}
 			},

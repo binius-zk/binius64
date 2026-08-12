@@ -5,8 +5,10 @@
 use std::{marker::PhantomData, mem::size_of};
 
 use binius_core::word::Word;
-use binius_field::{Field, util::FieldFn};
-use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
+use binius_field::{BinaryField, util::FieldFn};
+use binius_ip::channel::{
+	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
+};
 use binius_utils::serialization::FixedSizeSerializeBytes;
 
 use crate::{
@@ -60,7 +62,7 @@ impl<'a, F, MerkleScheme_> SizeTrackingChannel<'a, F, MerkleScheme_> {
 
 impl<F, MerkleScheme_> IPVerifierChannel<F> for SizeTrackingChannel<'_, F, MerkleScheme_>
 where
-	F: Field + FixedSizeSerializeBytes,
+	F: BinaryField + FixedSizeSerializeBytes,
 	MerkleScheme_: MerkleTreeScheme<F>,
 {
 	// Nothing here reads a value, so a zero-sized stand-in would seem to fit.
@@ -106,13 +108,15 @@ where
 
 impl<F, MerkleScheme_> WordIPVerifierChannel<F> for SizeTrackingChannel<'_, F, MerkleScheme_>
 where
-	F: Field + FixedSizeSerializeBytes,
+	F: BinaryField + FixedSizeSerializeBytes,
 	MerkleScheme_: MerkleTreeScheme<F>,
 {
 	type Word = Word;
 
 	// Observing feeds the Fiat-Shamir state rather than the proof tape, so it costs no bytes.
-	fn observe_words(&mut self, _words: &[Word]) {}
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
+		words.to_vec()
+	}
 
 	fn subset_sum(&mut self, elems: &[F], word: &Word) -> F {
 		subset_sum_word(elems, *word)
@@ -126,11 +130,15 @@ where
 	fn sample_bits(&mut self, _bits: usize) -> Word {
 		Word::ZERO
 	}
+
+	fn pack_words(&mut self, words: &[Word]) -> Vec<F> {
+		pack_words_concrete::<F, F>(words)
+	}
 }
 
 impl<F, MerkleScheme_> MerkleIPVerifierChannel<F> for SizeTrackingChannel<'_, F, MerkleScheme_>
 where
-	F: Field + FixedSizeSerializeBytes,
+	F: BinaryField + FixedSizeSerializeBytes,
 	MerkleScheme_: MerkleTreeScheme<F>,
 {
 	type Commitment = CommittedShape;

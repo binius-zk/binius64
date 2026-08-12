@@ -2,6 +2,7 @@
 
 //! BaseFold ZK implementation of the IOP verifier channel.
 
+use binius_core::word::Word;
 use binius_field::{BinaryField, util::FieldFn};
 use binius_ip::{
 	channel::{IPVerifierChannel, WordIPVerifierChannel},
@@ -291,8 +292,8 @@ where
 {
 	type Word = Channel::Word;
 
-	fn observe_words(&mut self, words: &[Self::Word]) {
-		self.channel.observe_words(words);
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Self::Word> {
+		self.channel.observe_words(words)
 	}
 
 	fn subset_sum(&mut self, elems: &[Self::Elem], word: &Self::Word) -> Self::Elem {
@@ -305,6 +306,10 @@ where
 
 	fn sample_bits(&mut self, bits: usize) -> Self::Word {
 		self.channel.sample_bits(bits)
+	}
+
+	fn pack_words(&mut self, words: &[Self::Word]) -> Vec<Self::Elem> {
+		self.channel.pack_words(words)
 	}
 }
 

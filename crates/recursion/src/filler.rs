@@ -126,8 +126,13 @@ where
 {
 	type Word = Word;
 
-	fn observe_words(&mut self, words: &[Word]) {
-		self.inner.observe_words(words);
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
+		// The build allocated one input wire per statement word here, so the replay fills them in
+		// the same order before forwarding to the real Fiat-Shamir state.
+		for &word in words {
+			self.fill_word("observe_words", word);
+		}
+		self.inner.observe_words(words)
 	}
 
 	fn subset_sum(&mut self, elems: &[B128], word: &Word) -> B128 {
@@ -142,6 +147,11 @@ where
 		let value = self.inner.sample_bits(bits);
 		self.fill_word("sample_bits", value);
 		value
+	}
+
+	// The build pairs up wires it already has, allocating none, so there is nothing to fill.
+	fn pack_words(&mut self, words: &[Word]) -> Vec<B128> {
+		self.inner.pack_words(words)
 	}
 }
 

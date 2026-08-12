@@ -22,7 +22,9 @@
 use std::{iter::repeat_with, ops::Shr};
 
 use binius_core::word::Word;
-use binius_field::{Field, field::FieldOps, util::FieldFn};
+use binius_field::{
+	BinaryField, BinaryField1b, ExtensionField, Field, field::FieldOps, util::FieldFn,
+};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, CanSampleBits, Challenger},
@@ -136,8 +138,15 @@ pub trait WordIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// `u32` to match [`Word`]'s own [`Shl`](std::ops::Shl) and [`Shr`] impls.
 	type Word: Clone + From<Word> + Shr<u32, Output = Self::Word>;
 
-	/// Feeds words into the Fiat-Shamir state, each as eight little-endian bytes.
-	fn observe_words(&mut self, words: &[Self::Word]);
+	/// Feeds words into the Fiat-Shamir state, each as eight little-endian bytes, and returns them
+	/// as this channel's word type.
+	///
+	/// The words go in concrete, because the statement is fixed data the verifier is handed rather
+	/// than something the protocol derives. They come back as [`Self::Word`], which is where a
+	/// channel that carries words as wires introduces them: it allocates the wires here, and the
+	/// protocol sees the statement symbolically from this point on. A channel over concrete values
+	/// hands the same words straight back.
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Self::Word>;
 
 	/// Returns the sum of the `elems` selected by the low bits of `word`, low bit first.
 	///
@@ -163,6 +172,47 @@ pub trait WordIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// The result is masked to `bits` bits. Protocols rely on that bound, so an implementation
 	/// must enforce it rather than assume the sampled value already fits.
 	fn sample_bits(&mut self, bits: usize) -> Self::Word;
+
+	/// Packs words into field elements, as many words to an element as one holds.
+	///
+	/// Word `i` occupies bits `[Word::BITS * i, Word::BITS * (i + 1))` of element
+	/// `i / words_per_elem`, so the packed form reads the same way the committed trace does: the
+	/// low bit-index coordinates address the bit within a word, the next the word within its
+	/// element. A word count that does not fill the last element leaves its high words zero.
+	///
+	/// This is a channel method rather than a free function because the words may be wires: a
+	/// channel over concrete values computes the elements, and a circuit-building one emits the
+	/// gates that assemble them.
+	fn pack_words(&mut self, words: &[Self::Word]) -> Vec<Self::Elem>;
+}
+
+/// [`WordIPVerifierChannel::pack_words`] over concrete words, for channels carrying [`Word`].
+///
+/// A set bit contributes the basis element at its position in the packed layout, which is what
+/// makes this agree with reading the element's bits back out.
+pub fn pack_words_concrete<F, E>(words: &[Word]) -> Vec<E>
+where
+	F: BinaryField,
+	E: FieldOps<Scalar = F> + From<F>,
+{
+	let words_per_elem = F::N_BITS / Word::BITS;
+	words
+		.chunks(words_per_elem)
+		.map(|chunk| {
+			let packed = chunk
+				.iter()
+				.enumerate()
+				.flat_map(|(i, word)| {
+					(0..Word::BITS)
+						.filter(|&bit| word.extract_bit(bit))
+						.map(move |bit| {
+							<F as ExtensionField<BinaryField1b>>::basis(i * Word::BITS + bit)
+						})
+				})
+				.sum::<F>();
+			E::from(packed)
+		})
+		.collect()
 }
 
 /// [`WordIPVerifierChannel::subset_sum`] over a concrete word, for channels carrying [`Word`].
@@ -242,13 +292,14 @@ where
 
 impl<F, Challenger_> WordIPVerifierChannel<F> for VerifierTranscript<Challenger_>
 where
-	F: Field,
+	F: BinaryField,
 	Challenger_: Challenger,
 {
 	type Word = Word;
 
-	fn observe_words(&mut self, words: &[Word]) {
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
 		self.observe().write_slice(words);
+		words.to_vec()
 	}
 
 	fn subset_sum(&mut self, elems: &[F], word: &Word) -> F {
@@ -261,6 +312,10 @@ where
 
 	fn sample_bits(&mut self, bits: usize) -> Word {
 		Word::from_u64(CanSampleBits::<u32>::sample_bits(self, bits) as u64)
+	}
+
+	fn pack_words(&mut self, words: &[Word]) -> Vec<F> {
+		pack_words_concrete::<F, F>(words)
 	}
 }
 

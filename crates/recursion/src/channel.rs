@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use binius_circuits::multiplexer::multi_wire_multiplex;
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
+use binius_field::{BinaryField, BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
 use binius_frontend::{Circuit, Wire};
 use binius_iop::merkle_channel::{self, MerkleIPVerifierChannel};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
@@ -18,6 +18,10 @@ use crate::{
 
 /// Number of 64-bit words a SHA-256 digest occupies.
 pub(crate) const DIGEST_WORDS: usize = 4;
+
+/// Number of 64-bit words one field element holds, which is the two halves a [`SymbolicElem`]
+/// carries.
+const WORDS_PER_ELEM: usize = B128::N_BITS / Word::BITS;
 
 /// A Merkle commitment received by the builder channel.
 ///
@@ -159,9 +163,17 @@ impl IPVerifierChannel<B128> for Binius64BuilderChannel {
 impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 	type Word = SymbolicWord;
 
-	fn observe_words(&mut self, _words: &[SymbolicWord]) {
-		// UNCONSTRAINED: the statement must reach the Fiat-Shamir state for the circuit to be
-		// bound to what it claims to verify.
+	fn observe_words(&mut self, words: &[Word]) -> Vec<SymbolicWord> {
+		// The statement enters the circuit here, one input wire per word, so everything downstream
+		// reads it symbolically instead of baking it in as constants. That is what makes the
+		// recorded circuit verify a *statement* rather than one fixed instance of it.
+		//
+		// UNCONSTRAINED: nothing feeds these into a Fiat-Shamir state yet, so the circuit is not
+		// yet bound to the statement it claims to verify.
+		words
+			.iter()
+			.map(|_| SymbolicWord::wire(&self.shared, self.shared.input_wire("observe_words")))
+			.collect()
 	}
 
 	fn subset_sum(&mut self, elems: &[SymbolicElem], word: &SymbolicWord) -> SymbolicElem {
@@ -220,6 +232,23 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 		// UNCONSTRAINED, twice over: the index should come from the Fiat-Shamir state, and it
 		// should be masked to `bits` bits, which the FRI code relies on rather than asserting.
 		SymbolicWord::wire(&self.shared, self.shared.input_wire("sample_bits"))
+	}
+
+	fn pack_words(&mut self, words: &[SymbolicWord]) -> Vec<SymbolicElem> {
+		// A `SymbolicElem` *is* the low and high wire of a 128-bit element, and a word fills half
+		// of it, so packing is pairing the wires up. It costs no gates, and a trailing odd word
+		// takes the low half against a zero high half.
+		let builder = self.shared.builder();
+		words
+			.chunks(WORDS_PER_ELEM)
+			.map(|chunk| {
+				let lo = chunk[0].to_wire(builder);
+				let hi = chunk
+					.get(1)
+					.map_or_else(|| builder.add_constant_64(0), |word| word.to_wire(builder));
+				SymbolicElem::wires(&self.shared, lo, hi)
+			})
+			.collect()
 	}
 }
 

@@ -114,7 +114,10 @@ impl IOPVerifier {
 	/// `verify`, rather than duplicating it here.
 	pub fn oracle_specs(&self, is_zk: bool) -> Vec<OracleSpec> {
 		let mut channel = OracleSetupChannel::new(is_zk);
-		let inout = vec![Word::ZERO; self.constraint_system.n_inout];
+		let inout = WordIPVerifierChannel::<B128>::observe_words(
+			&mut channel,
+			&vec![Word::ZERO; self.constraint_system.n_inout],
+		);
 		// The result is discarded: the setup channel performs no real verification (all `recv_*`
 		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle specs.
 		let _ = self.verify(&inout, &mut channel);
@@ -125,7 +128,16 @@ impl IOPVerifier {
 	///
 	/// This is the core verification logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Verifier::verify`] is the simpler interface.
-	pub fn verify<Channel>(&self, inout: &[Word], channel: &mut Channel) -> Result<(), Error>
+	///
+	/// `inout` is the statement as the channel carries it, which is what
+	/// [`WordIPVerifierChannel::observe_words`] returns: the caller observes the concrete words and
+	/// passes on what comes back. A channel that carries words as wires introduces them there, so
+	/// the verification below reads the statement symbolically rather than as fixed data.
+	pub fn verify<Channel>(
+		&self,
+		inout: &[Channel::Word],
+		channel: &mut Channel,
+	) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
@@ -140,21 +152,16 @@ impl IOPVerifier {
 			});
 		}
 
-		// Only the inout values go into Fiat-Shamir: they are what varies per instance, and the
-		// constants are fixed by the constraint system the transcript is already bound to.
-		//
-		// The words are lifted into the channel's own word type, so a channel that carries words
-		// as wires still receives them. They arrive here concrete, so such a channel sees the
-		// statement as fixed; taking it symbolically is BINIUS-433.
-		let observed = inout
+		// The shift reduction reads the whole public segment, which is the constants followed by
+		// the inout values — the order the value vector places them in. The constants are fixed by
+		// the constraint system, so they lift into the channel's word type as themselves.
+		let public = self
+			.constraint_system
+			.constants
 			.iter()
 			.map(|&word| Channel::Word::from(word))
+			.chain(inout.iter().cloned())
 			.collect::<Vec<_>>();
-		channel.observe_words(&observed);
-
-		// The shift reduction reads the whole public segment, which is the constants followed by
-		// the inout values — the order the value vector places them in.
-		let public = [self.constraint_system.constants.as_slice(), inout].concat();
 
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -320,11 +327,14 @@ where
 		)
 		.entered();
 
-		// Create channel, delegate to IOPVerifier::verify, then finish it.
+		// Create channel, observe the statement, delegate to IOPVerifier::verify, then finish it.
+		// The observation is the caller's step because it is the one place the protocol handles
+		// concrete words; what it returns is what the IOP verifies against.
 		let mut channel = self
 			.iop_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
-		self.iop_verifier.verify(inout, &mut channel)?;
+		let inout = channel.observe_words(inout);
+		self.iop_verifier.verify(&inout, &mut channel)?;
 		channel.finish()?;
 		Ok(())
 	}

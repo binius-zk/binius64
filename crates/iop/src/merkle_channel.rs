@@ -15,7 +15,7 @@
 use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_core::word::Word;
-use binius_field::{Field, util::FieldFn};
+use binius_field::{BinaryField, Field, util::FieldFn};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
@@ -151,15 +151,15 @@ where
 impl<F, T, Challenger_, H> WordIPVerifierChannel<F>
 	for VerifierMerkleTranscriptChannel<T, Challenger_, F, H>
 where
-	F: Field,
+	F: BinaryField,
 	T: BorrowMut<VerifierTranscript<Challenger_>>,
 	Challenger_: Challenger,
 	H: HashSuite,
 {
 	type Word = Word;
 
-	fn observe_words(&mut self, words: &[Word]) {
-		WordIPVerifierChannel::<F>::observe_words(self.transcript.borrow_mut(), words);
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
+		WordIPVerifierChannel::<F>::observe_words(self.transcript.borrow_mut(), words)
 	}
 
 	fn subset_sum(&mut self, elems: &[F], word: &Word) -> F {
@@ -173,12 +173,16 @@ where
 	fn sample_bits(&mut self, bits: usize) -> Word {
 		WordIPVerifierChannel::<F>::sample_bits(self.transcript.borrow_mut(), bits)
 	}
+
+	fn pack_words(&mut self, words: &[Word]) -> Vec<F> {
+		WordIPVerifierChannel::<F>::pack_words(self.transcript.borrow_mut(), words)
+	}
 }
 
 impl<F, T, Challenger_, H> MerkleIPVerifierChannel<F>
 	for VerifierMerkleTranscriptChannel<T, Challenger_, F, H>
 where
-	F: Field + FixedSizeSerializeBytes,
+	F: BinaryField + FixedSizeSerializeBytes,
 	T: BorrowMut<VerifierTranscript<Challenger_>>,
 	Challenger_: Challenger,
 	H: HashSuite,

@@ -10,7 +10,7 @@ use std::{
 
 use binius_core::word::Word;
 use binius_field::{
-	ExtensionField, Field, FieldOps,
+	BinaryField, ExtensionField, Field, FieldOps,
 	arithmetic_traits::{InvertOrZero, Square},
 	util::FieldFn,
 };
@@ -203,11 +203,13 @@ impl<F: Field> IPVerifierChannel<F> for OracleSetupChannel {
 	}
 }
 
-impl<F: Field> WordIPVerifierChannel<F> for OracleSetupChannel {
+impl<F: BinaryField> WordIPVerifierChannel<F> for OracleSetupChannel {
 	type Word = Word;
 
 	// The dry run records oracle shapes only, so nothing reaches a Fiat-Shamir state.
-	fn observe_words(&mut self, _words: &[Word]) {}
+	fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
+		words.to_vec()
+	}
 
 	fn subset_sum(&mut self, _elems: &[DummyElem<F>], _word: &Word) -> DummyElem<F> {
 		DummyElem(PhantomData)
@@ -220,6 +222,12 @@ impl<F: Field> WordIPVerifierChannel<F> for OracleSetupChannel {
 	// The recorded oracle shapes do not depend on which leaves a protocol would query.
 	fn sample_bits(&mut self, _bits: usize) -> Word {
 		Word::ZERO
+	}
+
+	// Only the element count matters here, and it follows from the word count alone.
+	fn pack_words(&mut self, words: &[Word]) -> Vec<DummyElem<F>> {
+		let words_per_elem = F::N_BITS / Word::BITS;
+		vec![DummyElem(PhantomData); words.len().div_ceil(words_per_elem)]
 	}
 }
 

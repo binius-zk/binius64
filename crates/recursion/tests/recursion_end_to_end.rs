@@ -20,6 +20,7 @@ use binius_core::{constraint_system::ValueVec, word::Word};
 use binius_field::arch::OptimalPackedB128;
 use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, Wire};
 use binius_hash::StdHashSuite;
+use binius_ip::channel::WordIPVerifierChannel;
 use binius_prover::Prover;
 use binius_recursion::{Binius64BuilderChannel, WitnessFillerChannel};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
@@ -124,9 +125,13 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	let recorded = {
 		let builder_channel = Binius64BuilderChannel::new();
 		let mut channel = verifier.iop_compiler().create_channel(builder_channel);
+		// The statement is observed by the caller, and what comes back is what the verifier reads.
+		// On this channel those are wires, so the recorded circuit takes the statement as input
+		// rather than baking it in.
+		let inout = channel.observe_words(witness.inout());
 		verifier
 			.iop_verifier()
-			.verify(witness.inout(), &mut channel)
+			.verify(&inout, &mut channel)
 			.expect("the symbolic run records rather than checks, so it cannot fail");
 		let builder_channel = channel.finish().unwrap();
 		builder_channel.build()
@@ -143,6 +148,16 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	);
 	assert!(stat.n_bmul_constraints > 0, "the verifier's field arithmetic should be recorded");
 
+	// The statement reaches the circuit as wires, one per inout word, rather than as constants
+	// baked in while building. That is what makes the recorded circuit verify a statement rather
+	// than one fixed instance of it.
+	let statement_wires = recorded
+		.inputs
+		.iter()
+		.filter(|input| input.kind == "observe_words")
+		.count();
+	assert_eq!(statement_wires, witness.inout().len());
+
 	// --- its witness ---------------------------------------------------------------------------
 	// The same verifier runs again over the real transcript, and every value the circuit cannot
 	// derive is written into the wire the build recorded for it.
@@ -155,9 +170,10 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 			recorded.inputs.clone(),
 		);
 		let mut channel = verifier.iop_compiler().create_channel(filler_channel);
+		let inout = channel.observe_words(witness.inout());
 		verifier
 			.iop_verifier()
-			.verify(witness.inout(), &mut channel)
+			.verify(&inout, &mut channel)
 			.unwrap();
 		channel.finish().unwrap().finish();
 	}
