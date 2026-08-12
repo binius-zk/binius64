@@ -13,7 +13,7 @@ use super::{
 	ValueIndex, ValueSegment, ValueVec, ZeroConstraint,
 };
 use crate::{
-	error::{ConstraintSystemError, VerificationError},
+	error::{ConstraintSystemError, OperandFault, VerificationError},
 	word::Word,
 };
 
@@ -325,25 +325,35 @@ impl ConstraintSystem {
 		constraint_index: usize,
 		operand_name: &'static str,
 	) -> Result<(), ConstraintSystemError> {
-		for term in operand {
+		match self.operand_fault(operand) {
+			None => Ok(()),
+			Some(source) => Err(ConstraintSystemError::ConstraintOperand {
+				constraint_kind,
+				constraint_index,
+				operand_name,
+				source,
+			}),
+		}
+	}
+
+	/// Returns the first way a term of an operand is malformed, or `None` when every term is
+	/// well-formed.
+	///
+	/// The fault says nothing about where the operand sits, so a constraint operand and a chip-call
+	/// operand can both report it under their own naming.
+	pub fn operand_fault(&self, operand: &Operand) -> Option<OperandFault> {
+		operand.iter().find_map(|term| {
 			for shift in term.shift_seq {
 				// check canonicity. SLL is the canonical form of the identity.
 				if !shift.is_canonical() {
-					return Err(ConstraintSystemError::NonCanonicalShift {
-						constraint_kind,
-						constraint_index,
-						operand_name,
-					});
+					return Some(OperandFault::NonCanonicalShift);
 				}
 				// Half-word (*32) variants cap at 32, full-width at 64. `Shift::new` and the
 				// deserializer both enforce this, but the fields are public, so a hand-built term
 				// can still carry an amount the variant cannot represent.
 				let max_amount = shift.variant.max_amount();
 				if usize::from(shift.amount) >= max_amount {
-					return Err(ConstraintSystemError::ShiftAmountTooLarge {
-						constraint_kind,
-						constraint_index,
-						operand_name,
+					return Some(OperandFault::ShiftAmountTooLarge {
 						shift_amount: shift.amount as usize,
 						max_amount,
 					});
@@ -353,11 +363,7 @@ impl ConstraintSystem {
 			// Were the outer slot allowed to carry the lone shift, one map would have two
 			// spellings and two terms denoting the same shifted word would not compare equal.
 			if term.is_unshifted() && term.is_doubly_shifted() {
-				return Err(ConstraintSystemError::NonCanonicalShiftSequence {
-					constraint_kind,
-					constraint_index,
-					operand_name,
-				});
+				return Some(OperandFault::NonCanonicalShiftSequence);
 			}
 			// A genuine pair must not collapse. `Single` means the frontend failed to merge two
 			// shifts that compose into one; `Zero` means it emitted a term whose every bit is
@@ -365,39 +371,26 @@ impl ConstraintSystem {
 			if term.is_doubly_shifted() {
 				let composition = Shift::compose(term.inner(), term.outer());
 				if composition != Composition::Pair {
-					return Err(ConstraintSystemError::CollapsibleShiftSequence {
-						constraint_kind,
-						constraint_index,
-						operand_name,
-						composition,
-					});
+					return Some(OperandFault::CollapsibleShiftSequence { composition });
 				}
 			}
 			// Scratch words are uncommitted temporaries of the circuit that produced this system,
 			// so no constraint may name one.
 			let segment = term.value_index.segment();
 			if !segment.is_referenceable() {
-				return Err(ConstraintSystemError::ScratchValueIndex {
-					constraint_kind,
-					constraint_index,
-					operand_name,
-				});
+				return Some(OperandFault::ScratchValueIndex);
 			}
 			// An index is checked against its own segment, so it can only name a declared value.
-			// Padding follows the values of a segment, and no index reaches it.
 			let segment_len = self.segment_len(segment);
 			if term.value_index.index() as usize >= segment_len {
-				return Err(ConstraintSystemError::OutOfRangeValueIndex {
-					constraint_kind,
-					constraint_index,
-					operand_name,
+				return Some(OperandFault::OutOfRangeValueIndex {
 					segment,
 					value_index: term.value_index.index(),
 					segment_len,
 				});
 			}
-		}
-		Ok(())
+			None
+		})
 	}
 
 	/// Returns the number of ZERO constraints in the system.
@@ -795,8 +788,10 @@ mod tests {
 		));
 
 		match cs.validate().unwrap_err() {
-			ConstraintSystemError::ScratchValueIndex {
-				constraint_kind, ..
+			ConstraintSystemError::ConstraintOperand {
+				constraint_kind,
+				source: OperandFault::ScratchValueIndex,
+				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
 			}
@@ -817,10 +812,13 @@ mod tests {
 		));
 
 		match cs.validate().unwrap_err() {
-			ConstraintSystemError::OutOfRangeValueIndex {
-				segment,
-				value_index,
-				segment_len,
+			ConstraintSystemError::ConstraintOperand {
+				source:
+					OperandFault::OutOfRangeValueIndex {
+						segment,
+						value_index,
+						segment_len,
+					},
 				..
 			} => {
 				assert_eq!(segment, ValueSegment::Constant);
@@ -881,11 +879,15 @@ mod tests {
 			.push(ZeroConstraint::plain([ValueIndex::constant(0), ValueIndex::private(100)]));
 
 		match cs.validate().unwrap_err() {
-			ConstraintSystemError::OutOfRangeValueIndex {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				operand_name,
-				value_index,
-				segment_len,
+				source:
+					OperandFault::OutOfRangeValueIndex {
+						value_index,
+						segment_len,
+						..
+					},
 				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::Zero);
@@ -935,11 +937,15 @@ mod tests {
 		assert!(result.is_err(), "Should reject constraint with out-of-range index");
 
 		match result.unwrap_err() {
-			ConstraintSystemError::OutOfRangeValueIndex {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				operand_name,
-				value_index,
-				segment_len,
+				source:
+					OperandFault::OutOfRangeValueIndex {
+						value_index,
+						segment_len,
+						..
+					},
 				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
@@ -967,11 +973,15 @@ mod tests {
 		assert!(result.is_err(), "Should reject IMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
-			ConstraintSystemError::OutOfRangeValueIndex {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				operand_name,
-				value_index,
-				segment_len,
+				source:
+					OperandFault::OutOfRangeValueIndex {
+						value_index,
+						segment_len,
+						..
+					},
 				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::Imul);
@@ -1001,11 +1011,15 @@ mod tests {
 		assert!(result.is_err(), "Should reject BMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
-			ConstraintSystemError::OutOfRangeValueIndex {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				operand_name,
-				value_index,
-				segment_len,
+				source:
+					OperandFault::OutOfRangeValueIndex {
+						value_index,
+						segment_len,
+						..
+					},
 				..
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::Bmul);
@@ -1038,12 +1052,15 @@ mod tests {
 		));
 
 		match cs.validate().unwrap_err() {
-			ConstraintSystemError::ShiftAmountTooLarge {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				constraint_index,
 				operand_name,
-				shift_amount,
-				max_amount,
+				source:
+					OperandFault::ShiftAmountTooLarge {
+						shift_amount,
+						max_amount,
+					},
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
 				assert_eq!(constraint_index, 0);
@@ -1078,12 +1095,15 @@ mod tests {
 		));
 
 		match cs.validate().unwrap_err() {
-			ConstraintSystemError::ShiftAmountTooLarge {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				constraint_index,
 				operand_name,
-				shift_amount,
-				max_amount,
+				source:
+					OperandFault::ShiftAmountTooLarge {
+						shift_amount,
+						max_amount,
+					},
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
 				assert_eq!(constraint_index, 0);
@@ -1111,10 +1131,11 @@ mod tests {
 		));
 
 		match cs.validate().unwrap_err() {
-			ConstraintSystemError::NonCanonicalShiftSequence {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				constraint_index,
 				operand_name,
+				source: OperandFault::NonCanonicalShiftSequence,
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
 				assert_eq!(constraint_index, 0);
@@ -1140,11 +1161,11 @@ mod tests {
 		));
 
 		match cs.validate().unwrap_err() {
-			ConstraintSystemError::CollapsibleShiftSequence {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				constraint_index,
 				operand_name,
-				composition,
+				source: OperandFault::CollapsibleShiftSequence { composition },
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
 				assert_eq!(constraint_index, 0);
@@ -1172,11 +1193,11 @@ mod tests {
 		));
 
 		match cs.validate().unwrap_err() {
-			ConstraintSystemError::CollapsibleShiftSequence {
+			ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				constraint_index,
 				operand_name,
-				composition,
+				source: OperandFault::CollapsibleShiftSequence { composition },
 			} => {
 				assert_eq!(constraint_kind, ConstraintKind::And);
 				assert_eq!(constraint_index, 0);

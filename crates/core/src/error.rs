@@ -2,62 +2,88 @@
 // Copyright 2026 The Binius Developers
 //! Hosts error definitions for the core crate.
 
+use std::fmt;
+
 use crate::constraint_system::{Composition, ConstraintKind, ValueSegment};
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
 #[derive(Debug, thiserror::Error)]
 pub enum ConstraintSystemError {
-	#[error(
-		"{constraint_kind} #{constraint_index} uses non canonical shift in its {operand_name} operand"
-	)]
-	NonCanonicalShift {
+	#[error("{constraint_kind} #{constraint_index} operand {operand_name} is malformed: {source}")]
+	ConstraintOperand {
 		constraint_kind: ConstraintKind,
 		constraint_index: usize,
 		operand_name: &'static str,
+		#[source]
+		source: OperandFault,
+	},
+	#[error("chip call #{call_index} has a malformed operand #{operand_index}: {source}")]
+	ChipCallOperand {
+		call_index: usize,
+		operand_index: usize,
+		#[source]
+		source: OperandFault,
+	},
+	#[error("{} calls chip {chip_id}, but the system has {n_chips} chips", ChipName(*chip_index))]
+	OutOfRangeChipId {
+		chip_index: Option<usize>,
+		chip_id: usize,
+		n_chips: usize,
 	},
 	#[error(
-		"{constraint_kind} #{constraint_index} puts a lone shift in the outer slot of its {operand_name} operand; the canonical form places it inner"
+		"{}'s call #{call_index} passes {arity} operands to chip {chip_id}, which has {n_inout} inout values",
+		ChipName(*chip_index)
 	)]
-	NonCanonicalShiftSequence {
-		constraint_kind: ConstraintKind,
-		constraint_index: usize,
-		operand_name: &'static str,
+	WrongCallArity {
+		chip_index: Option<usize>,
+		call_index: usize,
+		chip_id: usize,
+		arity: usize,
+		n_inout: usize,
 	},
-	#[error(
-		"{constraint_kind} #{constraint_index} uses a shift pair in its {operand_name} operand that composes to {composition:?} rather than staying a pair"
-	)]
-	CollapsibleShiftSequence {
-		constraint_kind: ConstraintKind,
-		constraint_index: usize,
-		operand_name: &'static str,
-		composition: Composition,
-	},
-	#[error(
-		"{constraint_kind} #{constraint_index} refers to a scratch value in its {operand_name} operand"
-	)]
-	ScratchValueIndex {
-		constraint_kind: ConstraintKind,
-		operand_name: &'static str,
-		constraint_index: usize,
-	},
-	#[error(
-		"{constraint_kind} #{constraint_index} uses shift amount n={shift_amount}>={max_amount} in {operand_name} operand"
-	)]
+	#[error("chip #{chip_index} calls chip {callee}, which is not a later chip")]
+	CallOutOfOrder { chip_index: usize, callee: usize },
+}
+
+/// Names the chip of an M4 system that a diagnostic is about: `chip #3`, or `the main chip`.
+///
+/// The main chip is not one of the numbered chips, so it has no index. The frontend's circuit form
+/// numbers its chips the same way, so its diagnostics name them through this too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChipName(pub Option<usize>);
+
+impl fmt::Display for ChipName {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self.0 {
+			Some(chip_index) => write!(f, "chip #{chip_index}"),
+			None => f.write_str("the main chip"),
+		}
+	}
+}
+
+/// The way one term of an operand is malformed, said without naming where the operand sits.
+///
+/// A diagnostic pairs this with the position of the operand it checked, which differs between a
+/// constraint and a chip call.
+#[allow(missing_docs)] // errors are self-documenting
+#[derive(Debug, thiserror::Error)]
+pub enum OperandFault {
+	#[error("the shift is not canonical")]
+	NonCanonicalShift,
+	#[error("the shift amount n={shift_amount}>={max_amount}")]
 	ShiftAmountTooLarge {
-		constraint_kind: ConstraintKind,
-		constraint_index: usize,
-		operand_name: &'static str,
 		shift_amount: usize,
 		max_amount: usize,
 	},
-	#[error(
-		"{constraint_kind} #{constraint_index} refers to out-of-range value index in {operand_name} operand ({segment:?} index {value_index} >= segment length {segment_len})"
-	)]
+	#[error("a lone shift sits in the outer slot; the canonical form places it inner")]
+	NonCanonicalShiftSequence,
+	#[error("a shift pair composes to {composition:?} rather than staying a pair")]
+	CollapsibleShiftSequence { composition: Composition },
+	#[error("it refers to a scratch value")]
+	ScratchValueIndex,
+	#[error("it refers to {segment:?} index {value_index} >= segment length {segment_len}")]
 	OutOfRangeValueIndex {
-		constraint_kind: ConstraintKind,
-		constraint_index: usize,
-		operand_name: &'static str,
 		segment: ValueSegment,
 		value_index: u32,
 		segment_len: usize,
@@ -158,5 +184,73 @@ pub enum VerificationError {
 		constraint_index: usize,
 		/// The relation that failed, carrying the words that failed it.
 		source: ConstraintViolation,
+	},
+}
+
+/// Names the chip instance an M4 diagnostic blames a call on, by chip index and instance.
+///
+/// The main chip runs once, so only a numbered chip's instance is worth naming. Unlike
+/// [`ChipName`], nothing outside this module names a caller, so this stays private to it.
+struct CallerName(Option<(usize, usize)>);
+
+impl fmt::Display for CallerName {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self.0 {
+			Some((chip_index, instance)) => write!(f, "chip #{chip_index} instance #{instance}"),
+			None => f.write_str("the main chip"),
+		}
+	}
+}
+
+/// Reason a witness fails to satisfy an M4 constraint system.
+///
+/// A witness is the main chip's value vector and one list of instance value vectors per chip.
+/// It must satisfy every chip's local constraints on every instance, and serve every chip call
+/// with the instance at the call's position.
+#[allow(missing_docs)] // errors are self-documenting
+#[derive(Debug, thiserror::Error)]
+pub enum VerificationM4Error {
+	#[error("the witness covers {n_witness_chips} chips, but the system has {n_chips}")]
+	WrongChipCount {
+		n_witness_chips: usize,
+		n_chips: usize,
+	},
+	#[error("the main chip is not satisfied: {0}")]
+	Main(#[from] VerificationError),
+	#[error("chip #{chip_id} instance #{instance} is not satisfied: {source}")]
+	ChipInstance {
+		chip_id: usize,
+		instance: usize,
+		#[source]
+		source: VerificationError,
+	},
+	#[error("chip #{chip_id} has {n_instances} instances, fewer than its {n_active} active ones")]
+	MissingInstances {
+		chip_id: usize,
+		n_instances: usize,
+		n_active: usize,
+	},
+	#[error(
+		"{n_invocations} invocations reach chip #{chip_id}, which has {n_active} active instances"
+	)]
+	WrongInvocationCount {
+		chip_id: usize,
+		n_invocations: usize,
+		n_active: usize,
+	},
+	#[error(
+		"call #{call_index} of {} reaches chip #{chip_id} as invocation #{row}, passing {passed:016x} \
+		 as inout value {word}, but the instance holds {served:016x}",
+		CallerName(*caller)
+	)]
+	CallMismatch {
+		chip_id: usize,
+		row: usize,
+		/// The calling chip instance, or `None` for the main chip.
+		caller: Option<(usize, usize)>,
+		call_index: usize,
+		word: usize,
+		passed: u64,
+		served: u64,
 	},
 }

@@ -149,6 +149,7 @@ pub struct Circuit {
 	constraint_system: ConstraintSystem,
 	value_vec_layout: ValueVecLayout,
 	wire_mapping: SecondaryMap<Wire, ValueIndex>,
+	inout: Vec<Wire>,
 	eval_form: EvalForm,
 	scratch_peak_live: usize,
 }
@@ -161,6 +162,7 @@ impl Circuit {
 		constraint_system: ConstraintSystem,
 		value_vec_layout: ValueVecLayout,
 		wire_mapping: SecondaryMap<Wire, ValueIndex>,
+		inout: Vec<Wire>,
 		eval_form: EvalForm,
 		scratch_peak_live: usize,
 	) -> Self {
@@ -169,9 +171,24 @@ impl Circuit {
 			constraint_system,
 			value_vec_layout,
 			wire_mapping,
+			inout,
 			eval_form,
 			scratch_peak_live,
 		}
+	}
+
+	/// Returns the wires forming the circuit's public interface, in inout segment order.
+	///
+	/// Inout value `i` of the value vector is the word wire `inout()[i]` holds, so this is the
+	/// reverse of [`Self::witness_index`] over that segment. A caller assembling the positional
+	/// public-input vector a verifier takes reads it straight off this slice.
+	///
+	/// The segment is ordered by wire creation, so a wire promoted with
+	/// [`CircuitBuilder::mark_inout`](super::CircuitBuilder::mark_inout) follows the declared inout
+	/// wires only if its gate created it later; among promotions the order is the one their gates
+	/// ran in, not the order they were promoted in.
+	pub fn inout(&self) -> &[Wire] {
+		&self.inout
 	}
 
 	/// Returns the smallest scratch segment this circuit could run with.

@@ -9,6 +9,11 @@ pub struct Assignment {
 	pub wire_mapping: SecondaryMap<Wire, ValueIndex>,
 	pub value_vec_layout: ValueVecLayout,
 	pub constants: Vec<Word>,
+	/// The inout wires in segment order, so inout value `i` is the word `inout[i]` holds.
+	///
+	/// `wire_mapping` only looks up a wire, so this is the way back from a position to the wire
+	/// at it.
+	pub inout: Vec<Wire>,
 }
 
 /// A structure that provides you assignments of value indices for wires and get a
@@ -95,7 +100,7 @@ impl Alloc {
 			wire_mapping[wire] = ValueIndex::constant(index as u32);
 			constants.push(value);
 		}
-		for (index, wire) in self.w_inout.into_iter().enumerate() {
+		for (index, &wire) in self.w_inout.iter().enumerate() {
 			wire_mapping[wire] = ValueIndex::inout(index as u32);
 		}
 		for (index, wire) in self
@@ -128,6 +133,7 @@ impl Alloc {
 			wire_mapping,
 			value_vec_layout,
 			constants,
+			inout: self.w_inout,
 		}
 	}
 }
