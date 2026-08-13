@@ -80,6 +80,20 @@
 //! So both can run as one `(m-1)`-variable sumcheck followed by one shared line-fold.
 //! That yields a single evaluation point, collapsing the two `Y` evaluations into one.
 //!
+//! # Transparent tables
+//!
+//! A transparent (succinct) table is one the verifier evaluates itself, without a commitment.
+//! Against such a table the product sumcheck is not needed at all.
+//! Both of the claims it would reduce are linear relations on the one multilinear `Y`:
+//!
+//! ```text
+//!     <Y, eq_z> = Y(z)      the fractional-addition leaf claim
+//!     <Y, T>    = e         the product claim
+//! ```
+//!
+//! A caller holding `Y` as a committed oracle opens the two together against that one commitment.
+//! [`verify_reduction_transparent`] stops the reduction there and hands both claims back.
+//!
 //! # Soundness
 //!
 //! - The logUp identity for a random `c` catches a wrong `Y` except with probability `(n + m) /
@@ -114,6 +128,6 @@ mod verify;
 
 pub use self::{
 	error::{Error, VerificationError},
-	output::{LogupOutput, LogupTableOutput},
-	verify::{LookerClaim, TableLookup, verify_reduction},
+	output::{LogupOutput, LogupTableOutput, LogupTransparentOutput, LogupTransparentTableOutput},
+	verify::{LookerClaim, TableLookup, verify_reduction, verify_reduction_transparent},
 };

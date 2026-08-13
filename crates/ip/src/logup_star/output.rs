@@ -41,3 +41,44 @@ pub struct LogupTableOutput<F> {
 	/// order, each at that looker's own suffix of [`LogupOutput::index_eval_point`].
 	pub index_eval_claims: Vec<F>,
 }
+
+/// The open claims of a logUp* verification that leaves the table side unclosed.
+///
+/// This is what the reduction holds before the pushforward sumcheck runs.
+/// Each table keeps two claims on its pushforward and none on the table itself:
+///
+/// ```text
+///     <Y_t, eq_{z_t}> = Y_t(z_t)      the fractional-addition leaf claim
+///     <Y_t, T_t>      = e_t           the product claim
+/// ```
+///
+/// See [`super::verify_reduction_transparent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogupTransparentOutput<F> {
+	/// The point the index evaluation claims are drawn from, of `max n` coordinates.
+	///
+	/// A looker whose column has `n` variables is claimed at the **last `n`** coordinates, exactly
+	/// as in [`LogupOutput::index_eval_point`].
+	pub index_eval_point: Vec<F>,
+	/// One entry per table, in the order the tables were given.
+	pub tables: Vec<LogupTransparentTableOutput<F>>,
+}
+
+/// The open claims belonging to one table whose table side is left unclosed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogupTransparentTableOutput<F> {
+	/// The fractional-addition leaf point `z_t`, of this table's own `m_t` coordinates.
+	pub pushforward_eval_point: Vec<F>,
+	/// The leaf claim `Y_t(z_t)` on this table's pushforward.
+	pub pushforward_eval_claim: F,
+	/// The product claim `e_t = <T_t, Y_t>`, an inner product over this table's `m_t`-variable
+	/// cube.
+	///
+	/// It is the gamma-combination of the claims of the lookers that read this table.
+	/// The reduction never reads a table, so this claim arrives unchecked: opening it is what
+	/// proves the lookups.
+	pub product_claim: F,
+	/// The claimed evaluations of this table's lookers' index multilinears `I`, in its own looker
+	/// order, each at that looker's own suffix of [`LogupTransparentOutput::index_eval_point`].
+	pub index_eval_claims: Vec<F>,
+}
