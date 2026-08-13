@@ -312,25 +312,27 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	let g = build_combined_g();
 	let oblong_weights = lagrange_evals(&subspace, prepared.bitand.r_zhat_prime);
-	let h = shift_operator_table::<F, P, _>(&GlobalAllocator, oblong_weights.as_ref());
 	let Phase1Output {
 		r_j,
-		r_s,
-		r_v,
+		r_s_inner,
+		r_v_inner,
+		r_s_outer,
+		r_v_outer,
+		psi: _,
 		gamma,
 		g_eval: _,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
 		run_phase_1_sumcheck::<F, P, _, _>(
 			g.clone(),
-			h.clone(),
+			oblong_weights.as_ref(),
 			prepared.batched_eval(),
 			&mut transcript,
 			&GlobalAllocator,
 		)
 	};
-	// The bit-index phase's rounds are not benchmarked; phase 4 only needs the scalar they reduce
-	// the two bit-index factors to, so a stand-in value serves.
+	// The bit-index phases' rounds are not benchmarked; the last phase only needs the scalar they
+	// reduce their factors to, so a stand-in value serves.
 	let shift_ind_eval = F::random(&mut rng);
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
@@ -340,15 +342,17 @@ fn bench_shift_phases(c: &mut Criterion) {
 		&key_collection,
 		&prepared,
 		shift_ind_eval,
-		&r_s,
-		&r_v,
+		&r_s_inner,
+		&r_v_inner,
+		&r_s_outer,
+		&r_v_outer,
 	);
 
 	let mut group = c.benchmark_group("shift_reduction_phases");
 	group.sample_size(10);
 
 	// Phase 1. `build_g` / `shift_operator_table` take their inputs by reference, so no
-	// per-iteration clone is needed; `run_phase_1_sumcheck` consumes `g`/`h` by value.
+	// per-iteration clone is needed; `run_phase_1_sumcheck` consumes `g` by value.
 	group.bench_function("phase1_build_g_parts", |b| {
 		b.iter(&build_combined_g);
 	});
@@ -357,12 +361,12 @@ fn bench_shift_phases(c: &mut Criterion) {
 	});
 	group.bench_function("phase1_run_sumcheck", |b| {
 		b.iter_batched(
-			|| (g.clone(), h.clone()),
-			|(g, h)| {
+			|| g.clone(),
+			|g| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
 				run_phase_1_sumcheck::<F, P, _, _>(
 					g,
-					h,
+					oblong_weights.as_ref(),
 					prepared.batched_eval(),
 					&mut transcript,
 					&GlobalAllocator,
@@ -381,8 +385,10 @@ fn bench_shift_phases(c: &mut Criterion) {
 				&key_collection,
 				&prepared,
 				shift_ind_eval,
-				&r_s,
-				&r_v,
+				&r_s_inner,
+				&r_v_inner,
+				&r_s_outer,
+				&r_v_outer,
 			)
 		});
 	});

@@ -23,7 +23,7 @@ use binius_utils::rayon::{
 	prelude::*,
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
-use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
+use binius_verifier::protocols::shift::LOG_SHIFT_COUNT;
 use bytemuck::zeroed_vec;
 use itertools::izip;
 use tracing::instrument;
@@ -33,20 +33,27 @@ use super::{
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment},
 	monster::shift_operator_table,
+	outer::OuterShiftStage,
 };
 
-/// The number of variables in the g (and h) multilinear of phase 1.
+/// The number of variables the shift-and-bit phases of the reduction span.
 ///
-/// The axes run, from the low index positions up: the bit position within a word, the shift
-/// amount, and the shift variant.
-pub const PHASE_1_LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS + LOG_SHIFT_VARIANT_COUNT;
+/// The axes run, from the low index positions up: the bit position within a word, then the inner
+/// shift slot, then the outer one. The `g` multilinear spans all of them; no single table the
+/// prover forms does, which is what the outer rounds exist to avoid.
+pub const PHASE_1_LOG_LEN: usize = Word::LOG_BITS + LOG_SHIFT_ROWS;
 
 /// The number of variables of the phase-1 multilinears that index the shift.
 ///
-/// Both multilinears hold one row of `Word::BITS` scalars per `(shift variant, shift amount)`
-/// pair, the bit position running within a row. These are the variables above that row: the shift
-/// amount, then the shift variant.
-pub const LOG_SHIFT_ROWS: usize = PHASE_1_LOG_LEN - Word::LOG_BITS;
+/// A term names a sequence of two shifts, so the row axis is two slots wide. It is indexed
+/// **outer-major**, since the rounds peel the outer shift first.
+pub const LOG_SHIFT_ROWS: usize = 2 * LOG_SHIFT_COUNT;
+
+/// The number of variables one shift operator table spans.
+///
+/// Such a table holds one row of `Word::BITS` weights per `(variant, amount)` pair of a single
+/// slot, the bit position running within a row.
+pub const SHIFT_OPERATOR_LOG_LEN: usize = Word::LOG_BITS + LOG_SHIFT_COUNT;
 
 /// What phase 1 leaves the phases after it: its sumcheck's challenge point, split into the axes
 /// it binds, and the two evaluations it reduced to.
@@ -54,27 +61,37 @@ pub const LOG_SHIFT_ROWS: usize = PHASE_1_LOG_LEN - Word::LOG_BITS;
 pub struct Phase1Output<F> {
 	/// The bit position within a word.
 	pub r_j: Vec<F>,
-	/// The shift amount.
-	pub r_s: Vec<F>,
-	/// The shift variant, called the operation in the paper.
-	pub r_v: Vec<F>,
+	/// The inner shift's amount.
+	pub r_s_inner: Vec<F>,
+	/// The inner shift's variant, called the operation in the paper.
+	pub r_v_inner: Vec<F>,
+	/// The outer shift's amount.
+	pub r_s_outer: Vec<F>,
+	/// The outer shift's variant.
+	pub r_v_outer: Vec<F>,
+	/// The oblong weights carried through the outer shift, at the outer challenge point.
+	///
+	/// This is the terminal fold of the outer rounds' table, and it is the weight vector the
+	/// rounds binding the intermediate bit index run against.
+	pub psi: Vec<F>,
 	/// The evaluation claim the next phase proves, called gamma in the paper: the product of the
 	/// two evaluations below.
 	pub gamma: F,
-	/// `g(r_j, r_s, r_v)`, the sum over the word index of the constraint matrix against the
-	/// witness. It is the scalar the bit-index phase carries through its rounds, so the sum never
-	/// has to be formed a second time.
+	/// `g` at the bound shift and bit point, the sum over the word index of the constraint matrix
+	/// against the witness. It is the scalar the bit-index phases carry through their rounds, so
+	/// the sum never has to be formed a second time.
 	pub g_eval: F,
 }
 
 /// Proves the first phase of the shift reduction.
 ///
-/// Builds the g and h multilinears and runs one sumcheck over their product.
+/// Builds the g multilinear and runs one sumcheck over its product with `h`, which is never formed
+/// as a table — see [`run_phase_1_sumcheck`].
 ///
 /// # Arguments
 ///
 /// - `oblong_weights`: the oblong weights of the reduction's first factor, one per bit position.
-///   `h` is those weights pushed through every shift.
+///   `h` is those weights pushed through both shift slots.
 #[instrument(skip_all, name = "prover_phase_1")]
 pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
@@ -99,9 +116,7 @@ where
 		(&hidden, &key_collection.hidden.dense_shift_enc),
 	]);
 
-	let h = shift_operator_table(alloc, oblong_weights);
-
-	run_phase_1_sumcheck(g, h, prepared.batched_eval(), channel, alloc)
+	run_phase_1_sumcheck::<_, P, _, _>(g, oblong_weights, prepared.batched_eval(), channel, alloc)
 }
 
 /// The number of packed elements one row of `Word::BITS` scalars occupies.
@@ -308,12 +323,15 @@ impl<'alloc, A: Allocator, F: Field, P: PackedField<Scalar = F>>
 {
 	/// Creates a prover for the claim that `g * h` sums to `sum` over the hypercube.
 	///
+	/// The outer shift slot is already bound by the time this runs, so `h` is the shift operator
+	/// over the weights those rounds left behind, and `g`'s remaining row index is the inner slot.
+	///
 	/// # Panics
 	///
-	/// Panics unless `g` and `h` both span the whole phase-1 hypercube.
+	/// Panics unless `g` and `h` both span one shift slot and the bit position.
 	pub fn new(g: SparseShiftRows<P>, h: FieldVec<P, A>, sum: F, alloc: &'alloc A) -> Self {
-		assert_eq!(h.log_len(), PHASE_1_LOG_LEN, "h spans the whole phase-1 hypercube");
-		assert_eq!(g.log_rows(), LOG_SHIFT_ROWS, "g spans the whole shift space");
+		assert_eq!(h.log_len(), SHIFT_OPERATOR_LOG_LEN, "h spans one shift slot");
+		assert_eq!(g.log_rows(), LOG_SHIFT_COUNT, "g's rows span one shift slot");
 
 		Self {
 			alloc,
@@ -406,15 +424,29 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 /// Runs the phase 1 sumcheck protocol for shift constraint verification.
 ///
 /// One sumcheck over the product of `g` and `h`, multilinears of [`PHASE_1_LOG_LEN`] variables,
-/// driven by [`Phase1SumcheckProver`]. The shift variant is the high
-/// [`LOG_SHIFT_VARIANT_COUNT`] variables of each, so the sumcheck folds the variant axis rather
-/// than the prover summing a separate claim per variant.
+/// binding the outer shift slot, then the inner one, then the bit position. Each slot's variant is
+/// the high
+/// [`LOG_SHIFT_VARIANT_COUNT`](binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT)
+/// variables of its run, so the sumcheck folds the variant axis rather than the prover summing a
+/// separate claim per variant.
 ///
-/// The `g` multilinear carries the witness and the batching randomness; `h` encodes what each
-/// shift does at the univariate challenge point.
+/// The `g` multilinear carries the witness and the batching randomness; `h` says what each shift
+/// *sequence* does at the univariate challenge point. A table of `h` would hold `2^24` entries and
+/// is never formed:
+///
+/// - The [`LOG_SHIFT_COUNT`] rounds binding the outer slot run against [`OuterShiftStage`], which
+///   derives each live row from a folded `2^15` table one slice at a time.
+/// - Those rounds leave the weights `psi`, and `h` over what remains is the shift operator applied
+///   to them — a `2^15` table, which the remaining rounds fold as an ordinary multilinear through
+///   [`Phase1SumcheckProver`].
+///
+/// The outer rounds are driven here rather than folded into [`Phase1SumcheckProver`] because
+/// `prove_single` consumes its prover, and `psi` has to outlive it: the rounds binding the
+/// intermediate bit index run against those same weights.
 ///
 /// # Arguments
 ///
+/// - `oblong_weights`: the oblong weights of the reduction's first factor, one per bit position.
 /// - `sum`: the claim being proved, as the operations' batched evaluations give it. This is the
 ///   same value the verifier feeds its own sumcheck, so the prover proves the statement it was
 ///   handed rather than whatever `g · h` happens to come to.
@@ -426,32 +458,57 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 ///
 /// # Returns
 ///
-/// `SumcheckOutput` containing the challenge vector and the final evaluation `gamma`.
+/// The challenge point split into the axes the rounds bound, the weights the next phase runs
+/// against, and the evaluations this one reduced to.
 #[instrument(skip_all, name = "run_sumcheck")]
 pub fn run_phase_1_sumcheck<
-	F: Field,
+	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 >(
-	g: SparseShiftRows<P>,
-	h: FieldVec<P, A>,
+	mut g: SparseShiftRows<P>,
+	oblong_weights: &[F],
 	sum: F,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> Phase1Output<F> {
+	assert_eq!(g.log_rows(), LOG_SHIFT_ROWS, "g's rows span both shift slots");
+
+	// The rounds binding the outer slot, driven a round at a time.
+	let mut outer = OuterShiftStage::new(alloc, oblong_weights);
+	let mut claim = sum;
+	let mut outer_point = Vec::with_capacity(LOG_SHIFT_COUNT);
+	for _ in 0..LOG_SHIFT_COUNT {
+		let round_coeffs = outer.round_coeffs(&g, claim);
+		channel.send_many(round_coeffs.clone().truncate().coeffs());
+		let challenge = channel.sample();
+		claim = round_coeffs.evaluate(&challenge);
+		outer.fold(challenge);
+		g.fold(challenge);
+		outer_point.push(challenge);
+	}
+	let psi = outer.psi().to_vec();
+
+	// What is left is one shift slot and the bit position, against the operator over those weights.
+	let h = shift_operator_table(alloc, &psi);
 	let ProveSingleOutput {
 		multilinear_evals,
 		mut challenges,
-	} = prove_single(Phase1SumcheckProver::new(g, h, sum, alloc), channel);
-	// Reverse the challenges into the evaluation point, then split it into the axes the rounds
-	// bound: the bit position within a word, then the shift amount, then the shift variant, in
-	// increasing order of significance.
+	} = prove_single(Phase1SumcheckProver::new(g, h, claim, alloc), channel);
+
+	// Reverse each run of challenges into its evaluation point, whose coordinates then run in
+	// increasing order of significance: the bit position within a word, then the inner shift slot's
+	// amount and variant, then the outer slot's.
 	challenges.reverse();
-	assert_eq!(challenges.len(), PHASE_1_LOG_LEN);
+	assert_eq!(challenges.len(), SHIFT_OPERATOR_LOG_LEN);
 	let mut r_j = challenges;
-	let r_v = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s = r_j.split_off(Word::LOG_BITS);
+	let r_v_inner = r_j.split_off(Word::LOG_BITS * 2);
+	let r_s_inner = r_j.split_off(Word::LOG_BITS);
+
+	outer_point.reverse();
+	let mut r_s_outer = outer_point;
+	let r_v_outer = r_s_outer.split_off(Word::LOG_BITS);
 
 	let [g_eval, h_eval] = multilinear_evals
 		.try_into()
@@ -459,8 +516,11 @@ pub fn run_phase_1_sumcheck<
 
 	Phase1Output {
 		r_j,
-		r_s,
-		r_v,
+		r_s_inner,
+		r_v_inner,
+		r_s_outer,
+		r_v_outer,
+		psi,
 		gamma: g_eval * h_eval,
 		g_eval,
 	}
@@ -662,24 +722,14 @@ mod tests {
 	type F = BinaryField128bGhash;
 
 	impl<P: PackedField> SparseShiftRows<P> {
-		/// Spreads the rows over the full shift space, as a dense multilinear of
-		/// [`PHASE_1_LOG_LEN`] variables. Rows at a repeated index add up; every row the system
-		/// does not name stays zero.
+		/// Spreads the rows over the space they still span, as a dense multilinear. Rows at a
+		/// repeated index add up; every row the system does not name stays zero.
 		///
 		/// The prover never needs this — [`Phase1SumcheckProver`] reads the rows where they are.
 		/// It is the dense `g` these tests measure the sparse rounds against.
-		///
-		/// ## Preconditions
-		///
-		/// * `self.log_rows() == LOG_SHIFT_ROWS`, so the rows still span the whole shift space
 		fn scatter<A: Allocator>(&self, alloc: &A) -> FieldVec<P, A> {
-			assert_eq!(
-				self.log_rows, LOG_SHIFT_ROWS,
-				"precondition: no row-index variable is bound"
-			);
-
 			let row_len = row_len::<P>();
-			let mut g = FieldBuffer::zeros_in(alloc, PHASE_1_LOG_LEN);
+			let mut g = FieldBuffer::zeros_in(alloc, self.log_rows + Word::LOG_BITS);
 			for (index, row) in self.rows() {
 				// A row is a whole number of packed elements, so it lands at row alignment.
 				let slots = &mut g.as_mut()[index * row_len..][..row_len];
@@ -743,8 +793,9 @@ mod tests {
 			(&hidden, &key_collection.hidden.dense_shift_enc),
 		]);
 
-		// The public segment's two shifts, then the hidden segment's three. `(Sll, 0)` is the first
-		// row of both, so index 0 appears twice.
+		// The public segment's two shifts, then the hidden segment's three. Every term here is
+		// singly shifted, so its outer slot is the identity and its quadruple index is its inner
+		// shift's. `(Sll, 0)` is the first row of both segments, so index 0 appears twice.
 		let row_index = |shift: Shift| shift.index() as u32;
 		assert_eq!(
 			g.indices,
@@ -764,50 +815,82 @@ mod tests {
 		}
 
 		// Where `g` is read, the two rows at the identity add up.
-		let dense = g.scatter(&GlobalAllocator);
-		let at = |shift: Shift| dense.get(shift.index() * Word::BITS);
+		let at = |shift: Shift| {
+			g.rows()
+				.filter(|&(index, _)| index == shift.index())
+				.map(|(_, row)| row[0])
+				.sum::<F>()
+		};
 		assert_eq!(at(Shift::IDENTITY), F::new(0x100) + F::new(0x200));
 		assert_eq!(at(Shift::srl(3)), F::new(0x101));
 		assert_eq!(at(Shift::sar(7)), F::new(0x201));
 		assert_eq!(at(Shift::rotr(1)), F::new(0x202));
 	}
 
+	/// A sequence is placed outer-major, so the outer slot lands where the first rounds bind it.
+	#[test]
+	fn a_sequence_is_keyed_outer_major() {
+		let hidden = ValueIndex::private(1);
+		let sequence = [Shift::srl(3), Shift::sll(5)];
+		let cs = ConstraintSystem {
+			constants: vec![Word::ZERO; 4],
+			n_inout: 0,
+			n_private: 4,
+			zero_constraints: Vec::new(),
+			and_constraints: vec![AndConstraint([
+				vec![ShiftedValueIndex::new(hidden, sequence)],
+				Vec::new(),
+				Vec::new(),
+			])],
+			imul_constraints: Vec::new(),
+			bmul_constraints: Vec::new(),
+		};
+
+		let key_collection = build_key_collection(&cs, InoutSegment::Public);
+		let [inner, outer] = sequence;
+		assert_eq!(
+			key_collection
+				.hidden
+				.dense_shift_enc
+				.shift_indices()
+				.collect::<Vec<_>>(),
+			[outer.index() << LOG_SHIFT_COUNT | inner.index()]
+		);
+	}
+
 	/// The scatter puts every row where its shift index names, and leaves the rest zero.
+	///
+	/// The outer rounds are past by the time the dense reference below is taken, so the rows span
+	/// one shift slot here rather than the quadruple `from_segments` keys on.
 	#[test]
 	fn scatter_places_rows_at_their_shift_index() {
-		let key_collection =
-			build_key_collection(&overlapping_shift_system(), InoutSegment::Public);
-		let hidden_enc = &key_collection.hidden.dense_shift_enc;
-
-		// One non-zero row per shift the hidden segment names, and an empty public segment.
-		let hidden = (0..hidden_enc.len() * Word::BITS)
+		let indices = [Shift::IDENTITY, Shift::sar(7), Shift::rotr(1)]
+			.map(|shift| shift.index() as u32)
+			.to_vec();
+		let values = (0..indices.len() * Word::BITS)
 			.map(|i| F::new(1 + (i / Word::BITS) as u128))
 			.collect::<Vec<F>>();
-		let merged = SparseShiftRows::<F>::from_segments([
-			(&[], &DenseShiftEncoding::default()),
-			(&hidden, hidden_enc),
-		]);
+		let rows = SparseShiftRows::<F>::new(indices.clone(), values, LOG_SHIFT_COUNT);
 
-		let g = merged.scatter(&binius_compute::GlobalAllocator);
-		assert_eq!(g.log_len(), PHASE_1_LOG_LEN);
+		let g = rows.scatter(&GlobalAllocator);
+		assert_eq!(g.log_len(), SHIFT_OPERATOR_LOG_LEN);
 
-		// Exactly the named rows are non-zero, and each holds what the merged list held.
-		for (row, shift_index) in hidden_enc.shift_indices().enumerate() {
-			let offset = shift_index * Word::BITS;
+		// Exactly the named rows are non-zero, and each holds what the list held.
+		for (row, &shift_index) in indices.iter().enumerate() {
+			let offset = shift_index as usize * Word::BITS;
 			for bit in 0..Word::BITS {
 				assert_eq!(g.get(offset + bit), F::new(1 + row as u128));
 			}
 		}
-		let named = hidden_enc.shift_indices().collect::<Vec<_>>();
-		for row in (0..1 << LOG_SHIFT_ROWS).filter(|row| !named.contains(row)) {
+		for row in (0..1 << LOG_SHIFT_COUNT).filter(|row| !indices.contains(&(*row as u32))) {
 			assert!((0..Word::BITS).all(|bit| g.get(row * Word::BITS + bit) == F::ZERO));
 		}
 	}
 
-	/// Runs the phase-1 sumcheck the dense way: one bivariate-product prover over the scattered
-	/// `g` and the whole of `h`, with no round of it special-cased.
+	/// Runs the sparse row and bit rounds the dense way: one bivariate-product prover over the
+	/// scattered `g` and the whole of `h`, with no round of it special-cased.
 	///
-	/// This is what [`run_phase_1_sumcheck`] replaces, kept here as the reference its round
+	/// This is what [`Phase1SumcheckProver`] replaces, kept here as the reference its round
 	/// messages have to reproduce.
 	fn run_dense_reference<P: PackedField<Scalar = F>>(
 		g: &SparseShiftRows<P>,
@@ -831,9 +914,10 @@ mod tests {
 		(challenges, g_eval * h_eval)
 	}
 
-	/// The phase-1 `g` and `h` of a constraint system, from pseudo-random weights.
+	/// The `g` and `h` the row and bit rounds run over, from pseudo-random weights.
 	///
-	/// `g`'s rows carry arbitrary values rather than ones a witness produces: the sumcheck is a
+	/// The outer rounds are past by this point, so `g`'s rows sit at the inner shift each sequence
+	/// names. They carry arbitrary values rather than ones a witness produces: the sumcheck is a
 	/// statement about whatever multilinears it is handed, so what the rows hold does not bear on
 	/// whether the sparse rounds reproduce the dense ones.
 	fn phase_1_multilinears<P: PackedField<Scalar = F>>(
@@ -843,17 +927,15 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(seed);
 		let key_collection = build_key_collection(cs, InoutSegment::Public);
 
-		let segment_rows = |enc: &DenseShiftEncoding, rng: &mut StdRng| {
-			(0..enc.len() * row_len::<P>())
-				.map(|_| P::random(&mut *rng))
-				.collect::<Vec<P>>()
-		};
-		let public = segment_rows(&key_collection.public.dense_shift_enc, &mut rng);
-		let hidden = segment_rows(&key_collection.hidden.dense_shift_enc, &mut rng);
-		let g = SparseShiftRows::from_segments([
-			(&public, &key_collection.public.dense_shift_enc),
-			(&hidden, &key_collection.hidden.dense_shift_enc),
-		]);
+		let mut indices = Vec::new();
+		let mut values = Vec::new();
+		for segment in [&key_collection.public, &key_collection.hidden] {
+			for [inner, _] in segment.dense_shift_enc.iter() {
+				indices.push(inner.index() as u32);
+				values.extend((0..row_len::<P>()).map(|_| P::random(&mut rng)));
+			}
+		}
+		let g = SparseShiftRows::new(indices, values, LOG_SHIFT_COUNT);
 
 		// The weights `h` is built from are arbitrary here for the same reason `g`'s rows are.
 		let h = shift_operator_table(&GlobalAllocator, &random_scalars::<F>(&mut rng, Word::BITS));
@@ -872,22 +954,23 @@ mod tests {
 		let sum = inner_product_buffers(&g.scatter(&GlobalAllocator), &h);
 
 		let mut sparse_transcript = ProverTranscript::<StdChallenger>::default();
-		let sparse = run_phase_1_sumcheck::<F, P, _, _>(
-			g.clone(),
-			h.clone(),
-			sum,
+		let ProveSingleOutput {
+			multilinear_evals,
+			challenges: mut sparse_challenges,
+		} = prove_single(
+			Phase1SumcheckProver::new(g.clone(), h.clone(), sum, &GlobalAllocator),
 			&mut sparse_transcript,
-			&GlobalAllocator,
 		);
+		sparse_challenges.reverse();
+		let [g_eval, h_eval] = multilinear_evals
+			.try_into()
+			.expect("prover has 2 multilinear polynomials");
 
 		let mut dense_transcript = ProverTranscript::<StdChallenger>::default();
 		let (dense_challenges, dense_eval) = run_dense_reference(&g, h, sum, &mut dense_transcript);
 
-		// The sparse prover splits its challenge point into the axes the rounds bound; the dense
-		// reference leaves it whole.
-		let sparse_challenges = [sparse.r_j, sparse.r_s, sparse.r_v].concat();
 		assert_eq!(sparse_challenges, dense_challenges);
-		assert_eq!(sparse.gamma, dense_eval);
+		assert_eq!(g_eval * h_eval, dense_eval);
 		assert_eq!(sparse_transcript.finalize(), dense_transcript.finalize());
 	}
 

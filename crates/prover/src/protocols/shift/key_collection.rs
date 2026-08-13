@@ -12,9 +12,10 @@ use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
 	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
 };
+use binius_verifier::protocols::shift::LOG_SHIFT_COUNT;
 use bytes::{Buf, BufMut};
 
-use super::{DOUBLE_SHIFT_UNSUPPORTED, PreparedOperatorData};
+use super::PreparedOperatorData;
 
 /// Represents the type of operations handled by the shift protocol.
 ///
@@ -105,22 +106,20 @@ impl DenseShiftEncoding {
 		self.shifts.iter().copied()
 	}
 
-	/// Where the inner shift of every sequence the segment uses sits in the space one slot spans,
-	/// in dense index order.
+	/// Where every sequence the segment uses sits in the space two shift slots span, in dense index
+	/// order.
 	///
-	/// The reduction's row axis is one shift slot wide, so a sequence is placed by its inner shift.
-	/// The outer slot holds the identity on every sequence, so distinct sequences have distinct
-	/// inner shifts and the indices come out strictly increasing.
-	/// That is what lets two segments' encodings merge.
+	/// The reduction's row axis is two slots wide and its rounds peel the outer shift first, so a
+	/// sequence is placed **outer-major**: the outer slot's index above the inner slot's, which
+	/// puts the outer bits where the first rounds bind them.
 	///
-	/// # Panics
-	///
-	/// Panics in debug builds if a sequence carries a shift outside its inner slot.
+	/// Distinct sequences land on distinct indices, which is what lets two segments' encodings
+	/// merge. They do not come out ascending — the sequences are sorted by their inner slot first —
+	/// and nothing needs them to be.
 	pub fn shift_indices(&self) -> impl Iterator<Item = usize> + '_ {
-		self.shifts.iter().map(|&[inner, outer]| {
-			debug_assert!(outer.is_identity(), "{DOUBLE_SHIFT_UNSUPPORTED}");
-			inner.index()
-		})
+		self.shifts
+			.iter()
+			.map(|&[inner, outer]| outer.index() << LOG_SHIFT_COUNT | inner.index())
 	}
 
 	/// The dense index of one shift sequence, for lookup while the keys are built.
