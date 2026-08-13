@@ -92,15 +92,15 @@ pub fn circuit_xmss(
 	);
 
 	// Step 3: check the authentication path links the leaf to the committed root.
-	circuit_merkle_path(
+	let computed_root = circuit_merkle_path(
 		builder,
 		domain_param,
 		spec.domain_param_len,
 		&leaf_hash,
 		signature.epoch,
 		&signature.auth_path,
-		root_hash,
 	);
+	builder.assert_eq_v("xmss_merkle_root_check", computed_root, *root_hash);
 }
 
 #[cfg(test)]

@@ -1,14 +1,16 @@
 // Copyright 2025 Irreducible Inc.
+use std::array;
+
+use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::hashing::circuit_tree_hash;
-use crate::multiplexer::multi_wire_multiplex;
 
-/// Verifies a Merkle tree authentication path.
+/// Reconstructs a Merkle tree root from a leaf and its authentication path.
 ///
-/// This circuit verifies that a given leaf hash is part of a Merkle tree
-/// by reconstructing the path from leaf to root using the provided
-/// authentication path (sibling hashes).
+/// The circuit climbs one tree level per authentication-path sibling, ordering each pair by the
+/// corresponding bit of `leaf_index`. To verify membership, the caller compares the returned root
+/// against the committed one.
 ///
 /// # Arguments
 ///
@@ -19,11 +21,11 @@ use crate::multiplexer::multi_wire_multiplex;
 /// * `leaf_hash` - The leaf hash to verify (32 bytes as 4x64-bit LE wires)
 /// * `leaf_index` - Index of the leaf in the tree (as a wire)
 /// * `auth_path` - Authentication path: sibling hashes from leaf to root
-/// * `root_hash` - Expected root hash (32 bytes as 4x64-bit LE wires)
 ///
 /// # Returns
 ///
-/// Emits constraints only; the BLAKE3 node digests are derived from the inputs by the evaluator.
+/// The reconstructed root hash (32 bytes as 4x64-bit LE wires). The BLAKE3 node digests along the
+/// path are derived from the inputs by the evaluator.
 pub fn circuit_merkle_path(
 	builder: &CircuitBuilder,
 	domain_param: &[Wire],
@@ -31,8 +33,7 @@ pub fn circuit_merkle_path(
 	leaf_hash: &[Wire; 4],
 	leaf_index: Wire,
 	auth_path: &[[Wire; 4]],
-	root_hash: &[Wire; 4],
-) {
+) -> [Wire; 4] {
 	assert!(
 		domain_param_len <= domain_param.len() * 8,
 		"domain_param_len {} exceeds maximum capacity {} of domain_param wires",
@@ -40,45 +41,36 @@ pub fn circuit_merkle_path(
 		domain_param.len() * 8
 	);
 
-	let tree_height = auth_path.len();
-	let mut current_hash = *leaf_hash;
-	let mut current_index = leaf_index;
-	let one = builder.add_constant_64(1);
-
 	// Climb one tree level per authentication-path sibling.
-	for level in 0..tree_height {
-		let sibling_hash = auth_path[level];
+	auth_path
+		.iter()
+		.enumerate()
+		.fold(*leaf_hash, |current_hash, (level, sibling_hash)| {
+			let is_right = builder.shl(leaf_index, (Word::BITS - 1 - level) as u32);
 
-		// The current node is the left child when its index is even (low bit clear).
-		let is_left = builder.bnot(builder.band(current_index, one));
+			// Order the pair as (left, right): swap in the sibling on the opposite side.
+			let left_hash = array::from_fn::<_, 4, _>(|i| {
+				builder.select(is_right, sibling_hash[i], current_hash[i])
+			});
+			let right_hash = array::from_fn::<_, 4, _>(|i| {
+				builder.select(is_right, current_hash[i], sibling_hash[i])
+			});
 
-		// Order the pair as (left, right): swap in the sibling on the opposite side.
-		let left_hash = multi_wire_multiplex(builder, &[&sibling_hash, &current_hash], is_left)
-			.try_into()
-			.expect("multi_wire_multiplex should return 4 wires");
-		let right_hash = multi_wire_multiplex(builder, &[&current_hash, &sibling_hash], is_left)
-			.try_into()
-			.expect("multi_wire_multiplex should return 4 wires");
+			// The parent index drops the low bit of the current node's index.
+			let parent_index = builder.shr(leaf_index, level as u32 + 1);
 
-		// The parent index drops the low bit of the current index.
-		let parent_index = builder.shr(current_index, 1);
-
-		// Hash the ordered pair into the parent; the digest is gate-derived.
-		let level_wire = builder.add_constant_64(level as u64);
-		current_hash = circuit_tree_hash(
-			builder,
-			domain_param.to_vec(),
-			domain_param_len,
-			left_hash,
-			right_hash,
-			level_wire,
-			parent_index,
-		);
-		current_index = parent_index;
-	}
-
-	// The reconstructed root must equal the committed root.
-	builder.assert_eq_v("merkle_root_check", current_hash, *root_hash);
+			// Hash the ordered pair into the parent; the digest is gate-derived.
+			let level_wire = builder.add_constant_64(level as u64);
+			circuit_tree_hash(
+				builder,
+				domain_param.to_vec(),
+				domain_param_len,
+				left_hash,
+				right_hash,
+				level_wire,
+				parent_index,
+			)
+		})
 }
 
 #[cfg(test)]
@@ -114,7 +106,9 @@ mod tests {
 			.map(|_| std::array::from_fn(|_| builder.add_inout()))
 			.collect();
 
-		circuit_merkle_path(&builder, &param, PARAM.len(), &leaf_w, index_w, &path, &root_w);
+		let computed_root =
+			circuit_merkle_path(&builder, &param, PARAM.len(), &leaf_w, index_w, &path);
+		builder.assert_eq_v("merkle_root_check", computed_root, root_w);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
