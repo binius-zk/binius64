@@ -60,10 +60,6 @@ name = "blake2s"
 harness = false
 
 [[bench]]
-name = "hashsign"
-harness = false
-
-[[bench]]
 name = "sha256_compressions"
 harness = false
 

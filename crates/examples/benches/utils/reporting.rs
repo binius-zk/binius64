@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! Benchmark reporting utilities
 
@@ -92,8 +93,6 @@ pub fn print_env_help() {
 			"  N_SIGNATURES           - Number of signatures (default: 1 for ethsign, 4 for hashsign)"
 		);
 		println!("  MESSAGE_MAX_BYTES      - Max message bytes for ethsign (default: 67)");
-		println!("  XMSS_TREE_HEIGHT       - Tree height for hashsign (default: 13)");
-		println!("  WOTS_SPEC              - Winternitz spec for hashsign (default: 2)");
 		println!("\nCriterion benchmark timing flags:");
 		println!("  --warm-up-time <secs>  - Warm-up time in seconds (e.g., --warm-up-time 0.5)");
 		println!(
