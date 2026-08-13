@@ -14,17 +14,17 @@ pub const PUBLIC_KEY_TWEAK: u8 = 0x03;
 /// Computes the one-time public-key (Merkle leaf) hash, returning its 32-byte digest.
 ///
 /// Evaluates the BLAKE3 tweakable hash with:
-/// - domain (chaining value) `param || 0x03 || epoch`,
-/// - data (absorbed blocks) the concatenation of the Winternitz chain ends.
+/// - key (tweak) `param || 0x03 || epoch`,
+/// - message the concatenation of the Winternitz chain ends.
 ///
-/// The leaf is the larger-than-one-block case: the chain ends are absorbed two per compression.
-/// Mixing the epoch into the domain binds the leaf to its position in the tree.
+/// This is the many-block case, so the message spans several BLAKE3 chunks and a parent tree.
+/// Mixing the epoch into the tweak binds the leaf to its position in the tree.
 ///
 /// # Arguments
 ///
 /// * `builder` - Circuit builder.
 /// * `domain_param_wires` - Per-signer parameter, eight bytes per wire.
-/// * `domain_param_len` - Parameter length in bytes; at most 23 so the domain fits the 32-byte cv.
+/// * `domain_param_len` - Parameter length in bytes; at most 23 so the tweak fits the 32-byte key.
 /// * `epoch` - Epoch (leaf index) this public key sits at.
 /// * `pk_hashes` - Chain-end hashes, 32 bytes each as four 64-bit little-endian wires.
 ///

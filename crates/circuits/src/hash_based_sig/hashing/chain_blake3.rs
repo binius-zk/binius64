@@ -21,7 +21,7 @@
 use binius_frontend::{CircuitBuilder, Wire};
 
 use crate::{
-	blake3::{blake3_compress, blake3_compress_2x, ref_compress},
+	blake3::{KEY_BYTES, blake3_compress, blake3_compress_2x, blake3_keyed_fixed, ref_compress},
 	concat::concat,
 	fixed_byte_vec::ByteVec,
 	util::{clear_high_bits, split_u32_words, zeroed_u32_words},
@@ -303,21 +303,27 @@ pub fn hash_chain_blake3(
 	current
 }
 
-/// Maximum domain (tweak) length in bytes that fits the 32-byte chaining value.
-pub const TH_DOMAIN_MAX_BYTES: usize = 32;
+/// Maximum tweak length in bytes, set by the size of a BLAKE3 key.
+pub const TH_DOMAIN_MAX_BYTES: usize = KEY_BYTES;
 
-/// General compress-based BLAKE3 tweakable hash.
+/// BLAKE3 tweakable hash: the keyed hash of `data` under the tweak as key.
 ///
-/// - The domain (tweak) seeds the 8-word chaining value, zero-padded to 32 bytes.
-/// - The data is absorbed in 64-byte blocks, each folded in with one compression.
-/// - The output is the final chaining value, as four 64-bit little-endian wires.
+/// - The tweak is zero-padded to a 32-byte key, which is BLAKE3's native keying.
+/// - The data is the message, hashed by the full BLAKE3 construction.
+/// - The output is the 32-byte digest, as four 64-bit little-endian wires.
 ///
-/// This mirrors the chain step but with the roles generalized:
-/// the chain step is the special case of a 32-byte domain and a single data block.
+/// The full construction, rather than a bare chain of compressions, is what separates the domains:
+/// - Every compression carries the keyed-hash flag.
+/// - A chunk's first and last block are marked, and the root again.
+/// - So no digest extends into the digest of a longer message, which an unpadded chain allows.
+///
+/// A tweak shorter than 32 bytes is zero-padded, so two tweaks equal after padding collide.
+/// Every caller here lays its tweak out at fixed widths, which keeps them apart.
 ///
 /// # Panics
 ///
-/// - If the concatenated domain exceeds 32 bytes.
+/// - If the concatenated tweak exceeds the 32-byte key.
+/// - If any tweak term's length is not fixed at circuit construction time.
 pub fn circuit_blake3_th(
 	builder: &CircuitBuilder,
 	domain_terms: &[ByteVec],
@@ -328,74 +334,37 @@ pub fn circuit_blake3_th(
 	let data_len: usize = data_terms.iter().map(|t| *t.len_range.end()).sum();
 	assert!(
 		domain_len <= TH_DOMAIN_MAX_BYTES,
-		"BLAKE3 tweakable-hash domain ({domain_len} bytes) exceeds the {TH_DOMAIN_MAX_BYTES}-byte chaining value"
+		"BLAKE3 tweakable-hash tweak ({domain_len} bytes) exceeds the {TH_DOMAIN_MAX_BYTES}-byte key"
 	);
 
-	// Seed the chaining value from the domain, zero-padded to 8 words.
-	let domain = concat(builder, domain_terms);
-	let cv_words = zeroed_u32_words(builder, &domain.data, domain_len, CV_WORDS);
-	let mut cv: [Wire; CV_WORDS] = std::array::from_fn(|i| cv_words[i]);
+	// The tweak is the key; `blake3_keyed_fixed` zero-pads it to 32 bytes and masks the rest.
+	let key = concat(builder, domain_terms);
 
-	// Absorb the data in 64-byte blocks, one compression each.
+	// The data is the message, as 32-bit little-endian words with the bytes past its length zeroed.
 	let data = concat(builder, data_terms);
-	let num_blocks = data_len.div_ceil(BLOCK_BYTES).max(1);
-	let data_words = zeroed_u32_words(builder, &data.data, data_len, num_blocks * BLOCK_WORDS);
-	let counter = builder.add_constant_64(0);
-	let flags = builder.add_constant_64(0);
-	for b in 0..num_blocks {
-		let block: [Wire; BLOCK_WORDS] = std::array::from_fn(|i| data_words[b * BLOCK_WORDS + i]);
-		let block_len = (data_len - b * BLOCK_BYTES).min(BLOCK_BYTES);
-		let block_len_w = builder.add_constant_64(block_len as u64);
-		cv = blake3_compress(builder, cv, block, counter, block_len_w, flags);
-	}
-	cv8_to_hash4(builder, &cv)
+	let message = zeroed_u32_words(builder, &data.data, data_len, data_len.div_ceil(4));
+
+	cv8_to_hash4(builder, &blake3_keyed_fixed(builder, &message, data_len, &key))
 }
 
-/// Reference (out-of-circuit) form of `circuit_blake3_th`.
+/// Reference (out-of-circuit) form of [`circuit_blake3_th`].
 ///
-/// - `domain` seeds the chaining value, zero-padded to 32 bytes.
-/// - `data` is absorbed in 64-byte blocks via the compression reference.
+/// One call to the BLAKE3 crate, so the circuit is pinned against the reference implementation
+/// rather than a second hand-written copy of it.
 ///
-/// Built directly on the BLAKE3 compression function used as a tweakable hash:
-/// - the domain replaces the initial chaining value, acting as the key and tweak,
-/// - the data plays the role of the message blocks fed through the compression.
+/// # Panics
+///
+/// - If `domain` exceeds the 32-byte key.
 pub fn ref_blake3_th(domain: &[u8], data: &[u8]) -> [u8; 32] {
-	// The domain seeds the 32-byte chaining value, so it cannot be longer.
-	assert!(domain.len() <= TH_DOMAIN_MAX_BYTES, "domain exceeds 32 bytes");
+	assert!(
+		domain.len() <= TH_DOMAIN_MAX_BYTES,
+		"BLAKE3 tweakable-hash tweak ({} bytes) exceeds the {TH_DOMAIN_MAX_BYTES}-byte key",
+		domain.len(),
+	);
 
-	// Zero-pad the domain to 32 bytes, then read it as the 8-word chaining value (BLAKE3's IV
-	// slot).
-	let mut cv_bytes = [0u8; TH_DOMAIN_MAX_BYTES];
-	cv_bytes[..domain.len()].copy_from_slice(domain);
-	let mut cv: [u32; 8] =
-		std::array::from_fn(|i| u32::from_le_bytes(cv_bytes[4 * i..4 * i + 4].try_into().unwrap()));
-
-	// Absorb the data in 64-byte blocks, chaining each compression into the next.
-	let total = data.len();
-	// At least one compression runs, so empty data still maps to a defined digest.
-	let num_blocks = total.div_ceil(BLOCK_BYTES).max(1);
-	for b in 0..num_blocks {
-		// This block's byte range; the last block may be shorter than 64 bytes.
-		let start = b * BLOCK_BYTES;
-		let end = (start + BLOCK_BYTES).min(total);
-
-		// Pack the block into 16 little-endian words, trailing bytes left zero.
-		let mut block_bytes = [0u8; BLOCK_BYTES];
-		block_bytes[..end - start].copy_from_slice(&data[start..end]);
-		let block: [u32; 16] = std::array::from_fn(|i| {
-			u32::from_le_bytes(block_bytes[4 * i..4 * i + 4].try_into().unwrap())
-		});
-
-		// Bare compression (counter/flags = 0); block_len is the real byte count.
-		cv = ref_compress(&cv, &block, 0, (end - start) as u32, 0);
-	}
-
-	// Serialize the final chaining value to 32 little-endian bytes: the digest.
-	let mut out = [0u8; 32];
-	for (i, word) in cv.iter().enumerate() {
-		out[4 * i..4 * i + 4].copy_from_slice(&word.to_le_bytes());
-	}
-	out
+	let mut key = [0u8; TH_DOMAIN_MAX_BYTES];
+	key[..domain.len()].copy_from_slice(domain);
+	*blake3::keyed_hash(&key, data).as_bytes()
 }
 
 #[cfg(test)]
@@ -448,33 +417,14 @@ mod tests {
 
 		#[test]
 		fn generic_th_matches_reference(
-			domain_len in 1usize..=32,
-			data_len in 1usize..=200,
+			domain_len in 0usize..=32,
+			data_len in 0usize..=200,
 			domain in prop::collection::vec(any::<u8>(), 32),
 			data in prop::collection::vec(any::<u8>(), 200),
 		) {
-			// The generic compress-based tweakable hash must equal its reference for any
-			// domain (<= 32 bytes) and any data length.
-			let b = CircuitBuilder::new();
-			let dom_w: Vec<Wire> = (0..domain_len.div_ceil(8)).map(|_| b.add_inout()).collect();
-			let dat_w: Vec<Wire> = (0..data_len.div_ceil(8)).map(|_| b.add_inout()).collect();
-			let dom_term = ByteVec::new_const_len(&b, dom_w.clone(), domain_len);
-			let dat_term = ByteVec::new_const_len(&b, dat_w.clone(), data_len);
-			let out = circuit_blake3_th(&b, &[dom_term], &[dat_term]);
-			let expected: [Wire; 4] = std::array::from_fn(|_| b.add_inout());
-			for k in 0..4 {
-				b.assert_eq("th_out", out[k], expected[k]);
-			}
-
-			let circuit = b.build();
-			let mut w = circuit.new_witness_filler();
-			w.pack_bytes_le(&dom_w, &domain[..domain_len]);
-			w.pack_bytes_le(&dat_w, &data[..data_len]);
-			let reference = ref_blake3_th(&domain[..domain_len], &data[..data_len]);
-			w.pack_bytes_le(&expected, &reference);
-
-			circuit.populate_wire_witness(&mut w).unwrap();
-			circuit.constraint_system().verify(&w.into_value_vec()).unwrap();
+			// The tweakable hash must equal its reference for any tweak (<= 32 bytes) and any data
+			// length, the empty ones included.
+			check_th(&domain[..domain_len], &data[..data_len]);
 		}
 
 		#[test]
@@ -517,6 +467,66 @@ mod tests {
 			circuit.populate_wire_witness(&mut w).unwrap();
 			circuit.constraint_system().verify(&w.into_value_vec()).unwrap();
 		}
+	}
+
+	/// Build the tweakable hash over `tweak` and `data`, and pin the digest to the reference.
+	fn check_th(tweak: &[u8], data: &[u8]) {
+		let b = CircuitBuilder::new();
+		let tweak_w: Vec<Wire> = (0..tweak.len().div_ceil(8))
+			.map(|_| b.add_inout())
+			.collect();
+		let data_w: Vec<Wire> = (0..data.len().div_ceil(8)).map(|_| b.add_inout()).collect();
+		let tweak_term = ByteVec::new_const_len(&b, tweak_w.clone(), tweak.len());
+		let data_term = ByteVec::new_const_len(&b, data_w.clone(), data.len());
+		let out = circuit_blake3_th(&b, &[tweak_term], &[data_term]);
+		let expected: [Wire; 4] = std::array::from_fn(|_| b.add_inout());
+		for k in 0..4 {
+			b.assert_eq("th_out", out[k], expected[k]);
+		}
+
+		let circuit = b.build();
+		let mut w = circuit.new_witness_filler();
+		w.pack_bytes_le(&tweak_w, tweak);
+		w.pack_bytes_le(&data_w, data);
+		w.pack_bytes_le(&expected, &ref_blake3_th(tweak, data));
+
+		circuit.populate_wire_witness(&mut w).unwrap_or_else(|e| {
+			panic!("th disagreed for tweak_len={}, data_len={}: {e:?}", tweak.len(), data.len())
+		});
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
+	}
+
+	#[test]
+	fn th_is_the_keyed_hash_of_the_zero_padded_tweak() {
+		// The tweak is the key, so a short tweak must agree with the same key padded by hand.
+		let tweak = b"tweak";
+		let data = b"the quick brown fox";
+		let mut key = [0u8; TH_DOMAIN_MAX_BYTES];
+		key[..tweak.len()].copy_from_slice(tweak);
+		assert_eq!(ref_blake3_th(tweak, data), *blake3::keyed_hash(&key, data).as_bytes());
+	}
+
+	#[test]
+	fn th_spans_chunks_and_blocks() {
+		// Data past 1024 bytes builds a parent tree, a path a bare chain of compressions never has.
+		//
+		//     2304 bytes = 2 full chunks + 256 -> 3 chunk CVs -> 2 parent nodes
+		//
+		// 2304 is the real leaf-hash size for a 72-chain Winternitz instance.
+		for &len in &[63usize, 64, 65, 1023, 1024, 1025, 2304] {
+			let data: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+			check_th(b"chunk-spanning tweak", &data);
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "tweak (33 bytes) exceeds the 32-byte key")]
+	fn th_rejects_an_oversized_tweak() {
+		// The tweak becomes the key, so it cannot outgrow one.
+		ref_blake3_th(&[0u8; TH_DOMAIN_MAX_BYTES + 1], b"data");
 	}
 
 	#[test]

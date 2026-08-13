@@ -137,7 +137,7 @@ mod tests {
 			message_hash_len: 4,
 			coordinate_resolution_bits: 2,
 			target_sum: 24,
-			// At most 23 bytes so the BLAKE3 tweakable-hash domain fits the 32-byte chaining value.
+			// At most 23 bytes so the BLAKE3 tweakable-hash tweak fits the 32-byte key.
 			domain_param_len: 18,
 		}
 	}

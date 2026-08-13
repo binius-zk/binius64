@@ -10,8 +10,8 @@ pub const MESSAGE_TWEAK: u8 = 0x02;
 /// Computes the message hash, returning its 32-byte digest as four 64-bit little-endian wires.
 ///
 /// Evaluates the BLAKE3 tweakable hash with:
-/// - domain (chaining value) `param || 0x02 || epoch`,
-/// - data (absorbed block) `nonce || message`.
+/// - key (tweak) `param || 0x02 || epoch`,
+/// - message `nonce || message`.
 ///
 /// The codeword coordinates are read out of this digest.
 /// Binding the epoch into the domain makes the encoding epoch-dependent, matching the reference
@@ -22,7 +22,7 @@ pub const MESSAGE_TWEAK: u8 = 0x02;
 ///
 /// * `builder` - Circuit builder.
 /// * `domain_param_wires` - Per-signer parameter, eight bytes per wire (little-endian).
-/// * `domain_param_len` - Parameter length in bytes; at most 23 so the domain fits the 32-byte cv.
+/// * `domain_param_len` - Parameter length in bytes; at most 23 so the tweak fits the 32-byte key.
 /// * `epoch` - Epoch (leaf index) at which the message is signed.
 /// * `nonce_wires` - Nonce wires, eight bytes per wire.
 /// * `nonce_len` - Nonce length in bytes.

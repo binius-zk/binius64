@@ -10,8 +10,8 @@ pub const TREE_TWEAK: u8 = 0x01;
 /// Computes an internal Merkle-tree node hash, returning its 32-byte digest as four 64-bit wires.
 ///
 /// Evaluates the BLAKE3 tweakable hash with:
-/// - domain (chaining value) `param || 0x01 || level || index`,
-/// - data (absorbed block) `left || right`.
+/// - key (tweak) `param || 0x01 || level || index`,
+/// - message `left || right`.
 ///
 /// The level and index place each node in its own hash domain, so a node at one position can never
 /// be reused at another.
@@ -20,7 +20,7 @@ pub const TREE_TWEAK: u8 = 0x01;
 ///
 /// * `builder` - Circuit builder.
 /// * `domain_param_wires` - Per-signer parameter, eight bytes per wire.
-/// * `domain_param_len` - Parameter length in bytes; at most 23 so the domain fits the 32-byte cv.
+/// * `domain_param_len` - Parameter length in bytes; at most 23 so the tweak fits the 32-byte key.
 /// * `left` - Left child hash, 32 bytes as four 64-bit little-endian wires.
 /// * `right` - Right child hash, 32 bytes as four 64-bit little-endian wires.
 /// * `level` - Tree level, low four bytes used.
