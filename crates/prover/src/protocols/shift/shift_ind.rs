@@ -38,8 +38,8 @@ const HALF_WORD_LOG_BITS: usize = Word::LOG_BITS - 1;
 /// The two are held apart rather than multiplied together, which is what keeps the round
 /// polynomials degree 2. The constant is folded into the weights, so the pair sums to $\beta$ and
 /// the rounds are the ones the verifier's single sumcheck expects. Phase 4 then scales its
-/// monster multilinear by [`Phase3Output::shift_ind_eval`], the evaluation these rounds reduce
-/// the two factors to.
+/// monster multilinear by the product of the two evaluations these rounds reduce their factors to,
+/// which [`ShiftIndOutput`] reports separately.
 ///
 /// The weights and the point the indicator is read at are the caller's, not this type's: a
 /// reduction peeling two shifts runs these rounds once per shift slot, differing only in those two
@@ -55,15 +55,23 @@ pub struct ShiftIndSumcheck<P: PackedField, A: Allocator> {
 	beta: P::Scalar,
 }
 
-/// What phase 3 leaves phase 4.
-#[derive(Debug, Clone, Copy)]
-pub struct Phase3Output<F> {
-	/// The product of the two factors at the bit-index challenge point:
-	/// `weights(r_i) * shift_ind(r_i, r_j, r_s, r_v)`. Phase 4 scales its monster multilinear by
-	/// it, and the verifier recomputes it from `r_i` alone.
-	pub shift_ind_eval: F,
-	/// The claim phase 4 proves: `shift_ind_eval * G`.
+/// What one run of these rounds leaves the phases after it.
+///
+/// The two factor evaluations are reported apart rather than as their product. A reduction peeling
+/// two shifts runs these rounds once per slot and needs them separately: the indicator evaluation
+/// alone is the constant the next run carries, while the products of both runs are what scale the
+/// monster multilinear at the end.
+#[derive(Debug, Clone)]
+pub struct ShiftIndOutput<F> {
+	/// The weight vector at the challenge point, `weights(r_i)`.
+	pub weights_eval: F,
+	/// The interpolated shift indicator at the challenge point,
+	/// `shift_ind(r_i, r_j, r_s, r_v)`. The verifier recomputes it from the point alone.
+	pub ind_eval: F,
+	/// The claim the next phase proves: the two evaluations above times the carried constant.
 	pub eval: F,
+	/// The point these rounds bound, in evaluation order.
+	pub point: Vec<F>,
 }
 
 impl<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator> ShiftIndSumcheck<P, A> {
@@ -108,7 +116,7 @@ impl<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator> ShiftIndSumcheck<
 	}
 
 	/// Proves the [`Word::LOG_BITS`] rounds binding the bit index.
-	pub fn prove(self, channel: &mut impl IPProverChannel<F>, alloc: &A) -> Phase3Output<F> {
+	pub fn prove(self, channel: &mut impl IPProverChannel<F>, alloc: &A) -> ShiftIndOutput<F> {
 		let Self {
 			scaled_weights,
 			shift_ind,
@@ -127,13 +135,15 @@ impl<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator> ShiftIndSumcheck<
 			.try_into()
 			.expect("prover has 2 multilinear polynomials");
 
-		// The scale rides in the first evaluation, so the unscaled weights are evaluated at the
-		// challenge point separately — the same 64-term inner product the verifier runs.
+		// The carried constant rides in the first evaluation, so the unscaled weights are evaluated
+		// at the challenge point separately — the same 64-term inner product the verifier runs.
 		let weights_eval = inner_product(weights, eq_ind_partial_eval_scalars(&challenges));
 
-		Phase3Output {
-			shift_ind_eval: weights_eval * shift_ind_eval,
+		ShiftIndOutput {
+			weights_eval,
+			ind_eval: shift_ind_eval,
 			eval: scaled_weights_eval * shift_ind_eval,
+			point: challenges,
 		}
 	}
 }

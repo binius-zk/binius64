@@ -208,13 +208,15 @@ where
 	let phase_3_output = phase_3.prove(channel, alloc);
 
 	// Phase 4 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
-	// the univariate variable `r_j` and the multilinear variable `r_y`.
+	// the univariate variable `r_j` and the multilinear variable `r_y`. Its monster multilinear is
+	// scaled by the product of the two factors phase 3 reduced.
 	prove_phase_2::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared,
 		phase_1_output,
-		phase_3_output,
+		phase_3_output.weights_eval * phase_3_output.ind_eval,
+		phase_3_output.eval,
 		channel,
 		alloc,
 	)

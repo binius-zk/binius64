@@ -29,7 +29,7 @@ use tracing::instrument;
 
 use super::{
 	SegmentWords, claims::PreparedOperatorClaims, key_collection::KeyCollection,
-	monster::build_monster_segments, phase_1::Phase1Output, shift_ind::Phase3Output,
+	monster::build_monster_segments, phase_1::Phase1Output,
 };
 use crate::fold_word::fold_words;
 
@@ -51,20 +51,23 @@ use crate::fold_word::fold_words;
 /// - `words`: The value vector words
 /// - `prepared`: The prepared claim of each operation, indexed by the operation a key names
 /// - `phase_1_output`: Challenges and evaluation from the first phase
-/// - `h_eval`: The h evaluation weighting every shift key, from
-///   [`ShiftIndSumcheck`](super::ShiftIndSumcheck)
+/// - `shift_ind_eval`: the scalar weighting every shift key, the product of the bit-index rounds'
+///   two factor evaluations ([`ShiftIndSumcheck`](super::ShiftIndSumcheck))
+/// - `epsilon`: the claim these rounds prove, which those rounds reduced to
 /// - `channel`: The prover's channel
 ///
 /// # Returns
 /// Returns `SumcheckOutput` containing the combined challenges `[r_j, r_y]` and the witness
 /// evaluation, or an error if the protocol fails.
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "prove_phase_2")]
 pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
 	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
 	phase_1_output: Phase1Output<F>,
-	phase_3_output: Phase3Output<F>,
+	shift_ind_eval: F,
+	epsilon: F,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> SumcheckOutput<F>
@@ -80,10 +83,6 @@ where
 		gamma: _,
 		g_eval: _,
 	} = phase_1_output;
-	let Phase3Output {
-		shift_ind_eval,
-		eval: epsilon,
-	} = phase_3_output;
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 

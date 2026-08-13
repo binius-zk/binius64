@@ -15,7 +15,7 @@ use binius_math::{
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		KeyCollection, KeySegment, OperatorClaims, Phase3Output, PreparedOperatorClaims,
+		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftIndOutput,
 		ShiftIndSumcheck,
 		monster::{build_monster_segments, shift_operator_table},
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
@@ -100,10 +100,14 @@ where
 	let phase_3 =
 		ShiftIndSumcheck::<P, _>::new(alloc, oblong_weights.as_ref(), &r_j, &r_s, &r_v, g_eval);
 	debug_assert_eq!(phase_3.beta(), gamma);
-	let Phase3Output {
-		shift_ind_eval,
+	let ShiftIndOutput {
+		weights_eval,
+		ind_eval,
 		eval: epsilon,
+		point: _,
 	} = phase_3.prove(channel, alloc);
+	// The monster multilinear is scaled by the product of the two factors phase 3 reduced.
+	let shift_ind_eval = weights_eval * ind_eval;
 
 	// Phase 4: the witness folded at the bit position challenge `r_j`, per segment.
 
