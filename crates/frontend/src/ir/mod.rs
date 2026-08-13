@@ -203,16 +203,9 @@ impl GateData {
 	pub fn shape(&self, registry: &HintRegistry) -> OpcodeShape {
 		match self.opcode {
 			Opcode::Hint => {
-				let hint_id = self.immediates[0];
+				let hint_id = HintId::from_u32(self.immediates[0]);
 				let (n_in, n_out) = registry.shape(hint_id, &self.dimensions);
-				OpcodeShape {
-					const_in: &[],
-					n_in,
-					n_out,
-					n_aux: 0,
-					n_scratch: 0,
-					n_imm: 1,
-				}
+				OpcodeShape::new(n_in, n_out).with_imm(1)
 			}
 			_ => self.opcode.shape(&self.dimensions),
 		}
@@ -403,7 +396,7 @@ impl GateGraph {
 			opcode: Opcode::Hint,
 			wires,
 			dimensions: dimensions.to_vec(),
-			immediates: smallvec![hint_id],
+			immediates: smallvec![hint_id.as_u32()],
 		};
 		let gate = self.gates.push(data);
 		self.gate_origin[gate] = gate_origin;

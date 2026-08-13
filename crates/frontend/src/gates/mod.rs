@@ -8,7 +8,11 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	ir::{Gate, GateData, GateGraph, GateParam, Wire, hints::HintRegistry, path::PathSpec},
+	ir::{
+		Gate, GateData, GateGraph, GateParam, Wire,
+		hints::{HintId, HintRegistry},
+		path::PathSpec,
+	},
 	lower::ConstraintBuilder,
 };
 
@@ -199,7 +203,7 @@ fn emit_hint(
 	wire_to_reg: impl Fn(Wire) -> u32,
 	hint_registry: &HintRegistry,
 ) {
-	let hint_id = data.immediates[0];
+	let hint_id = HintId::from_u32(data.immediates[0]);
 	let (n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
 	let input_regs: Vec<u32> = data.wires[..n_in].iter().map(|&w| wire_to_reg(w)).collect();
 	let output_regs: Vec<u32> = data.wires[n_in..n_in + n_out]

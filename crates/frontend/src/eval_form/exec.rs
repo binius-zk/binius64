@@ -16,7 +16,10 @@ use binius_field::BinaryField128bGhash;
 use smallvec::{SmallVec, smallvec};
 
 use super::opcode::EvalOpcode;
-use crate::ir::{hints::HintRegistry, path::PathSpec};
+use crate::ir::{
+	hints::{HintId, HintRegistry},
+	path::PathSpec,
+};
 
 /// Multiplies two GHASH field elements ($\mathbb{F}_{2^{128}}$), each carried by a `(lo, hi)` pair
 /// of words — `lo` holds the coefficients of $1, X, \ldots, X^{63}$ and `hi` those of
@@ -434,7 +437,7 @@ impl<'a> Executor<'a> {
 
 	// Hint execution
 	fn exec_hint<C: EvalContext>(&mut self, ctx: &mut C) {
-		let hint_id = self.read_u32();
+		let hint_id = HintId::from_u32(self.read_u32());
 
 		// Read dimensions
 		let n_dimensions = self.read_u16() as usize;

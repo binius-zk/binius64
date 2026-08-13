@@ -5,6 +5,7 @@
 use binius_core::constraint_system::ShiftVariant;
 
 use super::opcode::EvalOpcode;
+use crate::ir::hints::HintId;
 
 /// Builder for constructing bytecode during circuit compilation
 pub struct BytecodeBuilder {
@@ -245,14 +246,14 @@ impl BytecodeBuilder {
 	// Hint calls
 	pub fn emit_hint(
 		&mut self,
-		hint_id: u32,
+		hint_id: HintId,
 		dimensions: &[usize],
 		inputs: &[u32],
 		outputs: &[u32],
 	) {
 		self.n_eval_insn += 1;
 		self.emit_opcode(EvalOpcode::Hint);
-		self.emit_u32(hint_id);
+		self.emit_u32(hint_id.as_u32());
 		self.emit_u16(dimensions.len() as u16);
 		for &dim in dimensions {
 			self.emit_u32(dim as u32);

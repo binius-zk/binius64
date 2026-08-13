@@ -7,7 +7,10 @@ use binius_core::{Word, constraint_system::ShiftVariant};
 use super::exec::ghash_mul;
 use crate::{
 	gates::Opcode,
-	ir::{Gate, GateGraph, hints::HintRegistry},
+	ir::{
+		Gate, GateGraph,
+		hints::{HintId, HintRegistry},
+	},
 };
 
 /// Evaluates a gate whose inputs are all constant, returning the values of its output wires.
@@ -157,7 +160,7 @@ pub fn evaluate_gate_constants(
 			Ok(Vec::new())
 		}
 		Opcode::Hint => {
-			let hint_id = data.immediates[0];
+			let hint_id = HintId::from_u32(data.immediates[0]);
 			let (_n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
 			let mut outputs = vec![Word::ZERO; n_out];
 			hint_registry.execute(hint_id, &data.dimensions, constants, &mut outputs);

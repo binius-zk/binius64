@@ -8,19 +8,34 @@
 //! to verify.
 
 use std::{
-	collections::HashMap,
-	hash::{DefaultHasher, Hash, Hasher},
+	any::TypeId,
+	collections::{HashMap, hash_map::Entry},
 };
 
 use binius_core::Word;
 
-pub type HintId = u32;
+/// Names one hint by the slot it holds in a registry.
+///
+/// Slots are handed out from zero in registration order.
+/// So an identifier only means something against the registry that issued it.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HintId(u32);
+
+impl HintId {
+	/// The identifier as the bytecode encodes it.
+	pub(crate) const fn as_u32(self) -> u32 {
+		self.0
+	}
+
+	/// Reads an identifier back from its bytecode encoding.
+	pub(crate) const fn from_u32(raw: u32) -> Self {
+		Self(raw)
+	}
+}
 
 /// Hint handler trait for extensible operations.
 ///
-/// Each implementor declares a globally unique `NAME`. The registry identifies hints by the
-/// hash of this name (see [`hint_id_of`]), so registering the same hint twice is a no-op
-/// and every gate using the same hint type shares a single handler entry.
+/// A registry holds one slot per implementing type.
 ///
 /// # The `dimensions` parameter
 ///
@@ -40,7 +55,7 @@ pub type HintId = u32;
 /// - A parameterized hint reads limb counts from `dimensions` and derives its arity from them.
 /// - A fixed-arity hint ignores `dimensions` (an empty slice) and returns a constant shape.
 pub trait Hint: Send + Sync + 'static {
-	/// Globally unique name for this hint. Used to derive a stable [`HintId`].
+	/// A label for this hint, used in diagnostics.
 	const NAME: &'static str;
 
 	/// Compute the gate's input/output arity as a function of `dimensions`.
@@ -62,17 +77,6 @@ pub trait Hint: Send + Sync + 'static {
 	fn execute(&self, dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]);
 }
 
-/// Derive a [`HintId`] from a hint's name.
-///
-/// Hashes the name with `std::hash::DefaultHasher` (fixed seed, deterministic across runs)
-/// and folds the resulting 64-bit value down to 32 bits by XORing its two halves.
-pub fn hint_id_of(name: &str) -> HintId {
-	let mut hasher = DefaultHasher::new();
-	name.hash(&mut hasher);
-	let h = hasher.finish();
-	(h as u32) ^ ((h >> 32) as u32)
-}
-
 /// Object-safe adapter so the registry can store hints behind `Box<dyn _>`.
 ///
 /// `Hint` itself is not dyn-compatible because it carries an associated `const NAME`.
@@ -92,34 +96,51 @@ impl<T: Hint> ErasedHint for T {
 	}
 }
 
-/// Registry for hint handlers keyed by [`HintId`].
-///
-/// Registration is idempotent: the same hint type always hashes to the same id, so a second
-/// call to [`HintRegistry::register`] with the same concrete type is a no-op.
+/// Holds the hints a circuit calls, one slot per hint type.
 pub struct HintRegistry {
-	handlers: HashMap<HintId, Box<dyn ErasedHint>>,
+	/// The registered hints, in registration order.
+	///
+	/// An identifier indexes this vector directly.
+	handlers: Vec<Box<dyn ErasedHint>>,
+	/// The slot each hint type holds.
+	///
+	/// The concrete type is a hint's identity, which no two distinct hints can share.
+	slots: HashMap<TypeId, HintId>,
 }
 
 impl HintRegistry {
 	pub fn new() -> Self {
 		Self {
-			handlers: HashMap::new(),
+			handlers: Vec::new(),
+			slots: HashMap::new(),
 		}
 	}
 
-	/// Register a hint, returning its stable [`HintId`]. No-op if the same hint is already
-	/// registered.
+	/// Registers a hint and returns its identifier.
+	///
+	/// A hint already registered keeps its identifier.
+	/// The handler passed here is then dropped.
 	pub fn register<T: Hint>(&mut self, handler: T) -> HintId {
-		let id = hint_id_of(T::NAME);
-		self.handlers.entry(id).or_insert_with(|| Box::new(handler));
-		id
+		// Borrowing the two fields apart lets the vacant arm append while the map entry is held.
+		let Self { handlers, slots } = self;
+		match slots.entry(TypeId::of::<T>()) {
+			Entry::Occupied(slot) => *slot.get(),
+			Entry::Vacant(slot) => {
+				let id = HintId::from_u32(
+					u32::try_from(handlers.len()).expect("a circuit calls fewer than 2^32 hints"),
+				);
+				handlers.push(Box::new(handler));
+				*slot.insert(id)
+			}
+		}
 	}
 
-	/// Compute the `(n_in, n_out)` arity of the hint identified by `hint_id`.
+	/// Computes the input and output arity of one hint, for the given dimensions.
 	pub fn shape(&self, hint_id: HintId, dimensions: &[usize]) -> (usize, usize) {
-		self.handlers[&hint_id].shape(dimensions)
+		self.handler(hint_id).shape(dimensions)
 	}
 
+	/// Runs one hint over its inputs, filling every output slot.
 	pub fn execute(
 		&self,
 		hint_id: HintId,
@@ -127,12 +148,127 @@ impl HintRegistry {
 		inputs: &[Word],
 		outputs: &mut [Word],
 	) {
-		self.handlers[&hint_id].execute(dimensions, inputs, outputs);
+		self.handler(hint_id).execute(dimensions, inputs, outputs);
+	}
+
+	/// The hint one identifier names.
+	///
+	/// # Panics
+	///
+	/// Panics unless this registry issued the identifier.
+	fn handler(&self, hint_id: HintId) -> &dyn ErasedHint {
+		self.handlers
+			.get(hint_id.as_u32() as usize)
+			.map(Box::as_ref)
+			.unwrap_or_else(|| {
+				panic!("no hint is registered under id {}", hint_id.as_u32());
+			})
 	}
 }
 
 impl Default for HintRegistry {
 	fn default() -> Self {
 		Self::new()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	// Doubles its input.
+	struct Doubler;
+
+	impl Hint for Doubler {
+		// This name and "hint_50152" both fold to 407677619 under a 32-bit hash of the name.
+		// So a name cannot serve as an identity.
+		const NAME: &'static str = "hint_33476";
+
+		fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+			(1, 1)
+		}
+
+		fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+			outputs[0] = Word::from_u64(inputs[0].as_u64().wrapping_mul(2));
+		}
+	}
+
+	// Splits its input into low and high halves, for an arity the doubler does not share.
+	struct SplitHalves;
+
+	impl Hint for SplitHalves {
+		const NAME: &'static str = "hint_50152";
+
+		fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+			(1, 2)
+		}
+
+		fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+			outputs[0] = Word::from_u64(inputs[0].as_u64() & 0xffff_ffff);
+			outputs[1] = Word::from_u64(inputs[0].as_u64() >> 32);
+		}
+	}
+
+	#[test]
+	fn hints_whose_names_share_a_hash_keep_their_own_slots() {
+		// Invariant: a hint's identity is its concrete type, not its name.
+		//
+		// Both names fold to one 32-bit hash.
+		// Keying on that hash would give the two hints a single slot.
+		// The second registration would then resolve to the first hint's handler.
+		let mut registry = HintRegistry::new();
+		let doubler = registry.register(Doubler);
+		let split = registry.register(SplitHalves);
+
+		//     slot 0 <- Doubler
+		//     slot 1 <- SplitHalves
+		assert_ne!(doubler, split);
+
+		// Each identifier reports the arity of its own hint.
+		assert_eq!(registry.shape(doubler, &[]), (1, 1));
+		assert_eq!(registry.shape(split, &[]), (1, 2));
+
+		// 0x0000_000b_0000_0007 doubles to 0x0000_0016_0000_000e, and splits to (7, 11).
+		let input = [Word::from_u64(0x0000_000b_0000_0007)];
+
+		let mut doubled = [Word::ZERO];
+		registry.execute(doubler, &[], &input, &mut doubled);
+		assert_eq!(doubled, [Word::from_u64(0x0000_0016_0000_000e)]);
+
+		let mut halves = [Word::ZERO; 2];
+		registry.execute(split, &[], &input, &mut halves);
+		assert_eq!(halves, [Word::from_u64(7), Word::from_u64(11)]);
+	}
+
+	#[test]
+	fn registering_one_hint_twice_reuses_its_slot() {
+		// Invariant: registration is idempotent, so a hint called from many gates costs one slot.
+		let mut registry = HintRegistry::new();
+
+		let first = registry.register(Doubler);
+		let second = registry.register(Doubler);
+
+		assert_eq!(first, second);
+		assert_eq!(registry.handlers.len(), 1);
+	}
+
+	#[test]
+	fn slots_are_handed_out_from_zero_in_registration_order() {
+		// Invariant: an identifier is a position.
+		// So resolving one is an index, not a probe.
+		let mut registry = HintRegistry::new();
+
+		assert_eq!(registry.register(Doubler), HintId::from_u32(0));
+		assert_eq!(registry.register(SplitHalves), HintId::from_u32(1));
+	}
+
+	#[test]
+	#[should_panic(expected = "no hint is registered under id 7")]
+	fn an_identifier_this_registry_never_issued_names_the_id_it_rejects() {
+		// A registry holding one hint has only slot 0, so slot 7 cannot resolve.
+		let mut registry = HintRegistry::new();
+		registry.register(Doubler);
+
+		registry.shape(HintId::from_u32(7), &[]);
 	}
 }
