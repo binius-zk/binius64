@@ -4,7 +4,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::{Allocator, GlobalAllocator};
+use binius_compute::Allocator;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_ip_prover::{
@@ -49,9 +49,9 @@ pub struct BaseFoldOracle {
 struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 	/// The mask buffer generated during [`fri::encode_masked`] for a ZK oracle, held by the
 	/// channel because it is the only party that knows it. `None` for a non-ZK (unmasked) oracle.
-	mask: Option<FieldBuffer<P>>,
-	/// RS-encoded codeword.
-	codeword: FieldBuffer<P>,
+	mask: Option<FieldBuffer<P, Data>>,
+	/// RS-encoded codeword, drawn from the channel's allocator.
+	codeword: FieldBuffer<P, Data>,
 	/// The Merkle commitment handle for query proofs, owning the committed tree.
 	commitment: C,
 	/// The committed multilinear message `pi_i`, backed by the caller's allocator. Handed over by
@@ -106,6 +106,8 @@ where
 	/// length is also the number of oracles committed so far.
 	queue: Vec<Vec<QueuedRelation<P, A::Vec<P>>>>,
 	rng: StdRng,
+	/// The allocator every codeword, mask and encode temporary is drawn from.
+	alloc: A,
 }
 
 impl<'a, F, P, NTT, Channel, A> BaseFoldProverChannel<'a, F, P, NTT, Channel, A>
@@ -127,6 +129,7 @@ where
 		oracle_specs: Vec<OracleSpec>,
 		fri_params: FRIParams<F>,
 		mut rng: impl Rng,
+		alloc: A,
 	) -> Self {
 		Self {
 			channel,
@@ -136,6 +139,7 @@ where
 			committed_oracles: Vec::new(),
 			queue: Vec::new(),
 			rng: StdRng::from_rng(&mut rng),
+			alloc,
 		}
 	}
 
@@ -148,7 +152,7 @@ where
 	/// (in oracle-index order). Mirrors [`BaseFoldVerifierChannel::finish`].
 	///
 	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold::channel::BaseFoldVerifierChannel::finish
-	pub fn finish(self, alloc: &A) {
+	pub fn finish(self) {
 		let Self {
 			mut channel,
 			ntt,
@@ -157,6 +161,7 @@ where
 			committed_oracles,
 			queue,
 			rng: _,
+			alloc,
 		} = self;
 
 		let n_remaining = oracle_specs.len() - queue.len();
@@ -173,7 +178,7 @@ where
 			&fri_params,
 			committed_oracles,
 			queue,
-			alloc,
+			&alloc,
 		);
 	}
 }
@@ -610,7 +615,7 @@ where
 				self.ntt,
 				buffer.to_ref(),
 				&mut self.rng,
-				&GlobalAllocator,
+				&self.alloc,
 			);
 			(codeword, Some(mask))
 		} else {
@@ -620,7 +625,7 @@ where
 					index,
 					self.ntt,
 					buffer.to_ref(),
-					&GlobalAllocator,
+					&self.alloc,
 				),
 				None,
 			)
@@ -782,7 +787,7 @@ mod tests {
 
 		prover_channel.prove_oracle_relation(oracle, transparent_poly.clone(), eval_claim);
 		prover_channel.finalize_oracle(oracle, buffer);
-		prover_channel.finish(&GlobalAllocator);
+		prover_channel.finish();
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -853,7 +858,7 @@ mod tests {
 		prover_channel.prove_oracle_relation(oracle_2, transparent_poly_2.clone(), eval_claim_2);
 		prover_channel.finalize_oracle(oracle_1, buffer_1);
 		prover_channel.finalize_oracle(oracle_2, buffer_2);
-		prover_channel.finish(&GlobalAllocator);
+		prover_channel.finish();
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -940,7 +945,7 @@ mod tests {
 			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
 			prover_channel.finalize_oracle(oracle, buffer.clone());
 		}
-		prover_channel.finish(&GlobalAllocator);
+		prover_channel.finish();
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -1029,7 +1034,7 @@ mod tests {
 			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
 			prover_channel.finalize_oracle(oracle, buffer.clone());
 		}
-		prover_channel.finish(&GlobalAllocator);
+		prover_channel.finish();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler
@@ -1284,7 +1289,7 @@ mod tests {
 		for (oracle, (buffer, _)) in iter::zip(&oracles, &data) {
 			prover_channel.finalize_oracle(*oracle, buffer.clone());
 		}
-		prover_channel.finish(&GlobalAllocator);
+		prover_channel.finish();
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();

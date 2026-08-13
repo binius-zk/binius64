@@ -3,6 +3,8 @@
 
 //! The core BaseFold opening protocol on the prover side.
 
+use std::ops::Deref;
+
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::mlecheck;
@@ -42,13 +44,13 @@ use crate::{fri::FRIFoldProver, merkle_channel::MerkleIPProverChannel};
 /// The final FRI value equals the final MLE-check value.
 /// The verifier asserts that equality when it runs the matching opening.
 #[allow(clippy::too_many_arguments)]
-pub fn prove_mlecheck_basefold<A, F, P, NTT, Channel>(
+pub fn prove_mlecheck_basefold<A, F, P, NTT, Channel, Data>(
 	witness: FieldVec<P, A>,
 	eval_point: &[F],
 	eval_claim: F,
 	batch_challenge: Option<F>,
 	outer_challenges: &[F],
-	mut fri_folder: FRIFoldProver<'_, F, P, NTT, Channel::Commitment>,
+	mut fri_folder: FRIFoldProver<'_, F, P, NTT, Channel::Commitment, Data>,
 	channel: &mut Channel,
 	alloc: &A,
 ) where
@@ -57,6 +59,7 @@ pub fn prove_mlecheck_basefold<A, F, P, NTT, Channel>(
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
+	Data: Deref<Target = [P]>,
 {
 	let _scope = tracing::debug_span!("Basefold MLE-check ZK (batched)").entered();
 

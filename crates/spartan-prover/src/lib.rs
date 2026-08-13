@@ -421,7 +421,7 @@ where
 			&mut channel,
 			&alloc,
 		)?;
-		channel.finish(&alloc);
+		channel.finish();
 		Ok(())
 	}
 }

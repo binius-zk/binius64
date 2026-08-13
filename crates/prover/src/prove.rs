@@ -471,7 +471,7 @@ where
 			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
 		self.iop_prover
 			.prove::<_, P, _>(witness, &mut channel, &alloc)?;
-		channel.finish(&alloc);
+		channel.finish();
 		Ok(())
 	}
 }

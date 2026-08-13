@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::ops::Deref;
+
 use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 use tracing::instrument;
@@ -23,11 +25,12 @@ pub trait ProxTestOracleProver<F: Field> {
 /// The [`ProxTestOracleProver`] for a [Brakedown]-style interleaved code proximity check.
 ///
 /// [Brakedown]: <https://dl.acm.org/doi/10.1007/978-3-031-38545-2_7>
-pub struct BrakedownOracleProver<P, C>
+pub struct BrakedownOracleProver<P, C, Data = Vec<P>>
 where
 	P: PackedField,
+	Data: Deref<Target = [P]>,
 {
-	codeword: FieldBuffer<P>,
+	codeword: FieldBuffer<P, Data>,
 	commitment: C,
 	/// log2 the lift factor (oracle padding). The committed codeword is virtually duplicated
 	/// `2^log_lift` times to reach the common first-round length; a query at global index `k`
@@ -35,16 +38,17 @@ where
 	log_lift: usize,
 }
 
-impl<P, C> BrakedownOracleProver<P, C>
+impl<P, C, Data> BrakedownOracleProver<P, C, Data>
 where
 	P: PackedField,
+	Data: Deref<Target = [P]>,
 {
 	/// Constructs a new oracle prover wrapping a committed interleaved codeword.
 	///
 	/// `log_lift` is the oracle-padding lift factor (the committed codeword is virtually duplicated
 	/// `2^log_lift` times to reach the common first-round length); pass `0` when no lifting is
 	/// needed.
-	pub const fn new(codeword: FieldBuffer<P>, commitment: C, log_lift: usize) -> Self {
+	pub const fn new(codeword: FieldBuffer<P, Data>, commitment: C, log_lift: usize) -> Self {
 		Self {
 			codeword,
 			commitment,
@@ -53,10 +57,11 @@ where
 	}
 }
 
-impl<F, P, C> ProxTestOracleProver<F> for BrakedownOracleProver<P, C>
+impl<F, P, C, Data> ProxTestOracleProver<F> for BrakedownOracleProver<P, C, Data>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	Data: Deref<Target = [P]>,
 {
 	type Commitment = C;
 
@@ -81,27 +86,30 @@ where
 /// single folded codeword during the first FRI fold. Their query openings are written sequentially,
 /// one oracle's full decommitment after another, so the verifier reads each committed oracle's
 /// advice in turn.
-pub struct BatchBrakedownOracleProver<P, C>
+pub struct BatchBrakedownOracleProver<P, C, Data = Vec<P>>
 where
 	P: PackedField,
+	Data: Deref<Target = [P]>,
 {
-	oracles: Vec<BrakedownOracleProver<P, C>>,
+	oracles: Vec<BrakedownOracleProver<P, C, Data>>,
 }
 
-impl<P, C> BatchBrakedownOracleProver<P, C>
+impl<P, C, Data> BatchBrakedownOracleProver<P, C, Data>
 where
 	P: PackedField,
+	Data: Deref<Target = [P]>,
 {
 	/// Constructs a batch oracle prover from the per-commitment oracle provers.
-	pub const fn new(oracles: Vec<BrakedownOracleProver<P, C>>) -> Self {
+	pub const fn new(oracles: Vec<BrakedownOracleProver<P, C, Data>>) -> Self {
 		Self { oracles }
 	}
 }
 
-impl<F, P, C> ProxTestOracleProver<F> for BatchBrakedownOracleProver<P, C>
+impl<F, P, C, Data> ProxTestOracleProver<F> for BatchBrakedownOracleProver<P, C, Data>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	Data: Deref<Target = [P]>,
 {
 	type Commitment = C;
 
@@ -168,19 +176,21 @@ where
 /// This is a composition of [`ProxTestOracleProver`]s mirroring the verifier's `FRIQueryVerifier`:
 /// a [`BatchBrakedownOracleProver`] for the codeword's interleaved reduction, then one
 /// [`FRIOracleProver`] per fold arity for the subsequent reductions.
-pub struct FRIQueryProver<F, P, C>
+pub struct FRIQueryProver<F, P, C, Data = Vec<P>>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	Data: Deref<Target = [P]>,
 {
-	codeword_oracle: BatchBrakedownOracleProver<P, C>,
+	codeword_oracle: BatchBrakedownOracleProver<P, C, Data>,
 	fri_oracles: Vec<FRIOracleProver<F, C>>,
 }
 
-impl<F, P, C> FRIQueryProver<F, P, C>
+impl<F, P, C, Data> FRIQueryProver<F, P, C, Data>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	Data: Deref<Target = [P]>,
 {
 	/// Constructs a query prover from the per-oracle provers built during the fold phase.
 	///
@@ -188,7 +198,7 @@ where
 	/// interleaved codeword(s), and `fri_oracles` holds one [`FRIOracleProver`] per fold arity. The
 	/// terminal codeword is sent in full and therefore is not represented here.
 	pub const fn new(
-		codeword_oracle: BatchBrakedownOracleProver<P, C>,
+		codeword_oracle: BatchBrakedownOracleProver<P, C, Data>,
 		fri_oracles: Vec<FRIOracleProver<F, C>>,
 	) -> Self {
 		Self {

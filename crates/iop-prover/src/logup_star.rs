@@ -472,7 +472,7 @@ mod tests {
 		let alloc = GlobalAllocator;
 		let prover_proof =
 			prove::<F, BP, _, _>(prover_tables(&tables), &mut prover_channel, &alloc);
-		prover_channel.finish(&alloc);
+		prover_channel.finish();
 
 		// Verify: receive the pushforwards, run the reduction, open them through the real FRI
 		// check.
