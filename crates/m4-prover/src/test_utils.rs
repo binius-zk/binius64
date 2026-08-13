@@ -6,7 +6,7 @@
 //! Both need a circuit whose AND-constraint operands carry real shifts.
 
 use binius_core::{ValueTable, word::Word};
-use binius_frontend::{Circuit, CircuitBuilder, Wire};
+use binius_frontend::{Circuit, CircuitBuilder, CircuitM4, Wire, hints::Hint};
 
 /// The CRC-64/GO-ISO generator polynomial, in reflected form.
 ///
@@ -33,18 +33,23 @@ pub const N_INPUT_WORDS: usize = 4;
 ///
 /// The `Circuit` counterpart mirrors this loop gate for gate, so the two agree bit for bit.
 pub fn crc64_iso_reference(words: &[u64; N_INPUT_WORDS]) -> u64 {
-	let mut crc = INIT;
-	for &word in words {
-		for i in 0..64 {
-			let bit = (word >> i) & 1;
-			let mix = (crc ^ bit) & 1;
-			crc >>= 1;
-			if mix != 0 {
-				crc ^= POLY_REFLECTED;
-			}
+	words.iter().fold(INIT, |crc, &word| mix_word(crc, word)) ^ XOR_OUT
+}
+
+/// Mixes one message word into the register, absorbing its bits from bit 0 up.
+///
+/// This is one iteration of [`crc64_iso_reference`]'s fold, which the chip fixture below makes a
+/// chip of its own.
+pub fn mix_word(mut crc: u64, word: u64) -> u64 {
+	for i in 0..64 {
+		let bit = (word >> i) & 1;
+		let mix = (crc ^ bit) & 1;
+		crc >>= 1;
+		if mix != 0 {
+			crc ^= POLY_REFLECTED;
 		}
 	}
-	crc ^ XOR_OUT
+	crc
 }
 
 /// A circuit computing CRC-64/GO-ISO over four message words.
@@ -114,6 +119,91 @@ pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]])
 			}
 		})
 		.unwrap()
+}
+
+/// Mixes one message word into the register in gates, mirroring [`mix_word`] round for round.
+fn mix_word_gates(builder: &CircuitBuilder, mut crc: Wire, word: Wire) -> Wire {
+	let poly = builder.add_constant_64(POLY_REFLECTED);
+	for i in 0..64 {
+		// Isolate message bit `i` into the low bit; the higher bits are junk we discard.
+		let bit = if i == 0 { word } else { builder.shr(word, i) };
+
+		// The low bit that decides whether the polynomial is mixed in this round.
+		let mixed = builder.bxor(crc, bit);
+
+		// Broadcast that low bit across the whole word: all ones iff it is set, else zero.
+		let to_msb = builder.shl(mixed, 63);
+		let mask = builder.sar(to_msb, 63);
+		let poly_term = builder.band(mask, poly);
+
+		// Advance the register: shift right by one, then conditionally mix the polynomial.
+		crc = builder.bxor(builder.shr(crc, 1), poly_term);
+	}
+	crc
+}
+
+/// The register state one call produces, which main takes on trust and the call constrains.
+struct MixWord;
+
+impl Hint for MixWord {
+	const NAME: &'static str = "crc64_iso_mix_word";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(2, 1)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		outputs[0] = Word(mix_word(inputs[0].as_u64(), inputs[1].as_u64()));
+	}
+}
+
+/// A chip-accelerated CRC-64/GO-ISO circuit over message words.
+pub struct Crc64ChipCircuit {
+	pub circuit: CircuitM4,
+	pub input: Vec<Wire>,
+	pub output: Wire,
+}
+
+/// Builds a composite CRC-64/GO-ISO circuit over `n_words` message words: one chip, called once
+/// per word.
+///
+/// Mixing one word into the register is the chip. Main learns each register state from a hint
+/// rather than computing it, so its own constraints say nothing about the CRC — the chip calls are
+/// what tie the states together. That makes main much smaller than the chip it calls, which is
+/// what a composite fixture wants: the two sub-systems commit oracles of different sizes.
+pub fn crc64_chip_circuit(n_words: usize) -> Crc64ChipCircuit {
+	let chip = {
+		let builder = CircuitBuilder::new();
+		let crc_in = builder.add_inout();
+		let word = builder.add_inout();
+		// `crc_out` is promoted rather than declared, so the chip states the relation in the word
+		// it already computes rather than paying for a third inout and an assertion.
+		builder.mark_inout(mix_word_gates(&builder, crc_in, word));
+		builder.build_m4()
+	};
+
+	let builder = CircuitBuilder::new();
+	let chip = builder.add_chip(chip);
+
+	let input = (0..n_words)
+		.map(|_| builder.add_inout())
+		.collect::<Vec<_>>();
+
+	let mut crc = builder.add_constant_64(INIT);
+	for &word in &input {
+		let next = builder.call_hint(MixWord, &[], &[crc, word])[0];
+		builder.call_chip(chip, &[crc, word, next]);
+		crc = next;
+	}
+
+	let output = builder.bxor(crc, builder.add_constant_64(XOR_OUT));
+	builder.mark_inout(output);
+
+	Crc64ChipCircuit {
+		circuit: builder.build_m4(),
+		input,
+		output,
+	}
 }
 
 #[cfg(test)]
