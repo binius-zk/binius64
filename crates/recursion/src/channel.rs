@@ -7,7 +7,7 @@ use std::{array, rc::Rc};
 use binius_circuits::multiplexer::multi_wire_multiplex;
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
-use binius_frontend::{Circuit, CircuitBuilder};
+use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	merkle_channel::{self, MerkleIPVerifierChannel},
@@ -63,21 +63,44 @@ pub struct Binius64BuilderChannel {
 	scheme: BinaryMerkleTreeScheme<B128, StdHashSuite>,
 	/// Merkle verifications emitted so far, used to name subcircuits.
 	n_merkle_checks: usize,
+	/// Words bound to public inputs so far, so each binding gets a distinct name.
+	n_public: usize,
 }
 
 impl Binius64BuilderChannel {
 	/// Creates a channel over a fresh builder.
-	///
-	/// The inner statement is not among the circuit's inputs yet: `IOPVerifier::verify` lifts it
-	/// through `From<Word>`, so it reaches the channel already concrete and is baked in. Taking it
-	/// as inout wires is BINIUS-433.
 	pub fn new() -> Self {
 		Self {
 			shared: Rc::new(Shared::new()),
 			n_assertions: 0,
 			scheme: BinaryMerkleTreeScheme::new(),
 			n_merkle_checks: 0,
+			n_public: 0,
 		}
+	}
+
+	/// Binds words to fresh public inputs, returning the inout wire allocated for each.
+	///
+	/// Each word keeps the witness wire the replay fills, and gains a public wire equal to it.
+	/// An outer proof can then read the value rather than trust whoever filled it.
+	///
+	/// Which words to bind is the caller's choice, so part of a statement can stay unexposed.
+	pub fn bind_public(&mut self, words: Vec<SymbolicWord>) -> Vec<Wire> {
+		// Numbered across calls, so a failing binding names which word it was.
+		let first = self.n_public;
+		self.n_public += words.len();
+
+		// One named subcircuit, so a broken binding is traceable to this gadget.
+		let builder = self.shared.builder().subcircuit("bind_public");
+		words
+			.into_iter()
+			.enumerate()
+			.map(|(i, word)| {
+				let public = builder.add_inout();
+				builder.assert_eq(format!("{}", first + i), word.to_wire(&builder), public);
+				public
+			})
+			.collect()
 	}
 
 	/// Consumes the channel and compiles what it recorded.

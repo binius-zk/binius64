@@ -16,6 +16,8 @@
 //! The Merkle commitments are checked in-circuit, so tampering with their advice is rejected here.
 //! The Fiat-Shamir state is not, so a challenge is still whatever the replay supplies.
 
+use std::iter;
+
 use binius_core::{constraint_system::ValueVec, word::Word};
 use binius_field::arch::OptimalPackedB128;
 use binius_frontend::{
@@ -134,11 +136,18 @@ fn prove_crc64() -> Proved {
 	}
 }
 
-/// Records the verifier run as a circuit.
+/// The recursive circuit, and the public wires the inner statement was bound to.
+struct Recording {
+	recorded: Recorded,
+	/// One inout wire per inner statement word, each constrained to equal what the verifier read.
+	public: Vec<Wire>,
+}
+
+/// Records the verifier run as a circuit, with the whole inner statement made public.
 ///
 /// The builder channel is wrapped in the same BaseFold layer the transcript channel gets.
 /// What the verifier does over it becomes the circuit.
-fn record(proved: &Proved) -> Recorded {
+fn record(proved: &Proved) -> Recording {
 	let builder_channel = Binius64BuilderChannel::new();
 	let mut channel = proved
 		.verifier
@@ -147,13 +156,21 @@ fn record(proved: &Proved) -> Recorded {
 	// The statement is observed by the caller, and what comes back is what the verifier reads.
 	// On this channel those are wires, so the recorded circuit takes the statement as input
 	// rather than baking it in.
-	let inout = channel.observe_words(proved.witness.inout());
+	let statement = channel.observe_words(proved.witness.inout());
 	proved
 		.verifier
 		.iop_verifier()
-		.verify(&inout, &mut channel)
+		.verify(&statement, &mut channel)
 		.expect("the symbolic run records rather than checks, so it cannot fail");
-	channel.finish().unwrap().build()
+
+	// Binding every word is this caller's choice, not the channel's.
+	// One that exposed only part of its inner statement would bind only that part.
+	let mut builder_channel = channel.finish().unwrap();
+	let public = builder_channel.bind_public(statement);
+	Recording {
+		recorded: builder_channel.build(),
+		public,
+	}
 }
 
 /// Replays the verifier over the real transcript, filling every wire the build recorded.
@@ -180,7 +197,7 @@ fn replay(proved: &Proved, recorded: &Recorded, filler: &mut WitnessFiller) {
 #[test]
 fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	let proved = prove_crc64();
-	let recorded = record(&proved);
+	let Recording { recorded, public } = record(&proved);
 	let witness = &proved.witness;
 
 	let stat = CircuitStat::collect(&recorded.circuit);
@@ -194,15 +211,17 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	);
 	assert!(stat.n_bmul_constraints > 0, "the verifier's field arithmetic should be recorded");
 
-	// The statement reaches the circuit as wires, one per inout word, rather than as constants
-	// baked in while building. That is what makes the recorded circuit verify a statement rather
-	// than one fixed instance of it.
-	let statement_wires = recorded
-		.inputs
-		.iter()
-		.filter(|input| input.kind == "observe_words")
-		.count();
-	assert_eq!(statement_wires, witness.inout().len());
+	// The statement still reaches the verifier as wires the replay fills, one per inout word.
+	assert_eq!(
+		recorded
+			.inputs
+			.iter()
+			.filter(|input| input.kind == "observe_words")
+			.count(),
+		witness.inout().len()
+	);
+	// One public wire was bound beside each of them.
+	assert_eq!(public.len(), witness.inout().len());
 
 	// The decommitted layer is on wires now, which is what the opened leaves are matched against.
 	assert!(
@@ -214,15 +233,28 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	);
 
 	// --- its witness ---------------------------------------------------------------------------
+	// Whoever checks the outer proof supplies the public half of each binding.
+	let mut filler = recorded.circuit.new_witness_filler();
+	for (&wire, &word) in iter::zip(&public, witness.inout()) {
+		filler[wire] = word;
+	}
+
 	// The same verifier runs again over the real transcript, and every value the circuit cannot
 	// derive is written into the wire the build recorded for it.
-	let mut filler = recorded.circuit.new_witness_filler();
 	replay(&proved, &recorded, &mut filler);
 
 	recorded
 		.circuit
 		.populate_wire_witness(&mut filler)
 		.expect("the recorded circuit is satisfied by the replayed witness");
+
+	// The point of the change: the circuit's public interface *is* the inner statement.
+	// An outer proof can pin what was verified instead of trusting the filler.
+	assert_eq!(
+		filler.into_value_vec().inout(),
+		witness.inout(),
+		"the recursive circuit's public values must be the statement it verifies"
+	);
 }
 
 /// Flips one bit of the first recorded wire of `kind`, and returns why the circuit then fails.
@@ -230,8 +262,11 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 /// The wire is tampered after an honest replay, so only that bit differs from a good witness.
 fn reject_tampered(kind: &'static str) -> Vec<String> {
 	let proved = prove_crc64();
-	let recorded = record(&proved);
+	let Recording { recorded, public } = record(&proved);
 	let mut filler = recorded.circuit.new_witness_filler();
+	for (&wire, &word) in iter::zip(&public, proved.witness.inout()) {
+		filler[wire] = word;
+	}
 	replay(&proved, &recorded, &mut filler);
 
 	let input = recorded
@@ -289,4 +324,42 @@ fn a_tampered_committed_vector_leaves_the_circuit_unsatisfied() {
 		paths.iter().any(|path| path.contains("verify_vector")),
 		"a corrupted committed value must fail the rebuilt tree: {paths:?}"
 	);
+}
+
+#[test]
+fn a_public_input_that_disagrees_with_the_statement_is_rejected() {
+	// Invariant: binding is a constraint, so a disagreeing public input is rejected.
+	//
+	// Fixture state: one honest proof, replayed in full, with one public word then flipped.
+	//
+	//     before:  public word == the word the replay filled
+	//     after:   public word != it, and the equality the binding emitted breaks
+	let proved = prove_crc64();
+	let Recording { recorded, public } = record(&proved);
+	let mut filler = recorded.circuit.new_witness_filler();
+	for (&wire, &word) in iter::zip(&public, proved.witness.inout()) {
+		filler[wire] = word;
+	}
+	replay(&proved, &recorded, &mut filler);
+
+	// Mutation: flip one bit of the first public word, leaving the replay's own wire alone.
+	filler[public[0]] = Word(filler[public[0]].0 ^ 1);
+
+	let error = recorded
+		.circuit
+		.populate_wire_witness(&mut filler)
+		.expect_err("a public input that disagrees must leave the circuit unsatisfied");
+
+	// `..` is forced: `PopulateError` is non-exhaustive. Both of its fields are checked here.
+	let PopulateError {
+		failures, total, ..
+	} = error;
+	assert_eq!(total, 1, "only the binding may fail");
+	assert_eq!(failures.len(), 1);
+	assert!(
+		failures[0].path.contains("bind_public"),
+		"the failure must come from the binding: {}",
+		failures[0].path
+	);
+	assert!(!failures[0].detail.is_empty(), "a failure must carry a diagnostic");
 }

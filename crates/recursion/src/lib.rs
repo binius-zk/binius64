@@ -18,6 +18,10 @@
 //! operations in the same order, and one cursor pairs what the second saw with the wires the first
 //! allocated.
 //!
+//! The statement a verifier reads comes back as wires.
+//! [`bind_public`](Binius64BuilderChannel::bind_public) ties chosen ones to public inputs.
+//! That is what lets whoever checks an outer proof see which statement was verified.
+//!
 //! # Status: a skeleton, and not sound
 //!
 //! One gadget is still missing, so a value that ought to be derived is left as a circuit input:
