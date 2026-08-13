@@ -312,7 +312,7 @@ fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph) {
 	for lin in &cb.linear_constraints {
 		let consumer = lin.dst;
 		for term in &lin.rhs {
-			leg.note_lin_use(term.wire, term.shift, consumer);
+			leg.note_lin_use(term.wire, term.sole_shift(), consumer);
 		}
 	}
 
@@ -346,7 +346,7 @@ fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph) {
 fn harvest_root_uses(operand: &WireOperand, leg: &mut LeGraph, constraint: ConstraintRef) {
 	for term in operand {
 		if leg.is_lin_def(term.wire) {
-			leg.note_root_use(term.wire, term.shift, constraint);
+			leg.note_root_use(term.wire, term.sole_shift(), constraint);
 		}
 	}
 }

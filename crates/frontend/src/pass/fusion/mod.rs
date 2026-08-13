@@ -39,9 +39,13 @@ use stat::Stat;
 
 /// How many shifts a term of the lowered constraint system may carry.
 ///
-/// A [`ShiftedValueIndex`](binius_core::constraint_system::ShiftedValueIndex) names one shift, so
-/// the pass has to collapse every inlined path down to one.
-const LOWERED_SHIFT_SLOTS: usize = 1;
+/// A [`ShiftedValueIndex`](binius_core::constraint_system::ShiftedValueIndex) names two, and the
+/// shift reduction proves both. The pass keeps to one for now: spending the second slot changes
+/// which definitions are worth inlining, which wants a cost rule this pass does not yet have.
+///
+/// Both halves of the pass read this — the commit set to decide what it may inline, and the patch
+/// builder to decide what it may spell — so they cannot disagree about the budget.
+pub(super) const LOWERED_SHIFT_SLOTS: usize = 1;
 
 pub fn run_pass(cb: &mut ConstraintBuilder, pinned_wires: &EntitySet<Wire>) {
 	let mut stat = Stat::new(cb);

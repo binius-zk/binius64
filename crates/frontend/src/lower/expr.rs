@@ -47,11 +47,8 @@ pub enum WireExprTerm {
 impl WireExprTerm {
 	const fn to_shifted_wire(self) -> ShiftedWire {
 		match self {
-			WireExprTerm::Wire(wire) => ShiftedWire {
-				wire,
-				shift: Shift::IDENTITY,
-			},
-			WireExprTerm::Shifted(wire, shift) => ShiftedWire { wire, shift },
+			WireExprTerm::Wire(wire) => ShiftedWire::single(wire, Shift::IDENTITY),
+			WireExprTerm::Shifted(wire, shift) => ShiftedWire::single(wire, shift),
 		}
 	}
 }
