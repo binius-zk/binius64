@@ -10,19 +10,22 @@
 //!   recursive circuit  <----------  its witness  ->  validated
 //! ```
 //!
-//! What this does *not* show is that the recursive circuit rejects anything. The skeleton leaves
-//! the Fiat-Shamir state and the Merkle openings unconstrained, so the values that would pin them
-//! are supplied by the replay rather than derived. What it does show is that the shapes line up:
-//! one verifier runs over both channels, reaching the same operations in the same order, and the
-//! circuit the first produced is satisfied by the witness the second filled.
+//! One verifier runs over both channels and reaches the same operations in the same order.
+//! The circuit the first produced is satisfied by the witness the second filled.
+//!
+//! The Merkle commitments are checked in-circuit, so tampering with their advice is rejected here.
+//! The Fiat-Shamir state is not, so a challenge is still whatever the replay supplies.
 
 use binius_core::{constraint_system::ValueVec, word::Word};
 use binius_field::arch::OptimalPackedB128;
-use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, Wire};
+use binius_frontend::{
+	Circuit, CircuitBuilder, CircuitStat, MAX_ASSERTION_FAILURES, PopulateError, Wire,
+	WitnessFiller,
+};
 use binius_hash::StdHashSuite;
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_prover::Prover;
-use binius_recursion::{Binius64BuilderChannel, WitnessFillerChannel};
+use binius_recursion::{Binius64BuilderChannel, Recorded, WitnessFillerChannel};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_verifier::{Verifier, config::StdChallenger};
 
@@ -96,9 +99,17 @@ fn crc64_witness(crc64: &Crc64, message: &[u64; N_INPUT_WORDS]) -> ValueVec {
 	filler.into_value_vec()
 }
 
-#[test]
-fn recursive_circuit_is_satisfied_by_a_real_proof() {
-	// --- the inner circuit and its proof -------------------------------------------------------
+/// One CRC-64 statement, proved once, for the recursion pipeline to consume.
+struct Proved {
+	verifier: Verifier<StdHashSuite>,
+	witness: ValueVec,
+	proof: Vec<u8>,
+}
+
+/// Proves one CRC-64 statement, and checks it verifies natively.
+///
+/// A proof that fails here would make every recursion failure below ambiguous.
+fn prove_crc64() -> Proved {
 	let crc64 = crc64_circuit();
 	let message = [0x0123456789abcdef, 0xfedcba9876543210, 1, u64::MAX];
 	let witness = crc64_witness(&crc64, &message);
@@ -112,30 +123,65 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	prover.prove(&witness, &mut prover_transcript).unwrap();
 	let proof = prover_transcript.finalize();
 
-	// The proof verifies natively, so anything the recursion trips over is the recursion's fault.
-	{
-		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof.clone());
-		verifier.verify(witness.inout(), &mut transcript).unwrap();
-		transcript.finalize().unwrap();
-	}
+	let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof.clone());
+	verifier.verify(witness.inout(), &mut transcript).unwrap();
+	transcript.finalize().unwrap();
 
-	// --- the recursive circuit -----------------------------------------------------------------
-	// The verifier runs over the builder channel, wrapped in the same BaseFold layer the transcript
-	// channel gets, and what it records becomes the circuit.
-	let recorded = {
-		let builder_channel = Binius64BuilderChannel::new();
-		let mut channel = verifier.iop_compiler().create_channel(builder_channel);
-		// The statement is observed by the caller, and what comes back is what the verifier reads.
-		// On this channel those are wires, so the recorded circuit takes the statement as input
-		// rather than baking it in.
-		let inout = channel.observe_words(witness.inout());
-		verifier
-			.iop_verifier()
-			.verify(&inout, &mut channel)
-			.expect("the symbolic run records rather than checks, so it cannot fail");
-		let builder_channel = channel.finish().unwrap();
-		builder_channel.build()
-	};
+	Proved {
+		verifier,
+		witness,
+		proof,
+	}
+}
+
+/// Records the verifier run as a circuit.
+///
+/// The builder channel is wrapped in the same BaseFold layer the transcript channel gets.
+/// What the verifier does over it becomes the circuit.
+fn record(proved: &Proved) -> Recorded {
+	let builder_channel = Binius64BuilderChannel::new();
+	let mut channel = proved
+		.verifier
+		.iop_compiler()
+		.create_channel(builder_channel);
+	// The statement is observed by the caller, and what comes back is what the verifier reads.
+	// On this channel those are wires, so the recorded circuit takes the statement as input
+	// rather than baking it in.
+	let inout = channel.observe_words(proved.witness.inout());
+	proved
+		.verifier
+		.iop_verifier()
+		.verify(&inout, &mut channel)
+		.expect("the symbolic run records rather than checks, so it cannot fail");
+	channel.finish().unwrap().build()
+}
+
+/// Replays the verifier over the real transcript, filling every wire the build recorded.
+fn replay(proved: &Proved, recorded: &Recorded, filler: &mut WitnessFiller) {
+	let mut transcript = VerifierTranscript::new(StdChallenger::default(), proved.proof.clone());
+	let filler_channel = WitnessFillerChannel::<_, StdChallenger, StdHashSuite>::new(
+		&mut transcript,
+		filler,
+		recorded.inputs.clone(),
+	);
+	let mut channel = proved
+		.verifier
+		.iop_compiler()
+		.create_channel(filler_channel);
+	let inout = channel.observe_words(proved.witness.inout());
+	proved
+		.verifier
+		.iop_verifier()
+		.verify(&inout, &mut channel)
+		.unwrap();
+	channel.finish().unwrap().finish();
+}
+
+#[test]
+fn recursive_circuit_is_satisfied_by_a_real_proof() {
+	let proved = prove_crc64();
+	let recorded = record(&proved);
+	let witness = &proved.witness;
 
 	let stat = CircuitStat::collect(&recorded.circuit);
 	println!(
@@ -158,28 +204,89 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 		.count();
 	assert_eq!(statement_wires, witness.inout().len());
 
+	// The decommitted layer is on wires now, which is what the opened leaves are matched against.
+	assert!(
+		recorded
+			.inputs
+			.iter()
+			.any(|input| input.kind == "merkle_layer"),
+		"the query phase must record the layer it decommits to"
+	);
+
 	// --- its witness ---------------------------------------------------------------------------
 	// The same verifier runs again over the real transcript, and every value the circuit cannot
 	// derive is written into the wire the build recorded for it.
 	let mut filler = recorded.circuit.new_witness_filler();
-	{
-		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
-		let filler_channel = WitnessFillerChannel::<_, StdChallenger, StdHashSuite>::new(
-			&mut transcript,
-			&mut filler,
-			recorded.inputs.clone(),
-		);
-		let mut channel = verifier.iop_compiler().create_channel(filler_channel);
-		let inout = channel.observe_words(witness.inout());
-		verifier
-			.iop_verifier()
-			.verify(&inout, &mut channel)
-			.unwrap();
-		channel.finish().unwrap().finish();
-	}
+	replay(&proved, &recorded, &mut filler);
 
 	recorded
 		.circuit
 		.populate_wire_witness(&mut filler)
 		.expect("the recorded circuit is satisfied by the replayed witness");
+}
+
+/// Flips one bit of the first recorded wire of `kind`, and returns why the circuit then fails.
+///
+/// The wire is tampered after an honest replay, so only that bit differs from a good witness.
+fn reject_tampered(kind: &'static str) -> Vec<String> {
+	let proved = prove_crc64();
+	let recorded = record(&proved);
+	let mut filler = recorded.circuit.new_witness_filler();
+	replay(&proved, &recorded, &mut filler);
+
+	let input = recorded
+		.inputs
+		.iter()
+		.find(|input| input.kind == kind)
+		.unwrap_or_else(|| panic!("the verifier must record at least one {kind} wire"));
+	filler[input.wire] = Word(filler[input.wire].0 ^ 1);
+
+	let error = recorded
+		.circuit
+		.populate_wire_witness(&mut filler)
+		.expect_err("a tampered witness must leave the circuit unsatisfied");
+
+	// `..` is forced: `PopulateError` is non-exhaustive. Both of its fields are checked here.
+	let PopulateError {
+		failures, total, ..
+	} = error;
+	assert!(total > 0, "an unsatisfied circuit must report a failing assertion");
+	assert_eq!(failures.len(), total.min(MAX_ASSERTION_FAILURES));
+	for failure in &failures {
+		assert!(!failure.detail.is_empty(), "a failure must carry a diagnostic");
+	}
+	failures.into_iter().map(|failure| failure.path).collect()
+}
+
+#[test]
+fn a_tampered_layer_digest_leaves_the_circuit_unsatisfied() {
+	// Invariant: the decommitted layer is folded to the root, so its digests are not free.
+	//
+	// Fixture state: one honest proof, replayed in full, with one layer digest then flipped.
+	//
+	//     before:  layer  -> fold -> the root the commitment carries
+	//     after:   layer' -> fold -> a digest that root does not match
+	//
+	// A layer digest reaches no arithmetic anywhere in the verifier, so the fold is the only thing
+	// that reads it. That is what makes this isolate the binding under test.
+	let paths = reject_tampered("merkle_layer");
+	assert!(
+		paths.iter().any(|path| path.contains("verify_layer")),
+		"a corrupted layer digest must fail the fold to the root: {paths:?}"
+	);
+}
+
+#[test]
+fn a_tampered_committed_vector_leaves_the_circuit_unsatisfied() {
+	// Invariant: a vector sent in the clear is bound by the tree rebuilt over it.
+	//
+	// Fixture state: one honest proof, replayed in full, with one committed value then flipped.
+	//
+	//     before:  data  -> rebuild -> the root the commitment carries
+	//     after:   data' -> rebuild -> a different root
+	let paths = reject_tampered("committed_vector");
+	assert!(
+		paths.iter().any(|path| path.contains("verify_vector")),
+		"a corrupted committed value must fail the rebuilt tree: {paths:?}"
+	);
 }
