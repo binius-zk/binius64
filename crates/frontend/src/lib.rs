@@ -47,7 +47,9 @@ mod lower;
 mod pass;
 
 pub use artifact::{
-	chip::{self, ChipRef, CircuitM4, CircuitM4Error, EmbeddedCircuit, PopulateM4Error},
+	chip::{
+		self, ChipGadget, ChipRef, CircuitM4, CircuitM4Error, EmbeddedCircuit, PopulateM4Error,
+	},
 	circuit::Circuit,
 	stat::{self, CircuitStat},
 	witness::{AssertionFailure, BatchWitnessFiller, PopulateError, WitnessFiller},

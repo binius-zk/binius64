@@ -1,9 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::marker::PhantomData;
+
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_field::{ExtensionField, FieldOps};
-use binius_hash::StdHashSuite;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel},
@@ -12,17 +14,19 @@ use binius_iop::{
 };
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
+use binius_utils::DeserializeBytes;
 use binius_verifier::{
 	Error, SECURITY_BITS,
 	config::{B1, B128},
 	reduction::{Instances, reduce_constraints},
 	ring_switch::{self, RingSwitchVerifyOutput},
 };
+use digest::Output;
 
 use crate::commit::BatchCommitLayout;
 
-/// The Merkle commitment scheme over the committed field.
-pub(crate) type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
+/// The Merkle commitment scheme over the committed field, for a given hash suite.
+pub(crate) type Scheme<H> = BinaryMerkleTreeScheme<B128, H>;
 
 /// IOP verifier for the M4 constraint reduction of a particular constraint system.
 ///
@@ -162,14 +166,23 @@ impl IOPVerifier {
 /// A later verification checks one proof against that fixed setup.
 ///
 /// The prover is built from this verifier, so both sides share one set of FRI parameters.
-pub struct Verifier {
+///
+/// `H` is the hash suite the Merkle commitments and the transcript channel use, as it is for
+/// [`binius_verifier::Verifier`].
+pub struct Verifier<H: HashSuite> {
 	/// The IOP verifier, holding the constraint system and the committed shape.
 	iop_verifier: IOPVerifier,
 	/// The precomputed BaseFold verifier, holding the FRI parameters.
 	iop_compiler: BaseFoldVerifierCompiler<B128>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
-impl Verifier {
+impl<H> Verifier<H>
+where
+	H: HashSuite,
+	Output<H::LeafHash>: DeserializeBytes,
+{
 	/// Builds the verifier for `2^log_instances` instances of one circuit at the given code rate.
 	///
 	/// # Arguments
@@ -190,7 +203,7 @@ impl Verifier {
 
 		// Pick the proof-size-optimal FRI fold arity for this codeword length.
 		let log_code_len = layout.log_witness_elems + log_inv_rate;
-		let merkle_scheme = Scheme::new();
+		let merkle_scheme = Scheme::<H>::new();
 		let fri_arity =
 			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
 				.arity;
@@ -209,6 +222,7 @@ impl Verifier {
 		Self {
 			iop_verifier,
 			iop_compiler,
+			_hash_marker: PhantomData,
 		}
 	}
 
@@ -253,7 +267,7 @@ impl Verifier {
 	{
 		let mut channel = self
 			.iop_compiler
-			.create_channel_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		self.iop_verifier.verify_chip(&mut channel)?;
 		channel.finish()?;
 

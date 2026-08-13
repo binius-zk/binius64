@@ -2,6 +2,7 @@
 // Copyright 2025 Irreducible Inc.
 use std::{
 	cell::{RefCell, RefMut},
+	collections::HashMap,
 	iter, mem,
 	rc::Rc,
 };
@@ -16,7 +17,7 @@ use itertools::chain;
 
 use crate::{
 	artifact::{
-		chip::{ChipRef, CircuitM4, EmbeddedCircuit},
+		chip::{ChipGadget, ChipRef, CircuitM4, EmbeddedCircuit},
 		circuit::Circuit,
 	},
 	eval_form,
@@ -105,6 +106,19 @@ pub(crate) struct PendingCall {
 	inout: Vec<Wire>,
 }
 
+/// The chip serving a gadget, and how a call site orders the words it passes.
+#[derive(Clone)]
+pub(crate) struct RegisteredGadget {
+	chip: ChipRef,
+	/// Where each of the chip's inout words sits in the gadget's interface, which is its inputs
+	/// followed by its outputs.
+	///
+	/// The inout segment is ordered by wire creation, so a promoted output lands where its gate
+	/// ran rather than where it was promoted. Registration reads the positions back off the built
+	/// chip, and a call site permutes its words by them.
+	inout_order: Vec<usize>,
+}
+
 pub(crate) struct Shared {
 	pub(crate) graph: GateGraph,
 	pub(crate) opts: Options,
@@ -114,6 +128,8 @@ pub(crate) struct Shared {
 	pub(crate) chips: Vec<EmbeddedCircuit>,
 	/// The calls the built circuit makes, in the order they were emitted.
 	pub(crate) chip_calls: Vec<PendingCall>,
+	/// The chips serving a gadget, keyed by the gadget's name and dimensions.
+	pub(crate) chip_gadgets: HashMap<(&'static str, Vec<usize>), RegisteredGadget>,
 }
 
 /// Circuit builder for constructing zero-knowledge proof circuits.
@@ -229,6 +245,7 @@ impl CircuitBuilder {
 				hint_registry: HintRegistry::new(),
 				chips: Vec::new(),
 				chip_calls: Vec::new(),
+				chip_gadgets: HashMap::new(),
 			}))),
 		}
 	}
@@ -311,6 +328,144 @@ impl CircuitBuilder {
 			chip,
 			inout: inout.to_vec(),
 		});
+	}
+
+	/// Makes a gadget a chip of the circuit being built, so that every emission of it is a call.
+	///
+	/// The chip is the gadget as a system of its own: its inputs declared with
+	/// [`Self::add_inout`], its gates emitted by [`ChipGadget::build`], and its outputs promoted
+	/// with [`Self::mark_inout`]. Building it here rather than taking one built elsewhere is what
+	/// holds the chip's interface and the call sites' words to the same order.
+	///
+	/// The chip's own gates are emitted on a builder of its own, which registers no gadget. So a
+	/// gadget reaching [`Self::build_gadget`] for itself emits its gates inside its chip rather
+	/// than calling back into it.
+	///
+	/// The gadget is keyed by its [`NAME`](Hint::NAME) and `dimensions`: a later
+	/// [`Self::build_gadget`] on the same pair is a call to this chip, and any other emission is
+	/// gates as before. Registering is the whole of the opt-in, and it reaches every subcircuit,
+	/// since they build the same circuit.
+	///
+	/// Registering a gadget the circuit never builds leaves a chip nothing calls, which
+	/// [`CircuitM4::validate`] rejects. So a circuit registers the gadgets it goes on to use.
+	///
+	/// # Panics
+	///
+	/// Panics if the gadget is already registered for these dimensions, if its `build` returns a
+	/// number of outputs other than its [`shape`](Hint::shape) declares, or if its `build`
+	/// declares inout wires of its own, which the interface a call site passes cannot reach.
+	pub fn register_chip<G: ChipGadget>(&self, gadget: G, dimensions: &[usize]) {
+		let (n_in, _) = gadget.shape(dimensions);
+
+		let body = CircuitBuilder::new();
+		let inputs = (0..n_in).map(|_| body.add_inout()).collect::<Vec<_>>();
+		let outputs = body.build_gadget(gadget, dimensions, &inputs);
+		for &wire in &outputs {
+			body.mark_inout(wire);
+		}
+		let built = body.build_m4();
+
+		let interface = chain(&inputs, &outputs).copied().collect::<Vec<_>>();
+		let inout = built.main.circuit.inout();
+		assert_eq!(
+			inout.len(),
+			interface.len(),
+			"register_chip: gadget {} holds inout words beyond the {n_in} inputs and {} outputs \
+			 of its interface",
+			G::NAME,
+			outputs.len(),
+		);
+		let position = interface
+			.iter()
+			.enumerate()
+			.map(|(k, &wire)| (wire, k))
+			.collect::<HashMap<_, _>>();
+		let inout_order = inout.iter().map(|wire| position[wire]).collect::<Vec<_>>();
+
+		let chip = self.add_chip(built);
+
+		let mut shared = self.shared.borrow_mut();
+		let previous = shared
+			.as_mut()
+			.expect("CircuitBuilder used after build")
+			.chip_gadgets
+			.insert((G::NAME, dimensions.to_vec()), RegisteredGadget { chip, inout_order });
+		assert!(
+			previous.is_none(),
+			"register_chip: gadget {} is already a chip for dimensions {dimensions:?}",
+			G::NAME,
+		);
+	}
+
+	/// Emits a gadget, as a call to its chip where [`Self::register_chip`] has made it one and as
+	/// its gates otherwise.
+	///
+	/// A call passes the words the gadget relates rather than computing them, so the outputs come
+	/// from the gadget's own [`Hint`]: [`Self::call_hint`] hands the witness its values, and the
+	/// call is the constraint that makes them the ones the gadget's gates would have produced.
+	///
+	/// Either way the returned wires hold the gadget's outputs, so a caller reads the same wires
+	/// whichever way the gadget landed.
+	///
+	/// # Panics
+	///
+	/// Panics if `inputs.len()` or the gadget's output count differs from its
+	/// [`shape`](Hint::shape).
+	pub fn build_gadget<G: ChipGadget>(
+		&self,
+		gadget: G,
+		dimensions: &[usize],
+		inputs: &[Wire],
+	) -> Vec<Wire> {
+		let (n_in, n_out) = gadget.shape(dimensions);
+		assert_eq!(
+			inputs.len(),
+			n_in,
+			"build_gadget: gadget {} takes {n_in} inputs, given {}",
+			G::NAME,
+			inputs.len(),
+		);
+
+		let outputs = match self.registered_gadget(G::NAME, dimensions) {
+			Some(registered) => {
+				let outputs = self.call_hint(gadget, dimensions, inputs);
+				let interface = chain(inputs, &outputs).copied().collect::<Vec<_>>();
+				let inout = registered
+					.inout_order
+					.iter()
+					.map(|&k| interface[k])
+					.collect::<Vec<_>>();
+				self.call_chip(registered.chip, &inout);
+				outputs
+			}
+			None => gadget.build(self, dimensions, inputs),
+		};
+
+		assert_eq!(
+			outputs.len(),
+			n_out,
+			"build_gadget: gadget {} built {} outputs, its shape declares {n_out}",
+			G::NAME,
+			outputs.len(),
+		);
+		outputs
+	}
+
+	/// The chip serving a gadget, if one is registered for these dimensions.
+	///
+	/// Copies the entry out, since a caller goes on to emit gates against the same shared state.
+	fn registered_gadget(
+		&self,
+		name: &'static str,
+		dimensions: &[usize],
+	) -> Option<RegisteredGadget> {
+		self.shared
+			.borrow()
+			.as_ref()
+			.expect("CircuitBuilder used after build")
+			.chip_gadgets
+			.get(&(name, dimensions.to_vec()))
+			.cloned()
 	}
 
 	/// Returns the circuit built by this builder.

@@ -14,9 +14,10 @@ use binius_core::{
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use crate::{
-	Circuit,
+	Circuit, CircuitBuilder,
 	artifact::witness::{PopulateError, WitnessFiller},
 	eval_form::BatchPopulateError,
+	ir::{Wire, hints::Hint},
 };
 
 /// One chip of a [`CircuitM4`], as the circuit that generates its witness.
@@ -25,8 +26,8 @@ use crate::{
 /// positionally, and every value the chip holds beyond them is derived from them. An inout wire the
 /// call does not reach is filled with zero.
 ///
-/// A wire promoted with [`CircuitBuilder::mark_inout`](crate::CircuitBuilder::mark_inout) serves
-/// as well as one declared with [`CircuitBuilder::add_inout`](crate::CircuitBuilder::add_inout).
+/// A wire promoted with [`CircuitBuilder::mark_inout`] serves
+/// as well as one declared with [`CircuitBuilder::add_inout`].
 /// Witness generation assigns every inout wire from the call data, then evaluation recomputes the
 /// promoted ones over it. Nothing checks that the two agree, and nothing has to: where they
 /// disagree the row stops matching the call site, which is what the chip call itself enforces.
@@ -377,9 +378,9 @@ pub enum PopulateM4Error {
 	},
 }
 
-/// A chip of the system a [`CircuitBuilder`](crate::CircuitBuilder) is building.
+/// A chip of the system a [`CircuitBuilder`] is building.
 ///
-/// [`CircuitBuilder::add_chip`](crate::CircuitBuilder::add_chip) returns one for each chip it
+/// [`CircuitBuilder::add_chip`] returns one for each chip it
 /// registers, and a call site names its callee by it. Registering further chips never moves a chip
 /// already registered, so a reference stays good for the rest of the build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -398,6 +399,71 @@ impl ChipRef {
 	pub const fn chip_id(self) -> usize {
 		self.0
 	}
+}
+
+/// A gadget the builder emits either as inline gates or as a call to a chip.
+///
+/// The gadget is written once, in [`build`](Self::build), and where it lands is the building
+/// circuit's to decide: [`CircuitBuilder::build_gadget`]
+/// emits the gates unless
+/// [`CircuitBuilder::register_chip`] has made the gadget a
+/// chip, in which case it emits a hint and a call constraining it.
+///
+/// The [`Hint`] half is what the chip path needs of a gadget beyond its gates. Its `NAME` and
+/// `dimensions` name which gadget a registered chip serves; [`shape`](Hint::shape) gives the arity
+/// of the gates and of the chip's interface alike; and [`execute`](Hint::execute) computes the
+/// outputs a call passes alongside its inputs.
+///
+/// So a `Hint::execute` and a `build` of the same gadget must agree on every input the circuit can
+/// reach them with. Where they disagree, the chip instance recomputes a word the call did not name,
+/// and only [`WitnessM4::verify`](binius_core::m4::WitnessM4::verify) reports it.
+///
+/// ```
+/// use binius_core::word::Word;
+/// use binius_frontend::{ChipGadget, CircuitBuilder, Hint, Wire};
+///
+/// /// The bitwise conjunction of two words.
+/// struct And;
+///
+/// impl Hint for And {
+///     const NAME: &'static str = "doc.and";
+///
+///     fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+///         (2, 1)
+///     }
+///
+///     fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+///         outputs[0] = Word(inputs[0].as_u64() & inputs[1].as_u64());
+///     }
+/// }
+///
+/// impl ChipGadget for And {
+///     fn build(&self, builder: &CircuitBuilder, _dims: &[usize], inputs: &[Wire]) -> Vec<Wire> {
+///         vec![builder.band(inputs[0], inputs[1])]
+///     }
+/// }
+///
+/// // Without a chip the gadget is its gates, and the circuit builds as any other.
+/// let builder = CircuitBuilder::new();
+/// let (a, b) = (builder.add_inout(), builder.add_inout());
+/// builder.build_gadget(And, &[], &[a, b]);
+/// builder.build();
+///
+/// // Registering the gadget is the whole of the opt-in: the same call is now a chip call.
+/// let builder = CircuitBuilder::new();
+/// builder.register_chip(And, &[]);
+/// let (a, b) = (builder.add_inout(), builder.add_inout());
+/// builder.build_gadget(And, &[], &[a, b]);
+/// builder.build_m4().validate().unwrap();
+/// ```
+pub trait ChipGadget: Hint {
+	/// Emits the gadget's gates, returning the outputs its
+	/// [`shape`](Hint::shape) declares.
+	///
+	/// Each returned wire must be gate-created: a chip promotes them with
+	/// [`CircuitBuilder::mark_inout`], which takes no other
+	/// kind. Returning an input or a constant unchanged is what that rules out.
+	fn build(&self, builder: &CircuitBuilder, dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire>;
 }
 
 /// Reason an M4 circuit cannot be populated as it stands.

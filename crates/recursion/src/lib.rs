@@ -18,24 +18,33 @@
 //! operations in the same order, and one cursor pairs what the second saw with the wires the first
 //! allocated.
 //!
-//! # Status: a skeleton, and not sound
+//! The statement a verifier reads comes back as wires.
+//! [`bind_public`](Binius64BuilderChannel::bind_public) ties chosen ones to public inputs.
+//! That is what lets whoever checks an outer proof see which statement was verified.
 //!
-//! One gadget is still missing, so a value that ought to be derived is left as a circuit input:
+//! # Status: one hole left
 //!
-//! - **The Fiat-Shamir state.** `sample` and `sample_bits` return free wires rather than the
-//!   challenger's output, so nothing ties a challenge to the transcript that produced it.
+//! One value that ought to be derived is still a circuit input:
 //!
-//! What *is* constrained is the verifier's arithmetic: the sumcheck folding, the eq-indicator and
-//! Lagrange evaluations, the monster multilinear, every `assert_zero` along the way, and both field
-//! gadgets that used to be bare hints.
+//! - **The FRI query index.** `sample_bits` returns a free wire, so a prover chooses where its
+//!   committed data is opened.
 //!
-//! The Merkle commitments are constrained too, by [`merkle`].
+//! Everything else is constrained:
+//!
+//! - the verifier's arithmetic, down to every `assert_zero` along the way
+//! - the two field gadgets that used to be bare hints
+//! - the Merkle commitments, by [`merkle`]
+//! - the Fiat-Shamir state, by [`challenger`]
+//!
 //! An opened leaf is hashed and climbed to a decommitted layer the root fixes.
 //! A committed vector has its tree rebuilt over it.
 //! Both keep their values as circuit inputs, since those values are proof data.
 //!
-//! A circuit built here still accepts proofs it should reject: a prover picks its own challenges.
-//! Driving [`challenger`] from `sample` and `sample_bits` is what removes the bullet above.
+//! Every byte the native challenger observes is absorbed here too.
+//! A challenge is therefore derived from the transcript rather than supplied.
+//!
+//! So a circuit built here still accepts proofs it should reject, at one point only.
+//! Deriving and masking the query indices is what closes the bullet above.
 
 pub mod challenger;
 mod channel;

@@ -2,12 +2,14 @@
 
 //! Verifying a whole [`ConstraintSystemM4`]: the main chip and every numbered chip.
 
+use std::marker::PhantomData;
+
 use binius_core::{
 	Word,
 	constraint_system::{InoutSegment, m4::ConstraintSystemM4},
 };
 use binius_field::FieldOps;
-use binius_hash::StdHashSuite;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleSpec},
@@ -15,8 +17,9 @@ use binius_iop::{
 };
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::checked_arithmetics::log2_ceil_usize;
+use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
 use binius_verifier::{Error, SECURITY_BITS, config::B128};
+use digest::Output;
 
 use crate::{
 	commit::BatchCommitLayout,
@@ -146,16 +149,22 @@ impl IOPVerifierM4 {
 ///
 /// See [`IOPVerifierM4`] for what a composite proof does and does not establish.
 ///
-/// The hash suite is fixed to [`StdHashSuite`], as it is for a single-chip
-/// [`Verifier`](crate::Verifier). The Binius64 verifier takes it as a parameter instead.
-pub struct VerifierM4 {
+/// `H` is the hash suite the Merkle commitments and the transcript channel use. One composite
+/// proof commits every sub-system on one channel, so one suite covers the whole system.
+pub struct VerifierM4<H: HashSuite> {
 	/// The IOP verifier, holding the sub-verifier for every sub-system.
 	iop_verifier: IOPVerifierM4,
 	/// The precomputed BaseFold verifier, holding the FRI parameters.
 	iop_compiler: BaseFoldVerifierCompiler<B128>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
-impl VerifierM4 {
+impl<H> VerifierM4<H>
+where
+	H: HashSuite,
+	Output<H::LeafHash>: DeserializeBytes,
+{
 	/// Builds the verifier for a composite system at the given code rate.
 	///
 	/// # Arguments
@@ -180,7 +189,7 @@ impl VerifierM4 {
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
-			&Scheme::new(),
+			&Scheme::<H>::new(),
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,
@@ -190,6 +199,7 @@ impl VerifierM4 {
 		Ok(Self {
 			iop_verifier,
 			iop_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -228,7 +238,7 @@ impl VerifierM4 {
 	{
 		let mut channel = self
 			.iop_compiler
-			.create_channel_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let inout = channel.observe_words(inout);
 		self.iop_verifier.verify(&inout, &mut channel)?;
 		channel.finish()?;
@@ -240,6 +250,7 @@ impl VerifierM4 {
 #[cfg(test)]
 mod tests {
 	use binius_frontend::{CircuitBuilder, CircuitM4, Wire, hints::Hint};
+	use binius_hash::StdHashSuite;
 
 	use super::*;
 
@@ -304,7 +315,7 @@ mod tests {
 	#[test]
 	fn setup_covers_every_sub_system() {
 		let cs = composite_system(4);
-		let verifier = VerifierM4::setup(&cs, 1).unwrap();
+		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, 1).unwrap();
 		let iop_verifier = verifier.iop_verifier();
 
 		// One sub-verifier per chip, alongside main's.
@@ -328,7 +339,7 @@ mod tests {
 	fn the_code_holds_every_sub_system() {
 		let log_inv_rate = 1;
 		let cs = composite_system(4);
-		let verifier = VerifierM4::setup(&cs, log_inv_rate).unwrap();
+		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, log_inv_rate).unwrap();
 
 		// The codeword encodes every oracle, so it is at least the encoding of the longest one. A
 		// setup that had handed the compiler one sub-system's specs would fall short of this.
@@ -350,6 +361,6 @@ mod tests {
 		// Mutation: drop the chip main calls, leaving every call naming a chip that is not there.
 		cs.chips.clear();
 
-		assert!(VerifierM4::setup(&cs, 1).is_err());
+		assert!(VerifierM4::<StdHashSuite>::setup(&cs, 1).is_err());
 	}
 }
