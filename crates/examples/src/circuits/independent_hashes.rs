@@ -14,6 +14,7 @@ use binius_circuits::{
 	blake3::{blake3_compress, ref_compress},
 	keccak::permutation::keccak_f1600,
 	sha256::{State as Sha256State, populate_message_block, sha256_compress},
+	util::clear_high_bits,
 };
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
@@ -135,8 +136,10 @@ impl ExampleCircuit for IndependentBlake3Compressions {
 				let block_len = builder.add_witness();
 				let flags = builder.add_witness();
 				let out = blake3_compress(builder, cv, block, counter, block_len, flags);
+				// Unlike SHA-256, this gadget splits its rounds across the two 32-bit lanes and
+				// leaves the discarded one in each word's high half, so the comparison masks it.
+				let out = out.map(|word| clear_high_bits(builder, word, 32));
 				let out_cv = std::array::from_fn(|_| builder.add_inout());
-				// See the SHA-256 note on raw 64-bit equality over 32-bit lanes.
 				builder.assert_eq_v(format!("blake3_compression_out[{i}]"), out, out_cv);
 				Blake3Compression {
 					cv,

@@ -8,7 +8,8 @@
 //! wrapping structs.
 //!
 //! The entry points are:
-//! - [`blake3_compress`] — single-block compression primitive.
+//! - [`blake3_compress`] — single-block compression primitive, its rounds split across the two
+//!   32-bit lanes.
 //! - [`blake3_compress_2x_seq`] — two sequential compressions sharing one parallel core.
 //! - [`blake3_chunk`] — single-chunk (up to 16 blocks) chaining-value gadget.
 //! - [`blake3_fixed`] — full hash gadget for messages of compile-time-known length, spanning any
@@ -173,16 +174,16 @@ pub fn blake3_chunk(
 		);
 	}
 
-	// A trailing block with no partner runs through the one-lane core.
+	// A trailing block with no partner is compressed on its own.
 	//
 	//     6 blocks: [0,1] [2,3] [4,5]              -> 3 paired cores
-	//     7 blocks: [0,1] [2,3] [4,5] then 6 alone -> 3 paired cores + 1 one-lane core
+	//     7 blocks: [0,1] [2,3] [4,5] then 6 alone -> 3 paired cores + 1 lone compression
 	//
 	// Why not pad to an even count with a dummy block:
-	// - The paired core costs a chaining-value binding on top of its mixing rounds.
-	// - It also packs a second lane's counter, length and flags.
+	// - The paired core runs all 7 rounds, where a lone compression splits its own rounds across
+	//   the two lanes and runs 4.
+	// - The pair also packs a second lane's counter, length and flags.
 	// - All of that would be spent producing a result nothing reads.
-	// - The one-lane core is cheaper even though it leaves half of each word idle.
 	if n_blocks % 2 == 1 {
 		let last = n_blocks - 1;
 		cv = blake3_compress(
@@ -208,6 +209,9 @@ pub fn blake3_chunk(
 /// The parent block is the two children concatenated (16 words); the chaining value is the key (or
 /// the [`IV`] when unkeyed), the counter is 0, the block length is [`BLOCK_BYTES`], and the flags
 /// are [`PARENT`] (plus [`ROOT`] for the tree root).
+///
+/// The result's high halves are cleared, since a parent's value is read whole: the level above
+/// merges it with a shift, and the root is the digest.
 fn blake3_parent(
 	builder: &CircuitBuilder,
 	key: Option<[Wire; 8]>,
@@ -221,7 +225,8 @@ fn blake3_parent(
 	let block_len = builder.add_constant(Word(BLOCK_BYTES as u64));
 	let root_flag = if is_root { ROOT } else { 0 };
 	let flags = builder.add_constant(Word((PARENT | root_flag | key_flag(key)) as u64));
-	blake3_compress(builder, cv, block, counter, block_len, flags)
+	let out = blake3_compress(builder, cv, block, counter, block_len, flags);
+	std::array::from_fn(|i| clear_high_bits(builder, out[i], 32))
 }
 
 /// Two independent BLAKE3 parent-node compressions of one hash, evaluated in the two lanes of
@@ -519,9 +524,11 @@ fn blake3_hash_fixed(
 /// - The block count, the block lengths, the flags and the tree shape all agree.
 /// - So every compression of one hash has exactly one partner in the other.
 ///
-/// The saving lands where a single hash has no partner block to pair with.
-/// - It then spends a whole core on one lane, through [`blake3_compress_2x_seq`].
-/// - A one-block message, the shape a tweakable hash uses, halves.
+/// The saving lands where a single hash has an odd block with no partner to pair with.
+/// - That block goes through [`blake3_compress`], which fills the lanes by splitting its own rounds
+///   across them and so evaluates 3 of its 7 rounds twice.
+/// - Pairing two hashes puts a real second hash in that lane instead, and the duplicated rounds are
+///   what it recovers: 336 AND constraints against 384, for a one-block message.
 ///
 /// # Arguments
 ///
@@ -1223,7 +1230,7 @@ mod tests {
 		//
 		//     0..=64 bytes  one block, the shape a tweakable hash uses
 		//     65..=128      two blocks, where the single-hash path also fills both lanes
-		//     129..=192     three blocks, where it falls back to a one-lane compression
+		//     129..=192     three blocks, where it falls back to a lone compression
 		//     1025+         several chunks, so the parent tree runs too
 		for &len in &[0usize, 1, 64, 65, 128, 192, 1024, 2048] {
 			let (single, paired) = and_counts(len);
@@ -1234,11 +1241,14 @@ mod tests {
 			);
 		}
 
-		// A one-block message is what the gadget exists for: two hashes for the price of one.
+		// A one-block message is the shape the gadget exists for, and the only one where it wins
+		// outright: a lone compression splits its own rounds across the lanes, so the single-hash
+		// path leaves nothing idle for the pair to reclaim, and the pair's saving is the 3 rounds
+		// the split spends twice rather than a whole second core.
 		let (single, paired) = and_counts(BLOCK_BYTES);
 		assert!(
-			2 * paired <= single,
-			"a one-block pair costs {paired} AND constraints, over half of the {single} two \
+			paired < single,
+			"a one-block pair costs {paired} AND constraints, no less than the {single} two \
 			 single hashes cost"
 		);
 	}
