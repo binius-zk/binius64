@@ -21,7 +21,33 @@
 //! In circuit the chain work is not the 99 steps a verifier walks but every one of the
 //! `V * (CHAIN_LENGTH - 1) = 294`: each step's tweak is a circuit constant, so a chain has to
 //! evaluate all of its steps and take the hashed value only past its digit. The target sum buys
-//! encoding validity here rather than verifier work, and a verification is 339 compressions.
+//! encoding validity here rather than verifier work.
+//!
+//! Those 294 run two chains to a compression, as the two 32-bit lanes of one paired BLAKE3 core,
+//! so they cost 147 cores beside the 45 lone compressions of the encoding, the leaf and the path.
+//!
+//! # Example
+//!
+//! Sign a message and verify it, out of circuit:
+//!
+//! ```
+//! use binius_circuits::hash_based_sig::{MESSAGE_LEN, xmss};
+//! use rand::{Rng, SeedableRng, rngs::StdRng};
+//!
+//! let mut rng = StdRng::seed_from_u64(0);
+//! let mut message = [0u8; MESSAGE_LEN];
+//! rng.fill_bytes(&mut message);
+//!
+//! let epoch = 42;
+//! let (public_key, signature) = xmss::generate_signature(&mut rng, &message, epoch);
+//! xmss::xmss_verify(&public_key, &message, &signature, epoch).unwrap();
+//!
+//! // The same signature at any other epoch is not a signature.
+//! assert!(xmss::xmss_verify(&public_key, &message, &signature, epoch + 1).is_err());
+//! ```
+//!
+//! [`xmss::circuit_xmss_verify`] is the in-circuit form of that check, and
+//! [`aggregate::circuit_xmss_multisig`] runs it for several signers over one message.
 //!
 //! CREDIT: <https://github.com/leanEthereum/leanVM-b> (XMSS construction).
 

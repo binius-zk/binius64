@@ -7,11 +7,12 @@
 //! many targets an attacker may aim at, and the public parameter separates users. Hashing the
 //! exact byte string binds its length, so no digest extends into the digest of a longer input.
 
+use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{DIGEST_LEN, DIGEST_WIRES, Digest, PUBLIC_PARAM_WIRES, PublicParam};
 use crate::{
-	blake3::blake3_fixed,
+	blake3::{CHUNK_END, CHUNK_START, IV, ROOT, blake3_compress_2x, blake3_fixed},
 	util::{clear_high_bits, split_u32_words},
 };
 
@@ -103,6 +104,88 @@ pub fn circuit_tweak_hash(
 	let len_bytes = words.len() * 8;
 	let message = split_u32_words(builder, &words, len_bytes / 4);
 	truncate(builder, &blake3_fixed(builder, &message, len_bytes))
+}
+
+/// BLAKE3 block size in bytes.
+const BLOCK_BYTES: usize = 64;
+
+/// Two independent tweak hashes evaluated as the two lanes of one compression.
+///
+/// A hash whose whole byte string fits one 64-byte block is one chunk of one block, so its digest
+/// is a single compression carrying `CHUNK_START | CHUNK_END | ROOT` at counter zero. Two of those
+/// differ only in their message block, which is what lets them share a paired core.
+///
+/// This is cheaper than two lone compressions, though not for the reason the lane count suggests.
+/// A lone compression already uses both lanes, splitting its own seven rounds across them for four
+/// packed rounds, so on rounds alone the pair only trades eight for seven. The rest of the saving
+/// is the split itself: a lone compression hints its mid-round state and then constrains that hint
+/// word for word, and a pair has no split to pin.
+///
+/// Both lanes take the same tweak type and index and the same payload length; only the
+/// sub-position and the payload differ, which is exactly how two chains at one step differ.
+///
+/// # Panics
+///
+/// - If the two payloads differ in length.
+/// - If the hashed byte string does not fit one block.
+pub fn circuit_tweak_hash_2x(
+	builder: &CircuitBuilder,
+	public_param: &[Wire; PUBLIC_PARAM_WIRES],
+	tweak_type: u8,
+	sub_positions: [u32; 2],
+	index: Wire,
+	payloads: [&[Wire]; 2],
+) -> [[Wire; DIGEST_WIRES]; 2] {
+	assert_eq!(
+		payloads[0].len(),
+		payloads[1].len(),
+		"both lanes must hash the same number of bytes"
+	);
+	let len_bytes = (TWEAK_WIRES + PUBLIC_PARAM_WIRES + payloads[0].len()) * 8;
+	assert!(
+		len_bytes <= BLOCK_BYTES,
+		"a two-lane tweak hash needs its {len_bytes} bytes to fit one {BLOCK_BYTES}-byte block"
+	);
+
+	// Each lane's block, as 32-bit words zero-padded out to the full 64 bytes.
+	let lane_block = |lane: usize| {
+		let mut words = Vec::with_capacity(TWEAK_WIRES + PUBLIC_PARAM_WIRES + payloads[lane].len());
+		words.extend_from_slice(&tweak_wires(builder, tweak_type, sub_positions[lane], index));
+		words.extend_from_slice(public_param);
+		words.extend_from_slice(payloads[lane]);
+		split_u32_words(builder, &words, BLOCK_BYTES / 4)
+	};
+	let (block0, block1) = (lane_block(0), lane_block(1));
+
+	// Lane 0 occupies the low half of each word and lane 1 the high half. The words come out of
+	// the split with clean high halves, so the exclusive-or is a disjoint merge.
+	let block: [Wire; BLOCK_BYTES / 4] =
+		std::array::from_fn(|i| builder.bxor(block0[i], builder.shl(block1[i], 32)));
+
+	// Everything but the message is identical in both lanes, so each is one constant carrying the
+	// same value twice.
+	let duplicated =
+		|value: u32| builder.add_constant(Word((value as u64) | ((value as u64) << 32)));
+	let cv: [Wire; 8] = std::array::from_fn(|i| duplicated(IV[i]));
+	let zero = builder.add_constant_64(0);
+	let block_len = duplicated(len_bytes as u32);
+	// A lone chunk that is the whole message: the block both starts and ends it, and is the root.
+	let flags = duplicated(CHUNK_START | CHUNK_END | ROOT);
+
+	let out = blake3_compress_2x(builder, cv, block, zero, zero, block_len, flags);
+
+	// The digest is the low DIGEST_LEN bytes, so only the first words are read back, each split
+	// into the lane it belongs to.
+	[
+		std::array::from_fn(|k| {
+			let low = clear_high_bits(builder, out[2 * k], 32);
+			builder.bxor(low, builder.shl(out[2 * k + 1], 32))
+		}),
+		std::array::from_fn(|k| {
+			let low = builder.shr(out[2 * k], 32);
+			builder.bxor(low, builder.shl(builder.shr(out[2 * k + 1], 32), 32))
+		}),
+	]
 }
 
 /// The tweak as 64-bit little-endian wires.
@@ -242,6 +325,52 @@ mod tests {
 		for index in [0, 1, u32::MAX, u32::MAX - 1, 1 << 24, (1 << 24) - 1] {
 			check(&pp, TWEAK_TYPE_CHAIN, 0, index, &[9u8; DIGEST_LEN]);
 		}
+	}
+
+	#[test]
+	fn two_lane_hash_matches_the_reference_in_both_lanes() {
+		// The paired core must agree with `tweak_hash` lane for lane, at the chain step's shape.
+		let pp = [6u8; PUBLIC_PARAM_LEN];
+		let payloads = [[1u8; DIGEST_LEN], [2u8; DIGEST_LEN]];
+		let sub_positions = [17u32, 25];
+		let index = 4242u32;
+
+		let b = CircuitBuilder::new();
+		let param_w: [Wire; PUBLIC_PARAM_WIRES] = std::array::from_fn(|_| b.add_inout());
+		let index_w = b.add_inout();
+		let payload_w: [[Wire; DIGEST_WIRES]; 2] =
+			std::array::from_fn(|_| std::array::from_fn(|_| b.add_inout()));
+		let digests = circuit_tweak_hash_2x(
+			&b,
+			&param_w,
+			TWEAK_TYPE_CHAIN,
+			sub_positions,
+			index_w,
+			[&payload_w[0], &payload_w[1]],
+		);
+		let expected: [[Wire; DIGEST_WIRES]; 2] =
+			std::array::from_fn(|_| std::array::from_fn(|_| b.add_inout()));
+		for lane in 0..2 {
+			b.assert_eq_v(format!("lane[{lane}]"), digests[lane], expected[lane]);
+		}
+
+		let circuit = b.build();
+		let mut w = circuit.new_witness_filler();
+		w.pack_bytes_le(&param_w, &pp);
+		w[index_w] = Word::from_u64(index as u64);
+		for lane in 0..2 {
+			w.pack_bytes_le(&payload_w[lane], &payloads[lane]);
+			w.pack_bytes_le(
+				&expected[lane],
+				&tweak_hash(&pp, TWEAK_TYPE_CHAIN, sub_positions[lane], index, &payloads[lane]),
+			);
+		}
+
+		circuit.populate_wire_witness(&mut w).unwrap();
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.unwrap();
 	}
 
 	proptest! {

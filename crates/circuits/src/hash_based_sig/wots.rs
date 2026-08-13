@@ -5,6 +5,8 @@
 //! encoding's digits sum to [`TARGET_SUM`], and a verifier that checks the sum knows no digit can
 //! have been lowered without another being raised.
 
+use std::iter;
+
 use binius_frontend::{CircuitBuilder, Wire};
 use rand::CryptoRng;
 
@@ -13,7 +15,8 @@ use super::{
 	PUBLIC_PARAM_WIRES, PublicParam, RANDOMNESS_LEN, RANDOMNESS_WIRES, Randomness, TARGET_SUM, V,
 	W,
 	hashing::{
-		TWEAK_TYPE_CHAIN, TWEAK_TYPE_ENCODING, TWEAK_TYPE_WOTS_PK, circuit_tweak_hash, tweak_hash,
+		TWEAK_TYPE_CHAIN, TWEAK_TYPE_ENCODING, TWEAK_TYPE_WOTS_PK, circuit_tweak_hash,
+		circuit_tweak_hash_2x, tweak_hash,
 	},
 };
 
@@ -64,10 +67,8 @@ pub fn wots_encode(
 			64 + W * (i - DIGITS_PER_WORD)
 		}
 	};
-	let mut encoding = [0u8; V];
-	for (i, e) in encoding.iter_mut().enumerate() {
-		*e = (0..W).fold(0, |acc, k| acc | (bit(pos(i) + k) << k));
-	}
+	let encoding: [u8; V] =
+		std::array::from_fn(|i| (0..W).fold(0, |acc, k| acc | (bit(pos(i) + k) << k)));
 	(encoding.iter().map(|&x| x as usize).sum::<usize>() == TARGET_SUM).then_some(encoding)
 }
 
@@ -137,7 +138,7 @@ pub fn wots_public_key_hash(
 	chain_ends: &[Digest; V],
 ) -> Digest {
 	let mut data = [0u8; V * DIGEST_LEN];
-	for (chunk, end) in data.chunks_exact_mut(DIGEST_LEN).zip(chain_ends) {
+	for (chunk, end) in iter::zip(data.chunks_exact_mut(DIGEST_LEN), chain_ends) {
 		chunk.copy_from_slice(end);
 	}
 	tweak_hash(public_param, TWEAK_TYPE_WOTS_PK, 0, epoch, &data)
@@ -183,11 +184,9 @@ pub fn circuit_wots_encode(
 	});
 
 	// The digits are each below CHAIN_LENGTH by construction, so the sum cannot overflow.
-	let mut sum = zero;
-	for &digit in &digits {
-		let (next, _carry) = builder.iadd(sum, digit);
-		sum = next;
-	}
+	let sum = digits
+		.iter()
+		.fold(zero, |acc, &digit| builder.iadd(acc, digit).0);
 	builder.assert_eq("encoding_target_sum", sum, builder.add_constant_64(TARGET_SUM as u64));
 
 	digits
@@ -199,6 +198,9 @@ pub fn circuit_wots_encode(
 /// its digit, because a step's tweak is a circuit constant and cannot be indexed by the digit. A
 /// chain whose digit is `CHAIN_LENGTH - 1` therefore never advances, and its end is its tip, as
 /// the scheme requires.
+///
+/// Chains are walked in pairs, both lanes of one compression per step. Chains are independent and
+/// [`V`] is even, so every step of every chain finds a partner at the same step.
 pub fn circuit_recover_public_key(
 	builder: &CircuitBuilder,
 	public_param: &[Wire; PUBLIC_PARAM_WIRES],
@@ -206,24 +208,34 @@ pub fn circuit_recover_public_key(
 	chain_tips: &[[Wire; DIGEST_WIRES]; V],
 	digits: &[Wire; V],
 ) -> [[Wire; DIGEST_WIRES]; V] {
-	std::array::from_fn(|i| {
-		let mut current = chain_tips[i];
-		for step in 0..CHAIN_LENGTH - 1 {
-			let next = circuit_tweak_hash(
-				builder,
-				public_param,
-				TWEAK_TYPE_CHAIN,
-				(i * CHAIN_LENGTH + step) as u32,
-				epoch,
-				&current,
-			);
-			// The reference walks steps `digit..CHAIN_LENGTH - 2`, so this step applies exactly
-			// when `digit <= step`.
-			let advance = builder.icmp_ult(digits[i], builder.add_constant_64(step as u64 + 1));
-			current = std::array::from_fn(|k| builder.select(advance, next[k], current[k]));
-		}
-		current
-	})
+	let chain_ends = (0..V / 2)
+		.flat_map(|pair| {
+			let (c0, c1) = (2 * pair, 2 * pair + 1);
+			(0..CHAIN_LENGTH - 1).fold([chain_tips[c0], chain_tips[c1]], |current, step| {
+				let next = circuit_tweak_hash_2x(
+					builder,
+					public_param,
+					TWEAK_TYPE_CHAIN,
+					[
+						(c0 * CHAIN_LENGTH + step) as u32,
+						(c1 * CHAIN_LENGTH + step) as u32,
+					],
+					epoch,
+					[&current[0], &current[1]],
+				);
+				// The reference walks steps `digit..CHAIN_LENGTH - 2`, so this step applies
+				// exactly when `digit <= step`.
+				let past = builder.add_constant_64(step as u64 + 1);
+				std::array::from_fn(|lane| {
+					let advance = builder.icmp_ult(digits[2 * pair + lane], past);
+					std::array::from_fn(|k| {
+						builder.select(advance, next[lane][k], current[lane][k])
+					})
+				})
+			})
+		})
+		.collect::<Vec<_>>();
+	std::array::from_fn(|i| chain_ends[i])
 }
 
 /// In-circuit form of [`wots_public_key_hash`].
@@ -233,7 +245,7 @@ pub fn circuit_wots_public_key_hash(
 	epoch: Wire,
 	chain_ends: &[[Wire; DIGEST_WIRES]; V],
 ) -> [Wire; DIGEST_WIRES] {
-	let payload: Vec<Wire> = chain_ends.iter().flatten().copied().collect();
+	let payload = chain_ends.iter().flatten().copied().collect::<Vec<_>>();
 	circuit_tweak_hash(builder, public_param, TWEAK_TYPE_WOTS_PK, 0, epoch, &payload)
 }
 

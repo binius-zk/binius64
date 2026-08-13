@@ -1,9 +1,14 @@
 // Copyright 2026 The Binius Developers
-//! M4 proof of one XMSS verification.
+//! M4 proof of one XMSS verification, compressing through a BLAKE3 chip.
 //!
 //! The companion to `prove_hash_primitives`, one level up: that file proves a batch of bare
-//! primitives, this one proves a whole signature verification — 339 BLAKE3 compressions over the
-//! encoding, the 42 Winternitz chains, the leaf and the 32-level authentication path.
+//! primitives, this one proves a whole signature verification — the encoding, the 42 Winternitz
+//! chains, the leaf and the 32-level authentication path.
+//!
+//! Registering the chip is the whole opt-in: `circuit_xmss_verify` reaches `blake3_compress_2x`
+//! through the paired chain steps without knowing whether it lands in gates or a chip call. The
+//! lone compressions the encoding, the leaf and the path use stay inline, so the chip serves the
+//! chain steps alone.
 //!
 //! The proof runs inside a timing span. With tracing enabled, the prover's internal spans nest
 //! beneath that span, so the per-phase breakdown of proving is visible.
@@ -19,9 +24,12 @@
 //!     -- --ignored --nocapture
 //! ```
 
-use binius_circuits::hash_based_sig::{
-	DIGEST_WIRES, MESSAGE_LEN, MESSAGE_WIRES, Message, PUBLIC_PARAM_WIRES,
-	xmss::{XmssSignatureWires, circuit_xmss_verify, generate_signature},
+use binius_circuits::{
+	blake3::Blake3Compress2x,
+	hash_based_sig::{
+		DIGEST_WIRES, MESSAGE_LEN, MESSAGE_WIRES, Message, PUBLIC_PARAM_WIRES,
+		xmss::{XmssSignatureWires, circuit_xmss_verify, generate_signature},
+	},
 };
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, CircuitM4, CircuitStat, Wire, WitnessFiller};
@@ -65,9 +73,10 @@ struct XmssWires {
 	signature: XmssSignatureWires,
 }
 
-/// Builds a circuit verifying one XMSS signature.
+/// Builds a circuit verifying one XMSS signature, with the paired BLAKE3 compression as a chip.
 fn build_xmss_circuit() -> (CircuitM4, XmssWires) {
 	let builder = CircuitBuilder::new();
+	builder.register_chip(Blake3Compress2x, &[]);
 
 	// Everything the verifier is given is public: the statement is the signature and what it
 	// signs. Nothing here is a witness, so the committed trace holds only derived values.
@@ -130,7 +139,15 @@ fn prove_hash_based_sig() {
 		.validate()
 		.expect("the system can be populated in one pass");
 
+	// Report what each sub-system costs. The chip's instance count is what the chain steps
+	// produced, and the spare-capacity lines show how much of each padded section is wasted.
 	debug!("xmss main circuit stats:\n{}", CircuitStat::collect(&circuit.main.circuit));
+	for (id, (chip, instances)) in circuit.chips.iter().enumerate() {
+		debug!(
+			"xmss chip[{id}] over {instances} instances:\n{}",
+			CircuitStat::collect(&chip.circuit)
+		);
+	}
 
 	// Generate the witness in its own span: for this circuit that is every BLAKE3 compression,
 	// which is the bulk of it.
