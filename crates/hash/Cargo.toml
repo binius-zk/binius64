@@ -10,6 +10,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+binius-compute = { path = "../compute" }
 binius-field = { path = "../field" }
 binius-utils = { path = "../utils" }
 blake3 = { workspace = true, features = ["traits-preview"] }

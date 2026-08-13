@@ -1,6 +1,9 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::fmt;
+
+use binius_compute::{Allocator, GlobalAllocator, VecLike};
 use binius_field::Field;
 use binius_utils::{
 	checked_arithmetics::checked_log_2,
@@ -82,27 +85,41 @@ pub enum Error {
 /// A binary tree is then folded over those leaf digests.
 ///
 /// All committed vectors must have the same length, and that length must be a power of two.
-#[derive(Debug, Clone)]
-pub struct BinaryMerkleTree<D> {
+///
+/// The nodes are drawn from an [`Allocator`], so a prover can back the whole tree with pooled
+/// memory instead of the global heap. The default is [`GlobalAllocator`], which is a plain [`Vec`].
+pub struct BinaryMerkleTree<D: Send, A: Allocator = GlobalAllocator> {
 	/// Base-2 logarithm of the number of leaves.
 	pub log_len: usize,
 	/// The inner nodes, arranged as a flattened array of layers with the root at the end.
-	pub inner_nodes: Vec<D>,
+	pub inner_nodes: A::Vec<D>,
 }
 
-impl<N: ArraySize> BinaryMerkleTree<Array<u8, N>> {
+/// Written through the node slice rather than the buffer, so no allocator has to be [`Debug`]
+/// itself for a tree over it to be.
+impl<D: fmt::Debug + Send, A: Allocator> fmt::Debug for BinaryMerkleTree<D, A> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("BinaryMerkleTree")
+			.field("log_len", &self.log_len)
+			.field("inner_nodes", &&*self.inner_nodes)
+			.finish()
+	}
+}
+
+impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 	/// Commits a slice of values, cutting it into consecutive leaves.
 	///
 	/// # Arguments
 	///
 	/// * `elements` - the values to commit, in leaf order.
 	/// * `batch_size` - how many consecutive values are hashed together into one leaf.
+	/// * `alloc` - the allocator the tree's nodes are drawn from.
 	///
 	/// # Errors
 	///
 	/// * The value count is not a multiple of the batch size.
 	/// * The resulting leaf count is not a power of two.
-	pub fn new<F, H>(elements: &[F], batch_size: usize) -> Result<Self, Error>
+	pub fn new<F, H>(elements: &[F], batch_size: usize, alloc: &A) -> Result<Self, Error>
 	where
 		F: Field,
 		H: HashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
@@ -128,6 +145,7 @@ impl<N: ArraySize> BinaryMerkleTree<Array<u8, N>> {
 				.par_chunks(batch_size)
 				.map(|chunk| chunk.iter().copied()),
 			batch_size,
+			alloc,
 		))
 	}
 
@@ -149,11 +167,12 @@ impl<N: ArraySize> BinaryMerkleTree<Array<u8, N>> {
 	///
 	/// * `leaves` - one iterator per leaf, each yielding that leaf's values.
 	/// * `n_items_per_input` - how many values every leaf iterator yields.
+	/// * `alloc` - the allocator the tree's nodes are drawn from.
 	///
 	/// # Panics
 	///
 	/// Panics unless the number of leaves is a power of two.
-	pub fn from_leaves<F, H, ParIter>(leaves: ParIter, n_items_per_input: usize) -> Self
+	pub fn from_leaves<F, H, ParIter>(leaves: ParIter, n_items_per_input: usize, alloc: &A) -> Self
 	where
 		F: Field,
 		H: HashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
@@ -163,8 +182,9 @@ impl<N: ArraySize> BinaryMerkleTree<Array<u8, N>> {
 		let log_len = checked_log_2(leaves.len());
 
 		// A binary tree over 2^log_len leaves has 2^(log_len+1) - 1 nodes in total.
+		// The whole tree is one allocation, which the layer loop then fills front to back.
 		let total_length = (1 << (log_len + 1)) - 1;
-		let mut inner_nodes = Vec::with_capacity(total_length);
+		let mut inner_nodes = alloc.alloc::<Array<u8, N>>(total_length);
 
 		// Fill the widest layer first, straight into uninitialized capacity.
 		{
@@ -213,7 +233,7 @@ impl<N: ArraySize> BinaryMerkleTree<Array<u8, N>> {
 	}
 }
 
-impl<D: Clone> BinaryMerkleTree<D> {
+impl<D: Clone + Send, A: Allocator> BinaryMerkleTree<D, A> {
 	/// Clones the root digest, which sits last in the flattened layers.
 	pub fn root(&self) -> D {
 		self.inner_nodes
@@ -285,7 +305,7 @@ mod tests {
 		let elements = (0..n_values)
 			.map(|i| B128::new(i as u128))
 			.collect::<Vec<_>>();
-		BinaryMerkleTree::new::<B128, Sha256HashSuite>(&elements, batch_size)
+		BinaryMerkleTree::new::<B128, Sha256HashSuite>(&elements, batch_size, &GlobalAllocator)
 	}
 
 	#[test]
