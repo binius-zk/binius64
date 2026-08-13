@@ -132,6 +132,7 @@ where
 		&self,
 		channel: Channel,
 		rng: impl Rng,
+		alloc: A,
 	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel, A>
 	where
 		Channel: MerkleIPProverChannel<F>,
@@ -143,6 +144,7 @@ where
 			self.oracle_specs.clone(),
 			self.fri_params.clone(),
 			rng,
+			alloc,
 		)
 	}
 
@@ -160,6 +162,7 @@ where
 	pub fn create_channel_without_zk<Channel, A>(
 		&self,
 		channel: Channel,
+		alloc: A,
 	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel, A>
 	where
 		Channel: MerkleIPProverChannel<F>,
@@ -172,7 +175,7 @@ where
 		);
 
 		// No mask is ever drawn, so the seed is arbitrary; reuse the seeded-RNG constructor.
-		self.create_channel(channel, StdRng::seed_from_u64(0))
+		self.create_channel(channel, StdRng::seed_from_u64(0), alloc)
 	}
 
 	/// Creates a ZK prover channel over a transcript, for the common case.
@@ -201,6 +204,7 @@ where
 				BinaryMerkleTreeProver::with_allocator(alloc),
 			),
 			rng,
+			alloc,
 		)
 	}
 
@@ -220,9 +224,12 @@ where
 		Output<H::LeafHash>: SerializeBytes,
 		A: Allocator,
 	{
-		self.create_channel_without_zk(ProverMerkleTranscriptChannel::with_merkle_prover(
-			transcript,
-			BinaryMerkleTreeProver::with_allocator(alloc),
-		))
+		self.create_channel_without_zk(
+			ProverMerkleTranscriptChannel::with_merkle_prover(
+				transcript,
+				BinaryMerkleTreeProver::with_allocator(alloc),
+			),
+			alloc,
+		)
 	}
 }

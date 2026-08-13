@@ -436,7 +436,7 @@ where
 			.prove_chip::<P, _, _>(table, &mut channel, &alloc);
 
 		let _scope = tracing::debug_span!("PCS opening").entered();
-		channel.finish(&alloc);
+		channel.finish();
 	}
 }
 

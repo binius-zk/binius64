@@ -206,7 +206,7 @@ where
 			.prove::<P, _, _>(witness, &mut channel, &alloc)?;
 
 		let _scope = tracing::debug_span!("PCS opening").entered();
-		channel.finish(&alloc);
+		channel.finish();
 
 		Ok(())
 	}

@@ -227,7 +227,7 @@ where
 		)?;
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
 		// the single combined opening over all committed oracles now.
-		inner_channel.finish(alloc);
+		inner_channel.finish();
 		Ok(())
 	}
 }

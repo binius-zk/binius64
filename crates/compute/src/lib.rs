@@ -30,7 +30,11 @@ pub use buffer_pool::{BufferPool, PoolVec};
 /// [`Sync`] is required because the prover shares `&impl Allocator` across rayon tasks (e.g. the
 /// parallel fractional-addition GKR reduction); both `&BufferPool` and `GlobalAllocator` are
 /// `Sync`.
-pub trait Allocator: Sync {
+///
+/// [`Copy`] is required because a caller often hands the same allocator to several things at once
+/// — a channel and the Merkle prover inside it, say. An allocator handle is a pool reference or a
+/// unit struct, so both implementors are already `Copy` and the bound costs them nothing.
+pub trait Allocator: Sync + Copy {
 	/// The buffer type this allocator hands out for element type `T`.
 	///
 	/// It is both a [`VecLike`] (growable) and a [`BufferData`] (shrinkable-in-place) buffer, so an
