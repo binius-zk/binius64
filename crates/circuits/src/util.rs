@@ -26,6 +26,67 @@ pub fn clear_high_bits(builder: &CircuitBuilder, w: Wire, n: u32) -> Wire {
 	builder.shr(builder.shl(w, n), n)
 }
 
+/// Splits each 64-bit wire into two little-endian 32-bit word wires (low half, then high half).
+///
+/// Returns exactly `num_words` words, zero-padding when `data` runs out.
+pub(crate) fn split_u32_words(
+	builder: &CircuitBuilder,
+	data: &[Wire],
+	num_words: usize,
+) -> Vec<Wire> {
+	let mut words = Vec::with_capacity(num_words);
+	for &w in data {
+		if words.len() >= num_words {
+			break;
+		}
+		words.push(clear_high_bits(builder, w, 32));
+		if words.len() >= num_words {
+			break;
+		}
+		words.push(builder.shr(w, 32));
+	}
+	while words.len() < num_words {
+		words.push(builder.add_constant_64(0));
+	}
+	words
+}
+
+/// Splits a byte vector into `num_words` 32-bit words, forcing every byte at index `>= valid_bytes`
+/// to zero.
+///
+/// The zeroing closes a malleability gap:
+/// - a byte vector leaves bytes past its length unconstrained,
+/// - a hash compression mixes the whole block, including those bytes,
+/// - pinning them stops a prover from choosing the padding to alter the digest.
+///
+/// Each word is handled by its position relative to the content:
+/// - fully inside: passed through,
+/// - fully past: replaced by the zero constant,
+/// - straddling the boundary: masked to its low valid bytes.
+pub(crate) fn zeroed_u32_words(
+	builder: &CircuitBuilder,
+	data: &[Wire],
+	valid_bytes: usize,
+	num_words: usize,
+) -> Vec<Wire> {
+	let raw = split_u32_words(builder, data, num_words);
+	let zero = builder.add_constant_64(0);
+	(0..num_words)
+		.map(|i| {
+			let word_start = 4 * i;
+			if word_start + 4 <= valid_bytes {
+				raw[i]
+			} else if word_start >= valid_bytes {
+				zero
+			} else {
+				let keep = valid_bytes - word_start;
+				let mask = builder.add_constant_64((1u64 << (keep * 8)) - 1);
+				builder.band(raw[i], mask)
+			}
+		})
+		.collect()
+}
+
 /// Returns a wire that is all-ones exactly when every wire in `booleans` is all-ones.
 ///
 /// The fold starts from the all-ones constant, so an empty iterator yields all-ones.
