@@ -27,6 +27,7 @@
 
 pub mod hashing;
 pub mod wots;
+pub mod xmss;
 
 /// Digest length in bytes: n = 128 bits.
 pub const DIGEST_LEN: usize = 16;
