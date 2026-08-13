@@ -95,10 +95,13 @@ fn hash4_to_cv8(builder: &CircuitBuilder, hash: [Wire; 4]) -> [Wire; CV_WORDS] {
 }
 
 /// Packs the 8-word BLAKE3 output (8x32-bit LE) back into a 32-byte chain value (4x64-bit LE).
+///
+/// The even word's high half is masked: [`blake3_compress`] leaves its discarded lane there, and
+/// this is where the two halves of a result meet.
 fn cv8_to_hash4(builder: &CircuitBuilder, cv: &[Wire; CV_WORDS]) -> [Wire; 4] {
 	std::array::from_fn(|k| {
 		let hi = builder.shl(cv[2 * k + 1], 32);
-		builder.bxor(cv[2 * k], hi)
+		builder.bxor(clear_high_bits(builder, cv[2 * k], 32), hi)
 	})
 }
 
