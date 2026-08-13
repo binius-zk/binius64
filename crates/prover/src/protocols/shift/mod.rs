@@ -32,6 +32,8 @@ mod claims;
 #[doc(hidden)]
 pub mod monster;
 #[doc(hidden)]
+pub mod outer;
+#[doc(hidden)]
 pub mod phase_1;
 #[doc(hidden)]
 pub mod phase_2;

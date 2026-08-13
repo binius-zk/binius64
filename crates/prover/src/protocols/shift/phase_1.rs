@@ -155,20 +155,45 @@ impl<P: PackedField> SparseShiftRows<P> {
 			values.extend_from_slice(rows);
 		}
 
+		Self::new(indices, values, LOG_SHIFT_ROWS)
+	}
+
+	/// Collects stored rows sitting at the given indices of a row space `log_rows` variables wide.
+	///
+	/// Indices repeat freely: `g` is the sum of its rows, so two rows at one index add up where it
+	/// is read.
+	///
+	/// # Panics
+	///
+	/// Panics unless there is one [`row_len`] run of values per index, and every index is below
+	/// the row space.
+	pub fn new(indices: Vec<u32>, values: Vec<P>, log_rows: usize) -> Self {
+		assert_eq!(
+			values.len(),
+			indices.len() * row_len::<P>(),
+			"the values hold one row per index"
+		);
+		assert!(
+			indices
+				.iter()
+				.all(|&index| (index as usize) < 1 << log_rows),
+			"every index names a row of the space"
+		);
+
 		Self {
 			indices,
 			values,
-			log_rows: LOG_SHIFT_ROWS,
+			log_rows,
 		}
 	}
 
 	/// The number of row-index variables the sumcheck has yet to bind.
-	const fn log_rows(&self) -> usize {
+	pub(crate) const fn log_rows(&self) -> usize {
 		self.log_rows
 	}
 
 	/// The stored rows, each with the row index it sits at.
-	fn rows(&self) -> impl Iterator<Item = (usize, &[P])> {
+	pub(crate) fn rows(&self) -> impl Iterator<Item = (usize, &[P])> {
 		iter::zip(&self.indices, self.values.chunks_exact(row_len::<P>()))
 			.map(|(&index, row)| (index as usize, row))
 	}
@@ -178,7 +203,7 @@ impl<P: PackedField> SparseShiftRows<P> {
 	/// ## Preconditions
 	///
 	/// * `self.log_rows() >= 1`
-	fn half(&self) -> usize {
+	pub(crate) fn half(&self) -> usize {
 		assert!(self.log_rows > 0, "precondition: a row-index variable remains to bind");
 		1 << (self.log_rows - 1)
 	}
@@ -192,7 +217,7 @@ impl<P: PackedField> SparseShiftRows<P> {
 	/// ## Preconditions
 	///
 	/// * `self.log_rows() >= 1`
-	fn fold(&mut self, challenge: P::Scalar) {
+	pub(crate) fn fold(&mut self, challenge: P::Scalar) {
 		let half = self.half();
 		let lower_weight = P::broadcast(P::Scalar::ONE - challenge);
 		let upper_weight = P::broadcast(challenge);
