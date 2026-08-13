@@ -27,6 +27,7 @@ use std::array;
 use binius_circuits::{blake3::blake3_compress_2x, keccak::permutation::keccak_f1600};
 use binius_core::word::Word;
 use binius_frontend::{BatchWitnessFiller, Circuit, CircuitBuilder, CircuitStat, Wire};
+use binius_hash::StdHashSuite;
 use binius_m4_prover::Prover;
 use binius_m4_verifier::Verifier;
 use binius_prover::OptimalPackedB128;
@@ -111,7 +112,7 @@ where
 	// Set up the verifier.
 	// Build the prover from it, sharing its FRI parameters.
 	let verifier = Verifier::setup(&cs, log_instances, LOG_INV_RATE);
-	let prover = Prover::<OptimalPackedB128>::setup(&verifier);
+	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(&verifier);
 
 	// Warm up first, discarding the proof.
 	// This pays the one-time costs — thread-pool spin-up, lazily built tables, page faults on the

@@ -3,7 +3,7 @@
 //! Proving a whole [`ConstraintSystemM4`](binius_core::constraint_system::m4::ConstraintSystemM4):
 //! the main chip and every numbered chip.
 
-use std::iter;
+use std::{iter, marker::PhantomData};
 
 use binius_compute::{Allocator, BufferPool};
 use binius_core::{
@@ -11,14 +11,16 @@ use binius_core::{
 	constraint_system::{InoutSegment, m4::WitnessM4},
 };
 use binius_field::PackedField;
-use binius_hash::StdHashSuite;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::channel::WordIPProverChannel;
 use binius_m4_verifier::{IOPVerifierM4, VerifierM4};
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded};
 use binius_prover::{Error, protocols::shift::build_key_collection};
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
+use binius_utils::SerializeBytes;
 use binius_verifier::config::B128;
+use digest::Output;
 
 use crate::prove::{IOPProver, ProverNtt};
 
@@ -123,9 +125,10 @@ impl IOPProverM4 {
 /// Built from a [`VerifierM4`], so both sides share one set of FRI parameters.
 ///
 /// See [`IOPVerifierM4`] for what a composite proof does and does not establish.
-pub struct ProverM4<P>
+pub struct ProverM4<P, H>
 where
 	P: PackedField<Scalar = B128>,
+	H: HashSuite,
 {
 	iop_prover: IOPProverM4,
 	/// The precomputed BaseFold prover, holding the NTT and the FRI parameters.
@@ -133,17 +136,22 @@ where
 	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
 	/// so blocks freed by one proof are reused by the next.
 	pool: BufferPool,
+	/// The prover creates its Merkle transcript channels with the hash suite `H`, matching the
+	/// verifier it was built from.
+	_hash_marker: PhantomData<H>,
 }
 
-impl<P> ProverM4<P>
+impl<P, H> ProverM4<P, H>
 where
 	P: PackedField<Scalar = B128>,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Builds the prover from a verifier, inheriting its sub-systems and FRI parameters.
 	///
 	/// The prover encodes the codeword with the multithreaded NTT, spread across the cores.
 	/// Reusing the verifier's compiler keeps both sides on one set of FRI parameters.
-	pub fn setup(verifier: &VerifierM4) -> Self {
+	pub fn setup(verifier: &VerifierM4<H>) -> Self {
 		// Reuse the verifier's evaluation domain so both sides agree on the code: its compiler
 		// fixed that domain as the Gao-Mateer basis of this dimension.
 		let domain_context =
@@ -161,6 +169,7 @@ where
 			iop_prover: IOPProverM4::new(verifier.iop_verifier()),
 			basefold_compiler,
 			pool: BufferPool::new(),
+			_hash_marker: PhantomData,
 		}
 	}
 
@@ -189,9 +198,7 @@ where
 		// channel draws no randomness.
 		let mut channel = self
 			.basefold_compiler
-			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _, _>(
-				transcript,
-			);
+			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript);
 
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs.
@@ -210,6 +217,7 @@ where
 mod tests {
 	use binius_core::{ValueTable, constraint_system::m4::ConstraintSystemM4};
 	use binius_field::PackedBinaryGhash1x128b;
+	use binius_hash::StdHashSuite;
 	use binius_transcript::VerifierTranscript;
 	use binius_verifier::config::StdChallenger;
 
@@ -249,7 +257,7 @@ mod tests {
 	/// Proves `witness` against `cs` and returns the proof bytes.
 	fn prove(cs: &ConstraintSystemM4, witness: &WitnessM4) -> Vec<u8> {
 		let verifier = VerifierM4::setup(cs, LOG_INV_RATE).unwrap();
-		let prover = ProverM4::<P>::setup(&verifier);
+		let prover = ProverM4::<P, StdHashSuite>::setup(&verifier);
 
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove(witness, &mut transcript).unwrap();
@@ -261,7 +269,7 @@ mod tests {
 		let (cs, witness) = fixture();
 		let proof = prove(&cs, &witness);
 
-		let verifier = VerifierM4::setup(&cs, LOG_INV_RATE).unwrap();
+		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
 		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		verifier
 			.verify(witness.main.inout(), &mut transcript)
@@ -272,8 +280,8 @@ mod tests {
 	#[test]
 	fn the_prover_mirrors_the_verifier_sub_system_for_sub_system() {
 		let (cs, _) = fixture();
-		let verifier = VerifierM4::setup(&cs, LOG_INV_RATE).unwrap();
-		let prover = ProverM4::<P>::setup(&verifier);
+		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
+		let prover = ProverM4::<P, StdHashSuite>::setup(&verifier);
 
 		assert_eq!(prover.iop_prover().chips().len(), cs.chips.len());
 	}
@@ -287,7 +295,7 @@ mod tests {
 		let mut inout = witness.main.inout().to_vec();
 		inout[0] = Word(inout[0].as_u64() ^ 1);
 
-		let verifier = VerifierM4::setup(&cs, LOG_INV_RATE).unwrap();
+		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
 		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		assert!(
 			verifier.verify(&inout, &mut transcript).is_err(),
@@ -310,7 +318,7 @@ mod tests {
 
 		let proof = prove(&cs, &witness);
 
-		let verifier = VerifierM4::setup(&cs, LOG_INV_RATE).unwrap();
+		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
 		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		assert!(
 			verifier
