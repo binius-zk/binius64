@@ -13,7 +13,7 @@ use binius_iop::{
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_verifier::{
-	Error,
+	Error, SECURITY_BITS,
 	config::{B1, B128},
 	reduction::{Instances, reduce_constraints},
 	ring_switch::{self, RingSwitchVerifyOutput},
@@ -21,14 +21,8 @@ use binius_verifier::{
 
 use crate::commit::BatchCommitLayout;
 
-/// The target soundness, in bits.
-///
-/// This matches the Binius64 verifier's target.
-/// It only sets the FRI query count.
-const SECURITY_BITS: usize = 96;
-
 /// The Merkle commitment scheme over the committed field.
-type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
+pub(crate) type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 
 /// IOP verifier for the M4 constraint reduction of a particular constraint system.
 ///
