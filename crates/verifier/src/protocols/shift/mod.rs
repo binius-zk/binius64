@@ -17,6 +17,12 @@ pub const SHIFT_VARIANT_COUNT: usize = 1 << LOG_SHIFT_VARIANT_COUNT;
 /// the word index is sized by the constraint system.
 pub const SHIFT_LOG_VARS: usize = Word::LOG_BITS * 3 + LOG_SHIFT_VARIANT_COUNT;
 
+/// The number of index bits one shift slot occupies: the variant above the amount.
+///
+/// A reduction axis over one slot is this many variables wide, which is what
+/// [`Shift::index`](binius_core::constraint_system::Shift::index) addresses.
+pub const LOG_SHIFT_COUNT: usize = LOG_SHIFT_VARIANT_COUNT + Word::LOG_BITS;
+
 /// The number of `(variant, amount)` spellings one shift slot can take.
 ///
 /// A shift is a variant paired with an amount below the word width.
@@ -24,7 +30,7 @@ pub const SHIFT_LOG_VARS: usize = Word::LOG_BITS * 3 + LOG_SHIFT_VARIANT_COUNT;
 ///
 /// A term carries two slots, so the sequences it could name number the square of this.
 /// The weight factorizes across the slots, so two tables of this size replace one of that square.
-pub const SHIFT_COUNT: usize = SHIFT_VARIANT_COUNT * Word::BITS;
+pub const SHIFT_COUNT: usize = 1 << LOG_SHIFT_COUNT;
 
 pub const ZERO_ARITY: usize = 1;
 pub const BITAND_ARITY: usize = 3;
