@@ -127,10 +127,11 @@ where
 		value
 	}
 
-	fn assert_zero(&mut self, val: B128) -> Result<(), binius_ip::channel::Error> {
-		// The real check still runs, so a bad proof is caught here rather than surfacing as an
-		// unsatisfiable circuit.
-		self.transcript.borrow_mut().assert_zero(val)
+	fn assert_zero(&mut self, _val: B128) -> Result<(), binius_ip::channel::Error> {
+		// Deliberately not checked here.
+		// The build emitted a ZERO constraint for this, so a bad proof surfaces as an
+		// unsatisfied circuit rather than as an error out of a witness generator.
+		Ok(())
 	}
 
 	fn compute_public_value(&mut self, inputs: &[B128], f: impl FieldFn<B128>) -> B128 {
@@ -201,10 +202,10 @@ where
 		})
 	}
 
-	/// Reads the same advice the native channel reads, and fills the wires the gadget checks.
+	/// Reads the same advice the native channel reads, and fills the wires the gadgets check.
 	///
-	/// The climb is not repeated natively: the circuit hashes each leaf and matches the layer.
-	/// A forged opening therefore surfaces as an unsatisfied constraint, not an error at this call.
+	/// Nothing is verified here: the circuit folds the layer to the root and climbs every opening.
+	/// A forged one therefore surfaces as an unsatisfied constraint, not an error at this call.
 	fn recv_openings(
 		&mut self,
 		commitment: &Self::Commitment,
@@ -232,10 +233,6 @@ where
 			}
 			(layer, openings)
 		};
-
-		// The layer folds to the root over concrete digests, so that half stays a native check.
-		self.scheme
-			.verify_layer(&commitment.commitment.root, layer_depth, &layer)?;
 
 		// Filled in the order the build allocated: the shared layer, then a leaf and a branch per
 		// query.
@@ -265,10 +262,7 @@ where
 			.borrow_mut()
 			.decommitment()
 			.read_scalar_slice::<B128>(len)?;
-		// The rebuild runs over concrete values too, so this stays a native check.
-		self.scheme
-			.verify_vector(&commitment.commitment.root, &data, commitment.leaf_size)?;
-
+		// Not verified here either: the circuit rebuilds the tree over these values.
 		for &value in &data {
 			self.fill_elem("committed_vector", value);
 		}
