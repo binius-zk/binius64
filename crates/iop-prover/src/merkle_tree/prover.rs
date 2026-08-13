@@ -1,6 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::GlobalAllocator;
 use binius_field::Field;
 use binius_hash::binary_merkle_tree::{BinaryMerkleTree, HashSuite};
 use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment};
@@ -70,7 +71,9 @@ where
 	where
 		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 	{
-		let tree = BinaryMerkleTree::from_leaves::<F, H, _>(leaves, n_items_per_input);
+		// The global heap for now; BINIUS-490 threads a pool allocator down to here.
+		let tree =
+			BinaryMerkleTree::from_leaves::<F, H, _>(leaves, n_items_per_input, &GlobalAllocator);
 
 		let commitment = Commitment {
 			root: tree.root(),
