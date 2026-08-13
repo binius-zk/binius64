@@ -25,6 +25,7 @@
 //!
 //! CREDIT: <https://github.com/leanEthereum/leanVM-b> (XMSS construction).
 
+pub mod aggregate;
 pub mod hashing;
 pub mod wots;
 pub mod xmss;
