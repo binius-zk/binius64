@@ -197,15 +197,16 @@ fn tweak_wires(
 	index: Wire,
 ) -> [Wire; TWEAK_WIRES] {
 	// Bytes 0..8 hold the type, the sub-position and the index's low three bytes. The first two
-	// are circuit constants, so only the index costs anything.
+	// are circuit constants, so only the index costs anything: shifting it up to byte 5 both
+	// places those three bytes and carries everything above them off the top of the word.
 	let head = builder.add_constant_64((tweak_type as u64) | ((sub_position as u64) << 8));
-	let index_low = builder.band(index, builder.add_constant_64(0x00FF_FFFF));
-	let word0 = builder.bxor(head, builder.shl(index_low, 40));
+	let word0 = builder.bxor(head, builder.shl(index, 40));
 
-	// Byte 8 is the index's top byte and bytes 9..16 are zero. Masking to one byte holds those
-	// zero bytes zero whatever a caller passes above bit 32, so the tweak stays the reference's
-	// 16 bytes rather than growing an extra prover-chosen field.
-	let word1 = builder.band(builder.shr(index, 24), builder.add_constant_64(0xFF));
+	// Byte 8 is the index's top byte and bytes 9..16 are zero. Lifting that byte to the top of
+	// the word and dropping it back to the bottom selects it and discards anything a caller
+	// passes above bit 32, so the tweak stays the reference's 16 bytes rather than growing an
+	// extra prover-chosen field.
+	let word1 = builder.shr(builder.shl(index, 32), 56);
 
 	[word0, word1]
 }

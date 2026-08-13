@@ -177,11 +177,12 @@ pub fn circuit_wots_encode(
 		builder.assert_zero(format!("encoding_leftover_bit[{k}]"), builder.shr(word, 63));
 	}
 
-	let mask = builder.add_constant_64((1 << W) - 1);
+	// A digit is W bits from the middle of its word: lift them to the top of the word, then drop
+	// them back to the bottom, so nothing above or below them survives.
 	let digits: [Wire; V] = std::array::from_fn(|i| {
 		let word = digest[i / DIGITS_PER_WORD];
 		let shift = (W * (i % DIGITS_PER_WORD)) as u32;
-		builder.band(builder.shr(word, shift), mask)
+		builder.shr(builder.shl(word, u64::BITS - shift - W as u32), u64::BITS - W as u32)
 	});
 
 	// The digits are each below CHAIN_LENGTH by construction, so the sum cannot overflow.
