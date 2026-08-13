@@ -17,7 +17,7 @@ pub struct Input {
 	pub kind: &'static str,
 }
 
-/// The circuit under construction, plus the wires someone other than the gates has to fill.
+/// The circuit under construction, plus the wires whose values the witness must supply.
 ///
 /// Shared between the channel and every [`SymbolicElem`](crate::SymbolicElem) and
 /// [`SymbolicWord`](crate::SymbolicWord) derived from it, so an operation can allocate a wire
@@ -30,8 +30,6 @@ pub struct Shared {
 	/// otherwise have computed. Both are filled by replaying the verifier over the real
 	/// transcript, which visits the same operations in the same order.
 	inputs: RefCell<Vec<Input>>,
-	/// Wires the inner statement enters on, in observation order.
-	statement: RefCell<Vec<Wire>>,
 }
 
 impl Shared {
@@ -39,7 +37,6 @@ impl Shared {
 		Self {
 			builder: CircuitBuilder::new(),
 			inputs: RefCell::new(Vec::new()),
-			statement: RefCell::new(Vec::new()),
 		}
 	}
 
@@ -54,25 +51,9 @@ impl Shared {
 		wire
 	}
 
-	/// Allocates a wire the inner statement enters on.
-	///
-	/// The wire is inout rather than witness, so the statement is public.
-	/// It is kept out of [`Self::inputs`] on purpose.
-	/// A statement is given, not derived, so a replay has nothing to supply for it.
-	pub fn statement_wire(&self) -> Wire {
-		let wire = self.builder.add_inout();
-		self.statement.borrow_mut().push(wire);
-		wire
-	}
-
 	/// The wires the witness must supply, in allocation order.
 	pub fn inputs(&self) -> Vec<Input> {
 		self.inputs.borrow().clone()
-	}
-
-	/// The wires the inner statement enters on, in observation order.
-	pub fn statement(&self) -> Vec<Wire> {
-		self.statement.borrow().clone()
 	}
 }
 

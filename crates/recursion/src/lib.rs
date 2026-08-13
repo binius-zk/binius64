@@ -18,9 +18,9 @@
 //! operations in the same order, and one cursor pairs what the second saw with the wires the first
 //! allocated.
 //!
-//! The inner statement is the one thing the replay does not supply.
-//! It enters on inout wires, so it is the recursive circuit's public interface.
-//! Whoever checks an outer proof can then see which statement was verified.
+//! The statement a verifier reads comes back as wires.
+//! [`bind_public`](Binius64BuilderChannel::bind_public) ties chosen ones to public inputs.
+//! That is what lets whoever checks an outer proof see which statement was verified.
 //!
 //! # Status: a skeleton, and not sound
 //!
