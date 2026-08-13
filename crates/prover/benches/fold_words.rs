@@ -20,7 +20,7 @@ fn bench_fold_words(c: &mut Criterion) {
 		group.bench_with_input(BenchmarkId::from_parameter(n_words), &n_words, |b, &n_words| {
 			let mut rng = rand::rng();
 			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 			let vec = random_scalars::<B128>(&mut rng, Word::BITS);
 

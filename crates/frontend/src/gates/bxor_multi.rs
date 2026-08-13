@@ -97,11 +97,11 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(123);
 		for _ in 0..1000 {
 			let mut w = circuit.new_witness_filler();
-			w[a] = Word(rng.random::<u64>());
-			w[b] = Word(rng.random::<u64>());
-			w[c] = Word(rng.random::<u64>());
-			w[d] = Word(rng.random::<u64>());
-			w[e] = Word(rng.random::<u64>());
+			w[a] = Word(rng.random());
+			w[b] = Word(rng.random());
+			w[c] = Word(rng.random());
+			w[d] = Word(rng.random());
+			w[e] = Word(rng.random());
 
 			// Expected results
 			w[expected_3] = Word(w[a].0 ^ w[b].0 ^ w[c].0);
@@ -134,10 +134,10 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(456);
 		for _ in 0..100 {
 			let mut w = circuit.new_witness_filler();
-			w[a] = Word(rng.random::<u64>());
-			w[b] = Word(rng.random::<u64>());
+			w[a] = Word(rng.random());
+			w[b] = Word(rng.random());
 			w[expected_2] = Word(w[a].0 ^ w[b].0);
-			w[single] = Word(rng.random::<u64>());
+			w[single] = Word(rng.random());
 
 			w.circuit.populate_wire_witness(&mut w).unwrap();
 		}

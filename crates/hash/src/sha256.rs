@@ -331,11 +331,7 @@ mod tests {
 		for n_items_per_input in [1, 2, 3, 4] {
 			let n_leaves = 50;
 			let leaves: Vec<Vec<u128>> = (0..n_leaves)
-				.map(|_| {
-					(0..n_items_per_input)
-						.map(|_| rng.random::<u128>())
-						.collect()
-				})
+				.map(|_| (0..n_items_per_input).map(|_| rng.random()).collect())
 				.collect();
 
 			let digest = ParallelSha256Digest::new();

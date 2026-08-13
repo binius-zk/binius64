@@ -78,7 +78,7 @@ mod tests {
 		let n_leaves = 50;
 		// `u128` serializes to 16 little-endian bytes.
 		let leaves: Vec<Vec<u128>> = (0..n_leaves)
-			.map(|_| (0..4).map(|_| rng.random::<u128>()).collect())
+			.map(|_| (0..4).map(|_| rng.random()).collect())
 			.collect();
 
 		let digest = <ParallelDigestAdapter<blake3::Hasher> as ParallelDigest>::new();
@@ -108,7 +108,7 @@ mod tests {
 		// Leaves are `u8` items (BYTE_SIZE = 1), so `leaf_len` bytes == `leaf_len` items.
 		let mut check = |leaf_len: usize| {
 			let leaves: Vec<Vec<u8>> = (0..n_leaves)
-				.map(|_| (0..leaf_len).map(|_| rng.random::<u8>()).collect())
+				.map(|_| (0..leaf_len).map(|_| rng.random()).collect())
 				.collect();
 
 			// The scalar adapter that walks the Blake3 tree — the reference path.

@@ -357,7 +357,7 @@ mod test {
 
 		for n_words in windowing_shapes() {
 			let [a, b] = array::from_fn(|_| {
-				repeat_with(|| Word(rng.random::<u64>()))
+				repeat_with(|| Word(rng.random()))
 					.take(n_words)
 					.collect::<Vec<_>>()
 			});
