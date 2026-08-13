@@ -2,7 +2,7 @@
 //! Common-subexpression elimination on the gate graph.
 //!
 //! Two gates are structurally identical when they match on all of:
-//! - opcode;
+//! - what the gate does;
 //! - constant and input wires;
 //! - immediates;
 //! - dimensions.
@@ -27,10 +27,7 @@ use cranelift_entity::EntitySet;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use crate::{
-	gates::opcode::Opcode,
-	ir::{Gate, GateGraph, Wire, WireKind, hints::HintRegistry},
-};
+use crate::ir::{Gate, GateBody, GateGraph, Wire, WireKind, hints::HintRegistry};
 
 /// Deduplicates structurally-identical gates, returning the gates left dead.
 ///
@@ -56,11 +53,6 @@ pub fn dedup_gates(
 	// Gate ids are collected up front so the graph can be mutated inside the loop.
 	let gate_ids: Vec<Gate> = graph.gates.keys().collect();
 	for gate in gate_ids {
-		// Hint gates carry their shape in the registry and are rarely duplicated, so skip them.
-		if matches!(graph.gate_data(gate).opcode, Opcode::Hint) {
-			continue;
-		}
-
 		// Rewrite this gate's wires to their canonical form.
 		// An input that fed an earlier duplicate is remapped.
 		// Output, aux, and scratch wires are never keys in the map, so they pass through unchanged.
@@ -76,7 +68,7 @@ pub fn dedup_gates(
 		// A gate producing one is never collapsed, though it can still be a canonical target.
 		let produces_observable = graph
 			.gate_data(gate)
-			.gate_param_with_registry(hint_registry)
+			.gate_param(hint_registry)
 			.outputs
 			.iter()
 			.any(|&wire| {
@@ -91,13 +83,9 @@ pub fn dedup_gates(
 		match duplicate_of {
 			// Map each output of the duplicate onto the canonical gate's matching output.
 			Some(canon) => {
-				let param = graph
-					.gate_data(gate)
-					.gate_param_with_registry(hint_registry);
+				let param = graph.gate_data(gate).gate_param(hint_registry);
 				let dup_outputs = param.outputs.to_vec();
-				let canon_param = graph
-					.gate_data(canon)
-					.gate_param_with_registry(hint_registry);
+				let canon_param = graph.gate_data(canon).gate_param(hint_registry);
 				let canon_outputs = canon_param.outputs.to_vec();
 				for (dup_out, canon_out) in dup_outputs.into_iter().zip(canon_outputs) {
 					remap.insert(dup_out, canon_out);
@@ -115,15 +103,15 @@ pub fn dedup_gates(
 	dead
 }
 
-/// A gate's structural identity: opcode, constant and input wires, immediates, dimensions.
+/// A gate's structural identity: what it does, the wires it reads, its immediates and dimensions.
 ///
 /// Output, auxiliary, and scratch wires are excluded.
 /// They are freshly allocated per gate, so including them would make identical gates differ.
 ///
-/// One is built per gate, so each field is held inline at the arity the opcodes actually use.
+/// One is built per gate, so each field is held inline at the arity the gates actually use.
 #[derive(PartialEq, Eq, Hash)]
 struct GateStructure {
-	opcode: Opcode,
+	body: GateBody,
 	/// The constant and input wires, in order, which is what the gate reads.
 	reads: SmallVec<[Wire; 4]>,
 	immediates: SmallVec<[u32; 2]>,
@@ -133,9 +121,9 @@ struct GateStructure {
 /// Extracts the structural identity of a gate.
 fn structure_of(graph: &GateGraph, gate: Gate, hint_registry: &HintRegistry) -> GateStructure {
 	let data = graph.gate_data(gate);
-	let param = data.gate_param_with_registry(hint_registry);
+	let param = data.gate_param(hint_registry);
 	GateStructure {
-		opcode: data.opcode,
+		body: data.body,
 		reads: param
 			.constants
 			.iter()
@@ -149,8 +137,13 @@ fn structure_of(graph: &GateGraph, gate: Gate, hint_registry: &HintRegistry) -> 
 
 #[cfg(test)]
 mod tests {
+	use binius_core::word::Word;
+
 	use super::*;
-	use crate::ir::GateGraph;
+	use crate::{
+		gates::Opcode,
+		ir::{GateGraph, hints::Hint},
+	};
 
 	#[test]
 	fn duplicate_and_gate_is_collapsed() {
@@ -183,7 +176,11 @@ mod tests {
 		assert!(dead.contains(g2), "duplicate gate must be dead");
 
 		// The reader now consumes the canonical output, not the dead duplicate's.
-		let reader_inputs = graph.gate_data(reader).gate_param().inputs.to_vec();
+		let reader_inputs = graph
+			.gate_data(reader)
+			.gate_param(&HintRegistry::new())
+			.inputs
+			.to_vec();
 		assert_eq!(reader_inputs, vec![o1], "reader must be redirected to the canonical wire");
 	}
 
@@ -263,5 +260,110 @@ mod tests {
 
 		let dead = dedup_gates(&mut graph, &force_committed, &registry);
 		assert!(!dead.contains(g2), "gate producing a committed wire must be kept");
+	}
+
+	/// Doubles its input.
+	struct Doubler;
+
+	impl Hint for Doubler {
+		const NAME: &'static str = "cse.test.doubler";
+
+		fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+			(1, 1)
+		}
+
+		fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+			outputs[0] = Word(inputs[0].as_u64() << 1);
+		}
+	}
+
+	/// Negates its input.
+	struct Negate;
+
+	impl Hint for Negate {
+		const NAME: &'static str = "cse.test.negate";
+
+		fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+			(1, 1)
+		}
+
+		fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+			outputs[0] = Word(!inputs[0].as_u64());
+		}
+	}
+
+	#[test]
+	fn duplicate_hint_gate_is_collapsed() {
+		// Invariant: a hint is pure, so calling it twice on one input is redundant.
+		let mut registry = HintRegistry::new();
+		let doubler = registry.register(Doubler);
+
+		let mut graph = GateGraph::new();
+		let root = graph.path_spec_tree.root();
+		let x = graph.add_inout();
+
+		// Fixture: the same hint over the same input, twice, with a reader of the second output.
+		let o1 = graph.add_internal();
+		let g1 = graph.emit_hint_gate(root, doubler, &[], vec![x], vec![o1]);
+		let o2 = graph.add_internal();
+		let g2 = graph.emit_hint_gate(root, doubler, &[], vec![x], vec![o2]);
+		let reader = graph.emit_gate(root, Opcode::AssertZero, vec![o2], vec![]);
+
+		let dead = dedup_gates(&mut graph, &EntitySet::new(), &registry);
+
+		assert!(!dead.contains(g1), "the first hint call is canonical");
+		assert!(dead.contains(g2), "the repeated hint call must collapse");
+
+		// The reader now consumes the canonical output.
+		let inputs = graph
+			.gate_data(reader)
+			.gate_param(&registry)
+			.inputs
+			.to_vec();
+		assert_eq!(inputs, vec![o1]);
+	}
+
+	#[test]
+	fn hints_computing_different_things_are_not_collapsed() {
+		// Invariant: which hint a gate calls is part of its identity.
+		let mut registry = HintRegistry::new();
+		let doubler = registry.register(Doubler);
+		let negate = registry.register(Negate);
+
+		let mut graph = GateGraph::new();
+		let root = graph.path_spec_tree.root();
+		let x = graph.add_inout();
+
+		let o1 = graph.add_internal();
+		let g1 = graph.emit_hint_gate(root, doubler, &[], vec![x], vec![o1]);
+		let o2 = graph.add_internal();
+		let g2 = graph.emit_hint_gate(root, negate, &[], vec![x], vec![o2]);
+
+		let dead = dedup_gates(&mut graph, &EntitySet::new(), &registry);
+
+		assert!(!dead.contains(g1));
+		assert!(!dead.contains(g2), "a different hint is a different gate");
+	}
+
+	#[test]
+	fn one_hint_at_different_dimensions_is_not_collapsed() {
+		// Invariant: a hint's dimensions are part of its identity.
+		// The doubler ignores them, so the two gates differ in nothing else.
+		let mut registry = HintRegistry::new();
+		let doubler = registry.register(Doubler);
+
+		let mut graph = GateGraph::new();
+		let root = graph.path_spec_tree.root();
+		let x = graph.add_inout();
+
+		let o1 = graph.add_internal();
+		let g1 = graph.emit_hint_gate(root, doubler, &[1], vec![x], vec![o1]);
+		let o2 = graph.add_internal();
+		let g2 = graph.emit_hint_gate(root, doubler, &[2], vec![x], vec![o2]);
+
+		let dead = dedup_gates(&mut graph, &EntitySet::new(), &registry);
+
+		assert!(!dead.contains(g1));
+		assert!(!dead.contains(g2), "different dimensions are a different gate");
 	}
 }

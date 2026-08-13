@@ -41,12 +41,7 @@ pub fn live_gates(
 	// Seed 1: assertions.
 	// A gate with no output wire produces only a constraint, so it is a root and never dead.
 	for (gate, data) in graph.gates.iter() {
-		if data
-			.gate_param_with_registry(hint_registry)
-			.outputs
-			.is_empty()
-			&& live.insert(gate)
-		{
+		if data.gate_param(hint_registry).outputs.is_empty() && live.insert(gate) {
 			work.push(gate);
 		}
 	}
@@ -70,11 +65,7 @@ pub fn live_gates(
 	// The live set and worklist are locals, so an input slice can stay borrowed while they grow.
 	let graph: &GateGraph = graph;
 	while let Some(gate) = work.pop() {
-		for &input in graph
-			.gate_data(gate)
-			.gate_param_with_registry(hint_registry)
-			.inputs
-		{
+		for &input in graph.gate_data(gate).gate_param(hint_registry).inputs {
 			if let Some(def) = graph.wire_def[input]
 				&& live.insert(def)
 			{

@@ -8,7 +8,11 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	ir::{Gate, GateData, GateGraph, GateParam, Wire, hints::HintRegistry, path::PathSpec},
+	ir::{
+		Gate, GateBody, GateGraph, GateParam, Wire,
+		hints::{HintId, HintRegistry},
+		path::PathSpec,
+	},
 	lower::ConstraintBuilder,
 };
 
@@ -63,6 +67,7 @@ pub trait GateKind {
 /// What a gate's emission needs beyond its own wires.
 ///
 /// Every kind takes one, so an assertion reads its path through the signature all gates share.
+#[derive(Copy, Clone)]
 pub struct EmitCtx<'a> {
 	resolve: &'a dyn Fn(Wire) -> u32,
 	path: PathSpec,
@@ -102,10 +107,6 @@ const fn row<G: GateKind>(opcode: Opcode) -> GateVTable {
 }
 
 /// Every gate kind, indexed by its opcode.
-///
-/// - The hint gate has no row: its shape lives in the hint registry, not in a type.
-/// - It is the last opcode declared, so it indexes one past the table.
-/// - A lookup reads that as absent, and the tests below pin both facts.
 static GATE_KINDS: [GateVTable; 21] = [
 	row::<band::Band>(Opcode::Band),
 	row::<bxor::Bxor>(Opcode::Bxor),
@@ -131,37 +132,37 @@ static GATE_KINDS: [GateVTable; 21] = [
 ];
 
 impl Opcode {
-	/// The gate kind serving this opcode, or `None` for the hint gate.
-	fn vtable(self) -> Option<&'static GateVTable> {
-		let row = GATE_KINDS.get(self as usize)?;
+	/// The gate kind serving this opcode.
+	fn vtable(self) -> &'static GateVTable {
+		let row = &GATE_KINDS[self as usize];
 		debug_assert_eq!(
 			row.opcode, self,
 			"the gate table row does not serve the opcode indexing it"
 		);
-		Some(row)
+		row
 	}
 
 	/// The shape a gate of this opcode carries, for the dimensions it was emitted with.
-	///
-	/// # Panics
-	///
-	/// Panics for the hint gate, whose shape the hint registry settles instead.
-	/// Reading a gate's shape rather than its opcode's covers that case too.
 	pub fn shape(self, dimensions: &[usize]) -> OpcodeShape {
-		let vtable = self
-			.vtable()
-			.expect("Opcode::Hint shape requires the HintRegistry; use GateData::shape instead");
-		(vtable.shape)(dimensions)
+		(self.vtable().shape)(dimensions)
 	}
 }
 
 /// Appends the constraints one gate contributes.
 ///
 /// A hint contributes none: the surrounding circuit constrains the value it computes.
-pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder) {
+pub fn constrain(
+	gate: Gate,
+	graph: &GateGraph,
+	builder: &mut ConstraintBuilder,
+	hint_registry: &HintRegistry,
+) {
 	let data = &graph.gates[gate];
-	if let Some(vtable) = data.opcode.vtable() {
-		(vtable.constrain)(data.gate_param(), builder);
+	match data.body {
+		GateBody::Op(opcode) => {
+			(opcode.vtable().constrain)(data.gate_param(hint_registry), builder);
+		}
+		GateBody::Hint(_) => {}
 	}
 }
 
@@ -174,39 +175,27 @@ pub fn emit_gate_bytecode(
 	hint_registry: &HintRegistry,
 ) {
 	let data = &graph.gates[gate];
-	match data.opcode.vtable() {
-		Some(vtable) => {
-			let ctx = EmitCtx {
-				resolve: &wire_to_reg,
-				path: graph.assertion_names[gate],
-			};
-			(vtable.emit)(data.gate_param(), ctx, builder);
-		}
-		None => emit_hint(data, builder, wire_to_reg, hint_registry),
+	let params = data.gate_param(hint_registry);
+	let ctx = EmitCtx {
+		resolve: &wire_to_reg,
+		path: graph.assertion_names[gate],
+	};
+	match data.body {
+		GateBody::Op(opcode) => (opcode.vtable().emit)(params, ctx, builder),
+		GateBody::Hint(hint_id) => emit_hint(hint_id, params, &data.dimensions, ctx, builder),
 	}
 }
 
-/// Emits a hint call, the one gate with no kind of its own.
-///
-/// The hint already lives in the registry, put there when the circuit called it.
-/// The gate carries only its id and the dimensions the caller passed.
-///
-/// A hint's shape is not known statically, so the wires are sliced with the arity the registry
-/// reports rather than through the usual accessor.
+/// Emits a call to one registered hint.
 fn emit_hint(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-	hint_registry: &HintRegistry,
+	hint_id: HintId,
+	gate: GateParam<'_>,
+	dimensions: &[usize],
+	ctx: EmitCtx<'_>,
+	bc: &mut BytecodeBuilder,
 ) {
-	let hint_id = data.immediates[0];
-	let (n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
-	let input_regs: Vec<u32> = data.wires[..n_in].iter().map(|&w| wire_to_reg(w)).collect();
-	let output_regs: Vec<u32> = data.wires[n_in..n_in + n_out]
-		.iter()
-		.map(|&w| wire_to_reg(w))
-		.collect();
-	builder.emit_hint(hint_id, &data.dimensions, &input_regs, &output_regs);
+	let regs = |wires: &[Wire]| wires.iter().map(|&w| ctx.reg(w)).collect::<Vec<_>>();
+	bc.emit_hint(hint_id, dimensions, &regs(gate.inputs), &regs(gate.outputs));
 }
 
 #[cfg(test)]
@@ -222,14 +211,11 @@ mod tests {
 		}
 	}
 
-	// Invariant: the hint is the one opcode without a row, and it is declared last.
-	// A new opcode appended after it would silently take its slot.
+	// Invariant: every row's opcode resolves back to that row.
 	#[test]
-	fn the_hint_is_the_one_opcode_with_no_row() {
-		assert_eq!(Opcode::Hint as usize, GATE_KINDS.len());
-		assert!(Opcode::Hint.vtable().is_none());
+	fn every_opcode_in_the_table_resolves_to_its_own_row() {
 		for row in &GATE_KINDS {
-			assert!(row.opcode.vtable().is_some(), "{:?} has no row", row.opcode);
+			assert_eq!(row.opcode.vtable().opcode, row.opcode);
 		}
 	}
 }

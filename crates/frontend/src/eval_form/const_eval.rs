@@ -7,15 +7,13 @@ use binius_core::{Word, constraint_system::ShiftVariant};
 use super::exec::ghash_mul;
 use crate::{
 	gates::Opcode,
-	ir::{Gate, GateGraph, hints::HintRegistry},
+	ir::{Gate, GateBody, GateGraph, hints::HintRegistry},
 };
 
 /// Evaluates a gate whose inputs are all constant, returning the values of its output wires.
 ///
 /// `constants` holds the values of the gate's input wires, in order. `hint_registry` must contain
-/// any hint referenced by the gate. For [`Opcode::Hint`] gates this is the registry populated by
-/// [`CircuitBuilder::call_hint`](crate::builder::CircuitBuilder::call_hint); for other gates an
-/// empty registry is fine.
+/// any hint the gate references. Only a hint gate reads it, so an empty registry serves the rest.
 ///
 /// Assertion gates have no outputs. They return an empty vector when the constant inputs satisfy
 /// the assertion, and the violation message otherwise.
@@ -26,7 +24,19 @@ pub fn evaluate_gate_constants(
 	hint_registry: &HintRegistry,
 ) -> Result<Vec<Word>, String> {
 	let data = &graph.gates[gate];
-	match data.opcode {
+
+	// A hint computes its outputs itself; the rest are folded by the operation below.
+	let opcode = match data.body {
+		GateBody::Op(opcode) => opcode,
+		GateBody::Hint(hint_id) => {
+			let (_n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
+			let mut outputs = vec![Word::ZERO; n_out];
+			hint_registry.execute(hint_id, &data.dimensions, constants, &mut outputs);
+			return Ok(outputs);
+		}
+	};
+
+	match opcode {
 		Opcode::Band => {
 			let [x, y] = constants else { unreachable!() };
 			Ok(vec![*x & *y])
@@ -155,13 +165,6 @@ pub fn evaluate_gate_constants(
 				return Err(format!("{x:?} MSB is false"));
 			}
 			Ok(Vec::new())
-		}
-		Opcode::Hint => {
-			let hint_id = data.immediates[0];
-			let (_n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
-			let mut outputs = vec![Word::ZERO; n_out];
-			hint_registry.execute(hint_id, &data.dimensions, constants, &mut outputs);
-			Ok(outputs)
 		}
 	}
 }
