@@ -92,6 +92,8 @@ impl WitnessFiller<'_> {
 	}
 
 	/// Returns a mutable reference to the underlying value vector.
+	///
+	/// Raw access is what plants a witness the evaluator would never produce.
 	pub const fn value_vec_mut(&mut self) -> &mut ValueVec {
 		&mut self.value_vec
 	}
@@ -309,7 +311,7 @@ impl Circuit {
 	/// If any instance is not satisfiable, returns an error naming a failing instance and its
 	/// assertion failures. The reported instance is not guaranteed to be the lowest failing
 	/// instance across all stripes.
-	pub fn populate_wire_witness_batched_parallel(
+	pub(crate) fn populate_wire_witness_batched_parallel(
 		&self,
 		mut values: StridedArray2DViewMut<'_, Word>,
 		stripe_width: usize,

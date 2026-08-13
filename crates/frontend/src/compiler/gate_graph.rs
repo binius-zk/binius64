@@ -1,4 +1,7 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+use std::collections::hash_map::Entry;
+
 use binius_core::word::Word;
 use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap, entity_impl};
 use rustc_hash::FxHashMap;
@@ -9,29 +12,6 @@ use crate::compiler::{
 	hints::{HintId, HintRegistry},
 	pathspec::{PathSpec, PathSpecTree},
 };
-
-#[derive(Default)]
-pub struct ConstPool {
-	/// Interning table mapping each constant value to the wire that holds it.
-	///
-	/// Keyed by a 64-bit word, so a fast integer hasher beats the default SipHash here.
-	pub pool: FxHashMap<Word, Wire>,
-}
-
-impl ConstPool {
-	pub fn new() -> Self {
-		ConstPool::default()
-	}
-
-	pub fn get(&self, value: Word) -> Option<Wire> {
-		self.pool.get(&value).copied()
-	}
-
-	pub fn insert(&mut self, word: Word, wire: Wire) {
-		let prev = self.pool.insert(word, wire);
-		assert!(prev.is_none());
-	}
-}
 
 /// A wire through which a value flows in and out of gates.
 ///
@@ -203,9 +183,10 @@ pub struct GateGraph {
 	pub gate_origin: SecondaryMap<Gate, PathSpec>,
 	pub assertion_names: SecondaryMap<Gate, PathSpec>,
 
-	pub const_pool: ConstPool,
-	pub n_witness: usize,
-	pub n_inout: usize,
+	/// Interning table mapping each constant value to the wire that holds it.
+	///
+	/// Keyed by a 64-bit word, so a fast integer hasher beats the default SipHash here.
+	pub const_pool: FxHashMap<Word, Wire>,
 
 	/// The all-one constant wire, seeded as the first constant at construction.
 	///
@@ -238,9 +219,7 @@ impl GateGraph {
 			path_spec_tree,
 			gate_origin: SecondaryMap::with_default(root),
 			assertion_names: SecondaryMap::with_default(root),
-			const_pool: ConstPool::new(),
-			n_witness: 0,
-			n_inout: 0,
+			const_pool: FxHashMap::default(),
 			// Placeholder; overwritten by the seeding call below before any other wire exists.
 			all_one: Wire::from_u32(0),
 			wire_def: SecondaryMap::new(),
@@ -262,33 +241,28 @@ impl GateGraph {
 	}
 
 	pub fn add_inout(&mut self) -> Wire {
-		self.n_inout += 1;
 		self.wires.push(WireKind::Inout)
 	}
 
 	pub fn add_witness(&mut self) -> Wire {
-		self.n_witness += 1;
 		self.wires.push(WireKind::Witness)
 	}
 
 	pub fn add_internal(&mut self) -> Wire {
-		// Internal wires are treated as witnesses for allocation purposes
-		self.n_witness += 1;
 		self.wires.push(WireKind::Internal)
 	}
 
 	pub fn add_scratch(&mut self) -> Wire {
-		// Scratch wires are temporary storage, not part of witness
 		self.wires.push(WireKind::Scratch)
 	}
 
+	/// Returns the wire holding the given constant, creating it on first use.
 	pub fn add_constant(&mut self, word: Word) -> Wire {
-		if let Some(wire) = self.const_pool.get(word) {
-			return wire;
+		// One hash whether or not a wire already holds the word.
+		match self.const_pool.entry(word) {
+			Entry::Occupied(entry) => *entry.get(),
+			Entry::Vacant(entry) => *entry.insert(self.wires.push(WireKind::Constant(word))),
 		}
-		let wire = self.wires.push(WireKind::Constant(word));
-		self.const_pool.insert(word, wire);
-		wire
 	}
 
 	/// Emits a gate with the given opcode, inputs and outputs.

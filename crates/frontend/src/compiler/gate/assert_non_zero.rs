@@ -26,6 +26,9 @@
 //! The gate generates 2 constraints:
 //! - AND: `(x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout`
 //! - ZERO: `sar(cout, 63) ⊕ all-1 = 0` (forces `MSB(cout) = 1`, i.e. `x ≠ 0`)
+//!
+//! No gadget in the workspace calls this gate.
+//! It is kept as a primitive, and because the two-constraint split is easy to get wrong.
 
 use binius_core::word::Word;
 

@@ -74,6 +74,12 @@ pub struct Options {
 	/// Apply algebraic identities that let a gate return one of its operands.
 	pub enable_algebraic_folding: bool,
 	/// Share scratch slots between values whose lifetimes do not overlap.
+	///
+	/// - Shrinks the uncommitted segment to the most values alive at once, saved once per
+	///   instance.
+	/// - Changes no constraint, since an uncommitted value appears in no operand.
+	/// - Stops slots being one-to-one with values, so only committed values read back
+	///   meaningfully.
 	pub enable_scratch_pooling: bool,
 	/// Forward past the gates a zero operand turns into the identity.
 	pub enable_zero_propagation: bool,
@@ -654,41 +660,6 @@ impl CircuitBuilder {
 		// reads only the pinned set: without this it would inline a linear definition and leave the
 		// public word with no constraint defining it.
 		self.force_commit(wire);
-	}
-
-	/// Shares the value-vector slots of values the constraint system never references.
-	///
-	/// # Overview
-	///
-	/// Gate fusion inlines a linear operation into its consumers, leaving its result uncommitted.
-	/// Such a result only has to survive until the gate that last reads it.
-	///
-	/// - Without sharing, each one holds a slot for the whole run.
-	/// - With sharing, the segment shrinks to the largest number of them alive at once.
-	///
-	/// The batched witness buffer holds one column per instance.
-	/// So each slot dropped is saved once per instance.
-	///
-	/// No constraint changes.
-	/// An uncommitted value appears in no constraint operand.
-	/// Only the recorded length of the segment moves.
-	///
-	/// # Reading values back
-	///
-	/// Slots stop being one-to-one with values.
-	/// Looking one up afterwards yields whatever now occupies its slot.
-	///
-	/// Only committed values read back meaningfully:
-	/// - public inputs and outputs,
-	/// - private witnesses,
-	/// - anything pinned with [`force_commit`](Self::force_commit).
-	pub fn enable_scratch_pooling(&self) {
-		self.shared
-			.borrow_mut()
-			.as_mut()
-			.expect("CircuitBuilder used after build")
-			.opts
-			.enable_scratch_pooling = true;
 	}
 
 	fn graph_mut(&self) -> RefMut<'_, GateGraph> {
