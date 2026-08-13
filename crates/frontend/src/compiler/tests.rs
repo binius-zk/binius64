@@ -712,6 +712,14 @@ const fn chain_shl(i: u32) -> u32 {
 /// That is what makes slot sharing observable.
 const CHAIN_ROUNDS: u32 = 48;
 
+/// The default pass set with scratch-slot sharing turned on.
+fn pooled_opts() -> Options {
+	Options {
+		enable_scratch_pooling: true,
+		..Options::default()
+	}
+}
+
 /// Builds a chain of rotates, shifts and exclusive-ors, pinned by an equality assertion.
 ///
 /// Every intermediate result is linear, so gate fusion inlines it and leaves it uncommitted.
@@ -762,8 +770,7 @@ fn test_scratch_pooling_preserves_the_committed_witness() {
 	let (x_unpooled, expected_unpooled) = build_chain(&unpooled);
 	let unpooled = unpooled.build();
 
-	let pooled = CircuitBuilder::new();
-	pooled.enable_scratch_pooling();
+	let pooled = CircuitBuilder::with_opts(pooled_opts());
 	let (x_pooled, expected_pooled) = build_chain(&pooled);
 	let pooled = pooled.build();
 
@@ -847,8 +854,7 @@ fn test_scratch_pooling_rejects_a_bad_assignment() {
 	// A wrong assignment is rejected exactly as it would be under one slot per value.
 	//
 	// Fixture state: the 48-round chain, compiled with slots shared.
-	let builder = CircuitBuilder::new();
-	builder.enable_scratch_pooling();
+	let builder = CircuitBuilder::with_opts(pooled_opts());
 	let (x, expected) = build_chain(&builder);
 	let circuit = builder.build();
 
@@ -883,8 +889,7 @@ fn test_scratch_pooling_matches_scalar_per_instance_batched() {
 	//
 	//     value 0  [ inst0 | inst1 | ... | inst7 ]
 	//     value 1  [ inst0 | inst1 | ... | inst7 ]
-	let builder = CircuitBuilder::new();
-	builder.enable_scratch_pooling();
+	let builder = CircuitBuilder::with_opts(pooled_opts());
 	let (x, expected) = build_chain(&builder);
 	let circuit = builder.build();
 
