@@ -6,10 +6,7 @@ use std::iter;
 use binius_compute::{Allocator, VecLike};
 use binius_core::{ShiftVariant, constraint_system::Shift, word::Word};
 use binius_field::{BinaryField, Field, PackedField, WideMul};
-use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval,
-	univariate::lagrange_evals,
-};
+use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, ZERO_ARITY,
@@ -70,9 +67,13 @@ impl<F: Field> OuterSlotWeights<F> {
 	}
 }
 
-/// Fills one row of a shift operator table.
+/// Writes the row of a shift operator table that one `(variant, amount)` pair contributes.
 ///
-/// The row holds, for each bit position, the weight that one `(variant, amount)` pair moves there.
+/// The row holds, for each bit position, the weight that pair moves there:
+///
+/// ```text
+///     row[j] = sum_k psi(k) * shift-ind_variant(k, j, amount)
+/// ```
 ///
 /// This is the one place that says what a variant does to a weight vector:
 /// - Logical left and logical right move the weights and leave zeros behind.
@@ -80,7 +81,28 @@ impl<F: Field> OuterSlotWeights<F> {
 /// - Rotate wraps them around instead.
 /// - The half-word forms apply the same rule to each 32-bit half, reading only the low 5 bits of
 ///   the amount.
-fn fill_operator_row<F: Field>(variant: ShiftVariant, amount: usize, row: &mut [F], psi: &[F]) {
+///
+/// # Arguments
+///
+/// The amount is an index over the reduction's amount axis rather than a validated
+/// [`Shift`](binius_core::constraint_system::Shift) amount: that axis spans `Word::BITS` for every
+/// variant, and a half-word variant reads it modulo its own 32-bit width.
+///
+/// Every cell of `row` is written, so the caller need not zero it first. A caller reading one
+/// slice at a time can therefore carry a single scratch row across every pair it visits.
+///
+/// # Panics
+///
+/// Panics unless the row and the weights each hold one entry per bit position of a word.
+pub fn shift_operator_row<F: Field>(
+	variant: ShiftVariant,
+	amount: usize,
+	row: &mut [F],
+	psi: &[F],
+) {
+	assert_eq!(row.len(), Word::BITS, "the row is indexed by bit position");
+	assert_eq!(psi.len(), Word::BITS, "the weights are indexed by bit position");
+
 	// A half-word variant repeats the full-width rule over each half, so both share one closure.
 	let halves = |row: &mut [F], rule: fn(usize, &mut [F], &[F])| {
 		let amount = amount % HALF_WORD_BITS;
@@ -94,9 +116,12 @@ fn fill_operator_row<F: Field>(variant: ShiftVariant, amount: usize, row: &mut [
 	fn sll<F: Field>(amount: usize, row: &mut [F], psi: &[F]) {
 		let width = row.len();
 		row[..width - amount].copy_from_slice(&psi[amount..]);
+		// The positions the weights vacate take no weight at all.
+		row[width - amount..].fill(F::ZERO);
 	}
 	fn srl<F: Field>(amount: usize, row: &mut [F], psi: &[F]) {
 		let width = row.len();
+		row[..amount].fill(F::ZERO);
 		row[amount..].copy_from_slice(&psi[..width - amount]);
 	}
 	fn sar<F: Field>(amount: usize, row: &mut [F], psi: &[F]) {
@@ -155,6 +180,7 @@ fn fill_operator_row<F: Field>(variant: ShiftVariant, amount: usize, row: &mut [
 ///
 /// Every entry is one copy or one accumulation.
 /// So the whole table costs `O(2^15)` field operations, and a single slice `O(2^6)`.
+/// A caller needing one slice rather than the whole table calls [`shift_operator_row`] itself.
 ///
 /// # Panics
 ///
@@ -175,37 +201,11 @@ where
 		iter::zip(ShiftVariant::ALL, data.chunks_exact_mut(Word::BITS * Word::BITS))
 	{
 		for (amount, row) in block.chunks_exact_mut(Word::BITS).enumerate() {
-			fill_operator_row(variant, amount, row, psi);
+			shift_operator_row(variant, amount, row, psi);
 		}
 	}
 
 	FieldBuffer::from_values_in(alloc, &data)
-}
-
-/// Constructs the "h" multilinear for shift operations at a univariate challenge point.
-///
-/// See the paper for the definition of the h polynomials.
-/// There is one per shift variant, and this returns all of them as a single multilinear.
-/// The layout is the one [`shift_operator_table`] documents.
-///
-/// The weights are the Lagrange evaluations at the univariate challenge.
-/// Those are the oblong weights the reduction's first factor carries.
-///
-/// # Usage in Protocol
-///
-/// Phase 1 runs one sumcheck over this multilinear and its "g" counterpart.
-/// So the variant axis is folded by the sumcheck rather than summed across separate provers.
-#[instrument(skip_all, name = "build_h")]
-pub fn build_h<F, P: PackedField<Scalar = F>, A: Allocator>(
-	alloc: &A,
-	domain_subspace: &BinarySubspace<F>,
-	r_zhat_prime: F,
-) -> FieldVec<P, A>
-where
-	F: BinaryField,
-{
-	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-	shift_operator_table(alloc, l_tilde.as_ref())
 }
 
 /// Constructs the "monster multilinear" that combines all shift operations into a single
@@ -370,8 +370,8 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{AESTowerField8b, BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 	use binius_math::{
-		inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
-		test_utils::random_scalars,
+		BinarySubspace, inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
+		test_utils::random_scalars, univariate::lagrange_evals,
 	};
 	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 	use proptest::prelude::*;
@@ -403,10 +403,10 @@ mod tests {
 
 			// Method 1: the claim phase 3 starts from, with the carried constant set to one.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 			let claimed = ShiftIndSumcheck::<P, _>::new(
 				&GlobalAllocator,
-				&subspace,
-				r_zhat_prime,
+				l_tilde.as_ref(),
 				&r_j,
 				&r_s,
 				&r_v,
@@ -415,7 +415,7 @@ mod tests {
 			.beta();
 
 			// Method 2: evaluate the built multilinear at the whole point.
-			let h = build_h(&GlobalAllocator, &subspace, r_zhat_prime);
+			let h = shift_operator_table::<F, P, _>(&GlobalAllocator, l_tilde.as_ref());
 			let evaluation_point = [r_j, r_s, r_v].concat();
 			let tensor = eq_ind_partial_eval::<P>(&evaluation_point);
 			let direct = inner_product_buffers(&h, &tensor);
@@ -504,6 +504,35 @@ mod tests {
 				.collect::<Vec<F>>();
 
 			prop_assert_eq!(lhs.as_ref(), rhs.as_slice());
+		}
+	}
+
+	// Invariant: the row builder writes exactly the slice the table holds for that pair.
+	//
+	// The reduction's outer phase reads one slice at a time rather than building the table, so the
+	// two paths have to agree entry for entry.
+	//
+	// The scratch row is carried across every pair and starts out non-zero, which is what pins the
+	// full-write contract: a builder that left cells alone would leak the previous pair's weights.
+	#[test]
+	fn shift_operator_row_matches_its_slice_of_the_table() {
+		type F = BinaryField128bGhash;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let psi = random_scalars::<F>(&mut rng, Word::BITS);
+
+		let table = shift_operator_table::<F, F, _>(&GlobalAllocator, &psi);
+		let mut row = vec![F::ONE; Word::BITS];
+		for (variant_idx, variant) in ShiftVariant::ALL.into_iter().enumerate() {
+			for amount in 0..Word::BITS {
+				shift_operator_row(variant, amount, &mut row, &psi);
+				let offset = (variant_idx * Word::BITS + amount) * Word::BITS;
+				assert_eq!(
+					row.as_slice(),
+					&table.as_ref()[offset..offset + Word::BITS],
+					"{variant:?} at amount {amount}"
+				);
+			}
 		}
 	}
 

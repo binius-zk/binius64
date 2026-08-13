@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -6,7 +7,8 @@ use binius_field::{BinaryField, Field, PackedField, util::powers};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
+	BinarySubspace, FieldBuffer, inner_product::inner_product,
+	multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
 
 use super::{
@@ -175,24 +177,28 @@ where
 		claims.prepare(|| channel.sample())
 	};
 
+	// The oblong weights the reduction's first factor carries. Phase 1 pushes them through every
+	// shift to build its h multilinear and phase 3 runs its rounds over them directly, so they are
+	// computed once here. All four operations share `r_zhat_prime`, so it is drawn from the BitAnd
+	// claim.
+	let oblong_weights = lagrange_evals(domain_subspace, prepared.bitand.r_zhat_prime);
+
 	// Phases 1 and 2 bind the shift variant, the shift amount and the bit position, outputting
 	// challenges `r_j || r_s || r_v` and the claim `gamma` (see paper).
 	let phase_1_output = prove_phase_1::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared,
-		domain_subspace,
+		oblong_weights.as_ref(),
 		channel,
 		alloc,
 	);
 
 	// Phase 3 binds the bit index the shift indicators read, carrying phase 1's `g` evaluation
-	// through its rounds as a constant. All four operations share `r_zhat_prime`, so it is drawn
-	// from the BitAnd claim, as phase 1's h multilinear is.
+	// through its rounds as a constant.
 	let phase_3 = ShiftIndSumcheck::<P, _>::new(
 		alloc,
-		domain_subspace,
-		prepared.bitand.r_zhat_prime,
+		oblong_weights.as_ref(),
 		&phase_1_output.r_j,
 		&phase_1_output.r_s,
 		&phase_1_output.r_v,

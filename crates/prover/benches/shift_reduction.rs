@@ -10,12 +10,14 @@ use binius_core::{
 };
 use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
-use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{
+	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
+};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		OperatorClaims, OperatorData, build_key_collection,
-		monster::{build_h, build_monster_segments},
+		monster::{build_monster_segments, shift_operator_table},
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 		prove,
@@ -309,7 +311,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 	};
 
 	let g = build_combined_g();
-	let h = build_h::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime);
+	let oblong_weights = lagrange_evals(&subspace, prepared.bitand.r_zhat_prime);
+	let h = shift_operator_table::<F, P, _>(&GlobalAllocator, oblong_weights.as_ref());
 	let Phase1Output {
 		r_j,
 		r_s,
@@ -344,13 +347,13 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let mut group = c.benchmark_group("shift_reduction_phases");
 	group.sample_size(10);
 
-	// Phase 1. `build_g` / `build_h` take their inputs by reference, so no
+	// Phase 1. `build_g` / `shift_operator_table` take their inputs by reference, so no
 	// per-iteration clone is needed; `run_phase_1_sumcheck` consumes `g`/`h` by value.
 	group.bench_function("phase1_build_g_parts", |b| {
 		b.iter(&build_combined_g);
 	});
 	group.bench_function("phase1_build_h_parts", |b| {
-		b.iter(|| build_h::<F, P, _>(&GlobalAllocator, &subspace, prepared.bitand.r_zhat_prime));
+		b.iter(|| shift_operator_table::<F, P, _>(&GlobalAllocator, oblong_weights.as_ref()));
 	});
 	group.bench_function("phase1_run_sumcheck", |b| {
 		b.iter_batched(
