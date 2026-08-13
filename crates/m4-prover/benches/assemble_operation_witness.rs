@@ -8,12 +8,12 @@
 
 use binius_compute::BufferPool;
 use binius_core::{
-	ValueIndex,
-	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex, ZeroConstraint},
+	ValueIndex, ValueTable,
+	constraint_system::{Operand, Shift, ShiftVariant, ShiftedValueIndex, ZeroConstraint},
 	word::Word,
 };
 use binius_frontend::{CircuitBuilder, Wire};
-use binius_m4_prover::{OperandColumns, ValueTable};
+use binius_m4_prover::OperandColumns;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::prelude::*;
 
@@ -84,16 +84,18 @@ fn build_table_fixture() -> (ValueTable, Vec<Word>) {
 		.collect();
 
 	let circuit = builder.build();
-	let table = ValueTable::populate(&circuit, LOG_INSTANCES, |instance, w| {
-		for (index, &wire) in witnesses.iter().enumerate() {
-			w[wire] = fixture_witness_word(instance, index);
-		}
-	})
-	.unwrap();
+	let table = circuit
+		.populate_batch(LOG_INSTANCES, |instance, filler| {
+			for (index, &wire) in witnesses.iter().enumerate() {
+				filler[wire] = fixture_witness_word(instance, index);
+			}
+		})
+		.unwrap();
 
 	let constants = circuit.constraint_system().constants.clone();
 	assert!(constants.len() >= N_CONSTANTS);
-	assert!(table.n_hidden_words() >= N_WITNESS_VALUES);
+	// Every generated private index must name a committed witness row.
+	assert!(table.layout().n_witness >= N_WITNESS_VALUES);
 
 	(table, constants)
 }
@@ -110,21 +112,10 @@ const fn fixture_witness_word(instance: usize, index: usize) -> Word {
 	Word(mixed)
 }
 
-fn generate_constraints(
-	case: &OperandCase,
-	constants_len: usize,
-	witness_offset: usize,
-) -> (Vec<ZeroConstraint>, usize) {
+fn generate_constraints(case: &OperandCase, constants_len: usize) -> (Vec<ZeroConstraint>, usize) {
 	let mut rng = StdRng::seed_from_u64(case.seed);
 	let constraints = (0..N_OPERANDS)
-		.map(|_| {
-			ZeroConstraint([random_operand(
-				&mut rng,
-				case,
-				constants_len,
-				witness_offset,
-			)])
-		})
+		.map(|_| ZeroConstraint([random_operand(&mut rng, case, constants_len)]))
 		.collect::<Vec<_>>();
 	let total_shifted_indices = constraints
 		.iter()
@@ -139,57 +130,45 @@ fn generate_constraints(
 	(constraints, total_shifted_indices)
 }
 
-fn random_operand(
-	rng: &mut impl Rng,
-	case: &OperandCase,
-	constants_len: usize,
-	witness_offset: usize,
-) -> Operand {
+fn random_operand(rng: &mut impl Rng, case: &OperandCase, constants_len: usize) -> Operand {
 	let n_terms = rng.random_range(case.min_terms..=case.max_terms);
 	(0..n_terms)
-		.map(|_| random_shifted_value_index(rng, constants_len, witness_offset))
+		.map(|_| random_shifted_value_index(rng, constants_len))
 		.collect()
 }
 
-fn random_shifted_value_index(
-	rng: &mut impl Rng,
-	constants_len: usize,
-	witness_offset: usize,
-) -> ShiftedValueIndex {
-	let value_index = random_value_index(rng, constants_len, witness_offset);
-	let shift_variant = SHIFT_VARIANTS[rng.random_range(0..SHIFT_VARIANTS.len())];
-	let amount = rng.random_range(0..shift_variant.max_amount()) as u8;
+fn random_shifted_value_index(rng: &mut impl Rng, constants_len: usize) -> ShiftedValueIndex {
+	let value_index = random_value_index(rng, constants_len);
+	let variant = SHIFT_VARIANTS[rng.random_range(0..SHIFT_VARIANTS.len())];
+	let amount = rng.random_range(0..variant.max_amount());
 
-	ShiftedValueIndex {
-		value_index,
-		shift_variant,
-		amount,
-	}
+	// A constraint system carries canonical shifts, which spell the identity one way only.
+	let shift = if amount == 0 {
+		Shift::IDENTITY
+	} else {
+		Shift::new(variant, amount)
+	};
+
+	ShiftedValueIndex::single(value_index, shift)
 }
 
-fn random_value_index(
-	rng: &mut impl Rng,
-	constants_len: usize,
-	witness_offset: usize,
-) -> ValueIndex {
+fn random_value_index(rng: &mut impl Rng, constants_len: usize) -> ValueIndex {
 	if rng.random_range(0..8) == 0 {
-		ValueIndex(rng.random_range(0..constants_len) as u32)
+		ValueIndex::constant(rng.random_range(0..constants_len) as u32)
 	} else {
-		ValueIndex((witness_offset + rng.random_range(0..N_WITNESS_VALUES)) as u32)
+		ValueIndex::private(rng.random_range(0..N_WITNESS_VALUES) as u32)
 	}
 }
 
 fn bench_assemble_operation_witness(c: &mut Criterion) {
 	let (table, constants) = build_table_fixture();
-	let witness_offset = table.layout().offset_witness;
 	let pool = BufferPool::new();
 	let alloc = &pool;
 
 	let mut group = c.benchmark_group("assemble_operation_witness");
 
 	for case in CASES {
-		let (constraints, total_shifted_indices) =
-			generate_constraints(&case, constants.len(), witness_offset);
+		let (constraints, total_shifted_indices) = generate_constraints(&case, constants.len());
 
 		group.throughput(Throughput::Elements(total_shifted_indices as u64));
 		group.bench_with_input(
