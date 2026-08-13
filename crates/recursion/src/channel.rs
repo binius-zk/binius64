@@ -289,14 +289,10 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 	}
 
 	fn sample_bits(&mut self, bits: usize) -> SymbolicWord {
-		// The draw happens even though the result is thrown away.
-		// It consumes four sampler bytes, and that count is what the next observe appends.
-		// Skipping it desyncs every challenge after the first bit sample.
-		let _ = self.challenger.sample_bits(bits);
-
-		// UNCONSTRAINED: the index is still the prover's choice, which is BINIUS-470.
-		// The gadget's masked draw above is discarded rather than returned.
-		SymbolicWord::wire(&self.shared, self.shared.input_wire("sample_bits"))
+		// The gadget masks the draw with a real gate, so the result provably lies below 2^bits.
+		// The FRI code takes that bound as given rather than asserting it.
+		// So deriving the index and masking it are one change, not two.
+		SymbolicWord::wire(&self.shared, self.challenger.sample_bits(bits))
 	}
 
 	fn pack_words(&mut self, words: &[SymbolicWord]) -> Vec<SymbolicElem> {
@@ -425,6 +421,69 @@ mod tests {
 
 	use super::*;
 	use crate::merkle::element_words;
+
+	/// Every query index the channel hands out is the native one, and fits the width it asked for.
+	///
+	/// Four sampler bytes are read whatever the width, so a narrow one almost always overflows.
+	/// An unmasked draw would then differ from the native value and fail the pin below.
+	///
+	/// The bound matters on its own.
+	/// The FRI code takes it as given, so a wide index could point a query anywhere satisfiable.
+	#[test]
+	fn a_sampled_index_is_the_native_one_and_fits_its_width() {
+		// Widths where the mask drops bits, one that needs no mask, and one that clamps to 32.
+		let widths = [1usize, 3, 7, 8, 11, 16, 31, 32, 33];
+
+		let mut native = HasherChallenger::<Sha256>::default();
+		let mut channel = Binius64BuilderChannel::new();
+
+		let expected = widths
+			.iter()
+			.map(|&bits| sample_bits_reader(native.sampler(), bits))
+			.collect::<Vec<_>>();
+		let sampled = widths
+			.iter()
+			.map(|&bits| WordIPVerifierChannel::<B128>::sample_bits(&mut channel, bits))
+			.collect::<Vec<_>>();
+
+		// The reference values are in range, so pinning to them is what carries the bound.
+		for (&bits, &want) in widths.iter().zip(&expected) {
+			let width = bits.min(u32::BITS as usize);
+			assert!(
+				u64::from(want) < 1u64 << width,
+				"the native index must fit the width it was drawn at"
+			);
+		}
+
+		let pins = {
+			let builder = channel.shared.builder();
+			sampled
+				.iter()
+				.zip(&expected)
+				.enumerate()
+				.map(|(i, (word, &want))| {
+					let claimed = builder.add_inout();
+					builder.assert_eq(format!("index[{i}]"), word.to_wire(builder), claimed);
+					(claimed, want)
+				})
+				.collect::<Vec<_>>()
+		};
+
+		// Every symbolic value must be dropped before the circuit is built.
+		drop(sampled);
+		let recorded = channel.build();
+		assert!(
+			recorded.inputs.is_empty(),
+			"a derived index records nothing for a replay to fill: {:?}",
+			recorded.inputs
+		);
+
+		let mut w = recorded.circuit.new_witness_filler();
+		for (claimed, want) in pins {
+			w[claimed] = Word(u64::from(want));
+		}
+		recorded.circuit.populate_wire_witness(&mut w).unwrap();
+	}
 
 	/// Draws a challenge, two query indices, then a second challenge, on both channels.
 	///
