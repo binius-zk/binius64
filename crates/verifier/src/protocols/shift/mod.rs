@@ -12,10 +12,11 @@ pub const SHIFT_VARIANT_COUNT: usize = 1 << LOG_SHIFT_VARIANT_COUNT;
 
 /// The number of variables the shift reduction's sumcheck binds outside the word index.
 ///
-/// The claim sums over five axes: the shift variant, the shift amount, the bit position within a
-/// word, the bit index the shift indicators read, and the word index. This counts the first four;
-/// the word index is sized by the constraint system.
-pub const SHIFT_LOG_VARS: usize = Word::LOG_BITS * 3 + LOG_SHIFT_VARIANT_COUNT;
+/// A shifted value index names two shifts applied in sequence, so the claim sums over two shift
+/// slots — a variant and an amount each — and three bit indices: the witness bit the inner shift
+/// reads, the intermediate-word bit the two indicators meet at, and the output bit the oblong
+/// weights attach to. This counts all of those; the word index is sized by the constraint system.
+pub const SHIFT_LOG_VARS: usize = Word::LOG_BITS * 3 + 2 * LOG_SHIFT_COUNT;
 
 /// The number of index bits one shift slot occupies: the variant above the amount.
 ///

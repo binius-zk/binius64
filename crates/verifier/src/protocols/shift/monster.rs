@@ -19,13 +19,6 @@ use binius_utils::{
 
 use super::SHIFT_COUNT;
 
-/// Why a term's outer shift slot must hold the identity in the two-phase reduction.
-///
-/// A shift key names one shift, so the reduction reads the inner slot and ignores the outer one.
-/// A term carrying both would verify against the wrong shifted word.
-const DOUBLE_SHIFT_UNSUPPORTED: &str =
-	"the two-phase shift reduction reads only the inner shift of a term";
-
 /// A [`FieldFn`] evaluating one operation's monster multilinear polynomial.
 ///
 /// The monster multilinear encodes all `ARITY`-operand constraints of a single operation (BitAnd,
@@ -177,7 +170,6 @@ where
 			let mut constraint_eval = E::zero();
 			for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 				for svi in operand {
-					assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
 					let inner = svi.inner().index() * ARITY + operand_id;
 					let outer = svi.outer().index();
 					constraint_eval += operand_shift_scalars[inner].clone()
@@ -224,7 +216,6 @@ where
 				let mut constraint_eval = F::ZERO;
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 					for svi in operand {
-						assert!(!svi.is_doubly_shifted(), "{DOUBLE_SHIFT_UNSUPPORTED}");
 						let inner = svi.inner().index() * ARITY + operand_id;
 						let outer = svi.outer().index();
 						constraint_eval += operand_shift_scalars[inner]
@@ -309,7 +300,11 @@ mod tests {
 	/// one array of operands per constraint.
 	///
 	/// Every term names a private word, so the constant and inout runs of the word-index tensor
-	/// stay empty.
+	/// stay empty. Terms are drawn across all three classes — unshifted, singly shifted and doubly
+	/// shifted — so both slots' tables are read at more than one index.
+	///
+	/// The evaluation is a sum over whatever terms it is handed, so the sequences here need not be
+	/// canonical or non-collapsible the way a real constraint system's do.
 	fn random_and_constraints(
 		rng: &mut StdRng,
 		n_constraints: usize,
@@ -325,21 +320,25 @@ mod tests {
 			ShiftVariant::Sra32,
 			ShiftVariant::Rotr32,
 		];
+		let random_shift = |rng: &mut StdRng| Shift {
+			variant: shift_variants[rng.random_range(0..SHIFT_VARIANT_COUNT)],
+			amount: rng.random_range(0..Word::BITS) as u8,
+		};
 		(0..n_constraints)
 			.map(|_| {
 				AndConstraint(std::array::from_fn(|_| {
 					(0..rng.random_range(0..=3))
 						.map(|_| {
-							// The reduction reads the inner slot, so the fixture leaves the outer
-							// one at the identity.
-							ShiftedValueIndex::single(
-								ValueIndex::private(rng.random_range(0..n_words) as u32),
-								Shift {
-									variant: shift_variants
-										[rng.random_range(0..SHIFT_VARIANT_COUNT)],
-									amount: rng.random_range(0..Word::BITS) as u8,
-								},
-							)
+							let value_index =
+								ValueIndex::private(rng.random_range(0..n_words) as u32);
+							let inner = random_shift(rng);
+							// A third of the terms carry a second shift, so the outer table is read
+							// away from the identity as well as at it.
+							if rng.random_range(0..3) == 0 {
+								ShiftedValueIndex::new(value_index, [inner, random_shift(rng)])
+							} else {
+								ShiftedValueIndex::single(value_index, inner)
+							}
 						})
 						.collect()
 				}))
@@ -349,10 +348,12 @@ mod tests {
 
 	#[test]
 	fn evaluate_monster_scales_by_the_outer_slot_weight() {
-		// Invariant: the outer slot's weight reaches the evaluation, and reaches it as a factor.
+		// Invariant: the outer slot's weight reaches every term, and reaches it as a factor.
 		//
-		// Every term the fixture builds carries an identity outer shift, so index 0 is the only
-		// entry read. Scaling it must scale the whole evaluation by the same factor.
+		// The evaluation is linear in the outer table, and each term reads exactly one of its
+		// entries, so scaling the whole table scales the evaluation by the same factor. That holds
+		// however the fixture's terms are spread across the table, which is what lets the fixture
+		// carry doubly shifted terms rather than reading index 0 alone.
 		type F = BinaryField128bGhash;
 		let mut rng = StdRng::seed_from_u64(7);
 
@@ -374,27 +375,43 @@ mod tests {
 			eval_fn.call_native(&input)
 		};
 
-		// The identity-selecting table, which is what the two-phase reduction supplies.
-		let mut identity_selecting = [F::ZERO; SHIFT_COUNT];
-		identity_selecting[0] = F::ONE;
-		let baseline = eval_with_outer(&identity_selecting);
+		let outer: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
+		let baseline = eval_with_outer(&outer);
 		// A non-degenerate fixture, or the scaling below proves nothing.
 		assert_ne!(baseline, F::ZERO);
 
-		// Scaling the entry every term reads scales the evaluation by the same factor.
+		// Scaling every entry scales the evaluation by the same factor.
 		let scale = F::random(&mut rng);
-		let mut scaled = [F::ZERO; SHIFT_COUNT];
-		scaled[0] = scale;
-		assert_eq!(eval_with_outer(&scaled), baseline * scale);
+		assert_eq!(eval_with_outer(&outer.map(|weight| weight * scale)), baseline * scale);
 
-		// Zeroing it kills the evaluation, so no term slipped past the outer factor.
+		// Zeroing the table kills the evaluation, so no term slipped past the outer factor.
 		assert_eq!(eval_with_outer(&[F::ZERO; SHIFT_COUNT]), F::ZERO);
 
-		// The weight of a shift the fixture never names must not enter. Only index 0 is read, so
-		// filling every other entry changes nothing.
-		let mut noise = [F::random(&mut rng); SHIFT_COUNT];
-		noise[0] = F::ONE;
-		assert_eq!(eval_with_outer(&noise), baseline);
+		// The identity-selecting table is what a term with no outer shift is weighed by, and it
+		// reproduces what a reduction over one shift slot would give the same terms.
+		let mut identity_selecting = [F::ZERO; SHIFT_COUNT];
+		identity_selecting[0] = F::ONE;
+		let singly_shifted_only = constraints
+			.iter()
+			.map(|constraint| {
+				AndConstraint(std::array::from_fn(|operand| {
+					constraint.0[operand]
+						.iter()
+						.filter(|svi| !svi.is_doubly_shifted())
+						.copied()
+						.collect()
+				}))
+			})
+			.collect::<Vec<_>>();
+		let shift_scalars = ShiftScalars {
+			inner: &inner,
+			outer: &identity_selecting,
+		};
+		let input = encode_operation_input(&r_x_prime, lambda, shift_scalars, r_y_tensor);
+		assert_eq!(
+			eval_with_outer(&identity_selecting),
+			OperationEvalFn::new(&singly_shifted_only, 0, 0, n_words).call_native(&input)
+		);
 	}
 
 	/// The native `WideMul` variant must produce exactly the same result as the generic

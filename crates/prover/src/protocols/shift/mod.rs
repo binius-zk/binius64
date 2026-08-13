@@ -3,13 +3,6 @@
 
 use binius_core::word::Word;
 
-/// Why a shift sequence's outer slot must hold the identity in the two-phase reduction.
-///
-/// The reduction folds one shift axis pair, so it reads the inner slot and ignores the outer one.
-/// A term carrying both would be reduced against the wrong shifted word.
-pub(crate) const DOUBLE_SHIFT_UNSUPPORTED: &str =
-	"the two-phase shift reduction reads only the inner shift of a sequence";
-
 /// The value vector's two committed segments, each at the width the protocol addresses it at.
 ///
 /// A circuit declares fewer values than the reductions address: the public segment is padded to a
@@ -45,4 +38,4 @@ pub use key_collection::{
 	DenseShiftEncoding, KeyCollection, KeySegment, Operation, build_key_collection,
 };
 pub use prove::{OperatorData, PreparedOperatorData, prove};
-pub use shift_ind::{Phase3Output, ShiftIndSumcheck};
+pub use shift_ind::{ShiftIndOutput, ShiftIndSumcheck};

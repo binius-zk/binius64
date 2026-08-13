@@ -8,16 +8,14 @@ use binius_core::{ShiftVariant, constraint_system::Shift, word::Word};
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-use binius_verifier::protocols::shift::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, ZERO_ARITY,
-};
+use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
 use bytemuck::zeroed_vec;
 use tracing::instrument;
 
 use super::{
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment, Operation},
-	phase_1::PHASE_1_LOG_LEN,
+	phase_1::SHIFT_OPERATOR_LOG_LEN,
 };
 
 /// The width the half-word (`*32`) shift variants act over.
@@ -47,16 +45,11 @@ struct OuterSlotWeights<F: Field> {
 }
 
 impl<F: Field> OuterSlotWeights<F> {
-	/// The weights that select the identity and reject every other outer shift.
-	///
-	/// This is the equality indicator at the all-zero point, where no challenges were drawn over
-	/// the outer axes.
-	/// Every key's outer slot holds [`Shift::IDENTITY`], spelled `(Sll, 0)`.
-	/// So a well-formed key weighs one, and the scalars match what a single-shift reduction builds.
-	fn identity_selecting() -> Self {
+	/// The equality indicators of the outer slot's challenge point.
+	fn new(r_s_outer: &[F], r_v_outer: &[F]) -> Self {
 		Self {
-			variant: eq_ind_partial_eval::<F>(&[F::ZERO; LOG_SHIFT_VARIANT_COUNT]),
-			amount: eq_ind_partial_eval::<F>(&[F::ZERO; Word::LOG_BITS]),
+			variant: eq_ind_partial_eval::<F>(r_v_outer),
+			amount: eq_ind_partial_eval::<F>(r_s_outer),
 		}
 	}
 
@@ -168,7 +161,7 @@ pub fn shift_operator_row<F: Field>(
 ///
 /// # Returns
 ///
-/// One multilinear over [`PHASE_1_LOG_LEN`] variables, indexed from the low variables up:
+/// One multilinear over [`SHIFT_OPERATOR_LOG_LEN`] variables, indexed from the low variables up:
 ///
 /// ```text
 ///     low     Word::LOG_BITS             the bit position
@@ -196,7 +189,7 @@ where
 	assert_eq!(psi.len(), Word::BITS, "the weights are indexed by bit position");
 
 	// One row of `Word::BITS` weights per `(variant, amount)`, variant most significant.
-	let mut data = zeroed_vec::<F>(1 << PHASE_1_LOG_LEN);
+	let mut data = zeroed_vec::<F>(1 << SHIFT_OPERATOR_LOG_LEN);
 	for (variant, block) in
 		iter::zip(ShiftVariant::ALL, data.chunks_exact_mut(Word::BITS * Word::BITS))
 	{
@@ -243,19 +236,22 @@ where
 /// hidden piece over `log_witness_words` variables (the hidden words at the base, zeros above).
 /// The sparse first sumcheck round consumes them without materializing the combined buffer.
 #[instrument(skip_all, name = "build_monster_segments")]
+#[allow(clippy::too_many_arguments)]
 pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	key_collection: &KeyCollection,
 	prepared: &PreparedOperatorClaims<F>,
 	h_eval: F,
-	r_s: &[F],
-	r_v: &[F],
+	r_s_inner: &[F],
+	r_v_inner: &[F],
+	r_s_outer: &[F],
+	r_v_outer: &[F],
 ) -> (FieldVec<P, A>, FieldVec<P, A>)
 where
 	F: BinaryField,
 {
-	let r_v_tensor = eq_ind_partial_eval::<F>(r_v);
-	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
+	let r_v_tensor = eq_ind_partial_eval::<F>(r_v_inner);
+	let r_s_tensor = eq_ind_partial_eval::<F>(r_s_inner);
 
 	// Invariant: a key's sequence weight factorizes across its two slots.
 	//
@@ -263,10 +259,7 @@ where
 	//     \______ inner slot _________/     \______ outer slot ________/
 	//
 	// So one table per slot suffices, at `2 * SHIFT_COUNT` entries instead of `SHIFT_COUNT^2`.
-	//
-	// Challenges are drawn over the inner axes only, so the outer slot sits at the all-zero point.
-	// There the indicator selects the identity, the only outer shift a key may carry.
-	let outer = OuterSlotWeights::<F>::identity_selecting();
+	let outer = OuterSlotWeights::<F>::new(r_s_outer, r_v_outer);
 
 	// The scalars of one operation, laid out with the operand index innermost so that the `arity`
 	// weights for one `key.dense_shift_idx` form a contiguous chunk that [`Key::accumulate_wide`]
@@ -438,7 +431,7 @@ mod tests {
 
 	/// The operator table computed straight from the indicator definition, one entry at a time.
 	fn reference_table<F: Field>(psi: &[F]) -> Vec<F> {
-		let mut table = vec![F::ZERO; 1 << PHASE_1_LOG_LEN];
+		let mut table = vec![F::ZERO; 1 << SHIFT_OPERATOR_LOG_LEN];
 		for (variant_idx, variant) in ShiftVariant::ALL.into_iter().enumerate() {
 			for amount in 0..Word::BITS {
 				for j in 0..Word::BITS {

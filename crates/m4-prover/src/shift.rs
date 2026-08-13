@@ -15,9 +15,9 @@ use binius_math::{
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		KeyCollection, KeySegment, OperatorClaims, Phase3Output, PreparedOperatorClaims,
+		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftIndOutput,
 		ShiftIndSumcheck,
-		monster::{build_monster_segments, shift_operator_table},
+		monster::build_monster_segments,
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 	},
@@ -83,27 +83,49 @@ where
 		(&public, &key_collection.public.dense_shift_enc),
 		(&hidden, &key_collection.hidden.dense_shift_enc),
 	]);
-	// The oblong weights, which phase 1 pushes through every shift and phase 3 runs its rounds
+	// The oblong weights, which phase 1 pushes through both shift slots and phase 3 runs its rounds
 	// over directly.
 	let oblong_weights = lagrange_evals(domain_subspace, prepared.bitand.r_zhat_prime);
-	let h = shift_operator_table::<F, F, _>(alloc, oblong_weights.as_ref());
 	let Phase1Output {
 		r_j,
-		r_s,
-		r_v,
+		r_s_inner,
+		r_v_inner,
+		r_s_outer,
+		r_v_outer,
+		psi,
 		gamma,
 		g_eval,
-	} = run_phase_1_sumcheck::<F, F, _, _>(g, h, prepared.batched_eval(), channel, alloc);
+	} = run_phase_1_sumcheck::<F, F, _, _>(
+		g,
+		oblong_weights.as_ref(),
+		prepared.batched_eval(),
+		channel,
+		alloc,
+	);
 
-	// Phase 3 binds the bit index the shift indicators read, carrying phase 1's `g` evaluation
-	// through its rounds as a constant.
-	let phase_3 =
-		ShiftIndSumcheck::<P, _>::new(alloc, oblong_weights.as_ref(), &r_j, &r_s, &r_v, g_eval);
-	debug_assert_eq!(phase_3.beta(), gamma);
-	let Phase3Output {
-		shift_ind_eval,
+	// Phases 2 and 3 bind the two bit indices the shift indicators chain through, working back up
+	// the chain — see the single-instance prover for what each run carries.
+	let inner = ShiftIndSumcheck::<P, _>::new(alloc, &psi, &r_j, &r_s_inner, &r_v_inner, g_eval);
+	debug_assert_eq!(inner.beta(), gamma);
+	let inner_output = inner.prove(channel, alloc);
+
+	let outer = ShiftIndSumcheck::<P, _>::new(
+		alloc,
+		oblong_weights.as_ref(),
+		&inner_output.point,
+		&r_s_outer,
+		&r_v_outer,
+		inner_output.ind_eval * g_eval,
+	);
+	debug_assert_eq!(outer.beta(), inner_output.eval);
+	let ShiftIndOutput {
+		weights_eval,
+		ind_eval,
 		eval: epsilon,
-	} = phase_3.prove(channel, alloc);
+		point: _,
+	} = outer.prove(channel, alloc);
+	// The monster multilinear is scaled by the three bit-index factors the two runs reduced.
+	let shift_ind_eval = weights_eval * ind_eval * inner_output.ind_eval;
 
 	// Phase 4: the witness folded at the bit position challenge `r_j`, per segment.
 
@@ -117,8 +139,10 @@ where
 		key_collection,
 		&prepared,
 		shift_ind_eval,
-		&r_s,
-		&r_v,
+		&r_s_inner,
+		&r_v_inner,
+		&r_s_outer,
+		&r_v_outer,
 	);
 
 	run_sumcheck::<F, P, _, _>(
@@ -219,7 +243,9 @@ mod tests {
 		test_utils::random_scalars,
 		univariate::lagrange_evals_scalars,
 	};
-	use binius_prover::protocols::shift::{DenseShiftEncoding, OperatorData, build_key_collection};
+	use binius_prover::protocols::shift::{
+		DenseShiftEncoding, OperatorData, build_key_collection, monster::shift_operator_table,
+	};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
 		config::{B128, StdChallenger},

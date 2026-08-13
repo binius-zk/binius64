@@ -105,6 +105,100 @@ pub fn create_concat_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 	(circuit.constraint_system().clone(), witness_filler.into_value_vec())
 }
 
+/// A system whose operands carry genuinely doubly shifted value indices, with a witness.
+///
+/// The frontend still lowers every term to a single shift, so nothing a circuit builds reaches
+/// this path. It is built by hand instead, which is what lets the reduction be exercised over two
+/// shift slots ahead of the compiler emitting them.
+///
+/// Each pair is one AND constraint `a & b ^ c = 0`, with `a` doubly shifted, `b` a second private
+/// word and `c` the word the witness sets to their AND. One operand also mixes an unshifted, a
+/// singly shifted and a doubly shifted term, since that is what a compiler emitting pairs would
+/// produce.
+pub fn create_double_shift_cs_with_witness() -> (ConstraintSystem, ValueVec) {
+	use binius_core::constraint_system::{Composition, Shift, ShiftedValueIndex, ValueIndex};
+	use rand::RngExt;
+
+	/// The word a shift sequence carries its operand to, inner slot first.
+	fn apply(sequence: [Shift; 2], word: Word) -> Word {
+		let [inner, outer] = sequence;
+		outer.apply(inner.apply(word))
+	}
+
+	// Sequences that genuinely need both slots: a sign extension of a sub-word field, a shift under
+	// a rotate, a byte masked off one end and back, and the half-word family's own sign extension.
+	// `sar` is the case worth covering in either slot, being the one shift whose vacated positions
+	// all read a single input bit. Two shifts of one variant chain into one, so no pair here shares
+	// a variant — the assertion below is what holds that to the composition rule rather than to
+	// this comment.
+	let sequences = [
+		[Shift::sll(40), Shift::sar(40)],
+		[Shift::rotr(1), Shift::sll(9)],
+		[Shift::sll(8), Shift::srl(8)],
+		[Shift::sll32(11), Shift::sra32(11)],
+		[Shift::sar(7), Shift::sll(3)],
+	];
+	for [inner, outer] in sequences {
+		assert_eq!(
+			Shift::compose(inner, outer),
+			Composition::Pair,
+			"a collapsible sequence is not a doubly shifted term: {inner:?} then {outer:?}"
+		);
+	}
+
+	// Three private words per sequence: the shifted operand, the mask, and their AND.
+	let mut rng = StdRng::seed_from_u64(7);
+	let mut private = (0..3 * sequences.len())
+		.map(|_| Word::from_u64(rng.random()))
+		.collect::<Vec<_>>();
+
+	let mut and_constraints = Vec::new();
+	for (i, sequence) in sequences.into_iter().enumerate() {
+		let base = 3 * i as u32;
+		// The witness makes the constraint hold: the product word is what `a & b` comes to.
+		private[base as usize + 2] =
+			apply(sequence, private[base as usize]) & private[base as usize + 1];
+		and_constraints.push(AndConstraint([
+			vec![ShiftedValueIndex::new(ValueIndex::private(base), sequence)],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(base + 1))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(base + 2))],
+		]));
+	}
+
+	// One more constraint whose first operand mixes all three term classes, since that is what a
+	// compiler emitting pairs would produce. Its terms XOR to one word, which the other two
+	// operands are then set to.
+	{
+		let sign_extend = [Shift::sll(40), Shift::sar(40)];
+		let terms = vec![
+			ShiftedValueIndex::plain(ValueIndex::private(0)),
+			ShiftedValueIndex::srl(ValueIndex::private(3), 17),
+			ShiftedValueIndex::new(ValueIndex::private(1), sign_extend),
+		];
+		let mixed = private[0] ^ (private[3] >> 17) ^ apply(sign_extend, private[1]);
+		let base = private.len() as u32;
+		private.push(mixed);
+		private.push(mixed);
+		and_constraints.push(AndConstraint([
+			terms,
+			vec![ShiftedValueIndex::plain(ValueIndex::private(base))],
+			vec![ShiftedValueIndex::plain(ValueIndex::private(base + 1))],
+		]));
+	}
+
+	let cs = ConstraintSystem {
+		constants: vec![Word::ZERO; 4],
+		n_inout: 0,
+		n_private: private.len(),
+		zero_constraints: Vec::new(),
+		and_constraints,
+		imul_constraints: Vec::new(),
+		bmul_constraints: Vec::new(),
+	};
+	let value_vec = ValueVec::new_from_data(4, &[Word::ZERO; 4], &private);
+	(cs, value_vec)
+}
+
 pub fn create_slice_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 	use binius_circuits::slice::{assert_slice_eq, slice};
 
@@ -238,6 +332,7 @@ fn test_shift_prove_and_verify() {
 		create_sha256_cs_with_witness(),
 		create_slice_cs_with_witness(),
 		create_concat_cs_with_witness(),
+		create_double_shift_cs_with_witness(),
 	];
 	for (constraint_system, _) in constraint_systems_to_test.iter() {
 		constraint_system.validate().unwrap();

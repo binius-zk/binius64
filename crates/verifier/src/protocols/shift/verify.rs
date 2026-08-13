@@ -14,19 +14,22 @@ use binius_ip::{
 };
 use binius_math::{
 	BinarySubspace,
-	inner_product::inner_product_scalars,
 	line::extrapolate_line,
-	multilinear::eq::{
-		eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var, scaled_eq_ind_partial_eval,
-		scaled_eq_ind_partial_eval_scalars,
+	multilinear::{
+		eq::{
+			eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var, scaled_eq_ind_partial_eval,
+			scaled_eq_ind_partial_eval_scalars,
+		},
+		evaluate::evaluate_inplace_scalars,
 	},
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
 use getset::Getters;
 
 use super::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperationEvalFn, SHIFT_COUNT, SHIFT_LOG_VARS,
-	ShiftScalars, ZERO_ARITY, encode_operation_input, error::Error, shift_ind::evaluate_shift_inds,
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_COUNT, OperationEvalFn, SHIFT_COUNT,
+	SHIFT_LOG_VARS, ShiftScalars, ZERO_ARITY, encode_operation_input, error::Error,
+	shift_ind::evaluate_shift_inds,
 };
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
@@ -108,15 +111,25 @@ pub struct VerifyOutput<F> {
 	intmul_lambda: F,
 	/// Random coefficient for batching BMUL constraint evaluations.
 	binmul_lambda: F,
-	/// Challenge point for the bit index variables (length `Word::LOG_BITS`).
+	/// Challenge point for the witness bit index (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
-	/// Challenge point for the shift-amount variables (length `Word::LOG_BITS`).
-	pub r_s: Vec<F>,
-	/// Challenge point for the shift-variant variables (length `LOG_SHIFT_VARIANT_COUNT`).
-	pub r_v: Vec<F>,
+	/// Challenge point for the inner shift's amount variables (length `Word::LOG_BITS`).
+	pub r_s_inner: Vec<F>,
+	/// Challenge point for the inner shift's variant variables (length
+	/// `LOG_SHIFT_VARIANT_COUNT`).
+	pub r_v_inner: Vec<F>,
+	/// Challenge point for the outer shift's amount variables (length `Word::LOG_BITS`).
+	pub r_s_outer: Vec<F>,
+	/// Challenge point for the outer shift's variant variables (length
+	/// `LOG_SHIFT_VARIANT_COUNT`).
+	pub r_v_outer: Vec<F>,
 	/// Challenge point for the word index variables (length `log_segment_words`).
 	pub r_y: Vec<F>,
-	/// Challenge point for the bit index the shift indicators read (length `Word::LOG_BITS`).
+	/// Challenge point for the bit index of the intermediate word, where the two shift indicators
+	/// meet (length `Word::LOG_BITS`).
+	pub r_k: Vec<F>,
+	/// Challenge point for the output bit index the oblong weights attach to (length
+	/// `Word::LOG_BITS`).
 	pub r_i: Vec<F>,
 	/// Challenge for the witness's segment selector variable.
 	pub r_segment: F,
@@ -136,14 +149,6 @@ impl<F> VerifyOutput<F> {
 		&self.r_j
 	}
 
-	/// Returns the challenge point for shift variables.
-	///
-	/// This corresponds to `Word::LOG_BITS` variables encoding
-	/// the shift operations in the constraint system.
-	pub fn r_s(&self) -> &[F] {
-		&self.r_s
-	}
-
 	/// Returns the challenge point for word index variables.
 	///
 	/// This corresponds to `log_word_count` variables indexing
@@ -159,13 +164,15 @@ impl<F> VerifyOutput<F> {
 /// 1. **Sampling Phase**: Samples random lambda coefficients for batching bitand, intmul and binmul
 ///    evaluation claims across operands.
 /// 2. **Sumcheck**: Verifies the batched evaluation claim over all `SHIFT_LOG_VARS +
-///    log_word_count` variables of the claim, degree 2 in each. The rounds bind the shift variant,
-///    then the shift amount, then the bit position within a word, then the bit index the shift
-///    indicators read, and last the word index — the order the prover's four phases need.
-/// 3. **Challenge Splitting**: Splits the challenge point into its `r_v`, `r_s`, `r_j`, `r_i` and
-///    `r_y` runs
+///    log_word_count` variables of the claim, degree 2 in each. A shifted value index names two
+///    shifts applied in sequence, and the rounds peel them from the output end inward: the outer
+///    shift's variant and amount, then the inner shift's, then the bit position within a word, then
+///    the intermediate word's bit index where the two shift indicators meet, then the output bit
+///    index, and last the word index — the order the prover's phases need.
+/// 3. **Challenge Splitting**: Splits the challenge point into its per-slot shift runs, its three
+///    bit-index runs and `r_y`
 /// 4. **Monster Multilinear Verification**: Checks that the claim the sumcheck reduced to matches
-///    the product of its four factors, for AND constraints (bitand), IMUL constraints (intmul) and
+///    the product of its five factors, for AND constraints (bitand), IMUL constraints (intmul) and
 ///    BMUL constraints (binmul)
 ///
 /// # Parameters
@@ -219,14 +226,22 @@ where
 	} = verify_sumcheck(SHIFT_LOG_VARS + log_word_count, 2, eval, channel)?;
 
 	// Reverse the challenges into the evaluation point, whose coordinates then run in increasing
-	// order of significance: the word index, the bit index the shift indicators read, the bit
-	// position within a word, the shift amount, and the shift variant. The rounds bind them in
-	// the opposite order — variant first, word index last — which is what admits the prover's
-	// four phases.
+	// order of significance: the word index, the output bit index, the intermediate bit index, the
+	// witness bit index, then the inner shift slot and the outer one. The rounds bind them in the
+	// opposite order — the outer shift first, the word index last — which is what admits the
+	// prover's phases, and which peels the two shifts from the output end inward.
 	point.reverse();
-	let r_v = point.split_off(log_word_count + Word::LOG_BITS * 3);
-	let r_s = point.split_off(log_word_count + Word::LOG_BITS * 2);
-	let r_j = point.split_off(log_word_count + Word::LOG_BITS);
+	debug_assert_eq!(point.len(), SHIFT_LOG_VARS + log_word_count);
+	// Where each run starts, counting up from the word index. `split_off` cuts from the top, so
+	// the runs come off in decreasing significance.
+	let bit_indices = log_word_count + Word::LOG_BITS * 3;
+	let inner_slot = bit_indices + LOG_SHIFT_COUNT;
+	let r_v_outer = point.split_off(inner_slot + Word::LOG_BITS);
+	let r_s_outer = point.split_off(inner_slot);
+	let r_v_inner = point.split_off(bit_indices + Word::LOG_BITS);
+	let r_s_inner = point.split_off(bit_indices);
+	let r_j = point.split_off(log_word_count + Word::LOG_BITS * 2);
+	let r_k = point.split_off(log_word_count + Word::LOG_BITS);
 	let r_i = point.split_off(log_word_count);
 	let mut r_y = point;
 	let r_segment = r_y.pop().expect("log_word_count >= 1");
@@ -241,8 +256,11 @@ where
 		r_j,
 		r_y,
 		r_segment,
-		r_s,
-		r_v,
+		r_s_inner,
+		r_v_inner,
+		r_s_outer,
+		r_v_outer,
+		r_k,
 		r_i,
 		eval,
 		witness_eval,
@@ -308,37 +326,45 @@ where
 		binmul_lambda,
 		eval,
 		r_j,
-		r_s,
-		r_v,
+		r_s_inner,
+		r_v_inner,
+		r_s_outer,
+		r_v_outer,
 		r_y,
 		r_segment,
+		r_k,
 		r_i,
 		witness_eval,
 	} = output;
 
-	// Two of the sumcheck's four factors depend on the bit index the middle rounds bound: the
-	// Lagrange weights of the univariate challenge, and the shift indicators interpolated over the
-	// variant axis. Both are evaluated at `r_i` alone.
-	let l_tilde = lagrange_evals_scalars(subspace, r_zhat_prime);
-	let l_tilde_eval = inner_product_scalars(l_tilde, eq_ind_partial_eval_scalars(r_i));
-	let shift_ind_eval =
-		inner_product_scalars(evaluate_shift_inds(r_i, r_j, r_s), eq_ind_partial_eval_scalars(r_v));
+	// Three of the sumcheck's five factors are the verifier's to evaluate from the bit-index
+	// challenges alone: the Lagrange weights of the univariate challenge at `r_i`, and the two
+	// shift indicators, one per slot of a term's shift sequence. The indicators chain through the
+	// intermediate word — the outer one carries the output bit down to `r_k`, the inner one carries
+	// `r_k` down to the witness bit — which is what makes a sequence of two shifts one index entry.
+	let l_tilde_eval =
+		evaluate_inplace_scalars(lagrange_evals_scalars(subspace, r_zhat_prime), r_i);
+	let outer_ind_eval =
+		evaluate_inplace_scalars(&mut evaluate_shift_inds(r_i, r_k, r_s_outer)[..], r_v_outer);
+	let inner_ind_eval =
+		evaluate_inplace_scalars(&mut evaluate_shift_inds(r_k, r_j, r_s_inner)[..], r_v_inner);
+	let shift_ind_eval = outer_ind_eval * inner_ind_eval;
 
 	// `monster_eval` is a function of purely public-channel-derived elements
-	// (`bitand_lambda`, `intmul_lambda`, the operator data's `r_x_prime` vectors, `r_s`, `r_v`,
-	// `r_y`) plus the constant `constraint_system`. Trade those Elems for plain field values, run
-	// the MLE evaluation in plaintext, and materialize the result as a single inout wire instead
-	// of building the entire sub-circuit in wrapper channels.
+	// (`bitand_lambda`, `intmul_lambda`, the operator data's `r_x_prime` vectors, both shift slots'
+	// challenges, `r_y`) plus the constant `constraint_system`. Trade those Elems for plain field
+	// values, run the MLE evaluation in plaintext, and materialize the result as a single inout
+	// wire instead of building the entire sub-circuit in wrapper channels.
 	//
-	// The two bit-index factors scale every shift scalar of the monster; they multiply the result
-	// out here rather than entering the function, which keeps its input free of `r_i`.
+	// The three bit-index factors scale every shift scalar of the monster; they multiply the result
+	// out here rather than entering the function, which keeps its input free of `r_i` and `r_k`.
 	let monster_eval = {
 		let zero_r_x_prime_len = zero_data.r_x_prime.len();
 		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
 		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
 		let binmul_r_x_prime_len = binmul_data.r_x_prime.len();
-		let r_s_len = r_s.len();
-		let r_v_len = r_v.len();
+		let r_s_len = r_s_inner.len();
+		let r_v_len = r_v_inner.len();
 		let r_y_len = r_y.len();
 
 		let inputs: Vec<C::Elem> = iter::once(zero_lambda.clone())
@@ -349,8 +375,10 @@ where
 			.chain(bitand_data.r_x_prime.iter().cloned())
 			.chain(intmul_data.r_x_prime.iter().cloned())
 			.chain(binmul_data.r_x_prime.iter().cloned())
-			.chain(r_s.iter().cloned())
-			.chain(r_v.iter().cloned())
+			.chain(r_s_inner.iter().cloned())
+			.chain(r_v_inner.iter().cloned())
+			.chain(r_s_outer.iter().cloned())
+			.chain(r_v_outer.iter().cloned())
 			.chain(r_y.iter().cloned())
 			.chain(iter::once(r_segment.clone()))
 			.collect();
@@ -388,13 +416,14 @@ where
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_s.. | r_v.. | r_y..
+/// zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y..
 /// ```
 ///
-/// The stored lengths recover each variable-length section from that flat slice.
+/// The stored lengths recover each variable-length section from that flat slice. Both shift slots
+/// have the same shape, so one pair of lengths covers the two.
 ///
-/// The h evaluation every shift scalar is scaled by is left out: it is a prover message, so
-/// [`check_eval`] multiplies it in outside.
+/// The bit-index factors every shift scalar is scaled by are left out: they depend on prover
+/// messages, so [`check_eval`] multiplies them in outside.
 struct MonsterEvalFn<'a> {
 	/// The AND, IMUL and BMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,
@@ -408,9 +437,9 @@ struct MonsterEvalFn<'a> {
 	intmul_r_x_prime_len: usize,
 	/// Length of the BinMul operator's `r_x_prime` section.
 	binmul_r_x_prime_len: usize,
-	/// Length of the `r_s` section (the shift-amount challenges).
+	/// Length of each `r_s` section (one shift slot's amount challenges).
 	r_s_len: usize,
-	/// Length of the `r_v` section (the shift-variant challenges).
+	/// Length of each `r_v` section (one shift slot's variant challenges).
 	r_v_len: usize,
 	/// Length of the `r_y` section (the column challenges).
 	r_y_len: usize,
@@ -481,9 +510,13 @@ impl MonsterEvalFn<'_> {
 		off += self.intmul_r_x_prime_len;
 		let binmul_r_x_prime_v = &vals[off..off + self.binmul_r_x_prime_len];
 		off += self.binmul_r_x_prime_len;
-		let r_s_v = &vals[off..off + self.r_s_len];
+		let r_s_inner_v = &vals[off..off + self.r_s_len];
 		off += self.r_s_len;
-		let r_v_v = &vals[off..off + self.r_v_len];
+		let r_v_inner_v = &vals[off..off + self.r_v_len];
+		off += self.r_v_len;
+		let r_s_outer_v = &vals[off..off + self.r_s_len];
+		off += self.r_s_len;
+		let r_v_outer_v = &vals[off..off + self.r_v_len];
 		off += self.r_v_len;
 		let r_y_v = &vals[off..off + self.r_y_len];
 		off += self.r_y_len;
@@ -532,24 +565,17 @@ impl MonsterEvalFn<'_> {
 		// sequence space — see the two-table split on the scalars type.
 		//
 		// Both are built once, so the Zero, BitAnd, IntMul and BinMul monster evaluations share
-		// them. Each is indexed by `variant * Word::BITS + amount`. The h evaluation scaling all of
-		// them is left for `check_eval` to multiply in.
-		let eq_r_v = eq_ind_partial_eval_scalars(r_v_v);
-		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
-		let inner_shift_scalars = Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
-			eq_r_v[i / Word::BITS].clone() * &eq_r_s[i % Word::BITS]
-		}));
-
-		// The outer slot's table sits at the all-zero point: no challenges are drawn over its axes.
-		// There the indicator selects the identity, the only outer shift a term may carry.
-		//
-		//     index 0 = (Sll, 0) -> one
-		//     every other index  -> zero
-		//
-		// So a well-formed term's weight is what a single-shift reduction gives it.
-		let outer_shift_scalars = Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
-			if i == 0 { E::one() } else { E::zero() }
-		}));
+		// them. Each is indexed by `variant * Word::BITS + amount`. The bit-index factors scaling
+		// all of them are left for `check_eval` to multiply in.
+		let slot_scalars = |r_s: &[E], r_v: &[E]| {
+			let eq_r_v = eq_ind_partial_eval_scalars(r_v);
+			let eq_r_s = eq_ind_partial_eval_scalars(r_s);
+			Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
+				eq_r_v[i / Word::BITS].clone() * &eq_r_s[i % Word::BITS]
+			}))
+		};
+		let inner_shift_scalars = slot_scalars(r_s_inner_v, r_v_inner_v);
+		let outer_shift_scalars = slot_scalars(r_s_outer_v, r_v_outer_v);
 		let shift_scalars = ShiftScalars {
 			inner: &inner_shift_scalars,
 			outer: &outer_shift_scalars,

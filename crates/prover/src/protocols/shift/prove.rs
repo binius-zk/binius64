@@ -128,12 +128,13 @@ impl<F: Field> PreparedOperatorData<F> {
 ///
 /// The result is a single multilinear evaluation claim on the witness.
 ///
-/// One sumcheck runs, in four prover phases:
+/// One sumcheck runs, in five prover phases. A shifted value index names two shifts applied in
+/// sequence, and the reduction peels them from the output end inward:
 ///
-/// 1. phases 1 and 2 prove the batched claims over the shift variants, the shift amounts and the
-///    bit positions, sparsely and then densely;
-/// 2. phase 3 binds the bit index the shift indicators read;
-/// 3. phase 4 reduces what is left to a witness evaluation, against the monster multilinear.
+/// 1. phase 1 binds the outer shift slot, then the inner one, then the bit position within a word;
+/// 2. phase 2 binds the bit index of the intermediate word, where the two shift indicators meet;
+/// 3. phase 3 binds the output bit index the oblong weights attach to;
+/// 4. phase 4 reduces what is left to a witness evaluation, against the monster multilinear.
 ///
 /// # Parameters
 /// - `key_collection`: the prover's key collection for the constraint system.
@@ -194,27 +195,49 @@ where
 		alloc,
 	);
 
-	// Phase 3 binds the bit index the shift indicators read, carrying phase 1's `g` evaluation
-	// through its rounds as a constant.
-	let phase_3 = ShiftIndSumcheck::<P, _>::new(
+	// Phases 3 and 4 bind the two bit indices the shift indicators chain through, working back up
+	// the chain: first the intermediate word's, where the inner indicator meets the outer one, then
+	// the output bit the oblong weights attach to. Both are the same rounds over a weight vector
+	// and an indicator, differing only in those two arguments.
+	//
+	// Phase 3 runs against the weights the outer rounds left behind, carrying phase 1's `g`
+	// evaluation as a constant.
+	let inner = ShiftIndSumcheck::<P, _>::new(
 		alloc,
-		oblong_weights.as_ref(),
+		&phase_1_output.psi,
 		&phase_1_output.r_j,
-		&phase_1_output.r_s,
-		&phase_1_output.r_v,
+		&phase_1_output.r_s_inner,
+		&phase_1_output.r_v_inner,
 		phase_1_output.g_eval,
 	);
-	debug_assert_eq!(phase_3.beta(), phase_1_output.gamma);
-	let phase_3_output = phase_3.prove(channel, alloc);
+	debug_assert_eq!(inner.beta(), phase_1_output.gamma);
+	let inner_output = inner.prove(channel, alloc);
 
-	// Phase 4 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
-	// the univariate variable `r_j` and the multilinear variable `r_y`.
+	// Phase 4 runs against the oblong weights themselves. The constant it carries collects what is
+	// already fixed: the inner indicator's evaluation and `g`'s. Its own weights evaluate to the
+	// Lagrange factor the verifier recomputes, and `psi(r_k)` is what the two runs agree on, so no
+	// division is needed to pass between them.
+	let outer = ShiftIndSumcheck::<P, _>::new(
+		alloc,
+		oblong_weights.as_ref(),
+		&inner_output.point,
+		&phase_1_output.r_s_outer,
+		&phase_1_output.r_v_outer,
+		inner_output.ind_eval * phase_1_output.g_eval,
+	);
+	debug_assert_eq!(outer.beta(), inner_output.eval);
+	let outer_output = outer.prove(channel, alloc);
+
+	// Phase 5 outputs challenges `r_y`, and the witness evaluation at the oblong point given by
+	// the univariate variable `r_j` and the multilinear variable `r_y`. Its monster multilinear is
+	// scaled by the three bit-index factors the two runs reduced.
 	prove_phase_2::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared,
 		phase_1_output,
-		phase_3_output,
+		outer_output.weights_eval * outer_output.ind_eval * inner_output.ind_eval,
+		outer_output.eval,
 		channel,
 		alloc,
 	)
