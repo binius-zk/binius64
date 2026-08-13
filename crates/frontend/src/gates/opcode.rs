@@ -35,12 +35,6 @@ pub enum Opcode {
 	AssertFalse,
 	AssertTrue,
 	AssertEqCond,
-
-	/// Generic hint gate. The hint's [`HintId`](crate::ir::hints::HintId) is stored in
-	/// `immediates[0]` and the user dimensions (passed to
-	/// [`Hint::shape`](crate::ir::hints::Hint::shape) /
-	/// [`Hint::execute`](crate::ir::hints::Hint::execute)) are `&dimensions`.
-	Hint,
 }
 
 /// The shape of an opcode is a description of it's inputs and outputs. It allows treating a gate as

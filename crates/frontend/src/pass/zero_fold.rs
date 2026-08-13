@@ -6,7 +6,7 @@ use cranelift_entity::EntitySet;
 
 use crate::{
 	gates::Opcode,
-	ir::{Gate, GateGraph, Wire, hints::HintRegistry},
+	ir::{Gate, GateBody, GateGraph, Wire, hints::HintRegistry},
 };
 
 /// Rewrites every gate that a zero operand turns into the identity.
@@ -96,8 +96,12 @@ fn zero_identity(
 	hint_registry: &HintRegistry,
 ) -> Option<[(Wire, Wire); 2]> {
 	let data = graph.gate_data(gate);
-	let param = data.gate_param_with_registry(hint_registry);
-	let opcode = data.opcode;
+	let param = data.gate_param(hint_registry);
+
+	// No rule below applies to a hint.
+	let GateBody::Op(opcode) = data.body else {
+		return None;
+	};
 
 	// A force-committed output has to stay a committed wire backed by its own constraint, so
 	// leave the gate alone rather than strand it.

@@ -3,10 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::ser::SerializeStruct;
 
-use crate::{
-	gates::opcode::Opcode,
-	ir::{Gate, GateGraph, path::PathSpec},
-};
+use crate::ir::{Gate, GateBody, GateGraph, path::PathSpec};
 
 struct PathSpecData {
 	name: String,
@@ -32,43 +29,44 @@ impl PathSpecData {
 
 #[derive(Clone)]
 struct GateBreakdown {
-	/// Shows how many opcodes of every type there is.
-	by_opcode: BTreeMap<Opcode, usize>,
+	/// How many gates of each kind there are.
+	by_kind: BTreeMap<GateBody, usize>,
 }
 
 impl GateBreakdown {
 	fn count(gg: &GateGraph, gates: &[Gate]) -> GateBreakdown {
 		let mut breakdown = GateBreakdown {
-			by_opcode: BTreeMap::new(),
+			by_kind: BTreeMap::new(),
 		};
 		for gate in gates {
-			*breakdown
-				.by_opcode
-				.entry(gg.gates[*gate].opcode)
-				.or_insert(0) += 1;
+			*breakdown.by_kind.entry(gg.gates[*gate].body).or_insert(0) += 1;
 		}
 		breakdown
 	}
 
 	fn merge(mut self, other: &GateBreakdown) -> GateBreakdown {
-		for (&opcode, count) in &other.by_opcode {
-			*self.by_opcode.entry(opcode).or_insert(0) += count;
+		for (&kind, count) in &other.by_kind {
+			*self.by_kind.entry(kind).or_insert(0) += count;
 		}
 		self
 	}
 }
 
 impl serde::Serialize for GateBreakdown {
-	/// Serializes the counts under opcode names.
+	/// Serializes the counts under the name of each kind.
 	///
 	/// Names are rendered here rather than while counting.
-	/// So a circuit with a million gates names each opcode once, not once per gate.
+	/// So a circuit with a million gates names each kind once, not once per gate.
 	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-		let by_name: BTreeMap<String, usize> = self
-			.by_opcode
-			.iter()
-			.map(|(opcode, count)| (format!("{opcode:?}"), *count))
-			.collect();
+		// Every hint reports under one name, since its id is an opaque hash.
+		let mut by_name: BTreeMap<String, usize> = BTreeMap::new();
+		for (kind, count) in &self.by_kind {
+			let name = match kind {
+				GateBody::Op(opcode) => format!("{opcode:?}"),
+				GateBody::Hint(_) => "Hint".to_string(),
+			};
+			*by_name.entry(name).or_insert(0) += count;
+		}
 
 		let mut breakdown = serializer.serialize_struct("GateBreakdown", 1)?;
 		breakdown.serialize_field("by_opcode", &by_name)?;
@@ -221,13 +219,7 @@ impl Cx {
 		}
 
 		// Calculate total gates from cumulative breakdown
-		let n_gates = data
-			.cum_breakdown
-			.as_ref()
-			.unwrap()
-			.by_opcode
-			.values()
-			.sum();
+		let n_gates = data.cum_breakdown.as_ref().unwrap().by_kind.values().sum();
 
 		SubcircuitInfo {
 			name: data.name.clone(),
@@ -258,4 +250,32 @@ pub(crate) fn dump_composition(gg: &GateGraph) -> String {
 
 	let subcircuit_info = cx.build_subcircuit_info(gg);
 	serde_json::to_string_pretty(&subcircuit_info).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::{gates::Opcode, ir::hints::hint_id_of};
+
+	#[test]
+	fn every_hint_is_counted_under_one_name() {
+		// Invariant: a hint id is an opaque hash, so the breakdown reports hints as one kind.
+		// Two distinct hints and one operation therefore render as two names, not three.
+		let mut graph = GateGraph::new();
+		let root = graph.path_spec_tree.root();
+		let x = graph.add_inout();
+		let y = graph.add_inout();
+
+		let o1 = graph.add_internal();
+		graph.emit_hint_gate(root, hint_id_of("dump.test.a"), &[], vec![x], vec![o1]);
+		let o2 = graph.add_internal();
+		graph.emit_hint_gate(root, hint_id_of("dump.test.b"), &[], vec![x], vec![o2]);
+		let o3 = graph.add_internal();
+		graph.emit_gate(root, Opcode::Band, vec![x, y], vec![o3]);
+
+		let dump = dump_composition(&graph);
+
+		assert!(dump.contains("\"Hint\": 2"), "{dump}");
+		assert!(dump.contains("\"Band\": 1"), "{dump}");
+	}
 }

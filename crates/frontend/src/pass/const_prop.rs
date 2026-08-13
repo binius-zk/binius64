@@ -53,7 +53,7 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 				Ok(output_values) => {
 					let output_wires = {
 						let gate_data = graph.gate_data(gate);
-						let gate_param = gate_data.gate_param_with_registry(hint_registry);
+						let gate_param = gate_data.gate_param(hint_registry);
 						gate_param.outputs.to_vec()
 					};
 					for (i, &output_wire) in output_wires.iter().enumerate() {
@@ -100,7 +100,7 @@ fn try_evaluate_gate_with_constants(
 	hint_registry: &HintRegistry,
 ) -> Option<Result<Vec<binius_core::word::Word>, String>> {
 	let gate_data = graph.gate_data(gate);
-	let gate_param = gate_data.gate_param_with_registry(hint_registry);
+	let gate_param = gate_data.gate_param(hint_registry);
 
 	let mut input_constants = Vec::new();
 	for &input_wire in gate_param.inputs {
@@ -163,7 +163,7 @@ mod tests {
 		// But the gates that used them should now use constant wires
 		// Check that and_gate now uses a constant wire with value 6 instead of xor_out
 		let and_gate_data = &graph.gates[and_gate];
-		let and_inputs = and_gate_data.gate_param().inputs;
+		let and_inputs = and_gate_data.gate_param(&HintRegistry::new()).inputs;
 		// First input should be a constant with value 6 (5 ^ 3)
 		match graph.wires[and_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(6)),
@@ -172,7 +172,7 @@ mod tests {
 
 		// Check that test_gate now uses a constant wire with value 0 instead of and_out
 		let test_gate_data = &graph.gates[test_gate];
-		let test_inputs = test_gate_data.gate_param().inputs;
+		let test_inputs = test_gate_data.gate_param(&HintRegistry::new()).inputs;
 		// Both inputs should be constants with value 0 (6 & 1)
 		match graph.wires[test_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(0)),
@@ -225,7 +225,7 @@ mod tests {
 
 		// Check that shl_gate now uses a constant wire with value 4 (16 >> 2)
 		let shl_gate_data = &graph.gates[shl_gate];
-		let shl_inputs = shl_gate_data.gate_param().inputs;
+		let shl_inputs = shl_gate_data.gate_param(&HintRegistry::new()).inputs;
 		match graph.wires[shl_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(4)),
 			_ => panic!("Expected shl_gate's input to be constant 4"),
@@ -233,7 +233,7 @@ mod tests {
 
 		// Check that test_gate now uses a constant wire with value 8 (4 << 1)
 		let test_gate_data = &graph.gates[test_gate];
-		let test_inputs = test_gate_data.gate_param().inputs;
+		let test_inputs = test_gate_data.gate_param(&HintRegistry::new()).inputs;
 		match graph.wires[test_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(8)),
 			_ => panic!("Expected test_gate's input to be constant 8"),
@@ -300,12 +300,16 @@ mod tests {
 		assert!(matches!(graph.wires[quotient], WireKind::Witness));
 		assert!(matches!(graph.wires[remainder], WireKind::Witness));
 
-		let test_q_inputs = graph.gates[test_q_gate].gate_param().inputs;
+		let test_q_inputs = graph.gates[test_q_gate]
+			.gate_param(&HintRegistry::new())
+			.inputs;
 		match graph.wires[test_q_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(14)), // 100 / 7 = 14
 			_ => panic!("Expected test_q_gate's input to be constant 14"),
 		}
-		let test_r_inputs = graph.gates[test_r_gate].gate_param().inputs;
+		let test_r_inputs = graph.gates[test_r_gate]
+			.gate_param(&HintRegistry::new())
+			.inputs;
 		match graph.wires[test_r_inputs[0]] {
 			WireKind::Constant(val) => assert_eq!(val, Word(2)), // 100 % 7 = 2
 			_ => panic!("Expected test_r_gate's input to be constant 2"),

@@ -599,7 +599,7 @@ impl CircuitBuilder {
 			{
 				continue;
 			}
-			gates::constrain(gate_id, &graph, &mut builder);
+			gates::constrain(gate_id, &graph, &mut builder, &shared.hint_registry);
 		}
 
 		// Perform fusion if the corresponding feature flag is turned on.
