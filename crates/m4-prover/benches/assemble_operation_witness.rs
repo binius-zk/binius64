@@ -3,17 +3,22 @@
 //! operation reduction consumes.
 //!
 //! This targets [`OperandColumns::build`] at the BitAnd arity, the shape the M4 prover builds from
-//! a constraint system's AND constraints. Setup constructs a minimal witness-only [`ValueTable`]
-//! and generates random operands of a controlled term density, which a fixed circuit cannot vary:
-//! the number of terms, the value indices they name, and their shift sequences.
+//! a constraint system's AND constraints. Two fixtures share the benchmark group:
 //!
-//! The generated operands read the table from uniformly drawn rows, with none of the locality a
-//! circuit's program order gives, so a case's per-word rate is pessimistic in absolute terms. Read
-//! the cases against each other.
+//! * `bitand_keccak_f1600` assembles the real AND constraints of a Keccak-f1600 permutation circuit
+//!   (see the `keccak_witness_gen` bench). Operand density, shift mix and wire locality are
+//!   whatever the frontend emits, so this is the production-shaped measurement.
+//! * The `*_terms` cases assemble synthetic operands of a controlled term density, which a fixed
+//!   circuit cannot vary. They read the same table over and over from uniformly drawn rows, with
+//!   none of the locality a circuit's program order gives, so their per-word rate is pessimistic.
+//!   Read them against each other rather than against the Keccak case.
 //!
-//! Populating the batch table and preparing the constants and constraints are setup; only the
+//! Populating the batch tables and preparing the constants and constraints are setup; only the
 //! column assembly is timed, over 8192 instances.
 
+use std::array;
+
+use binius_circuits::keccak::permutation::keccak_f1600;
 use binius_compute::BufferPool;
 use binius_core::{
 	ValueIndex, ValueTable,
@@ -22,13 +27,16 @@ use binius_core::{
 	},
 	word::Word,
 };
-use binius_frontend::{CircuitBuilder, Wire};
+use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_m4_prover::OperandColumns;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::prelude::*;
 
 /// The base-2 logarithm of the instance count: 2^13 = 8192 instances.
 const LOG_INSTANCES: usize = 13;
+
+/// The number of 64-bit lanes in a Keccak-f1600 state.
+const STATE_LANES: usize = 25;
 
 /// Witness rows available for generated operands to read from.
 const N_WITNESS_VALUES: usize = 1024;
@@ -84,6 +92,50 @@ const CASES: [OperandCase; 3] = [
 		seed: 2,
 	},
 ];
+
+/// Builds a circuit that applies one Keccak-f1600 permutation to a public input state and promotes
+/// the permuted lanes to public outputs. Returns the circuit and the 25 input state wires.
+fn build_keccak_circuit() -> (Circuit, [Wire; STATE_LANES]) {
+	let builder = CircuitBuilder::new();
+	let input: [Wire; STATE_LANES] = array::from_fn(|_| builder.add_inout());
+
+	// Permute a copy of the input wires in place; `state` then holds the output wires.
+	let mut state = input;
+	keccak_f1600(&builder, &mut state);
+
+	// Promoting the permuted state keeps the whole permutation alive under dead-code elimination.
+	for wire in state {
+		builder.mark_inout(wire);
+	}
+
+	(builder.build(), input)
+}
+
+/// The Keccak fixture: a populated batch table, the circuit's constants and its AND constraints.
+fn build_keccak_fixture() -> (ValueTable, Vec<Word>, Vec<AndConstraint>) {
+	let (circuit, input) = build_keccak_circuit();
+
+	let table = circuit
+		.populate_batch(LOG_INSTANCES, |instance, filler| {
+			for lane in 0..STATE_LANES {
+				filler[input[lane]] = keccak_input_word(instance, lane);
+			}
+		})
+		.unwrap();
+
+	let cs = circuit.constraint_system().clone();
+	cs.validate().unwrap();
+
+	(table, cs.constants, cs.and_constraints)
+}
+
+/// A deterministic, instance- and lane-dependent input word. Keccak's timing is data-independent,
+/// so the exact values only need to be non-degenerate.
+const fn keccak_input_word(instance: usize, lane: usize) -> Word {
+	let mixed = (instance as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+		^ (lane as u64).wrapping_mul(0x0100_0000_01b3);
+	Word(mixed)
+}
 
 /// The synthetic fixture: a witness-only batch table and the constants the generated terms read.
 ///
@@ -230,6 +282,19 @@ fn bench_assemble_operation_witness(c: &mut Criterion) {
 	let alloc = &pool;
 
 	let mut group = c.benchmark_group("assemble_operation_witness");
+
+	let (keccak_table, keccak_constants, keccak_constraints) = build_keccak_fixture();
+	group.throughput(Throughput::Elements(streamed_words(&keccak_constraints)));
+	group.bench_function("bitand_keccak_f1600", |b| {
+		b.iter(|| -> OperandColumns<&BufferPool, 2> {
+			OperandColumns::<_, 2>::build(
+				&keccak_table,
+				&keccak_constants,
+				&keccak_constraints,
+				&alloc,
+			)
+		});
+	});
 
 	let (table, constants) = build_table_fixture();
 	for case in CASES {
