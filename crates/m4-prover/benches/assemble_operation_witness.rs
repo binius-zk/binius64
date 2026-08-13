@@ -1,15 +1,25 @@
 // Copyright 2026 The Binius Developers
-//! Benchmark for assembling one batched operation-witness column from sparse operands.
+//! Benchmark for assembling a batched per-operation witness — the operand-column layout an
+//! operation reduction consumes.
 //!
-//! This targets [`OperandColumns::build`] directly. Setup constructs a minimal witness-only
-//! [`ValueTable`] and generates random [`Operand`]s with varied sparse row structure: number of
-//! shifted value indices, value indices, shift amounts, and shift variants. Only the column
-//! assembly is timed.
+//! This targets [`OperandColumns::build`] at the BitAnd arity, the shape the M4 prover builds from
+//! a constraint system's AND constraints. Setup constructs a minimal witness-only [`ValueTable`]
+//! and generates random operands of a controlled term density, which a fixed circuit cannot vary:
+//! the number of terms, the value indices they name, and their shift sequences.
+//!
+//! The generated operands read the table from uniformly drawn rows, with none of the locality a
+//! circuit's program order gives, so a case's per-word rate is pessimistic in absolute terms. Read
+//! the cases against each other.
+//!
+//! Populating the batch table and preparing the constants and constraints are setup; only the
+//! column assembly is timed, over 8192 instances.
 
 use binius_compute::BufferPool;
 use binius_core::{
 	ValueIndex, ValueTable,
-	constraint_system::{Operand, Shift, ShiftVariant, ShiftedValueIndex, ZeroConstraint},
+	constraint_system::{
+		AndConstraint, Composition, Operand, Shift, ShiftVariant, ShiftedValueIndex,
+	},
 	word::Word,
 };
 use binius_frontend::{CircuitBuilder, Wire};
@@ -26,20 +36,23 @@ const N_WITNESS_VALUES: usize = 1024;
 /// Constants available for generated operands to read from.
 const N_CONSTANTS: usize = 16;
 
-/// Number of operands in each benchmark case.
-const N_OPERANDS: usize = 1024;
+/// Number of constraints in each generated benchmark case.
+const N_CONSTRAINTS: usize = 1024;
 
-const SHIFT_VARIANTS: [ShiftVariant; 8] = [
-	ShiftVariant::Sll,
-	ShiftVariant::Slr,
-	ShiftVariant::Sar,
-	ShiftVariant::Rotr,
-	ShiftVariant::Sll32,
-	ShiftVariant::Srl32,
-	ShiftVariant::Sra32,
-	ShiftVariant::Rotr32,
-];
+/// One term in this many names a constant, the rest naming witness rows.
+///
+/// A constant is splatted from a single word and never touches the table, so the ratio moves the
+/// result directly. It is kept low because a circuit's operands mostly name wires.
+const CONSTANT_TERM_ODDS: u32 = 8;
 
+/// How the three term classes are drawn, as their share of this many draws.
+///
+/// Each class takes its own path through the assembly: an unshifted term copies its row, a singly
+/// shifted one shifts as it streams, and a doubly shifted one resolves both slots per word. The
+/// shares are arbitrary, and only have to keep every path represented.
+const TERM_CLASS_DRAWS: u32 = 4;
+
+/// One generated benchmark case: a term density and the seed that generates it.
 struct OperandCase {
 	name: &'static str,
 	min_terms: usize,
@@ -47,16 +60,20 @@ struct OperandCase {
 	seed: u64,
 }
 
+/// The generated cases, from barely-populated operands to the widest a frontend emits.
+///
+/// Every operand carries at least one term: an empty one is written by a single fill, which
+/// measures memory bandwidth rather than operand assembly.
 const CASES: [OperandCase; 3] = [
 	OperandCase {
-		name: "sparse_0_to_2_terms",
-		min_terms: 0,
+		name: "sparse_1_to_2_terms",
+		min_terms: 1,
 		max_terms: 2,
 		seed: 0,
 	},
 	OperandCase {
-		name: "mixed_0_to_4_terms",
-		min_terms: 0,
+		name: "mixed_1_to_4_terms",
+		min_terms: 1,
 		max_terms: 4,
 		seed: 1,
 	},
@@ -68,6 +85,10 @@ const CASES: [OperandCase; 3] = [
 	},
 ];
 
+/// The synthetic fixture: a witness-only batch table and the constants the generated terms read.
+///
+/// The circuit carries no constraints of its own. It exists to allocate the rows the generated
+/// value indices name, and to populate them with words the shifts have something to move.
 fn build_table_fixture() -> (ValueTable, Vec<Word>) {
 	let builder = CircuitBuilder::new();
 
@@ -100,10 +121,14 @@ fn build_table_fixture() -> (ValueTable, Vec<Word>) {
 	(table, constants)
 }
 
+/// A distinct constant word per index, so the frontend cannot deduplicate the fixture's constants.
 const fn fixture_constant_word(index: usize) -> Word {
 	Word((index as u64).wrapping_mul(0xd6e8_feb8_6659_fd93) ^ 0xa076_1d64_78bd_642f)
 }
 
+/// A deterministic, instance- and row-dependent witness word.
+///
+/// Assembly is data-independent, so the words only need to be non-degenerate under a shift.
 const fn fixture_witness_word(instance: usize, index: usize) -> Word {
 	let mixed = (instance as u64)
 		.wrapping_mul(0x9e37_79b9_7f4a_7c15)
@@ -112,24 +137,23 @@ const fn fixture_witness_word(instance: usize, index: usize) -> Word {
 	Word(mixed)
 }
 
-fn generate_constraints(case: &OperandCase, constants_len: usize) -> (Vec<ZeroConstraint>, usize) {
+/// Generates one case's constraints, at the case's term density.
+///
+/// Only the first two operands are assembled into columns, so the third is left empty.
+fn generate_constraints(case: &OperandCase, constants_len: usize) -> Vec<AndConstraint> {
 	let mut rng = StdRng::seed_from_u64(case.seed);
-	let constraints = (0..N_OPERANDS)
-		.map(|_| ZeroConstraint([random_operand(&mut rng, case, constants_len)]))
-		.collect::<Vec<_>>();
-	let total_shifted_indices = constraints
-		.iter()
-		.map(|constraint| constraint.val().len())
-		.sum();
-
-	assert!(
-		total_shifted_indices > 0,
-		"benchmark fixture must have at least one shifted value index"
-	);
-
-	(constraints, total_shifted_indices)
+	(0..N_CONSTRAINTS)
+		.map(|_| {
+			AndConstraint([
+				random_operand(&mut rng, case, constants_len),
+				random_operand(&mut rng, case, constants_len),
+				Operand::default(),
+			])
+		})
+		.collect()
 }
 
+/// One operand: a XOR of between `min_terms` and `max_terms` shifted values.
 fn random_operand(rng: &mut impl Rng, case: &OperandCase, constants_len: usize) -> Operand {
 	let n_terms = rng.random_range(case.min_terms..=case.max_terms);
 	(0..n_terms)
@@ -137,46 +161,87 @@ fn random_operand(rng: &mut impl Rng, case: &OperandCase, constants_len: usize) 
 		.collect()
 }
 
+/// One term, drawn across all three classes the assembly distinguishes.
 fn random_shifted_value_index(rng: &mut impl Rng, constants_len: usize) -> ShiftedValueIndex {
 	let value_index = random_value_index(rng, constants_len);
-	let variant = SHIFT_VARIANTS[rng.random_range(0..SHIFT_VARIANTS.len())];
-	let amount = rng.random_range(0..variant.max_amount());
-
-	// A constraint system carries canonical shifts, which spell the identity one way only.
-	let shift = if amount == 0 {
-		Shift::IDENTITY
-	} else {
-		Shift::new(variant, amount)
-	};
-
-	ShiftedValueIndex::single(value_index, shift)
+	match rng.random_range(0..TERM_CLASS_DRAWS) {
+		0 => ShiftedValueIndex::plain(value_index),
+		1 => ShiftedValueIndex::new(value_index, random_shift_pair(rng)),
+		_ => ShiftedValueIndex::single(value_index, random_shift(rng)),
+	}
 }
 
+/// One value index, naming a constant or a committed witness row.
 fn random_value_index(rng: &mut impl Rng, constants_len: usize) -> ValueIndex {
-	if rng.random_range(0..8) == 0 {
+	if rng.random_range(0..CONSTANT_TERM_ODDS) == 0 {
 		ValueIndex::constant(rng.random_range(0..constants_len) as u32)
 	} else {
 		ValueIndex::private(rng.random_range(0..N_WITNESS_VALUES) as u32)
 	}
 }
 
+/// One shift that moves the word, never the identity.
+fn random_shift(rng: &mut impl Rng) -> Shift {
+	let variant = ShiftVariant::ALL[rng.random_range(0..ShiftVariant::ALL.len())];
+	Shift::new(variant, rng.random_range(1..variant.max_amount()))
+}
+
+/// A shift sequence that genuinely needs both slots.
+///
+/// A pair collapsing to one shift, or clearing the word, is not a term a constraint system carries,
+/// so it is redrawn. Two shifts of one variant always compose, which is the bulk of the redraws.
+fn random_shift_pair(rng: &mut impl Rng) -> [Shift; 2] {
+	loop {
+		let inner = random_shift(rng);
+		let outer = random_shift(rng);
+		if Shift::compose(inner, outer) == Composition::Pair {
+			return [inner, outer];
+		}
+	}
+}
+
+/// The number of words a case streams, which is the throughput the assembly is rated on.
+///
+/// Every term of every assembled column passes over one stripe of instances, so a term costs a
+/// stripe rather than a word.
+///
+/// # Panics
+///
+/// Panics if the constraints carry no terms at all, which would rate the case on nothing.
+fn streamed_words(constraints: &[AndConstraint]) -> u64 {
+	let n_terms: usize = constraints
+		.iter()
+		.map(|constraint| constraint.a().len() + constraint.b().len())
+		.sum();
+	assert!(n_terms > 0, "benchmark fixture must have at least one shifted value index");
+	(n_terms as u64) << LOG_INSTANCES
+}
+
 fn bench_assemble_operation_witness(c: &mut Criterion) {
-	let (table, constants) = build_table_fixture();
+	// The columns are drawn from a pool that lives across the timed iterations, matching how the
+	// prover recycles its working buffers between proofs.
+	//
+	// So this benchmark measures assembly onto recycled blocks, not onto fresh ones: every
+	// iteration after the first reuses the blocks its predecessor freed. Comparing it against a
+	// revision that allocated a fresh `Vec` per call therefore measures the allocator, not the
+	// assembly algorithm — the per-word work is unchanged. Read a delta here as "cost of the
+	// allocation strategy", never as an algorithmic speedup.
 	let pool = BufferPool::new();
 	let alloc = &pool;
 
 	let mut group = c.benchmark_group("assemble_operation_witness");
 
+	let (table, constants) = build_table_fixture();
 	for case in CASES {
-		let (constraints, total_shifted_indices) = generate_constraints(&case, constants.len());
+		let constraints = generate_constraints(&case, constants.len());
 
-		group.throughput(Throughput::Elements(total_shifted_indices as u64));
+		group.throughput(Throughput::Elements(streamed_words(&constraints)));
 		group.bench_with_input(
 			BenchmarkId::from_parameter(case.name),
 			&constraints,
 			|b, constraints| {
-				b.iter(|| -> OperandColumns<&BufferPool, 1> {
-					OperandColumns::<_, 1>::build(&table, &constants, constraints, &alloc)
+				b.iter(|| -> OperandColumns<&BufferPool, 2> {
+					OperandColumns::<_, 2>::build(&table, &constants, constraints, &alloc)
 				});
 			},
 		);
