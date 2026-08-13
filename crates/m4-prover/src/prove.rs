@@ -58,7 +58,8 @@ type ProverNtt = NeighborsLastMultiThread<GaoMateerPreExpanded<B128>>;
 /// [`Prover`] instead, which wraps this with a BaseFold compiler.
 ///
 /// Proving composes the commitment, the reduction, and the ring-switching opening on one
-/// transcript, mirroring [`IOPVerifier::verify`](binius_m4_verifier::IOPVerifier::verify):
+/// transcript, mirroring
+/// [`IOPVerifier::verify_chip`](binius_m4_verifier::IOPVerifier::verify_chip):
 /// - Pack the table into one B128 multilinear and commit it as the trace oracle.
 /// - Run the AND-check and shift reduction to a claim about the instance-folded witness.
 /// - Ring-switch that claim onto the committed trace and open it.
@@ -106,8 +107,8 @@ impl IOPProver {
 	/// channel.
 	///
 	/// This is the core proving logic, independent of the specific IOP compilation strategy. For
-	/// most users, [`Prover::prove`] is the simpler interface.
-	pub fn prove<P, Channel, A>(&self, table: &ValueTable, channel: &mut Channel, alloc: &A)
+	/// most users, [`Prover::prove_chip`] is the simpler interface.
+	pub fn prove_chip<P, Channel, A>(&self, table: &ValueTable, channel: &mut Channel, alloc: &A)
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P, A>,
@@ -143,7 +144,7 @@ impl IOPProver {
 		// Its per-bit operand evaluations are bound to the transcript here.
 		// BitAnd then draws the univariate challenge that collapses them.
 		// Committing them first stops a malicious prover choosing them as a function of that
-		// challenge. Do not reorder these, and keep the same order in `IOPVerifier::verify`.
+		// challenge. Do not reorder these, and keep the same order in `IOPVerifier::verify_chip`.
 		//
 		// The columns are the four operands of every constraint over every instance, laid out
 		// constraint-major.
@@ -167,7 +168,7 @@ impl IOPProver {
 		// SOUNDNESS: the BinMul check runs after the IntMul check and before the BitAnd check
 		// below. Its per-bit operand evaluations are bound to the transcript here, before BitAnd
 		// draws the univariate challenge that collapses them. Do not reorder these, and keep the
-		// same order in `IOPVerifier::verify`.
+		// same order in `IOPVerifier::verify_chip`.
 		//
 		// The six columns are the `(lo, hi)` word pairs of the two multiplicands and the product of
 		// every constraint over every instance, laid out constraint-major. They are kept alongside
@@ -218,7 +219,7 @@ impl IOPProver {
 		let (r_rho_and, r_x_and) = eval_point.split_at(table.log_instances());
 
 		// The Zero reduction's claim, at the constraint half of the AND-check output point. See
-		// `IOPVerifier::verify` for why it skips the re-randomization below.
+		// `IOPVerifier::verify_chip` for why it skips the re-randomization below.
 		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
 		let zero_data = OperatorData {
 			evals: [B128::ZERO],
@@ -405,9 +406,9 @@ where
 
 	/// Proves that every instance in the batch satisfies the constraint system.
 	///
-	/// Creates the IOP channel from the transcript, delegates to [`IOPProver::prove`], then
+	/// Creates the IOP channel from the transcript, delegates to [`IOPProver::prove_chip`], then
 	/// finishes the channel with the combined FRI opening.
-	pub fn prove<Challenger_>(
+	pub fn prove_chip<Challenger_>(
 		&self,
 		table: &ValueTable,
 		transcript: &mut ProverTranscript<Challenger_>,
@@ -424,7 +425,7 @@ where
 		// by earlier proofs.
 		let alloc = &self.pool;
 		self.iop_prover
-			.prove::<P, _, _>(table, &mut channel, &alloc);
+			.prove_chip::<P, _, _>(table, &mut channel, &alloc);
 
 		let _scope = tracing::debug_span!("PCS opening").entered();
 		channel.finish(&alloc);
@@ -760,7 +761,7 @@ mod tests {
 		// One prover, two proofs of the same table: the second reuses the first's freed blocks.
 		let prove_once = || {
 			let mut transcript = ProverTranscript::new(StdChallenger::default());
-			prover.prove(&table, &mut transcript);
+			prover.prove_chip(&table, &mut transcript);
 			transcript.finalize()
 		};
 		let first = prove_once();
@@ -771,7 +772,7 @@ mod tests {
 		for proof in [first, second] {
 			let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 			verifier
-				.verify(&mut verifier_transcript)
+				.verify_chip(&mut verifier_transcript)
 				.expect("a faithful proof verifies");
 			verifier_transcript
 				.finalize()
@@ -832,11 +833,11 @@ mod tests {
 		let prover = Prover::<P>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -889,11 +890,11 @@ mod tests {
 		let prover = Prover::<P>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		assert!(
-			verifier.verify(&mut verifier_transcript).is_err(),
+			verifier.verify_chip(&mut verifier_transcript).is_err(),
 			"a violated ZERO constraint must not verify"
 		);
 	}
@@ -912,12 +913,12 @@ mod tests {
 
 		// Prover: commit, reduce, and open on a fresh transcript.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		// Verifier: replay the same transcript end to end.
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -971,12 +972,12 @@ mod tests {
 
 		// Prover: commit both oracles, reduce, and open on a fresh transcript.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		// Verifier: replay the same transcript end to end.
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -1035,11 +1036,11 @@ mod tests {
 		let prover = Prover::<P>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -1101,11 +1102,11 @@ mod tests {
 		let prover = Prover::<P>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -1166,11 +1167,11 @@ mod tests {
 		let prover = Prover::<WideP>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -1221,12 +1222,12 @@ mod tests {
 
 		// Prover: commit the trace, reduce, and open on a fresh transcript.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		// Verifier: replay the same transcript end to end.
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -1295,11 +1296,11 @@ mod tests {
 		let prover = Prover::<WideP>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -1362,11 +1363,11 @@ mod tests {
 		let prover = Prover::<P>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
 		verifier_transcript
 			.finalize()
@@ -1384,7 +1385,7 @@ mod tests {
 
 		// Produce a faithful proof, then collect its bytes.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 		let mut proof = prover_transcript.finalize();
 
 		// Flip one bit in the last byte, which lands in a FRI query's Merkle opening.
@@ -1393,7 +1394,7 @@ mod tests {
 		proof[last] ^= 1;
 
 		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
-		let err = verifier.verify(&mut verifier_transcript).unwrap_err();
+		let err = verifier.verify_chip(&mut verifier_transcript).unwrap_err();
 		assert_matches!(
 			err,
 			Error::IOPChannel(IOPChannelError::BaseFold(BaseFoldError::Verification(
@@ -1432,7 +1433,7 @@ mod tests {
 		let prover = Prover::<P>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 		let mut proof = prover_transcript.finalize();
 
 		// Flip a bit early in the proof, in the IntMul check's first message. The verifier then
@@ -1442,7 +1443,7 @@ mod tests {
 
 		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		assert!(
-			verifier.verify(&mut verifier_transcript).is_err(),
+			verifier.verify_chip(&mut verifier_transcript).is_err(),
 			"a proof tampered in the IntMul check's first message must not verify"
 		);
 	}

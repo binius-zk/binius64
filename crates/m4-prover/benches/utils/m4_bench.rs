@@ -66,12 +66,12 @@ pub fn bench_m4_proving<F>(
 			.populate_batch_parallel(log_instances, &fill)
 			.expect("witness inputs satisfy the circuit");
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(&table, &mut prover_transcript);
+		prover.prove_chip(&table, &mut prover_transcript);
 
 		// Replay the same transcript; a faithful proof verifies and leaves no trailing data.
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		verifier
-			.verify(&mut verifier_transcript)
+			.verify_chip(&mut verifier_transcript)
 			.expect("the batch proof verifies");
 		verifier_transcript
 			.finalize()
@@ -93,7 +93,7 @@ pub fn bench_m4_proving<F>(
 				.populate_batch_parallel(log_instances, &fill)
 				.unwrap();
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			prover.prove(&table, &mut prover_transcript);
+			prover.prove_chip(&table, &mut prover_transcript);
 			prover_transcript
 		});
 	});

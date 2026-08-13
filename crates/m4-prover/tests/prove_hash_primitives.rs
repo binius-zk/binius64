@@ -118,18 +118,19 @@ where
 	// prover's scratch buffers — so the timed run below measures steady-state proving.
 	let mut warmup_transcript = ProverTranscript::new(StdChallenger::default());
 	info_span!("prove_warmup", primitive = name)
-		.in_scope(|| prover.prove(&table, &mut warmup_transcript));
+		.in_scope(|| prover.prove_chip(&table, &mut warmup_transcript));
 
 	// Prove in a span.
 	// The prover's commit, reduction, and opening spans nest beneath it.
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-	info_span!("prove", primitive = name).in_scope(|| prover.prove(&table, &mut prover_transcript));
+	info_span!("prove", primitive = name)
+		.in_scope(|| prover.prove_chip(&table, &mut prover_transcript));
 
 	// The proof must verify.
 	// It must also leave no trailing transcript data.
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	verifier
-		.verify(&mut verifier_transcript)
+		.verify_chip(&mut verifier_transcript)
 		.expect("the proof verifies");
 	verifier_transcript
 		.finalize()
