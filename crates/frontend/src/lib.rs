@@ -34,7 +34,7 @@ pub mod ops;
 pub mod stat;
 
 pub use batch::BatchWitnessFiller;
-pub use chip::{ChipRef, CircuitM4, CircuitM4Error, EmbeddedCircuit};
+pub use chip::{ChipGadget, ChipRef, CircuitM4, CircuitM4Error, EmbeddedCircuit};
 pub use chip_witness::PopulateM4Error;
 pub use compiler::{
 	CircuitBuilder, Options, Wire,

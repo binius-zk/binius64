@@ -1259,3 +1259,222 @@ fn call_chip_commits_a_linear_argument() {
 	assert_eq!(called.value_vec_layout().n_private(), 1);
 	assert_eq!(called.constraint_system().n_zero_constraints(), 1);
 }
+
+/// A gadget returning its outputs in the reverse of the order their gates ran.
+///
+/// The inout segment is ordered by wire creation, so a chip built from this holds the exclusive-or
+/// before the conjunction while the gadget's interface holds them the other way round. A call site
+/// that passed its words in interface order would name them crosswise.
+struct AndThenXor;
+
+impl Hint for AndThenXor {
+	const NAME: &'static str = "test.and_then_xor";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(2, 2)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		outputs[0] = Word(inputs[0].as_u64() & inputs[1].as_u64());
+		outputs[1] = Word(inputs[0].as_u64() ^ inputs[1].as_u64());
+	}
+}
+
+impl ChipGadget for AndThenXor {
+	fn build(&self, builder: &CircuitBuilder, _dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
+		let xor = builder.bxor(inputs[0], inputs[1]);
+		let and = builder.band(inputs[0], inputs[1]);
+		vec![and, xor]
+	}
+}
+
+/// A gadget built out of [`AndThenXor`], which is what reaches a gadget from inside a chip body.
+struct XorOfAndThenXor;
+
+impl Hint for XorOfAndThenXor {
+	const NAME: &'static str = "test.xor_of_and_then_xor";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(2, 1)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		let (a, b) = (inputs[0].as_u64(), inputs[1].as_u64());
+		outputs[0] = Word((a & b) ^ (a ^ b));
+	}
+}
+
+impl ChipGadget for XorOfAndThenXor {
+	fn build(&self, builder: &CircuitBuilder, dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
+		let inner = builder.build_gadget(AndThenXor, dimensions, inputs);
+		vec![builder.bxor(inner[0], inner[1])]
+	}
+}
+
+/// The words `AndThenXor` relates, as the circuit that registers no chip computes them.
+const AND_THEN_XOR_CASE: [u64; 4] = [0b1100, 0b1010, 0b1000, 0b0110];
+
+// A builder that no chip serves builds the gadget's gates, so a circuit that never registers one
+// is the circuit it was before the gadget became registrable.
+#[test]
+fn build_gadget_emits_gates_where_no_chip_serves_the_gadget() {
+	let builder = CircuitBuilder::new();
+	let (a, b) = (builder.add_inout(), builder.add_inout());
+	let out = builder.build_gadget(AndThenXor, &[], &[a, b]);
+
+	// `build` accepts this builder, which is what says no chip was registered.
+	let circuit = builder.build();
+	let mut w = circuit.new_witness_filler();
+	w[a] = Word(AND_THEN_XOR_CASE[0]);
+	w[b] = Word(AND_THEN_XOR_CASE[1]);
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	assert_eq!(w[out[0]], Word(AND_THEN_XOR_CASE[2]));
+	assert_eq!(w[out[1]], Word(AND_THEN_XOR_CASE[3]));
+}
+
+// The same gadget, on a builder holding its chip. Main computes nothing: the hint hands it the
+// outputs and the call is the only thing relating them to the inputs.
+#[test]
+fn build_gadget_calls_the_chip_serving_the_gadget() {
+	let builder = CircuitBuilder::new();
+	builder.register_chip(AndThenXor, &[]);
+	let (a, b) = (builder.add_inout(), builder.add_inout());
+	let out = builder.build_gadget(AndThenXor, &[], &[a, b]);
+	let circuit = builder.build_m4();
+
+	circuit.validate().unwrap();
+	let cs = circuit.to_constraint_system();
+	cs.validate().unwrap();
+
+	// The chip holds the exclusive-or before the conjunction, so the call passes its last two
+	// words the other way round from the order the gadget returns them.
+	let main = &circuit.main.circuit;
+	let operands = circuit.main.chip_calls[0]
+		.inout
+		.iter()
+		.map(|operand| operand.as_slice())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		operands,
+		[
+			[ShiftedValueIndex::plain(main.witness_index(a))].as_slice(),
+			[ShiftedValueIndex::plain(main.witness_index(b))].as_slice(),
+			[ShiftedValueIndex::plain(main.witness_index(out[1]))].as_slice(),
+			[ShiftedValueIndex::plain(main.witness_index(out[0]))].as_slice(),
+		]
+	);
+
+	let witness = circuit
+		.generate_witness(|filler| {
+			filler[a] = Word(AND_THEN_XOR_CASE[0]);
+			filler[b] = Word(AND_THEN_XOR_CASE[1]);
+		})
+		.unwrap();
+
+	// The gadget's caller reads the same wires it would have read from the gates.
+	assert_eq!(witness.main[main.witness_index(out[0])], Word(AND_THEN_XOR_CASE[2]));
+	assert_eq!(witness.main[main.witness_index(out[1])], Word(AND_THEN_XOR_CASE[3]));
+
+	// The chip instance recomputes both outputs over the words the call named, so this is what
+	// holds the hint to the gates.
+	witness.verify(&cs).unwrap();
+}
+
+// Registering reaches the subcircuits of the builder that registered, since they build the same
+// circuit. A gadget deep in a hierarchy needs nothing threaded down to it.
+#[test]
+fn a_subcircuit_reaches_a_chip_the_root_builder_registered() {
+	let builder = CircuitBuilder::new();
+	builder.register_chip(AndThenXor, &[]);
+	let (a, b) = (builder.add_inout(), builder.add_inout());
+	builder
+		.subcircuit("nested")
+		.build_gadget(AndThenXor, &[], &[a, b]);
+
+	let circuit = builder.build_m4();
+	assert_eq!(circuit.main.chip_calls.len(), 1);
+	circuit.validate().unwrap();
+}
+
+// A chip's own gates are emitted on a builder registering nothing, so a gadget inside a chip body
+// lands as gates however the outer circuit builds the same gadget.
+#[test]
+fn a_chip_body_emits_the_gadgets_it_uses_as_gates() {
+	let builder = CircuitBuilder::new();
+	builder.register_chip(AndThenXor, &[]);
+	builder.register_chip(XorOfAndThenXor, &[]);
+	let (a, b) = (builder.add_inout(), builder.add_inout());
+	builder.build_gadget(AndThenXor, &[], &[a, b]);
+	builder.build_gadget(XorOfAndThenXor, &[], &[a, b]);
+
+	let circuit = builder.build_m4();
+	assert_eq!(circuit.main.chip_calls.len(), 2);
+	assert!(
+		circuit
+			.chips
+			.iter()
+			.all(|(chip, _)| chip.chip_calls.is_empty())
+	);
+	circuit.validate().unwrap();
+
+	let cs = circuit.to_constraint_system();
+	let witness = circuit
+		.generate_witness(|filler| {
+			filler[a] = Word(AND_THEN_XOR_CASE[0]);
+			filler[b] = Word(AND_THEN_XOR_CASE[1]);
+		})
+		.unwrap();
+	witness.verify(&cs).unwrap();
+}
+
+// Two chips for one gadget shape would each hold a table, serving calls that could have shared one.
+#[test]
+#[should_panic(expected = "already a chip for dimensions []")]
+fn register_chip_rejects_a_gadget_it_already_serves() {
+	let builder = CircuitBuilder::new();
+	builder.register_chip(AndThenXor, &[]);
+	builder.register_chip(AndThenXor, &[]);
+}
+
+// A gadget's shape is what its interface is built from, so gates disagreeing with it would leave
+// the chip and its call sites different sizes.
+#[test]
+#[should_panic(expected = "built 1 outputs, its shape declares 2")]
+fn register_chip_rejects_a_gadget_disagreeing_with_its_shape() {
+	struct Miscounted;
+
+	impl Hint for Miscounted {
+		const NAME: &'static str = "test.miscounted";
+
+		fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+			(1, 2)
+		}
+
+		fn execute(&self, _dimensions: &[usize], _inputs: &[Word], outputs: &mut [Word]) {
+			outputs.fill(Word::ZERO);
+		}
+	}
+
+	impl ChipGadget for Miscounted {
+		fn build(
+			&self,
+			builder: &CircuitBuilder,
+			_dimensions: &[usize],
+			inputs: &[Wire],
+		) -> Vec<Wire> {
+			vec![builder.shl(inputs[0], 1)]
+		}
+	}
+
+	CircuitBuilder::new().register_chip(Miscounted, &[]);
+}
+
+// The inputs are passed positionally, so the wrong number of them would shift every word past the
+// gap, whether they reach the gates or a call.
+#[test]
+#[should_panic(expected = "takes 2 inputs, given 1")]
+fn build_gadget_rejects_the_wrong_number_of_inputs() {
+	let builder = CircuitBuilder::new();
+	builder.build_gadget(AndThenXor, &[], &[builder.add_inout()]);
+}
