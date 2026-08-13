@@ -26,6 +26,7 @@
 //! CREDIT: <https://github.com/leanEthereum/leanVM-b> (XMSS construction).
 
 pub mod hashing;
+pub mod wots;
 
 /// Digest length in bytes: n = 128 bits.
 pub const DIGEST_LEN: usize = 16;
