@@ -193,8 +193,14 @@ fn prove(shape: &Shape, setup: &Setup, seed: u64) -> Opening {
 	// A masked encoding interleaves the polynomial with a random mask of the same size.
 	// That is what stops the opened cosets leaking the polynomial.
 	let merkle_prover = BinaryMerkleTreeProver::<B128, StdHashSuite>::new();
-	let MaskedCodeword { codeword, mask } =
-		fri::encode_masked(&setup.fri_params, 0, &setup.ntt, witness.to_ref(), &mut rng);
+	let MaskedCodeword { codeword, mask } = fri::encode_masked(
+		&setup.fri_params,
+		0,
+		&setup.ntt,
+		witness.to_ref(),
+		&mut rng,
+		&GlobalAllocator,
+	);
 
 	let mut transcript = ProverTranscript::new(StdChallenger::default());
 	let mut channel =

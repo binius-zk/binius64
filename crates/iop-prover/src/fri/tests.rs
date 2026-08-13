@@ -3,6 +3,7 @@
 
 use std::{iter, vec};
 
+use binius_compute::GlobalAllocator;
 use binius_field::{
 	BinaryField, BinaryField128bGhash as B128, Field, PackedBinaryGhash1x128b, PackedField,
 };
@@ -54,7 +55,7 @@ fn test_commit_prove_verify_success<F, P>(
 	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());
 
 	// Prover encodes the message and commits the codeword over a Merkle channel.
-	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref());
+	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
 
 	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
 	let mut prover_channel =
@@ -257,7 +258,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 		let oracle_params =
 			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref());
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
 		let commitment =
 			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
 		messages.push(msg);
@@ -392,7 +393,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 		let oracle_params =
 			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref());
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
 		let commitment =
 			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
 		messages.push(msg);
@@ -547,7 +548,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		let rs_code = ReedSolomonCode::new(log_dim, log_inv_rate);
 		let oracle_params = FRIParams::new(rs_code, log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref());
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
 		let commitment =
 			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
 		messages.push(msg);
@@ -667,7 +668,7 @@ where
 
 	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());
 
-	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref());
+	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
 
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	let mut prover_channel =

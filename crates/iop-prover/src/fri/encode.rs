@@ -1,8 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::iter;
+use std::{iter, ops::Deref};
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::fri::FRIParams;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
@@ -26,21 +27,24 @@ use rand::{CryptoRng, rngs::StdRng};
 /// * `oracle_index` - the index into [`FRIParams::input_oracles`] of the oracle being encoded.
 /// * `ntt` - the additive NTT for Reed-Solomon encoding.
 /// * `message` - the interleaved message to encode.
+/// * `alloc` - the allocator the codeword is drawn from.
 ///
 /// ## Preconditions
 ///
 /// * `message.log_len()` must equal the oracle's committed message length,
 ///   `params.rs_code().log_dim() - log_lift + log_batch_size`.
-pub fn encode_interleaved<F, P, NTT>(
+pub fn encode_interleaved<F, P, NTT, A>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
 	ntt: &NTT,
 	message: FieldSlice<P>,
-) -> FieldBuffer<P>
+	alloc: &A,
+) -> FieldBuffer<P, A::Vec<P>>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
+	A: Allocator,
 {
 	let oracle_spec = &params.input_oracles()[oracle_index];
 	let log_batch_size = oracle_spec.log_batch_size();
@@ -69,16 +73,19 @@ where
 	)
 	.entered();
 
-	rs_code.encode_batch(ntt, message.to_ref(), log_batch_size)
+	rs_code.encode_batch(ntt, message.to_ref(), log_batch_size, alloc)
 }
 
 /// Output of [`encode_masked`]: the interleaved (message ‖ mask) codeword and the generated mask.
+///
+/// Both buffers come from the allocator the encode was given, so a pooled prover holds neither on
+/// the global heap.
 #[derive(Debug)]
-pub struct MaskedCodeword<P: PackedField> {
+pub struct MaskedCodeword<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	/// The Reed-Solomon encoding of the interleaved (message ‖ mask) buffer.
-	pub codeword: FieldBuffer<P>,
+	pub codeword: FieldBuffer<P, Data>,
 	/// The generated random mask, of equal length to the message.
-	pub mask: FieldBuffer<P>,
+	pub mask: FieldBuffer<P, Data>,
 }
 
 /// Generates a random mask, interleaves it with the message, and Reed-Solomon encodes.
@@ -96,17 +103,20 @@ pub struct MaskedCodeword<P: PackedField> {
 /// * `ntt` - the additive NTT for Reed-Solomon encoding
 /// * `message` - the raw message to encode (not doubled)
 /// * `rng` - cryptographic RNG for mask generation
-pub fn encode_masked<F, P, NTT>(
+/// * `alloc` - the allocator the mask, the codeword, and the concatenation temporary are drawn from
+pub fn encode_masked<F, P, NTT, A>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
 	ntt: &NTT,
 	message: FieldSlice<P>,
 	mut rng: impl CryptoRng,
-) -> MaskedCodeword<P>
+	alloc: &A,
+) -> MaskedCodeword<P, A::Vec<P>>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
+	A: Allocator,
 {
 	let oracle_spec = &params.input_oracles()[oracle_index];
 	assert_eq!(oracle_spec.log_batch_size(), 1, "encode_masked requires log_batch_size == 1");
@@ -124,33 +134,47 @@ where
 	let packed_len = 1usize << log_len.saturating_sub(P::LOG_WIDTH);
 
 	let gen_mask_scope = tracing::debug_span!("Generate random mask").entered();
-	let mask = FieldBuffer::<P>::new(
-		log_len,
-		par_rand::<StdRng, _, _>(packed_len, &mut rng, P::random).collect(),
-	);
+	// `par_rand` is a parallel iterator, so the buffer is filled by writing into its uninitialized
+	// capacity rather than collected — an allocator's buffer has no rayon `collect` to target.
+	let mut mask_values = alloc.alloc::<P>(packed_len);
+	(
+		mask_values.spare_capacity_mut()[..packed_len].par_iter_mut(),
+		par_rand::<StdRng, _, _>(packed_len, &mut rng, P::random),
+	)
+		.into_par_iter()
+		.for_each(|(slot, value)| {
+			slot.write(value);
+		});
+	// SAFETY: the loop above wrote every one of the leading `packed_len` words.
+	unsafe { mask_values.set_len(packed_len) };
+	let mask = FieldBuffer::new(log_len, mask_values);
 	drop(gen_mask_scope);
 
 	let combined_values = if log_len < P::LOG_WIDTH {
 		let combined_value =
 			P::from_scalars(iter::chain(message.iter_scalars(), mask.iter_scalars()));
-		vec![combined_value]
+		let mut values = alloc.alloc::<P>(1);
+		values.push(combined_value);
+		values
 	} else {
 		let _scope = tracing::debug_span!("Concatenate message and mask").entered();
 		// TODO: Ideally, encoding should not allocate and copy the memory into a temp buffer.
-		let mut combined_values: Vec<P> = Vec::with_capacity(2 * packed_len);
+		// Until then the temporary at least comes from the pool rather than the global heap.
+		let mut combined_values = alloc.alloc::<P>(2 * packed_len);
 		combined_values.extend_from_slice(message.as_ref());
 		combined_values.extend_from_slice(mask.as_ref());
 		combined_values
 	};
 	let combined = FieldBuffer::new(log_len + 1, combined_values);
 
-	let codeword = encode_interleaved(params, oracle_index, ntt, combined.to_ref());
+	let codeword = encode_interleaved(params, oracle_index, ntt, combined.to_ref(), alloc);
 
 	MaskedCodeword { codeword, mask }
 }
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash1x128b};
 	use binius_hash::StdHashSuite;
 	use binius_iop::fri::FRIParams;
@@ -194,7 +218,8 @@ mod tests {
 
 		let message = random_field_buffer::<P>(&mut rng, log_dim);
 
-		let output: MaskedCodeword<P> = encode_masked(&params, 0, &ntt, message.to_ref(), &mut rng);
+		let output: MaskedCodeword<P> =
+			encode_masked(&params, 0, &ntt, message.to_ref(), &mut rng, &GlobalAllocator);
 
 		// Verify mask has correct dimensions.
 		assert_eq!(output.mask.log_len(), log_dim);

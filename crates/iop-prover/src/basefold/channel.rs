@@ -4,7 +4,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, GlobalAllocator};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_ip_prover::{
@@ -610,10 +610,20 @@ where
 				self.ntt,
 				buffer.to_ref(),
 				&mut self.rng,
+				&GlobalAllocator,
 			);
 			(codeword, Some(mask))
 		} else {
-			(fri::encode_interleaved(&self.fri_params, index, self.ntt, buffer.to_ref()), None)
+			(
+				fri::encode_interleaved(
+					&self.fri_params,
+					index,
+					self.ntt,
+					buffer.to_ref(),
+					&GlobalAllocator,
+				),
+				None,
+			)
 		};
 
 		// Commit the codeword over the Merkle channel, with one interleaved coset per leaf.
