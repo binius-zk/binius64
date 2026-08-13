@@ -1,4 +1,5 @@
 // Copyright 2026 The Binius Developers
+// Copyright (c) 2026 leanEthereum
 //! XMSS signature verification.
 //!
 //! The scheme is the one leanVM-b's `xmss` crate implements, with BLAKE3 in place of BLAKE2s as

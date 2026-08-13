@@ -1,4 +1,5 @@
 // Copyright 2026 The Binius Developers
+// Copyright (c) 2026 leanEthereum
 //! The XMSS hash layer: [`tweak_hash`] is BLAKE3 of the exact byte string `tweak | pp | payload`,
 //! truncated to 16 bytes, for chain steps, Merkle nodes, WOTS public keys and message encodings
 //! alike.

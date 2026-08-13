@@ -1,4 +1,5 @@
 // Copyright 2026 The Binius Developers
+// Copyright (c) 2026 leanEthereum
 //! WOTS (Winternitz one-time signature) with target-sum encoding.
 //!
 //! There are no checksum chains. Instead the signer grinds the signature randomness until the

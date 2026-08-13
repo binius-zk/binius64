@@ -1,4 +1,5 @@
 // Copyright 2026 The Binius Developers
+// Copyright (c) 2026 leanEthereum
 //! XMSS: a Merkle tree of `2^LOG_LIFETIME` WOTS public-key hashes.
 //!
 //! A signature is a WOTS signature at one epoch plus the authentication path linking that epoch's
