@@ -9,6 +9,7 @@
 //! Published Flock figures include it in the proof path, so the measured unit matches.
 
 use binius_frontend::{BatchWitnessFiller, Circuit};
+use binius_hash::StdHashSuite;
 use binius_m4_prover::Prover;
 use binius_m4_verifier::Verifier;
 use binius_prover::OptimalPackedB128;
@@ -57,7 +58,7 @@ pub fn bench_m4_proving<F>(
 
 	// The verifier fixes the shape and FRI parameters; the prover inherits them.
 	let verifier = Verifier::setup(&cs, log_instances, log_inv_rate);
-	let prover = Prover::<OptimalPackedB128>::setup(&verifier);
+	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(&verifier);
 
 	// Correctness gate: prove and verify one batch before timing.
 	// A bench that measures a proof of nothing is worse than no bench.

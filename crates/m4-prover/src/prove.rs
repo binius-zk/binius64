@@ -1,13 +1,15 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::marker::PhantomData;
+
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment, ValueTable},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
-use binius_hash::StdHashSuite;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::sumcheck::{
 	MleToSumCheckEvaluator,
@@ -33,6 +35,7 @@ use binius_prover::{
 	ring_switch::{self, RingSwitchOutput},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
+use binius_utils::SerializeBytes;
 use binius_verifier::{
 	config::B128,
 	protocols::{
@@ -41,6 +44,7 @@ use binius_verifier::{
 		zero,
 	},
 };
+use digest::Output;
 
 use crate::{
 	shift::prove as prove_shift,
@@ -352,9 +356,10 @@ impl IOPProver {
 ///
 /// One-time setup builds the shift keys and the BaseFold prover, reusing the verifier's parameters.
 /// A later proving call commits a witness table and proves it satisfies every AND constraint.
-pub struct Prover<P>
+pub struct Prover<P, H>
 where
 	P: PackedField<Scalar = B128>,
+	H: HashSuite,
 {
 	iop_prover: IOPProver,
 	/// The precomputed BaseFold prover, holding the NTT and the FRI parameters.
@@ -362,17 +367,22 @@ where
 	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
 	/// so blocks freed by one `prove` call are reused by the next.
 	pool: BufferPool,
+	/// The prover creates its Merkle transcript channels with the hash suite `H`, matching the
+	/// verifier it was built from.
+	_hash_marker: PhantomData<H>,
 }
 
-impl<P> Prover<P>
+impl<P, H> Prover<P, H>
 where
 	P: PackedField<Scalar = B128>,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Builds the prover from a verifier, inheriting its constraint system and FRI parameters.
 	///
 	/// The prover encodes the codeword with the multithreaded NTT, spread across the cores.
 	/// Reusing the verifier's compiler keeps both sides on one set of FRI parameters.
-	pub fn setup(verifier: &Verifier) -> Self {
+	pub fn setup(verifier: &Verifier<H>) -> Self {
 		// Reuse the verifier's evaluation domain so both sides agree on the code: its compiler
 		// fixed that domain as the Gao-Mateer basis of this dimension.
 		let domain_context =
@@ -396,6 +406,7 @@ where
 			iop_prover,
 			basefold_compiler,
 			pool: BufferPool::new(),
+			_hash_marker: PhantomData,
 		}
 	}
 
@@ -417,9 +428,7 @@ where
 	{
 		let mut channel = self
 			.basefold_compiler
-			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _, _>(
-				transcript,
-			);
+			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript);
 
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs.
@@ -678,6 +687,7 @@ mod tests {
 	use assert_matches::assert_matches;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::CircuitBuilder;
+	use binius_hash::StdHashSuite;
 	use binius_iop::{
 		basefold::{Error as BaseFoldError, VerificationError as BaseFoldVerificationError},
 		channel::Error as IOPChannelError,
@@ -755,8 +765,8 @@ mod tests {
 			})
 			.unwrap();
 
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		// One prover, two proofs of the same table: the second reuses the first's freed blocks.
 		let prove_once = || {
@@ -829,8 +839,8 @@ mod tests {
 			})
 			.unwrap();
 
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
@@ -886,8 +896,8 @@ mod tests {
 			})
 			.unwrap();
 
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
@@ -908,8 +918,8 @@ mod tests {
 
 		// Setup once: the verifier fixes the shape and FRI parameters.
 		// The prover inherits them.
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		// Prover: commit, reduce, and open on a fresh transcript.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -967,8 +977,8 @@ mod tests {
 			.unwrap();
 
 		// Setup once: the verifier fixes the shape and FRI parameters, the prover inherits them.
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		// Prover: commit both oracles, reduce, and open on a fresh transcript.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -1032,8 +1042,8 @@ mod tests {
 			"the table commits the inout values with the private ones"
 		);
 
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
@@ -1098,8 +1108,8 @@ mod tests {
 			})
 			.unwrap();
 
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
@@ -1163,8 +1173,8 @@ mod tests {
 			.unwrap();
 
 		// Prove with the wide packing; the verifier is packing-agnostic.
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<WideP>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<WideP, StdHashSuite>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
@@ -1217,8 +1227,8 @@ mod tests {
 			.unwrap();
 
 		// Setup once: the verifier fixes the shape and FRI parameters, the prover inherits them.
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		// Prover: commit the trace, reduce, and open on a fresh transcript.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -1292,8 +1302,8 @@ mod tests {
 			.unwrap();
 
 		// Prove with the wide packing; the verifier is packing-agnostic.
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<WideP>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<WideP, StdHashSuite>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
@@ -1359,8 +1369,8 @@ mod tests {
 			})
 			.unwrap();
 
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
@@ -1380,8 +1390,8 @@ mod tests {
 		let log_instances = 6;
 		let (cs, table) = setup_batch(log_instances, 1);
 
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		// Produce a faithful proof, then collect its bytes.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -1429,8 +1439,8 @@ mod tests {
 			})
 			.unwrap();
 
-		let verifier = Verifier::setup(&cs, log_instances, 1);
-		let prover = Prover::<P>::setup(&verifier);
+		let verifier = Verifier::<StdHashSuite>::setup(&cs, log_instances, 1);
+		let prover = Prover::<P, StdHashSuite>::setup(&verifier);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
