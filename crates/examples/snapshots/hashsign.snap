@@ -1,0 +1,30 @@
+hashsign circuit
+--
+Gates & Instructions
+├─ Number of gates: 685,542
+└─ Number of evaluation instructions: 686,424
+
+Constraints
+├─ ZERO constraints: 177,059 used (67.5% of 2^18)
+│  [▓▓▓▓▓▓░░░░] spare: 85,085
+├─ AND constraints: 195,600 used (74.6% of 2^18)
+│  [▓▓▓▓▓▓▓░░░] spare: 66,544
+├─ IMUL constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
+├─ BMUL constraints: 2,148 used (52.4% of 2^12)
+│  [▓▓▓▓▓░░░░░] spare: 1,948
+└─ Distinct value indices: 936,943
+   ├─ Distinct shifted value indices: 561,682
+   └─ Distinct unshifted value indices: 375,261
+
+Value Vector
+├─ Public Section: 375 (not committed)
+│  ├─ Constants: 358
+│  └─ Inout: 17
+├─ Private Section: 375,244
+│  ├─ Witness: 453
+│  └─ Internal: 374,791
+├─ Committed Trace: 375,244 used (71.6% of 2^19)
+│  [▓▓▓▓▓▓▓░░░] spare: 149,044
+└─ Scratch (uncommitted): 505,142 (peak live: 1,195)
+
