@@ -13,7 +13,7 @@
 use std::{array, iter};
 
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Hint, Wire};
+use binius_frontend::{ChipGadget, CircuitBuilder, Hint, Wire};
 
 use super::{IV, MSG_SCHEDULE};
 use crate::util::clear_high_bits;
@@ -92,7 +92,76 @@ pub fn blake3_compress(
 /// # Returns
 ///
 /// The updated 8-word chaining value, with each word packing both lanes.
+///
+/// # Chips
+///
+/// This is a [`ChipGadget`]. A circuit that calls
+/// [`register_chip`](CircuitBuilder::register_chip) with [`Blake3Compress2x`] before building
+/// turns every compression under it into a chip call, including the ones
+/// [`blake3_compress_2x_seq`] and the chunk and tree gadgets reach.
 pub fn blake3_compress_2x(
+	builder: &CircuitBuilder,
+	cv: [Wire; 8],
+	block: [Wire; 16],
+	counter_lo: Wire,
+	counter_hi: Wire,
+	block_len: Wire,
+	flags: Wire,
+) -> [Wire; 8] {
+	let inputs = cv
+		.into_iter()
+		.chain(block)
+		.chain([counter_lo, counter_hi, block_len, flags])
+		.collect::<Vec<_>>();
+
+	let outputs = builder.build_gadget(Blake3Compress2x, &[], &inputs);
+	array::from_fn(|i| outputs[i])
+}
+
+/// [`blake3_compress_2x`] as a gadget, so that a circuit can make it a chip.
+///
+/// Its interface is the flat 28 input words `cv[0..8]`, `block[0..16]`, `counter_lo`,
+/// `counter_hi`, `block_len`, `flags`, and the 8 output chaining-value words, all packing two
+/// lanes as [`blake3_compress_2x`] documents.
+pub struct Blake3Compress2x;
+
+impl Hint for Blake3Compress2x {
+	const NAME: &'static str = "binius.blake3_compress_2x";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(28, 8)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		// Each lane is a 32-bit half of every input word, and the halves never interact: the
+		// core's adds and rotates are 32-bit and its exclusive-ors are bitwise. So a lane is the
+		// reference compression of its own halves.
+		let compress_lane = |i: usize| {
+			let lane = |word: Word| (word.as_u64() >> (32 * i)) as u32;
+			let cv: [u32; 8] = array::from_fn(|j| lane(inputs[j]));
+			let block: [u32; 16] = array::from_fn(|j| lane(inputs[8 + j]));
+			let counter = lane(inputs[24]) as u64 | ((lane(inputs[25]) as u64) << 32);
+			ref_compress(&cv, &block, counter, lane(inputs[26]), lane(inputs[27]))
+		};
+
+		let (lane_0, lane_1) = (compress_lane(0), compress_lane(1));
+		for (slot, (low, high)) in iter::zip(outputs, iter::zip(lane_0, lane_1)) {
+			*slot = Word(low as u64 | ((high as u64) << 32));
+		}
+	}
+}
+
+impl ChipGadget for Blake3Compress2x {
+	fn build(&self, builder: &CircuitBuilder, _dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
+		let cv: [Wire; 8] = array::from_fn(|i| inputs[i]);
+		let block: [Wire; 16] = array::from_fn(|i| inputs[8 + i]);
+		compress_2x_gates(builder, cv, block, inputs[24], inputs[25], inputs[26], inputs[27])
+			.to_vec()
+	}
+}
+
+/// [`blake3_compress_2x`] in gates, whatever the building circuit does with the gadget.
+fn compress_2x_gates(
 	builder: &CircuitBuilder,
 	cv: [Wire; 8],
 	block: [Wire; 16],
@@ -395,6 +464,33 @@ mod tests {
 	use crate::blake3::{CHUNK_END, CHUNK_START, PARENT, ROOT};
 
 	// --- Circuit-level tests --------------------------------------------------------
+
+	/// Runs `blake3_compress_2x` in gates over its flat packed-word interface.
+	fn run_compress_2x_words(inputs: [u64; 28]) -> [u64; 8] {
+		let builder = CircuitBuilder::new();
+		let wires: [Wire; 28] = array::from_fn(|_| builder.add_witness());
+		let out = compress_2x_gates(
+			&builder,
+			array::from_fn(|i| wires[i]),
+			array::from_fn(|i| wires[8 + i]),
+			wires[24],
+			wires[25],
+			wires[26],
+			wires[27],
+		);
+		for wire in out {
+			builder.mark_inout(wire);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		for (wire, word) in iter::zip(wires, inputs) {
+			w[wire] = Word(word);
+		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		array::from_fn(|i| w[out[i]].as_u64())
+	}
 
 	/// Build a circuit that computes `blake3_compress` on witness inputs, populate the
 	/// witness with the given values, and return the evaluated 8-word output.
@@ -876,6 +972,20 @@ mod tests {
 			// Each lane is checked against a reference run of its own inputs alone.
 			prop_assert_eq!(actual[0], ref_compress(&cv0, &b0, t0, l0, f0));
 			prop_assert_eq!(actual[1], ref_compress(&cv1, &b1, t1, l1, f1));
+		}
+
+		// The chip path takes the outputs from `Blake3Compress2x::execute` and the chip recomputes
+		// them from its gates, so the two have to agree on every word a circuit can reach them
+		// with. Words drawn at random are lane pairs no caller would pass, which is the point:
+		// nothing about the interface stops one.
+		#[test]
+		fn compress_2x_hint_matches_its_gates(words in prop::collection::vec(any::<u64>(), 28)) {
+			let inputs: [u64; 28] = array::from_fn(|i| words[i]);
+
+			let mut hinted = [Word::ZERO; 8];
+			Blake3Compress2x.execute(&[], &inputs.map(Word), &mut hinted);
+
+			prop_assert_eq!(hinted.map(|word| word.as_u64()), run_compress_2x_words(inputs));
 		}
 
 		#[test]

@@ -26,7 +26,9 @@ use crate::{
 
 pub mod compress;
 
-pub use compress::{blake3_compress, blake3_compress_2x, blake3_compress_2x_seq, ref_compress};
+pub use compress::{
+	Blake3Compress2x, blake3_compress, blake3_compress_2x, blake3_compress_2x_seq, ref_compress,
+};
 
 /// BLAKE3 initial chaining value. Same as the SHA-256 IV.
 pub const IV: [u32; 8] = [
@@ -1272,5 +1274,74 @@ mod tests {
 			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
 			check(&input);
 		}
+	}
+
+	/// Hashes `input` with [`Blake3Compress2x`] as a chip, and checks the digest and the system.
+	///
+	/// The digest wires are public and filled with the reference digest, as in [`check`], so a
+	/// disagreement fails to populate. What the chip adds is checked after: the calls each
+	/// compression made have to be served by an instance that recomputes the same words.
+	fn check_with_compress_chip(input: &[u8]) {
+		let builder = CircuitBuilder::new();
+		builder.register_chip(Blake3Compress2x, &[]);
+
+		let message: Vec<Wire> = (0..input.len().div_ceil(4))
+			.map(|_| builder.add_witness())
+			.collect();
+		let digest = blake3_fixed(&builder, &message, input.len());
+		let digest_out: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		for i in 0..8 {
+			builder.assert_eq("digest_match", digest[i], digest_out[i]);
+		}
+
+		let circuit = builder.build_m4();
+		circuit.validate().unwrap();
+		let cs = circuit.to_constraint_system();
+		cs.validate().unwrap();
+
+		let expected = blake3::hash(input);
+		let expected_words: [u32; 8] = std::array::from_fn(|i| {
+			u32::from_le_bytes(expected.as_bytes()[i * 4..i * 4 + 4].try_into().unwrap())
+		});
+
+		let witness = circuit
+			.generate_witness(|w| {
+				for (wire, word) in message.iter().zip(bytes_to_le_words(input)) {
+					w[*wire] = Word(word);
+				}
+				for i in 0..8 {
+					w[digest_out[i]] = Word(expected_words[i] as u64);
+				}
+			})
+			.unwrap_or_else(|e| panic!("blake3_fixed failed for len_bytes={}: {e:?}", input.len()));
+
+		witness.verify(&cs).unwrap();
+	}
+
+	// The gadgets between `blake3_fixed` and `blake3_compress_2x` are untouched by the chip: the
+	// compressions the chunk pairs reach and the ones the parent tree reaches both land as calls
+	// because the builder holds the chip, not because anything in between was told.
+	//
+	// Lengths run from two blocks, which is the shortest message reaching a paired compression at
+	// all, up through an odd chunk count, whose tree carries a two-lane parent as well as a
+	// single-lane one.
+	#[test]
+	fn a_registered_chip_serves_every_compression() {
+		for &len in &[128usize, 320, 1025, 5121] {
+			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+			check_with_compress_chip(&input);
+		}
+	}
+
+	// A message short enough to compress one block at a time never reaches the paired gadget, so
+	// its chip goes uncalled and the system it leaves is not one that can be populated.
+	#[test]
+	fn a_chip_no_compression_reaches_leaves_an_uncalled_chip() {
+		let builder = CircuitBuilder::new();
+		builder.register_chip(Blake3Compress2x, &[]);
+		blake3_fixed(&builder, &[builder.add_witness()], 4);
+
+		let error = builder.build_m4().validate().unwrap_err();
+		assert!(matches!(error, binius_frontend::CircuitM4Error::NeverCalled { .. }), "{error:?}");
 	}
 }
