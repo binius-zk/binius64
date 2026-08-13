@@ -1,0 +1,1588 @@
+// Copyright 2025-2026 The Binius Developers
+// Copyright 2025 Irreducible Inc.
+use std::{
+	cell::{RefCell, RefMut},
+	iter, mem,
+	rc::Rc,
+};
+
+use binius_core::{
+	constraint_system::{ConstraintSystem, ShiftVariant, ShiftedValueIndex, ValueSegment},
+	m4::ChipCall,
+	word::Word,
+};
+use cranelift_entity::EntitySet;
+use itertools::chain;
+
+use crate::{
+	artifact::{
+		chip::{ChipRef, CircuitM4, EmbeddedCircuit},
+		circuit::Circuit,
+	},
+	eval_form,
+	gates::{self, Opcode},
+	ir::{
+		GateGraph, Wire, WireKind,
+		hints::{Hint, HintRegistry},
+		path::PathSpec,
+	},
+	lower::ConstraintBuilder,
+	pass::{
+		const_prop, cse, dce, fusion,
+		layout::{
+			scratch_alloc::{ScratchAlloc, ScratchPolicy},
+			value_vec_alloc,
+		},
+		zero_fold,
+	},
+};
+
+mod gadget;
+#[cfg(test)]
+mod tests;
+
+use gadget::smul64;
+
+/// Which compiler passes run.
+///
+/// This is the only knob: a circuit compiles the same way whatever the process environment holds.
+/// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`],
+/// overriding the fields it cares about:
+///
+/// ```
+/// use binius_frontend::{CircuitBuilder, Options};
+///
+/// let builder = CircuitBuilder::with_opts(Options {
+///     enable_gate_fusion: false,
+///     ..Options::default()
+/// });
+/// ```
+pub struct Options {
+	/// Inline linear definitions into the non-linear gates that consume them.
+	pub enable_gate_fusion: bool,
+	/// Fold gates whose inputs are all constants.
+	pub enable_constant_propagation: bool,
+	/// Collapse structurally identical gates.
+	pub enable_common_subexpression_elimination: bool,
+	/// Drop gates that cannot affect the constraint system.
+	pub enable_dead_code_elimination: bool,
+	/// Apply algebraic identities that let a gate return one of its operands.
+	pub enable_algebraic_folding: bool,
+	/// Share scratch slots between values whose lifetimes do not overlap.
+	///
+	/// - Shrinks the uncommitted segment to the most values alive at once, saved once per
+	///   instance.
+	/// - Changes no constraint, since an uncommitted value appears in no operand.
+	/// - Stops slots being one-to-one with values, so only committed values read back
+	///   meaningfully.
+	pub enable_scratch_pooling: bool,
+	/// Forward past the gates a zero operand turns into the identity.
+	pub enable_zero_propagation: bool,
+}
+
+impl Default for Options {
+	fn default() -> Self {
+		Self {
+			enable_gate_fusion: true,
+			enable_constant_propagation: false,
+			enable_common_subexpression_elimination: true,
+			enable_dead_code_elimination: true,
+			enable_algebraic_folding: true,
+			// Why off: sharing slots stops an uncommitted value from being readable afterwards.
+			// A caller that inspects one has to opt in knowingly.
+			enable_scratch_pooling: false,
+			enable_zero_propagation: true,
+		}
+	}
+}
+
+/// A chip call named by the wires it passes, before the build assigns them value indices.
+///
+/// A [`ChipCall`] reads its words out of the value vector, and which word a wire holds is only
+/// settled once the circuit is built.
+pub(crate) struct PendingCall {
+	chip: ChipRef,
+	inout: Vec<Wire>,
+}
+
+pub(crate) struct Shared {
+	pub(crate) graph: GateGraph,
+	pub(crate) opts: Options,
+	pub(crate) force_committed: EntitySet<Wire>,
+	pub(crate) hint_registry: HintRegistry,
+	/// The chips registered on the builder, indexed by chip ID.
+	pub(crate) chips: Vec<EmbeddedCircuit>,
+	/// The calls the built circuit makes, in the order they were emitted.
+	pub(crate) chip_calls: Vec<PendingCall>,
+}
+
+/// Circuit builder for constructing zero-knowledge proof circuits.
+///
+/// `CircuitBuilder` provides the primary interface for constructing circuits in the Binius64
+/// proof system. The builder compiles imperative gate operations into a constraint system
+/// suitable for zero-knowledge proof generation.
+///
+/// # Circuit Model
+///
+/// A circuit represents computation as a directed acyclic graph where 64-bit values flow
+/// through gates via **wires**. Gates transform input wires to produce output wires.
+/// Methods like [`band`] and [`iadd_32`] add gates to the graph and return handles
+/// to output wires.
+///
+/// During [`build`], the gate graph compiles into ZERO, AND, IMUL, and BMUL constraints
+/// that the proof system operates on directly.
+///
+/// # Wire Types
+///
+/// Wires are handles to 64-bit values that exist during proof generation.
+/// During circuit construction, wires represent value placeholders.
+///
+/// **Constants** - Values known at compile time. Zero constraint cost as both prover
+/// and verifier know these values. Created with [`add_constant`].
+///
+/// **Public inputs/outputs** - Values visible to both prover and verifier.
+/// Form part of the proof statement (e.g., hash output in a preimage proof).
+/// Created with [`add_inout`](Self::add_inout).
+///
+/// **Private witnesses** - Values known only to the prover.
+/// The circuit proves knowledge of these values without revealing them
+/// (e.g., preimage in a hash proof). Created with [`add_witness`](Self::add_witness).
+///
+/// **Internal wires** - Created automatically by gate operations.
+/// Represent intermediate computation values.
+///
+/// # MSB-Boolean Convention
+///
+/// Boolean values encode in the most significant bit (bit 63) of a 64-bit word.
+/// MSB = 1 represents true, MSB = 0 represents false.
+/// The lower 63 bits are "don't care" values.
+///
+/// # Constraint Costs
+///
+/// **AND constraints** - Baseline unit of cost. Bitwise operations and comparisons
+/// generate 1-2 AND constraints.
+///
+/// **IMUL constraints** - 64-bit multiplication costs ~3-4× more than AND constraints.
+///
+/// **Committed values** - Each public input/output and witness adds to proof size
+/// (~0.2× of an AND constraint).
+///
+/// **Linear operations** - XOR and shifts generate virtual linear constraints.
+/// During compilation these either:
+/// - Fuse into adjacent non-linear gates (near-zero cost)
+/// - Materialize as ZERO constraints, which the Zero reduction discharges without a prover message
+///
+/// Gate fusion inlines compatible XOR expressions and shifts into existing AND gates.
+/// Incompatible operations (e.g., right shift into left shift) and heuristic limits
+/// prevent some fusions. XORs typically cost <0.1× of an AND constraint,
+/// shifts slightly more.
+///
+/// # Compilation
+///
+/// The builder uses reference-counted sharing internally. [`subcircuit`] returns
+/// a builder referencing the same graph with hierarchical naming.
+///
+/// [`build`] triggers compilation:
+/// 1. Validates the circuit structure
+/// 2. Runs optimization passes (constant propagation, gate fusion)
+/// 3. Generates the final constraint system
+///
+/// [`build`] consumes internal state and can only be called once per builder instance.
+///
+/// [`add_constant`]: Self::add_constant
+/// [`add_inout`]: Self::add_inout
+/// [`add_witness`]: Self::add_witness
+/// [`band`]: Self::band
+/// [`build`]: Self::build
+/// [`iadd_32`]: Self::iadd_32
+/// [`subcircuit`]: Self::subcircuit
+#[derive(Clone)]
+pub struct CircuitBuilder {
+	/// Current path at which this circuit builder is positioned.
+	current_path: PathSpec,
+	shared: Rc<RefCell<Option<Shared>>>,
+}
+
+impl Default for CircuitBuilder {
+	fn default() -> Self {
+		CircuitBuilder::new()
+	}
+}
+
+#[warn(missing_docs)]
+impl CircuitBuilder {
+	/// Create a new circuit builder with default options.
+	pub fn new() -> Self {
+		Self::with_opts(Options::default())
+	}
+
+	/// Create a new circuit builder with the given options.
+	pub fn with_opts(opts: Options) -> Self {
+		let graph = GateGraph::new();
+		let root = graph.path_spec_tree.root();
+		CircuitBuilder {
+			current_path: root,
+			shared: Rc::new(RefCell::new(Some(Shared {
+				graph,
+				opts,
+				force_committed: EntitySet::new(),
+				hint_registry: HintRegistry::new(),
+				chips: Vec::new(),
+				chip_calls: Vec::new(),
+			}))),
+		}
+	}
+
+	/// Registers a chip the built circuit can delegate subrelations to, and returns a reference
+	/// naming it.
+	///
+	/// The registered system is flattened into the builder's own: its main circuit becomes the
+	/// chip the returned reference names, and the chips it calls follow, with the IDs inside it
+	/// shifted to their new slots. Each system occupies one contiguous run of IDs and calls only
+	/// into its own run, so the chips stay in the topological order [`CircuitM4::validate`]
+	/// requires.
+	///
+	/// The registered system's active-instance counts are dropped, and the instances its calls name
+	/// are left stale. They say how often its own main reached each chip, which says nothing about
+	/// how often this circuit will; [`Self::build_m4`] recounts the whole graph.
+	///
+	/// Only [`Self::build_m4`] returns the registered chips; [`Self::build`] rejects a builder
+	/// carrying any.
+	pub fn add_chip(&self, chip: CircuitM4) -> ChipRef {
+		let mut shared = self.shared.borrow_mut();
+		let chips = &mut shared
+			.as_mut()
+			.expect("CircuitBuilder used after build")
+			.chips;
+
+		let chip_id = chips.len();
+		// The system's main takes the next slot and its own chips follow it, so an ID naming its
+		// chip `i` now names the slot one past main's.
+		let offset = chip_id + 1;
+		let CircuitM4 {
+			main,
+			chips: nested,
+		} = chip;
+		chips.extend(
+			iter::once(main)
+				.chain(nested.into_iter().map(|(embedded, _)| embedded))
+				.map(|mut embedded| {
+					for call in &mut embedded.chip_calls {
+						call.chip_id += offset;
+					}
+					embedded
+				}),
+		);
+		ChipRef::new(chip_id)
+	}
+
+	/// Calls a registered chip, passing the given wires as the inout words of one invocation.
+	///
+	/// The chip gains an instance serving this call, and that instance's inout values are these
+	/// wires' words. The chip's own constraints are what relate them, so this is how a circuit
+	/// delegates a relation rather than constraining it inline.
+	///
+	/// A chip does not say which of its inout words are inputs and which are outputs; a call
+	/// constrains them all alike. The expected shape computes the outputs from the inputs with a
+	/// hint and passes both: the hint hands the witness its values, and the call is the
+	/// constraint that makes them correct.
+	///
+	/// The build treats a call as a constraint on the words it names. Each wire passed takes a
+	/// committed word of the value vector, and the gate defining it stays live however little
+	/// else reads it. A call names words rather than expressions, though, so a linear argument
+	/// such as `a ^ b` is committed together with the ZERO constraint defining it, where a
+	/// constraint operand would have fused it in for free.
+	///
+	/// The wires are matched positionally against the callee's
+	/// [`Circuit::inout`](Circuit::inout), so they are given in that order and there is one per
+	/// inout word.
+	///
+	/// # Panics
+	///
+	/// Panics if the wire count differs from the callee's inout word count.
+	pub fn call_chip(&self, chip: ChipRef, inout: &[Wire]) {
+		let mut shared = self.shared.borrow_mut();
+		let shared = shared.as_mut().expect("CircuitBuilder used after build");
+
+		let n_inout = shared.chips[chip.chip_id()].circuit.inout().len();
+		assert_eq!(inout.len(), n_inout, "chip #{} takes {n_inout} inout words", chip.chip_id());
+
+		shared.chip_calls.push(PendingCall {
+			chip,
+			inout: inout.to_vec(),
+		});
+	}
+
+	/// Returns the circuit built by this builder.
+	///
+	/// Note that cloning the circuit builder only clones the reference and as such is treated
+	/// as a shallow copy.
+	///
+	/// # Preconditions
+	///
+	/// Must be called only once, on a builder with no chip registered by [`Self::add_chip`].
+	pub fn build(&self) -> Circuit {
+		let shared = self.take_shared();
+		assert!(
+			shared.chips.is_empty(),
+			"a builder carrying chips builds with CircuitBuilder::build_m4"
+		);
+		Self::compile(shared, &[])
+	}
+
+	/// Returns the chip-composed circuit built by this builder.
+	///
+	/// The built circuit is the main one, over the chips registered with [`Self::add_chip`] and
+	/// making the calls emitted by [`Self::call_chip`]. Each call's wires resolve to the value
+	/// indices the build assigned them, and each chip's active-instance count is counted off the
+	/// resulting call graph.
+	///
+	/// # Preconditions
+	///
+	/// Must be called only once.
+	pub fn build_m4(&self) -> CircuitM4 {
+		let mut shared = self.take_shared();
+		let chips = mem::take(&mut shared.chips);
+		let pending = mem::take(&mut shared.chip_calls);
+		let circuit = Self::compile(shared, &pending);
+
+		// The instances and the active-instance counts are the whole call graph's to settle, so
+		// both are left to `recompute_instances` below.
+		let chip_calls = pending
+			.into_iter()
+			.map(|call| ChipCall {
+				chip_id: call.chip.chip_id(),
+				first_instance: 0,
+				inout: call
+					.inout
+					.iter()
+					.map(|&wire| vec![ShiftedValueIndex::plain(circuit.witness_index(wire))])
+					.collect(),
+			})
+			.collect();
+
+		let mut circuit = CircuitM4 {
+			main: EmbeddedCircuit {
+				circuit,
+				chip_calls,
+			},
+			chips: chips.into_iter().map(|chip| (chip, 0)).collect(),
+		};
+		circuit.recompute_instances();
+		circuit
+	}
+
+	/// Takes the builder's state, leaving it spent.
+	///
+	/// # Panics
+	///
+	/// Panics if the state was already taken, which is what makes building a one-shot operation.
+	fn take_shared(&self) -> Shared {
+		let shared = self.shared.borrow_mut().take();
+		let Some(shared) = shared else {
+			panic!("CircuitBuilder::build called twice");
+		};
+		shared
+	}
+
+	/// Compiles the builder's state into a circuit, running every optimization pass it enables.
+	fn compile(shared: Shared, chip_calls: &[PendingCall]) -> Circuit {
+		let mut graph = shared.graph;
+
+		// A chip call is a constraint on the words its wires hold, but the compiler passes have
+		// no notion of a call. Folding its wires into the pinned set gives them the treatment a
+		// constraint's wires get: dead-code elimination keeps the gates defining them,
+		// common-subexpression elimination keeps them distinct, and gate fusion keeps a linear
+		// definition committed rather than inlining it away.
+		let mut pinned = shared.force_committed;
+		for wire in chip_calls.iter().flat_map(|call| &call.inout) {
+			pinned.insert(*wire);
+		}
+
+		// The all-one wire is seeded as the first constant when the graph is constructed.
+		let all_one = graph.all_one;
+
+		graph.validate(&shared.hint_registry);
+
+		// Run constant propagation optimization
+		if shared.opts.enable_constant_propagation {
+			const_prop::constant_propagation(&mut graph, &shared.hint_registry);
+		}
+
+		// Zero propagation: drop the gates a zero operand turns into the identity.
+		// This runs before the dead-code pass, which is what removes the gates it strands.
+		if shared.opts.enable_zero_propagation {
+			zero_fold::zero_propagation(&mut graph, &pinned, &shared.hint_registry);
+		}
+
+		// Common-subexpression elimination: collapse structurally-identical gates.
+		// This runs first so the dead-code pass sees the canonicalized graph.
+		let dead_gates = shared
+			.opts
+			.enable_common_subexpression_elimination
+			.then(|| cse::dedup_gates(&mut graph, &pinned, &shared.hint_registry));
+
+		// Dead-code elimination: the gates that can affect the constraint system.
+		// A gate outside this set emits no constraint and no committed wire, so it is skipped
+		// below.
+		let live_gates = shared
+			.opts
+			.enable_dead_code_elimination
+			.then(|| dce::live_gates(&mut graph, &pinned, &shared.hint_registry));
+
+		let mut builder = ConstraintBuilder::new();
+		for (gate_id, _) in graph.gates.iter() {
+			// Drop collapsed duplicates: their outputs are now read through the canonical gate.
+			if let Some(dead_gates) = &dead_gates
+				&& dead_gates.contains(gate_id)
+			{
+				continue;
+			}
+			// Drop dead gates: they would only add constraints on wires that nothing reads.
+			if let Some(live_gates) = &live_gates
+				&& !live_gates.contains(gate_id)
+			{
+				continue;
+			}
+			gates::constrain(gate_id, &graph, &mut builder);
+		}
+
+		// Perform fusion if the corresponding feature flag is turned on.
+		if shared.opts.enable_gate_fusion {
+			fusion::run_pass(&mut builder, &pinned);
+		}
+
+		let mut constrained_wires = builder.mark_used_wires();
+
+		// A chip call reads its words out of the value vector just as a constraint operand does,
+		// so the wires it names are committed on the same footing. This is what commits a hint
+		// output: no constraint defines it, and constraining it is the call's purpose.
+		for wire in chip_calls.iter().flat_map(|call| &call.inout) {
+			constrained_wires.insert(*wire);
+		}
+
+		// Collect the values no constraint operand mentions.
+		//
+		// Only a value the user declared is committed on its own account.
+		// Anything a gate produced is committed only if a constraint references it.
+		// Gate fusion is what decides that.
+		// The rest exist purely during witness evaluation, so they form the scratch segment.
+		let mut scratch_wires = EntitySet::new();
+		for (wire, kind) in graph.wires.iter() {
+			if matches!(kind, WireKind::Internal | WireKind::Scratch)
+				&& !constrained_wires.contains(wire)
+			{
+				scratch_wires.insert(wire);
+			}
+		}
+
+		// Lay the segment out under the selected policy.
+		// Slots are either one per value, or shared between disjoint lifetimes.
+		let scratch_policy = if shared.opts.enable_scratch_pooling {
+			ScratchPolicy::Pooled
+		} else {
+			ScratchPolicy::PerWire
+		};
+		let scratch_alloc = ScratchAlloc::new(&graph, &scratch_wires, scratch_policy);
+
+		// Allocate a place for each wire in the value vec layout.
+		//
+		// This gives us mappings from wires into the value indices, as well as the constant
+		// portion of the value vec.
+		let value_vec_alloc::Assignment {
+			wire_mapping,
+			value_vec_layout,
+			constants,
+			inout,
+		} = {
+			let mut value_vec_alloc = value_vec_alloc::Alloc::new(scratch_alloc.n_slots());
+			for (wire, kind) in graph.wires.iter() {
+				match kind {
+					WireKind::Constant(value) => {
+						value_vec_alloc.add_constant(wire, *value);
+					}
+					WireKind::Inout => value_vec_alloc.add_inout(wire),
+					WireKind::Witness => value_vec_alloc.add_witness(wire),
+					WireKind::Internal | WireKind::Scratch => {
+						// Unlike inout and witness those two are not declared by the user and thus
+						// are not required to appear in the value vec.
+						//
+						// Therefore, we ignore the initial designation internal <=> scratch and
+						// instead we look whether a wire is referenced in the constraint system
+						// or not. If it is referenced then we declare it as internal and put into
+						// the private section (witness). If it's not referenced we declare it as
+						// a scratch value.
+						//
+						// Note that the concept of wire kind outlived it's lifetime and should be
+						// reworked. This is left for the future.
+						if constrained_wires.contains(wire) {
+							value_vec_alloc.add_internal(wire);
+						} else {
+							value_vec_alloc.add_scratch(wire, scratch_alloc.slot(wire));
+						}
+					}
+				}
+			}
+			value_vec_alloc.into_assignment()
+		};
+
+		// Invariant: the all-one constant seeded at graph construction is the first constant.
+		// Downstream consumers reference it by the fixed index 0.
+		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex::constant(0));
+		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
+
+		let (mut zero_constraints, mut and_constraints, mut imul_constraints, mut bmul_constraints) =
+			builder.build(&wire_mapping);
+
+		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
+		// terms referencing a zero constant contribute nothing to an XOR operand.
+		{
+			let operands = chain!(
+				zero_constraints.iter_mut().flat_map(|c| &mut c.0),
+				and_constraints.iter_mut().flat_map(|c| &mut c.0),
+				imul_constraints.iter_mut().flat_map(|c| &mut c.0),
+				bmul_constraints.iter_mut().flat_map(|c| &mut c.0),
+			);
+			for operand in operands {
+				operand.retain(|term: &binius_core::constraint_system::ShiftedValueIndex| {
+					let index = term.value_index;
+					index.segment() != ValueSegment::Constant
+						|| constants[index.index() as usize] != Word::ZERO
+				});
+			}
+		}
+
+		let cs = ConstraintSystem {
+			zero_constraints,
+			and_constraints,
+			imul_constraints,
+			bmul_constraints,
+			..value_vec_layout.constraint_system_shape(constants)
+		};
+		if cfg!(debug_assertions) {
+			// Validate that the resulting constraint system has a good shape.
+			cs.validate().unwrap();
+		}
+
+		// Build evaluation form (consumes the hint registry the user populated via call_hint).
+		let eval_form = eval_form::EvalForm::build(
+			&graph,
+			&wire_mapping,
+			&value_vec_layout,
+			shared.hint_registry,
+		);
+
+		Circuit::new(
+			graph,
+			cs,
+			value_vec_layout,
+			wire_mapping,
+			inout,
+			eval_form,
+			scratch_alloc.peak_live(),
+		)
+	}
+
+	/// Creates a reference to the same underlying circuit builder that is namespaced to the
+	/// given name.
+	///
+	/// This is useful for creating subcircuits within a larger circuit.
+	///
+	/// Note that this is the same builder instance, but with a different namespace, and that means
+	/// calling [`Self::build`] on the returned builder is going to build the whole circuit.
+	pub fn subcircuit(&self, name: impl Into<String>) -> CircuitBuilder {
+		let nested_path = self
+			.graph_mut()
+			.path_spec_tree
+			.extend(self.current_path, name);
+		CircuitBuilder {
+			current_path: nested_path,
+			shared: self.shared.clone(),
+		}
+	}
+
+	/// Force commit the given wire.
+	///
+	/// This annotate the wire to be forcefully committed. This instructs optimization passes
+	/// (ATOW only gate fusion) to forcibly materialize wire.
+	pub fn force_commit(&self, wire: Wire) {
+		self.shared
+			.borrow_mut()
+			.as_mut()
+			.unwrap()
+			.force_committed
+			.insert(wire);
+	}
+
+	/// Promotes a gate-created wire to a public output.
+	///
+	/// The wire moves from the private segment to the inout one, joining the circuit's public
+	/// interface. This is what a circuit exposing a gadget's result wants: declaring a separate
+	/// inout wire and asserting the result against it costs a second committed word and a
+	/// constraint whenever the result is a wire that has to be committed anyway.
+	///
+	/// The value is still derived by the gate producing it, so a witness filler must *not* assign
+	/// it — unlike a wire from [`Self::add_inout`], which the filler is required to set.
+	///
+	/// Promoting also pins the wire, so this subsumes [`Self::force_commit`] rather than needing
+	/// it alongside.
+	///
+	/// # Position in the segment
+	///
+	/// The inout segment is ordered by wire creation, so a promoted wire follows the declared
+	/// inout wires and sits among its fellow promotions in the order their gates created them —
+	/// which is not necessarily the order they are promoted in. That is invisible to a caller
+	/// filling by [`Wire`], but a caller building the positional public-input vector a verifier
+	/// takes should read each index back with
+	/// [`Circuit::witness_index`](crate::Circuit::witness_index) rather than assume promotion
+	/// order.
+	///
+	/// # Panics
+	///
+	/// Panics unless the wire is a gate-created internal wire. A constant, an input, or an
+	/// already-public wire has nothing to promote.
+	pub fn mark_inout(&self, wire: Wire) {
+		{
+			let mut graph = self.graph_mut();
+			assert!(
+				matches!(graph.wire_kind(wire), WireKind::Internal),
+				"only a gate-created wire can be promoted to a public output"
+			);
+			graph.wires[wire] = WireKind::Inout;
+		}
+
+		// Dead-code elimination and CSE already treat an inout wire as observable, but gate fusion
+		// reads only the pinned set: without this it would inline a linear definition and leave the
+		// public word with no constraint defining it.
+		self.force_commit(wire);
+	}
+
+	fn graph_mut(&self) -> RefMut<'_, GateGraph> {
+		RefMut::map(self.shared.borrow_mut(), |shared| &mut shared.as_mut().unwrap().graph)
+	}
+
+	/// The compile-time value of a wire, when it is a constant.
+	///
+	/// Returns `None` for inputs, witnesses, and gate outputs whose value is only known at
+	/// proving time.
+	/// Used by the builder to fold trivial gate identities at construction.
+	fn const_of(&self, wire: Wire) -> Option<Word> {
+		let shared = self.shared.borrow();
+		let shared = shared.as_ref().expect("CircuitBuilder used after build");
+		match shared.graph.wires[wire] {
+			WireKind::Constant(word) => Some(word),
+			_ => None,
+		}
+	}
+
+	/// Creates a wire from a 64-bit word.
+	///
+	/// # Arguments
+	/// * `word` -  The word to add to the circuit.
+	///
+	/// # Returns
+	/// A `Wire` representing the constant value. The wire might be aliased because the constants
+	/// are deduplicated.
+	///
+	/// # Cost
+	///
+	/// Constants have no constraint cost - they are "free" in the circuit.
+	pub fn add_constant(&self, word: Word) -> Wire {
+		self.graph_mut().add_constant(word)
+	}
+
+	/// Creates a constant wire from a 64-bit unsigned integer.
+	///
+	/// This method adds a 64-bit constant value to the circuit. The constant is stored
+	/// as a `Word` and can be used in constraints and operations.
+	///
+	/// Constants are automatically deduplicated - multiple calls with the same value
+	/// will return the same wire.
+	///
+	/// # Arguments
+	/// * `c` - The 64-bit constant value to add to the circuit
+	///
+	/// # Returns
+	/// A `Wire` representing the constant value that can be used in circuit operations
+	pub fn add_constant_64(&self, c: u64) -> Wire {
+		self.add_constant(Word(c))
+	}
+
+	/// Creates a constant wire from an 8-bit value, zero-extended to 64 bits.
+	///
+	/// This method takes an 8-bit unsigned integer (byte) and zero-extends it to
+	/// a 64-bit value before adding it as a constant to the circuit. The resulting
+	/// wire contains the byte value in the lower 8 bits and zeros in the upper 56 bits.
+	/// This is commonly used for byte constants in circuits that process byte data.
+	///
+	/// # Arguments
+	/// * `c` - The 8-bit constant value (0-255) to add to the circuit
+	pub fn add_constant_zx_8(&self, c: u8) -> Wire {
+		self.add_constant(Word(c as u64))
+	}
+
+	/// Creates a public input/output wire.
+	///
+	/// Public wires form part of the proof statement and are visible to both prover and verifier.
+	/// They are committed in the public section of the value vector alongside constants.
+	///
+	/// The wire must be manually assigned a value using [`WitnessFiller`] before circuit
+	/// evaluation.
+	///
+	/// [`WitnessFiller`]: crate::WitnessFiller
+	pub fn add_inout(&self) -> Wire {
+		self.graph_mut().add_inout()
+	}
+
+	/// Creates a private input wire.
+	///
+	/// Private wires contain secret values known only to the prover. They are placed in the
+	/// private section of the value vector and are not revealed to the verifier.
+	///
+	/// The wire must be manually assigned a value using [`WitnessFiller`] before circuit
+	/// evaluation.
+	///
+	/// [`WitnessFiller`]: crate::WitnessFiller
+	pub fn add_witness(&self) -> Wire {
+		self.graph_mut().add_witness()
+	}
+
+	/// Adds a wire similar to [`Self::add_witness`]. Internal wires are meant to designate wires
+	/// that are prunable.
+	fn add_internal(&self) -> Wire {
+		self.graph_mut().add_internal()
+	}
+
+	/// Whether build-time algebraic identity folding is enabled.
+	fn algebraic_folding(&self) -> bool {
+		self.shared
+			.borrow()
+			.as_ref()
+			.expect("CircuitBuilder used after build")
+			.opts
+			.enable_algebraic_folding
+	}
+
+	/// Bitwise AND.
+	///
+	/// Returns z = x & y
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint, or none when both operands are the same wire.
+	pub fn band(&self, x: Wire, y: Wire) -> Wire {
+		// Idempotent: x & x = x, bit for bit, so return x and emit no gate.
+		if self.algebraic_folding() && x == y {
+			return x;
+		}
+		// Identities that hold bit for bit, so they need no AND constraint:
+		//   c & d  -> fold        0 & y -> 0        all-1 & y -> y
+		match (self.const_of(x), self.const_of(y)) {
+			(Some(a), Some(b)) => return self.add_constant(Word(a.0 & b.0)),
+			(Some(a), _) if a == Word::ZERO => return x,
+			(Some(a), _) if a == Word::ALL_ONE => return y,
+			(_, Some(b)) if b == Word::ZERO => return y,
+			(_, Some(b)) if b == Word::ALL_ONE => return x,
+			_ => {}
+		}
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Band, [x, y], [z]);
+		z
+	}
+
+	/// Bitwise XOR.
+	///
+	/// Returns z = x ^ y
+	///
+	/// # Cost
+	///
+	/// 1 linear constraint, or none when both operands are the same wire.
+	pub fn bxor(&self, a: Wire, b: Wire) -> Wire {
+		// Self-inverse: x ^ x = 0, so return the zero constant and emit no gate.
+		if self.algebraic_folding() && a == b {
+			return self.add_constant(Word::ZERO);
+		}
+		// Identities that hold bit for bit, so they need no linear constraint:
+		//   c ^ d  -> fold        0 ^ b -> b        a ^ 0 -> a
+		match (self.const_of(a), self.const_of(b)) {
+			(Some(x), Some(y)) => return self.add_constant(Word(x.0 ^ y.0)),
+			(Some(x), _) if x == Word::ZERO => return b,
+			(_, Some(y)) if y == Word::ZERO => return a,
+			_ => {}
+		}
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Bxor, [a, b], [z]);
+		z
+	}
+
+	/// Multi-way bitwise XOR operation.
+	///
+	/// Takes a variable-length slice of wires and XORs them all together.
+	///
+	/// Returns z = i ^ j ^ k ^ ...
+	///
+	/// # Cost
+	///
+	/// 1 linear constraint.
+	pub fn bxor_multi(&self, wires: &[Wire]) -> Wire {
+		assert!(!wires.is_empty(), "bxor_multi requires at least one input");
+
+		if wires.len() == 1 {
+			return wires[0];
+		}
+
+		if wires.len() == 2 {
+			return self.bxor(wires[0], wires[1]);
+		}
+
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate_generic(
+			self.current_path,
+			Opcode::BxorMulti,
+			wires.iter().copied(),
+			[z],
+			&[wires.len()],
+			&[],
+		);
+		z
+	}
+
+	/// Bitwise Not
+	///
+	/// Returns z = ~x
+	///
+	/// # Cost
+	///
+	/// 1 linear constraint.
+	pub fn bnot(&self, a: Wire) -> Wire {
+		let all_one = self.add_constant(Word::ALL_ONE);
+		self.bxor(a, all_one)
+	}
+
+	/// Bitwise OR.
+	///
+	/// Returns z = x | y
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint, or none when both operands are the same wire.
+	pub fn bor(&self, a: Wire, b: Wire) -> Wire {
+		// Idempotent: x | x = x, bit for bit, so return x and emit no gate.
+		if self.algebraic_folding() && a == b {
+			return a;
+		}
+		// Identities that hold bit for bit, so they need no AND constraint:
+		//   c | d  -> fold        0 | b -> b        all-1 | b -> all-1
+		match (self.const_of(a), self.const_of(b)) {
+			(Some(x), Some(y)) => return self.add_constant(Word(x.0 | y.0)),
+			(Some(x), _) if x == Word::ZERO => return b,
+			(Some(x), _) if x == Word::ALL_ONE => return a,
+			(_, Some(y)) if y == Word::ZERO => return a,
+			(_, Some(y)) if y == Word::ALL_ONE => return b,
+			_ => {}
+		}
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Bor, [a, b], [z]);
+		z
+	}
+
+	/// Fused AND-XOR operation.
+	///
+	/// Computes (x & y) ^ w in a single gate.
+	///
+	/// Returns z = (x & y) ^ w
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn fax(&self, x: Wire, y: Wire, w: Wire) -> Wire {
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Fax, [x, y, w], [z]);
+		z
+	}
+
+	/// Parallel 32-bit integer addition.
+	///
+	/// Performs simultaneous independent 32-bit additions on the upper and lower halves,
+	/// discarding the carry-out.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint, 1 linear constraint.
+	pub fn iadd_32(&self, a: Wire, b: Wire) -> Wire {
+		let sum = self.add_internal();
+		let cout = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Iadd32, [a, b], [sum, cout]);
+		sum
+	}
+
+	/// Parallel 32-bit integer addition with carry-in and carry-out.
+	///
+	/// Performs simultaneous independent 32-bit additions on the upper and lower halves
+	/// of the 64-bit word, with per-half carry-in and carry-out.
+	///
+	/// The carry-in for each half is taken from the MSB of that half in `cin`:
+	/// bit 31 for the lower half, bit 63 for the upper half. The carry-out
+	/// is a full carry word where bit 31 and bit 63 indicate the carry-out
+	/// of the lower and upper halves respectively.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint, 1 linear constraint.
+	pub fn iadd32_cin_cout(&self, a: Wire, b: Wire, cin: Wire) -> (Wire, Wire) {
+		let sum = self.add_internal();
+		let cout = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Iadd32CinCout, [a, b, cin], [sum, cout]);
+		(sum, cout)
+	}
+
+	/// 64-bit integer addition with carry input and output.
+	///
+	/// Performs full 64-bit unsigned addition of two wires plus a carry input.
+	///
+	/// Returns `(sum, carry_out)` where:
+	///
+	/// - `sum` is the 64-bit result and
+	/// - `carry_out` is a 64-bit word where every bit position with a carry is set to 1.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn iadd_cin_cout(&self, a: Wire, b: Wire, cin: Wire) -> (Wire, Wire) {
+		let sum = self.add_internal();
+		let cout = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::IaddCinCout, [a, b, cin], [sum, cout]);
+		(sum, cout)
+	}
+
+	/// 64-bit subtraction with borrow input and output.
+	///
+	/// Performs full 64-bit unsigned subtraction of two wires plus a borrow input.
+	///
+	/// Returns `(diff, borrow_out)` where:
+	///
+	/// - `diff` is the 64-bit result and
+	/// - `borrow_out` is a 64-bit word where every bit position with a borrow is set to 1.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn isub_bin_bout(&self, a: Wire, b: Wire, bin: Wire) -> (Wire, Wire) {
+		let diff = self.add_internal();
+		let bout = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::IsubBinBout, [a, b, bin], [diff, bout]);
+		(diff, bout)
+	}
+
+	/// Emits one shift/rotate gate for the given variant and amount.
+	///
+	/// The variant and amount are carried as the gate's two immediates.
+	/// The caller enforces the amount range and any identity fast-paths.
+	fn emit_shift(&self, variant: ShiftVariant, x: Wire, n: u32) -> Wire {
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate_generic(
+			self.current_path,
+			Opcode::Shift,
+			[x],
+			[z],
+			&[],
+			&[variant as u32, n],
+		);
+		z
+	}
+
+	/// 32-bit half-wise rotate left.
+	///
+	/// Rotates the upper and lower 32-bit halves left independently by `n`.
+	/// Bits do not cross the 32-bit lane boundary.
+	///
+	/// Returns `x ROTL32 n`
+	///
+	/// # Panics
+	///
+	/// Panics if n ≥ 32.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint (0 if n = 0).
+	pub fn rotl32(&self, x: Wire, n: u32) -> Wire {
+		assert!(n < 32, "rotate amount n={n} out of range");
+		if n == 0 {
+			return x;
+		}
+		self.emit_shift(ShiftVariant::Rotr32, x, 32 - n)
+	}
+
+	/// 32-bit half-wise rotate right.
+	///
+	/// Rotates the upper and lower 32-bit halves right independently by `n`.
+	/// Bits do not cross the 32-bit lane boundary.
+	///
+	/// Returns `x ROTR32 n`
+	///
+	/// # Panics
+	///
+	/// Panics if n ≥ 32.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint (0 if n = 0).
+	pub fn rotr32(&self, x: Wire, n: u32) -> Wire {
+		assert!(n < 32, "rotate amount n={n} out of range");
+		if n == 0 {
+			return x;
+		}
+		self.emit_shift(ShiftVariant::Rotr32, x, n)
+	}
+
+	/// 64-bit rotate left.
+	///
+	/// Rotates a 64-bit value left by n positions. Bits shifted out on the left
+	/// wrap around to the right.
+	///
+	/// Returns `x rotated left by n`
+	///
+	/// # Panics
+	///
+	/// Panics if n ≥ 64.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint (0 if n = 0).
+	pub fn rotl(&self, x: Wire, n: u32) -> Wire {
+		assert!(n < 64, "rotate amount n={n} out of range");
+		if n == 0 {
+			return x;
+		}
+		self.emit_shift(ShiftVariant::Rotr, x, 64 - n)
+	}
+
+	/// 64-bit rotate right.
+	///
+	/// Rotates a 64-bit value right by n positions. Bits shifted out on the right
+	/// wrap around to the left.
+	///
+	/// Returns `x rotated right by n`
+	///
+	/// # Panics
+	///
+	/// Panics if n ≥ 64.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint (0 if n = 0).
+	pub fn rotr(&self, x: Wire, n: u32) -> Wire {
+		assert!(n < 64, "rotate amount n={n} out of range");
+		if n == 0 {
+			return x;
+		}
+		self.emit_shift(ShiftVariant::Rotr, x, n)
+	}
+
+	/// 32-bit half-wise logical right shift.
+	///
+	/// Shifts the upper and lower 32-bit halves right independently by `n`.
+	/// Bits do not cross the 32-bit lane boundary.
+	///
+	/// Returns `x SRL32 n`
+	///
+	/// # Panics
+	///
+	/// Panics if n ≥ 32.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn srl32(&self, x: Wire, n: u32) -> Wire {
+		assert!(n < 32, "shift amount n={n} out of range");
+		self.emit_shift(ShiftVariant::Srl32, x, n)
+	}
+
+	/// 32-bit half-wise logical left shift.
+	///
+	/// Shifts the upper and lower 32-bit halves left independently by `n`.
+	/// Bits do not cross the 32-bit lane boundary.
+	///
+	/// Returns `x SLL32 n`.
+	///
+	/// # Panics
+	///
+	/// Panics if `n ≥ 32`.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn sll32(&self, x: Wire, n: u32) -> Wire {
+		assert!(n < 32, "shift amount n={n} out of range for 32-bit half shift");
+		self.emit_shift(ShiftVariant::Sll32, x, n)
+	}
+
+	/// Logical left shift.
+	///
+	/// Shifts a 64-bit wire left by n bits, filling with zeros from the right.
+	///
+	/// Returns a << n
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn shl(&self, a: Wire, n: u32) -> Wire {
+		assert!(n < 64, "shift amount n={n} out of range");
+		self.emit_shift(ShiftVariant::Sll, a, n)
+	}
+
+	/// Logical right shift.
+	///
+	/// Shifts a 64-bit wire right by n bits, filling with zeros from the left.
+	///
+	/// Returns a >> n
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn shr(&self, a: Wire, n: u32) -> Wire {
+		assert!(n < 64, "shift amount n={n} out of range");
+		self.emit_shift(ShiftVariant::Slr, a, n)
+	}
+
+	/// Arithmetic right shift.
+	///
+	/// Shifts a 64-bit wire right by n bits, filling with the MSB from the left.
+	///
+	/// Returns a SAR n
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn sar(&self, a: Wire, n: u32) -> Wire {
+		assert!(n < 64, "shift amount n={n} out of range");
+		self.emit_shift(ShiftVariant::Sar, a, n)
+	}
+
+	/// 32-bit half-wise arithmetic right shift.
+	///
+	/// Shifts the upper and lower 32-bit halves right independently by `n`,
+	/// sign-extending each half from its own bit 31.
+	///
+	/// Returns `x SRA32 n`.
+	///
+	/// # Panics
+	///
+	/// Panics if `n ≥ 32`.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn sra32(&self, a: Wire, n: u32) -> Wire {
+		assert!(n < 32, "shift amount n={n} out of range for 32-bit half shift");
+		self.emit_shift(ShiftVariant::Sra32, a, n)
+	}
+
+	/// Equality assertion.
+	///
+	/// Asserts that two 64-bit wires are equal.
+	///
+	/// Takes wires x and y and enforces x == y.
+	/// If the assertion fails, the circuit will report an error with the given name.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn assert_eq(&self, name: impl Into<String>, x: Wire, y: Wire) {
+		let mut graph = self.graph_mut();
+		let gate = graph.emit_gate(self.current_path, Opcode::AssertEq, [x, y], []);
+		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
+		graph.assertion_names[gate] = path_spec;
+	}
+
+	/// Vector equality assertion.
+	///
+	/// Asserts that two arrays of 64-bit wires are equal element-wise.
+	///
+	/// Takes wire arrays x and y and enforces `x[i] == y[i]` for all `i`.
+	/// Each element assertion is named with the base name and index.
+	///
+	/// # Cost
+	///
+	/// N AND constraints (one per element).
+	pub fn assert_eq_v<const N: usize>(&self, name: impl Into<String>, x: [Wire; N], y: [Wire; N]) {
+		let base_name = name.into();
+		for i in 0..N {
+			self.assert_eq(format!("{base_name}[{i}]"), x[i], y[i]);
+		}
+	}
+
+	/// Asserts that the given wire equals zero.
+	///
+	/// Enforces that `x = 0` exactly. Every bit of the 64-bit value must be zero.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn assert_zero(&self, name: impl Into<String>, x: Wire) {
+		let mut graph = self.graph_mut();
+		let gate = graph.emit_gate(self.current_path, Opcode::AssertZero, [x], []);
+		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
+		graph.assertion_names[gate] = path_spec;
+	}
+
+	/// Asserts that the given wire is not zero.
+	///
+	/// Enforces that `x ≠ 0`. At least one bit must be non-zero.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn assert_non_zero(&self, name: impl Into<String>, x: Wire) {
+		let mut graph = self.graph_mut();
+		let gate = graph.emit_gate(self.current_path, Opcode::AssertNonZero, [x], []);
+		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
+		graph.assertion_names[gate] = path_spec;
+	}
+
+	/// Asserts that the given wire's MSB (Most Significant Bit) is 0.
+	///
+	/// This treats the wire as an MSB-boolean where:
+	/// - MSB = 0 → false (assertion passes)
+	/// - MSB = 1 → true (assertion fails)
+	///
+	/// All bits except the MSB are ignored. This is commonly used with comparison
+	/// results which return MSB-boolean values.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn assert_false(&self, name: impl Into<String>, x: Wire) {
+		let mut graph = self.graph_mut();
+		let gate = graph.emit_gate(self.current_path, Opcode::AssertFalse, [x], []);
+		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
+		graph.assertion_names[gate] = path_spec;
+	}
+
+	/// Asserts that the given wire's MSB (Most Significant Bit) is 1.
+	///
+	/// This treats the wire as an MSB-boolean where:
+	/// - MSB = 1 → true (assertion passes)
+	/// - MSB = 0 → false (assertion fails)
+	///
+	/// All bits except the MSB are ignored. This is commonly used with comparison
+	/// results which return MSB-boolean values.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn assert_true(&self, name: impl Into<String>, x: Wire) {
+		let mut graph = self.graph_mut();
+		let gate = graph.emit_gate(self.current_path, Opcode::AssertTrue, [x], []);
+		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
+		graph.assertion_names[gate] = path_spec;
+	}
+
+	/// 64-bit × 64-bit → 128-bit unsigned multiplication.
+	///
+	/// Performs unsigned integer multiplication of two 64-bit values, producing
+	/// a 128-bit result split into high and low 64-bit words.
+	///
+	/// Returns `(hi, lo)` where `a * b = (hi << 64) | lo`
+	///
+	/// # Cost
+	///
+	/// 1 IMUL constraint.
+	pub fn imul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
+		let hi = self.add_internal();
+		let lo = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Imul, [a, b], [hi, lo]);
+		(hi, lo)
+	}
+
+	/// Multiplication in the GHASH field GF(2^128).
+	///
+	/// Multiplies two field elements, each carried by a `(lo, hi)` pair of 64-bit words — `lo`
+	/// holds the coefficients of `1, X, …, X^63` and `hi` those of `X^64, …, X^127`.
+	///
+	/// Returns `(c_lo, c_hi)`, the product `(a_lo, a_hi) * (b_lo, b_hi)` in the same
+	/// representation.
+	///
+	/// # Cost
+	///
+	/// - 1 BMUL constraint.
+	pub fn bmul(&self, a_lo: Wire, a_hi: Wire, b_lo: Wire, b_hi: Wire) -> (Wire, Wire) {
+		let c_lo = self.add_internal();
+		let c_hi = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Bmul, [a_lo, a_hi, b_lo, b_hi], [c_lo, c_hi]);
+		(c_lo, c_hi)
+	}
+
+	/// Conditional equality assertion.
+	///
+	/// Asserts that two 64-bit wires are equal only when a condition is true (MSB = 1).
+	/// When the condition is false (MSB = 0), no constraint is enforced.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn assert_eq_cond(&self, name: impl Into<String>, x: Wire, y: Wire, cond: Wire) {
+		let mut graph = self.graph_mut();
+		let gate = graph.emit_gate(self.current_path, Opcode::AssertEqCond, [x, y, cond], []);
+		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
+		graph.assertion_names[gate] = path_spec;
+	}
+
+	/// Unsigned less-than comparison.
+	///
+	/// Compares two 64-bit wires as unsigned integers.
+	///
+	/// Returns:
+	/// - a wire whose MSB-bool value is true if a < b
+	/// - a wire whose MSB-bool value is false if a ≥ b
+	///
+	/// the non-most-significant bits of the output wire are undefined.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn icmp_ult(&self, x: Wire, y: Wire) -> Wire {
+		let out_wire = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::IcmpUlt, [x, y], [out_wire]);
+		out_wire
+	}
+
+	/// Unsigned less-than-or-equal comparison.
+	///
+	/// Compares two 64-bit wires as unsigned integers.
+	///
+	/// Returns:
+	/// - a wire whose MSB-bool value is true if x <= y
+	/// - a wire whose MSB-bool value is false if x > y
+	///
+	/// the non-most-significant bits of the output wire are undefined.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn icmp_ule(&self, x: Wire, y: Wire) -> Wire {
+		// x <= y is equivalent to !(y < x)
+		let gt = self.icmp_ult(y, x);
+		self.bnot(gt)
+	}
+
+	/// Unsigned greater-than comparison.
+	///
+	/// Compares two 64-bit wires as unsigned integers.
+	///
+	/// Returns:
+	/// - a wire whose MSB-bool value is true if x > y
+	/// - a wire whose MSB-bool value is false if x <= y
+	///
+	/// the non-most-significant bits of the output wire are undefined.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn icmp_ugt(&self, x: Wire, y: Wire) -> Wire {
+		// x > y is equivalent to y < x.
+		self.icmp_ult(y, x)
+	}
+
+	/// Unsigned greater-than-or-equal comparison.
+	///
+	/// Compares two 64-bit wires as unsigned integers.
+	///
+	/// Returns:
+	/// - a wire whose MSB-bool value is true if x >= y
+	/// - a wire whose MSB-bool value is false if x < y
+	///
+	/// the non-most-significant bits of the output wire are undefined.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn icmp_uge(&self, x: Wire, y: Wire) -> Wire {
+		// x >= y is equivalent to !(x < y)
+		let lt = self.icmp_ult(x, y);
+		self.bnot(lt)
+	}
+
+	/// Equality comparison.
+	///
+	/// Compares two 64-bit wires for equality.
+	///
+	/// Returns:
+	/// - a wire whose MSB-bool value is true if a == b
+	/// - a wire whose MSB-bool value is false if a != b
+	///
+	/// the non-most-significant bits of the output wire are undefined.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn icmp_eq(&self, x: Wire, y: Wire) -> Wire {
+		let out_wire = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::IcmpEq, [x, y], [out_wire]);
+		out_wire
+	}
+
+	/// Inequality comparison.
+	///
+	/// Compares two 64-bit wires for inequality.
+	///
+	/// Returns:
+	/// - a wire whose MSB-bool value is true if a != b
+	/// - a wire whose MSB-bool value is false if a == b
+	///
+	/// the non-most-significant bits of the output wire are undefined.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn icmp_ne(&self, x: Wire, y: Wire) -> Wire {
+		let eq = self.icmp_eq(x, y);
+		self.bnot(eq)
+	}
+
+	/// Byte extraction.
+	///
+	/// Extracts byte j from a 64-bit word (j=0 is least significant byte).
+	///
+	/// Returns the extracted byte (0-255) in the low 8 bits, with high 56 bits zero.
+	///
+	/// # Panics
+	///
+	/// Panics if j is greater than or equal to 8.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn extract_byte(&self, word: Wire, j: u32) -> Wire {
+		assert!(j < 8, "byte index j={j} out of range");
+
+		// To extract the byte j out of 8 we want to generate a mask that will zero out all bits
+		// except the ones in the j-th byte and then shift it to the rightmost position. We used
+		// to have a gate for this but it's not necessary.
+		let shift = j * 8;
+		let mask = self.add_constant_64(0xff << shift);
+		let masked = self.band(word, mask);
+		self.shr(masked, shift)
+	}
+
+	/// Select operation.
+	///
+	/// Returns `t` if `cond` is true (MSB-bit set), otherwise returns `f`.
+	///
+	/// # Cost
+	///
+	/// 1 BMUL constraint, or none when both arms are the same wire.
+	pub fn select(&self, cond: Wire, t: Wire, f: Wire) -> Wire {
+		// Both arms identical: the result is that wire regardless of the condition.
+		// This reads no bit of `cond`, so it is independent of the MSB-boolean convention.
+		if self.algebraic_folding() && t == f {
+			return t;
+		}
+		// A constant condition resolves the branch at compile time.
+		// The selector reads only the most significant bit (bit 63), the MSB-bool.
+		if let Some(c) = self.const_of(cond) {
+			return if (c.0 >> 63) == 1 { t } else { f };
+		}
+		let out = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Select, [cond, t, f], [out]);
+		out
+	}
+
+	/// Invoke a [`Hint`] and emit the corresponding gate.
+	///
+	/// Registers `hint` in the builder's hint registry (idempotent, keyed by `T::NAME`),
+	/// allocates output wires according to `hint.shape(dimensions)`, and emits a
+	/// generic hint gate. Returns the freshly allocated output wires.
+	///
+	/// `dimensions` is passed verbatim to [`Hint::shape`] and [`Hint::execute`]; it is the
+	/// hint's parameterization (e.g., limb counts for a bignum hint).
+	///
+	/// # Panics
+	///
+	/// Panics if `inputs.len()` does not match the hint's declared input arity.
+	pub fn call_hint<T: Hint>(&self, hint: T, dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
+		let (n_in, n_out) = hint.shape(dimensions);
+		assert_eq!(
+			inputs.len(),
+			n_in,
+			"call_hint: input arity mismatch for hint {} (expected {}, got {})",
+			T::NAME,
+			n_in,
+			inputs.len(),
+		);
+
+		let hint_id = self
+			.shared
+			.borrow_mut()
+			.as_mut()
+			.expect("CircuitBuilder used after build")
+			.hint_registry
+			.register(hint);
+
+		let outputs: Vec<Wire> = (0..n_out).map(|_| self.add_internal()).collect();
+
+		let mut graph = self.graph_mut();
+		graph.emit_hint_gate(
+			self.current_path,
+			hint_id,
+			dimensions,
+			inputs.iter().copied(),
+			outputs.iter().copied(),
+		);
+
+		outputs
+	}
+
+	/// 64-bit unsigned integer addition, returning the sum and carry-out.
+	///
+	/// Addition with a carry-in is the general primitive.
+	/// Plain addition is the special case where the carry-in is zero.
+	///
+	/// Returns `(sum, cout)` where:
+	///
+	/// - `sum` is the 64-bit result `a + b`.
+	/// - `cout` has a set bit at every position where a carry occurred.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn iadd(&self, a: Wire, b: Wire) -> (Wire, Wire) {
+		// Zero carry-in: the MSB of `cin` is the carry bit, and zero carries nothing.
+		let cin = self.add_constant_64(0);
+		self.iadd_cin_cout(a, b, cin)
+	}
+
+	/// 64-bit × 64-bit → 128-bit signed multiplication.
+	///
+	/// Handles two's complement operands, including overflow cases.
+	///
+	/// Returns `(hi, lo)` where the signed product equals `(hi << 64) | lo`.
+	///
+	/// The high word is the sign extension of the product.
+	pub fn smul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
+		smul64(self, a, b)
+	}
+}
