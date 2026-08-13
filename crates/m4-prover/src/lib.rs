@@ -10,6 +10,8 @@
 mod composite;
 mod prove;
 mod shift;
+#[cfg(feature = "test-circuits")]
+pub mod test_circuits;
 #[cfg(test)]
 mod test_utils;
 mod value_table;
