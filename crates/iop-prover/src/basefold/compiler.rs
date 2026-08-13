@@ -20,7 +20,15 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use crate::{
 	basefold::channel::BaseFoldProverChannel,
 	merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
+	merkle_tree::prover::BinaryMerkleTreeProver,
 };
+
+/// The channel the `*_from_transcript` constructors return.
+///
+/// A BaseFold channel over a transcript-backed Merkle channel, where `A` backs both the BaseFold
+/// working buffers and the nodes of every Merkle tree committed through it.
+pub type TranscriptBaseFoldProverChannel<'a, F, P, NTT, T, Challenger_, H, A> =
+	BaseFoldProverChannel<'a, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>, A>;
 
 /// A compiler that creates BaseFold ZK prover channels with precomputed parameters.
 ///
@@ -172,11 +180,14 @@ where
 	/// The transcript may be owned or mutably borrowed.
 	/// It is wrapped in a [`ProverMerkleTranscriptChannel`] for the given hash suite.
 	/// That channel is then passed to [`Self::create_channel`].
+	/// `alloc` backs both the channel's working buffers and the nodes of every Merkle tree it
+	/// commits, so one pool serves the whole opening.
 	pub fn create_channel_from_transcript<H, Challenger_, T, A>(
 		&self,
 		transcript: T,
 		rng: impl Rng,
-	) -> BaseFoldProverChannel<'_, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H>, A>
+		alloc: A,
+	) -> TranscriptBaseFoldProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
 	where
 		H: HashSuite,
 		Challenger_: Challenger,
@@ -184,7 +195,13 @@ where
 		Output<H::LeafHash>: SerializeBytes,
 		A: Allocator,
 	{
-		self.create_channel(ProverMerkleTranscriptChannel::new(transcript), rng)
+		self.create_channel(
+			ProverMerkleTranscriptChannel::with_merkle_prover(
+				transcript,
+				BinaryMerkleTreeProver::with_allocator(alloc),
+			),
+			rng,
+		)
 	}
 
 	/// Creates a non-ZK prover channel over a transcript, for the common case.
@@ -194,7 +211,8 @@ where
 	pub fn create_channel_without_zk_from_transcript<H, Challenger_, T, A>(
 		&self,
 		transcript: T,
-	) -> BaseFoldProverChannel<'_, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H>, A>
+		alloc: A,
+	) -> TranscriptBaseFoldProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
 	where
 		H: HashSuite,
 		Challenger_: Challenger,
@@ -202,6 +220,9 @@ where
 		Output<H::LeafHash>: SerializeBytes,
 		A: Allocator,
 	{
-		self.create_channel_without_zk(ProverMerkleTranscriptChannel::new(transcript))
+		self.create_channel_without_zk(ProverMerkleTranscriptChannel::with_merkle_prover(
+			transcript,
+			BinaryMerkleTreeProver::with_allocator(alloc),
+		))
 	}
 }

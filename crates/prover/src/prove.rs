@@ -462,12 +462,13 @@ where
 		// Create channel, delegate to IOPProver::prove, then finish it. The unified channel takes
 		// an rng to mask ZK oracles, but a plain `Prover` produces a transparent proof whose only
 		// oracle is non-ZK, so no masks are drawn and the rng is never consumed.
+		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
+		// by earlier proofs. The pool is passed as an `&BufferPool` allocator, and the channel
+		// commits its Merkle trees out of the same pool.
+		let alloc = &self.pool;
 		let mut channel = self
 			.basefold_compiler
-			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript);
-		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
-		// by earlier proofs. The pool is passed as an `&BufferPool` allocator.
-		let alloc = &self.pool;
+			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
 		self.iop_prover
 			.prove::<_, P, _>(witness, &mut channel, &alloc)?;
 		channel.finish(&alloc);

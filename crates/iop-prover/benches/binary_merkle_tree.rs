@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::BufferPool;
 use binius_field::{BinaryField128bGhash as B128, PackedField, arch::OptimalPackedB128};
 use binius_hash::{
 	binary_merkle_tree::HashSuite, blake3::Blake3HashSuite, sha256::Sha256HashSuite,
@@ -44,16 +45,23 @@ where
 		((1 << (LOG_LEAVES + LOG_ELEMS_IN_LEAF)) * std::mem::size_of::<B128>()) as u64,
 	));
 	group.sample_size(10);
-	group.bench_function(
-		format!(
-			"{LOG_LEAVES} log leaves size {}xB128 leaf {}",
-			1 << LOG_ELEMS_IN_LEAF,
-			packing_name.as_ref()
-		),
-		|b| {
-			b.iter(|| merkle_prover.commit_field_buffer(buffer.to_ref(), LOG_ELEMS_IN_LEAF));
-		},
+	let case = format!(
+		"{LOG_LEAVES} log leaves size {}xB128 leaf {}",
+		1 << LOG_ELEMS_IN_LEAF,
+		packing_name.as_ref()
 	);
+	group.bench_function(&case, |b| {
+		b.iter(|| merkle_prover.commit_field_buffer(buffer.to_ref(), LOG_ELEMS_IN_LEAF));
+	});
+
+	// The same commitment out of a pool the prover holds across iterations, which is how a real
+	// prover uses one. Benching both here rather than against a baseline build keeps the
+	// comparison inside a single binary, where the two arms meet identical machine conditions.
+	let pool = BufferPool::new();
+	let pooled_prover = BinaryMerkleTreeProver::<B128, H, _>::with_allocator(&pool);
+	group.bench_function(format!("{case} pooled"), |b| {
+		b.iter(|| pooled_prover.commit_field_buffer(buffer.to_ref(), LOG_ELEMS_IN_LEAF));
+	});
 	group.finish()
 }
 

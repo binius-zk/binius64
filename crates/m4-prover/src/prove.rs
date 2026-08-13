@@ -426,13 +426,12 @@ where
 	) where
 		Challenger_: Challenger,
 	{
+		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
+		// by earlier proofs. The channel commits its Merkle trees out of the same pool.
+		let alloc = &self.pool;
 		let mut channel = self
 			.basefold_compiler
-			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript);
-
-		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
-		// by earlier proofs.
-		let alloc = &self.pool;
+			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
 		self.iop_prover
 			.prove_chip::<P, _, _>(table, &mut channel, &alloc);
 
