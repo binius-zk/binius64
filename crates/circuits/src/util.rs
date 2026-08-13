@@ -79,9 +79,8 @@ pub(crate) fn zeroed_u32_words(
 			} else if word_start >= valid_bytes {
 				zero
 			} else {
-				let keep = valid_bytes - word_start;
-				let mask = builder.add_constant_64((1u64 << (keep * 8)) - 1);
-				builder.band(raw[i], mask)
+				let keep_bits = (valid_bytes - word_start) * 8;
+				clear_high_bits(builder, raw[i], (64 - keep_bits) as u32)
 			}
 		})
 		.collect()
