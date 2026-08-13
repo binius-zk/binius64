@@ -9,13 +9,15 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{
+	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
+};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		KeyCollection, KeySegment, OperatorClaims, Phase3Output, PreparedOperatorClaims,
 		ShiftIndSumcheck,
-		monster::{build_h, build_monster_segments},
+		monster::{build_monster_segments, shift_operator_table},
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
 	},
@@ -81,7 +83,10 @@ where
 		(&public, &key_collection.public.dense_shift_enc),
 		(&hidden, &key_collection.hidden.dense_shift_enc),
 	]);
-	let h = build_h::<F, F, _>(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
+	// The oblong weights, which phase 1 pushes through every shift and phase 3 runs its rounds
+	// over directly.
+	let oblong_weights = lagrange_evals(domain_subspace, prepared.bitand.r_zhat_prime);
+	let h = shift_operator_table::<F, F, _>(alloc, oblong_weights.as_ref());
 	let Phase1Output {
 		r_j,
 		r_s,
@@ -92,15 +97,8 @@ where
 
 	// Phase 3 binds the bit index the shift indicators read, carrying phase 1's `g` evaluation
 	// through its rounds as a constant.
-	let phase_3 = ShiftIndSumcheck::<P, _>::new(
-		alloc,
-		domain_subspace,
-		prepared.bitand.r_zhat_prime,
-		&r_j,
-		&r_s,
-		&r_v,
-		g_eval,
-	);
+	let phase_3 =
+		ShiftIndSumcheck::<P, _>::new(alloc, oblong_weights.as_ref(), &r_j, &r_s, &r_v, g_eval);
 	debug_assert_eq!(phase_3.beta(), gamma);
 	let Phase3Output {
 		shift_ind_eval,
@@ -221,9 +219,7 @@ mod tests {
 		test_utils::random_scalars,
 		univariate::lagrange_evals_scalars,
 	};
-	use binius_prover::protocols::shift::{
-		DenseShiftEncoding, OperatorData, build_key_collection, monster::build_h,
-	};
+	use binius_prover::protocols::shift::{DenseShiftEncoding, OperatorData, build_key_collection};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
 		config::{B128, StdChallenger},
@@ -437,8 +433,8 @@ mod tests {
 	// The phase-1 identity: summing the g·h inner products over the shift variants reconstructs the
 	// lambda-batched operand evaluation claim.
 	//
-	// The g multilinear comes from the batched build_g on the full folded witness; h comes
-	// from the single-instance prover's build_h at the same univariate challenge r_z. Their
+	// The g multilinear comes from the batched build_g on the full folded witness; h comes from
+	// the shift operator table over the oblong weights at the same univariate challenge r_z. Their
 	// inner product must equal the lambda-powers scaling of the batched AND-check operand evals
 	// (the intmul claim is empty, contributing nothing).
 	#[test]
@@ -510,7 +506,10 @@ mod tests {
 		// from the single-instance prover.
 		let public = build_g::<B128, B128>(public_words, &key_collection.public, &prepared);
 		let hidden = build_g_from_folded_words(&hidden_folded, &key_collection.hidden, &prepared);
-		let h = build_h::<B128, B128, _>(&GlobalAllocator, &domain_subspace, r_z);
+		let h = shift_operator_table::<B128, B128, _>(
+			&GlobalAllocator,
+			lagrange_evals(&domain_subspace, r_z).as_ref(),
+		);
 
 		// `g` is zero outside the rows the segments name, so the inner product is those rows
 		// alone — each sitting at `shift_index * Word::BITS` in the phase-1 layout.

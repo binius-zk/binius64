@@ -18,9 +18,7 @@ use binius_ip_prover::{
 		round_evaluator::SharedSumcheckProver,
 	},
 };
-use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec, multilinear::fold::fold_highest_var_inplace,
-};
+use binius_math::{FieldBuffer, FieldVec, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::{
 	prelude::*,
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
@@ -34,7 +32,7 @@ use super::{
 	SegmentWords,
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment},
-	monster::build_h,
+	monster::shift_operator_table,
 };
 
 /// The number of variables in the g (and h) multilinear of phase 1.
@@ -72,12 +70,17 @@ pub struct Phase1Output<F> {
 /// Proves the first phase of the shift reduction.
 ///
 /// Builds the g and h multilinears and runs one sumcheck over their product.
+///
+/// # Arguments
+///
+/// - `oblong_weights`: the oblong weights of the reduction's first factor, one per bit position.
+///   `h` is those weights pushed through every shift.
 #[instrument(skip_all, name = "prover_phase_1")]
 pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: SegmentWords<'_>,
 	prepared: &PreparedOperatorClaims<F>,
-	domain_subspace: &BinarySubspace<F>,
+	oblong_weights: &[F],
 	channel: &mut Channel,
 	alloc: &A,
 ) -> Phase1Output<F>
@@ -96,8 +99,7 @@ where
 		(&hidden, &key_collection.hidden.dense_shift_enc),
 	]);
 
-	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
-	let h = build_h(alloc, domain_subspace, prepared.bitand.r_zhat_prime);
+	let h = shift_operator_table(alloc, oblong_weights);
 
 	run_phase_1_sumcheck(g, h, prepared.batched_eval(), channel, alloc)
 }
@@ -623,10 +625,8 @@ mod tests {
 	use binius_core::constraint_system::{
 		AndConstraint, ConstraintSystem, InoutSegment, Shift, ShiftedValueIndex, ValueIndex,
 	};
-	use binius_field::{
-		AESTowerField8b, BinaryField128bGhash, Field, PackedBinaryGhash2x128b, Random,
-	};
-	use binius_math::inner_product::inner_product_buffers;
+	use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash2x128b};
+	use binius_math::{inner_product::inner_product_buffers, test_utils::random_scalars};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::config::StdChallenger;
 	use rand::{SeedableRng, rngs::StdRng};
@@ -806,7 +806,7 @@ mod tests {
 		(challenges, g_eval * h_eval)
 	}
 
-	/// The phase-1 `g` and `h` of a constraint system, at a pseudo-random univariate challenge.
+	/// The phase-1 `g` and `h` of a constraint system, from pseudo-random weights.
 	///
 	/// `g`'s rows carry arbitrary values rather than ones a witness produces: the sumcheck is a
 	/// statement about whatever multilinears it is handed, so what the rows hold does not bear on
@@ -830,8 +830,8 @@ mod tests {
 			(&hidden, &key_collection.hidden.dense_shift_enc),
 		]);
 
-		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
-		let h = build_h(&GlobalAllocator, &subspace, F::random(&mut rng));
+		// The weights `h` is built from are arbitrary here for the same reason `g`'s rows are.
+		let h = shift_operator_table(&GlobalAllocator, &random_scalars::<F>(&mut rng, Word::BITS));
 
 		(g, h)
 	}

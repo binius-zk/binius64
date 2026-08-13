@@ -12,10 +12,9 @@ use binius_ip_prover::{
 	sumcheck::{ProveSingleOutput, bivariate_product_prover, prove_single},
 };
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec,
+	FieldBuffer, FieldVec,
 	inner_product::inner_product,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
-	univariate::lagrange_evals,
 };
 
 /// The number of bit variables a half-word (`*32`) shift variant acts over.
@@ -33,21 +32,25 @@ const HALF_WORD_LOG_BITS: usize = Word::LOG_BITS - 1;
 /// $$
 ///
 /// with $G = g(r_j, r_s, r_v)$ the sum over the word index that phase 4 goes on to bind. Unrolling
-/// $h$ exposes these rounds as a sumcheck over two multilinears in the bit index — the Lagrange
-/// weights and the interpolated shift indicators — with $G$ riding along as a constant.
+/// $h$ exposes these rounds as a sumcheck over two multilinears in the bit index — a weight vector
+/// and the interpolated shift indicators — with $G$ riding along as a constant.
 ///
 /// The two are held apart rather than multiplied together, which is what keeps the round
 /// polynomials degree 2. The constant is folded into the weights, so the pair sums to $\beta$ and
 /// the rounds are the ones the verifier's single sumcheck expects. Phase 4 then scales its
 /// monster multilinear by [`Phase3Output::shift_ind_eval`], the evaluation these rounds reduce
 /// the two factors to.
+///
+/// The weights and the point the indicator is read at are the caller's, not this type's: a
+/// reduction peeling two shifts runs these rounds once per shift slot, differing only in those two
+/// arguments.
 pub struct ShiftIndSumcheck<P: PackedField, A: Allocator> {
-	/// The Lagrange evaluations at the univariate challenge, over the bit index, scaled by `G`.
-	scaled_l_tilde: FieldVec<P, A>,
+	/// The weights over the bit index, scaled by `G`.
+	scaled_weights: FieldVec<P, A>,
 	/// The shift indicators interpolated over the shift variant, over the bit index.
 	shift_ind: FieldVec<P, A>,
-	/// The unscaled Lagrange evaluations, kept to evaluate them at the challenge point.
-	l_tilde: Vec<P::Scalar>,
+	/// The unscaled weights, kept to evaluate them at the challenge point.
+	weights: Vec<P::Scalar>,
 	/// The claim these rounds start from: `h(r_j, r_s, r_v) * G`.
 	beta: P::Scalar,
 }
@@ -56,49 +59,45 @@ pub struct ShiftIndSumcheck<P: PackedField, A: Allocator> {
 #[derive(Debug, Clone, Copy)]
 pub struct Phase3Output<F> {
 	/// The product of the two factors at the bit-index challenge point:
-	/// `L(r_i) * shift_ind(r_i, r_j, r_s, r_v)`. Phase 4 scales its monster multilinear by it,
-	/// and the verifier recomputes it from `r_i` alone.
+	/// `weights(r_i) * shift_ind(r_i, r_j, r_s, r_v)`. Phase 4 scales its monster multilinear by
+	/// it, and the verifier recomputes it from `r_i` alone.
 	pub shift_ind_eval: F,
 	/// The claim phase 4 proves: `shift_ind_eval * G`.
 	pub eval: F,
 }
 
 impl<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator> ShiftIndSumcheck<P, A> {
-	/// Builds the two multilinears the rounds run over, from phase 1's challenges and its `g`
-	/// evaluation.
+	/// Builds the two multilinears the rounds run over, from the weights the caller holds and
+	/// phase 1's challenges.
 	///
 	/// # Arguments
 	///
-	/// - `domain_subspace`: the univariate evaluation domain.
-	/// - `r_zhat_prime`: the univariate challenge, shared by every operation.
-	/// - `r_j`, `r_s`, `r_v`: phase 1's challenges — the input bit position, the shift amount and
-	///   the shift variant.
+	/// - `weights`: the weight vector over the bit index, one entry per bit of a word. The
+	///   reduction supplies the oblong Lagrange evaluations at the univariate challenge.
+	/// - `r_j`, `r_s`, `r_v`: the point the shift indicator is read at — phase 1's challenges for
+	///   the input bit position, the shift amount and the shift variant.
 	/// - `g_eval`: `g(r_j, r_s, r_v)`, the constant these rounds carry.
-	pub fn new(
-		alloc: &A,
-		domain_subspace: &BinarySubspace<F>,
-		r_zhat_prime: F,
-		r_j: &[F],
-		r_s: &[F],
-		r_v: &[F],
-		g_eval: F,
-	) -> Self {
-		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-		let l_tilde = l_tilde.as_ref().to_vec();
+	///
+	/// # Panics
+	///
+	/// Panics unless the weights hold one entry per bit position of a word.
+	pub fn new(alloc: &A, weights: &[F], r_j: &[F], r_s: &[F], r_v: &[F], g_eval: F) -> Self {
+		assert_eq!(weights.len(), Word::BITS, "the weights are indexed by bit position");
+
 		let shift_ind = build_shift_ind(r_j, r_s, r_v);
 
 		// Folding the constant into one of the two factors makes the pair sum to the incoming
 		// claim, so the standard bivariate-product prover emits the right rounds.
-		let scaled_l_tilde = l_tilde
+		let scaled_weights = weights
 			.iter()
 			.map(|&weight| weight * g_eval)
 			.collect::<Vec<_>>();
-		let beta = inner_product(scaled_l_tilde.iter().copied(), shift_ind.iter().copied());
+		let beta = inner_product(scaled_weights.iter().copied(), shift_ind.iter().copied());
 
 		Self {
-			scaled_l_tilde: FieldBuffer::from_values_in(alloc, &scaled_l_tilde),
+			scaled_weights: FieldBuffer::from_values_in(alloc, &scaled_weights),
 			shift_ind: FieldBuffer::from_values_in(alloc, &shift_ind),
-			l_tilde,
+			weights: weights.to_vec(),
 			beta,
 		}
 	}
@@ -111,30 +110,30 @@ impl<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator> ShiftIndSumcheck<
 	/// Proves the [`Word::LOG_BITS`] rounds binding the bit index.
 	pub fn prove(self, channel: &mut impl IPProverChannel<F>, alloc: &A) -> Phase3Output<F> {
 		let Self {
-			scaled_l_tilde,
+			scaled_weights,
 			shift_ind,
-			l_tilde,
+			weights,
 			beta,
 		} = self;
 
-		let prover = bivariate_product_prover(alloc, [scaled_l_tilde, shift_ind], beta);
+		let prover = bivariate_product_prover(alloc, [scaled_weights, shift_ind], beta);
 		let ProveSingleOutput {
 			multilinear_evals,
 			mut challenges,
 		} = prove_single(prover, channel);
 		challenges.reverse();
 
-		let [scaled_l_tilde_eval, shift_ind_eval] = multilinear_evals
+		let [scaled_weights_eval, shift_ind_eval] = multilinear_evals
 			.try_into()
 			.expect("prover has 2 multilinear polynomials");
 
 		// The scale rides in the first evaluation, so the unscaled weights are evaluated at the
 		// challenge point separately — the same 64-term inner product the verifier runs.
-		let l_tilde_eval = inner_product(l_tilde, eq_ind_partial_eval_scalars(&challenges));
+		let weights_eval = inner_product(weights, eq_ind_partial_eval_scalars(&challenges));
 
 		Phase3Output {
-			shift_ind_eval: l_tilde_eval * shift_ind_eval,
-			eval: scaled_l_tilde_eval * shift_ind_eval,
+			shift_ind_eval: weights_eval * shift_ind_eval,
+			eval: scaled_weights_eval * shift_ind_eval,
 		}
 	}
 }
@@ -294,7 +293,7 @@ mod tests {
 
 	use binius_field::{BinaryField128bGhash as B128, Field};
 	use binius_math::{
-		multilinear::eq::eq_ind_partial_eval_scalars, test_utils::random_scalars,
+		BinarySubspace, multilinear::eq::eq_ind_partial_eval_scalars, test_utils::random_scalars,
 		univariate::lagrange_evals_scalars,
 	};
 	use binius_verifier::protocols::shift::{LOG_SHIFT_VARIANT_COUNT, evaluate_shift_inds};
@@ -412,8 +411,8 @@ mod tests {
 		}
 	}
 
-	/// The claim phase 3 starts from is the h evaluation scaled by the constant it carries: the
-	/// Lagrange weights contracted against the indicator multilinear, times `g_eval`.
+	/// The claim phase 3 starts from is the weights contracted against the indicator multilinear,
+	/// scaled by the constant it carries.
 	#[test]
 	fn claimed_sum_is_the_weighted_indicator_sum() {
 		use binius_compute::GlobalAllocator;
@@ -428,18 +427,12 @@ mod tests {
 		let r_v = random_scalars::<B128>(&mut rng, LOG_SHIFT_VARIANT_COUNT);
 
 		let g_eval = B128::random(&mut rng);
-		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
-		let sumcheck = ShiftIndSumcheck::<P, _>::new(
-			&GlobalAllocator,
-			&subspace,
-			r_zhat_prime,
-			&r_j,
-			&r_s,
-			&r_v,
-			g_eval,
-		);
-
+		let subspace =
+			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic::<B128>();
 		let l_tilde = lagrange_evals_scalars(&subspace, &r_zhat_prime);
+		let sumcheck =
+			ShiftIndSumcheck::<P, _>::new(&GlobalAllocator, &l_tilde, &r_j, &r_s, &r_v, g_eval);
+
 		let expected = g_eval * inner_product(l_tilde, build_shift_ind(&r_j, &r_s, &r_v));
 		assert_eq!(sumcheck.beta(), expected);
 	}

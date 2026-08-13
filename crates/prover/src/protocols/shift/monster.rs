@@ -6,10 +6,7 @@ use std::iter;
 use binius_compute::{Allocator, VecLike};
 use binius_core::{ShiftVariant, constraint_system::Shift, word::Word};
 use binius_field::{BinaryField, Field, PackedField, WideMul};
-use binius_math::{
-	BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval,
-	univariate::lagrange_evals,
-};
+use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_VARIANT_COUNT, ZERO_ARITY,
@@ -211,32 +208,6 @@ where
 	FieldBuffer::from_values_in(alloc, &data)
 }
 
-/// Constructs the "h" multilinear for shift operations at a univariate challenge point.
-///
-/// See the paper for the definition of the h polynomials.
-/// There is one per shift variant, and this returns all of them as a single multilinear.
-/// The layout is the one [`shift_operator_table`] documents.
-///
-/// The weights are the Lagrange evaluations at the univariate challenge.
-/// Those are the oblong weights the reduction's first factor carries.
-///
-/// # Usage in Protocol
-///
-/// Phase 1 runs one sumcheck over this multilinear and its "g" counterpart.
-/// So the variant axis is folded by the sumcheck rather than summed across separate provers.
-#[instrument(skip_all, name = "build_h")]
-pub fn build_h<F, P: PackedField<Scalar = F>, A: Allocator>(
-	alloc: &A,
-	domain_subspace: &BinarySubspace<F>,
-	r_zhat_prime: F,
-) -> FieldVec<P, A>
-where
-	F: BinaryField,
-{
-	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
-	shift_operator_table(alloc, l_tilde.as_ref())
-}
-
 /// Constructs the "monster multilinear" that combines all shift operations into a single
 /// multilinear.
 ///
@@ -399,8 +370,8 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{AESTowerField8b, BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 	use binius_math::{
-		inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
-		test_utils::random_scalars,
+		BinarySubspace, inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
+		test_utils::random_scalars, univariate::lagrange_evals,
 	};
 	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 	use proptest::prelude::*;
@@ -432,10 +403,10 @@ mod tests {
 
 			// Method 1: the claim phase 3 starts from, with the carried constant set to one.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 			let claimed = ShiftIndSumcheck::<P, _>::new(
 				&GlobalAllocator,
-				&subspace,
-				r_zhat_prime,
+				l_tilde.as_ref(),
 				&r_j,
 				&r_s,
 				&r_v,
@@ -444,7 +415,7 @@ mod tests {
 			.beta();
 
 			// Method 2: evaluate the built multilinear at the whole point.
-			let h = build_h(&GlobalAllocator, &subspace, r_zhat_prime);
+			let h = shift_operator_table::<F, P, _>(&GlobalAllocator, l_tilde.as_ref());
 			let evaluation_point = [r_j, r_s, r_v].concat();
 			let tensor = eq_ind_partial_eval::<P>(&evaluation_point);
 			let direct = inner_product_buffers(&h, &tensor);
