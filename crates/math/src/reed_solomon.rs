@@ -7,6 +7,7 @@
 
 use std::{marker::PhantomData, ptr};
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_utils::rayon::{prelude::*, task_size::task_chunk_len};
 use getset::CopyGetters;
@@ -104,15 +105,17 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	/// ## Postconditions
 	///
 	/// * All elements in the output buffer are initialized with the encoded codeword.
-	pub fn encode_batch<P, NTT>(
+	pub fn encode_batch<P, NTT, A>(
 		&self,
 		ntt: &NTT,
 		data: FieldSlice<P>,
 		log_batch_size: usize,
-	) -> FieldBuffer<P>
+		alloc: &A,
+	) -> FieldBuffer<P, A::Vec<P>>
 	where
 		P: PackedField<Scalar = F>,
 		NTT: AdditiveNTT<Field = F> + Sync,
+		A: Allocator,
 	{
 		assert_eq!(
 			ntt.subspace(self.log_len()),
@@ -139,7 +142,10 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 			let mut scalars = data.iter_scalars().collect::<Vec<_>>();
 			bit_reverse_indices(&mut scalars);
 			let elem_0 = P::from_scalars(scalars.into_iter().cycle());
-			vec![elem_0; 1 << log_output_len.saturating_sub(P::LOG_WIDTH)]
+			let len = 1 << log_output_len.saturating_sub(P::LOG_WIDTH);
+			let mut output = alloc.alloc::<P>(len);
+			output.resize(len, elem_0);
+			output
 		} else {
 			// The forward transform below skips its first `log_inv_rate` layers.
 			// Each skipped layer would butterfly a coefficient with a zero pad:
@@ -156,7 +162,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 				.len()
 				.min(task_chunk_len::<P>().next_power_of_two());
 
-			repeated_message_buffer(data, output_packed_len, run)
+			repeated_message_buffer(data, output_packed_len, run, alloc)
 		};
 		let mut output = FieldBuffer::new(log_output_len, output_data);
 
@@ -187,13 +193,18 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 ///
 /// * `msg` holds at least one whole word, and `total` is a multiple of its word count
 /// * `run` is a power of two, and at most the message's word count
-fn repeated_message_buffer<P: PackedField>(msg: FieldSlice<P>, total: usize, run: usize) -> Vec<P> {
+fn repeated_message_buffer<P: PackedField, A: Allocator>(
+	msg: FieldSlice<P>,
+	total: usize,
+	run: usize,
+	alloc: &A,
+) -> A::Vec<P> {
 	let msg_len = msg.as_ref().len();
 	debug_assert!(msg_len.is_power_of_two());
 	debug_assert!(run.is_power_of_two() && run <= msg_len);
 	debug_assert_eq!(total % msg_len, 0);
 
-	let mut output = Vec::<P>::with_capacity(total);
+	let mut output = alloc.alloc::<P>(total);
 
 	// Copy the message into the leading copy.
 	let head = &mut output.spare_capacity_mut()[..msg_len];
@@ -211,7 +222,7 @@ fn repeated_message_buffer<P: PackedField>(msg: FieldSlice<P>, total: usize, run
 	unsafe { output.set_len(msg_len) };
 
 	// Permute the leading copy, so the copies below inherit it.
-	bit_reverse_packed(FieldSliceMut::from_slice(msg.log_len(), output.as_mut_slice()));
+	bit_reverse_packed(FieldSliceMut::from_slice(msg.log_len(), &mut output));
 
 	// The source is read through an address rather than a borrow.
 	// That is what lets the workers read the leading copy while the rest is held mutably.
@@ -241,6 +252,7 @@ fn repeated_message_buffer<P: PackedField>(msg: FieldSlice<P>, total: usize, run
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		BinaryField, PackedBinaryGhash1x128b, PackedBinaryGhash4x128b, PackedField,
 	};
@@ -275,7 +287,8 @@ mod tests {
 		let message = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
 
 		// Test the new encode_batch interface
-		let encoded_buffer = rs_code.encode_batch(&ntt, message.to_ref(), log_batch_size);
+		let encoded_buffer =
+			rs_code.encode_batch(&ntt, message.to_ref(), log_batch_size, &GlobalAllocator);
 
 		// Method 2: Reference implementation - apply NTT with zero-padded coefficients to the
 		// bit-reversal permuted message.
@@ -357,8 +370,8 @@ mod tests {
 			msg_large.set(i, val);
 		}
 
-		let enc_small = rs_small.encode_batch(&ntt, msg_small.to_ref(), 0);
-		let enc_large = rs_large.encode_batch(&ntt, msg_large.to_ref(), 0);
+		let enc_small = rs_small.encode_batch(&ntt, msg_small.to_ref(), 0, &GlobalAllocator);
+		let enc_large = rs_large.encode_batch(&ntt, msg_large.to_ref(), 0, &GlobalAllocator);
 
 		let small_scalars = enc_small.iter_scalars().collect::<Vec<_>>();
 		let large_scalars = enc_large.iter_scalars().collect::<Vec<_>>();
@@ -418,7 +431,12 @@ mod tests {
 				// A run under the message length is what splits a fill across workers.
 				// The encoder only reaches that on a message above one mebibyte.
 				for log_run in 0..=log_msg {
-					let built = repeated_message_buffer(msg.to_ref(), total, 1 << log_run);
+					let built = repeated_message_buffer(
+						msg.to_ref(),
+						total,
+						1 << log_run,
+						&GlobalAllocator,
+					);
 					assert_eq!(built, expected, "log_msg={log_msg} log_run={log_run}");
 				}
 			}

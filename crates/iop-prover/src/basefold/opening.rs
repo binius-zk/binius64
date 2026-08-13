@@ -175,8 +175,14 @@ mod test {
 		// Encode the interleaved (witness ‖ mask), generating the mask internally, and commit the
 		// codeword over the Merkle channel.
 		let mut commit_rng = StdRng::seed_from_u64(7);
-		let MaskedCodeword { codeword, mask } =
-			fri::encode_masked(&fri_params, 0, &ntt, witness.to_ref(), &mut commit_rng);
+		let MaskedCodeword { codeword, mask } = fri::encode_masked(
+			&fri_params,
+			0,
+			&ntt,
+			witness.to_ref(),
+			&mut commit_rng,
+			&GlobalAllocator,
+		);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel =
