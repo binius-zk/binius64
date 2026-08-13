@@ -12,6 +12,9 @@
 //! unchanged. The pushforwards are the only oracles this protocol introduces, per
 //! [Soukhanov25, Section 3].
 //!
+//! [`prove_transparent`] is the variant for tables the verifier evaluates itself.
+//! It opens each `Y` against both `eq_z` and the table, and so needs no pushforward sumcheck.
+//!
 //! [Soukhanov25]: <https://eprint.iacr.org/2025/946>
 
 use binius_compute::Allocator;
@@ -128,34 +131,145 @@ where
 	}
 }
 
+/// The reduced claims of a committed logUp* proof over transparent tables.
+///
+/// Nothing is left on the tables or the pushforwards: both of a table's claims are opened here,
+/// against the one `Y` commitment. Only the index claims are the caller's to prove.
+pub struct LogupTransparentProof<F> {
+	/// The point the index claims are drawn from, spanning the deepest looker.
+	///
+	/// A looker over `n` variables is claimed at its **last `n`** coordinates.
+	pub index_eval_point: Vec<F>,
+	/// One entry per table, in the order the tables were given, holding that table's lookers'
+	/// index claims in its own looker order.
+	pub index_eval_claims: Vec<Vec<F>>,
+}
+
+/// Prove a logUp* reduction over transparent tables, with the pushforwards committed as oracles.
+///
+/// This wraps [`binius_ip_prover::logup_star::prove_reduction_transparent`] the way [`prove`] wraps
+/// the committed-table reduction. The reduction leaves two claims on each pushforward instead of
+/// one, and both are opened here through the channel:
+///
+/// ```text
+///     <Y, eq_z> = Y(z)      the fractional-addition leaf claim
+///     <Y, T>    = e         the product claim, against the transparent table itself
+/// ```
+///
+/// The two are queued in that order, matching
+/// [`binius_iop::logup_star::verify_transparent`](binius_iop::logup_star::verify_transparent).
+///
+/// # Arguments
+///
+/// The arguments of [`prove`]. The tables are transparent, so no oracle is committed for them;
+/// their multilinears are still needed, both by the reduction and by the product relation.
+///
+/// # Preconditions
+///
+/// The preconditions of [`prove`].
+#[tracing::instrument(skip_all, level = "debug", name = "logup* transparent (committed)")]
+pub fn prove_transparent<'a, F, P, Channel, A>(
+	tables: impl IntoIterator<Item = reduction::TableLookup<'a, P>>,
+	channel: &mut Channel,
+	alloc: &A,
+) -> LogupTransparentProof<F>
+where
+	F: BinaryField<Underlier: Divisible<u64>>,
+	P: PackedField<Scalar = F> + 'a,
+	Channel: IOPProverChannel<P, A>,
+	A: Allocator,
+{
+	let tables = tables.into_iter().collect::<Vec<_>>();
+
+	// Sample gamma, build the witnesses, then commit every Y before the reduction, exactly as
+	// [`prove`] does.
+	let gamma = channel.sample();
+	let (numerators, pushforwards) = witness::combined_lookers::<A, F, P>(alloc, gamma, &tables);
+	let oracles = tracing::debug_span!("Commit pushforwards").in_scope(|| {
+		pushforwards
+			.iter()
+			.map(|pushforward| channel.send_oracle(pushforward.to_ref()))
+			.collect::<Vec<_>>()
+	});
+
+	let pushforward_slices = pushforwards
+		.iter()
+		.map(FieldBuffer::to_ref)
+		.collect::<Vec<_>>();
+	let output = reduction::prove_reduction_transparent(
+		alloc,
+		gamma,
+		&tables,
+		numerators,
+		&pushforward_slices,
+		channel,
+	);
+
+	// Open both of a table's claims against its one pushforward commitment. The product relation
+	// weighs Y against a copy of the table drawn from the caller's allocator, since the channel
+	// owns its transparents until the opening runs.
+	let _open_guard = tracing::debug_span!("Open pushforward relations").entered();
+	for (oracle, pushforward, table, open) in izip!(oracles, pushforwards, &tables, &output.tables)
+	{
+		let leaf_eq = eq_ind_partial_eval_in::<A, P>(alloc, &open.pushforward_eval_point);
+		channel.prove_oracle_relation(oracle.clone(), leaf_eq, open.pushforward_eval_claim);
+		channel.prove_oracle_relation(
+			oracle.clone(),
+			FieldBuffer::clone_from_slice(alloc, table.table),
+			open.product_claim,
+		);
+		channel.finalize_oracle(oracle, pushforward);
+	}
+
+	LogupTransparentProof {
+		index_eval_point: output.index_eval_point,
+		index_eval_claims: output
+			.tables
+			.into_iter()
+			.map(|table| table.index_eval_claims)
+			.collect(),
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::iter;
 
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		BinaryField1b, ExtensionField, Field,
+		BinaryField1b, ExtensionField, Field, PackedBinaryGhash1x128b,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
+	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
+		basefold::compiler::BaseFoldVerifierCompiler,
 		channel::{OracleSpec, naive::NaiveVerifierChannel},
-		logup_star as verify_logup,
+		fri::MinProofSizeStrategy,
+		logup_star::{self as verify_logup, TransparentTableLookup},
+		merkle_tree::BinaryMerkleTreeScheme,
 	};
 	use binius_ip::logup_star::LookerClaim;
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
+		multilinear::{
+			eq::eq_ind_partial_eval_scalars,
+			evaluate::{evaluate, evaluate_inplace_scalars},
+		},
+		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::channel::naive::NaiveProverChannel;
+	use crate::{basefold::compiler::BaseFoldProverCompiler, channel::naive::NaiveProverChannel};
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
+	/// The commitment field is the GHASH 128-bit field; BaseFold uses a single-lane packing of it.
+	type BP = PackedBinaryGhash1x128b;
+	type Chal = HasherChallenger<StdDigest>;
 
 	// Embed a table position j into the field through the GF(2)-linear basis, as the protocol does.
 	//
@@ -251,19 +365,37 @@ mod tests {
 		);
 		assert_eq!(prover_proof.tables, verifier_proof.tables, "per-table claims ({shape})");
 
-		// A table's claim is at the first m coordinates of the shared table point; its lookers'
-		// claims are at their own suffixes of the shared index point.
+		// A table's claim is at the first m coordinates of the shared table point.
 		let table_point = &prover_proof.table_eval_point;
-		let index_point = &prover_proof.index_eval_point;
 		for (table_index, table) in tables.iter().enumerate() {
-			let m = table.values.log_len();
 			assert_eq!(
 				prover_proof.tables[table_index].eval_claim,
-				evaluate(&table.values, &table_point[..m]),
+				evaluate(&table.values, &table_point[..table.values.log_len()]),
 				"table claim wrong for table {table_index} ({shape})"
 			);
+		}
 
-			let claims = &prover_proof.tables[table_index].index_eval_claims;
+		let claims_by_table = prover_proof
+			.tables
+			.iter()
+			.map(|table| table.index_eval_claims.clone())
+			.collect::<Vec<_>>();
+		check_index_claims(&prover_proof.index_eval_point, &claims_by_table, tables, shape);
+	}
+
+	// Check every looker's index claim, given the claims grouped by table.
+	//
+	// A looker's claim is at its own suffix of the shared index point.
+	fn check_index_claims<Q>(
+		index_point: &[F],
+		claims_by_table: &[Vec<F>],
+		tables: &[TestTable<F, Q>],
+		shape: &str,
+	) where
+		Q: PackedField<Scalar = F>,
+	{
+		for (table_index, (table, claims)) in iter::zip(tables, claims_by_table).enumerate() {
+			let m = table.values.log_len();
 			assert_eq!(claims.len(), table.lookers.len(), "claim count ({shape})");
 			for (looker, claim) in iter::zip(&table.lookers, claims) {
 				let embedded = looker
@@ -328,6 +460,28 @@ mod tests {
 			.collect()
 	}
 
+	// Build the verifier-side claims for an instance whose tables are transparent.
+	//
+	// A test table is a random buffer, so its "succinct" MLE is just the evaluation of its values.
+	fn transparent_verifier_tables<'a, Q>(
+		tables: &'a [TestTable<F, Q>],
+	) -> Vec<TransparentTableLookup<'a, F>>
+	where
+		Q: PackedField<Scalar = F>,
+	{
+		iter::zip(verifier_tables(tables), tables)
+			.map(|(lookup, table)| {
+				let values = table.values.iter_scalars().collect::<Vec<_>>();
+				TransparentTableLookup {
+					lookup,
+					table_eval: Box::new(move |point: &[F]| {
+						evaluate_inplace_scalars(values.clone(), point)
+					}),
+				}
+			})
+			.collect()
+	}
+
 	/// Round-trip a whole instance over the naive channel and check every reduced claim.
 	fn check_prove_verify(spec: &[(usize, Vec<usize>)], seed: u64) {
 		let tables = random_instance::<F, P>(spec, seed);
@@ -356,6 +510,56 @@ mod tests {
 		verifier_channel.finish();
 
 		check_proofs(&prover_proof, &verifier_proof, &tables, &shape);
+	}
+
+	/// Round-trip a transparent-table instance over the naive channel.
+	///
+	/// The channel checks both relations on every pushforward, so a passing run already proves the
+	/// two claims the reduction left open. Only the index claims need checking here.
+	fn check_prove_verify_transparent(spec: &[(usize, Vec<usize>)], seed: u64) {
+		let tables = random_instance::<F, P>(spec, seed);
+		let shape = format!("{spec:?}");
+
+		// One oracle per table still: the pushforward Y. A transparent table commits nothing.
+		let specs = tables
+			.iter()
+			.map(|table| OracleSpec::new(table.values.log_len()))
+			.collect::<Vec<_>>();
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let mut prover_channel =
+			NaiveProverChannel::<F, _>::new(&mut prover_transcript, specs.clone());
+		let prover_proof = prove_transparent::<F, P, _, _>(
+			prover_tables(&tables),
+			&mut prover_channel,
+			&GlobalAllocator,
+		);
+		prover_channel.finish();
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel =
+			NaiveVerifierChannel::<F, _>::new(&mut verifier_transcript, &specs);
+		let verifier_proof = verify_logup::verify_transparent(
+			transparent_verifier_tables(&tables),
+			&mut verifier_channel,
+		)
+		.expect("verification succeeds");
+		verifier_channel.finish();
+
+		assert_eq!(
+			prover_proof.index_eval_point, verifier_proof.index_eval_point,
+			"index point ({shape})"
+		);
+		assert_eq!(
+			prover_proof.index_eval_claims, verifier_proof.index_eval_claims,
+			"index claims ({shape})"
+		);
+		check_index_claims(
+			&prover_proof.index_eval_point,
+			&prover_proof.index_eval_claims,
+			&tables,
+			&shape,
+		);
 	}
 
 	#[test]
@@ -394,6 +598,24 @@ mod tests {
 	}
 
 	#[test]
+	fn test_prove_verify_transparent_round_trip() {
+		// The transparent variant shares every step but the last, so one spread covers it: m << n,
+		// m == n, a wide table, a one-variable table, several lookers on one pushforward, and
+		// several tables with the deepest instance on either side.
+		for spec in [
+			vec![(2usize, vec![6usize])],
+			vec![(4, vec![4])],
+			vec![(5, vec![3])],
+			vec![(1, vec![4])],
+			vec![(3, vec![5, 5])],
+			vec![(3, vec![5, 3]), (2, vec![2, 6])],
+			vec![(4, vec![1]), (2, vec![3]), (5, vec![2])],
+		] {
+			check_prove_verify_transparent(&spec, 31);
+		}
+	}
+
+	#[test]
 	fn test_verifier_rejects_wrong_eval_claim() {
 		let mut tables = random_instance::<F, P>(&[(3, vec![5])], 3);
 		let specs = vec![OracleSpec::new(3)];
@@ -416,28 +638,72 @@ mod tests {
 		assert!(result.is_err(), "verifier must reject a wrong eval claim");
 	}
 
+	// Run a transparent-table instance over the real BaseFold channel.
+	//
+	// One witness-dependent (ZK) oracle per table — the pushforward Y, with 2^m entries — each
+	// carrying two relations that the channel folds together before its single FRI opening. The
+	// verifier's `finish` is folded into the result, so a caller can tell a rejected opening from
+	// an accepted one.
+	fn run_basefold_transparent(
+		tables: &[TestTable<F, BP>],
+	) -> Result<
+		(LogupTransparentProof<F>, verify_logup::LogupTransparentProof<F>),
+		verify_logup::Error,
+	> {
+		const LOG_INV_RATE: usize = 1;
+		const SECURITY_BITS: usize = 32;
+		let n_test_queries = SECURITY_BITS.div_ceil(LOG_INV_RATE);
+		let oracle_specs = tables
+			.iter()
+			.map(|table| OracleSpec::new_zk(table.values.log_len()))
+			.collect::<Vec<_>>();
+
+		let verifier_compiler = BaseFoldVerifierCompiler::new(
+			&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
+			oracle_specs,
+			LOG_INV_RATE,
+			n_test_queries,
+			&MinProofSizeStrategy,
+		);
+
+		// Prove: commit the pushforwards with real FRI, run the reduction, open both relations.
+		let domain_context = GaoMateerOnTheFly::generate(verifier_compiler.max_log_domain_size());
+		let ntt = NeighborsLastSingleThread::new(domain_context);
+		let prover_compiler =
+			BaseFoldProverCompiler::<BP, _>::from_verifier_compiler(&verifier_compiler, ntt);
+
+		let mut prover_transcript = ProverTranscript::new(Chal::default());
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, Chal, _, _>(
+				&mut prover_transcript,
+				StdRng::seed_from_u64(8),
+			);
+
+		let alloc = GlobalAllocator;
+		let prover_proof =
+			prove_transparent::<F, BP, _, _>(prover_tables(tables), &mut prover_channel, &alloc);
+		prover_channel.finish(&alloc);
+
+		// Verify: receive the pushforwards, run the reduction, open both relations for real.
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, Chal, _>(&mut verifier_transcript);
+		let verifier_proof = verify_logup::verify_transparent(
+			transparent_verifier_tables(tables),
+			&mut verifier_channel,
+		)?;
+		verifier_channel.finish()?;
+
+		Ok((prover_proof, verifier_proof))
+	}
+
 	#[test]
 	fn test_basefold_round_trip() {
-		use binius_field::PackedBinaryGhash1x128b;
-		use binius_hash::{StdDigest, StdHashSuite};
-		use binius_iop::{
-			basefold::compiler::BaseFoldVerifierCompiler, fri::MinProofSizeStrategy,
-			merkle_tree::BinaryMerkleTreeScheme,
-		};
-		use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly};
-
-		use crate::basefold::compiler::BaseFoldProverCompiler;
-
-		// The commitment field is the GHASH 128-bit field; use a single-lane packing for BaseFold.
-		type BP = PackedBinaryGhash1x128b;
-		type Chal = HasherChallenger<StdDigest>;
-
 		// Two tables of different sizes, so the real FRI path carries one masked oracle per table
 		// and each is opened at its own prefix of the reduced point.
 		let spec = [(2usize, vec![6usize, 2usize]), (4, vec![3])];
 		let tables = random_instance::<F, BP>(&spec, 7);
 
-		// One witness-dependent (ZK) oracle per table: the pushforward Y, with 2^m entries.
 		const LOG_INV_RATE: usize = 1;
 		const SECURITY_BITS: usize = 32;
 		let n_test_queries = SECURITY_BITS.div_ceil(LOG_INV_RATE);
@@ -487,5 +753,40 @@ mod tests {
 		// The FRI openings already bound every Y to its claim.
 		// Cross-check the table and index claims against honest values.
 		check_proofs(&prover_proof, &verifier_proof, &tables, "basefold");
+	}
+
+	#[test]
+	fn test_basefold_transparent_round_trip() {
+		// Two tables of different sizes, so each pushforward oracle carries its own pair of
+		// relations into the one folded FRI opening.
+		let tables = random_instance::<F, BP>(&[(2usize, vec![6usize, 2usize]), (4, vec![3])], 7);
+
+		let (prover_proof, verifier_proof) =
+			run_basefold_transparent(&tables).expect("the batched FRI openings verify");
+
+		assert_eq!(prover_proof.index_eval_point, verifier_proof.index_eval_point, "index point");
+		assert_eq!(
+			prover_proof.index_eval_claims, verifier_proof.index_eval_claims,
+			"index claims"
+		);
+		check_index_claims(
+			&prover_proof.index_eval_point,
+			&prover_proof.index_eval_claims,
+			&tables,
+			"basefold transparent",
+		);
+	}
+
+	#[test]
+	fn test_basefold_transparent_rejects_wrong_eval_claim() {
+		// The transparent reduction hands the product claim back unchecked, so a perturbed
+		// looked-up evaluation survives it. Opening <Y, T> = e is what must reject.
+		let mut tables = random_instance::<F, BP>(&[(3usize, vec![5usize])], 3);
+		tables[0].lookers[0].eval_claim += F::ONE;
+
+		assert!(
+			run_basefold_transparent(&tables).is_err(),
+			"the opening must reject a wrong eval claim"
+		);
 	}
 }
