@@ -787,7 +787,7 @@ mod tests {
 		let n_words = 1 << log_n;
 
 		let words = (0..n_words)
-			.map(|_| Word::from_u64(rng.random::<u64>()))
+			.map(|_| Word::from_u64(rng.random()))
 			.collect::<Vec<_>>();
 
 		let vec = random_scalars(&mut rng, Word::BITS);
@@ -823,10 +823,10 @@ mod tests {
 		for n_words in [0, 1, width, width + 1, 4 * width, 4 * width + 3, 40] {
 			// Two random operand columns of the chosen length.
 			let a_words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 			let b_words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 			// The reference third column, materialized word-by-word.
 			let c_words = iter::zip(&a_words, &b_words)
@@ -905,7 +905,7 @@ mod tests {
 			(3, 0),
 		] {
 			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 			let index_scalars = random_scalars::<B128>(&mut rng, Word::BITS);
 			let row_scalars = random_field_buffer::<OptimalPackedB128>(&mut rng, log_rows);
@@ -995,7 +995,7 @@ mod tests {
 			let n_words = 1 << log_n;
 
 			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 			let point = random_scalars::<B128>(&mut rng, log_n);
 
@@ -1026,7 +1026,7 @@ mod tests {
 			(LOG_CHUNK_SIZE, 0),
 		] {
 			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 			let point = random_scalars::<B128>(&mut rng, log_rows);
 
@@ -1067,7 +1067,7 @@ mod tests {
 			let n_words = 1 << log_n;
 
 			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 			let point = random_scalars::<B128>(&mut rng, log_n);
 

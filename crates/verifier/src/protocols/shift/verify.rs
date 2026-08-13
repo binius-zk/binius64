@@ -666,7 +666,7 @@ mod tests {
 		let log_words = 3;
 		// A non-power-of-two word count exercises the implicit zero padding.
 		let words = (0..(1 << log_words) - 3)
-			.map(|_| Word::from_u64(rng.random::<u64>()))
+			.map(|_| Word::from_u64(rng.random()))
 			.collect::<Vec<_>>();
 		let r_j = random_scalars::<B128>(&mut rng, Word::LOG_BITS);
 		let r_y = random_scalars::<B128>(&mut rng, log_words);

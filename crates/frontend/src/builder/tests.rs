@@ -27,8 +27,8 @@ fn test_icmp_ult() {
 	let mut rng = StdRng::seed_from_u64(42);
 	for _ in 0..10000 {
 		let mut w = circuit.new_witness_filler();
-		w[a] = Word(rng.random::<u64>());
-		w[b] = Word(rng.random::<u64>());
+		w[a] = Word(rng.random());
+		w[b] = Word(rng.random());
 		w[expected] = Word(if w[a].0 < w[b].0 { u64::MAX } else { 0 });
 		w.circuit.populate_wire_witness(&mut w).unwrap();
 	}
@@ -49,8 +49,8 @@ fn test_icmp_eq() {
 	let mut rng = StdRng::seed_from_u64(42);
 	for _ in 0..10000 {
 		let mut w = circuit.new_witness_filler();
-		w[a] = Word(rng.random::<u64>());
-		w[b] = Word(rng.random::<u64>());
+		w[a] = Word(rng.random());
+		w[b] = Word(rng.random());
 		w[expected] = Word(if w[a].0 == w[b].0 { u64::MAX } else { 0 });
 		w.circuit.populate_wire_witness(&mut w).unwrap();
 	}
