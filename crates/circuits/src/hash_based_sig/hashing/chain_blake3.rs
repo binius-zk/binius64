@@ -24,7 +24,7 @@ use crate::{
 	blake3::{blake3_compress, blake3_compress_2x, ref_compress},
 	concat::concat,
 	fixed_byte_vec::ByteVec,
-	util::clear_high_bits,
+	util::{clear_high_bits, split_u32_words, zeroed_u32_words},
 };
 
 /// Tweak separator byte for chain hashing.
@@ -55,63 +55,6 @@ const CV_WORDS: usize = 8;
 /// `param || 0x00 || epoch(4) || chain_index(1) || position(1)`.
 pub const fn chain_tweak_len(param_len: usize) -> usize {
 	param_len + 1 + EPOCH_BYTES + CHAIN_INDEX_BYTES + POSITION_BYTES
-}
-
-/// Splits each 64-bit wire into two little-endian 32-bit word wires (low half, then high half).
-///
-/// Returns exactly `num_words` words.
-fn split_u32_words(builder: &CircuitBuilder, data: &[Wire], num_words: usize) -> Vec<Wire> {
-	let mut words = Vec::with_capacity(num_words);
-	for &w in data {
-		if words.len() >= num_words {
-			break;
-		}
-		words.push(clear_high_bits(builder, w, 32));
-		if words.len() >= num_words {
-			break;
-		}
-		words.push(builder.shr(w, 32));
-	}
-	while words.len() < num_words {
-		words.push(builder.add_constant_64(0));
-	}
-	words
-}
-
-/// Splits a byte vector into `num_words` 32-bit words, forcing every byte at index `>= valid_bytes`
-/// to zero.
-///
-/// The zeroing closes a malleability gap:
-/// - the concatenation primitive leaves bytes past a vector's length unconstrained,
-/// - a BLAKE3 compression mixes the whole 64-byte block, including those bytes,
-/// - pinning them stops a prover from choosing the padding to alter the digest.
-///
-/// Each word is handled by its position relative to the content:
-/// - fully inside: passed through,
-/// - fully past: replaced by the zero constant,
-/// - straddling the boundary: masked to its low valid bytes.
-fn zeroed_u32_words(
-	builder: &CircuitBuilder,
-	data: &[Wire],
-	valid_bytes: usize,
-	num_words: usize,
-) -> Vec<Wire> {
-	let raw = split_u32_words(builder, data, num_words);
-	let zero = builder.add_constant_64(0);
-	(0..num_words)
-		.map(|i| {
-			let word_start = 4 * i;
-			if word_start + 4 <= valid_bytes {
-				raw[i]
-			} else if word_start >= valid_bytes {
-				zero
-			} else {
-				let keep = valid_bytes - word_start;
-				let mask = builder.add_constant_64((1u64 << (keep * 8)) - 1);
-				builder.band(raw[i], mask)
-			}
-		})
-		.collect()
 }
 
 /// Builds the 16-word BLAKE3 message block holding the chain tweak.

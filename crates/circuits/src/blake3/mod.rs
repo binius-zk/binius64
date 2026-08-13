@@ -13,11 +13,15 @@
 //! - [`blake3_chunk`] — single-chunk (up to 16 blocks) chaining-value gadget.
 //! - [`blake3_fixed`] — full hash gadget for messages of compile-time-known length, spanning any
 //!   number of chunks via BLAKE3's parent tree.
+//! - [`blake3_keyed_fixed`] — the same gadget in BLAKE3's keyed mode.
 
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
-use crate::util::clear_high_bits;
+use crate::{
+	fixed_byte_vec::ByteVec,
+	util::{clear_high_bits, zeroed_u32_words},
+};
 
 pub mod compress;
 
@@ -58,17 +62,36 @@ pub const BLOCK_BYTES: usize = 64;
 /// Byte length of a BLAKE3 chunk.
 pub const CHUNK_BYTES: usize = 1024;
 
+/// Byte length of a BLAKE3 key.
+pub const KEY_BYTES: usize = 32;
+
+/// The chaining value a chunk or parent node starts from: the key in keyed mode, the [`IV`]
+/// otherwise.
+fn init_cv(builder: &CircuitBuilder, key: Option<[Wire; 8]>) -> [Wire; 8] {
+	key.unwrap_or_else(|| std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64))))
+}
+
+/// The flag every compression carries in keyed mode, and nothing in unkeyed mode.
+///
+/// Keying a BLAKE3 hash is exactly two substitutions — the key replaces the [`IV`] as the starting
+/// chaining value, and [`KEYED_HASH`] joins the flags — so the two travel together as one
+/// `Option`.
+const fn key_flag(key: Option<[Wire; 8]>) -> u32 {
+	if key.is_some() { KEYED_HASH } else { 0 }
+}
+
 /// Computes the BLAKE3 chaining value of a single chunk.
 ///
 /// A BLAKE3 chunk is up to 16 blocks (1024 bytes) compressed in a chain: the chaining value is
-/// threaded block-to-block starting from the [`IV`]. The first block carries [`CHUNK_START`] and
-/// the last carries [`CHUNK_END`]; every block carries the chunk's `counter` (its chunk index).
-/// `last_flags_extra` is OR'd into the last block's flags — pass [`ROOT`] when this chunk is the
-/// entire message (no parent tree), otherwise `0`.
+/// threaded block-to-block starting from `key`, or from the [`IV`] when unkeyed. The first block
+/// carries [`CHUNK_START`] and the last carries [`CHUNK_END`]; every block carries the chunk's
+/// `counter` (its chunk index). `last_flags_extra` is OR'd into the last block's flags — pass
+/// [`ROOT`] when this chunk is the entire message (no parent tree), otherwise `0`.
 ///
 /// # Arguments
 ///
 /// - `builder`: Circuit builder.
+/// - `key`: the 8-word key in keyed mode, `None` in unkeyed mode.
 /// - `blocks`: the chunk's message blocks (1..=16), each 16 little-endian 32-bit words.
 /// - `block_lens`: the byte length (0..=64) of each block; the trailing block may be partial.
 /// - `counter`: the chunk index, used as the 64-bit block counter for every block.
@@ -79,6 +102,7 @@ pub const CHUNK_BYTES: usize = 1024;
 /// The chunk's 8-word chaining value, each word a 32-bit value in its low 32 bits.
 pub fn blake3_chunk(
 	builder: &CircuitBuilder,
+	key: Option<[Wire; 8]>,
 	blocks: &[[Wire; 16]],
 	block_lens: &[Wire],
 	counter: u64,
@@ -103,12 +127,11 @@ pub fn blake3_chunk(
 			} else {
 				0
 			};
-			builder.add_constant(Word((start | end) as u64))
+			builder.add_constant(Word((start | end | key_flag(key)) as u64))
 		})
 		.collect();
 
-	// Initial chaining value = IV.
-	let mut cv: [Wire; 8] = std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64)));
+	let mut cv = init_cv(builder, key);
 
 	// Compress two blocks at a time: `blake3_compress_2x_seq` chains two sequential block
 	// compressions through a single parallel core, roughly halving the per-block cost.
@@ -166,20 +189,22 @@ pub fn blake3_chunk(
 
 /// One BLAKE3 parent-node compression: combines two child chaining values into one.
 ///
-/// The parent block is the two children concatenated (16 words); the chaining value is the
-/// [`IV`], the counter is 0, the block length is [`BLOCK_BYTES`], and the flags are [`PARENT`]
-/// (plus [`ROOT`] for the tree root).
+/// The parent block is the two children concatenated (16 words); the chaining value is the key (or
+/// the [`IV`] when unkeyed), the counter is 0, the block length is [`BLOCK_BYTES`], and the flags
+/// are [`PARENT`] (plus [`ROOT`] for the tree root).
 fn blake3_parent(
 	builder: &CircuitBuilder,
+	key: Option<[Wire; 8]>,
 	left: [Wire; 8],
 	right: [Wire; 8],
 	is_root: bool,
 ) -> [Wire; 8] {
-	let cv: [Wire; 8] = std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64)));
+	let cv = init_cv(builder, key);
 	let block: [Wire; 16] = std::array::from_fn(|i| if i < 8 { left[i] } else { right[i - 8] });
 	let counter = builder.add_constant(Word::ZERO);
 	let block_len = builder.add_constant(Word(BLOCK_BYTES as u64));
-	let flags = builder.add_constant(Word((PARENT | if is_root { ROOT } else { 0 }) as u64));
+	let root_flag = if is_root { ROOT } else { 0 };
+	let flags = builder.add_constant(Word((PARENT | root_flag | key_flag(key)) as u64));
 	blake3_compress(builder, cv, block, counter, block_len, flags)
 }
 
@@ -192,16 +217,22 @@ fn blake3_parent(
 /// low-32 layout.
 fn blake3_parent_2x(
 	builder: &CircuitBuilder,
+	key: Option<[Wire; 8]>,
 	a: ([Wire; 8], [Wire; 8]),
 	b: ([Wire; 8], [Wire; 8]),
 ) -> ([Wire; 8], [Wire; 8]) {
 	// lane 0 in the low 32 bits, lane 1 in the high 32 bits; both children have zero high bits,
 	// so shifting lane 1 up and XOR-ing is a clean merge.
 	let pack = |lo: Wire, hi: Wire| builder.bxor(lo, builder.shl(hi, 32));
-	let cv: [Wire; 8] = std::array::from_fn(|i| {
-		let w = IV[i] as u64;
-		builder.add_constant(Word(w | (w << 32)))
-	});
+	// Both lanes start from the same chaining value, so each word is that word in both halves.
+	// The key's words carry zero high bits, so they pack by the same shift-and-XOR as a child.
+	let cv: [Wire; 8] = match key {
+		Some(key) => std::array::from_fn(|i| pack(key[i], key[i])),
+		None => std::array::from_fn(|i| {
+			let w = IV[i] as u64;
+			builder.add_constant(Word(w | (w << 32)))
+		}),
+	};
 	let block: [Wire; 16] = std::array::from_fn(|i| {
 		if i < 8 {
 			pack(a.0[i], b.0[i])
@@ -211,7 +242,8 @@ fn blake3_parent_2x(
 	});
 	let zero = builder.add_constant(Word::ZERO);
 	let block_len = builder.add_constant(Word((BLOCK_BYTES as u64) | ((BLOCK_BYTES as u64) << 32)));
-	let flags = builder.add_constant(Word((PARENT as u64) | ((PARENT as u64) << 32)));
+	let lane_flags = (PARENT | key_flag(key)) as u64;
+	let flags = builder.add_constant(Word(lane_flags | (lane_flags << 32)));
 	let out = blake3_compress_2x(builder, cv, block, zero, zero, block_len, flags);
 	let cv_a: [Wire; 8] = std::array::from_fn(|i| clear_high_bits(builder, out[i], 32));
 	let cv_b: [Wire; 8] = std::array::from_fn(|i| builder.shr(out[i], 32));
@@ -227,7 +259,11 @@ fn blake3_parent_2x(
 /// 2->1 compression — carries [`ROOT`].
 ///
 /// Requires at least two chunk chaining values (a single chunk needs no tree).
-fn blake3_tree_root(builder: &CircuitBuilder, chunk_cvs: Vec<[Wire; 8]>) -> [Wire; 8] {
+fn blake3_tree_root(
+	builder: &CircuitBuilder,
+	key: Option<[Wire; 8]>,
+	chunk_cvs: Vec<[Wire; 8]>,
+) -> [Wire; 8] {
 	assert!(chunk_cvs.len() >= 2, "blake3_tree_root: needs at least two chunks");
 
 	let mut level = chunk_cvs;
@@ -237,6 +273,7 @@ fn blake3_tree_root(builder: &CircuitBuilder, chunk_cvs: Vec<[Wire; 8]>) -> [Wir
 		if level.len() == 2 {
 			return blake3_parent(
 				&builder.subcircuit("blake3_tree_root"),
+				key,
 				level[0],
 				level[1],
 				true,
@@ -253,6 +290,7 @@ fn blake3_tree_root(builder: &CircuitBuilder, chunk_cvs: Vec<[Wire; 8]>) -> [Wir
 		while p + 1 < n_pairs {
 			let (cv_a, cv_b) = blake3_parent_2x(
 				&sub,
+				key,
 				(level[2 * p], level[2 * p + 1]),
 				(level[2 * p + 2], level[2 * p + 3]),
 			);
@@ -262,7 +300,7 @@ fn blake3_tree_root(builder: &CircuitBuilder, chunk_cvs: Vec<[Wire; 8]>) -> [Wir
 		}
 		// A leftover unpaired parent (odd number of pairs) is done single-lane.
 		if p < n_pairs {
-			next.push(blake3_parent(&sub, level[2 * p], level[2 * p + 1], false));
+			next.push(blake3_parent(&sub, key, level[2 * p], level[2 * p + 1], false));
 		}
 		// A lone trailing chaining value with no sibling is promoted unchanged.
 		if n % 2 == 1 {
@@ -297,10 +335,67 @@ fn blake3_tree_root(builder: &CircuitBuilder, chunk_cvs: Vec<[Wire; 8]>) -> [Wir
 /// The BLAKE3 digest as 8 wires, each holding a 32-bit little-endian word in its
 /// low 32 bits.
 pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize) -> [Wire; 8] {
+	blake3_hash_fixed(builder, None, message, len_bytes)
+}
+
+/// Computes the keyed BLAKE3 hash of a compile-time fixed-length message.
+///
+/// The keyed mode of [`blake3_fixed`]: the 32-byte key replaces the [`IV`] as the chaining value
+/// every chunk and parent node starts from, and every compression carries [`KEYED_HASH`]. This is
+/// BLAKE3's native keying, so the digest matches [`blake3::keyed_hash`].
+///
+/// A key shorter than 32 bytes is zero-padded to 32 — the length of the key vector is not itself
+/// hashed, so keys that agree after padding (`b"k"` and `b"k\0"`) produce the same digest.
+///
+/// [`blake3::keyed_hash`]: https://docs.rs/blake3/latest/blake3/fn.keyed_hash.html
+///
+/// # Arguments
+///
+/// - `builder`: Circuit builder.
+/// - `message`: as in [`blake3_fixed`].
+/// - `len_bytes`: as in [`blake3_fixed`].
+/// - `key`: the key, 0 to 32 bytes packed little-endian 8 per wire. Its length must be fixed at
+///   circuit construction time (a point `len_range`, as [`ByteVec::new_const_len`] builds). Bytes
+///   past that length are masked to zero, so a prover cannot steer the digest through them.
+///
+/// # Returns
+///
+/// As in [`blake3_fixed`].
+pub fn blake3_keyed_fixed(
+	builder: &CircuitBuilder,
+	message: &[Wire],
+	len_bytes: usize,
+	key: &ByteVec,
+) -> [Wire; 8] {
+	assert_eq!(
+		key.len_range.start(),
+		key.len_range.end(),
+		"blake3_keyed_fixed: the key length must be fixed at circuit construction time, but \
+		 len_range is {:?}",
+		key.len_range,
+	);
+	let key_len = *key.len_range.start();
+	assert!(key_len <= KEY_BYTES, "blake3_keyed_fixed: key length ({key_len}) exceeds {KEY_BYTES}");
+
+	// `ByteVec` packs bytes little-endian 8 per wire and a BLAKE3 key is 8 little-endian 32-bit
+	// words, so splitting each wire in half is the whole conversion.
+	let key_words = zeroed_u32_words(builder, &key.data, key_len, 8);
+	blake3_hash_fixed(builder, Some(std::array::from_fn(|i| key_words[i])), message, len_bytes)
+}
+
+/// The body shared by [`blake3_fixed`] and [`blake3_keyed_fixed`]: the two differ only in the
+/// chaining value chunks and parent nodes start from, and the [`KEYED_HASH`] flag that rides along
+/// with it.
+fn blake3_hash_fixed(
+	builder: &CircuitBuilder,
+	key: Option<[Wire; 8]>,
+	message: &[Wire],
+	len_bytes: usize,
+) -> [Wire; 8] {
 	assert_eq!(
 		message.len(),
 		len_bytes.div_ceil(4),
-		"blake3_fixed: message.len() ({}) must equal len_bytes.div_ceil(4) ({})",
+		"blake3_hash_fixed: message.len() ({}) must equal len_bytes.div_ceil(4) ({})",
 		message.len(),
 		len_bytes.div_ceil(4),
 	);
@@ -351,6 +446,7 @@ pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 			let last_flags_extra = if n_chunks == 1 { ROOT } else { 0 };
 			blake3_chunk(
 				&builder.subcircuit(format!("blake3_chunk[{c}]")),
+				key,
 				&blocks,
 				&block_lens,
 				c as u64,
@@ -363,7 +459,7 @@ pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 	if n_chunks == 1 {
 		chunk_cvs[0]
 	} else {
-		blake3_tree_root(builder, chunk_cvs)
+		blake3_tree_root(builder, key, chunk_cvs)
 	}
 }
 
@@ -522,6 +618,119 @@ mod tests {
 			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
 			check(&input);
 		}
+	}
+
+	/// Run `blake3_keyed_fixed` over `input` and assert it matches the reference crate keyed with
+	/// `key` zero-padded to 32 bytes.
+	///
+	/// The key wires are witness, so `garbage_padding` populates the bytes past the key length
+	/// with 0xff instead of zero: the digest must not move, since the gadget masks them.
+	fn check_keyed(input: &[u8], key: &[u8], garbage_padding: bool) {
+		let builder = CircuitBuilder::new();
+		let message: Vec<Wire> = (0..input.len().div_ceil(4))
+			.map(|_| builder.add_witness())
+			.collect();
+		let key_data: Vec<Wire> = (0..key.len().div_ceil(8))
+			.map(|_| builder.add_witness())
+			.collect();
+		let key_vec = ByteVec::new_const_len(&builder, key_data, key.len());
+		let digest = blake3_keyed_fixed(&builder, &message, input.len(), &key_vec);
+		let digest_out: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		for i in 0..8 {
+			builder.assert_eq("digest_match", digest[i], digest_out[i]);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		for (wire, word) in message.iter().zip(bytes_to_le_words(input)) {
+			w[*wire] = Word(word);
+		}
+		// Pad out to whole wires, so the bytes past the key length are populated too.
+		let mut key_bytes = key.to_vec();
+		key_bytes.resize(key.len().next_multiple_of(8), if garbage_padding { 0xff } else { 0 });
+		for (i, chunk) in key_bytes.chunks(8).enumerate() {
+			w[key_vec.data[i]] = Word(u64::from_le_bytes(chunk.try_into().unwrap()));
+		}
+
+		let mut padded_key = [0u8; KEY_BYTES];
+		padded_key[..key.len()].copy_from_slice(key);
+		let expected = blake3::keyed_hash(&padded_key, input);
+		for i in 0..8 {
+			let bytes: [u8; 4] = expected.as_bytes()[i * 4..i * 4 + 4].try_into().unwrap();
+			w[digest_out[i]] = Word(u32::from_le_bytes(bytes) as u64);
+		}
+		circuit.populate_wire_witness(&mut w).unwrap_or_else(|e| {
+			panic!(
+				"blake3_keyed_fixed failed for len_bytes={}, key_len={}: {e:?}",
+				input.len(),
+				key.len()
+			)
+		});
+	}
+
+	#[test]
+	fn keyed_full_length_key() {
+		// The native case: a 32-byte key, across message lengths spanning the block and chunk
+		// boundaries that switch the chunk and tree shape.
+		let key: Vec<u8> = (0..KEY_BYTES).map(|i| (i * 7 + 3) as u8).collect();
+		for &len in &[0usize, 1, 64, 65, 192, 1024, 1025, 3072] {
+			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+			check_keyed(&input, &key, false);
+		}
+	}
+
+	#[test]
+	fn keyed_short_keys() {
+		// A key shorter than 32 bytes is zero-padded, including the empty key — which is the
+		// all-zero key, and still not the unkeyed hash, since [`KEYED_HASH`] separates them. The
+		// lengths cover both sides of the 8-byte wire boundary and the 4-byte word boundary the
+		// padding mask straddles.
+		for key_len in [0usize, 1, 4, 5, 8, 9, 16, 23, 31] {
+			let key: Vec<u8> = (0..key_len).map(|i| (i * 11 + 5) as u8).collect();
+			check_keyed(b"abc", &key, false);
+		}
+	}
+
+	#[test]
+	fn keyed_ignores_bytes_past_the_key_length() {
+		// The key wires are witness, so a prover picks the bytes past the key length. Masking them
+		// is what stops those bytes from steering the digest.
+		for key_len in [0usize, 1, 5, 9, 23, 31] {
+			let key: Vec<u8> = (0..key_len).map(|i| (i * 11 + 5) as u8).collect();
+			check_keyed(b"abc", &key, true);
+		}
+	}
+
+	proptest! {
+		// Every case compiles a whole hashing circuit, so the sample stays small.
+		#![proptest_config(ProptestConfig::with_cases(12))]
+
+		#[test]
+		fn keyed_matches_blake3_crate(
+			input in prop::collection::vec(any::<u8>(), 0..=300),
+			key in prop::collection::vec(any::<u8>(), 0..=KEY_BYTES),
+		) {
+			check_keyed(&input, &key, true);
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "key length (33) exceeds 32")]
+	fn keyed_rejects_an_oversized_key() {
+		let builder = CircuitBuilder::new();
+		let data: Vec<Wire> = (0..5).map(|_| builder.add_witness()).collect();
+		let key = ByteVec::new_const_len(&builder, data, KEY_BYTES + 1);
+		blake3_keyed_fixed(&builder, &[], 0, &key);
+	}
+
+	#[test]
+	#[should_panic(expected = "key length must be fixed at circuit construction time")]
+	fn keyed_rejects_a_runtime_length_key() {
+		let builder = CircuitBuilder::new();
+		// `new_witness` leaves the length range at the full `0..=capacity`, so the gadget cannot
+		// know which bytes to mask.
+		let key = ByteVec::new_witness(&builder, 4);
+		blake3_keyed_fixed(&builder, &[], 0, &key);
 	}
 
 	#[test]
