@@ -22,56 +22,39 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 3,
-		n_out: 1,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// One of two words, chosen by the most significant bit of a third.
+pub struct Select;
+
+impl GateKind for Select {
+	const SHAPE: OpcodeShape = OpcodeShape::new(3, 1);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [cond, t, f] = gate.in_wires();
+		let [out] = gate.out_wires();
+
+		// (cond >> 63) · (t ⊕ f) = out ⊕ f, over the GHASH field.
+		// Every factor fits in the low word, so each high word is the empty operand.
+		cb.bmul(
+			expr::srl(cond, 63),
+			expr::empty(),
+			expr::xor2(t, f),
+			expr::empty(),
+			expr::xor2(out, f),
+			expr::empty(),
+		);
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [cond, t, f] = inputs else { unreachable!() };
-	let [out] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [cond, t, f] = gate.in_wires();
+		let [out] = gate.out_wires();
 
-	// Constraint: Select operation
-	//
-	// (cond >> 63) · (t ⊕ f) = out ⊕ f, over the GHASH field.
-	//
-	// Every factor fits in the low word, so each high word is the empty operand.
-	builder.bmul(
-		expr::srl(*cond, 63),
-		expr::empty(),
-		expr::xor2(*t, *f),
-		expr::empty(),
-		expr::xor2(*out, *f),
-		expr::empty(),
-	);
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [cond, t, f] = inputs else { unreachable!() };
-	let [out] = outputs else { unreachable!() };
-
-	builder.emit_select(wire_to_reg(*out), wire_to_reg(*cond), wire_to_reg(*t), wire_to_reg(*f));
+		bc.emit_select(ctx.reg(out), ctx.reg(cond), ctx.reg(t), ctx.reg(f));
+	}
 }
 
 #[cfg(test)]

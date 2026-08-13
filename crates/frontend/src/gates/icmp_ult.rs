@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Unsigned less-than test returning a mask.
 //!
 //! Returns a wire whose value as an MSB-bool is true if `x < y`, and false otherwise.
@@ -24,65 +25,44 @@ use binius_core::word::Word;
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[Word::ALL_ONE],
-		n_in: 2,
-		n_out: 1,
-		n_aux: 0,
-		n_scratch: 1, // Holds the negated left operand
-		n_imm: 0,
+/// Whether one word is less than another, as an MSB-bool.
+pub struct IcmpUlt;
+
+impl GateKind for IcmpUlt {
+	// The scratch wire holds the negated left operand during evaluation.
+	const SHAPE: OpcodeShape = OpcodeShape::new(2, 1)
+		.with_consts(&[Word::ALL_ONE])
+		.with_scratch(1);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [all_one] = gate.const_wires();
+		let [x, y] = gate.in_wires();
+		let [bout] = gate.out_wires();
+
+		// Carry propagation for the comparison:
+		// ((x ⊕ all-1) ⊕ (bout << 1)) ∧ (y ⊕ (bout << 1)) = bout ⊕ (bout << 1)
+		cb.and(
+			expr::xor3(x, all_one, expr::sll(bout, 1)),
+			expr::xor2(y, expr::sll(bout, 1)),
+			expr::xor2(bout, expr::sll(bout, 1)),
+		);
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs,
-		outputs,
-		constants,
-		..
-	} = data.gate_param();
-	let [all_one] = constants else { unreachable!() };
-	let [x, y] = inputs else { unreachable!() };
-	let [bout] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [all_one] = gate.const_wires();
+		let [x, y] = gate.in_wires();
+		let [bout] = gate.out_wires();
+		let [negated_x] = gate.scratch_wires();
 
-	// Constraint 1: Carry propagation for comparison
-	// ((x ⊕ all-1) ⊕ (bout << 1)) ∧ (y ⊕ (bout << 1)) = bout ⊕ (bout << 1)
-	builder.and(
-		expr::xor3(*x, *all_one, expr::sll(*bout, 1)),
-		expr::xor2(*y, expr::sll(*bout, 1)),
-		expr::xor2(*bout, expr::sll(*bout, 1)),
-	);
-}
+		// ¬x, as x exclusive-ored with all-1.
+		bc.emit_bxor(ctx.reg(negated_x), ctx.reg(x), ctx.reg(all_one));
 
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		constants,
-		inputs,
-		outputs,
-		scratch,
-		..
-	} = data.gate_param();
-	let [all_one] = constants else { unreachable!() };
-	let [x, y] = inputs else { unreachable!() };
-	let [bout] = outputs else { unreachable!() };
-	let [scratch_nx] = scratch else {
-		unreachable!()
-	};
-
-	// Compute ¬x (x XOR all_one)
-	builder.emit_bxor(wire_to_reg(*scratch_nx), wire_to_reg(*x), wire_to_reg(*all_one));
-
-	// Carry bits of ¬x + y.
-	// Only the carries matter, so the sum is not stored.
-	builder.emit_iadd_carry(wire_to_reg(*bout), wire_to_reg(*scratch_nx), wire_to_reg(*y));
+		// Carry bits of ¬x + y. Only the carries matter, so the sum is not stored.
+		bc.emit_iadd_carry(ctx.reg(bout), ctx.reg(negated_x), ctx.reg(y));
+	}
 }

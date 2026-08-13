@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! N-way bitwise XOR operation.
 //!
 //! Returns `z = x0 ^ x1 ^ ... ^ xn`.
@@ -10,53 +11,41 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, WireExprTerm, expr},
 };
 
-pub fn shape(dimensions: &[usize]) -> OpcodeShape {
-	let [n_inputs] = dimensions else {
-		unreachable!()
-	};
-	OpcodeShape {
-		const_in: &[],
-		n_in: *n_inputs,
-		n_out: 1,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// The exclusive-or of any number of words.
+///
+/// This is the one kind whose arity is not fixed: its single dimension is the input count.
+pub struct BxorMulti;
+
+impl GateKind for BxorMulti {
+	/// The fixed part of the shape; the input count comes from the dimension.
+	const SHAPE: OpcodeShape = OpcodeShape::new(0, 1);
+
+	fn shape(dimensions: &[usize]) -> OpcodeShape {
+		let [n_inputs] = <[usize; 1]>::try_from(dimensions)
+			.expect("a multi-way exclusive-or carries its input count as its one dimension");
+		OpcodeShape::new(n_inputs, 1)
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [z] = outputs else { unreachable!() };
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [z] = gate.out_wires();
 
-	// Constraint: N-way Bitwise XOR (linear)
-	//
-	// (x0 ⊕ x1 ⊕ ... ⊕ xn) = z
-	//
-	// The terms are handed over as an iterator, since the operand collects them itself.
-	// A vector to carry them across would only be allocated to be dropped.
-	let terms = inputs.iter().map(|&wire| WireExprTerm::from(wire));
-	builder.linear(expr::xor_multi(terms), *z);
-}
+		// (x0 ⊕ x1 ⊕ ... ⊕ xn) = z
+		// The terms are handed over as an iterator, since the operand collects them itself.
+		let terms = gate.inputs.iter().map(|&wire| WireExprTerm::from(wire));
+		cb.linear(expr::xor_multi(terms), z);
+	}
 
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [z] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [z] = gate.out_wires();
 
-	let input_regs: Vec<u32> = inputs.iter().map(|&wire| wire_to_reg(wire)).collect();
-	builder.emit_bxor_multi(wire_to_reg(*z), &input_regs);
+		let input_regs: Vec<u32> = gate.inputs.iter().map(|&wire| ctx.reg(wire)).collect();
+		bc.emit_bxor_multi(ctx.reg(z), &input_regs);
+	}
 }
 
 #[cfg(test)]

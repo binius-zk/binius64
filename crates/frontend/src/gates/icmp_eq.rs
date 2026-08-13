@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! 64-bit equality test that returns an MSB-bool indicating equality.
 //!
 //! Returns a wire whose value, as an MSB-bool, is true if `x == y` and false otherwise.
@@ -37,76 +38,46 @@ use binius_core::word::Word;
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[Word::ALL_ONE, Word::MSB_ONE],
-		n_in: 2,
-		n_out: 1,
-		n_aux: 1,     // carry-out register used in eval bytecode
-		n_scratch: 1, // Holds the difference of the two operands
-		n_imm: 0,
+/// Whether two words are equal, as an MSB-bool.
+pub struct IcmpEq;
+
+impl GateKind for IcmpEq {
+	// The auxiliary wire is the carry-out; the scratch wire holds the operands' difference.
+	const SHAPE: OpcodeShape = OpcodeShape::new(2, 1)
+		.with_consts(&[Word::ALL_ONE, Word::MSB_ONE])
+		.with_aux(1)
+		.with_scratch(1);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [all_one, msb_one] = gate.const_wires();
+		let [x, y] = gate.in_wires();
+		let [out] = gate.out_wires();
+
+		let cin = expr::sll(out, 1);
+
+		// Carry-out: (x ⊕ y ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
+		cb.and(expr::xor3(x, y, cin), expr::xor2(all_one, cin), expr::xor3(cin, out, msb_one));
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		constants,
-		inputs,
-		outputs,
-		..
-	} = data.gate_param();
-	let [all_one, msb_one] = constants else {
-		unreachable!()
-	};
-	let [x, y] = inputs else { unreachable!() };
-	let [out_wire] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [all_one, msb_one] = gate.const_wires();
+		let [x, y] = gate.in_wires();
+		let [out] = gate.out_wires();
+		let [cout] = gate.aux_wires();
+		let [diff] = gate.scratch_wires();
 
-	let cin = expr::sll(*out_wire, 1);
+		// diff = x ⊕ y
+		bc.emit_bxor(ctx.reg(diff), ctx.reg(x), ctx.reg(y));
 
-	// Constraint 1: Constrain carry-out
-	// (x ⊕ y ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
-	builder.and(
-		expr::xor3(*x, *y, cin),
-		expr::xor2(*all_one, cin),
-		expr::xor3(cin, *out_wire, *msb_one),
-	);
-}
+		// Carry bits of all-1 + diff. Only the carries matter, so the sum is not stored.
+		bc.emit_iadd_carry(ctx.reg(cout), ctx.reg(all_one), ctx.reg(diff));
 
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		constants,
-		inputs,
-		outputs,
-		aux,
-		scratch,
-		..
-	} = data.gate_param();
-	let [all_one, msb_one] = constants else {
-		unreachable!()
-	};
-	let [x, y] = inputs else { unreachable!() };
-	let [out_wire] = outputs else { unreachable!() };
-	let [cout] = aux else { unreachable!() };
-	let [scratch_diff] = scratch else {
-		unreachable!()
-	};
-
-	// Compute diff = x ^ y
-	builder.emit_bxor(wire_to_reg(*scratch_diff), wire_to_reg(*x), wire_to_reg(*y));
-
-	// Carry bits of all_one + diff.
-	// Only the carries matter, so the sum is not stored.
-	builder.emit_iadd_carry(wire_to_reg(*cout), wire_to_reg(*all_one), wire_to_reg(*scratch_diff));
-
-	// Invert: out_wire = out_wire ^ msb_one
-	builder.emit_bxor(wire_to_reg(*out_wire), wire_to_reg(*cout), wire_to_reg(*msb_one));
+		// Invert the most significant bit, turning "differ" into "equal".
+		bc.emit_bxor(ctx.reg(out), ctx.reg(cout), ctx.reg(msb_one));
+	}
 }

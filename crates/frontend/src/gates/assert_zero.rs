@@ -11,37 +11,27 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire, path::PathSpec},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::ConstraintBuilder,
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 1,
-		n_out: 0,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// That a word is zero.
+pub struct AssertZero;
+
+impl GateKind for AssertZero {
+	const SHAPE: OpcodeShape = OpcodeShape::new(1, 0);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [x] = gate.in_wires();
+
+		// x = 0
+		cb.zero(x);
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam { inputs, .. } = data.gate_param();
-	let [x] = inputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [x] = gate.in_wires();
 
-	// Constraint: x = 0
-	builder.zero(*x);
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	assertion_path: PathSpec,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam { inputs, .. } = data.gate_param();
-	let [x] = inputs else { unreachable!() };
-	builder.emit_assert_zero(wire_to_reg(*x), assertion_path.as_u32());
+		bc.emit_assert_zero(ctx.reg(x), ctx.path().as_u32());
+	}
 }

@@ -1,45 +1,33 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Imul gate implements 64-bit × 64-bit → 128-bit unsigned multiplication.
 //! Uses the ImulConstraint: X * Y = (HI << 64) | LO
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::ConstraintBuilder,
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 2,
-		n_out: 2,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// The 128-bit unsigned product of two words.
+pub struct Imul;
+
+impl GateKind for Imul {
+	const SHAPE: OpcodeShape = OpcodeShape::new(2, 2);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [x, y] = gate.in_wires();
+		let [hi, lo] = gate.out_wires();
+
+		// x * y = (hi << 64) | lo
+		cb.imul(x, y, hi, lo);
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [x, y] = inputs else { unreachable!() };
-	let [hi, lo] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [x, y] = gate.in_wires();
+		let [hi, lo] = gate.out_wires();
 
-	// Create ImulConstraint: X * Y = (HI << 64) | LO
-	builder.imul(*x, *y, *hi, *lo);
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [x, y] = inputs else { unreachable!() };
-	let [hi, lo] = outputs else { unreachable!() };
-	builder.emit_imul(wire_to_reg(*hi), wire_to_reg(*lo), wire_to_reg(*x), wire_to_reg(*y));
+		bc.emit_imul(ctx.reg(hi), ctx.reg(lo), ctx.reg(x), ctx.reg(y));
+	}
 }

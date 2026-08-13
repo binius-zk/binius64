@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Fused AND-XOR operation.
 //!
 //! Returns `z = (x & y) ^ w`.
@@ -15,46 +16,29 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 3,
-		n_out: 1,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// Bitwise and of two words, exclusive-ored with a third.
+pub struct Fax;
+
+impl GateKind for Fax {
+	const SHAPE: OpcodeShape = OpcodeShape::new(3, 1);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [x, y, w] = gate.in_wires();
+		let [z] = gate.out_wires();
+
+		// x ∧ y = z ⊕ w, which is z = (x ∧ y) ⊕ w rearranged.
+		cb.and(x, y, expr::xor2(z, w));
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [x, y, w] = inputs else { unreachable!() };
-	let [z] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [x, y, w] = gate.in_wires();
+		let [z] = gate.out_wires();
 
-	// Constraint: Fused AND-XOR
-	//
-	// x & y = t, where t ^ w = z
-	// This can be written as: x & y ^ w = z
-	builder.and(*x, *y, expr::xor2(*z, *w));
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [x, y, w] = inputs else { unreachable!() };
-	let [z] = outputs else { unreachable!() };
-
-	builder.emit_fax(wire_to_reg(*z), wire_to_reg(*x), wire_to_reg(*y), wire_to_reg(*w));
+		bc.emit_fax(ctx.reg(z), ctx.reg(x), ctx.reg(y), ctx.reg(w));
+	}
 }
