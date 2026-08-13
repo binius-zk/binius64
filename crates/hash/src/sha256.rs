@@ -26,8 +26,16 @@ use super::{
 
 /// Hashes every leaf through the four-way interleaved SHA-256 kernel.
 ///
-/// The leaves serialize into one contiguous buffer, then hash four at a time.
-/// The serialize pass is cheap next to the compression work it feeds.
+/// A task serializes its own four leaves and hashes them immediately, so the bytes are still in
+/// cache when the kernel reads them and no buffer is shared between tasks. The four buffers are
+/// seeded per task and reused across the groups that task takes, which keeps the serialize pass
+/// off the allocator entirely — the same shape
+/// [`ParallelMultidigestImpl`](crate::parallel_digest::ParallelMultidigestImpl) uses for BLAKE3
+/// leaves.
+///
+/// Serializing every leaf into one contiguous buffer up front costs more than the pass it saves:
+/// the buffer is large enough to come straight from `mmap`, so each call faults the whole thing in
+/// afresh, and kernel fault handling is what limits how the leaf stage scales across cores.
 ///
 /// The caller guarantees the leaf count is a nonzero multiple of four.
 /// So every group of four is full.
@@ -37,36 +45,43 @@ fn digest_with_const_len_x4<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
 	source: impl IndexedParallelIterator<Item = I>,
 	out: &mut [MaybeUninit<Output<Sha256>>],
 ) {
-	use binius_utils::rayon::slice::{ParallelSlice, ParallelSliceMut};
+	use binius_utils::rayon::slice::ParallelSliceMut;
+	use bytes::BytesMut;
 
 	let leaf_len = n_items_per_input * <I::Item as FixedSizeSerializeBytes>::BYTE_SIZE;
 
-	// Serialize each leaf's bytes into its slot of a contiguous buffer, one leaf per task.
-	let mut leaf_bytes = vec![0u8; out.len() * leaf_len];
-	source
-		.zip(leaf_bytes.par_chunks_mut(leaf_len))
-		.for_each(|(items, dst)| {
-			let mut cursor = &mut dst[..];
-			for item in items {
-				item.serialize(&mut cursor)
-					.expect("pre-condition: items serialize without error");
-			}
-			debug_assert!(cursor.is_empty(), "pre-condition: each leaf serializes to leaf_len");
-		});
+	source.chunks(4).zip(out.par_chunks_mut(4)).for_each_with(
+		std::array::from_fn::<_, 4, _>(|_| BytesMut::new()),
+		|bufs, (leaves, out4)| {
+			debug_assert_eq!(
+				leaves.len(),
+				4,
+				"pre-condition: the leaf count is a multiple of four"
+			);
 
-	// Hash four adjacent leaves at once, writing the four digests into their output slots.
-	out.par_chunks_mut(4)
-		.zip(leaf_bytes.par_chunks(4 * leaf_len))
-		.for_each(|(out4, bytes4)| {
-			let inputs: [&[u8]; 4] =
-				std::array::from_fn(|i| &bytes4[i * leaf_len..(i + 1) * leaf_len]);
+			for (buf, items) in bufs.iter_mut().zip(leaves) {
+				// Reuse the capacity this task's earlier groups already grew.
+				buf.clear();
+				for item in items {
+					item.serialize(&mut *buf)
+						.expect("pre-condition: items serialize without error");
+				}
+				debug_assert_eq!(
+					buf.len(),
+					leaf_len,
+					"pre-condition: each leaf serializes to leaf_len"
+				);
+			}
+
+			let inputs: [&[u8]; 4] = std::array::from_fn(|i| bufs[i].as_ref());
 			let digests = crate::sha256_x4::sha256_x4(inputs);
 			for (slot, digest) in out4.iter_mut().zip(digests) {
 				let mut hash = Output::<Sha256>::default();
 				hash.copy_from_slice(&digest);
 				slot.write(hash);
 			}
-		});
+		},
+	);
 }
 
 /// SHA-256 initial hash values, used as the starting state for a raw block compression.
@@ -323,33 +338,40 @@ mod tests {
 
 	/// Checks that the specialized digest matches `Sha256::digest` over the serialized leaf bytes,
 	/// covering both the single-block fast path and the multi-block fallback.
+	///
+	/// The leaf counts matter as much as the leaf lengths: on aarch64 a count that is a nonzero
+	/// multiple of four routes to the four-way kernel, and any other count routes past it. 50
+	/// alone — the only count this covered before — never reaches that kernel, so the counts below
+	/// straddle the boundary deliberately. 4 is the smallest batch it accepts, and 48 spans several
+	/// groups, so a task that reuses its buffers across groups has to clear them between.
 	#[test]
 	fn test_parallel_sha256_matches_serial() {
 		let mut rng = StdRng::seed_from_u64(0);
 		// `u128` serializes to 16 little-endian bytes, so leaf lengths are 16, 32, 48 (single
 		// block) and 64 (> SINGLE_BLOCK_MAX_LEN, exercises the fallback).
 		for n_items_per_input in [1, 2, 3, 4] {
-			let n_leaves = 50;
-			let leaves: Vec<Vec<u128>> = (0..n_leaves)
-				.map(|_| (0..n_items_per_input).map(|_| rng.random()).collect())
-				.collect();
+			for n_leaves in [4, 48, 50] {
+				let leaves: Vec<Vec<u128>> = (0..n_leaves)
+					.map(|_| (0..n_items_per_input).map(|_| rng.random()).collect())
+					.collect();
 
-			let digest = ParallelSha256Digest::new();
-			let mut results = repeat_with(MaybeUninit::<Output<Sha256>>::uninit)
-				.take(n_leaves)
-				.collect::<Vec<_>>();
-			digest.digest_with_const_len(
-				n_items_per_input,
-				leaves.par_iter().map(|leaf| leaf.iter().copied()),
-				&mut results,
-			);
+				let digest = ParallelSha256Digest::new();
+				let mut results = repeat_with(MaybeUninit::<Output<Sha256>>::uninit)
+					.take(n_leaves)
+					.collect::<Vec<_>>();
+				digest.digest_with_const_len(
+					n_items_per_input,
+					leaves.par_iter().map(|leaf| leaf.iter().copied()),
+					&mut results,
+				);
 
-			for (result, leaf) in results.into_iter().zip(&leaves) {
-				let mut bytes = Vec::new();
-				for &item in leaf {
-					bytes.extend_from_slice(&item.to_le_bytes());
+				for (result, leaf) in results.into_iter().zip(&leaves) {
+					let mut bytes = Vec::new();
+					for &item in leaf {
+						bytes.extend_from_slice(&item.to_le_bytes());
+					}
+					assert_eq!(unsafe { result.assume_init() }, <Sha256 as Digest>::digest(&bytes));
 				}
-				assert_eq!(unsafe { result.assume_init() }, <Sha256 as Digest>::digest(&bytes));
 			}
 		}
 	}
