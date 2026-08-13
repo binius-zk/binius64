@@ -34,9 +34,9 @@ use crate::{
 /// diverging in opposite directions still add up, and every later value would land in the wrong
 /// wire silently.
 ///
-/// It exists because the skeleton leaves the Fiat-Shamir state unconstrained.
-/// Those wires carry values the circuit ought to derive.
-/// As gadgets land the recorded list shrinks, until only the proof itself remains.
+/// Most of what it fills is proof data the circuit cannot derive.
+/// The exception is the FRI query index, a value the circuit ought to derive and does not yet.
+/// When that lands, only the proof itself remains.
 ///
 /// The transcript is read directly rather than through a `VerifierMerkleTranscriptChannel`.
 /// That channel consumes the layer and branch digests internally, never handing them back.
@@ -117,9 +117,9 @@ where
 	}
 
 	fn sample(&mut self) -> B128 {
-		let value = IPVerifierChannel::<B128>::sample(self.transcript.borrow_mut());
-		self.fill_elem("sample", value);
-		value
+		// The circuit derives its own challenges now, so the build records no wire to fill here.
+		// The draw still has to happen, since it advances the native Fiat-Shamir state.
+		IPVerifierChannel::<B128>::sample(self.transcript.borrow_mut())
 	}
 
 	fn observe_one(&mut self, val: B128) -> B128 {

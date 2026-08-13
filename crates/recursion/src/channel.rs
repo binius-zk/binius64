@@ -4,7 +4,7 @@
 
 use std::{array, rc::Rc};
 
-use binius_circuits::multiplexer::multi_wire_multiplex;
+use binius_circuits::{bytes::swap_bytes_32, multiplexer::multi_wire_multiplex};
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
@@ -16,6 +16,7 @@ use binius_iop::{
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
 
 use crate::{
+	challenger::Sha256Challenger,
 	merkle::{self, Digest, ELEMENT_WORDS, Element},
 	shared::Shared,
 	symbolic::{SymbolicElem, SymbolicWord},
@@ -57,6 +58,11 @@ pub struct Recorded {
 /// See the crate docs for what this does and does not constrain.
 pub struct Binius64BuilderChannel {
 	shared: Rc<Shared>,
+	/// The Fiat-Shamir state, over wires.
+	///
+	/// Every observed byte the native challenger absorbs is absorbed here too, in the same order.
+	/// A missed absorb desyncs it, and every challenge after that point is wrong.
+	challenger: Sha256Challenger,
 	/// How many assertions have been recorded, so each gets a distinct name.
 	n_assertions: usize,
 	/// Consulted only for the layer depth an opening decommits to, so no tree is ever built.
@@ -70,8 +76,12 @@ pub struct Binius64BuilderChannel {
 impl Binius64BuilderChannel {
 	/// Creates a channel over a fresh builder.
 	pub fn new() -> Self {
+		let shared = Rc::new(Shared::new());
+		// The challenger opens on its protocol seed, which is constant and so costs nothing.
+		let challenger = Sha256Challenger::new(shared.builder());
 		Self {
-			shared: Rc::new(Shared::new()),
+			shared,
+			challenger,
 			n_assertions: 0,
 			scheme: BinaryMerkleTreeScheme::new(),
 			n_merkle_checks: 0,
@@ -127,12 +137,6 @@ impl Binius64BuilderChannel {
 		array::from_fn(|_| self.shared.input_wire(kind))
 	}
 
-	/// Allocates one field element as circuit inputs, in the form the protocol reads.
-	fn input_elem(&mut self, kind: &'static str) -> SymbolicElem {
-		let element = self.input_element(kind);
-		self.elem(element)
-	}
-
 	/// Lifts a wire pair to the element type the protocol sees.
 	fn elem(&self, [lo, hi]: Element) -> SymbolicElem {
 		SymbolicElem::wires(&self.shared, lo, hi)
@@ -157,18 +161,24 @@ impl IPVerifierChannel<B128> for Binius64BuilderChannel {
 	type Elem = SymbolicElem;
 
 	fn recv_one(&mut self) -> Result<SymbolicElem, binius_ip::channel::Error> {
-		Ok(self.input_elem("recv_one"))
+		// A received element is read through the transcript's *message* reader, which observes it.
+		// Its two halves are already the little-endian words the challenger absorbs.
+		let element = self.input_element("recv_one");
+		self.challenger.observe_words(&element);
+		Ok(self.elem(element))
 	}
 
 	fn sample(&mut self) -> SymbolicElem {
-		// UNCONSTRAINED: a challenge is the Fiat-Shamir state's output, which needs the
-		// challenger's hashing in-circuit. Until then it is an input the replay supplies.
-		self.input_elem("sample")
+		// Sixteen bytes of sampler output, packed little-endian into an element's two halves.
+		let (lo, hi) = self.challenger.sample_b128();
+		self.elem([lo, hi])
 	}
 
 	fn observe_one(&mut self, _val: B128) -> SymbolicElem {
-		// UNCONSTRAINED: nothing absorbs the value.
-		self.input_elem("observe_one")
+		// Absorbed as wires the replay fills, so the circuit is not tied to one value.
+		let element = self.input_element("observe_one");
+		self.challenger.observe_words(&element);
+		self.elem(element)
 	}
 
 	fn assert_zero(&mut self, val: SymbolicElem) -> Result<(), binius_ip::channel::Error> {
@@ -213,15 +223,16 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 	type Word = SymbolicWord;
 
 	fn observe_words(&mut self, words: &[Word]) -> Vec<SymbolicWord> {
-		// The statement enters the circuit here, one input wire per word, so everything downstream
-		// reads it symbolically instead of baking it in as constants. That is what makes the
-		// recorded circuit verify a *statement* rather than one fixed instance of it.
-		//
-		// UNCONSTRAINED: nothing feeds these into a Fiat-Shamir state yet, so the circuit is not
-		// yet bound to the statement it claims to verify.
-		words
+		// The statement enters as wires the replay fills, not as constants.
+		// Absorbing them binds every challenge below to this statement.
+		let wires = words
 			.iter()
-			.map(|_| SymbolicWord::wire(&self.shared, self.shared.input_wire("observe_words")))
+			.map(|_| self.shared.input_wire("observe_words"))
+			.collect::<Vec<_>>();
+		self.challenger.observe_words(&wires);
+		wires
+			.into_iter()
+			.map(|wire| SymbolicWord::wire(&self.shared, wire))
 			.collect()
 	}
 
@@ -277,9 +288,14 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 		SymbolicElem::wires(&self.shared, selected[0], selected[1])
 	}
 
-	fn sample_bits(&mut self, _bits: usize) -> SymbolicWord {
-		// UNCONSTRAINED, twice over: the index should come from the Fiat-Shamir state, and it
-		// should be masked to `bits` bits, which the FRI code relies on rather than asserting.
+	fn sample_bits(&mut self, bits: usize) -> SymbolicWord {
+		// The draw happens even though the result is thrown away.
+		// It consumes four sampler bytes, and that count is what the next observe appends.
+		// Skipping it desyncs every challenge after the first bit sample.
+		let _ = self.challenger.sample_bits(bits);
+
+		// UNCONSTRAINED: the index is still the prover's choice, which is BINIUS-470.
+		// The gadget's masked draw above is discarded rather than returned.
 		SymbolicWord::wire(&self.shared, self.shared.input_wire("sample_bits"))
 	}
 
@@ -310,6 +326,17 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 		depth: usize,
 	) -> Result<Commitment, merkle_channel::Error> {
 		let root = self.input_digest("merkle_root");
+
+		// A root is read through the message reader, so the challenger absorbs it.
+		//
+		// The wires hold the digest packed big-endian, which the hashing gadgets read.
+		// The challenger absorbs the tape's little-endian words, so each wire is reversed back.
+		let stream = {
+			let builder = self.shared.builder();
+			root.map(|word| swap_bytes_32(builder, word))
+		};
+		self.challenger.observe_words(&stream);
+
 		Ok(Commitment {
 			root,
 			leaf_size,
@@ -385,5 +412,76 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 		merkle::verify_vector(&builder, commitment.root, &data, commitment.leaf_size);
 
 		Ok(data.into_iter().map(|element| self.elem(element)).collect())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_transcript::{
+		Buf,
+		fiat_shamir::{Challenger, HasherChallenger, sample_bits_reader},
+	};
+	use sha2::Sha256;
+
+	use super::*;
+	use crate::merkle::element_words;
+
+	/// Draws a challenge, two query indices, then a second challenge, on both channels.
+	///
+	/// A bit sample reads from the same buffer a challenge reads from.
+	/// A channel that skipped the gadget for one would hand the next challenge spent bytes.
+	///
+	/// The index itself is still unconstrained, which is why only the challenges are pinned.
+	#[test]
+	fn a_challenge_after_a_bit_sample_matches_the_native_challenger() {
+		let mut native = HasherChallenger::<Sha256>::default();
+		let mut channel = Binius64BuilderChannel::new();
+
+		// The widths are arbitrary, but 11 and 5 are not multiples of eight, so the mask is live.
+		// A 128-bit challenge deserializes from sixteen little-endian sampler bytes.
+		let draw = |native: &mut HasherChallenger<Sha256>| {
+			let mut bytes = [0u8; 16];
+			native.sampler().copy_to_slice(&mut bytes);
+			u128::from_le_bytes(bytes)
+		};
+		let first = draw(&mut native);
+		sample_bits_reader(native.sampler(), 11);
+		sample_bits_reader(native.sampler(), 5);
+		let second = draw(&mut native);
+
+		let one = IPVerifierChannel::<B128>::sample(&mut channel);
+		WordIPVerifierChannel::<B128>::sample_bits(&mut channel, 11);
+		WordIPVerifierChannel::<B128>::sample_bits(&mut channel, 5);
+		let two = IPVerifierChannel::<B128>::sample(&mut channel);
+
+		// Each challenge is pinned to a public wire carrying the native value.
+		// A divergence then fails witness population rather than a Rust comparison.
+		let pins = {
+			let builder = channel.shared.builder();
+			[(one, first), (two, second)]
+				.iter()
+				.enumerate()
+				.map(|(i, (elem, want))| {
+					let (lo, hi) = elem.to_wires(builder);
+					let claimed = [builder.add_inout(), builder.add_inout()];
+					builder.assert_eq_v(format!("challenge[{i}]"), [lo, hi], claimed);
+					(claimed, *want)
+				})
+				.collect::<Vec<_>>()
+		};
+
+		// Every symbolic value must be dropped before the circuit is built.
+		let recorded = channel.build();
+		let mut w = recorded.circuit.new_witness_filler();
+		for (claimed, want) in pins {
+			for (wire, word) in claimed.iter().zip(element_words(want)) {
+				w[*wire] = Word(word);
+			}
+		}
+		// The discarded index draws are the only recorded inputs, and nothing reads their values.
+		for input in &recorded.inputs {
+			w[input.wire] = Word::ZERO;
+		}
+		recorded.circuit.populate_wire_witness(&mut w).unwrap();
 	}
 }
