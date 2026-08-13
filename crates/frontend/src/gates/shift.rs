@@ -19,23 +19,37 @@ use binius_core::constraint_system::ShiftVariant;
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::{GateParam, Wire},
 	lower::{ConstraintBuilder, WireExprTerm, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 1,
-		n_out: 1,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 2,
+/// One word shifted or rotated by a constant amount.
+pub struct Shift;
+
+impl GateKind for Shift {
+	const SHAPE: OpcodeShape = OpcodeShape::new(1, 1).with_imm(2);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [x] = gate.in_wires();
+		let [z] = gate.out_wires();
+		let [variant, n] = gate.imms();
+
+		// shift(x, n) = z, with the shift folded into the operand.
+		cb.linear(shifted_term(variant_of(variant), x, n), z);
+	}
+
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [x] = gate.in_wires();
+		let [z] = gate.out_wires();
+		let [variant, n] = gate.imms();
+
+		// One instruction carrying the variant and the amount.
+		bc.emit_shift(ctx.reg(z), ctx.reg(x), variant_of(variant), n as u8);
 	}
 }
 
-/// Decodes the variant immediate into its [`ShiftVariant`].
+/// Decodes the variant immediate.
 ///
 /// The builder always emits a discriminant in `0..=7`, so an out-of-range value is a bug.
 const fn variant_of(imm: u32) -> ShiftVariant {
@@ -54,39 +68,4 @@ const fn shifted_term(variant: ShiftVariant, x: Wire, n: u32) -> WireExprTerm {
 		ShiftVariant::Sra32 => expr::sra32(x, n),
 		ShiftVariant::Rotr32 => expr::rotr32(x, n),
 	}
-}
-
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs,
-		outputs,
-		imm,
-		..
-	} = data.gate_param();
-	let [x] = inputs else { unreachable!() };
-	let [z] = outputs else { unreachable!() };
-	let [variant, n] = imm else { unreachable!() };
-
-	// Constraint: shift(x, n) = z, with the shift folded into the operand.
-	let term = shifted_term(variant_of(*variant), *x, *n);
-	builder.linear(term, *z);
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		inputs,
-		outputs,
-		imm,
-		..
-	} = data.gate_param();
-	let [x] = inputs else { unreachable!() };
-	let [z] = outputs else { unreachable!() };
-	let [variant, n] = imm else { unreachable!() };
-
-	// Emit a single shift instruction carrying the variant and amount.
-	builder.emit_shift(wire_to_reg(*z), wire_to_reg(*x), variant_of(*variant), *n as u8);
 }

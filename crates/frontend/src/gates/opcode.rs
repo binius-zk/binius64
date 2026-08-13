@@ -80,58 +80,40 @@ pub struct OpcodeShape {
 	pub n_imm: usize,
 }
 
-impl Opcode {
-	pub fn shape(self, dimensions: &[usize]) -> OpcodeShape {
-		assert_eq!(self.is_const_shape(), dimensions.is_empty());
-
-		match self {
-			// Bitwise operations
-			Opcode::Band => super::band::shape(),
-			Opcode::Bxor => super::bxor::shape(),
-			// TODO: Can we get rid of this gate? This is the only non-hint one with dimensions
-			Opcode::BxorMulti => super::bxor_multi::shape(dimensions),
-			Opcode::Bor => super::bor::shape(),
-			Opcode::Fax => super::fax::shape(),
-
-			// Selection
-			Opcode::Select => super::select::shape(),
-
-			// Arithmetic
-			Opcode::IaddCinCout => super::iadd_cin_cout::shape(),
-			Opcode::Iadd32 => super::iadd32::shape(),
-			Opcode::Iadd32CinCout => super::iadd32_cin_cout::shape(),
-			Opcode::IsubBinBout => super::isub_bin_bout::shape(),
-			Opcode::Imul => super::imul::shape(),
-			Opcode::Bmul => super::bmul::shape(),
-
-			// Shifts
-			Opcode::Shift => super::shift::shape(),
-
-			// Comparisons
-			Opcode::IcmpUlt => super::icmp_ult::shape(),
-			Opcode::IcmpEq => super::icmp_eq::shape(),
-
-			// Assertions (no outputs)
-			Opcode::AssertEq => super::assert_eq::shape(),
-			Opcode::AssertZero => super::assert_zero::shape(),
-			Opcode::AssertNonZero => super::assert_non_zero::shape(),
-			Opcode::AssertFalse => super::assert_false::shape(),
-			Opcode::AssertTrue => super::assert_true::shape(),
-			Opcode::AssertEqCond => super::assert_eq_cond::shape(),
-
-			// Hints (no constraints)
-			Opcode::Hint => {
-				panic!("Opcode::Hint shape requires the HintRegistry; use GateData::shape instead")
-			}
+impl OpcodeShape {
+	/// A shape reading `n_in` inputs and producing `n_out` outputs, carrying nothing else.
+	pub const fn new(n_in: usize, n_out: usize) -> Self {
+		Self {
+			const_in: &[],
+			n_in,
+			n_out,
+			n_aux: 0,
+			n_scratch: 0,
+			n_imm: 0,
 		}
 	}
 
-	pub const fn is_const_shape(self) -> bool {
-		#[allow(clippy::match_like_matches_macro)]
-		match self {
-			Opcode::BxorMulti => false,
-			Opcode::Hint => false,
-			_ => true,
-		}
+	/// The same shape, reading the given constants ahead of its inputs.
+	pub const fn with_consts(mut self, const_in: &'static [Word]) -> Self {
+		self.const_in = const_in;
+		self
+	}
+
+	/// The same shape, with wires the constraint system references but no caller passes.
+	pub const fn with_aux(mut self, n_aux: usize) -> Self {
+		self.n_aux = n_aux;
+		self
+	}
+
+	/// The same shape, with wires only witness evaluation reads.
+	pub const fn with_scratch(mut self, n_scratch: usize) -> Self {
+		self.n_scratch = n_scratch;
+		self
+	}
+
+	/// The same shape, with compile-time parameters carried alongside the wires.
+	pub const fn with_imm(mut self, n_imm: usize) -> Self {
+		self.n_imm = n_imm;
+		self
 	}
 }

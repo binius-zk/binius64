@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Bitwise OR operation.
 //!
 //! Returns `z = x | y`.
@@ -15,45 +16,29 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 2,
-		n_out: 1,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// Bitwise or of two words.
+pub struct Bor;
+
+impl GateKind for Bor {
+	const SHAPE: OpcodeShape = OpcodeShape::new(2, 1);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [x, y] = gate.in_wires();
+		let [z] = gate.out_wires();
+
+		// x ∧ y = x ⊕ y ⊕ z
+		cb.and(x, y, expr::xor3(x, y, z));
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [x, y] = inputs else { unreachable!() };
-	let [z] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [x, y] = gate.in_wires();
+		let [z] = gate.out_wires();
 
-	// Constraint: Bitwise OR
-	//
-	// x ∧ y = x ⊕ y ⊕ z
-	builder.and(*x, *y, expr::xor3(*x, *y, *z));
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [x, y] = inputs else { unreachable!() };
-	let [z] = outputs else { unreachable!() };
-
-	builder.emit_bor(wire_to_reg(*z), wire_to_reg(*x), wire_to_reg(*y));
+		bc.emit_bor(ctx.reg(z), ctx.reg(x), ctx.reg(y));
+	}
 }

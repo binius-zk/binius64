@@ -19,40 +19,28 @@ use binius_core::word::Word;
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire, path::PathSpec},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[Word::ALL_ONE],
-		n_in: 1,
-		n_out: 0,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// That a word's most significant bit is set.
+pub struct AssertTrue;
+
+impl GateKind for AssertTrue {
+	const SHAPE: OpcodeShape = OpcodeShape::new(1, 0).with_consts(&[Word::ALL_ONE]);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [all_one] = gate.const_wires();
+		let [x] = gate.in_wires();
+
+		// sar(x, 63) ⊕ all-1 = 0
+		cb.zero(expr::xor2(expr::sar(x, 63), all_one));
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		constants, inputs, ..
-	} = data.gate_param();
-	let [all_one] = constants else { unreachable!() };
-	let [x] = inputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [x] = gate.in_wires();
 
-	// Constraint: sar(x, 63) ⊕ all-1 = 0
-	builder.zero(expr::xor2(expr::sar(*x, 63), *all_one));
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	assertion_path: PathSpec,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam { inputs, .. } = data.gate_param();
-	let [x] = inputs else { unreachable!() };
-	builder.emit_assert_true(wire_to_reg(*x), assertion_path.as_u32());
+		bc.emit_assert_true(ctx.reg(x), ctx.path().as_u32());
+	}
 }

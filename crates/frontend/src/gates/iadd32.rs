@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Parallel 32-bit unsigned integer addition without carry-in.
 //!
 //! Performs simultaneous independent 32-bit additions on the upper and lower 32-bit halves of
@@ -22,60 +23,39 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 2,
-		n_out: 2,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// Two independent 32-bit sums, one per half of the word.
+pub struct Iadd32;
+
+impl GateKind for Iadd32 {
+	const SHAPE: OpcodeShape = OpcodeShape::new(2, 2);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [x, y] = gate.in_wires();
+		let [z, cout] = gate.out_wires();
+
+		let cout_shifted = expr::sll32(cout, 1);
+
+		// Carry propagation:
+		// (x ⊕ (cout <<₃₂ 1)) ∧ (y ⊕ (cout <<₃₂ 1)) = cout ⊕ (cout <<₃₂ 1)
+		cb.and(
+			expr::xor2(x, cout_shifted),
+			expr::xor2(y, cout_shifted),
+			expr::xor2(cout, cout_shifted),
+		);
+
+		// Result: z = x ⊕ y ⊕ (cout <<₃₂ 1)
+		cb.linear(expr::xor3(x, y, cout_shifted), z);
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [x, y] = inputs else { unreachable!() };
-	let [z, cout] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [a, b] = gate.in_wires();
+		let [sum, cout] = gate.out_wires();
 
-	let cout_shifted = expr::sll32(*cout, 1);
-
-	// Constraint 1: Carry propagation
-	//
-	// (x ⊕ (cout <<₃₂ 1)) ∧ (y ⊕ (cout <<₃₂ 1)) = cout ⊕ (cout <<₃₂ 1)
-	builder.and(
-		expr::xor2(*x, cout_shifted),
-		expr::xor2(*y, cout_shifted),
-		expr::xor2(*cout, cout_shifted),
-	);
-
-	// Constraint 2: Result
-	//
-	// z = x ⊕ y ⊕ (cout <<₃₂ 1)
-	builder.linear(expr::xor3(*x, *y, cout_shifted), *z);
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [a, b] = inputs else { unreachable!() };
-	let [sum, cout] = outputs else { unreachable!() };
-	builder.emit_iadd32_cout(
-		wire_to_reg(*sum),
-		wire_to_reg(*cout),
-		wire_to_reg(*a),
-		wire_to_reg(*b),
-	);
+		bc.emit_iadd32_cout(ctx.reg(sum), ctx.reg(cout), ctx.reg(a), ctx.reg(b));
+	}
 }

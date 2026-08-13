@@ -34,68 +34,45 @@ use binius_core::word::Word;
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire, path::PathSpec},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		// ALL_ONE is the addend for the carry.
-		const_in: &[Word::ALL_ONE],
-		n_in: 1,
-		n_out: 0,
-		n_aux: 1,
-		n_scratch: 0,
-		n_imm: 0,
+/// That a word is not zero.
+pub struct AssertNonZero;
+
+impl GateKind for AssertNonZero {
+	// The constant is the addend for the carry; the auxiliary wire holds the carry-out.
+	const SHAPE: OpcodeShape = OpcodeShape::new(1, 0)
+		.with_consts(&[Word::ALL_ONE])
+		.with_aux(1);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [all_one] = gate.const_wires();
+		let [x] = gate.in_wires();
+		let [cout] = gate.aux_wires();
+
+		let cin = expr::sll(cout, 1);
+
+		// Carry-out: (x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
+		cb.and(expr::xor2(x, cin), expr::xor2(all_one, cin), expr::xor2(cin, cout));
+
+		// MSB(cout) = 1, as sar(cout, 63) ⊕ all-1 = 0.
+		// Fusion cannot inline an assertion, so the constant stays out of the carry constraint.
+		cb.zero(expr::xor2(expr::sar(cout, 63), all_one));
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		constants,
-		inputs,
-		aux,
-		..
-	} = data.gate_param();
-	let [all_one] = constants else { unreachable!() };
-	let [x] = inputs else { unreachable!() };
-	let [cout] = aux else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [all_one] = gate.const_wires();
+		let [x] = gate.in_wires();
+		let [cout] = gate.aux_wires();
 
-	let cin = expr::sll(*cout, 1);
+		// Carry bits of all-1 + x. Only the carries matter, so the sum is not stored.
+		bc.emit_iadd_carry(ctx.reg(cout), ctx.reg(all_one), ctx.reg(x));
 
-	// Constraint 1: Constrain carry-out
-	// (x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
-	builder.and(expr::xor2(*x, cin), expr::xor2(*all_one, cin), expr::xor2(cin, *cout));
-
-	// Constraint 2 (ZERO): sar(cout, 63) ⊕ all_one = 0, i.e. MSB(cout) = 1 (x ≠ 0).
-	// sar(cout, 63) sign-extends the MSB across all 64 bits, so it equals all_one iff
-	// MSB(cout) = 1. This is an assertion, which defines no wire, so gate fusion cannot inline it
-	// and substitute the constant back into Constraint 1, reopening the soundness hole.
-	builder.zero(expr::xor2(expr::sar(*cout, 63), *all_one));
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	assertion_path: PathSpec,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		constants,
-		inputs,
-		aux,
-		..
-	} = data.gate_param();
-	let [all_one] = constants else { unreachable!() };
-	let [x] = inputs else { unreachable!() };
-	let [cout] = aux else { unreachable!() };
-
-	// Carry bits of all_one + x.
-	// Only the carries matter, so the sum is not stored.
-	builder.emit_iadd_carry(wire_to_reg(*cout), wire_to_reg(*all_one), wire_to_reg(*x));
-
-	builder.emit_assert_non_zero(wire_to_reg(*cout), assertion_path.as_u32());
+		bc.emit_assert_non_zero(ctx.reg(cout), ctx.path().as_u32());
+	}
 }
 
 #[cfg(test)]

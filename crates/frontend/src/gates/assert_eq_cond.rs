@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Conditional equality assertion.
 //!
 //! Enforces `x = y` when the MSB-bool value of `cond` is true, and no constraint otherwise.
@@ -16,46 +17,29 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire, path::PathSpec},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 3,
-		n_out: 0,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// That two words are equal, where a third is true as an MSB-bool.
+pub struct AssertEqCond;
+
+impl GateKind for AssertEqCond {
+	const SHAPE: OpcodeShape = OpcodeShape::new(3, 0);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [x, y, cond] = gate.in_wires();
+
+		// (x ⊕ y) ∧ (cond ~>> 63) = 0
+		cb.and(expr::xor2(x, y), expr::sar(cond, 63), expr::empty());
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam { inputs, .. } = data.gate_param();
-	let [x, y, cond] = inputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [x, y, cond] = gate.in_wires();
 
-	// Constraint: (x ⊕ y) ∧ (cond ~>> 63) = 0
-	let mask = expr::sar(*cond, 63);
-	builder.and(expr::xor2(*x, *y), mask, expr::empty());
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	assertion_path: PathSpec,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam { inputs, .. } = data.gate_param();
-	let [x, y, cond] = inputs else { unreachable!() };
-
-	// The condition is read as an MSB-bool, and broadcasting the sign bit preserves it.
-	// So the condition is passed as it stands, with no mask to compute or hold.
-	builder.emit_assert_eq_cond(
-		wire_to_reg(*cond),
-		wire_to_reg(*x),
-		wire_to_reg(*y),
-		assertion_path.as_u32(),
-	);
+		// The condition is read as an MSB-bool, and broadcasting the sign bit preserves it.
+		// So the condition is passed as it stands, with no mask to compute or hold.
+		bc.emit_assert_eq_cond(ctx.reg(cond), ctx.reg(x), ctx.reg(y), ctx.path().as_u32());
+	}
 }

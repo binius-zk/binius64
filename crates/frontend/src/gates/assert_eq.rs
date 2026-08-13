@@ -15,37 +15,27 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire, path::PathSpec},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 2,
-		n_out: 0,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// That two words are equal.
+pub struct AssertEq;
+
+impl GateKind for AssertEq {
+	const SHAPE: OpcodeShape = OpcodeShape::new(2, 0);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [x, y] = gate.in_wires();
+
+		// x ⊕ y = 0
+		cb.zero(expr::xor2(x, y));
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam { inputs, .. } = data.gate_param();
-	let [x, y] = inputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [x, y] = gate.in_wires();
 
-	// Constraint: x ⊕ y = 0
-	builder.zero(expr::xor2(*x, *y));
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	assertion_path: PathSpec,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam { inputs, .. } = data.gate_param();
-	let [x, y] = inputs else { unreachable!() };
-	builder.emit_assert_eq(wire_to_reg(*x), wire_to_reg(*y), assertion_path.as_u32());
+		bc.emit_assert_eq(ctx.reg(x), ctx.reg(y), ctx.path().as_u32());
+	}
 }

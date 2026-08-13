@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! 64-bit unsigned integer addition with carry propagation.
 //!
 //! # Wires
@@ -29,62 +30,40 @@
 
 use crate::{
 	eval_form::BytecodeBuilder,
-	gates::opcode::OpcodeShape,
-	ir::{GateData, GateParam, Wire},
+	gates::{EmitCtx, GateKind, OpcodeShape},
+	ir::GateParam,
 	lower::{ConstraintBuilder, expr},
 };
 
-pub const fn shape() -> OpcodeShape {
-	OpcodeShape {
-		const_in: &[],
-		n_in: 3,
-		n_out: 2,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
+/// The 64-bit sum of two words and a carry-in, with its carry word.
+pub struct IaddCinCout;
+
+impl GateKind for IaddCinCout {
+	const SHAPE: OpcodeShape = OpcodeShape::new(3, 2);
+
+	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
+		let [a, b, cin] = gate.in_wires();
+		let [sum, cout] = gate.out_wires();
+
+		let cout_sll_1 = expr::sll(cout, 1);
+		let cin_msb = expr::srl(cin, 63);
+
+		// Carry propagation:
+		// (a ⊕ (cout << 1) ⊕ cin_msb) ∧ (b ⊕ (cout << 1) ⊕ cin_msb) = cout ⊕ (cout << 1) ⊕ cin_msb
+		cb.and(
+			expr::xor3(a, cout_sll_1, cin_msb),
+			expr::xor3(b, cout_sll_1, cin_msb),
+			expr::xor3(cout, cout_sll_1, cin_msb),
+		);
+
+		// Sum equality (linear): (a ⊕ b ⊕ (cout << 1) ⊕ cin_msb) = sum
+		cb.linear(expr::xor4(a, b, cout_sll_1, cin_msb), sum);
 	}
-}
 
-pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [a, b, cin] = inputs else { unreachable!() };
-	let [sum, cout] = outputs else { unreachable!() };
+	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
+		let [a, b, cin] = gate.in_wires();
+		let [sum, cout] = gate.out_wires();
 
-	let cout_sll_1 = expr::sll(*cout, 1);
-	let cin_msb = expr::srl(*cin, 63);
-
-	// Constraint 1: Carry propagation
-	//
-	// (a ⊕ (cout << 1) ⊕ cin_msb) ∧ (b ⊕ (cout << 1) ⊕ cin_msb) = cout ⊕ (cout << 1) ⊕ cin_msb
-	builder.and(
-		expr::xor3(*a, cout_sll_1, cin_msb),
-		expr::xor3(*b, cout_sll_1, cin_msb),
-		expr::xor3(*cout, cout_sll_1, cin_msb),
-	);
-
-	// Constraint 2: Sum equality (linear)
-	//
-	// (a ⊕ b ⊕ (cout << 1) ⊕ cin_msb) = sum
-	builder.linear(expr::xor4(*a, *b, cout_sll_1, cin_msb), *sum);
-}
-
-pub fn emit_eval_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-) {
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let [a, b, cin] = inputs else { unreachable!() };
-	let [sum, cout] = outputs else { unreachable!() };
-	builder.emit_iadd_cin_cout(
-		wire_to_reg(*sum),
-		wire_to_reg(*cout),
-		wire_to_reg(*a),
-		wire_to_reg(*b),
-		wire_to_reg(*cin),
-	);
+		bc.emit_iadd_cin_cout(ctx.reg(sum), ctx.reg(cout), ctx.reg(a), ctx.reg(b), ctx.reg(cin));
+	}
 }

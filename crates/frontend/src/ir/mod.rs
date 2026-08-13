@@ -60,7 +60,10 @@ pub struct Gate(u32);
 
 entity_impl!(Gate);
 
-/// A handy struct that allows a more type safe destructure.
+/// One gate's wires and immediates, sliced into the groups its shape declares.
+///
+/// A gate of fixed arity reads its groups as arrays, which destructure irrefutably.
+/// The slices serve a gate whose arity depends on its dimensions.
 pub struct GateParam<'a> {
 	pub constants: &'a [Wire],
 	pub inputs: &'a [Wire],
@@ -68,6 +71,50 @@ pub struct GateParam<'a> {
 	pub aux: &'a [Wire],
 	pub scratch: &'a [Wire],
 	pub imm: &'a [u32],
+}
+
+impl GateParam<'_> {
+	/// The gate's constant wires.
+	pub fn const_wires<const N: usize>(&self) -> [Wire; N] {
+		fixed(self.constants, "constant")
+	}
+
+	/// The gate's input wires.
+	pub fn in_wires<const N: usize>(&self) -> [Wire; N] {
+		fixed(self.inputs, "input")
+	}
+
+	/// The gate's output wires.
+	pub fn out_wires<const N: usize>(&self) -> [Wire; N] {
+		fixed(self.outputs, "output")
+	}
+
+	/// The gate's auxiliary wires, which the constraint system references but no caller passes.
+	pub fn aux_wires<const N: usize>(&self) -> [Wire; N] {
+		fixed(self.aux, "auxiliary")
+	}
+
+	/// The gate's scratch wires, which only witness evaluation reads.
+	pub fn scratch_wires<const N: usize>(&self) -> [Wire; N] {
+		fixed(self.scratch, "scratch")
+	}
+
+	/// The gate's immediates.
+	pub fn imms<const N: usize>(&self) -> [u32; N] {
+		fixed(self.imm, "immediate")
+	}
+}
+
+/// Reads one group of a gate as the fixed-size array its shape declares.
+///
+/// # Panics
+///
+/// Panics unless the group holds exactly `N` entries.
+/// Emission checks a gate against its own shape, so a built graph cannot reach this.
+fn fixed<T: Copy, const N: usize>(group: &[T], what: &str) -> [T; N] {
+	<[T; N]>::try_from(group).unwrap_or_else(|_| {
+		panic!("a gate carries {} {what} entries, but its shape declares {N}", group.len())
+	})
 }
 
 /// Describes a particular gate in the gate graph, it's type, input and output wires and
