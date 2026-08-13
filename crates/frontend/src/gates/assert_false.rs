@@ -1,0 +1,53 @@
+// Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+//! Assert that a wire, interpreted as a MSB-bool, is false.
+//! i.e., we are checking whether its most-significant bit is 0. all lower bits get ignored.
+//!
+//! Enforces `MSB(x) = 0` using a ZERO constraint.
+//!
+//! # Algorithm
+//!
+//! `sar(x, 63)` broadcasts the most-significant bit across the whole word, so it vanishes exactly
+//! when the bit is clear.
+//!
+//! # Constraints
+//!
+//! The gate generates 1 ZERO constraint:
+//! - `sar(x, 63) = 0`
+
+use crate::{
+	eval_form::BytecodeBuilder,
+	gates::opcode::OpcodeShape,
+	ir::{GateData, GateParam, Wire, path::PathSpec},
+	lower::{ConstraintBuilder, expr},
+};
+
+pub const fn shape() -> OpcodeShape {
+	OpcodeShape {
+		const_in: &[],
+		n_in: 1,
+		n_out: 0,
+		n_aux: 0,
+		n_scratch: 0,
+		n_imm: 0,
+	}
+}
+
+pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
+	let GateParam { inputs, .. } = data.gate_param();
+	let [x] = inputs else { unreachable!() };
+
+	// Constraint: sar(x, 63) = 0
+	builder.zero(expr::sar(*x, 63));
+}
+
+pub fn emit_eval_bytecode(
+	data: &GateData,
+	assertion_path: PathSpec,
+	builder: &mut BytecodeBuilder,
+	wire_to_reg: impl Fn(Wire) -> u32,
+) {
+	let GateParam { inputs, .. } = data.gate_param();
+	let [x] = inputs else { unreachable!() };
+	builder.emit_assert_false(wire_to_reg(*x), assertion_path.as_u32());
+}
