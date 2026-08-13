@@ -24,13 +24,11 @@ use super::{
 /// Digits carried by each of the digest's two 64-bit words.
 const DIGITS_PER_WORD: usize = V / 2;
 
-/// The encoding hashes `message | randomness` zero-padded to this many bytes.
-///
-/// Fixing the payload length keeps the encoding two compressions and, because the hash binds the
-/// exact byte string, keeps the padding out of the prover's hands.
-const ENCODING_PAYLOAD_LEN: usize = 64;
+/// The encoding hashes `message | randomness`, which is one BLAKE3 block with room to spare now
+/// that the domain rides in the key rather than the payload.
+const ENCODING_PAYLOAD_LEN: usize = MESSAGE_LEN + RANDOMNESS_LEN;
 
-const _: () = assert!(MESSAGE_LEN + RANDOMNESS_LEN <= ENCODING_PAYLOAD_LEN);
+const _: () = assert!(ENCODING_PAYLOAD_LEN <= 64);
 const _: () = assert!(2 * DIGITS_PER_WORD == V);
 
 /// The target-sum encoding.
@@ -163,11 +161,10 @@ pub fn circuit_wots_encode(
 ) -> [Wire; V] {
 	let zero = builder.add_constant_64(0);
 
-	// `message | randomness`, zero-padded to the fixed payload length.
+	// `message | randomness`, which fills its wires exactly.
 	let mut payload = Vec::with_capacity(ENCODING_PAYLOAD_LEN / 8);
 	payload.extend_from_slice(message);
 	payload.extend_from_slice(randomness);
-	payload.resize(ENCODING_PAYLOAD_LEN / 8, zero);
 
 	let digest = circuit_tweak_hash(builder, public_param, TWEAK_TYPE_ENCODING, 0, epoch, &payload);
 

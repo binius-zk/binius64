@@ -1,19 +1,24 @@
 // Copyright 2026 The Binius Developers
 // Copyright (c) 2026 leanEthereum
-//! The XMSS hash layer: [`tweak_hash`] is BLAKE3 of the exact byte string `tweak | pp | payload`,
+//! The XMSS hash layer: [`tweak_hash`] is the BLAKE3 keyed hash of the payload under `pp | tweak`,
 //! truncated to 16 bytes, for chain steps, Merkle nodes, WOTS public keys and message encodings
 //! alike.
 //!
 //! The 16-byte tweak makes every call site a distinct hash function, which is what separates the
-//! many targets an attacker may aim at, and the public parameter separates users. Hashing the
-//! exact byte string binds its length, so no digest extends into the digest of a longer input.
+//! many targets an attacker may aim at, and the public parameter separates users. Together they
+//! are 32 bytes, exactly a BLAKE3 key, so the whole of the domain fits the key with nothing left
+//! to pad — two distinct `(pp, tweak)` pairs are two distinct keys.
+//!
+//! Keying is BLAKE3's own domain separation: the key replaces the initial chaining value and every
+//! compression carries `KEYED_HASH`. The payload is then the entire message, and the full
+//! construction binds its length, so no digest extends into the digest of a longer payload.
 
-use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
-use super::{DIGEST_LEN, DIGEST_WIRES, Digest, PUBLIC_PARAM_WIRES, PublicParam};
+use super::{DIGEST_LEN, DIGEST_WIRES, Digest, PUBLIC_PARAM_LEN, PUBLIC_PARAM_WIRES, PublicParam};
 use crate::{
-	blake3::{CHUNK_END, CHUNK_START, IV, ROOT, blake3_compress_2x, blake3_fixed},
+	blake3::{KEY_BYTES, blake3_keyed_fixed, blake3_keyed_fixed_2x},
+	fixed_byte_vec::ByteVec,
 	util::{clear_high_bits, split_u32_words},
 };
 
@@ -35,6 +40,10 @@ const TWEAK_WIRES: usize = TWEAK_LEN / 8;
 /// A tweak: `[tweak_type (1) | sub_position (4) | index (4) | zeros (7)]`, little-endian.
 pub type Tweak = [u8; TWEAK_LEN];
 
+// The public parameter and the tweak fill a BLAKE3 key exactly, so the key needs no padding and
+// distinct domains cannot collide in it.
+const _: () = assert!(PUBLIC_PARAM_LEN + TWEAK_LEN == KEY_BYTES);
+
 /// Builds a tweak.
 ///
 /// `index` is the epoch (chain, WOTS public key, encoding) or the Merkle node index;
@@ -47,10 +56,23 @@ pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
 	tweak
 }
 
-/// BLAKE3 of the exact-length `tweak | pp | payload` byte string, truncated to [`DIGEST_LEN`].
+/// The key a call site hashes under: `pp | tweak`, the full 32 bytes of a BLAKE3 key.
+pub fn make_key(
+	public_param: &PublicParam,
+	tweak_type: u8,
+	sub_position: u32,
+	index: u32,
+) -> [u8; KEY_BYTES] {
+	let mut key = [0u8; KEY_BYTES];
+	key[..PUBLIC_PARAM_LEN].copy_from_slice(public_param);
+	key[PUBLIC_PARAM_LEN..].copy_from_slice(&make_tweak(tweak_type, sub_position, index));
+	key
+}
+
+/// The BLAKE3 keyed hash of `payload` under `pp | tweak`, truncated to [`DIGEST_LEN`].
 ///
-/// One compression for chain steps (48 bytes in total) and Merkle nodes (64 bytes), more for the
-/// multi-block WOTS public-key and encoding inputs.
+/// One compression for chain steps (16 bytes of payload), Merkle nodes (32) and the message
+/// encoding (56); eleven for the WOTS public key's 672.
 pub fn tweak_hash(
 	public_param: &PublicParam,
 	tweak_type: u8,
@@ -58,11 +80,8 @@ pub fn tweak_hash(
 	index: u32,
 	payload: &[u8],
 ) -> Digest {
-	let mut input = Vec::with_capacity(TWEAK_LEN + public_param.len() + payload.len());
-	input.extend_from_slice(&make_tweak(tweak_type, sub_position, index));
-	input.extend_from_slice(public_param);
-	input.extend_from_slice(payload);
-	blake3::hash(&input).as_bytes()[..DIGEST_LEN]
+	let key = make_key(public_param, tweak_type, sub_position, index);
+	blake3::keyed_hash(&key, payload).as_bytes()[..DIGEST_LEN]
 		.try_into()
 		.expect("the slice is DIGEST_LEN bytes")
 }
@@ -95,40 +114,42 @@ pub fn circuit_tweak_hash(
 	index: Wire,
 	payload: &[Wire],
 ) -> [Wire; DIGEST_WIRES] {
-	// `tweak | pp | payload`. Every part is a whole number of 8-byte words, so the byte string
-	// lands on the wires with no padding and no masking anywhere.
-	let mut words = Vec::with_capacity(TWEAK_WIRES + PUBLIC_PARAM_WIRES + payload.len());
-	words.extend_from_slice(&tweak_wires(builder, tweak_type, sub_position, index));
-	words.extend_from_slice(public_param);
-	words.extend_from_slice(payload);
-
-	let len_bytes = words.len() * 8;
-	let message = split_u32_words(builder, &words, len_bytes / 4);
-	truncate(builder, &blake3_fixed(builder, &message, len_bytes))
+	let key = circuit_key(builder, public_param, tweak_type, sub_position, index);
+	let len_bytes = payload.len() * 8;
+	let message = split_u32_words(builder, payload, len_bytes / 4);
+	truncate(builder, &blake3_keyed_fixed(builder, &message, len_bytes, &key))
 }
 
-/// BLAKE3 block size in bytes.
-const BLOCK_BYTES: usize = 64;
+/// The key as a byte vector: the public parameter, then the tweak.
+fn circuit_key(
+	builder: &CircuitBuilder,
+	public_param: &[Wire; PUBLIC_PARAM_WIRES],
+	tweak_type: u8,
+	sub_position: u32,
+	index: Wire,
+) -> ByteVec {
+	let mut wires = Vec::with_capacity(PUBLIC_PARAM_WIRES + TWEAK_WIRES);
+	wires.extend_from_slice(public_param);
+	wires.extend_from_slice(&tweak_wires(builder, tweak_type, sub_position, index));
+	ByteVec::new_const_len(builder, wires, KEY_BYTES)
+}
 
-/// Two independent tweak hashes evaluated as the two lanes of one compression.
+/// Two independent tweak hashes evaluated as the two lanes of one core.
 ///
-/// A hash whose whole byte string fits one 64-byte block is one chunk of one block, so its digest
-/// is a single compression carrying `CHUNK_START | CHUNK_END | ROOT` at counter zero. Two of those
-/// differ only in their message block, which is what lets them share a paired core.
+/// Two hashes of equal length run in lockstep — same block count, same block lengths, same flags,
+/// same tree shape — so every compression of one has a partner in the other and the two share a
+/// paired core. Here the lanes differ only in their key's sub-position and in their payload, which
+/// is exactly how two chains at one step differ.
 ///
-/// This is cheaper than two lone compressions, though not for the reason the lane count suggests.
-/// A lone compression already uses both lanes, splitting its own seven rounds across them for four
-/// packed rounds, so on rounds alone the pair only trades eight for seven. The rest of the saving
-/// is the split itself: a lone compression hints its mid-round state and then constrains that hint
-/// word for word, and a pair has no split to pin.
-///
-/// Both lanes take the same tweak type and index and the same payload length; only the
-/// sub-position and the payload differ, which is exactly how two chains at one step differ.
+/// This is cheaper than two lone hashes, though not for the reason the lane count suggests. A lone
+/// compression already uses both lanes, splitting its own seven rounds across them, so on rounds
+/// alone the pair only trades eight for seven. The rest of the saving is the split itself: a lone
+/// compression hints its mid-round state and then constrains that hint word for word, and a pair
+/// has no split to pin.
 ///
 /// # Panics
 ///
 /// - If the two payloads differ in length.
-/// - If the hashed byte string does not fit one block.
 pub fn circuit_tweak_hash_2x(
 	builder: &CircuitBuilder,
 	public_param: &[Wire; PUBLIC_PARAM_WIRES],
@@ -142,51 +163,19 @@ pub fn circuit_tweak_hash_2x(
 		payloads[1].len(),
 		"both lanes must hash the same number of bytes"
 	);
-	let len_bytes = (TWEAK_WIRES + PUBLIC_PARAM_WIRES + payloads[0].len()) * 8;
-	assert!(
-		len_bytes <= BLOCK_BYTES,
-		"a two-lane tweak hash needs its {len_bytes} bytes to fit one {BLOCK_BYTES}-byte block"
+
+	let keys = sub_positions
+		.map(|sub_position| circuit_key(builder, public_param, tweak_type, sub_position, index));
+	let len_bytes = payloads[0].len() * 8;
+	let messages = payloads.map(|payload| split_u32_words(builder, payload, len_bytes / 4));
+
+	let digests = blake3_keyed_fixed_2x(
+		builder,
+		[&messages[0], &messages[1]],
+		len_bytes,
+		[&keys[0], &keys[1]],
 	);
-
-	// Each lane's block, as 32-bit words zero-padded out to the full 64 bytes.
-	let lane_block = |lane: usize| {
-		let mut words = Vec::with_capacity(TWEAK_WIRES + PUBLIC_PARAM_WIRES + payloads[lane].len());
-		words.extend_from_slice(&tweak_wires(builder, tweak_type, sub_positions[lane], index));
-		words.extend_from_slice(public_param);
-		words.extend_from_slice(payloads[lane]);
-		split_u32_words(builder, &words, BLOCK_BYTES / 4)
-	};
-	let (block0, block1) = (lane_block(0), lane_block(1));
-
-	// Lane 0 occupies the low half of each word and lane 1 the high half. The words come out of
-	// the split with clean high halves, so the exclusive-or is a disjoint merge.
-	let block: [Wire; BLOCK_BYTES / 4] =
-		std::array::from_fn(|i| builder.bxor(block0[i], builder.shl(block1[i], 32)));
-
-	// Everything but the message is identical in both lanes, so each is one constant carrying the
-	// same value twice.
-	let duplicated =
-		|value: u32| builder.add_constant(Word((value as u64) | ((value as u64) << 32)));
-	let cv: [Wire; 8] = std::array::from_fn(|i| duplicated(IV[i]));
-	let zero = builder.add_constant_64(0);
-	let block_len = duplicated(len_bytes as u32);
-	// A lone chunk that is the whole message: the block both starts and ends it, and is the root.
-	let flags = duplicated(CHUNK_START | CHUNK_END | ROOT);
-
-	let out = blake3_compress_2x(builder, cv, block, zero, zero, block_len, flags);
-
-	// The digest is the low DIGEST_LEN bytes, so only the first words are read back, each split
-	// into the lane it belongs to.
-	[
-		std::array::from_fn(|k| {
-			let low = clear_high_bits(builder, out[2 * k], 32);
-			builder.bxor(low, builder.shl(out[2 * k + 1], 32))
-		}),
-		std::array::from_fn(|k| {
-			let low = builder.shr(out[2 * k], 32);
-			builder.bxor(low, builder.shl(builder.shr(out[2 * k + 1], 32), 32))
-		}),
-	]
+	digests.map(|digest| truncate(builder, &digest))
 }
 
 /// The tweak as 64-bit little-endian wires.

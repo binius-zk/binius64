@@ -2,21 +2,26 @@
 // Copyright (c) 2026 leanEthereum
 //! XMSS signature verification.
 //!
-//! The scheme is the one leanVM-b's `xmss` crate implements, with BLAKE3 in place of BLAKE2s as
-//! the hash underlying the tweakable hash. Every parameter, every hashed byte string and every
-//! tweak is otherwise the same, so a signature is defined by exactly the same construction:
+//! The scheme is the one leanVM-b's `xmss` crate implements. Every parameter, every tweak and
+//! every step of verification is the same, so a signature is the same construction:
 //!
 //! - a Winternitz one-time signature over [`V`] chains of length [`CHAIN_LENGTH`], with a
 //!   target-sum encoding and no checksum chains,
 //! - whose chain ends hash into a Merkle leaf,
 //! - which an authentication path links to the committed root.
 //!
-//! Both hashes compress 64 bytes at a time, so the swap costs nothing: a chain step is one
-//! compression, a Merkle node one, the message encoding two and the WOTS public key eleven, and a
-//! native verification is a constant 144 of them.
+//! The tweakable hash under it is the one thing that differs, and differs twice over: BLAKE3
+//! rather than BLAKE2s, keyed rather than prefixed. The reference hashes the byte string
+//! `tweak | pp | payload`; here `pp | tweak` is the BLAKE3 key and the payload is the whole
+//! message. The two are 32 bytes together, exactly a key, so the domain fits it with nothing left
+//! to pad. Digests therefore do not agree with the reference's — the schemes are the same, the
+//! instantiations are not.
+//!
+//! Keying also takes the domain out of the payload, which is what makes the message encoding one
+//! compression rather than two. A native verification is a constant 143:
 //!
 //! ```text
-//! 2 (encoding) + 99 (chains, fixed by the target sum) + 11 (leaf) + 32 (path) = 144
+//! 1 (encoding) + 99 (chains, fixed by the target sum) + 11 (leaf) + 32 (path) = 143
 //! ```
 //!
 //! In circuit the chain work is not the 99 steps a verifier walks but every one of the
@@ -24,8 +29,8 @@
 //! evaluate all of its steps and take the hashed value only past its digit. The target sum buys
 //! encoding validity here rather than verifier work.
 //!
-//! Those 294 run two chains to a compression, as the two 32-bit lanes of one paired BLAKE3 core,
-//! so they cost 147 cores beside the 45 lone compressions of the encoding, the leaf and the path.
+//! Those 294 run two chains to a core, as the two 32-bit lanes of one paired BLAKE3 compression,
+//! so they cost 147 cores beside the 44 lone compressions of the encoding, the leaf and the path.
 //!
 //! # Example
 //!
