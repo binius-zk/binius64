@@ -140,12 +140,15 @@ enum Channel {
 /// Every sampled wire then carries the value the native challenger would have produced.
 ///
 /// Each call emits its gates immediately rather than deferring them.
-/// That is why the builder is borrowed for this object's whole life.
+///
+/// The builder is held by value rather than borrowed.
+/// A `CircuitBuilder` is a handle, so a clone emits into the same circuit.
+/// That lets a channel own both the builder and a challenger over it.
 ///
 /// See the [module docs](self) for the byte-packing conventions and the constraint cost.
-pub struct Sha256Challenger<'a> {
+pub struct Sha256Challenger {
 	/// Where this gadget's gates are emitted.
-	builder: &'a CircuitBuilder,
+	builder: CircuitBuilder,
 	/// Midstate over the blocks of the current epoch already compressed.
 	state: State,
 	/// A completed block held back so the next one can share a two-lane compression core.
@@ -164,17 +167,17 @@ pub struct Sha256Challenger<'a> {
 	n_cores: usize,
 }
 
-impl<'a> Sha256Challenger<'a> {
+impl Sha256Challenger {
 	/// Creates a challenger in the state a freshly defaulted native challenger starts in.
 	///
 	/// The seed digest is a constant, so nothing is committed and nothing is compressed yet.
-	pub fn new(builder: &'a CircuitBuilder) -> Self {
+	pub fn new(builder: &CircuitBuilder) -> Self {
 		// The seed is fixed by the protocol, so it enters as constants and costs no constraints.
 		let buffer = array::from_fn(|i| builder.add_constant_64(SEED[i] as u64));
 
 		// Fresh state: an empty epoch, a full sample buffer, and the sampler live.
 		let mut this = Self {
-			builder,
+			builder: builder.clone(),
 			state: State::iv(builder),
 			pending: None,
 			block: [builder.add_constant(Word::ZERO); BLOCK_WORDS],
@@ -356,9 +359,9 @@ impl<'a> Sha256Challenger<'a> {
 		// A two-lane core leaves its partner's state in the high half, and sampling reads all
 		// 64 bits, so the digest is the one place a clean high half is required.
 		let digest: [Wire; DIGEST_WORDS] =
-			array::from_fn(|i| clear_high_bits(self.builder, self.state.0[i], 32));
+			array::from_fn(|i| clear_high_bits(&self.builder, self.state.0[i], 32));
 
-		self.state = State::iv(self.builder);
+		self.state = State::iv(&self.builder);
 		self.block = [self.builder.add_constant(Word::ZERO); BLOCK_WORDS];
 		self.absorbed = 0;
 		self.buffer = digest;
@@ -382,8 +385,8 @@ impl<'a> Sha256Challenger<'a> {
 		}
 		// Reversing the bytes of each 32-bit half turns the little-endian pair into the two
 		// big-endian schedule words, already in order.
-		let swapped = swap_bytes_32(self.builder, word);
-		let first = clear_high_bits(self.builder, swapped, 32);
+		let swapped = swap_bytes_32(&self.builder, word);
+		let first = clear_high_bits(&self.builder, swapped, 32);
 		let second = self.builder.shr(swapped, 32);
 		self.absorb_be32(first);
 		self.absorb_be32(second);
