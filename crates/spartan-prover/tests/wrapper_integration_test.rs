@@ -144,6 +144,7 @@ fn test_zk_wrapped_prove_verify() {
 		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 			&mut prover_transcript,
 			&mut rng,
+			GlobalAllocator,
 		);
 	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
 		basefold_channel,

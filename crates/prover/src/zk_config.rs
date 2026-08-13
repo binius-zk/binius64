@@ -147,7 +147,7 @@ where
 		// Create BaseFold prover channel and wrap with outer prover.
 		let basefold_channel = self
 			.basefold_compiler
-			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng);
+			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng, alloc);
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
 			basefold_channel,
 			&self.outer_iop_prover,

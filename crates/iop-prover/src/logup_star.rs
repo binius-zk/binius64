@@ -466,6 +466,7 @@ mod tests {
 			.create_channel_from_transcript::<StdHashSuite, Chal, _, _>(
 				&mut prover_transcript,
 				prover_channel_rng,
+				GlobalAllocator,
 			);
 
 		let alloc = GlobalAllocator;

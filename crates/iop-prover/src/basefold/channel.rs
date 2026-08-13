@@ -764,6 +764,7 @@ mod tests {
 			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
+				GlobalAllocator,
 			);
 
 		let oracle = prover_channel.send_oracle(buffer.to_ref());
@@ -832,6 +833,7 @@ mod tests {
 			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
+				GlobalAllocator,
 			);
 
 		let oracle_1 = prover_channel.send_oracle(buffer_1.to_ref());
@@ -917,6 +919,7 @@ mod tests {
 			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
+				GlobalAllocator,
 			);
 
 		let oracles: Vec<_> = data
@@ -1005,6 +1008,7 @@ mod tests {
 			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
+				GlobalAllocator,
 			);
 
 		let oracles: Vec<_> = data
@@ -1256,6 +1260,7 @@ mod tests {
 			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
+				GlobalAllocator,
 			);
 
 		let oracles = data

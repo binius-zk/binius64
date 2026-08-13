@@ -13,6 +13,7 @@
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
+use binius_compute::{Allocator, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{Field, PackedField};
 use binius_hash::binary_merkle_tree::{BinaryMerkleTree, HashSuite};
@@ -80,9 +81,15 @@ pub trait MerkleIPProverChannel<F: Field>: WordIPProverChannel<F> {
 ///
 /// The transcript is held through a [`BorrowMut`] bound, so the channel can own the transcript or
 /// mutably borrow one.
-pub struct ProverMerkleTranscriptChannel<T, Challenger_, F, H: HashSuite> {
+pub struct ProverMerkleTranscriptChannel<
+	T,
+	Challenger_,
+	F,
+	H: HashSuite,
+	A: Allocator = GlobalAllocator,
+> {
 	transcript: T,
-	merkle_prover: BinaryMerkleTreeProver<F, H>,
+	merkle_prover: BinaryMerkleTreeProver<F, H, A>,
 	_challenger_marker: PhantomData<Challenger_>,
 }
 
@@ -91,11 +98,17 @@ impl<T, Challenger_, F, H: HashSuite> ProverMerkleTranscriptChannel<T, Challenge
 	pub fn new(transcript: T) -> Self {
 		Self::with_merkle_prover(transcript, BinaryMerkleTreeProver::new())
 	}
+}
 
+impl<T, Challenger_, F, H: HashSuite, A: Allocator>
+	ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
+{
 	/// Constructs a channel over the transcript with the given Merkle tree prover.
+	///
+	/// The prover carries the allocator every committed tree draws its nodes from.
 	pub const fn with_merkle_prover(
 		transcript: T,
-		merkle_prover: BinaryMerkleTreeProver<F, H>,
+		merkle_prover: BinaryMerkleTreeProver<F, H, A>,
 	) -> Self {
 		Self {
 			transcript,
@@ -118,13 +131,14 @@ pub struct ProverMerkleCommitment<Committed> {
 	log_leaf_size: usize,
 }
 
-impl<F, T, Challenger_, H> IPProverChannel<F>
-	for ProverMerkleTranscriptChannel<T, Challenger_, F, H>
+impl<F, T, Challenger_, H, A> IPProverChannel<F>
+	for ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
 where
 	F: Field,
 	T: BorrowMut<ProverTranscript<Challenger_>>,
 	Challenger_: Challenger,
 	H: HashSuite,
+	A: Allocator,
 {
 	fn send_one(&mut self, elem: F) {
 		self.transcript.borrow_mut().send_one(elem)
@@ -147,13 +161,14 @@ where
 	}
 }
 
-impl<F, T, Challenger_, H> WordIPProverChannel<F>
-	for ProverMerkleTranscriptChannel<T, Challenger_, F, H>
+impl<F, T, Challenger_, H, A> WordIPProverChannel<F>
+	for ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
 where
 	F: Field,
 	T: BorrowMut<ProverTranscript<Challenger_>>,
 	Challenger_: Challenger,
 	H: HashSuite,
+	A: Allocator,
 {
 	type Word = Word;
 
@@ -166,16 +181,17 @@ where
 	}
 }
 
-impl<F, T, Challenger_, H> MerkleIPProverChannel<F>
-	for ProverMerkleTranscriptChannel<T, Challenger_, F, H>
+impl<F, T, Challenger_, H, A> MerkleIPProverChannel<F>
+	for ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
 where
 	F: Field,
 	T: BorrowMut<ProverTranscript<Challenger_>>,
 	Challenger_: Challenger,
 	H: HashSuite,
+	A: Allocator,
 	Output<H::LeafHash>: SerializeBytes,
 {
-	type Commitment = ProverMerkleCommitment<BinaryMerkleTree<Output<H::LeafHash>>>;
+	type Commitment = ProverMerkleCommitment<BinaryMerkleTree<Output<H::LeafHash>, A>>;
 
 	fn send_merkle_commitment<P: PackedField<Scalar = F>>(
 		&mut self,

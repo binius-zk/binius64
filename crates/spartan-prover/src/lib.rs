@@ -399,14 +399,15 @@ where
 		let public = witness.public();
 		transcript.observe().write_slice(public);
 
+		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
+		// by earlier proofs. The channel gets the same pool, so the Merkle trees it commits draw
+		// their nodes from it too.
+		let alloc = &self.pool;
 		// Create ZK channel (owns the RNG for mask generation), commit the precommit oracle,
 		// and delegate to the IOP prover.
 		let mut channel = self
 			.basefold_compiler
-			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng);
-		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
-		// by earlier proofs.
-		let alloc = &self.pool;
+			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng, alloc);
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _, _>(witness, &mut rng, &mut channel, &alloc);

@@ -3,6 +3,7 @@
 
 use core::slice;
 
+use binius_compute::BufferPool;
 use binius_field::{
 	BinaryField128bGhash as B128, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
 };
@@ -169,4 +170,33 @@ fn test_commit_field_buffer_rejects_oversized_leaf() {
 		&mut rng, 4,
 	));
 	let _ = prover.commit_field_buffer(buffer.to_ref(), 3);
+}
+
+#[test]
+fn a_pooled_prover_commits_the_same_tree_as_the_global_one() {
+	// Invariant: the allocator backing the nodes is not observable in what gets committed.
+	// Pooling is a memory strategy, so every digest the two provers produce must agree.
+	//
+	// Fixture state: 64 scalars in leaves of 2, committed twice — once on the global heap, once
+	// out of a `BufferPool`.
+	let mut rng = StdRng::seed_from_u64(0);
+	let data = random_scalars::<B128>(&mut rng, 64);
+
+	let global = BinaryMerkleTreeProver::<B128, StdHashSuite>::new();
+	let (global_commitment, global_tree) = global.commit(&data, 2);
+
+	let pool = BufferPool::new();
+	let pooled = BinaryMerkleTreeProver::<B128, StdHashSuite, _>::with_allocator(&pool);
+	let (pooled_commitment, pooled_tree) = pooled.commit(&data, 2);
+
+	assert_eq!(pooled_commitment.root, global_commitment.root);
+	assert_eq!(pooled_commitment.depth, global_commitment.depth);
+	// Every node, not just the root: a layer or branch read off the pooled tree must match too.
+	assert_eq!(&*pooled_tree.inner_nodes, &*global_tree.inner_nodes);
+
+	// The pool is reused across commitments, which is the whole point of holding one.
+	// A second commitment through the same pool draws recycled blocks and must still agree.
+	drop(pooled_tree);
+	let (again, _) = pooled.commit(&data, 2);
+	assert_eq!(again.root, global_commitment.root);
 }
