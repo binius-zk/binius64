@@ -1,14 +1,14 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
-use binius_core::constraint_system::{Composition, Shift};
+use binius_core::constraint_system::Shift;
 
-use super::legraph::LeGraph;
+use super::{LOWERED_SHIFT_SLOTS, legraph::LeGraph};
 use crate::{
 	ir::Wire,
 	lower::{
-		ConstraintBuilder, ShiftedWire, WireAndConstraint, WireBmulConstraint, WireImulConstraint,
-		WireLinearConstraint, WireOperand, WireZeroConstraint,
+		ConstraintBuilder, PushInner, ShiftedWire, WireAndConstraint, WireBmulConstraint,
+		WireImulConstraint, WireLinearConstraint, WireOperand, WireZeroConstraint, push_inner,
 	},
 	pass::fusion::legraph::ConstraintRef,
 };
@@ -218,49 +218,55 @@ fn process_operand(
 ) -> WireOperand {
 	let mut new_operand = WireOperand::new();
 	for term in old_operand {
-		process_term(cb, leg, &mut new_operand, subsumes, term.wire, term.shift);
+		process_term(cb, leg, &mut new_operand, subsumes, term.wire, term.shift_seq);
 	}
 	new_operand
 }
 
 /// Recursively process a term, inlining non-committed linear definitions.
+///
+/// `shift_seq` is what the consumers above have accumulated, to be applied to `wire`. Inlining
+/// folds the definition's own shift inside it, greedily, so a slot is spent only where the two
+/// genuinely do not collapse.
 fn process_term(
 	cb: &ConstraintBuilder,
 	leg: &LeGraph,
 	new_operand: &mut WireOperand,
 	subsumes: &mut Vec<ConstraintRef>,
 	wire: Wire,
-	shift: Shift,
+	shift_seq: [Shift; 2],
 ) {
 	// Check if this wire is committed or not a linear def (i.e., opaque)
 	if leg.commit_set().contains(wire) || !leg.is_lin_def(wire) {
-		// This is a terminal or committed wire - add it to the result with the accumulated shift
-		new_operand.push(ShiftedWire { wire, shift });
+		// This is a terminal or committed wire - add it to the result with the accumulated shifts
+		new_operand.push(ShiftedWire { wire, shift_seq });
 	} else {
 		// This is a non-committed linear def - we need to inline it!
 		let inner_operand = leg.lin_def_operand(cb, wire);
 		let constraint_ref = leg.lin_def_constraint_ref(wire);
 		subsumes.push(constraint_ref);
 
-		// Distribute the current shift over all terms in the inner operand
+		// Distribute the accumulated shifts over all terms in the inner operand
 		// This is crucial for correctness: shift(a ^ b) = shift(a) ^ shift(b)
 		for inner_term in inner_operand {
-			// Compose shifts: we're applying 'shift' to 'inner_term'
-			// So we need Shift::compose(inner_term.shift, shift)
-			match Shift::compose(inner_term.shift, shift) {
-				Composition::Single(composed_shift) => {
-					// Recursively process this term with the composed shift
-					process_term(cb, leg, new_operand, subsumes, inner_term.wire, composed_shift);
+			// The definition's own shift is applied before anything accumulated above it, so it
+			// folds into the sequence from the inside.
+			let inner_shift = inner_term.sole_shift();
+			match push_inner(shift_seq, inner_shift, LOWERED_SHIFT_SLOTS) {
+				PushInner::Seq(composed) => {
+					// Recursively process this term with the composed sequence
+					process_term(cb, leg, new_operand, subsumes, inner_term.wire, composed);
 				}
-				// The two shifts clear the word, so the term is identically zero. An operand is
+				// The shifts clear the word, so the term is identically zero. An operand is
 				// an XOR, so a zero term contributes nothing and the inlining simply drops it.
-				Composition::Zero => {}
-				// Needing both slots means the commit set inlined a definition it should have
+				PushInner::Zero => {}
+				// Needing a third slot means the commit set inlined a definition it should have
 				// committed: the two passes disagree about what is inlinable.
-				Composition::Pair => {
+				PushInner::OverBudget => {
 					panic!(
-						"Incompatible shifts during inlining: {:?} followed by {:?} for wire {:?}",
-						inner_term.shift, shift, inner_term.wire
+						"Incompatible shifts during inlining: {inner_shift:?} followed by \
+						 {shift_seq:?} for wire {:?}",
+						inner_term.wire
 					);
 				}
 			}
@@ -308,17 +314,17 @@ mod tests {
 			let actual = expand_expression(&cb, &leg, wire);
 
 			// Convert to BTreeMap for easier comparison (order-independent)
-			let expected_map: BTreeMap<(Wire, Shift), usize> =
+			let expected_map: BTreeMap<(Wire, [Shift; 2]), usize> =
 				expected_expansion
 					.iter()
 					.fold(BTreeMap::new(), |mut map, term| {
-						*map.entry((term.wire, term.shift)).or_insert(0) += 1;
+						*map.entry((term.wire, term.shift_seq)).or_insert(0) += 1;
 						map
 					});
 
-			let actual_map: BTreeMap<(Wire, Shift), usize> =
+			let actual_map: BTreeMap<(Wire, [Shift; 2]), usize> =
 				actual.iter().fold(BTreeMap::new(), |mut map, term| {
-					*map.entry((term.wire, term.shift)).or_insert(0) += 1;
+					*map.entry((term.wire, term.shift_seq)).or_insert(0) += 1;
 					map
 				});
 
@@ -347,14 +353,8 @@ mod tests {
 			&[(
 				w(4),
 				vec![
-					ShiftedWire {
-						wire: w(0),
-						shift: Shift::IDENTITY,
-					},
-					ShiftedWire {
-						wire: w(1),
-						shift: Shift::IDENTITY,
-					},
+					ShiftedWire::single(w(0), Shift::IDENTITY),
+					ShiftedWire::single(w(1), Shift::IDENTITY),
 				],
 			)],
 		);
@@ -525,16 +525,13 @@ mod tests {
 
 		if !leg.is_lin_def(wire) {
 			// Not a linear def - return as is
-			result.push(ShiftedWire {
-				wire,
-				shift: Shift::IDENTITY,
-			});
+			result.push(ShiftedWire::single(wire, Shift::IDENTITY));
 			return result;
 		}
 
 		let operand = leg.lin_def_operand(cb, wire);
 		for term in operand {
-			expand_term_recursive(cb, leg, &mut result, term.wire, term.shift);
+			expand_term_recursive(cb, leg, &mut result, term.wire, term.shift_seq);
 		}
 		result
 	}
@@ -544,23 +541,23 @@ mod tests {
 		leg: &LeGraph,
 		result: &mut Vec<ShiftedWire>,
 		wire: Wire,
-		shift: Shift,
+		shift_seq: [Shift; 2],
 	) {
 		// Check if this wire is committed OR not a linear def (terminal)
 		if !leg.is_lin_def(wire) || leg.commit_set().contains(wire) {
 			// Terminal or committed - add it as is
-			result.push(ShiftedWire { wire, shift });
+			result.push(ShiftedWire { wire, shift_seq });
 		} else {
 			// This is a non-committed linear def - expand recursively
 			let inner = leg.lin_def_operand(cb, wire);
 			for term in inner {
-				match Shift::compose(term.shift, shift) {
-					Composition::Single(composed) => {
+				match push_inner(shift_seq, term.sole_shift(), LOWERED_SHIFT_SLOTS) {
+					PushInner::Seq(composed) => {
 						expand_term_recursive(cb, leg, result, term.wire, composed)
 					}
-					// A term the two shifts clear contributes nothing to the XOR.
-					Composition::Zero => {}
-					Composition::Pair => {
+					// A term the shifts clear contributes nothing to the XOR.
+					PushInner::Zero => {}
+					PushInner::OverBudget => {
 						panic!("the commit set only inlines definitions whose shifts compose")
 					}
 				}
@@ -569,10 +566,12 @@ mod tests {
 	}
 
 	/// Build a frequency map for an operand for order-independent comparison.
-	fn operand_count_map(ops: &[ShiftedWire]) -> std::collections::BTreeMap<(Wire, Shift), usize> {
+	fn operand_count_map(
+		ops: &[ShiftedWire],
+	) -> std::collections::BTreeMap<(Wire, [Shift; 2]), usize> {
 		let mut map = std::collections::BTreeMap::new();
 		for t in ops {
-			*map.entry((t.wire, t.shift)).or_insert(0) += 1;
+			*map.entry((t.wire, t.shift_seq)).or_insert(0) += 1;
 		}
 		map
 	}
@@ -608,32 +607,17 @@ mod tests {
 				(
 					w(4),
 					vec![
-						ShiftedWire {
-							wire: w(0),
-							shift: Shift::IDENTITY,
-						},
-						ShiftedWire {
-							wire: w(1),
-							shift: Shift::IDENTITY,
-						},
-						ShiftedWire {
-							wire: w(3),
-							shift: Shift::IDENTITY,
-						},
+						ShiftedWire::single(w(0), Shift::IDENTITY),
+						ShiftedWire::single(w(1), Shift::IDENTITY),
+						ShiftedWire::single(w(3), Shift::IDENTITY),
 					],
 				),
 				// y should expand to: x ^ a
 				(
 					w(2),
 					vec![
-						ShiftedWire {
-							wire: w(0),
-							shift: Shift::IDENTITY,
-						},
-						ShiftedWire {
-							wire: w(1),
-							shift: Shift::IDENTITY,
-						},
+						ShiftedWire::single(w(0), Shift::IDENTITY),
+						ShiftedWire::single(w(1), Shift::IDENTITY),
 					],
 				),
 			],
@@ -656,21 +640,9 @@ mod tests {
 			&[],
 			&[
 				// z should expand to: x << 30
-				(
-					w(2),
-					vec![ShiftedWire {
-						wire: w(0),
-						shift: Shift::sll(30),
-					}],
-				),
+				(w(2), vec![ShiftedWire::single(w(0), Shift::sll(30))]),
 				// y should expand to: x << 10
-				(
-					w(1),
-					vec![ShiftedWire {
-						wire: w(0),
-						shift: Shift::sll(10),
-					}],
-				),
+				(w(1), vec![ShiftedWire::single(w(0), Shift::sll(10))]),
 			],
 		);
 	}
@@ -694,14 +666,8 @@ mod tests {
 				(
 					w(3),
 					vec![
-						ShiftedWire {
-							wire: w(0),
-							shift: Shift::rotr(5),
-						},
-						ShiftedWire {
-							wire: w(1),
-							shift: Shift::rotr(5),
-						},
+						ShiftedWire::single(w(0), Shift::rotr(5)),
+						ShiftedWire::single(w(1), Shift::rotr(5)),
 					],
 				),
 			],
@@ -724,13 +690,7 @@ mod tests {
 			&[w(1)], // y must be committed (incompatible shifts)
 			&[
 				// z should expand to: y >> 20 (y is committed, not inlined)
-				(
-					w(2),
-					vec![ShiftedWire {
-						wire: w(1),
-						shift: Shift::srl(20),
-					}],
-				),
+				(w(2), vec![ShiftedWire::single(w(1), Shift::srl(20))]),
 			],
 		);
 	}
@@ -754,26 +714,11 @@ mod tests {
 				(
 					w(6),
 					vec![
-						ShiftedWire {
-							wire: w(0),
-							shift: Shift::IDENTITY,
-						},
-						ShiftedWire {
-							wire: w(1),
-							shift: Shift::IDENTITY,
-						},
-						ShiftedWire {
-							wire: w(2),
-							shift: Shift::IDENTITY,
-						},
-						ShiftedWire {
-							wire: w(4),
-							shift: Shift::IDENTITY,
-						},
-						ShiftedWire {
-							wire: w(5),
-							shift: Shift::IDENTITY,
-						},
+						ShiftedWire::single(w(0), Shift::IDENTITY),
+						ShiftedWire::single(w(1), Shift::IDENTITY),
+						ShiftedWire::single(w(2), Shift::IDENTITY),
+						ShiftedWire::single(w(4), Shift::IDENTITY),
+						ShiftedWire::single(w(5), Shift::IDENTITY),
 					],
 				),
 			],
@@ -808,66 +753,26 @@ mod tests {
 			Patch {
 				subsumes: vec![ConstraintRef::And { index: 1 }],
 				added: AddedConstraint::And(WireAndConstraint {
-					a: vec![ShiftedWire {
-						wire: w(30),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
-					b: vec![ShiftedWire {
-						wire: w(31),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
-					c: vec![ShiftedWire {
-						wire: w(32),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
+					a: vec![ShiftedWire::single(w(30), Shift::IDENTITY)].into(),
+					b: vec![ShiftedWire::single(w(31), Shift::IDENTITY)].into(),
+					c: vec![ShiftedWire::single(w(32), Shift::IDENTITY)].into(),
 				}),
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Linear { index: 0 }],
 				added: AddedConstraint::And(WireAndConstraint {
-					a: vec![ShiftedWire {
-						wire: w(33),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
-					b: vec![ShiftedWire {
-						wire: w(34),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
-					c: vec![ShiftedWire {
-						wire: w(35),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
+					a: vec![ShiftedWire::single(w(33), Shift::IDENTITY)].into(),
+					b: vec![ShiftedWire::single(w(34), Shift::IDENTITY)].into(),
+					c: vec![ShiftedWire::single(w(35), Shift::IDENTITY)].into(),
 				}),
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Imul { index: 0 }],
 				added: AddedConstraint::Imul(WireImulConstraint {
-					a: vec![ShiftedWire {
-						wire: w(36),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
-					b: vec![ShiftedWire {
-						wire: w(37),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
-					lo: vec![ShiftedWire {
-						wire: w(38),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
-					hi: vec![ShiftedWire {
-						wire: w(39),
-						shift: Shift::IDENTITY,
-					}]
-					.into(),
+					a: vec![ShiftedWire::single(w(36), Shift::IDENTITY)].into(),
+					b: vec![ShiftedWire::single(w(37), Shift::IDENTITY)].into(),
+					lo: vec![ShiftedWire::single(w(38), Shift::IDENTITY)].into(),
+					hi: vec![ShiftedWire::single(w(39), Shift::IDENTITY)].into(),
 				}),
 			},
 		];
@@ -979,26 +884,11 @@ mod tests {
 		assert_operand_eq(
 			a,
 			&[
-				ShiftedWire {
-					wire: w(0),
-					shift: Shift::IDENTITY,
-				},
-				ShiftedWire {
-					wire: w(1),
-					shift: Shift::IDENTITY,
-				},
-				ShiftedWire {
-					wire: w(0),
-					shift: Shift::IDENTITY,
-				},
-				ShiftedWire {
-					wire: w(1),
-					shift: Shift::IDENTITY,
-				},
-				ShiftedWire {
-					wire: w(3),
-					shift: Shift::IDENTITY,
-				},
+				ShiftedWire::single(w(0), Shift::IDENTITY),
+				ShiftedWire::single(w(1), Shift::IDENTITY),
+				ShiftedWire::single(w(0), Shift::IDENTITY),
+				ShiftedWire::single(w(1), Shift::IDENTITY),
+				ShiftedWire::single(w(3), Shift::IDENTITY),
 			],
 			"mul.a",
 		);
@@ -1032,25 +922,12 @@ mod tests {
 
 		assert_eq!(cb2.imul_constraints.len(), 1);
 		let m = &cb2.imul_constraints[0];
-		assert_operand_eq(
-			&m.a,
-			&[ShiftedWire {
-				wire: w(1),
-				shift: Shift::sll(30),
-			}],
-			"mul.a (committed)",
-		);
+		assert_operand_eq(&m.a, &[ShiftedWire::single(w(1), Shift::sll(30))], "mul.a (committed)");
 		assert_operand_eq(
 			&m.b,
 			&[
-				ShiftedWire {
-					wire: w(3),
-					shift: Shift::IDENTITY,
-				},
-				ShiftedWire {
-					wire: w(4),
-					shift: Shift::IDENTITY,
-				},
+				ShiftedWire::single(w(3), Shift::IDENTITY),
+				ShiftedWire::single(w(4), Shift::IDENTITY),
 			],
 			"mul.b (inlinable)",
 		);
@@ -1085,23 +962,14 @@ mod tests {
 		let m = &cb2.imul_constraints[0];
 		assert_operand_eq(
 			&m.hi,
-			&[ShiftedWire {
-				wire: w(1),
-				shift: Shift::sll(20),
-			}],
+			&[ShiftedWire::single(w(1), Shift::sll(20))],
 			"mul.hi (committed)",
 		);
 		assert_operand_eq(
 			&m.lo,
 			&[
-				ShiftedWire {
-					wire: w(3),
-					shift: Shift::IDENTITY,
-				},
-				ShiftedWire {
-					wire: w(4),
-					shift: Shift::IDENTITY,
-				},
+				ShiftedWire::single(w(3), Shift::IDENTITY),
+				ShiftedWire::single(w(4), Shift::IDENTITY),
 			],
 			"mul.lo (inlinable)",
 		);
