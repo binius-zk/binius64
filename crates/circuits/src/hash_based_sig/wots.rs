@@ -194,21 +194,24 @@ pub fn circuit_wots_encode(
 	digits
 }
 
-/// Words the hint emits per chain hash: the input digest, then the chain and the step.
-const HINT_WORDS_PER_HASH: usize = DIGEST_WIRES + 2;
+/// Words the hint emits per chain hash: the input digest, then the chain, the step and the digit.
+const HINT_WORDS_PER_HASH: usize = DIGEST_WIRES + 3;
 
 /// Words the hint reads.
 const HINT_INPUTS: usize = PUBLIC_PARAM_WIRES + 1 + V + V * DIGEST_WIRES;
 
-/// Words the hint writes: one entry per chain hash, then the [`V`] chain ends.
-const HINT_OUTPUTS: usize = NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH + V * DIGEST_WIRES;
+/// Words the hint writes: one entry per chain hash, then where each chain's last entry sits.
+const HINT_OUTPUTS: usize = NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH + V;
 
-/// Computes the chain hashes a verifier actually walks, and where each one sits.
+/// Computes the chain hashes a verifier actually walks, and where each chain's last one sits.
 ///
 /// The verifier's work is the concatenation of the chain tails: chain `i` contributes its steps
 /// from `digit_i` up to `CHAIN_LENGTH - 2`, and the tails run in chain order. How long each tail
 /// is depends on the digits, so the list cannot be laid out at circuit construction time — it is
 /// hinted here and pinned by the constraints in [`circuit_recover_public_key`].
+///
+/// The offsets are hinted for the same reason and need no separate pinning: an offset is only ever
+/// used to index the list, and what it lands on is checked.
 struct ChainHashesHint;
 
 impl Hint for ChainHashesHint {
@@ -224,8 +227,9 @@ impl Hint for ChainHashesHint {
 		let digits = &inputs[PUBLIC_PARAM_WIRES + 1..][..V];
 		let tips = &inputs[PUBLIC_PARAM_WIRES + 1 + V..];
 
-		let (hashes, ends) = outputs.split_at_mut(NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH);
+		let (hashes, offsets) = outputs.split_at_mut(NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH);
 		hashes.fill(Word::ZERO);
+		offsets.fill(Word::ZERO);
 
 		let mut written = 0;
 		for i in 0..V {
@@ -235,7 +239,7 @@ impl Hint for ChainHashesHint {
 
 			// A chain walks from its digit to the last step. A digit of `CHAIN_LENGTH - 1` walks
 			// nothing, and a digit past that (an unsatisfiable witness) walks nothing either.
-			for step in digit..CHAIN_LENGTH - 1 {
+			for (step, position) in (digit..CHAIN_LENGTH - 1).enumerate() {
 				// Digits that miss the target sum overrun the list. The encoding constraints
 				// reject them, so stopping short here only has to avoid a panic.
 				if written == NUM_CHAIN_HASHES {
@@ -245,11 +249,13 @@ impl Hint for ChainHashesHint {
 				bytes_to_words(&current, &mut slot[..DIGEST_WIRES]);
 				slot[DIGEST_WIRES] = Word::from_u64(i as u64);
 				slot[DIGEST_WIRES + 1] = Word::from_u64(step as u64);
+				slot[DIGEST_WIRES + 2] = Word::from_u64(digit as u64);
 
-				current = chain_step(&public_param, epoch, i, step, &current);
+				current = chain_step(&public_param, epoch, i, position, &current);
 				written += 1;
+				// An empty chain leaves its offset at zero; nothing reads it.
+				offsets[i] = Word::from_u64((written - 1) as u64);
 			}
-			bytes_to_words(&current, &mut ends[i * DIGEST_WIRES..][..DIGEST_WIRES]);
 		}
 	}
 }
@@ -276,24 +282,33 @@ fn bytes_to_words(bytes: &[u8], words: &mut [Word]) {
 /// all chains at [`NUM_CHAIN_HASHES`] however the digits fall. So rather than give every chain
 /// room for its longest possible tail — `V * (CHAIN_LENGTH - 1)` hashes, two thirds of them
 /// discarded — the tails are concatenated into one list of exactly that total, hinted, and pinned
-/// by constraints. Each entry carries its input digest, its chain and its step; its output is the
-/// hash, not a hinted value, so nothing has to check it.
+/// by constraints. Each entry carries its input digest, its chain, its digit, and the number of
+/// hashes that chain has already done; its output is the hash, not a hinted value, so nothing has
+/// to check it.
 ///
 /// # What pins the list
 ///
-/// - `chain` is non-decreasing, so each chain's entries are one contiguous run.
-/// - Within a run, the step advances by one and each input is the previous output.
-/// - A run's first entry takes its chain's signature tip as input and starts at `digit`; its last
-///   ends at `CHAIN_LENGTH - 2` and its output is that chain's end.
-/// - A chain whose digit is `CHAIN_LENGTH - 1` owes no hashes; its end is its tip.
+/// Walking the list, every rule is local, which is what leaves the entries with nothing to look
+/// up:
 ///
-/// A run's length therefore has to be exactly `CHAIN_LENGTH - 1 - digit`, and the list is exactly
+/// - `chain` only ever increases, so a chain's entries are one contiguous run.
+/// - Within a run the step advances by one, the digit holds, and each input is the previous output.
+/// - A run opens at step zero, and so does the list.
+///
+/// Then one lookup per chain finds that chain's last entry, and checks it belongs to this chain,
+/// carries this chain's digit, and sits at the last position — `digit + step == CHAIN_LENGTH - 2`,
+/// since the last hash of a chain starts one below the chain's end. Its output is the chain's end.
+/// The offset is hinted; it needs no pinning of its own, because what it lands on is checked.
+///
+/// A run's length is therefore exactly `CHAIN_LENGTH - 1 - digit`, and the list is exactly
 /// [`NUM_CHAIN_HASHES`] long, which the target sum makes the sum of those lengths. **No chain that
 /// owes hashes can be missing a run**: if one were, the entries would not add up.
 ///
-/// Every entry looks its chain's tip, digit and end up in one [`V`]-entry table, indexed by the
-/// entry's own `chain` — which is where the variable layout is paid for, in committed words rather
-/// than in hashes.
+/// What a run starts *from* is left free. The tip is a hint, and verification only needs some
+/// preimage that walks a chain of the right length onto the committed public key — a prover with
+/// nothing to reveal would have to invert the hash to find one. A chain whose digit is
+/// `CHAIN_LENGTH - 1` owes no hashes at all, and its end is simply the value the signature
+/// revealed.
 pub fn circuit_recover_public_key(
 	builder: &CircuitBuilder,
 	public_param: &[Wire; PUBLIC_PARAM_WIRES],
@@ -313,42 +328,26 @@ pub fn circuit_recover_public_key(
 	};
 	let chain_of = |k: usize| hinted[k * HINT_WORDS_PER_HASH + DIGEST_WIRES];
 	let step_of = |k: usize| hinted[k * HINT_WORDS_PER_HASH + DIGEST_WIRES + 1];
-	let chain_ends: [[Wire; DIGEST_WIRES]; V] = std::array::from_fn(|i| {
-		std::array::from_fn(|w| {
-			hinted[NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH + i * DIGEST_WIRES + w]
-		})
-	});
+	let digit_of = |k: usize| hinted[k * HINT_WORDS_PER_HASH + DIGEST_WIRES + 2];
+	let offset_of = |i: usize| hinted[NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH + i];
 
-	// One row per chain: its tip, its digit, its end. Every entry indexes this by its own chain.
-	let table: Vec<Vec<Wire>> = (0..V)
-		.map(|i| {
-			let mut row = Vec::with_capacity(2 * DIGEST_WIRES + 1);
-			row.extend_from_slice(&chain_tips[i]);
-			row.push(digits[i]);
-			row.extend_from_slice(&chain_ends[i]);
-			row
-		})
-		.collect();
-	let table_rows = table.iter().map(|row| row.as_slice()).collect::<Vec<_>>();
-
-	// Which chains an entry can possibly belong to. A chain contributes at most
-	// `CHAIN_LENGTH - 1` entries, of which at most `CHAIN_LENGTH - 2` can fall on one side of any
-	// entry of its own. So of the `k` entries before this one, all but `CHAIN_LENGTH - 2` need
-	// chains strictly below its own, and likewise above for the entries after it. That confines
-	// each entry to about two thirds of the chains, and only that window has to be muxed over.
-	let window = |k: usize| -> (usize, usize) {
+	// Where a chain's last entry can sit. Chains before this one contribute at most
+	// `CHAIN_LENGTH - 1` entries each and so do the chains after, which pins the last entry of
+	// chain `i` into a window of the list — and only that window has to be muxed over.
+	let window = |i: usize| -> (usize, usize) {
 		let per_chain = CHAIN_LENGTH - 1;
-		let own_side = CHAIN_LENGTH - 2;
-		let before = k.saturating_sub(own_side).div_ceil(per_chain);
-		let after = (NUM_CHAIN_HASHES - 1 - k)
-			.saturating_sub(own_side)
-			.div_ceil(per_chain);
-		(before, V - 1 - after)
+		let earliest = (NUM_CHAIN_HASHES).saturating_sub((V - i) * per_chain);
+		let latest = ((i + 1) * per_chain - 1).min(NUM_CHAIN_HASHES - 1);
+		(earliest, latest)
 	};
 
 	// The hashes. Every entry's input is hinted rather than carried from the entry before it, so
-	// they are independent and pair two to a core.
-	let sub_position = |k: usize| builder.bxor(builder.shl(chain_of(k), W as u32), step_of(k));
+	// they are independent and pair two to a core. A chain link's tweak names the position the
+	// hash starts from, which is the chain's digit plus the hashes it has already done.
+	let sub_position = |k: usize| {
+		let position = builder.iadd(digit_of(k), step_of(k)).0;
+		builder.bxor(builder.shl(chain_of(k), W as u32), position)
+	};
 	let mut outputs = Vec::with_capacity(NUM_CHAIN_HASHES);
 	for pair in 0..NUM_CHAIN_HASHES / 2 {
 		let (a, b) = (2 * pair, 2 * pair + 1);
@@ -375,93 +374,94 @@ pub fn circuit_recover_public_key(
 		));
 	}
 
+	let zero = builder.add_constant_64(0);
 	let one = builder.add_constant_64(1);
-	let last_step = builder.add_constant_64((CHAIN_LENGTH - 2) as u64);
-	let never = builder.add_constant(Word::ZERO);
-	let always = builder.add_constant(Word::ALL_ONE);
 
+	// Walking the list: every rule here is local, which is what leaves the entries with nothing
+	// to look up.
 	for k in 0..NUM_CHAIN_HASHES {
 		let b = builder.subcircuit(format!("chain_hash[{k}]"));
-		let (chain, step, input) = (chain_of(k), step_of(k), input_of(k));
+		let (chain, step) = (chain_of(k), step_of(k));
 
-		// The window is asserted rather than merely implied: the mux reads only the low bits of
-		// its selector, so a chain outside the window would alias onto a row that is not its own.
-		let (lowest, highest) = window(k);
-		let lowest_wire = b.add_constant_64(lowest as u64);
-		b.assert_true("chain_at_least_window", b.icmp_ule(lowest_wire, chain));
-		b.assert_true("chain_at_most_window", b.icmp_ule(chain, b.add_constant_64(highest as u64)));
-
-		let zero = b.add_constant_64(0);
-		let offset = b.isub_bin_bout(chain, lowest_wire, zero).0;
-		let row = multi_wire_multiplex(&b, &table_rows[lowest..=highest], offset);
-		let tip: [Wire; DIGEST_WIRES] = std::array::from_fn(|w| row[w]);
-		let digit = row[DIGEST_WIRES];
-		let end: [Wire; DIGEST_WIRES] = std::array::from_fn(|w| row[DIGEST_WIRES + 1 + w]);
+		let Some(previous) = k.checked_sub(1) else {
+			// The list opens a chain, so it opens at its first hash.
+			b.assert_eq("first_step_is_zero", step, zero);
+			continue;
+		};
 
 		// An entry either continues the one before it or opens a new chain. The chain field is
-		// what says which, and it never decreases, so a chain's entries stay contiguous.
-		let continues = if k == 0 {
-			never
-		} else {
-			b.assert_true("chain_non_decreasing", b.icmp_ule(chain_of(k - 1), chain));
-			b.icmp_eq(chain, chain_of(k - 1))
-		};
+		// what says which, and it only ever increases, so a chain's entries stay contiguous.
+		let continues = b.icmp_eq(chain, chain_of(previous));
+		let opens = b.bnot(continues);
+		b.assert_true("chain_non_decreasing", b.icmp_ule(chain_of(previous), chain));
 
-		if k > 0 {
-			let expected_step = b.iadd(step_of(k - 1), one).0;
-			b.assert_eq("step_advances", b.select(continues, step, expected_step), expected_step);
-			for w in 0..DIGEST_WIRES {
-				let previous = outputs[k - 1][w];
-				b.assert_eq(
-					format!("input_continues[{w}]"),
-					b.select(continues, input[w], previous),
-					previous,
-				);
-			}
-		}
-
-		// Opening a chain: start at the digit, from the signature's tip for that chain.
-		let starts = b.bnot(continues);
-		b.assert_eq("starts_at_digit", b.select(starts, step, digit), digit);
+		// Continuing: one more hash of the same chain, on the value the last one produced.
+		let next_step = b.iadd(step_of(previous), one).0;
+		b.assert_eq("step_advances", b.select(continues, step, next_step), next_step);
+		b.assert_eq(
+			"digit_holds",
+			b.select(continues, digit_of(k), digit_of(previous)),
+			digit_of(previous),
+		);
 		for w in 0..DIGEST_WIRES {
+			let carried = outputs[previous][w];
 			b.assert_eq(
-				format!("starts_from_tip[{w}]"),
-				b.select(starts, input[w], tip[w]),
-				tip[w],
+				format!("input_continues[{w}]"),
+				b.select(continues, input_of(k)[w], carried),
+				carried,
 			);
 		}
 
-		// Closing a chain: end at the last step, and hand the chain its public-key end.
-		let ends = if k + 1 == NUM_CHAIN_HASHES {
-			always
-		} else {
-			b.bnot(b.icmp_eq(chain_of(k + 1), chain))
-		};
-		b.assert_eq("ends_at_last_step", b.select(ends, step, last_step), last_step);
-		for w in 0..DIGEST_WIRES {
-			b.assert_eq(
-				format!("ends_at_chain_end[{w}]"),
-				b.select(ends, outputs[k][w], end[w]),
-				end[w],
-			);
-		}
+		// Opening: a fresh chain starts over at its first hash. What it starts *from* is left
+		// free — the tip is a hint, and verification only needs some preimage that walks a chain
+		// of the right length onto the committed public key.
+		b.assert_eq("opens_at_zero", b.select(opens, step, zero), zero);
 	}
 
-	// A chain at the last digit owes no hashes and so has no entry to close it: its end is the
-	// tip the signature already gave.
-	let empty_digit = builder.add_constant_64((CHAIN_LENGTH - 1) as u64);
-	for i in 0..V {
-		let empty = builder.icmp_eq(digits[i], empty_digit);
-		for w in 0..DIGEST_WIRES {
-			builder.assert_eq(
-				format!("empty_chain_end[{i}][{w}]"),
-				builder.select(empty, chain_ends[i][w], chain_tips[i][w]),
-				chain_tips[i][w],
-			);
-		}
-	}
+	// One lookup per chain, into the window its last entry has to sit in. What the offset lands
+	// on is checked, so the offset itself needs no pinning.
+	std::array::from_fn(|i| {
+		let b = builder.subcircuit(format!("chain_end[{i}]"));
+		let (earliest, latest) = window(i);
+		let entries = (earliest..=latest)
+			.map(|k| {
+				vec![
+					chain_of(k),
+					step_of(k),
+					digit_of(k),
+					outputs[k][0],
+					outputs[k][1],
+				]
+			})
+			.collect::<Vec<_>>();
+		let rows = entries.iter().map(|e| e.as_slice()).collect::<Vec<_>>();
 
-	chain_ends
+		let earliest_wire = b.add_constant_64(earliest as u64);
+		let index = b.isub_bin_bout(offset_of(i), earliest_wire, zero).0;
+		let found = multi_wire_multiplex(&b, &rows, index);
+		let (chain, step, digit) = (found[0], found[1], found[2]);
+		let end: [Wire; DIGEST_WIRES] = std::array::from_fn(|w| found[DIGEST_WIRES + 1 + w]);
+
+		// A chain at the last digit owes no hashes, so it has no entry to find: its end is the
+		// value the signature already revealed, and nothing about the lookup is asserted.
+		let walks = b.bnot(b.icmp_eq(digits[i], b.add_constant_64((CHAIN_LENGTH - 1) as u64)));
+
+		let expected_chain = b.add_constant_64(i as u64);
+		b.assert_eq("chain_is_this_one", b.select(walks, chain, expected_chain), expected_chain);
+		b.assert_eq("digit_is_the_encoding", b.select(walks, digit, digits[i]), digits[i]);
+
+		// The last hash of a chain starts one below the end of the chain, so its position —
+		// the digit plus the hashes done before it — is `CHAIN_LENGTH - 2`.
+		let last_position = b.add_constant_64((CHAIN_LENGTH - 2) as u64);
+		let position = b.iadd(digit, step).0;
+		b.assert_eq(
+			"ends_at_the_last_position",
+			b.select(walks, position, last_position),
+			last_position,
+		);
+
+		std::array::from_fn(|w| b.select(walks, end[w], chain_tips[i][w]))
+	})
 }
 
 /// In-circuit form of [`wots_public_key_hash`].
