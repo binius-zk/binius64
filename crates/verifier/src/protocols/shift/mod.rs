@@ -47,4 +47,7 @@ mod verify;
 
 pub use error::Error;
 pub use shift_ind::evaluate_shift_inds;
-pub use verify::{OperatorData, VerifyOutput, check_eval, evaluate_words_mle, verify};
+pub use verify::{
+	OperatorData, VerifyOutput, WiringEvalClaim, WiringEvalFn, check_eval, evaluate_words_mle,
+	verify,
+};

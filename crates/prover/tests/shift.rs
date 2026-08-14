@@ -13,6 +13,8 @@ use binius_core::{
 };
 use binius_field::{AESTowerField8b, BinaryField};
 use binius_frontend::{CircuitBuilder, Wire};
+use binius_ip::channel::IPVerifierChannel;
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace,
 	inner_product::{inner_product, inner_product_buffers},
@@ -28,7 +30,8 @@ use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
 	protocols::shift::{
-		OperatorData as VerifierOperatorData, check_eval, evaluate_words_mle, verify,
+		OperatorData as VerifierOperatorData, WiringEvalClaim, check_eval, evaluate_words_mle,
+		verify,
 	},
 };
 use itertools::Itertools;
@@ -468,6 +471,10 @@ fn test_shift_prove_and_verify() {
 			&GlobalAllocator,
 		);
 
+		// The full reduction sends this after the public segment's evaluation claim; driving the
+		// shift alone, it follows the reduction directly.
+		prover_transcript.send_one(prover_output.wiring_eval);
+
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
@@ -497,7 +504,11 @@ fn test_shift_prove_and_verify() {
 		);
 
 		// Check consistency with verifier output
-		check_eval(
+		let WiringEvalClaim {
+			eval_fn,
+			inputs,
+			claimed,
+		} = check_eval(
 			&cs,
 			InoutSegment::Public,
 			public_eval,
@@ -511,6 +522,12 @@ fn test_shift_prove_and_verify() {
 			&mut verifier_transcript,
 		)
 		.unwrap();
+
+		// Discharge the wiring claim the way the full reduction does.
+		let wiring_eval = verifier_transcript.compute_public_value(&inputs, eval_fn);
+		verifier_transcript
+			.assert_zero(wiring_eval - claimed)
+			.unwrap();
 		verifier_transcript.finalize().unwrap();
 
 		// Check the claimed witness eval matches the direct evaluation of the non-public words.
@@ -532,7 +549,7 @@ fn test_shift_prove_and_verify() {
 			std::slice::from_ref(&verifier_output.r_segment),
 		]
 		.concat();
-		assert_eq!(prover_output.challenges, eval_point);
-		assert_eq!(prover_output.eval, verifier_output.witness_eval);
+		assert_eq!(prover_output.sumcheck.challenges, eval_point);
+		assert_eq!(prover_output.sumcheck.eval, verifier_output.witness_eval);
 	}
 }

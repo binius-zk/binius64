@@ -7,7 +7,6 @@ use std::iter;
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
-use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
@@ -16,7 +15,7 @@ use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftIndOutput,
-		ShiftIndSumcheck,
+		ShiftIndSumcheck, ShiftOutput,
 		monster::build_monster_segments,
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
@@ -51,7 +50,8 @@ use crate::witness::{FoldedWitness, FoldedWord};
 /// - `alloc`: the allocator backing the reduction's intermediate buffers.
 ///
 /// # Returns
-/// The `SumcheckOutput` with the final challenges and the reduced witness evaluation.
+/// The final challenges with the reduced witness evaluation, and the wiring multilinear's
+/// evaluation for the caller to send.
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
@@ -60,7 +60,7 @@ pub fn prove<F, P, Channel, A>(
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,
-) -> SumcheckOutput<F>
+) -> ShiftOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -150,6 +150,7 @@ where
 		hidden_folded,
 		&public_monster,
 		hidden_monster,
+		shift_ind_eval,
 		public_words,
 		r_j,
 		epsilon,
@@ -238,6 +239,7 @@ mod tests {
 		word::Word,
 	};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
+	use binius_ip::channel::IPVerifierChannel;
 	use binius_math::{
 		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 		test_utils::random_scalars,
@@ -251,8 +253,8 @@ mod tests {
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{
-			LOG_SHIFT_COUNT, OperatorData as VerifierOperatorData, SHIFT_COUNT, check_eval,
-			evaluate_words_mle, verify,
+			LOG_SHIFT_COUNT, OperatorData as VerifierOperatorData, SHIFT_COUNT, WiringEvalClaim,
+			check_eval, evaluate_words_mle, verify,
 		},
 	};
 	use rand::prelude::*;
@@ -396,6 +398,10 @@ mod tests {
 			&GlobalAllocator,
 		);
 
+		// The full reduction sends this after the public segment's evaluation claim; driving the
+		// shift alone, it follows the reduction directly.
+		prover_transcript.send_one(prover_output.wiring_eval);
+
 		// Verify against the single-instance shift verifier.
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verifier_zero = VerifierOperatorData::new(r_x_zero, [B128::ZERO]);
@@ -421,7 +427,11 @@ mod tests {
 			verifier_output.r_y(),
 		);
 
-		check_eval(
+		let WiringEvalClaim {
+			eval_fn,
+			inputs,
+			claimed,
+		} = check_eval(
 			&cs,
 			InoutSegment::Hidden,
 			public_eval,
@@ -435,6 +445,12 @@ mod tests {
 			&mut verifier_transcript,
 		)
 		.unwrap();
+
+		// Discharge the wiring claim the way the full reduction does.
+		let wiring_eval = verifier_transcript.compute_public_value(&inputs, eval_fn);
+		verifier_transcript
+			.assert_zero(wiring_eval - claimed)
+			.unwrap();
 		verifier_transcript.finalize().unwrap();
 
 		// The witness evaluation equals the instance-folded witness evaluated at the point, with
@@ -454,8 +470,8 @@ mod tests {
 			std::slice::from_ref(&verifier_output.r_segment),
 		]
 		.concat();
-		assert_eq!(prover_output.challenges, eval_point);
-		assert_eq!(prover_output.eval, verifier_output.witness_eval);
+		assert_eq!(prover_output.sumcheck.challenges, eval_point);
+		assert_eq!(prover_output.sumcheck.eval, verifier_output.witness_eval);
 	}
 
 	// The phase-1 identity: summing the g·h inner products over the shift variants reconstructs the

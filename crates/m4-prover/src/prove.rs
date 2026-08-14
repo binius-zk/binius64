@@ -329,13 +329,17 @@ impl IOPProver {
 		// The segment selector `r_segment` is the last coordinate, choosing public or hidden
 		// words. The hidden-only trace drops it.
 		// The word index `r_y` is everything in between.
-		let challenges = &witness_claim.challenges;
+		let challenges = &witness_claim.sumcheck.challenges;
 		let r_j = &challenges[..Word::LOG_BITS];
 		let r_y = &challenges[Word::LOG_BITS..challenges.len() - 1];
 
 		// Prove the public segment's evaluation claim, which the verifier's public-input check
 		// consumes.
 		ring_switch::prove_public_eval::<_, P, _>(alloc, &public_words, r_j, r_y, channel);
+
+		// The wiring evaluation the verifier closes the shift check with, sent where it reads it:
+		// after the public segment's claim.
+		channel.send_one(witness_claim.wiring_eval);
 
 		let RingSwitchOutput {
 			rs_eq_ind,

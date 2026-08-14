@@ -37,7 +37,7 @@ use crate::{
 	protocols::{
 		binmul, intmul,
 		shift::{
-			KeyCollection, OperatorClaims, OperatorData, build_key_collection,
+			KeyCollection, OperatorClaims, OperatorData, ShiftOutput, build_key_collection,
 			prove as prove_shift_reduction,
 		},
 	},
@@ -284,9 +284,12 @@ impl IOPProver {
 			perfetto_category = "phase"
 		)
 		.entered();
-		let SumcheckOutput {
-			challenges: eval_point,
-			eval: _,
+		let ShiftOutput {
+			sumcheck: SumcheckOutput {
+				challenges: eval_point,
+				eval: _,
+			},
+			wiring_eval,
 		} = prove_shift_reduction::<_, P, _, _>(
 			&self.key_collection,
 			witness.public(),
@@ -312,6 +315,10 @@ impl IOPProver {
 		// Prove the public segment's evaluation claim, which the verifier's public-input check
 		// consumes.
 		ring_switch::prove_public_eval::<_, P, _>(alloc, witness.public(), r_j, r_y, &mut *channel);
+
+		// The wiring evaluation the verifier closes the shift check with, sent where it reads it:
+		// after the public segment's claim.
+		channel.send_one(wiring_eval);
 
 		// [phase] Ring-Switching + PCS Opening
 		let pcs_guard = tracing::info_span!(

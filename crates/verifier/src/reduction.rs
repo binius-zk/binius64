@@ -46,7 +46,7 @@ use crate::{
 		binmul::{BinMulOutput, verify as verify_binmul_reduction},
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
-		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData},
+		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData, WiringEvalClaim},
 		zero,
 	},
 	ring_switch::{self, RingSwitchVerifyOutput, eval_rs_eq},
@@ -293,7 +293,11 @@ where
 		)
 		.entered();
 		let public_eval = verify_public_eval(cs, inout, public, &shift, channel)?;
-		shift::check_eval::<B128, _>(
+		let WiringEvalClaim {
+			eval_fn,
+			inputs,
+			claimed,
+		} = shift::check_eval::<B128, _>(
 			cs,
 			inout,
 			public_eval,
@@ -306,6 +310,10 @@ where
 			&shift,
 			channel,
 		)?;
+
+		// Tie the prover's wiring evaluation to the constraint system.
+		let wiring_eval = channel.compute_public_value(&inputs, eval_fn);
+		channel.assert_zero(wiring_eval - claimed)?;
 	}
 
 	Ok(ReductionOutput { r_rho, shift })

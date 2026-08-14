@@ -410,6 +410,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 					hidden_folded,
 					&public_monster,
 					hidden_monster,
+					shift_ind_eval,
 					public_words,
 					r_j,
 					gamma,
