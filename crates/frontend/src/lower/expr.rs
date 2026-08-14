@@ -6,8 +6,8 @@
 use binius_core::constraint_system::Shift;
 use smallvec::{SmallVec, smallvec};
 
-use super::operand::{ShiftedWire, WireOperand};
-use crate::ir::Wire;
+use super::{ConstraintBuilder, operand::ShiftedWire};
+use crate::{ir::Wire, lower::WireOperand};
 
 /// An operand under construction: the XOR of its terms.
 #[derive(Clone)]
@@ -15,11 +15,10 @@ pub struct WireExpr(SmallVec<[WireExprTerm; 4]>);
 
 impl WireExpr {
 	/// Consumes the expression into the operand its terms describe.
-	pub(super) fn into_operand(self) -> WireOperand {
-		self.0
-			.into_iter()
-			.map(WireExprTerm::to_shifted_wire)
-			.collect()
+	///
+	/// The terms are appended to the shared arena.
+	pub(super) fn into_operand(self, cb: &mut ConstraintBuilder) -> WireOperand {
+		cb.push_operand(self.0.into_iter().map(WireExprTerm::to_shifted_wire))
 	}
 }
 

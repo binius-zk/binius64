@@ -3,8 +3,6 @@
 
 //! The shift algebra shared by operands: a core [`Shift`] applied to a [`Wire`].
 
-use std::ops::Index;
-
 use binius_core::constraint_system::{Composition, Shift, ShiftedValueIndex, ValueIndex};
 use cranelift_entity::{EntitySet, SecondaryMap};
 
@@ -133,83 +131,76 @@ pub fn push_inner(seq: [Shift; 2], shift: Shift, slots: usize) -> PushInner {
 	}
 }
 
-/// An operand: an XOR of shifted-wire terms, stored per constraint position.
-#[derive(Clone, Debug, Default)]
-pub struct WireOperand(Vec<ShiftedWire>);
+/// An operand: an XOR of shifted-wire terms.
+///
+/// The operand owns nothing itself.
+/// It is a `[start, start + len)` range into the term arena every operand shares.
+///
+/// - The handle is `Copy`, since it is only two integers.
+/// - It is immune to the arena reallocating, since it names a position rather than an address.
+/// - Every operand's terms land in one shared `Vec`, rather than one small `Vec` each.
+///
+/// Reading the terms back needs the arena.
+/// Every accessor below takes the arena slice as a parameter.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct WireOperand {
+	start: u32,
+	len: u32,
+}
 
 impl WireOperand {
-	/// Creates an empty operand.
-	pub const fn new() -> Self {
-		Self(Vec::new())
+	/// Builds a handle from a raw arena range.
+	///
+	/// Only the arena's own builders call this.
+	/// Every other caller grows an operand through the shared push-and-finish helpers instead.
+	pub(super) fn from_range(start: usize, len: usize) -> Self {
+		Self {
+			start: start.try_into().expect("arena position fits in u32"),
+			len: len.try_into().expect("operand length fits in u32"),
+		}
 	}
 
-	/// Appends a shifted-wire term.
-	pub fn push(&mut self, term: ShiftedWire) {
-		self.0.push(term);
-	}
-
-	/// The terms this operand XORs together.
-	pub fn as_slice(&self) -> &[ShiftedWire] {
-		&self.0
+	/// The arena position this operand starts at.
+	pub(super) const fn start(self) -> usize {
+		self.start as usize
 	}
 
 	/// The number of terms.
-	pub const fn len(&self) -> usize {
-		self.0.len()
+	pub const fn len(self) -> usize {
+		self.len as usize
 	}
 
 	/// Whether the operand has no terms.
 	///
 	/// An empty XOR is the constant zero, so such an operand contributes nothing.
-	pub const fn is_empty(&self) -> bool {
-		self.0.is_empty()
+	// Only tests call this today, kept for symmetry with `len` rather than removed.
+	#[cfg_attr(not(test), allow(dead_code))]
+	pub const fn is_empty(self) -> bool {
+		self.len == 0
+	}
+
+	/// The terms this operand XORs together, resolved against the shared arena.
+	pub fn as_slice(self, arena: &[ShiftedWire]) -> &[ShiftedWire] {
+		&arena[self.start()..self.start() + self.len()]
 	}
 
 	/// Lowers the whole operand to core `ShiftedValueIndex` terms.
 	pub(super) fn into_value_indices(
 		self,
+		arena: &[ShiftedWire],
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> Vec<ShiftedValueIndex> {
-		self.0
-			.into_iter()
+		self.as_slice(arena)
+			.iter()
 			.map(|term| term.to_shifted_value_index(wire_mapping))
 			.collect()
 	}
 
 	/// Inserts every wire this operand references into `used_set`.
-	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
-		for term in &self.0 {
+	pub(super) fn mark_used(self, arena: &[ShiftedWire], used_set: &mut EntitySet<Wire>) {
+		for term in self.as_slice(arena) {
 			used_set.insert(term.wire);
 		}
-	}
-}
-
-impl Index<usize> for WireOperand {
-	type Output = ShiftedWire;
-
-	fn index(&self, term: usize) -> &Self::Output {
-		&self.0[term]
-	}
-}
-
-impl<'a> IntoIterator for &'a WireOperand {
-	type Item = &'a ShiftedWire;
-	type IntoIter = std::slice::Iter<'a, ShiftedWire>;
-
-	fn into_iter(self) -> Self::IntoIter {
-		self.0.iter()
-	}
-}
-
-impl FromIterator<ShiftedWire> for WireOperand {
-	fn from_iter<I: IntoIterator<Item = ShiftedWire>>(iter: I) -> Self {
-		Self(iter.into_iter().collect())
-	}
-}
-
-impl From<Vec<ShiftedWire>> for WireOperand {
-	fn from(terms: Vec<ShiftedWire>) -> Self {
-		Self(terms)
 	}
 }
 
