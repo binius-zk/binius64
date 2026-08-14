@@ -2,7 +2,7 @@
 use std::{array, iter};
 
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Hint, Wire, WitnessFiller};
+use binius_frontend::{ChipGadget, CircuitBuilder, Hint, Wire, WitnessFiller};
 
 use crate::util::clear_high_bits;
 
@@ -108,7 +108,61 @@ pub fn sha256_compress(builder: &CircuitBuilder, state_in: State, m: [Wire; 16])
 /// # Returns
 ///
 /// The updated 8-word state, with each wire packing both lanes' results.
+///
+/// # Chips
+///
+/// This is a [`ChipGadget`]. A circuit that calls
+/// [`register_chip`](CircuitBuilder::register_chip) with [`Sha256Compress2x`] before building
+/// turns every paired compression under it into a chip call, including the ones
+/// [`sha256_compress_2x_seq`] and the fixed and variable length hashers reach.
 pub fn sha256_compress_2x(builder: &CircuitBuilder, state_in: State, m: [Wire; 16]) -> State {
+	let inputs = state_in.0.into_iter().chain(m).collect::<Vec<_>>();
+
+	let outputs = builder.build_gadget(Sha256Compress2x, &[], &inputs);
+	State(array::from_fn(|i| outputs[i]))
+}
+
+/// [`sha256_compress_2x`] as a gadget, so that a circuit can make it a chip.
+///
+/// Its interface is the flat 24 input words `state[0..8]`, `m[0..16]`, and the 8 output state
+/// words, all packing two lanes as [`sha256_compress_2x`] documents.
+pub struct Sha256Compress2x;
+
+impl Hint for Sha256Compress2x {
+	const NAME: &'static str = "binius.sha256_compress_2x";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(24, 8)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		// Each lane is a 32-bit half of every input word, and the halves never interact: the
+		// core's adds, rotates and shifts are 32-bit and its ch/maj are bitwise. So a lane is
+		// the reference compression of its own halves.
+		let compress_lane = |i: usize| {
+			let lane = |word: Word| (word.as_u64() >> (32 * i)) as u32;
+			let state: [u32; 8] = array::from_fn(|j| lane(inputs[j]));
+			let m: [u32; 16] = array::from_fn(|j| lane(inputs[8 + j]));
+			ref_compress(state, m)
+		};
+
+		let (lane_0, lane_1) = (compress_lane(0), compress_lane(1));
+		for (slot, (low, high)) in iter::zip(outputs, iter::zip(lane_0, lane_1)) {
+			*slot = Word(low as u64 | ((high as u64) << 32));
+		}
+	}
+}
+
+impl ChipGadget for Sha256Compress2x {
+	fn build(&self, builder: &CircuitBuilder, _dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
+		let state_in = State(array::from_fn(|i| inputs[i]));
+		let m: [Wire; 16] = array::from_fn(|i| inputs[8 + i]);
+		compress_2x_gates(builder, state_in, m).0.to_vec()
+	}
+}
+
+/// [`sha256_compress_2x`] in gates, whatever the building circuit does with the gadget.
+fn compress_2x_gates(builder: &CircuitBuilder, state_in: State, m: [Wire; 16]) -> State {
 	// Round constants replicated into both 32-bit halves, so each lane adds the same K[t].
 	let k: [Wire; 64] = std::array::from_fn(|t| {
 		let kt = K[t] as u64;
@@ -439,11 +493,12 @@ fn small_sigma_1(b: &CircuitBuilder, x: Wire) -> Wire {
 #[cfg(test)]
 mod tests {
 	use binius_core::word::Word;
-	use binius_frontend::{CircuitBuilder, Wire};
+	use binius_frontend::{CircuitBuilder, Hint, Wire};
+	use proptest::prelude::*;
 
 	use super::{
-		IV, State, populate_message_block, ref_compress, sha256_compress, sha256_compress_2x,
-		sha256_compress_2x_seq,
+		IV, Sha256Compress2x, State, compress_2x_gates, populate_message_block, ref_compress,
+		sha256_compress, sha256_compress_2x, sha256_compress_2x_seq,
 	};
 
 	/// A test circuit that proves a knowledge of preimage for a given state vector S in
@@ -790,5 +845,44 @@ mod tests {
 		let block1: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0xdead_beef));
 		let block2: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0x0101_0101));
 		run_2x_seq(state_in, block1, block2);
+	}
+
+	/// Runs `sha256_compress_2x` in gates over its flat packed-word interface.
+	fn run_compress_2x_words(inputs: [u64; 24]) -> [u64; 8] {
+		let builder = CircuitBuilder::new();
+		let wires: [Wire; 24] = std::array::from_fn(|_| builder.add_witness());
+		let out = compress_2x_gates(
+			&builder,
+			State(std::array::from_fn(|i| wires[i])),
+			std::array::from_fn(|i| wires[8 + i]),
+		);
+		for wire in out.0 {
+			builder.mark_inout(wire);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		for (wire, word) in std::iter::zip(wires, inputs) {
+			w[wire] = Word(word);
+		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		std::array::from_fn(|i| w[out.0[i]].as_u64())
+	}
+
+	proptest! {
+		// The chip path takes the outputs from `Sha256Compress2x::execute` and the chip recomputes
+		// them from its gates, so the two have to agree on every word a circuit can reach them
+		// with. Any 64-bit word is a valid lane pair here, so random words cover the whole
+		// interface.
+		#[test]
+		fn compress_2x_hint_matches_its_gates(words in prop::collection::vec(any::<u64>(), 24)) {
+			let inputs: [u64; 24] = std::array::from_fn(|i| words[i]);
+
+			let mut hinted = [Word::ZERO; 8];
+			Sha256Compress2x.execute(&[], &inputs.map(Word), &mut hinted);
+
+			prop_assert_eq!(hinted.map(|word| word.as_u64()), run_compress_2x_words(inputs));
+		}
 	}
 }
