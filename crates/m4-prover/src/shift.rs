@@ -244,13 +244,15 @@ mod tests {
 		univariate::lagrange_evals_scalars,
 	};
 	use binius_prover::protocols::shift::{
-		DenseShiftEncoding, OperatorData, build_key_collection, monster::shift_operator_table,
+		DenseShiftEncoding, OperatorData, build_key_collection, monster::shift_operator_row,
+		outer::decode_shift,
 	};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{
-			OperatorData as VerifierOperatorData, check_eval, evaluate_words_mle, verify,
+			LOG_SHIFT_COUNT, OperatorData as VerifierOperatorData, SHIFT_COUNT, check_eval,
+			evaluate_words_mle, verify,
 		},
 	};
 	use rand::prelude::*;
@@ -460,9 +462,9 @@ mod tests {
 	// lambda-batched operand evaluation claim.
 	//
 	// The g multilinear comes from the batched build_g on the full folded witness; h comes from
-	// the shift operator table over the oblong weights at the same univariate challenge r_z. Their
-	// inner product must equal the lambda-powers scaling of the batched AND-check operand evals
-	// (the intmul claim is empty, contributing nothing).
+	// pushing the oblong weights at the same univariate challenge r_z through each term's two shift
+	// slots. Their inner product must equal the lambda-powers scaling of the batched AND-check
+	// operand evals (the intmul claim is empty, contributing nothing).
 	#[test]
 	fn phase_1_g_h_inner_product_matches_batched_evals() {
 		type P = PackedBinaryGhash1x128b;
@@ -532,19 +534,24 @@ mod tests {
 		// from the single-instance prover.
 		let public = build_g::<B128, B128>(public_words, &key_collection.public, &prepared);
 		let hidden = build_g_from_folded_words(&hidden_folded, &key_collection.hidden, &prepared);
-		let h = shift_operator_table::<B128, B128, _>(
-			&GlobalAllocator,
-			lagrange_evals(&domain_subspace, r_z).as_ref(),
-		);
+		let psi = lagrange_evals(&domain_subspace, r_z);
 
 		// `g` is zero outside the rows the segments name, so the inner product is those rows
-		// alone — each sitting at `shift_index * Word::BITS` in the phase-1 layout.
+		// alone. A term names a shift *pair*, and its `h` row is the operator applied twice: the
+		// oblong weights push through the outer slot, and that row pushes through the inner. The
+		// composed table the two slots span holds `2^24` entries and is never formed — this walks
+		// the one row per term instead, which is all the inner product reads.
 		let segment_inner_product = |rows: &[B128], enc: &DenseShiftEncoding| {
 			iter::zip(enc.shift_indices(), rows.chunks_exact(Word::BITS))
-				.map(|(shift_index, row)| {
-					let base = shift_index * Word::BITS;
-					iter::zip(row, base..)
-						.map(|(&value, index)| value * h.get(index))
+				.map(|(quadruple, row)| {
+					let (outer_variant, outer_amount) = decode_shift(quadruple >> LOG_SHIFT_COUNT);
+					let (inner_variant, inner_amount) = decode_shift(quadruple % SHIFT_COUNT);
+					let mut eta_row = [B128::ZERO; Word::BITS];
+					let mut h_row = [B128::ZERO; Word::BITS];
+					shift_operator_row(outer_variant, outer_amount, &mut eta_row, psi.as_ref());
+					shift_operator_row(inner_variant, inner_amount, &mut h_row, &eta_row);
+					iter::zip(row, h_row)
+						.map(|(&value, h)| value * h)
 						.sum::<B128>()
 				})
 				.sum::<B128>()
