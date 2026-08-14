@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, ops::Deref};
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
@@ -112,18 +112,23 @@ impl IOPProver {
 	///
 	/// This is the core proving logic, independent of the specific IOP compilation strategy. For
 	/// most users, [`Prover::prove_chip`] is the simpler interface.
-	pub fn prove_chip<P, Channel, A>(&self, table: &ValueTable, channel: &mut Channel, alloc: &A)
-	where
+	pub fn prove_chip<P, Channel, A, Data>(
+		&self,
+		table: &ValueTable<Data>,
+		channel: &mut Channel,
+		alloc: &A,
+	) where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P, A>,
 		A: Allocator,
+		Data: Deref<Target = [Word]>,
 	{
 		let cs = &self.cs;
 
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
 		let trace_packed = {
 			let _scope = tracing::debug_span!("Prepare trace").entered();
-			pack_table::<P, _>(table, alloc)
+			pack_table::<P, _, _>(table, alloc)
 		};
 		let trace_oracle = {
 			let _scope = tracing::debug_span!("Commit trace").entered();
@@ -419,12 +424,13 @@ where
 	///
 	/// Creates the IOP channel from the transcript, delegates to [`IOPProver::prove_chip`], then
 	/// finishes the channel with the combined FRI opening.
-	pub fn prove_chip<Challenger_>(
+	pub fn prove_chip<Challenger_, Data>(
 		&self,
-		table: &ValueTable,
+		table: &ValueTable<Data>,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) where
 		Challenger_: Challenger,
+		Data: Deref<Target = [Word]>,
 	{
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs. The channel commits its Merkle trees out of the same pool.
@@ -433,7 +439,7 @@ where
 			.basefold_compiler
 			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
 		self.iop_prover
-			.prove_chip::<P, _, _>(table, &mut channel, &alloc);
+			.prove_chip::<P, _, _, _>(table, &mut channel, &alloc);
 
 		let _scope = tracing::debug_span!("PCS opening").entered();
 		channel.finish();

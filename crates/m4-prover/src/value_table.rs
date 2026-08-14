@@ -5,8 +5,10 @@
 //! The table is [`binius_core`]'s and populating one is the frontend's, but neither knows about
 //! commitments. These are the two operations that do, so they live with the prover.
 
+use std::ops::Deref;
+
 use binius_compute::Allocator;
-use binius_core::ValueTable;
+use binius_core::{ValueTable, word::Word};
 use binius_field::PackedField;
 use binius_m4_verifier::BatchCommitLayout;
 use binius_math::FieldVec;
@@ -16,7 +18,7 @@ use binius_verifier::config::B128;
 ///
 /// The verifier derives the same layout from the constraint system.
 /// So both sides agree on the committed size.
-pub fn commit_layout(table: &ValueTable) -> BatchCommitLayout {
+pub fn commit_layout<Data: Deref<Target = [Word]>>(table: &ValueTable<Data>) -> BatchCommitLayout {
 	BatchCommitLayout::new(table.n_hidden_words(), table.log_instances())
 }
 
@@ -27,10 +29,11 @@ pub fn commit_layout(table: &ValueTable) -> BatchCommitLayout {
 /// The instance index occupies the low coordinates, the hidden-word index the high coordinates.
 /// Only the hidden segment is committed; the shared constants are not part of the oracle.
 /// The packed buffer is drawn from `alloc`.
-pub fn pack_table<P, A>(table: &ValueTable, alloc: &A) -> FieldVec<P, A>
+pub fn pack_table<P, A, Data>(table: &ValueTable<Data>, alloc: &A) -> FieldVec<P, A>
 where
 	P: PackedField<Scalar = B128>,
 	A: Allocator,
+	Data: Deref<Target = [Word]>,
 {
 	// The stored buffer is already the committed word sequence, wire-major.
 	// The base packer zero-pads it up to `2^log_witness_elems` elements.
@@ -119,7 +122,7 @@ mod tests {
 			.unwrap();
 
 		let layout = commit_layout(&table);
-		let packed: Vec<B128> = pack_table::<P, _>(&table, &GlobalAllocator)
+		let packed: Vec<B128> = pack_table::<P, _, _>(&table, &GlobalAllocator)
 			.iter_scalars()
 			.collect();
 

@@ -114,7 +114,7 @@ impl IOPProverM4 {
 
 		self.main.prove::<_, P, _>(&witness.main, channel, alloc)?;
 		for (prover, table) in iter::zip(&self.chips, &witness.tables) {
-			prover.prove_chip::<P, _, _>(table, channel, alloc);
+			prover.prove_chip::<P, _, _, _>(table, channel, alloc);
 		}
 		Ok(())
 	}
