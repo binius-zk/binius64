@@ -145,6 +145,23 @@ impl Binius64BuilderChannel {
 		array::from_fn(|_| self.shared.input_wire(kind))
 	}
 
+	/// Allocates the input wires one query's opening occupies: its leaf, then its branch.
+	///
+	/// The tape carries an opening in this order, so a replay fills the wires in it too.
+	fn input_opening(
+		&mut self,
+		leaf_size: usize,
+		branch_len: usize,
+	) -> (Vec<Element>, Vec<Digest>) {
+		let leaf = (0..leaf_size)
+			.map(|_| self.input_element("opening"))
+			.collect();
+		let branch = (0..branch_len)
+			.map(|_| self.input_digest("merkle_branch"))
+			.collect();
+		(leaf, branch)
+	}
+
 	/// Lifts a wire pair to the element type the protocol sees.
 	fn elem(&self, [lo, hi]: Element) -> SymbolicElem {
 		SymbolicElem::wires(&self.shared, lo, hi)
@@ -353,6 +370,9 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 	/// The opened values stay circuit inputs, since they are proof data.
 	/// They stop being *free*: each leaf is hashed and climbed to a layer the root fixes.
 	///
+	/// Queries are climbed two at a time, sharing the hash cores their levels compress in.
+	/// The advice is still read one query's leaf and branch at a time, as the tape carries it.
+	///
 	/// The index is a wire, so no range check is possible while the circuit is built.
 	/// An opening is verified at the index reduced modulo the leaf count.
 	/// Masking the sampled index so that reduction is a no-op is BINIUS-470.
@@ -373,16 +393,34 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 		merkle::verify_layer(&builder, commitment.root, &layer);
 
 		// Every query then climbs from its own leaf up to that layer.
+		// Two climbs are independent, so they share hash cores, which halves what a level costs.
 		let mut values = Vec::with_capacity(indices.len() * commitment.leaf_size);
-		for index in indices {
-			let leaf = (0..commitment.leaf_size)
-				.map(|_| self.input_element("opening"))
-				.collect::<Vec<_>>();
-			let branch = (0..tree_depth - layer_depth)
-				.map(|_| self.input_digest("merkle_branch"))
-				.collect::<Vec<_>>();
+		let mut pairs = indices.chunks_exact(2);
+		for pair in &mut pairs {
+			// The tape carries a leaf and a branch per query, whatever shares a core.
+			let openings = [(); 2]
+				.map(|()| self.input_opening(commitment.leaf_size, tree_depth - layer_depth));
 
-			// Hashes the leaf, climbs the branch, then matches the layer entry the index addresses.
+			// Both leaves hashed, both branches climbed, then each index picks its layer entry.
+			let builder = self.merkle_subcircuit("opening");
+			let indices = array::from_fn(|q| pair[q].to_wire(&builder));
+			merkle::verify_opening_2x(
+				&builder,
+				indices,
+				[&openings[0].0, &openings[1].0],
+				layer_depth,
+				tree_depth,
+				&layer,
+				[&openings[0].1, &openings[1].1],
+			);
+			for (leaf, _) in openings {
+				values.extend(leaf.into_iter().map(|element| self.elem(element)));
+			}
+		}
+		// An odd query count leaves the last climb with no partner to share cores with.
+		if let [index] = pairs.remainder() {
+			let (leaf, branch) = self.input_opening(commitment.leaf_size, tree_depth - layer_depth);
+
 			let builder = self.merkle_subcircuit("opening");
 			let index = index.to_wire(&builder);
 			merkle::verify_opening(

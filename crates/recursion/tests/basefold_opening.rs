@@ -456,6 +456,25 @@ fn one_circuit_verifies_two_different_openings() {
 	}
 }
 
+#[test]
+fn an_odd_query_count_verifies_in_circuit() {
+	// Invariant: the openings of one commitment climb in pairs, so an odd query count leaves the
+	// last one climbing alone, and both routes must reach the same layer.
+	//
+	// Fixture state: the native shape at 31 queries, so every opened commitment has a leftover.
+	let shape = Shape {
+		n_test_queries: 31,
+		..NATIVE_SHAPE
+	};
+	let setup = shape.setup();
+	let opening = prove(&shape, &setup, 8);
+	let verifier = record(&shape, &setup);
+
+	verifier
+		.check_opening(&shape, &setup, &opening)
+		.expect("the leftover query must verify beside the paired ones");
+}
+
 /// Returns `proof` with the low bit of one byte flipped.
 fn corrupt(proof: &[u8], offset: usize) -> Vec<u8> {
 	// One bit is the smallest change a sound protocol must still reject.

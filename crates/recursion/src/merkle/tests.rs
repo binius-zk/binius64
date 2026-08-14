@@ -15,6 +15,7 @@ use binius_iop::merkle_tree::MerkleTreeScheme;
 use binius_iop_prover::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
 use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 use digest::Output;
+use proptest::prelude::*;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use sha2::{Digest as _, Sha256};
 
@@ -702,11 +703,158 @@ fn verify_opening_rejects_a_wrong_index() {
 	}
 }
 
+/// Builds a circuit that verifies a pair of openings in shared cores, and reports the outcome.
+///
+/// Both openings come from one tree, so they climb to the same layer.
+/// Each query keeps its own claimed index, so a negative case can move one and leave the other.
+fn run_opening_2x(
+	openings: [&Opening; 2],
+	layer_depth: usize,
+	tree_depth: usize,
+	claimed_indices: [u64; 2],
+) -> Result<(), PopulateError> {
+	assert_eq!(openings[0].layer, openings[1].layer, "both openings must climb to one layer");
+
+	let builder = CircuitBuilder::new();
+	// The same wire roles as a single opening, one set per query.
+	let indices: [Wire; 2] = array::from_fn(|_| builder.add_inout());
+	let values = openings.map(|opening| element_wires(&builder, opening.values.len()));
+	let branch = openings.map(|opening| digest_wires(&builder, opening.branch.len()));
+	// The layer is shared, since it is checked once against the root and climbed to by both.
+	let layer: Vec<Digest> = (0..openings[0].layer.len())
+		.map(|_| array::from_fn(|_| builder.add_inout()))
+		.collect();
+	verify_opening_2x(
+		&builder,
+		indices,
+		[&values[0], &values[1]],
+		layer_depth,
+		tree_depth,
+		&layer,
+		[&branch[0], &branch[1]],
+	);
+
+	let circuit = builder.build();
+	let mut w = circuit.new_witness_filler();
+	for q in 0..2 {
+		w[indices[q]] = Word(claimed_indices[q]);
+		fill_elements(&mut w, &values[q], &openings[q].values);
+		fill_digests(&mut w, &branch[q], &openings[q].branch);
+	}
+	fill_digests(&mut w, &layer, &openings[0].layer);
+
+	// Both leaf hashes, both climbs and both layer lookups are evaluated here.
+	circuit.populate_wire_witness(&mut w)?;
+	circuit
+		.constraint_system()
+		.verify(&w.into_value_vec())
+		.expect("a satisfied circuit must verify");
+	Ok(())
+}
+
+/// What a differential case does to the pair of openings before verifying them.
+///
+/// Each mutation is one of the ones the single-opening negative tests use, aimed at one query.
+#[derive(Clone, Copy, Debug)]
+enum Tamper {
+	/// Leaves both openings as the native committer produced them.
+	None,
+	/// Flips the lowest bit of the sibling one query uses at the bottom level.
+	Sibling(usize),
+	/// Adds one to the first value under one query's leaf.
+	Value(usize),
+	/// Verifies one query at an index its path does not belong to.
+	Index(usize),
+}
+
+proptest! {
+	// Three circuits a case, each one built and evaluated, so the cases are not cheap.
+	#![proptest_config(ProptestConfig::with_cases(32))]
+
+	#[test]
+	fn verify_opening_2x_matches_two_solo_openings(
+		// Trees of 2 to 8 leaves, holding 1 or 2 elements per leaf.
+		log_len in 1usize..=3,
+		batch_size in 1usize..=2,
+		// Reduced below to a depth the tree has, since the two are drawn independently.
+		layer_draw in 0usize..=3,
+		// Likewise reduced to leaf indices, and free to coincide.
+		first in 0usize..8,
+		second in 0usize..8,
+		tamper in prop_oneof![
+			Just(Tamper::None),
+			(0usize..2).prop_map(Tamper::Sibling),
+			(0usize..2).prop_map(Tamper::Value),
+			(0usize..2).prop_map(Tamper::Index),
+		],
+		// Varying the seed varies the committed values, not just the shape.
+		seed: u64,
+	) {
+		// Invariant: verifying two openings in shared cores accepts exactly when verifying each on
+		// its own accepts, and a rejection is attributed to the query that earned it.
+		//
+		// The second half is what rules out cross-wiring: a pair that mixed the two climbs could
+		// still accept honest openings and reject tampered ones, but would blame the wrong query.
+		let layer_depth = layer_draw.min(log_len);
+		let indices = [first, second].map(|index| index % (1 << log_len));
+
+		let mut rng = StdRng::seed_from_u64(seed);
+		let data = random_values(&mut rng, batch_size << log_len);
+		// One tree, opened at both indices, so both openings share a layer.
+		let mut openings =
+			indices.map(|index| prove_opening(&data, batch_size, log_len, layer_depth, index));
+		let mut claimed = indices.map(|index| index as u64);
+
+		match tamper {
+			Tamper::None => {}
+			// At the full layer depth the climb is empty, so there is no sibling to corrupt.
+			Tamper::Sibling(q) => {
+				if let Some(sibling) = openings[q].branch.first_mut() {
+					sibling[0] ^= 1;
+				}
+			}
+			Tamper::Value(q) => openings[q].values[0] += B128::from(1u128),
+			// Flipping bit 0 names another leaf, whether it reorders a pair or moves the entry.
+			Tamper::Index(q) => claimed[q] ^= 1,
+		}
+
+		// Reference behaviour: each query verified on its own, by the single-opening gadget.
+		let solo: [Result<(), PopulateError>; 2] =
+			array::from_fn(|q| run_opening(&openings[q], layer_depth, log_len, claimed[q]));
+		let paired =
+			run_opening_2x([&openings[0], &openings[1]], layer_depth, log_len, claimed);
+
+		if solo.iter().all(Result::is_ok) {
+			prop_assert!(
+				paired.is_ok(),
+				"the pair rejected two openings that each verify alone: {paired:?}"
+			);
+		} else {
+			let error = paired.expect_err("the pair must reject what a solo verification rejects");
+			// Only the layer comparison can catch any of these, and only for a failing query.
+			assert_failed_paths(&error, ".verify_opening_2x.layer_digest");
+			for (q, result) in solo.iter().enumerate() {
+				if result.is_ok() {
+					let path = format!(".verify_opening_2x.layer_digest[{q}]");
+					prop_assert!(
+						!error.failures.iter().any(|failure| failure.path.starts_with(&path)),
+						"query {q} verifies alone, so the pair must not fail it: {:?}",
+						error.failures
+					);
+				}
+			}
+		}
+	}
+}
+
 /// AND constraints one climbed level of an opening costs.
 ///
 /// The module docs derive the layer-depth trade-off from this number, so a change here means the
 /// trade-off needs re-deriving.
 const LEVEL_AND: usize = 738;
+
+/// AND constraints one climbed level costs each query, when two openings share cores.
+const PAIRED_LEVEL_AND: usize = 377;
 
 /// AND constraints one inner node costs on its own core.
 const NODE_AND: usize = 742;
@@ -779,6 +927,65 @@ fn verify_opening_follows_the_documented_cost_model() {
 	let (wide, _) = opening_cost(20, 7, 16);
 	println!("verify_opening depth=20 layer=7 leaf=16: AND={wide}");
 	assert!(wide > narrow, "a sixteen-element leaf hashes more blocks than a one-element leaf");
+}
+
+/// The cost of verifying two openings of the same tree shape in shared cores.
+fn opening_cost_2x(tree_depth: usize, layer_depth: usize, leaf_size: usize) -> (usize, usize) {
+	cost(|builder| {
+		// One set of wires per query, over the one layer both climbs land on.
+		let indices: [Wire; 2] = array::from_fn(|_| builder.add_inout());
+		let values = [(); 2].map(|()| element_wires(builder, leaf_size));
+		let branch = [(); 2].map(|()| digest_wires(builder, tree_depth - layer_depth));
+		let layer: Vec<Digest> = (0..1usize << layer_depth)
+			.map(|_| array::from_fn(|_| builder.add_inout()))
+			.collect();
+		verify_opening_2x(
+			builder,
+			indices,
+			[&values[0], &values[1]],
+			layer_depth,
+			tree_depth,
+			&layer,
+			[&branch[0], &branch[1]],
+		);
+	})
+}
+
+#[test]
+fn verify_opening_2x_follows_the_documented_cost_model() {
+	// Invariant: pairing two climbs halves what a level costs each of them, and changes nothing
+	// about the selects, since ordering a pair and picking a layer entry stay per query.
+	//
+	// Fixture state: depth 20 trees with one-element leaves, at five layer depths.
+	// Each shape is measured again one level deeper, so the difference isolates one level.
+	for layer_depth in [0usize, 1, 4, 7, 8] {
+		let (and, bmul) = opening_cost_2x(20, layer_depth, 1);
+		let (deeper_and, deeper_bmul) = opening_cost_2x(21, layer_depth, 1);
+
+		// Two queries, each ordering one pair per level and picking one layer entry.
+		assert_eq!(
+			bmul,
+			2 * (8 * (20 - layer_depth) + 4 * ((1 << layer_depth) - 1)),
+			"BMUL at layer depth {layer_depth}"
+		);
+		assert_eq!(deeper_bmul - bmul, 16, "one more level orders one more pair per query");
+
+		// One shared node hash per level, so each query pays half of it.
+		assert_eq!(
+			(deeper_and - and) / 2,
+			PAIRED_LEVEL_AND,
+			"AND per climbed level per query at layer depth {layer_depth}"
+		);
+
+		// Printed so the figures quoted in the module docs can be re-read off a test run.
+		println!("verify_opening_2x depth=20 layer={layer_depth} leaf=1: AND={and} BMUL={bmul}");
+	}
+
+	// Sharing cores must be what pays for itself, so a pair costs less than two lone climbs.
+	let (paired, _) = opening_cost_2x(20, 7, 1);
+	let (solo, _) = opening_cost(20, 7, 1);
+	println!("two solo openings: AND={}, one paired: AND={paired}", 2 * solo);
+	assert!(paired < 2 * solo, "a shared core must beat two separate ones");
 }
 
 #[test]
