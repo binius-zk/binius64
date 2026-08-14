@@ -101,7 +101,7 @@ fn prove_once<C: TestCircuit>(name: &str, log_instances: usize) {
 
 	// Generate the batch witness in its own span.
 	let table = info_span!("witness_generation", primitive = name)
-		.in_scope(|| circuit.populate_batch(log_instances, |i, w| test_circuit.fill(i, w)))
+		.in_scope(|| circuit.populate_batch_parallel(log_instances, |i, w| test_circuit.fill(i, w)))
 		.unwrap();
 
 	// Clone and validate the shared single-instance constraint system.
@@ -128,6 +128,7 @@ fn prove_once<C: TestCircuit>(name: &str, log_instances: usize) {
 
 	// The proof must verify.
 	// It must also leave no trailing transcript data.
+	let _scope = info_span!("verify", primitive = name).entered();
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	verifier
 		.verify_chip(&mut verifier_transcript)
