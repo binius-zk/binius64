@@ -9,7 +9,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
 	word::Word,
 };
-use binius_utils::strided_array::StridedArray2DViewMut;
+use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 use cranelift_entity::SecondaryMap;
 
 use crate::{
@@ -25,8 +25,14 @@ use crate::{
 	pass::BuiltGates,
 };
 
-/// Default number of instance columns evaluated by one parallel witness-generation task.
-const DEFAULT_PARALLEL_STRIPE_WIDTH: usize = 1024;
+/// Default instance count of one parallel witness-generation tile.
+///
+/// A tile is one thread's fully contiguous working buffer for a small group of instances.
+/// Measured runtime on a hash-permutation fixture was flat for tile sizes 64 through 1024.
+/// 256 sits in the middle of that flat range.
+/// Large enough to amortize the per-tile setup cost.
+/// Small enough that a tile's buffer is a fraction of a typical L2 cache.
+const DEFAULT_PARALLEL_TILE_SIZE: usize = 256;
 
 /// An artifact that represents a built circuit.
 ///
@@ -192,38 +198,6 @@ impl Circuit {
 			.evaluate_batched(values, Some(&self.path_spec_tree))
 	}
 
-	/// Populates non-input values for a batch of instances split into vertical stripes.
-	///
-	/// This is the parallel counterpart to [`Self::populate_wire_witness_batched`]. Constants are
-	/// broadcast once over the full value array, then the bytecode interpreter runs independently
-	/// on disjoint instance-column stripes of at most `stripe_width` columns.
-	///
-	/// # Errors
-	///
-	/// If any instance is not satisfiable, returns an error naming a failing instance and its
-	/// assertion failures. The reported instance is not guaranteed to be the lowest failing
-	/// instance across all stripes.
-	pub(crate) fn populate_wire_witness_batched_parallel(
-		&self,
-		mut values: StridedArray2DViewMut<'_, Word>,
-		stripe_width: usize,
-	) -> Result<(), BatchPopulateError> {
-		assert!(stripe_width > 0, "stripe width must be positive");
-
-		// Broadcast each constant into its row across every instance. The constants are the same
-		// for all instances, so this fills the constant rows uniformly before the stripes split.
-		let n_instances = values.width();
-		for (index, &constant) in self.constraint_system.constants.iter().enumerate() {
-			for instance in 0..n_instances {
-				values[(index, instance)] = constant;
-			}
-		}
-
-		// Evaluate independent instance stripes in parallel, symbolicating assertion failures.
-		self.eval_form
-			.evaluate_batched_parallel(values, stripe_width, Some(&self.path_spec_tree))
-	}
-
 	/// Returns the constraint system for this circuit.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system
@@ -277,19 +251,21 @@ impl Circuit {
 		A: Allocator,
 		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
-		self.populate_batch_with(alloc, log_instances, None, fill)
+		self.populate_batch_with(alloc, log_instances, fill)
 	}
 
-	/// Builds the batch witness in wire-major order, evaluating instance stripes in parallel.
+	/// Builds the batch witness in parallel, one contiguous tile of instances per thread.
 	///
-	/// This is the parallel counterpart to [`Self::populate_batch`]. Input filling is still
-	/// performed once up front, then circuit evaluation runs over disjoint vertical instance
-	/// stripes.
+	/// - A column stripe of the shared value array is not contiguous.
+	/// - A thread reading it touches one short run per wire row.
+	/// - Successive rows of the same stripe sit one instance count apart in memory.
+	/// - A tile avoids this: each thread gets its own small, fully contiguous buffer.
+	/// - A thread fills, evaluates, then gathers its own tile into the batch's real layout.
 	///
 	/// # Errors
 	///
-	/// Returns an error naming a failing instance whose inputs do not satisfy the circuit. The
-	/// reported instance is not guaranteed to be the lowest failing instance across all stripes.
+	/// Returns an error naming a failing instance whose inputs do not satisfy the circuit.
+	/// The reported instance is not guaranteed to be the lowest failing one across all tiles.
 	pub fn populate_batch_parallel<A, F>(
 		&self,
 		alloc: &A,
@@ -298,25 +274,25 @@ impl Circuit {
 	) -> Result<ValueTable<A::Vec<Word>>, BatchPopulateError>
 	where
 		A: Allocator,
-		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
+		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>) + Sync,
 	{
 		self.populate_batch_parallel_with_stripe_width(
 			alloc,
 			log_instances,
-			DEFAULT_PARALLEL_STRIPE_WIDTH,
+			DEFAULT_PARALLEL_TILE_SIZE,
 			fill,
 		)
 	}
 
-	/// Builds the batch witness in parallel using a caller-provided stripe width.
+	/// Builds the batch witness in parallel using a caller-provided tile size.
 	///
-	/// This is exposed for benchmarking stripe widths. Production callers should use
-	/// [`Self::populate_batch_parallel`].
+	/// Exposed for benchmarking tile sizes.
+	/// Production callers should use [`Self::populate_batch_parallel`].
 	///
 	/// # Errors
 	///
-	/// Returns an error naming a failing instance whose inputs do not satisfy the circuit. The
-	/// reported instance is not guaranteed to be the lowest failing instance across all stripes.
+	/// Returns an error naming a failing instance whose inputs do not satisfy the circuit.
+	/// The reported instance is not guaranteed to be the lowest failing one across all tiles.
 	///
 	/// # Panics
 	///
@@ -330,17 +306,79 @@ impl Circuit {
 	) -> Result<ValueTable<A::Vec<Word>>, BatchPopulateError>
 	where
 		A: Allocator,
-		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
+		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>) + Sync,
 	{
 		assert!(stripe_width > 0, "stripe width must be positive");
-		self.populate_batch_with(alloc, log_instances, Some(stripe_width), fill)
+
+		let layout = self.value_vec_layout().clone();
+		let n_instances = 1usize << log_instances;
+		let full_len = layout.combined_len() + layout.n_scratch;
+		let offset_inout = layout.offset_inout();
+		let n_hidden_words = layout.combined_len() - offset_inout;
+		let tile_size = stripe_width;
+
+		// The destination buffer: row per hidden word, column per instance.
+		// Each tile below gathers into one contiguous stripe of its columns.
+		let data_len = n_hidden_words << log_instances;
+		let mut data = alloc.alloc::<Word>(data_len);
+		data.resize(data_len, Word::ZERO);
+		{
+			let dest =
+				StridedArray2DViewMut::without_stride(&mut data, n_hidden_words, n_instances)
+					.expect("n_hidden_words * n_instances == data.len() by construction");
+
+			(0..n_instances)
+				.into_par_iter()
+				.step_by(tile_size)
+				.zip(dest.into_par_strides(tile_size))
+				.map(|(tile_start, mut dest_stripe)| -> Result<(), BatchPopulateError> {
+					let tile_width = dest_stripe.width();
+
+					// One thread's fully contiguous working buffer for this tile's instances.
+					// Drawn from the same allocator as the destination.
+					// So a caller pooling buffers across proofs recycles every tile too.
+					let tile_len = full_len * tile_width;
+					let mut tile_buf = alloc.alloc::<Word>(tile_len);
+					tile_buf.resize(tile_len, Word::ZERO);
+					let mut tile_view =
+						StridedArray2DViewMut::without_stride(&mut tile_buf, full_len, tile_width)
+							.expect("full_len * tile_width == tile_buf.len() by construction");
+
+					// The caller assigns each instance's input wires into its column of the tile.
+					for local in 0..tile_width {
+						let mut filler = BatchWitnessFiller::new(self, &mut tile_view, local);
+						fill(tile_start + local, &mut filler);
+					}
+
+					// Broadcast the constants, then evaluate every wire the tile still needs.
+					// The tile is small enough to stay resident in cache for the whole pass.
+					// A failure here names a tile-local instance.
+					// Shift it back to the batch-global instance index the caller originally saw.
+					self.populate_wire_witness_batched(&mut tile_view)
+						.map_err(|err| BatchPopulateError {
+							instance: err.instance + tile_start,
+							source: err.source,
+						})?;
+
+					// Gather the tile's hidden rows into their real position in the batch.
+					for row in 0..n_hidden_words {
+						for local in 0..tile_width {
+							dest_stripe[(row, local)] = tile_view[(row + offset_inout, local)];
+						}
+					}
+
+					Ok(())
+				})
+				.collect::<Result<Vec<()>, _>>()?;
+		}
+
+		Ok(ValueTable::from_hidden_words(layout, log_instances, data))
 	}
 
 	fn populate_batch_with<A, F>(
 		&self,
 		alloc: &A,
 		log_instances: usize,
-		parallel_stripe_width: Option<usize>,
 		fill: F,
 	) -> Result<ValueTable<A::Vec<Word>>, BatchPopulateError>
 	where
@@ -371,14 +409,8 @@ impl Circuit {
 				fill(instance, &mut filler);
 			}
 
-			if let Some(stripe_width) = parallel_stripe_width {
-				// Broadcast the constants once, then evaluate disjoint instance stripes in
-				// parallel.
-				self.populate_wire_witness_batched_parallel(values, stripe_width)?;
-			} else {
-				// Broadcast the constants and evaluate every instance's remaining wires.
-				self.populate_wire_witness_batched(&mut values)?;
-			}
+			// Broadcast the constants and evaluate every instance's remaining wires.
+			self.populate_wire_witness_batched(&mut values)?;
 		}
 
 		// Keep the hidden segment: rows `[offset_inout, combined_len)`, the inout values followed
@@ -546,7 +578,9 @@ mod tests {
 	#[test]
 	fn parallel_population_matches_serial_for_varied_stripe_widths() {
 		let c = mix_circuit();
-		let log_instances = 3;
+		// 1024 instances: four times the default tile size.
+		// Even the default tile size must split the batch into more than one tile.
+		let log_instances = 10;
 		let fill = |i: usize, w: &mut BatchWitnessFiller<'_, '_>| {
 			c.fill(
 				w,
@@ -566,7 +600,9 @@ mod tests {
 			.unwrap();
 		assert_eq!(default_parallel.as_words(), serial.as_words());
 
-		for stripe_width in [1, 2, 3, 8, 64] {
+		// Widths span from a handful of instances to more than the whole batch.
+		// The small widths produce many tiles; the two largest each produce a single tile.
+		for stripe_width in [1, 2, 3, 8, 64, 256, 1024, 4096] {
 			let parallel = c
 				.circuit
 				.populate_batch_parallel_with_stripe_width(
