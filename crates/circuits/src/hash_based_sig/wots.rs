@@ -8,18 +8,20 @@
 
 use std::iter;
 
-use binius_frontend::{CircuitBuilder, Wire};
+use binius_core::Word;
+use binius_frontend::{CircuitBuilder, Hint, Wire};
 use rand::CryptoRng;
 
 use super::{
 	CHAIN_LENGTH, DIGEST_LEN, DIGEST_WIRES, Digest, MESSAGE_LEN, MESSAGE_WIRES, Message,
-	PUBLIC_PARAM_WIRES, PublicParam, RANDOMNESS_LEN, RANDOMNESS_WIRES, Randomness, TARGET_SUM, V,
-	W,
+	NUM_CHAIN_HASHES, PUBLIC_PARAM_LEN, PUBLIC_PARAM_WIRES, PublicParam, RANDOMNESS_LEN,
+	RANDOMNESS_WIRES, Randomness, TARGET_SUM, V, W,
 	hashing::{
 		TWEAK_TYPE_CHAIN, TWEAK_TYPE_ENCODING, TWEAK_TYPE_WOTS_PK, circuit_tweak_hash,
 		circuit_tweak_hash_2x, tweak_hash,
 	},
 };
+use crate::multiplexer::multi_wire_multiplex;
 
 /// Digits carried by each of the digest's two 64-bit words.
 const DIGITS_PER_WORD: usize = V / 2;
@@ -166,7 +168,8 @@ pub fn circuit_wots_encode(
 	payload.extend_from_slice(message);
 	payload.extend_from_slice(randomness);
 
-	let digest = circuit_tweak_hash(builder, public_param, TWEAK_TYPE_ENCODING, 0, epoch, &payload);
+	let digest =
+		circuit_tweak_hash(builder, public_param, TWEAK_TYPE_ENCODING, zero, epoch, &payload);
 
 	// With `V * W = 126` of the digest's 128 bits spent on digits, the two leftover top bits are
 	// what would otherwise let a word carry a slack term the digits do not account for.
@@ -191,15 +194,106 @@ pub fn circuit_wots_encode(
 	digits
 }
 
-/// In-circuit form of [`recover_public_key`].
+/// Words the hint emits per chain hash: the input digest, then the chain and the step.
+const HINT_WORDS_PER_HASH: usize = DIGEST_WIRES + 2;
+
+/// Words the hint reads.
+const HINT_INPUTS: usize = PUBLIC_PARAM_WIRES + 1 + V + V * DIGEST_WIRES;
+
+/// Words the hint writes: one entry per chain hash, then the [`V`] chain ends.
+const HINT_OUTPUTS: usize = NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH + V * DIGEST_WIRES;
+
+/// Computes the chain hashes a verifier actually walks, and where each one sits.
 ///
-/// Each chain evaluates all `CHAIN_LENGTH - 1` of its steps and takes the hashed value only past
-/// its digit, because a step's tweak is a circuit constant and cannot be indexed by the digit. A
-/// chain whose digit is `CHAIN_LENGTH - 1` therefore never advances, and its end is its tip, as
-/// the scheme requires.
+/// The verifier's work is the concatenation of the chain tails: chain `i` contributes its steps
+/// from `digit_i` up to `CHAIN_LENGTH - 2`, and the tails run in chain order. How long each tail
+/// is depends on the digits, so the list cannot be laid out at circuit construction time — it is
+/// hinted here and pinned by the constraints in [`circuit_recover_public_key`].
+struct ChainHashesHint;
+
+impl Hint for ChainHashesHint {
+	const NAME: &'static str = "binius.xmss_wots_chain_hashes";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(HINT_INPUTS, HINT_OUTPUTS)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		let public_param = bytes_from_words::<PUBLIC_PARAM_LEN>(&inputs[..PUBLIC_PARAM_WIRES]);
+		let epoch = inputs[PUBLIC_PARAM_WIRES].as_u64() as u32;
+		let digits = &inputs[PUBLIC_PARAM_WIRES + 1..][..V];
+		let tips = &inputs[PUBLIC_PARAM_WIRES + 1 + V..];
+
+		let (hashes, ends) = outputs.split_at_mut(NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH);
+		hashes.fill(Word::ZERO);
+
+		let mut written = 0;
+		for i in 0..V {
+			let digit = digits[i].as_u64() as usize;
+			let mut current =
+				bytes_from_words::<DIGEST_LEN>(&tips[i * DIGEST_WIRES..][..DIGEST_WIRES]);
+
+			// A chain walks from its digit to the last step. A digit of `CHAIN_LENGTH - 1` walks
+			// nothing, and a digit past that (an unsatisfiable witness) walks nothing either.
+			for step in digit..CHAIN_LENGTH - 1 {
+				// Digits that miss the target sum overrun the list. The encoding constraints
+				// reject them, so stopping short here only has to avoid a panic.
+				if written == NUM_CHAIN_HASHES {
+					break;
+				}
+				let slot = &mut hashes[written * HINT_WORDS_PER_HASH..][..HINT_WORDS_PER_HASH];
+				bytes_to_words(&current, &mut slot[..DIGEST_WIRES]);
+				slot[DIGEST_WIRES] = Word::from_u64(i as u64);
+				slot[DIGEST_WIRES + 1] = Word::from_u64(step as u64);
+
+				current = chain_step(&public_param, epoch, i, step, &current);
+				written += 1;
+			}
+			bytes_to_words(&current, &mut ends[i * DIGEST_WIRES..][..DIGEST_WIRES]);
+		}
+	}
+}
+
+/// Little-endian bytes from 64-bit words.
+fn bytes_from_words<const N: usize>(words: &[Word]) -> [u8; N] {
+	let mut bytes = [0u8; N];
+	for (chunk, word) in iter::zip(bytes.chunks_exact_mut(8), words) {
+		chunk.copy_from_slice(&word.as_u64().to_le_bytes());
+	}
+	bytes
+}
+
+/// The inverse of [`bytes_from_words`].
+fn bytes_to_words(bytes: &[u8], words: &mut [Word]) {
+	for (word, chunk) in iter::zip(words, bytes.chunks_exact(8)) {
+		*word = Word::from_u64(u64::from_le_bytes(chunk.try_into().expect("eight bytes")));
+	}
+}
+
+/// In-circuit form of [`recover_public_key`], spending only the hashes a verifier walks.
 ///
-/// Chains are walked in pairs, both lanes of one compression per step. Chains are independent and
-/// [`V`] is even, so every step of every chain finds a partner at the same step.
+/// A chain's tail is `CHAIN_LENGTH - 1 - digit` hashes, and the target sum fixes the total across
+/// all chains at [`NUM_CHAIN_HASHES`] however the digits fall. So rather than give every chain
+/// room for its longest possible tail — `V * (CHAIN_LENGTH - 1)` hashes, two thirds of them
+/// discarded — the tails are concatenated into one list of exactly that total, hinted, and pinned
+/// by constraints. Each entry carries its input digest, its chain and its step; its output is the
+/// hash, not a hinted value, so nothing has to check it.
+///
+/// # What pins the list
+///
+/// - `chain` is non-decreasing, so each chain's entries are one contiguous run.
+/// - Within a run, the step advances by one and each input is the previous output.
+/// - A run's first entry takes its chain's signature tip as input and starts at `digit`; its last
+///   ends at `CHAIN_LENGTH - 2` and its output is that chain's end.
+/// - A chain whose digit is `CHAIN_LENGTH - 1` owes no hashes; its end is its tip.
+///
+/// A run's length therefore has to be exactly `CHAIN_LENGTH - 1 - digit`, and the list is exactly
+/// [`NUM_CHAIN_HASHES`] long, which the target sum makes the sum of those lengths. **No chain that
+/// owes hashes can be missing a run**: if one were, the entries would not add up.
+///
+/// Every entry looks its chain's tip, digit and end up in one [`V`]-entry table, indexed by the
+/// entry's own `chain` — which is where the variable layout is paid for, in committed words rather
+/// than in hashes.
 pub fn circuit_recover_public_key(
 	builder: &CircuitBuilder,
 	public_param: &[Wire; PUBLIC_PARAM_WIRES],
@@ -207,34 +301,151 @@ pub fn circuit_recover_public_key(
 	chain_tips: &[[Wire; DIGEST_WIRES]; V],
 	digits: &[Wire; V],
 ) -> [[Wire; DIGEST_WIRES]; V] {
-	let chain_ends = (0..V / 2)
-		.flat_map(|pair| {
-			let (c0, c1) = (2 * pair, 2 * pair + 1);
-			(0..CHAIN_LENGTH - 1).fold([chain_tips[c0], chain_tips[c1]], |current, step| {
-				let next = circuit_tweak_hash_2x(
-					builder,
-					public_param,
-					TWEAK_TYPE_CHAIN,
-					[
-						(c0 * CHAIN_LENGTH + step) as u32,
-						(c1 * CHAIN_LENGTH + step) as u32,
-					],
-					epoch,
-					[&current[0], &current[1]],
-				);
-				// The reference walks steps `digit..CHAIN_LENGTH - 2`, so this step applies
-				// exactly when `digit <= step`.
-				let past = builder.add_constant_64(step as u64 + 1);
-				std::array::from_fn(|lane| {
-					let advance = builder.icmp_ult(digits[2 * pair + lane], past);
-					std::array::from_fn(|k| {
-						builder.select(advance, next[lane][k], current[lane][k])
-					})
-				})
-			})
+	let mut hint_inputs = Vec::with_capacity(HINT_INPUTS);
+	hint_inputs.extend_from_slice(public_param);
+	hint_inputs.push(epoch);
+	hint_inputs.extend_from_slice(digits);
+	hint_inputs.extend(chain_tips.iter().flatten().copied());
+	let hinted = builder.call_hint(ChainHashesHint, &[], &hint_inputs);
+
+	let input_of = |k: usize| -> [Wire; DIGEST_WIRES] {
+		std::array::from_fn(|w| hinted[k * HINT_WORDS_PER_HASH + w])
+	};
+	let chain_of = |k: usize| hinted[k * HINT_WORDS_PER_HASH + DIGEST_WIRES];
+	let step_of = |k: usize| hinted[k * HINT_WORDS_PER_HASH + DIGEST_WIRES + 1];
+	let chain_ends: [[Wire; DIGEST_WIRES]; V] = std::array::from_fn(|i| {
+		std::array::from_fn(|w| {
+			hinted[NUM_CHAIN_HASHES * HINT_WORDS_PER_HASH + i * DIGEST_WIRES + w]
 		})
-		.collect::<Vec<_>>();
-	std::array::from_fn(|i| chain_ends[i])
+	});
+
+	// One row per chain: its tip, its digit, its end. Every entry indexes this by its own chain.
+	let table: Vec<Vec<Wire>> = (0..V)
+		.map(|i| {
+			let mut row = Vec::with_capacity(2 * DIGEST_WIRES + 1);
+			row.extend_from_slice(&chain_tips[i]);
+			row.push(digits[i]);
+			row.extend_from_slice(&chain_ends[i]);
+			row
+		})
+		.collect();
+	let table_rows = table.iter().map(|row| row.as_slice()).collect::<Vec<_>>();
+
+	// The hashes. Every entry's input is hinted rather than carried from the entry before it, so
+	// they are independent and pair two to a core.
+	let sub_position = |k: usize| builder.bxor(builder.shl(chain_of(k), W as u32), step_of(k));
+	let mut outputs = Vec::with_capacity(NUM_CHAIN_HASHES);
+	for pair in 0..NUM_CHAIN_HASHES / 2 {
+		let (a, b) = (2 * pair, 2 * pair + 1);
+		let (in_a, in_b) = (input_of(a), input_of(b));
+		let digests = circuit_tweak_hash_2x(
+			builder,
+			public_param,
+			TWEAK_TYPE_CHAIN,
+			[sub_position(a), sub_position(b)],
+			epoch,
+			[&in_a, &in_b],
+		);
+		outputs.extend_from_slice(&digests);
+	}
+	if NUM_CHAIN_HASHES % 2 == 1 {
+		let k = NUM_CHAIN_HASHES - 1;
+		outputs.push(circuit_tweak_hash(
+			builder,
+			public_param,
+			TWEAK_TYPE_CHAIN,
+			sub_position(k),
+			epoch,
+			&input_of(k),
+		));
+	}
+
+	let one = builder.add_constant_64(1);
+	let last_step = builder.add_constant_64((CHAIN_LENGTH - 2) as u64);
+	let all_chains = builder.add_constant_64(V as u64);
+	let never = builder.add_constant(Word::ZERO);
+	let always = builder.add_constant(Word::ALL_ONE);
+
+	for k in 0..NUM_CHAIN_HASHES {
+		let b = builder.subcircuit(format!("chain_hash[{k}]"));
+		let (chain, step, input) = (chain_of(k), step_of(k), input_of(k));
+
+		let row = multi_wire_multiplex(&b, &table_rows, chain);
+		let tip: [Wire; DIGEST_WIRES] = std::array::from_fn(|w| row[w]);
+		let digit = row[DIGEST_WIRES];
+		let end: [Wire; DIGEST_WIRES] = std::array::from_fn(|w| row[DIGEST_WIRES + 1 + w]);
+
+		// An entry either continues the one before it or opens a new chain. The chain field is
+		// what says which, and it never decreases, so a chain's entries stay contiguous.
+		let continues = if k == 0 {
+			never
+		} else {
+			b.assert_true("chain_non_decreasing", b.icmp_ule(chain_of(k - 1), chain));
+			b.icmp_eq(chain, chain_of(k - 1))
+		};
+
+		if k > 0 {
+			let expected_step = b.iadd(step_of(k - 1), one).0;
+			b.assert_eq("step_advances", b.select(continues, step, expected_step), expected_step);
+			for w in 0..DIGEST_WIRES {
+				let previous = outputs[k - 1][w];
+				b.assert_eq(
+					format!("input_continues[{w}]"),
+					b.select(continues, input[w], previous),
+					previous,
+				);
+			}
+		}
+
+		// Opening a chain: start at the digit, from the signature's tip for that chain.
+		let starts = b.bnot(continues);
+		b.assert_eq("starts_at_digit", b.select(starts, step, digit), digit);
+		for w in 0..DIGEST_WIRES {
+			b.assert_eq(
+				format!("starts_from_tip[{w}]"),
+				b.select(starts, input[w], tip[w]),
+				tip[w],
+			);
+		}
+
+		// Closing a chain: end at the last step, and hand the chain its public-key end.
+		let ends = if k + 1 == NUM_CHAIN_HASHES {
+			always
+		} else {
+			b.bnot(b.icmp_eq(chain_of(k + 1), chain))
+		};
+		b.assert_eq("ends_at_last_step", b.select(ends, step, last_step), last_step);
+		for w in 0..DIGEST_WIRES {
+			b.assert_eq(
+				format!("ends_at_chain_end[{w}]"),
+				b.select(ends, outputs[k][w], end[w]),
+				end[w],
+			);
+		}
+	}
+
+	// The table is indexed by a hinted chain, so the chain has to name a real one. Monotonicity
+	// carries the bound to every entry.
+	builder.assert_true(
+		"chain_in_range",
+		builder.icmp_ult(chain_of(NUM_CHAIN_HASHES - 1), all_chains),
+	);
+
+	// A chain at the last digit owes no hashes and so has no entry to close it: its end is the
+	// tip the signature already gave.
+	let empty_digit = builder.add_constant_64((CHAIN_LENGTH - 1) as u64);
+	for i in 0..V {
+		let empty = builder.icmp_eq(digits[i], empty_digit);
+		for w in 0..DIGEST_WIRES {
+			builder.assert_eq(
+				format!("empty_chain_end[{i}][{w}]"),
+				builder.select(empty, chain_ends[i][w], chain_tips[i][w]),
+				chain_tips[i][w],
+			);
+		}
+	}
+
+	chain_ends
 }
 
 /// In-circuit form of [`wots_public_key_hash`].
@@ -245,7 +456,8 @@ pub fn circuit_wots_public_key_hash(
 	chain_ends: &[[Wire; DIGEST_WIRES]; V],
 ) -> [Wire; DIGEST_WIRES] {
 	let payload = chain_ends.iter().flatten().copied().collect::<Vec<_>>();
-	circuit_tweak_hash(builder, public_param, TWEAK_TYPE_WOTS_PK, 0, epoch, &payload)
+	let zero = builder.add_constant_64(0);
+	circuit_tweak_hash(builder, public_param, TWEAK_TYPE_WOTS_PK, zero, epoch, &payload)
 }
 
 #[cfg(test)]
@@ -304,6 +516,25 @@ mod tests {
 		let sig = TestSignature::generate(&mut rng, 7);
 		assert_eq!(sig.encoding.iter().map(|&e| e as usize).sum::<usize>(), TARGET_SUM);
 		assert!(sig.encoding.iter().all(|&e| (e as usize) < CHAIN_LENGTH));
+	}
+
+	#[test]
+	fn the_fixture_covers_empty_and_walked_chains() {
+		// `circuit_recovers_the_public_key` only exercises the empty-chain path if some chain is
+		// actually empty. With the target sum putting the mean digit at 4.64 that is the common
+		// case, but it is worth failing loudly if a fixture ever stops covering it.
+		let mut rng = StdRng::seed_from_u64(1);
+		let sig = TestSignature::generate(&mut rng, 12345);
+		assert!(
+			sig.encoding.iter().any(|&e| e as usize == CHAIN_LENGTH - 1),
+			"no chain is empty, so the zero-hash path goes unchecked"
+		);
+		assert!(
+			sig.encoding
+				.iter()
+				.any(|&e| (e as usize) < CHAIN_LENGTH - 1),
+			"every chain is empty, so no chain hash is walked"
+		);
 	}
 
 	#[test]
