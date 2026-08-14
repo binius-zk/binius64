@@ -89,9 +89,10 @@ pub fn tweak_hash(
 /// In-circuit form of [`tweak_hash`], returning the truncated digest as 64-bit little-endian
 /// wires.
 ///
-/// The tweak type and sub-position are circuit constants at every call site: a chain step's
-/// position and a Merkle node's level are fixed by where the gadget sits, never chosen by the
-/// prover.
+/// The tweak type is a circuit constant at every call site. The sub-position is a wire: a Merkle
+/// node's level is still a constant fed in as one, but a chain step's position is computed, so a
+/// chain can spend hashes only where its digit says it must. Nothing about it is free for the
+/// prover to choose — the caller is what constrains it.
 ///
 /// # Arguments
 ///
@@ -110,7 +111,7 @@ pub fn circuit_tweak_hash(
 	builder: &CircuitBuilder,
 	public_param: &[Wire; PUBLIC_PARAM_WIRES],
 	tweak_type: u8,
-	sub_position: u32,
+	sub_position: Wire,
 	index: Wire,
 	payload: &[Wire],
 ) -> [Wire; DIGEST_WIRES] {
@@ -125,7 +126,7 @@ fn circuit_key(
 	builder: &CircuitBuilder,
 	public_param: &[Wire; PUBLIC_PARAM_WIRES],
 	tweak_type: u8,
-	sub_position: u32,
+	sub_position: Wire,
 	index: Wire,
 ) -> ByteVec {
 	let mut wires = Vec::with_capacity(PUBLIC_PARAM_WIRES + TWEAK_WIRES);
@@ -154,7 +155,7 @@ pub fn circuit_tweak_hash_2x(
 	builder: &CircuitBuilder,
 	public_param: &[Wire; PUBLIC_PARAM_WIRES],
 	tweak_type: u8,
-	sub_positions: [u32; 2],
+	sub_positions: [Wire; 2],
 	index: Wire,
 	payloads: [&[Wire]; 2],
 ) -> [[Wire; DIGEST_WIRES]; 2] {
@@ -182,14 +183,15 @@ pub fn circuit_tweak_hash_2x(
 fn tweak_wires(
 	builder: &CircuitBuilder,
 	tweak_type: u8,
-	sub_position: u32,
+	sub_position: Wire,
 	index: Wire,
 ) -> [Wire; TWEAK_WIRES] {
-	// Bytes 0..8 hold the type, the sub-position and the index's low three bytes. The first two
-	// are circuit constants, so only the index costs anything: shifting it up to byte 5 both
-	// places those three bytes and carries everything above them off the top of the word.
-	let head = builder.add_constant_64((tweak_type as u64) | ((sub_position as u64) << 8));
-	let word0 = builder.bxor(head, builder.shl(index, 40));
+	// Bytes 0..8 hold the type, then the sub-position, then the index's low three bytes. Each
+	// field is lifted to the top of the word and dropped into place, which selects its bytes and
+	// carries everything above them off the top, so no field can reach into the next one's.
+	let head = builder.add_constant_64(tweak_type as u64);
+	let sub = builder.shr(builder.shl(sub_position, 32), 24);
+	let word0 = builder.bxor(head, builder.bxor(sub, builder.shl(index, 40)));
 
 	// Byte 8 is the index's top byte and bytes 9..16 are zero. Lifting that byte to the top of
 	// the word and dropping it back to the bottom selects it and discards anything a caller
@@ -230,8 +232,9 @@ mod tests {
 		let param_w: [Wire; PUBLIC_PARAM_WIRES] = std::array::from_fn(|_| b.add_inout());
 		let index_w = b.add_inout();
 		let payload_w: Vec<Wire> = (0..payload.len() / 8).map(|_| b.add_inout()).collect();
+		let sub_position_w = b.add_constant_64(sub_position as u64);
 		let digest =
-			circuit_tweak_hash(&b, &param_w, tweak_type, sub_position, index_w, &payload_w);
+			circuit_tweak_hash(&b, &param_w, tweak_type, sub_position_w, index_w, &payload_w);
 		let expected: [Wire; DIGEST_WIRES] = std::array::from_fn(|_| b.add_inout());
 		for k in 0..DIGEST_WIRES {
 			b.assert_eq("digest", digest[k], expected[k]);
@@ -335,7 +338,7 @@ mod tests {
 			&b,
 			&param_w,
 			TWEAK_TYPE_CHAIN,
-			sub_positions,
+			sub_positions.map(|s| b.add_constant_64(s as u64)),
 			index_w,
 			[&payload_w[0], &payload_w[1]],
 		);
