@@ -1,8 +1,8 @@
-// Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 mod utils;
 
-use std::{alloc::System, env};
+use std::alloc::System;
 
 use binius_examples::circuits::hashsign::{HashBasedSigExample, Instance, Params};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -15,29 +15,12 @@ static HASHSIGN_PEAK_ALLOC: PeakMemAlloc<System> = PeakMemAlloc::new(System);
 
 struct HashSignBenchmark {
 	config: SignBenchConfig,
-	tree_height: usize,
-	spec: u8,
 }
 
 impl HashSignBenchmark {
 	fn new() -> Self {
-		let config = SignBenchConfig::from_env(4); // default: 4 signatures
-
-		// Parse XMSS/WOTS parameters from environment variables
-		let tree_height = env::var("XMSS_TREE_HEIGHT")
-			.ok()
-			.and_then(|s| s.parse::<usize>().ok())
-			.unwrap_or(13);
-
-		let spec = env::var("WOTS_SPEC")
-			.ok()
-			.and_then(|s| s.parse::<u8>().ok())
-			.unwrap_or(2);
-
 		Self {
-			config,
-			tree_height,
-			spec,
+			config: SignBenchConfig::from_env(4), // default: 4 signatures
 		}
 	}
 }
@@ -49,9 +32,7 @@ impl ExampleBenchmark for HashSignBenchmark {
 
 	fn create_params(&self) -> Self::Params {
 		Params {
-			num_validators: self.config.n_signatures,
-			tree_height: self.tree_height,
-			spec: self.spec,
+			num_signers: self.config.n_signatures,
 		}
 	}
 
@@ -60,7 +41,7 @@ impl ExampleBenchmark for HashSignBenchmark {
 	}
 
 	fn bench_name(&self) -> String {
-		format!("sig_{}_tree_{}", self.config.n_signatures, self.tree_height)
+		format!("sig_{}", self.config.n_signatures)
 	}
 
 	fn throughput(&self) -> Throughput {
@@ -68,7 +49,7 @@ impl ExampleBenchmark for HashSignBenchmark {
 	}
 
 	fn proof_description(&self) -> String {
-		format!("{} signatures (tree height {})", self.config.n_signatures, self.tree_height)
+		format!("{} signatures", self.config.n_signatures)
 	}
 
 	fn log_inv_rate(&self) -> usize {
@@ -78,16 +59,6 @@ impl ExampleBenchmark for HashSignBenchmark {
 	fn print_params(&self) {
 		let params_list = vec![
 			("Signatures".to_string(), self.config.n_signatures.to_string()),
-			(
-				"XMSS tree height".to_string(),
-				format!(
-					"{} (2^{} = {} slots)",
-					self.tree_height,
-					self.tree_height,
-					1 << self.tree_height
-				),
-			),
-			("WOTS spec".to_string(), self.spec.to_string()),
 			("Message size".to_string(), "32 bytes (fixed)".to_string()),
 			("Log inverse rate".to_string(), self.config.log_inv_rate.to_string()),
 		];

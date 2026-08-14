@@ -1,9 +1,130 @@
-// Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+// Copyright (c) 2026 leanEthereum
+//! XMSS signature verification.
+//!
+//! The scheme is the one leanVM-b's `xmss` crate implements. Every parameter, every tweak and
+//! every step of verification is the same, so a signature is the same construction:
+//!
+//! - a Winternitz one-time signature over [`V`] chains of length [`CHAIN_LENGTH`], with a
+//!   target-sum encoding and no checksum chains,
+//! - whose chain ends hash into a Merkle leaf,
+//! - which an authentication path links to the committed root.
+//!
+//! The tweakable hash under it is the one thing that differs, and differs twice over: BLAKE3
+//! rather than BLAKE2s, keyed rather than prefixed. The reference hashes the byte string
+//! `tweak | pp | payload`; here `pp | tweak` is the BLAKE3 key and the payload is the whole
+//! message. The two are 32 bytes together, exactly a key, so the domain fits it with nothing left
+//! to pad. Digests therefore do not agree with the reference's — the schemes are the same, the
+//! instantiations are not.
+//!
+//! Keying also takes the domain out of the payload, which is what makes the message encoding one
+//! compression rather than two. A native verification is a constant 143:
+//!
+//! ```text
+//! 1 (encoding) + 99 (chains, fixed by the target sum) + 11 (leaf) + 32 (path) = 143
+//! ```
+//!
+//! In circuit the chain work is not the 99 steps a verifier walks but every one of the
+//! `V * (CHAIN_LENGTH - 1) = 294`: each step's tweak is a circuit constant, so a chain has to
+//! evaluate all of its steps and take the hashed value only past its digit. The target sum buys
+//! encoding validity here rather than verifier work.
+//!
+//! Those 294 run two chains to a core, as the two 32-bit lanes of one paired BLAKE3 compression,
+//! so they cost 147 cores beside the 44 lone compressions of the encoding, the leaf and the path.
+//!
+//! # Example
+//!
+//! Sign a message and verify it, out of circuit:
+//!
+//! ```
+//! use binius_circuits::hash_based_sig::{MESSAGE_LEN, xmss};
+//! use rand::{Rng, SeedableRng, rngs::StdRng};
+//!
+//! let mut rng = StdRng::seed_from_u64(0);
+//! let mut message = [0u8; MESSAGE_LEN];
+//! rng.fill_bytes(&mut message);
+//!
+//! let epoch = 42;
+//! let (public_key, signature) = xmss::generate_signature(&mut rng, &message, epoch);
+//! xmss::xmss_verify(&public_key, &message, &signature, epoch).unwrap();
+//!
+//! // The same signature at any other epoch is not a signature.
+//! assert!(xmss::xmss_verify(&public_key, &message, &signature, epoch + 1).is_err());
+//! ```
+//!
+//! [`xmss::circuit_xmss_verify`] is the in-circuit form of that check, and
+//! [`aggregate::circuit_xmss_multisig`] runs it for several signers over one message.
+//!
+//! CREDIT: <https://github.com/leanEthereum/leanVM-b> (XMSS construction).
 
-pub mod codeword;
+pub mod aggregate;
 pub mod hashing;
-pub mod merkle_tree;
-pub mod winternitz_ots;
-pub mod witness_utils;
+pub mod wots;
 pub mod xmss;
-pub mod xmss_aggregate;
+
+/// Digest length in bytes: n = 128 bits.
+pub const DIGEST_LEN: usize = 16;
+
+/// A digest as 64-bit little-endian wires.
+pub const DIGEST_WIRES: usize = DIGEST_LEN / 8;
+
+/// Public parameter length in bytes. The parameter separates users.
+pub const PUBLIC_PARAM_LEN: usize = 16;
+
+/// Wires holding a public parameter.
+pub const PUBLIC_PARAM_WIRES: usize = PUBLIC_PARAM_LEN / 8;
+
+/// Signature randomness length in bytes, ground until the encoding is valid.
+pub const RANDOMNESS_LEN: usize = 24;
+
+/// Wires holding the randomness.
+pub const RANDOMNESS_WIRES: usize = RANDOMNESS_LEN / 8;
+
+/// The message to sign: a 256-bit message hash.
+pub const MESSAGE_LEN: usize = 32;
+
+/// Wires holding a message.
+pub const MESSAGE_WIRES: usize = MESSAGE_LEN / 8;
+
+/// Number of Winternitz hash chains.
+pub const V: usize = 42;
+
+/// Bits per encoding digit.
+pub const W: usize = 3;
+
+/// Chain length: a digit selects one of `2^W` positions.
+pub const CHAIN_LENGTH: usize = 1 << W;
+
+/// Chain hashes the verifier walks, summed over all chains: `sum(CHAIN_LENGTH - 1 - e_i)`.
+///
+/// Constant because the encoding sum is fixed to [`TARGET_SUM`].
+pub const NUM_CHAIN_HASHES: usize = 99;
+
+/// A WOTS encoding `(e_0, .., e_{V-1})` is valid exactly when every `e_i < CHAIN_LENGTH`, the
+/// digits sum to this, and the two leftover digest bits are zero.
+///
+/// The signer grinds the randomness until the encoding is valid, which is what replaces the
+/// checksum chains. 195 sits above the mean of 147 so the verifier walks fewer chain steps.
+pub const TARGET_SUM: usize = V * (CHAIN_LENGTH - 1) - NUM_CHAIN_HASHES;
+
+/// Merkle tree height: a key is valid for up to `2^LOG_LIFETIME` epochs.
+pub const LOG_LIFETIME: usize = 32;
+
+/// A 128-bit digest.
+pub type Digest = [u8; DIGEST_LEN];
+
+/// A per-signer public parameter.
+pub type PublicParam = [u8; PUBLIC_PARAM_LEN];
+
+/// Signature randomness.
+pub type Randomness = [u8; RANDOMNESS_LEN];
+
+/// The message to sign.
+pub type Message = [u8; MESSAGE_LEN];
+
+// The encoding uses V*W = 126 of the digest's 128 bits; the 2 leftover top bits are ground to
+// zero, so the digest decomposes exactly into the digits.
+const _: () = assert!(V * W + 2 == DIGEST_LEN * 8);
+
+// The target sum is what fixes the verifier's chain work.
+const _: () = assert!(TARGET_SUM == 195);

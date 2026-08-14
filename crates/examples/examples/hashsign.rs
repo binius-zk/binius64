@@ -1,4 +1,4 @@
-// Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use anyhow::Result;
 use binius_examples::{Cli, circuits::hashsign::HashBasedSigExample};
 

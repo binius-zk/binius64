@@ -1,44 +1,34 @@
-// Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+//! XMSS multi-signature verification.
+//!
+//! `n` signers with independent trees sign one message at one epoch, and the circuit verifies
+//! every signature. The scheme's parameters are fixed, so the signer count is the only dial.
 
 use anyhow::Result;
 use binius_circuits::hash_based_sig::{
-	winternitz_ots::WinternitzSpec,
-	witness_utils::ValidatorSignatureData,
-	xmss::XmssSignature,
-	xmss_aggregate::{MultiSigBuilder, circuit_xmss_multisig},
+	MESSAGE_LEN, Message,
+	aggregate::{MultiSigWires, circuit_xmss_multisig},
+	xmss::generate_signature,
 };
-use binius_core::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
+use binius_frontend::{CircuitBuilder, WitnessFiller};
 use clap::Args;
-use rand::prelude::*;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::ExampleCircuit;
 
-/// Hash-based multi-signature verification example circuit
+/// Fixed seed, so a benchmark run is comparable with the one before it.
+const SEED: u64 = 42;
+
 pub struct HashBasedSigExample {
-	spec: WinternitzSpec,
-	tree_height: usize,
-	num_validators: usize,
-	validator_params: Vec<Vec<Wire>>,
-	message: Vec<Wire>,
-	epoch: Wire,
-	validator_roots: Vec<[Wire; 4]>,
-	validator_signatures: Vec<XmssSignature>,
+	num_signers: usize,
+	wires: MultiSigWires,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct Params {
-	/// Number of validators in the multi-signature
+	/// Number of signers in the multi-signature
 	#[arg(short = 'n', long, default_value_t = 3)]
-	pub num_validators: usize,
-
-	/// Height of the Merkle tree (2^height slots)
-	#[arg(short = 't', long, default_value_t = 3)]
-	pub tree_height: usize,
-
-	/// Winternitz spec: 1 or 2
-	#[arg(short = 's', long, default_value_t = 1)]
-	pub spec: u8,
+	pub num_signers: usize,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -49,112 +39,38 @@ impl ExampleCircuit for HashBasedSigExample {
 	type Instance = Instance;
 
 	fn build(params: Params, builder: &mut CircuitBuilder) -> Result<Self> {
-		println!("Building HashBasedSigExample with parameters:");
-		println!("  num_validators: {}", params.num_validators);
-		println!(
-			"  tree_height: {} (2^{} = {} slots)",
-			params.tree_height,
-			params.tree_height,
-			1 << params.tree_height
-		);
-		println!("  spec: {}", params.spec);
-
-		let spec = match params.spec {
-			1 => WinternitzSpec::spec_1(),
-			2 => WinternitzSpec::spec_2(),
-			_ => anyhow::bail!("Invalid spec: must be 1 or 2"),
-		};
-		let tree_height = params.tree_height;
-		if tree_height > 31 {
-			anyhow::bail!("tree_height {} exceeds the maximum supported height of 31", tree_height);
+		if params.num_signers == 0 {
+			anyhow::bail!("num_signers must be positive");
 		}
-		let num_validators = params.num_validators;
 
-		let ms_builder = MultiSigBuilder::new(builder, &spec);
-		let (message, epoch) = ms_builder.create_public_inputs();
-		let validator_params = ms_builder.create_validator_params(num_validators);
-		let validator_roots = ms_builder.create_validator_roots(num_validators);
-		let validator_signatures: Vec<XmssSignature> = (0..num_validators)
-			.map(|_| ms_builder.create_validator_signature(tree_height, epoch))
-			.collect();
-
-		circuit_xmss_multisig(
-			builder,
-			&spec,
-			&validator_params,
-			&message,
-			epoch,
-			&validator_roots,
-			&validator_signatures,
-		);
+		let wires = MultiSigWires::new(builder, params.num_signers);
+		circuit_xmss_multisig(builder, &wires);
 
 		Ok(Self {
-			spec,
-			tree_height,
-			num_validators,
-			validator_params,
-			message,
-			epoch,
-			validator_roots,
-			validator_signatures,
+			num_signers: params.num_signers,
+			wires,
 		})
 	}
 
 	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller) -> Result<()> {
-		let mut rng = StdRng::seed_from_u64(42); // Fixed seed for benchmarking consistency
+		let mut rng = StdRng::seed_from_u64(SEED);
 
-		// Fixed 32-byte message
-		let mut message_bytes = [0u8; 32];
-		rng.fill_bytes(&mut message_bytes);
+		let mut message: Message = [0u8; MESSAGE_LEN];
+		rng.fill_bytes(&mut message);
+		let mut epoch_bytes = [0u8; 4];
+		rng.fill_bytes(&mut epoch_bytes);
+		let epoch = u32::from_le_bytes(epoch_bytes);
 
-		// Safe because tree_height is validated to be <= 31 in build()
-		let epoch = rng.next_u32() % (1u32 << self.tree_height);
+		// Each signer has its own tree, so each generates its own key alongside its signature.
+		let signatures = (0..self.num_signers)
+			.map(|_| generate_signature(&mut rng, &message, epoch))
+			.collect::<Vec<_>>();
 
-		w.pack_bytes_le(&self.message, &message_bytes);
-		w[self.epoch] = Word::from_u64(epoch as u64);
-
-		// Generate a signature for each validator, each with its own domain parameter.
-		for val_idx in 0..self.num_validators {
-			let mut param_bytes = vec![0u8; self.spec.domain_param_len];
-			rng.fill_bytes(&mut param_bytes);
-
-			// Pack this validator's parameter (pad to match wire count)
-			let mut padded_param = vec![0u8; self.validator_params[val_idx].len() * 8];
-			padded_param[..param_bytes.len()].copy_from_slice(&param_bytes);
-			w.pack_bytes_le(&self.validator_params[val_idx], &padded_param);
-
-			let validator_data = ValidatorSignatureData::generate(
-				&mut rng,
-				&param_bytes,
-				&message_bytes,
-				epoch,
-				&self.spec,
-				self.tree_height,
-			);
-
-			w.pack_bytes_le(&self.validator_roots[val_idx], &validator_data.root);
-
-			// The nonce already fills the wire capacity exactly, so pack it directly.
-			w.pack_bytes_le(&self.validator_signatures[val_idx].nonce, &validator_data.nonce);
-
-			for (i, sig_hash) in validator_data.signature_hashes.iter().enumerate() {
-				w.pack_bytes_le(&self.validator_signatures[val_idx].signature_hashes[i], sig_hash);
-			}
-
-			for (i, pk_hash) in validator_data.public_key_hashes.iter().enumerate() {
-				w.pack_bytes_le(&self.validator_signatures[val_idx].public_key_hashes[i], pk_hash);
-			}
-
-			for (i, auth_node) in validator_data.auth_path.iter().enumerate() {
-				w.pack_bytes_le(&self.validator_signatures[val_idx].auth_path[i], auth_node);
-			}
-		}
-
-		// Every digest is BLAKE3, derived from the inputs, so the evaluator fills them all here.
+		self.wires.populate(w, &message, epoch, &signatures);
 		Ok(())
 	}
 
 	fn param_summary(params: &Self::Params) -> Option<String> {
-		Some(format!("{}v-{}t-s{}", params.num_validators, params.tree_height, params.spec))
+		Some(format!("{}s", params.num_signers))
 	}
 }

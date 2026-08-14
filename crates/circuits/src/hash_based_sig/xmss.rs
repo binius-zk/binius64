@@ -1,413 +1,400 @@
-// Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+// Copyright (c) 2026 leanEthereum
+//! XMSS: a Merkle tree of `2^LOG_LIFETIME` WOTS public-key hashes.
+//!
+//! A signature is a WOTS signature at one epoch plus the authentication path linking that epoch's
+//! leaf to the committed root. Verification recovers the WOTS public key from the chain tips,
+//! hashes it into the leaf, and climbs the path.
+//!
+//! XMSS is stateful: signing twice at one epoch breaks the one-time signature, and so the key.
+
+use std::iter;
+
+use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire};
+use rand::CryptoRng;
 
 use super::{
-	hashing::circuit_public_key_hash,
-	merkle_tree::circuit_merkle_path,
-	winternitz_ots::{WinternitzSpec, circuit_winternitz_ots},
+	DIGEST_LEN, DIGEST_WIRES, Digest, LOG_LIFETIME, MESSAGE_WIRES, Message, PUBLIC_PARAM_LEN,
+	PUBLIC_PARAM_WIRES, PublicParam, RANDOMNESS_WIRES, Randomness, V,
+	hashing::{TWEAK_TYPE_MERKLE, circuit_tweak_hash, tweak_hash},
+	wots::{
+		circuit_recover_public_key, circuit_wots_encode, circuit_wots_public_key_hash,
+		find_randomness_for_wots_encoding, iterate_hash, recover_public_key, wots_encode,
+		wots_public_key_hash,
+	},
 };
 
-/// An XMSS signature.
-///
-/// This structure contains all the witness data for an XMSS signature to be
-/// verified.
-#[derive(Clone)]
-pub struct XmssSignature {
-	/// Nonce feeding the message hash, eight bytes per wire.
-	pub nonce: Vec<Wire>,
-	/// The epoch is the index of key-pair used in the signature
-	pub epoch: Wire,
-	/// Winternitz signature hash values
-	pub signature_hashes: Vec<[Wire; 4]>,
-	/// Winternitz public key hashes
-	pub public_key_hashes: Vec<[Wire; 4]>,
-	/// Merkle authentication path
-	pub auth_path: Vec<[Wire; 4]>,
+/// An XMSS public key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XmssPublicKey {
+	pub merkle_root: Digest,
+	pub public_param: PublicParam,
 }
 
-/// Verifies an XMSS (eXtended Merkle Signature Scheme) signature.
+/// An XMSS signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XmssSignature {
+	/// The ground randomness the encoding is drawn from.
+	pub randomness: Randomness,
+	/// Each chain walked as far as its digit.
+	pub chain_tips: [Digest; V],
+	/// Sibling nodes from the leaf up to the root.
+	pub merkle_path: [Digest; LOG_LIFETIME],
+}
+
+/// The wires an [`XmssSignature`] occupies in circuit.
+#[derive(Debug, Clone)]
+pub struct XmssSignatureWires {
+	pub randomness: [Wire; RANDOMNESS_WIRES],
+	pub chain_tips: [[Wire; DIGEST_WIRES]; V],
+	pub merkle_path: [[Wire; DIGEST_WIRES]; LOG_LIFETIME],
+}
+
+impl XmssSignatureWires {
+	/// Allocates the signature as private witness wires.
+	pub fn new_witness(builder: &CircuitBuilder) -> Self {
+		Self {
+			randomness: std::array::from_fn(|_| builder.add_witness()),
+			chain_tips: std::array::from_fn(|_| std::array::from_fn(|_| builder.add_witness())),
+			merkle_path: std::array::from_fn(|_| std::array::from_fn(|_| builder.add_witness())),
+		}
+	}
+
+	/// Populates the wires from a signature.
+	pub fn populate(&self, w: &mut binius_frontend::WitnessFiller, signature: &XmssSignature) {
+		w.pack_bytes_le(&self.randomness, &signature.randomness);
+		for (wires, tip) in iter::zip(&self.chain_tips, &signature.chain_tips) {
+			w.pack_bytes_le(wires, tip);
+		}
+		for (wires, node) in iter::zip(&self.merkle_path, &signature.merkle_path) {
+			w.pack_bytes_le(wires, node);
+		}
+	}
+}
+
+/// Why a signature failed to verify.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum XmssVerifyError {
+	/// The randomness does not encode to a valid codeword.
+	InvalidWots,
+	/// The authentication path does not reach the committed root.
+	InvalidMerklePath,
+}
+
+/// A Merkle parent, hashed under the tweak that fixes its level and index.
+///
+/// The level and index place each node in its own hash domain, so a node computed at one position
+/// cannot be replayed at another.
+pub fn merkle_node(
+	public_param: &PublicParam,
+	level: usize,
+	index: u32,
+	left: &Digest,
+	right: &Digest,
+) -> Digest {
+	let mut data = [0u8; 2 * DIGEST_LEN];
+	data[..DIGEST_LEN].copy_from_slice(left);
+	data[DIGEST_LEN..].copy_from_slice(right);
+	tweak_hash(public_param, TWEAK_TYPE_MERKLE, level as u32, index, &data)
+}
+
+/// Climbs an authentication path from a leaf to the root it implies.
+fn climb(
+	public_param: &PublicParam,
+	leaf: &Digest,
+	epoch: u32,
+	merkle_path: &[Digest; LOG_LIFETIME],
+) -> Digest {
+	merkle_path
+		.iter()
+		.enumerate()
+		.fold(*leaf, |current, (level, sibling)| {
+			let is_left = ((epoch >> level) & 1) == 0;
+			let (left, right) = if is_left {
+				(current, *sibling)
+			} else {
+				(*sibling, current)
+			};
+			// The parent sits one level up, at half the index.
+			let parent_index = ((epoch as u64) >> (level + 1)) as u32;
+			merkle_node(public_param, level + 1, parent_index, &left, &right)
+		})
+}
+
+/// Verifies an XMSS signature.
+pub fn xmss_verify(
+	public_key: &XmssPublicKey,
+	message: &Message,
+	signature: &XmssSignature,
+	epoch: u32,
+) -> Result<(), XmssVerifyError> {
+	let encoding = wots_encode(message, epoch, &public_key.public_param, &signature.randomness)
+		.ok_or(XmssVerifyError::InvalidWots)?;
+	let chain_ends =
+		recover_public_key(&signature.chain_tips, &encoding, epoch, &public_key.public_param);
+	let leaf = wots_public_key_hash(&public_key.public_param, epoch, &chain_ends);
+	if climb(&public_key.public_param, &leaf, epoch, &signature.merkle_path)
+		== public_key.merkle_root
+	{
+		Ok(())
+	} else {
+		Err(XmssVerifyError::InvalidMerklePath)
+	}
+}
+
+/// In-circuit form of [`xmss_verify`].
 ///
 /// Three checks are stacked:
-/// 1. Winternitz OTS verification recovers the chain ends from the signature.
-/// 2. The chain ends are hashed into the Merkle leaf (the one-time public key).
-/// 3. The authentication path links that leaf to the committed root.
+/// 1. the randomness encodes to a valid codeword, and the chains walk from their tips to the
+///    Winternitz public key,
+/// 2. those chain ends hash into the Merkle leaf,
+/// 3. the authentication path links that leaf to the committed root.
 ///
-/// All hashing is BLAKE3, whose digests are derived from the inputs, so this emits constraints
-/// only and returns nothing.
+/// Every digest is derived from the inputs, so this emits constraints and returns nothing.
 ///
 /// # Arguments
 ///
-/// * `builder` - Circuit builder for constructing constraints.
-/// * `spec` - Winternitz specification parameters (including the parameter length).
-/// * `domain_param` - Per-signer parameter as 64-bit little-endian wires, with capacity for
-///   `spec.domain_param_len` bytes.
-/// * `message` - Message to verify, 32 bytes as four 64-bit little-endian wires.
-/// * `signature` - The XMSS signature witness data.
-/// * `root_hash` - Committed Merkle tree root, 32 bytes as four 64-bit little-endian wires.
-pub fn circuit_xmss(
+/// - `builder`: circuit builder.
+/// - `public_param`: the signer's public parameter.
+/// - `merkle_root`: the signer's committed root.
+/// - `message`: the 32-byte message.
+/// - `epoch`: the leaf index the signature is at.
+/// - `signature`: the signature's witness wires.
+pub fn circuit_xmss_verify(
 	builder: &CircuitBuilder,
-	spec: &WinternitzSpec,
-	domain_param: &[Wire],
-	message: &[Wire],
-	signature: &XmssSignature,
-	root_hash: &[Wire; 4],
+	public_param: &[Wire; PUBLIC_PARAM_WIRES],
+	merkle_root: &[Wire; DIGEST_WIRES],
+	message: &[Wire; MESSAGE_WIRES],
+	epoch: Wire,
+	signature: &XmssSignatureWires,
 ) {
-	// Step 0: bound the epoch to the tree.
-	// A valid leaf index uses only the low tree_height bits.
-	// Higher bits would change the per-level index tweaks, so the root could never match.
-	let tree_height = signature.auth_path.len();
-	// The range check shifts the epoch right by tree_height, which is only well defined below 64.
-	assert!(
-		tree_height < 64,
-		"tree_height {tree_height} must be < 64 for the epoch range-check shift to be well defined"
-	);
-	let zero = builder.add_constant_64(0);
-	builder.assert_eq(
-		"xmss_epoch_in_range",
-		builder.shr(signature.epoch, tree_height as u32),
-		zero,
-	);
+	// An epoch is a `u32` in the reference, and only its low four bytes reach a tweak. Bounding
+	// it here keeps epochs that agree modulo 2^32 from sharing every tweak in the instance.
+	builder.assert_zero("xmss_epoch_in_range", builder.shr(epoch, LOG_LIFETIME as u32));
 
-	// Step 1: verify the Winternitz OTS signature.
-	// The epoch is bound into the message and chain tweaks.
-	// This epoch-separates the encoding and the chains, as the security analysis requires.
-	circuit_winternitz_ots(
-		builder,
-		domain_param,
-		signature.epoch,
-		message,
-		&signature.nonce,
-		&signature.signature_hashes,
-		&signature.public_key_hashes,
-		spec,
-	);
+	let digits = circuit_wots_encode(builder, public_param, epoch, message, &signature.randomness);
+	let chain_ends =
+		circuit_recover_public_key(builder, public_param, epoch, &signature.chain_tips, &digits);
+	let leaf = circuit_wots_public_key_hash(builder, public_param, epoch, &chain_ends);
 
-	// Step 2: hash the chain ends into the one-time public key (the Merkle leaf).
-	let leaf_hash = circuit_public_key_hash(
-		builder,
-		domain_param.to_vec(),
-		spec.domain_param_len,
-		signature.epoch,
-		&signature.public_key_hashes,
-	);
+	let root = signature
+		.merkle_path
+		.iter()
+		.enumerate()
+		.fold(leaf, |current, (level, sibling)| {
+			// `select` reads its condition's most significant bit, so the epoch's level-th bit is
+			// shifted up to it: set means this node is the right child.
+			let is_right = builder.shl(epoch, (Word::BITS - 1 - level) as u32);
+			let left: [Wire; DIGEST_WIRES] =
+				std::array::from_fn(|k| builder.select(is_right, sibling[k], current[k]));
+			let right: [Wire; DIGEST_WIRES] =
+				std::array::from_fn(|k| builder.select(is_right, current[k], sibling[k]));
 
-	// Step 3: check the authentication path links the leaf to the committed root.
-	let computed_root = circuit_merkle_path(
-		builder,
-		domain_param,
-		spec.domain_param_len,
-		&leaf_hash,
-		signature.epoch,
-		&signature.auth_path,
-	);
-	builder.assert_eq_v("xmss_merkle_root_check", computed_root, *root_hash);
+			let parent_index = builder.shr(epoch, level as u32 + 1);
+			let payload = [left[0], left[1], right[0], right[1]];
+			circuit_tweak_hash(
+				builder,
+				public_param,
+				TWEAK_TYPE_MERKLE,
+				level as u32 + 1,
+				parent_index,
+				&payload,
+			)
+		});
+
+	builder.assert_eq_v("xmss_merkle_root", root, *merkle_root);
+}
+
+/// Generates a key and a signature on `message` at `epoch`, for witness generation.
+///
+/// The tree exists only along the authentication path. Its sibling nodes are drawn at random and
+/// the root is whatever climbing the path from the leaf produces, which is what the reference's
+/// secret key does for every node outside the range of epochs it can sign — so a `2^32`-leaf tree
+/// costs 32 hashes here rather than `2^32`.
+///
+/// This is enough to exercise a verifier and no more: there is no secret key to sign with again,
+/// and no second epoch under the same root.
+pub fn generate_signature(
+	rng: &mut impl CryptoRng,
+	message: &Message,
+	epoch: u32,
+) -> (XmssPublicKey, XmssSignature) {
+	let mut public_param = [0u8; PUBLIC_PARAM_LEN];
+	rng.fill_bytes(&mut public_param);
+
+	let (randomness, encoding) =
+		find_randomness_for_wots_encoding(message, epoch, &public_param, rng);
+
+	// A chain's secret preimage walked as far as its digit is what the signature reveals.
+	let chain_tips: [Digest; V] = std::array::from_fn(|i| {
+		let mut pre_image = [0u8; DIGEST_LEN];
+		rng.fill_bytes(&mut pre_image);
+		iterate_hash(&pre_image, encoding[i] as usize, &public_param, epoch, i, 0)
+	});
+
+	let chain_ends = recover_public_key(&chain_tips, &encoding, epoch, &public_param);
+	let leaf = wots_public_key_hash(&public_param, epoch, &chain_ends);
+
+	let merkle_path: [Digest; LOG_LIFETIME] = std::array::from_fn(|_| {
+		let mut node = [0u8; DIGEST_LEN];
+		rng.fill_bytes(&mut node);
+		node
+	});
+	let merkle_root = climb(&public_param, &leaf, epoch, &merkle_path);
+
+	(
+		XmssPublicKey {
+			merkle_root,
+			public_param,
+		},
+		XmssSignature {
+			randomness,
+			chain_tips,
+			merkle_path,
+		},
+	)
 }
 
 #[cfg(test)]
 mod tests {
-	use binius_core::Word;
-	use rand::prelude::*;
+	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use rstest::rstest;
 
 	use super::*;
-	use crate::hash_based_sig::{
-		hashing::{hash_chain_blake3, hash_public_key},
-		winternitz_ots::{NONCE_LENGTH_BYTES, NONCE_WIRES_COUNT, grind_nonce},
-		witness_utils::{build_merkle_tree, extract_auth_path},
-	};
+	use crate::hash_based_sig::MESSAGE_LEN;
 
-	/// Helper struct containing all test data for XMSS verification
-	struct XmssTestData {
-		param_bytes: Vec<u8>,
-		message_bytes: [u8; 32],
-		nonce_bytes: Vec<u8>,
-		epoch: u64,
-		sig_hashes: Vec<[u8; 32]>,
-		pk_hashes: Vec<[u8; 32]>,
-		auth_path: Vec<[u8; 32]>,
-		root_hash: [u8; 32],
-		tree_depth: usize,
+	/// Builds the verification circuit, populates it, and returns the result of checking it.
+	fn run(
+		public_key: &XmssPublicKey,
+		message: &Message,
+		signature: &XmssSignature,
+		epoch: u32,
+	) -> Result<(), String> {
+		let b = CircuitBuilder::new();
+		let param_w: [Wire; PUBLIC_PARAM_WIRES] = std::array::from_fn(|_| b.add_inout());
+		let root_w: [Wire; DIGEST_WIRES] = std::array::from_fn(|_| b.add_inout());
+		let message_w: [Wire; MESSAGE_WIRES] = std::array::from_fn(|_| b.add_inout());
+		let epoch_w = b.add_inout();
+		let sig_w = XmssSignatureWires::new_witness(&b);
+
+		circuit_xmss_verify(&b, &param_w, &root_w, &message_w, epoch_w, &sig_w);
+
+		let circuit = b.build();
+		let mut w = circuit.new_witness_filler();
+		w.pack_bytes_le(&param_w, &public_key.public_param);
+		w.pack_bytes_le(&root_w, &public_key.merkle_root);
+		w.pack_bytes_le(&message_w, message);
+		w[epoch_w] = Word::from_u64(epoch as u64);
+		sig_w.populate(&mut w, signature);
+
+		circuit
+			.populate_wire_witness(&mut w)
+			.map_err(|e| format!("populate: {e:?}"))?;
+		circuit
+			.constraint_system()
+			.verify(&w.into_value_vec())
+			.map_err(|e| format!("verify: {e:?}"))
 	}
 
-	impl XmssTestData {
-		/// Generate test data for XMSS verification
-		fn generate(
-			spec: &WinternitzSpec,
-			tree_size: usize,
-			signing_epoch: u64,
-			rng: &mut StdRng,
-		) -> Self {
-			// Generate random parameters based on spec
-			let mut param_bytes = vec![0u8; spec.domain_param_len];
-			rng.fill_bytes(&mut param_bytes);
-
-			let mut message_bytes = [0u8; 32];
-			rng.fill_bytes(&mut message_bytes);
-
-			// Find valid nonce
-			let grind_result = grind_nonce(spec, rng, &param_bytes, signing_epoch, &message_bytes)
-				.expect("Failed to find valid nonce");
-
-			// Generate Winternitz signature and public key
-			let mut sig_hashes = Vec::new();
-			let mut pk_hashes = Vec::new();
-
-			for (chain_idx, &coord) in grind_result.coords.iter().enumerate() {
-				let mut sig_hash = [0u8; 32];
-				rng.fill_bytes(&mut sig_hash);
-				sig_hashes.push(sig_hash);
-
-				let pk_hash = hash_chain_blake3(
-					&param_bytes,
-					signing_epoch as u32,
-					chain_idx as u8,
-					&sig_hash,
-					coord as usize,
-					spec.chain_len() - 1 - coord as usize,
-				);
-				pk_hashes.push(pk_hash);
-			}
-
-			// Build Merkle tree
-			let mut leaves = Vec::new();
-			for i in 0..tree_size {
-				if i as u64 == signing_epoch {
-					leaves.push(hash_public_key(&param_bytes, signing_epoch, &pk_hashes));
-				} else {
-					// Fill other epochs with random values - these represent other public keys
-					// in the tree that we're not using for this signature verification
-					let mut leaf = [0u8; 32];
-					rng.fill_bytes(&mut leaf);
-					leaves.push(leaf);
-				}
-			}
-
-			let (tree_levels, root_hash) = build_merkle_tree(&param_bytes, &leaves);
-			let auth_path = extract_auth_path(&tree_levels, signing_epoch as usize);
-
-			XmssTestData {
-				param_bytes,
-				message_bytes,
-				nonce_bytes: grind_result.nonce,
-				epoch: signing_epoch,
-				sig_hashes,
-				pk_hashes,
-				auth_path,
-				root_hash,
-				tree_depth: tree_levels.len() - 1,
-			}
-		}
-
-		/// Run verification test with this test data
-		fn run(&self, spec: &WinternitzSpec) -> Result<(), String> {
-			let builder = CircuitBuilder::new();
-
-			// Create input wires based on spec
-			let param_wire_count = spec.domain_param_len.div_ceil(8);
-			let param: Vec<Wire> = (0..param_wire_count).map(|_| builder.add_inout()).collect();
-			let message: Vec<Wire> = (0..4).map(|_| builder.add_inout()).collect();
-			let nonce: Vec<Wire> = (0..NONCE_WIRES_COUNT)
-				.map(|_| builder.add_inout())
-				.collect();
-			let epoch = builder.add_inout();
-			let root_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-
-			let signature_hashes: Vec<[Wire; 4]> = (0..spec.dimension())
-				.map(|_| std::array::from_fn(|_| builder.add_inout()))
-				.collect();
-
-			let public_key_hashes: Vec<[Wire; 4]> = (0..spec.dimension())
-				.map(|_| std::array::from_fn(|_| builder.add_inout()))
-				.collect();
-
-			let auth_path: Vec<[Wire; 4]> = (0..self.tree_depth)
-				.map(|_| std::array::from_fn(|_| builder.add_inout()))
-				.collect();
-
-			// Create the verification circuit
-			let signature = XmssSignature {
-				nonce: nonce.clone(),
-				epoch,
-				signature_hashes: signature_hashes.clone(),
-				public_key_hashes: public_key_hashes.clone(),
-				auth_path: auth_path.clone(),
-			};
-
-			circuit_xmss(&builder, spec, &param, &message, &signature, &root_hash);
-
-			let circuit = builder.build();
-			let mut w = circuit.new_witness_filler();
-
-			// Pack inputs into wires (pad param_bytes to match wire count)
-			let mut padded_param = vec![0u8; param.len() * 8];
-			padded_param[..self.param_bytes.len()].copy_from_slice(&self.param_bytes);
-			w.pack_bytes_le(&param, &padded_param);
-			w.pack_bytes_le(&message, &self.message_bytes);
-
-			let mut nonce_padded = vec![0u8; NONCE_LENGTH_BYTES];
-			nonce_padded[..self.nonce_bytes.len()].copy_from_slice(&self.nonce_bytes);
-			w.pack_bytes_le(&nonce, &nonce_padded);
-
-			w[epoch] = Word::from_u64(self.epoch);
-			w.pack_bytes_le(&root_hash, &self.root_hash);
-
-			for (i, sig_hash) in self.sig_hashes.iter().enumerate() {
-				w.pack_bytes_le(&signature_hashes[i], sig_hash);
-			}
-
-			for (i, pk_hash) in self.pk_hashes.iter().enumerate() {
-				w.pack_bytes_le(&public_key_hashes[i], pk_hash);
-			}
-
-			for (i, auth_node) in self.auth_path.iter().enumerate() {
-				w.pack_bytes_le(&auth_path[i], auth_node);
-			}
-
-			// Every digest is BLAKE3, derived from the inputs, so the evaluator fills them all
-			// here.
-			circuit
-				.populate_wire_witness(&mut w)
-				.map_err(|e| format!("Wire population failed: {:?}", e))?;
-
-			let cs = circuit.constraint_system();
-			cs.verify(&w.into_value_vec())
-				.map_err(|e| format!("Constraint verification failed: {:?}", e))?;
-
-			Ok(())
-		}
+	fn generate(seed: u64, epoch: u32) -> (XmssPublicKey, Message, XmssSignature) {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let mut message = [0u8; MESSAGE_LEN];
+		rng.fill_bytes(&mut message);
+		let (public_key, signature) = generate_signature(&mut rng, &message, epoch);
+		(public_key, message, signature)
 	}
 
-	/// Test case configuration for parameterized testing
-	enum TestCase {
-		Valid {
-			tree_size: usize,
-			signing_epoch: u64,
-		},
-		Invalid {
-			tree_size: usize,
-			signing_epoch: u64,
-			corrupt_fn: fn(&mut XmssTestData),
-		},
-	}
-
-	impl TestCase {
-		fn run(&self, spec: &WinternitzSpec) {
-			let mut rng = StdRng::seed_from_u64(42);
-
-			match self {
-				TestCase::Valid {
-					tree_size,
-					signing_epoch,
-				} => {
-					// Generate test data
-					let test_data =
-						XmssTestData::generate(spec, *tree_size, *signing_epoch, &mut rng);
-
-					let result = test_data.run(spec);
-					result.unwrap_or_else(|e| {
-						panic!("Test expected to pass but failed: {}", e);
-					});
-				}
-				TestCase::Invalid {
-					tree_size,
-					signing_epoch,
-					corrupt_fn,
-				} => {
-					// Generate test data
-					let mut test_data =
-						XmssTestData::generate(spec, *tree_size, *signing_epoch, &mut rng);
-
-					// Apply corruption
-					corrupt_fn(&mut test_data);
-
-					let result = test_data.run(spec);
-					assert!(result.is_err(), "Test expected to fail but passed");
-				}
-			}
-		}
-	}
-
-	fn corrupt_signature(test_data: &mut XmssTestData) {
-		// Corrupt the first signature hash
-		if !test_data.sig_hashes.is_empty() {
-			test_data.sig_hashes[0][0] ^= 0xFF;
-		}
-	}
-
-	fn corrupt_public_key(test_data: &mut XmssTestData) {
-		// Corrupt the first public key hash
-		if !test_data.pk_hashes.is_empty() {
-			test_data.pk_hashes[0][0] ^= 0xFF;
-		}
-	}
-
-	fn corrupt_auth_path(test_data: &mut XmssTestData) {
-		// Corrupt a node in the authentication path
-		if !test_data.auth_path.is_empty() {
-			test_data.auth_path[0][0] ^= 0xFF;
-		}
-	}
-
-	fn corrupt_root_hash(test_data: &mut XmssTestData) {
-		// Corrupt the root hash
-		test_data.root_hash[0] ^= 0xFF;
-	}
-
-	fn corrupt_message(test_data: &mut XmssTestData) {
-		// Change the message after signing
-		test_data.message_bytes[0] ^= 0xFF;
-	}
-
-	fn corrupt_epoch(test_data: &mut XmssTestData) {
-		// Use wrong epoch
-		test_data.epoch = (test_data.epoch + 1) % 4;
-	}
-
-	// ==================== Test Specs ====================
-
-	fn test_spec_small() -> WinternitzSpec {
-		WinternitzSpec {
-			message_hash_len: 4,
-			coordinate_resolution_bits: 2,
-			target_sum: 24,
-			// At most 23 bytes so the BLAKE3 tweakable-hash tweak fits the 32-byte key.
-			domain_param_len: 18,
-		}
-	}
-
-	/// Valid test cases with different configurations
 	#[rstest]
-	#[case::small_tree_4(test_spec_small(), 4, 1)]
-	#[case::small_tree_8(test_spec_small(), 8, 3)]
-	#[case::medium_tree_16(test_spec_small(), 16, 7)]
-	#[case::spec1(WinternitzSpec::spec_1(), 4, 0)]
-	#[case::spec2(WinternitzSpec::spec_2(), 4, 2)]
-	fn test_xmss_valid(
-		#[case] spec: WinternitzSpec,
-		#[case] tree_size: usize,
-		#[case] signing_epoch: u64,
-	) {
-		TestCase::Valid {
-			tree_size,
-			signing_epoch,
-		}
-		.run(&spec);
+	#[case::first_epoch(0)]
+	#[case::odd_epoch(1)]
+	#[case::interior_epoch(0x1234_5678)]
+	#[case::last_epoch(u32::MAX)]
+	fn a_generated_signature_verifies(#[case] epoch: u32) {
+		let (public_key, message, signature) = generate(1, epoch);
+		// The native verifier and the circuit must agree that it is valid.
+		xmss_verify(&public_key, &message, &signature, epoch).unwrap();
+		run(&public_key, &message, &signature, epoch).unwrap();
 	}
 
-	/// Invalid test cases with various corruption scenarios
-	#[rstest]
-	#[case::corrupt_signature(corrupt_signature)]
-	#[case::corrupt_public_key(corrupt_public_key)]
-	#[case::corrupt_auth_path(corrupt_auth_path)]
-	#[case::corrupt_root(corrupt_root_hash)]
-	#[case::corrupt_message(corrupt_message)]
-	#[case::corrupt_epoch(corrupt_epoch)]
-	fn test_xmss_invalid(#[case] corrupt_fn: fn(&mut XmssTestData)) {
-		TestCase::Invalid {
-			tree_size: 4,
-			signing_epoch: 1,
-			corrupt_fn,
+	#[test]
+	fn a_tampered_path_node_is_rejected() {
+		let (public_key, message, mut signature) = generate(2, 77);
+		signature.merkle_path[0][0] ^= 0xFF;
+		assert_eq!(
+			xmss_verify(&public_key, &message, &signature, 77),
+			Err(XmssVerifyError::InvalidMerklePath)
+		);
+		assert!(run(&public_key, &message, &signature, 77).is_err());
+	}
+
+	#[test]
+	fn a_tampered_root_is_rejected() {
+		let (mut public_key, message, signature) = generate(3, 77);
+		public_key.merkle_root[0] ^= 0xFF;
+		assert!(run(&public_key, &message, &signature, 77).is_err());
+	}
+
+	#[test]
+	fn another_message_is_rejected() {
+		let (public_key, mut message, signature) = generate(4, 77);
+		message[0] ^= 0xFF;
+		assert!(run(&public_key, &message, &signature, 77).is_err());
+	}
+
+	#[test]
+	fn another_epoch_is_rejected() {
+		// Every tweak on the path carries the level and index, and the leaf and chains carry the
+		// epoch, so a signature does not move to a neighbouring leaf.
+		let (public_key, message, signature) = generate(5, 77);
+		assert!(run(&public_key, &message, &signature, 78).is_err());
+	}
+
+	#[test]
+	fn an_epoch_past_the_lifetime_is_rejected() {
+		// Only the low four bytes of an epoch reach a tweak, so epochs 2^32 apart would otherwise
+		// share every hash in the instance.
+		let (public_key, message, signature) = generate(6, 5);
+		let b = CircuitBuilder::new();
+		let param_w: [Wire; PUBLIC_PARAM_WIRES] = std::array::from_fn(|_| b.add_inout());
+		let root_w: [Wire; DIGEST_WIRES] = std::array::from_fn(|_| b.add_inout());
+		let message_w: [Wire; MESSAGE_WIRES] = std::array::from_fn(|_| b.add_inout());
+		let epoch_w = b.add_inout();
+		let sig_w = XmssSignatureWires::new_witness(&b);
+		circuit_xmss_verify(&b, &param_w, &root_w, &message_w, epoch_w, &sig_w);
+
+		let circuit = b.build();
+		let mut w = circuit.new_witness_filler();
+		w.pack_bytes_le(&param_w, &public_key.public_param);
+		w.pack_bytes_le(&root_w, &public_key.merkle_root);
+		w.pack_bytes_le(&message_w, &message);
+		w[epoch_w] = Word::from_u64((1u64 << LOG_LIFETIME) + 5);
+		sig_w.populate(&mut w, &signature);
+
+		assert!(
+			circuit.populate_wire_witness(&mut w).is_err(),
+			"an epoch outside the lifetime must not verify"
+		);
+	}
+
+	#[test]
+	fn the_path_climbs_the_side_its_index_says() {
+		// Leaf 1 is a right child at level 0 and its subtree a left child at level 1, so the
+		// ordering at each level is what the epoch's bits dictate.
+		let pp = [1u8; PUBLIC_PARAM_LEN];
+		let leaf = [2u8; DIGEST_LEN];
+		let sibling0 = [3u8; DIGEST_LEN];
+		let sibling1 = [4u8; DIGEST_LEN];
+		let parent = merkle_node(&pp, 1, 0, &sibling0, &leaf);
+		let grandparent = merkle_node(&pp, 2, 0, &parent, &sibling1);
+
+		let mut path = [[0u8; DIGEST_LEN]; LOG_LIFETIME];
+		path[0] = sibling0;
+		path[1] = sibling1;
+		let mut current = grandparent;
+		for (level, sibling) in path.iter().enumerate().skip(2) {
+			current = merkle_node(&pp, level + 1, 0, &current, sibling);
 		}
-		.run(&test_spec_small());
+		assert_eq!(climb(&pp, &leaf, 1, &path), current);
 	}
 }

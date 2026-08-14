@@ -1,15 +1,17 @@
 // Copyright 2026 The Binius Developers
-//! M4 proof of one hash-based signature verification, compressing through a BLAKE3 chip.
+//! M4 proof of one XMSS verification, compressing through a BLAKE3 chip.
 //!
 //! The companion to `prove_hash_primitives`, one level up: that file proves a batch of bare
-//! primitives, this one proves a whole XMSS verification and lets the primitive inside it land in
-//! a chip. The circuit verifies a single signature, so the main chip runs once; the paired BLAKE3
-//! compressions its Winternitz chains reach become instances of the [`Blake3Compress2x`] chip, and
-//! the two are proved together as one composite system.
+//! primitives, this one proves a whole signature verification — the encoding, the 42 Winternitz
+//! chains, the leaf and the 32-level authentication path.
 //!
-//! The proof runs inside a timing span.
-//! With tracing enabled, the prover's internal spans nest beneath that span.
-//! The per-phase breakdown of proving is then visible, split between main and the chip.
+//! Registering the chip is the whole opt-in: `circuit_xmss_verify` reaches `blake3_compress_2x`
+//! through the paired chain steps without knowing whether it lands in gates or a chip call. The
+//! lone compressions the encoding, the leaf and the path use stay inline, so the chip serves the
+//! chain steps alone.
+//!
+//! The proof runs inside a timing span. With tracing enabled, the prover's internal spans nest
+//! beneath that span, so the per-phase breakdown of proving is visible.
 //!
 //! The run exists to be read rather than to gate anything, so it is `#[ignore]`d and needs
 //! `--ignored` to run. Run it `--release` as well: an unoptimized prover over this circuit is
@@ -25,9 +27,8 @@
 use binius_circuits::{
 	blake3::Blake3Compress2x,
 	hash_based_sig::{
-		winternitz_ots::{NONCE_LENGTH_BYTES, NONCE_WIRES_COUNT, WinternitzSpec},
-		witness_utils::ValidatorSignatureData,
-		xmss::{XmssSignature, circuit_xmss},
+		DIGEST_WIRES, MESSAGE_LEN, MESSAGE_WIRES, Message, PUBLIC_PARAM_WIRES,
+		xmss::{XmssSignatureWires, circuit_xmss_verify, generate_signature},
 	},
 };
 use binius_core::word::Word;
@@ -38,33 +39,13 @@ use binius_m4_verifier::VerifierM4;
 use binius_prover::OptimalPackedB128;
 use binius_transcript::ProverTranscript;
 use binius_verifier::config::StdChallenger;
-use rand::prelude::*;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use tracing::{debug, info_span, level_filters::LevelFilter};
 use tracing_forest::ForestLayer;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Base-2 logarithm of the inverse Reed-Solomon rate: rate 1/2, matching `prove_hash_primitives`.
 const LOG_INV_RATE: usize = 1;
-
-/// A 32-byte digest occupies four 64-bit little-endian wires.
-const HASH_WIRES: usize = 4;
-
-/// Reads the environment variable `var`, or `default` if unset.
-///
-/// Lets the run be resized from the command line, e.g.
-/// `WINTERNITZ_SPEC=2 cargo test --release -p binius-m4-prover --test prove_hash_based_sig`.
-///
-/// # Panics
-///
-/// Panics if `var` is set but does not parse as a `usize`.
-fn usize_from_env(var: &str, default: usize) -> usize {
-	match std::env::var(var) {
-		Ok(val) => val
-			.parse()
-			.unwrap_or_else(|_| panic!("{var} must be a non-negative integer, got {val:?}")),
-		Err(_) => default,
-	}
-}
 
 /// Installs a timing-tree tracing subscriber, once per test binary.
 ///
@@ -85,58 +66,40 @@ fn init_tracing() {
 
 /// The public wires of one XMSS verification.
 struct XmssWires {
-	/// The signer's domain parameter, eight bytes per wire.
-	domain_param: Vec<Wire>,
-	/// The signed message, 32 bytes.
-	message: [Wire; HASH_WIRES],
-	/// The committed Merkle root the authentication path must reach.
-	root_hash: [Wire; HASH_WIRES],
-	/// The signature itself, whose wires carry the nonce, epoch, chain ends and path.
-	signature: XmssSignature,
+	public_param: [Wire; PUBLIC_PARAM_WIRES],
+	message: [Wire; MESSAGE_WIRES],
+	merkle_root: [Wire; DIGEST_WIRES],
+	epoch: Wire,
+	signature: XmssSignatureWires,
 }
 
 /// Builds a circuit verifying one XMSS signature, with the paired BLAKE3 compression as a chip.
-///
-/// Registering the chip is the whole opt-in: `circuit_xmss` reaches `blake3_compress_2x` through
-/// the Winternitz chain steps without knowing whether it lands in gates or a chip call. The
-/// single-lane compressions the message hash, the public-key hash and the Merkle path use stay
-/// inline, so the chip serves the chain steps alone.
-fn build_xmss_circuit(spec: &WinternitzSpec, tree_height: usize) -> (CircuitM4, XmssWires) {
+fn build_xmss_circuit() -> (CircuitM4, XmssWires) {
 	let builder = CircuitBuilder::new();
 	builder.register_chip(Blake3Compress2x, &[]);
 
 	// Everything the verifier is given is public: the statement is the signature and what it
 	// signs. Nothing here is a witness, so the committed trace holds only derived values.
-	let domain_param: Vec<Wire> = (0..spec.domain_param_len.div_ceil(8))
-		.map(|_| builder.add_inout())
-		.collect();
-	let message: [Wire; HASH_WIRES] = std::array::from_fn(|_| builder.add_inout());
-	let root_hash: [Wire; HASH_WIRES] = std::array::from_fn(|_| builder.add_inout());
-	let signature = XmssSignature {
-		nonce: (0..NONCE_WIRES_COUNT)
-			.map(|_| builder.add_inout())
-			.collect(),
-		epoch: builder.add_inout(),
-		signature_hashes: (0..spec.dimension())
-			.map(|_| std::array::from_fn(|_| builder.add_inout()))
-			.collect(),
-		public_key_hashes: (0..spec.dimension())
-			.map(|_| std::array::from_fn(|_| builder.add_inout()))
-			.collect(),
-		auth_path: (0..tree_height)
-			.map(|_| std::array::from_fn(|_| builder.add_inout()))
-			.collect(),
+	let public_param: [Wire; PUBLIC_PARAM_WIRES] = std::array::from_fn(|_| builder.add_inout());
+	let message: [Wire; MESSAGE_WIRES] = std::array::from_fn(|_| builder.add_inout());
+	let merkle_root: [Wire; DIGEST_WIRES] = std::array::from_fn(|_| builder.add_inout());
+	let epoch = builder.add_inout();
+	let signature = XmssSignatureWires {
+		randomness: std::array::from_fn(|_| builder.add_inout()),
+		chain_tips: std::array::from_fn(|_| std::array::from_fn(|_| builder.add_inout())),
+		merkle_path: std::array::from_fn(|_| std::array::from_fn(|_| builder.add_inout())),
 	};
 
-	circuit_xmss(&builder, spec, &domain_param, &message, &signature, &root_hash);
+	circuit_xmss_verify(&builder, &public_param, &merkle_root, &message, epoch, &signature);
 
 	let circuit = builder.build_m4();
 	(
 		circuit,
 		XmssWires {
-			domain_param,
+			public_param,
 			message,
-			root_hash,
+			merkle_root,
+			epoch,
 			signature,
 		},
 	)
@@ -144,89 +107,40 @@ fn build_xmss_circuit(spec: &WinternitzSpec, tree_height: usize) -> (CircuitM4, 
 
 /// Generates a valid signature and writes it into the circuit's public wires.
 ///
-/// Every digest the circuit checks is BLAKE3 over these inputs, so the evaluator derives the rest.
-fn fill_xmss(
-	wires: &XmssWires,
-	spec: &WinternitzSpec,
-	tree_height: usize,
-	w: &mut WitnessFiller<'_>,
-) {
+/// Every digest the circuit checks is derived from these inputs, so the evaluator fills the rest.
+fn fill_xmss(wires: &XmssWires, w: &mut WitnessFiller<'_>) {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let mut param_bytes = vec![0u8; spec.domain_param_len];
-	rng.fill_bytes(&mut param_bytes);
-	let mut message_bytes = [0u8; 32];
-	rng.fill_bytes(&mut message_bytes);
-	let epoch = rng.next_u32() % (1u32 << tree_height);
+	let mut message: Message = [0u8; MESSAGE_LEN];
+	rng.fill_bytes(&mut message);
+	let mut epoch_bytes = [0u8; 4];
+	rng.fill_bytes(&mut epoch_bytes);
+	let epoch = u32::from_le_bytes(epoch_bytes);
 
-	// Grinding the nonce and walking the chains out of circuit is what makes the assignment a
-	// signature the circuit accepts rather than arbitrary words.
-	let data = ValidatorSignatureData::generate(
-		&mut rng,
-		&param_bytes,
-		&message_bytes,
-		epoch,
-		spec,
-		tree_height,
-	);
+	// Grinding the randomness and walking the chains out of circuit is what makes the assignment
+	// a signature the circuit accepts rather than arbitrary words.
+	let (public_key, signature) = generate_signature(&mut rng, &message, epoch);
 
-	// The parameter is padded up to its wire capacity; the rest fill their wires exactly.
-	let mut padded_param = vec![0u8; wires.domain_param.len() * 8];
-	padded_param[..param_bytes.len()].copy_from_slice(&param_bytes);
-	w.pack_bytes_le(&wires.domain_param, &padded_param);
-	w.pack_bytes_le(&wires.message, &message_bytes);
-	w.pack_bytes_le(&wires.root_hash, &data.root);
-
-	let mut nonce_padded = vec![0u8; NONCE_LENGTH_BYTES];
-	nonce_padded[..data.nonce.len()].copy_from_slice(&data.nonce);
-	w.pack_bytes_le(&wires.signature.nonce, &nonce_padded);
-	w[wires.signature.epoch] = Word::from_u64(epoch as u64);
-
-	for (wire_set, hash) in wires
-		.signature
-		.signature_hashes
-		.iter()
-		.zip(&data.signature_hashes)
-	{
-		w.pack_bytes_le(wire_set, hash);
-	}
-	for (wire_set, hash) in wires
-		.signature
-		.public_key_hashes
-		.iter()
-		.zip(&data.public_key_hashes)
-	{
-		w.pack_bytes_le(wire_set, hash);
-	}
-	for (wire_set, node) in wires.signature.auth_path.iter().zip(&data.auth_path) {
-		w.pack_bytes_le(wire_set, node);
-	}
+	w.pack_bytes_le(&wires.public_param, &public_key.public_param);
+	w.pack_bytes_le(&wires.message, &message);
+	w.pack_bytes_le(&wires.merkle_root, &public_key.merkle_root);
+	w[wires.epoch] = Word::from_u64(epoch as u64);
+	wires.signature.populate(w, &signature);
 }
 
 // Proves one XMSS verification through M4 and verifies it.
-//
-// The Winternitz spec and the tree height are overridable via `WINTERNITZ_SPEC` and
-// `XMSS_TREE_HEIGHT`. The spec is the cost driver: it fixes the number of chains and their length,
-// and so the chip's instance count.
 #[test]
 #[ignore = "proving run for its timing tree; use --ignored --release"]
 fn prove_hash_based_sig() {
 	init_tracing();
 
-	let spec = match usize_from_env("WINTERNITZ_SPEC", 1) {
-		1 => WinternitzSpec::spec_1(),
-		2 => WinternitzSpec::spec_2(),
-		other => panic!("WINTERNITZ_SPEC must be 1 or 2, got {other}"),
-	};
-	let tree_height = usize_from_env("XMSS_TREE_HEIGHT", 8);
-
-	let (circuit, wires) = build_xmss_circuit(&spec, tree_height);
+	let (circuit, wires) = build_xmss_circuit();
 	circuit
 		.validate()
 		.expect("the system can be populated in one pass");
 
 	// Report what each sub-system costs. The chip's instance count is what the chain steps
-	// produced, and the spare capacity lines show how much of each padded section is wasted.
+	// produced, and the spare-capacity lines show how much of each padded section is wasted.
 	debug!("xmss main circuit stats:\n{}", CircuitStat::collect(&circuit.main.circuit));
 	for (id, (chip, instances)) in circuit.chips.iter().enumerate() {
 		debug!(
@@ -235,17 +149,16 @@ fn prove_hash_based_sig() {
 		);
 	}
 
-	// Generate the witness in its own span: for this circuit that includes evaluating every
-	// BLAKE3 compression, which is the bulk of it.
+	// Generate the witness in its own span: for this circuit that is every BLAKE3 compression,
+	// which is the bulk of it.
 	let witness = info_span!("witness_generation", primitive = "xmss")
-		.in_scope(|| circuit.generate_witness(|w| fill_xmss(&wires, &spec, tree_height, w)))
+		.in_scope(|| circuit.generate_witness(|w| fill_xmss(&wires, w)))
 		.expect("the generated signature satisfies the circuit");
 
 	let cs = circuit.to_constraint_system();
 	cs.validate().unwrap();
 
-	// The witness satisfying the system is what says the timing below is of a real proof, not of
-	// a batch of chip instances that never had to agree with main.
+	// The witness satisfying the system is what says the timing below is of a real proof.
 	witness
 		.verify(&cs)
 		.expect("the signature verifies in circuit");
@@ -261,7 +174,7 @@ fn prove_hash_based_sig() {
 		.in_scope(|| prover.prove(&witness, &mut warmup_transcript))
 		.unwrap();
 
-	// Prove in a span. The main chip's and each chip's sub-proof spans nest beneath it.
+	// Prove in a span, so the prover's phases nest beneath it.
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	info_span!("prove", primitive = "xmss")
 		.in_scope(|| prover.prove(&witness, &mut prover_transcript))
