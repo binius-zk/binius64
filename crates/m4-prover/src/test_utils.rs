@@ -5,6 +5,7 @@
 //! It is shared by the shift-reduction and constraint-reduction tests.
 //! Both need a circuit whose AND-constraint operands carry real shifts.
 
+use binius_compute::GlobalAllocator;
 use binius_core::{ValueTable, word::Word};
 use binius_frontend::{Circuit, CircuitBuilder, CircuitM4, Wire, hints::Hint};
 
@@ -113,7 +114,7 @@ pub fn crc64_circuit() -> Crc64Circuit {
 pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable {
 	let log_instances = inputs.len().ilog2() as usize;
 	c.circuit
-		.populate_batch(log_instances, |i, filler| {
+		.populate_batch(&GlobalAllocator, log_instances, |i, filler| {
 			for (wire, &w) in c.input.iter().zip(&inputs[i]) {
 				filler[*wire] = Word(w);
 			}

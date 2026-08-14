@@ -757,7 +757,7 @@ mod tests {
 	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64, u64)]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
 		c.circuit
-			.populate_batch(log_instances, |i, filler| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, filler| {
 				let (x, y, w) = inputs[i];
 				filler[c.x] = Word(x);
 				filler[c.y] = Word(y);
@@ -864,7 +864,7 @@ mod tests {
 	fn populate_mul_table(c: &MulCircuit, inputs: &[(u64, u64)]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
 		c.circuit
-			.populate_batch(log_instances, |i, filler| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, filler| {
 				let (x, y) = inputs[i];
 				filler[c.x] = Word(x);
 				filler[c.y] = Word(y);
@@ -955,7 +955,7 @@ mod tests {
 	fn populate_binmul_table(c: &BinMulCircuit, inputs: &[(u64, u64, u64, u64)]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
 		c.circuit
-			.populate_batch(log_instances, |i, filler| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, filler| {
 				let (a_lo, a_hi, b_lo, b_hi) = inputs[i];
 				filler[c.a_lo] = Word(a_lo);
 				filler[c.a_hi] = Word(a_hi);

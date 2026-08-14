@@ -26,6 +26,7 @@
 //!     --features rayon prove_blake3_compression -- --ignored --nocapture
 //! ```
 
+use binius_compute::GlobalAllocator;
 use binius_frontend::CircuitStat;
 use binius_hash::StdHashSuite;
 use binius_m4_prover::{
@@ -105,7 +106,11 @@ fn prove_once<C: TestCircuit>(name: &str, log_instances: usize) {
 
 	// Generate the batch witness in its own span.
 	let table = info_span!("witness_generation", primitive = name)
-		.in_scope(|| circuit.populate_batch_parallel(log_instances, |i, w| test_circuit.fill(i, w)))
+		.in_scope(|| {
+			circuit.populate_batch_parallel(&GlobalAllocator, log_instances, |i, w| {
+				test_circuit.fill(i, w)
+			})
+		})
 		.unwrap();
 
 	// Clone and validate the shared single-instance constraint system.

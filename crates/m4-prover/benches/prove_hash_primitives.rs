@@ -18,6 +18,7 @@
 
 use std::env;
 
+use binius_compute::GlobalAllocator;
 use binius_frontend::BatchWitnessFiller;
 use binius_hash::StdHashSuite;
 use binius_m4_prover::{
@@ -75,7 +76,7 @@ fn bench_primitive<C: TestCircuit>(
 	// A bench that measures a proof of nothing is worse than no bench.
 	{
 		let table = circuit
-			.populate_batch_parallel(log_instances, fill)
+			.populate_batch_parallel(&GlobalAllocator, log_instances, fill)
 			.expect("witness inputs satisfy the circuit");
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover.prove_chip(&table, &mut prover_transcript);
@@ -97,7 +98,7 @@ fn bench_primitive<C: TestCircuit>(
 		b.iter(|| {
 			// Regenerate the batch witness, then prove it: the per-batch work of a real prover.
 			let table = circuit
-				.populate_batch_parallel(log_instances, fill)
+				.populate_batch_parallel(&GlobalAllocator, log_instances, fill)
 				.unwrap();
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 			prover.prove_chip(&table, &mut prover_transcript);

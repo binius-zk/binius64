@@ -115,7 +115,7 @@ mod tests {
 
 		// Fixture state: 4 instances with distinct witness inputs.
 		let table = circuit
-			.populate_batch(2, |i, w| {
+			.populate_batch(&GlobalAllocator, 2, |i, w| {
 				w[a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
 				w[b] = Word(i as u64 ^ 0xdead);
 			})

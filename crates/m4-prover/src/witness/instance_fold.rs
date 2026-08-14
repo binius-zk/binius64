@@ -256,7 +256,7 @@ mod tests {
 
 		// Every instance gets its own seed, so no two instances share an input.
 		circuit
-			.populate_batch(3, |i, w| {
+			.populate_batch(&GlobalAllocator, 3, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in inputs.iter().chain(&filler) {
 					w[wire] = Word(rng.random());

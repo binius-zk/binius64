@@ -690,6 +690,7 @@ mod tests {
 	use std::array;
 
 	use assert_matches::assert_matches;
+	use binius_compute::GlobalAllocator;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::CircuitBuilder;
 	use binius_hash::StdHashSuite;
@@ -762,7 +763,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -835,7 +836,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -891,7 +892,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -972,7 +973,7 @@ mod tests {
 		// two product words.
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				w[x] = Word(rng.next_u64());
 				w[y] = Word(rng.next_u64());
@@ -1028,7 +1029,7 @@ mod tests {
 		// data.
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				let input_word = rng.next_u64();
 				let secret_word = rng.next_u64();
@@ -1092,7 +1093,7 @@ mod tests {
 		// Fill each instance's inputs from a per-instance seed; the compression derives the rest.
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				// A 32-bit value per chaining-value word.
 				for wire in cv {
@@ -1167,7 +1168,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -1222,7 +1223,7 @@ mod tests {
 		// product words.
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				w[x_lo] = Word(rng.next_u64());
 				w[x_hi] = Word(rng.next_u64());
@@ -1296,7 +1297,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -1364,7 +1365,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -1435,7 +1436,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64 + 1);
 				w[x] = Word(rng.next_u64());
 				w[y] = Word(rng.next_u64());

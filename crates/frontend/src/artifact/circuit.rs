@@ -3,6 +3,7 @@
 
 //! The artifact a build hands back: a constraint system plus what it takes to fill a witness.
 
+use binius_compute::{Allocator, VecLike};
 use binius_core::{
 	ValueTable,
 	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
@@ -258,6 +259,7 @@ impl Circuit {
 	///
 	/// # Arguments
 	///
+	/// - `alloc`: backs the returned table's words and the transient buffer built to fill it.
 	/// - `log_instances`: base-2 logarithm of the instance count.
 	/// - `fill`: sets the input wires of instance `i`, for `i` in `0..2^log_instances`. It must
 	///   assign every witness input and every inout wire on each call.
@@ -265,15 +267,17 @@ impl Circuit {
 	/// # Errors
 	///
 	/// Returns an error naming the lowest-indexed instance whose inputs do not satisfy the circuit.
-	pub fn populate_batch<F>(
+	pub fn populate_batch<A, F>(
 		&self,
+		alloc: &A,
 		log_instances: usize,
 		fill: F,
-	) -> Result<ValueTable, BatchPopulateError>
+	) -> Result<ValueTable<A::Vec<Word>>, BatchPopulateError>
 	where
+		A: Allocator,
 		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
-		self.populate_batch_with(log_instances, None, fill)
+		self.populate_batch_with(alloc, log_instances, None, fill)
 	}
 
 	/// Builds the batch witness in wire-major order, evaluating instance stripes in parallel.
@@ -286,15 +290,18 @@ impl Circuit {
 	///
 	/// Returns an error naming a failing instance whose inputs do not satisfy the circuit. The
 	/// reported instance is not guaranteed to be the lowest failing instance across all stripes.
-	pub fn populate_batch_parallel<F>(
+	pub fn populate_batch_parallel<A, F>(
 		&self,
+		alloc: &A,
 		log_instances: usize,
 		fill: F,
-	) -> Result<ValueTable, BatchPopulateError>
+	) -> Result<ValueTable<A::Vec<Word>>, BatchPopulateError>
 	where
+		A: Allocator,
 		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
 		self.populate_batch_parallel_with_stripe_width(
+			alloc,
 			log_instances,
 			DEFAULT_PARALLEL_STRIPE_WIDTH,
 			fill,
@@ -314,35 +321,44 @@ impl Circuit {
 	/// # Panics
 	///
 	/// Panics if `stripe_width == 0`.
-	pub fn populate_batch_parallel_with_stripe_width<F>(
+	pub fn populate_batch_parallel_with_stripe_width<A, F>(
 		&self,
+		alloc: &A,
 		log_instances: usize,
 		stripe_width: usize,
 		fill: F,
-	) -> Result<ValueTable, BatchPopulateError>
+	) -> Result<ValueTable<A::Vec<Word>>, BatchPopulateError>
 	where
+		A: Allocator,
 		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
 		assert!(stripe_width > 0, "stripe width must be positive");
-		self.populate_batch_with(log_instances, Some(stripe_width), fill)
+		self.populate_batch_with(alloc, log_instances, Some(stripe_width), fill)
 	}
 
-	fn populate_batch_with<F>(
+	fn populate_batch_with<A, F>(
 		&self,
+		alloc: &A,
 		log_instances: usize,
 		parallel_stripe_width: Option<usize>,
 		fill: F,
-	) -> Result<ValueTable, BatchPopulateError>
+	) -> Result<ValueTable<A::Vec<Word>>, BatchPopulateError>
 	where
+		A: Allocator,
 		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
 		let layout = self.value_vec_layout().clone();
 		let n_instances = 1usize << log_instances;
 
 		// The transient working buffer spans the full value vector — constants, inputs, internal
-		// values, and scratch — for every instance, in wire-major order.
+		// values, and scratch — for every instance, in wire-major order. It is zeroed rather than
+		// merely reserved: a recycled block starts out holding the last batch's words, and the
+		// words no gate and no filler writes — an unassigned witness wire, say — are committed
+		// alongside the rest.
 		let full_len = layout.combined_len() + layout.n_scratch;
-		let mut working = vec![Word::ZERO; full_len << log_instances];
+		let working_len = full_len << log_instances;
+		let mut working = alloc.alloc::<Word>(working_len);
+		working.resize(working_len, Word::ZERO);
 
 		{
 			let mut values =
@@ -367,10 +383,12 @@ impl Circuit {
 
 		// Keep the hidden segment: rows `[offset_inout, combined_len)`, the inout values followed
 		// by the private ones. In the wire-major working buffer these rows are contiguous, so
-		// this is a single slice of the words. The constants and scratch are dropped.
+		// this is a single slice of the words. The constants and scratch are dropped, and so is
+		// the working buffer itself once the words are copied out.
 		let start = layout.offset_inout() << log_instances;
 		let end = layout.combined_len() << log_instances;
-		let data = working[start..end].to_vec();
+		let mut data = alloc.alloc::<Word>(end - start);
+		data.extend_from_slice(&working[start..end]);
 
 		Ok(ValueTable::from_hidden_words(layout, log_instances, data))
 	}
@@ -380,6 +398,7 @@ impl Circuit {
 mod tests {
 	use std::ops::IndexMut;
 
+	use binius_compute::GlobalAllocator;
 	use binius_core::{ValueVec, constraint_system::InoutSegment};
 	use proptest::prelude::*;
 
@@ -443,7 +462,7 @@ mod tests {
 		let log_instances = 3;
 		let table = c
 			.circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				c.fill(w, i as u64, i as u64 + 1);
 			})
 			.unwrap();
@@ -468,7 +487,7 @@ mod tests {
 
 		let table = c
 			.circuit
-			.populate_batch(2, |i, w| {
+			.populate_batch(&GlobalAllocator, 2, |i, w| {
 				c.fill(w, i as u64 * 0x9e37_79b9, i as u64 ^ 0xdead);
 			})
 			.unwrap();
@@ -489,7 +508,7 @@ mod tests {
 
 		let table = c
 			.circuit
-			.populate_batch(0, |_, w| {
+			.populate_batch(&GlobalAllocator, 0, |_, w| {
 				c.fill(w, 0xABCD, 0x0F0F);
 			})
 			.unwrap();
@@ -510,7 +529,7 @@ mod tests {
 			let c = mix_circuit();
 			let constants = c.circuit.constraint_system().constants.clone();
 
-			let table = c.circuit.populate_batch(2, |i, w| {
+			let table = c.circuit.populate_batch(&GlobalAllocator, 2, |i, w| {
 				let (a, b) = inputs[i];
 				c.fill(w, a, b);
 			})
@@ -536,18 +555,26 @@ mod tests {
 			);
 		};
 
-		let serial = c.circuit.populate_batch(log_instances, fill).unwrap();
+		let serial = c
+			.circuit
+			.populate_batch(&GlobalAllocator, log_instances, fill)
+			.unwrap();
 
 		let default_parallel = c
 			.circuit
-			.populate_batch_parallel(log_instances, fill)
+			.populate_batch_parallel(&GlobalAllocator, log_instances, fill)
 			.unwrap();
 		assert_eq!(default_parallel.as_words(), serial.as_words());
 
 		for stripe_width in [1, 2, 3, 8, 64] {
 			let parallel = c
 				.circuit
-				.populate_batch_parallel_with_stripe_width(log_instances, stripe_width, fill)
+				.populate_batch_parallel_with_stripe_width(
+					&GlobalAllocator,
+					log_instances,
+					stripe_width,
+					fill,
+				)
 				.unwrap();
 
 			assert_eq!(
@@ -568,7 +595,7 @@ mod tests {
 		let circuit = builder.build();
 
 		// Instance 2 violates a == b; the others satisfy it.
-		let result = circuit.populate_batch(2, |i, w| {
+		let result = circuit.populate_batch(&GlobalAllocator, 2, |i, w| {
 			w[a] = Word(i as u64);
 			w[b] = Word(if i == 2 { 99 } else { i as u64 });
 		});
@@ -596,10 +623,11 @@ mod tests {
 
 		// Instance 5 is in the third two-column stripe. Reporting a local stripe index would
 		// incorrectly return 1 instead of the global instance index 5.
-		let result = circuit.populate_batch_parallel_with_stripe_width(3, 2, |i, w| {
-			w[a] = Word(i as u64);
-			w[b] = Word(if i == 5 { 99 } else { i as u64 });
-		});
+		let result =
+			circuit.populate_batch_parallel_with_stripe_width(&GlobalAllocator, 3, 2, |i, w| {
+				w[a] = Word(i as u64);
+				w[b] = Word(if i == 5 { 99 } else { i as u64 });
+			});
 
 		let err = result.expect_err("instance 5 violates a == b");
 		assert_eq!(err.instance, 5);
@@ -630,7 +658,7 @@ mod tests {
 			w[b] = Word(if i == 5 || i == 7 { 99 } else { i as u64 });
 		};
 		let parallel = circuit
-			.populate_batch_parallel_with_stripe_width(3, 2, fill)
+			.populate_batch_parallel_with_stripe_width(&GlobalAllocator, 3, 2, fill)
 			.expect_err("instances fail");
 
 		assert!(parallel.instance == 5 || parallel.instance == 7);
@@ -661,7 +689,7 @@ mod tests {
 
 		let log_instances = 2;
 		let table = circuit
-			.populate_batch(log_instances, |i, f| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, f| {
 				f[a] = Word(i as u64);
 				f[b] = Word(i as u64 + 0x100);
 				f[w] = Word(i as u64 ^ 0xbeef);

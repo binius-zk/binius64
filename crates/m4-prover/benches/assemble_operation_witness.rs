@@ -19,7 +19,7 @@
 use std::array;
 
 use binius_circuits::keccak::permutation::keccak_f1600;
-use binius_compute::BufferPool;
+use binius_compute::{BufferPool, GlobalAllocator};
 use binius_core::{
 	ValueIndex, ValueTable,
 	constraint_system::{
@@ -116,7 +116,7 @@ fn build_keccak_fixture() -> (ValueTable, Vec<Word>, Vec<AndConstraint>) {
 	let (circuit, input) = build_keccak_circuit();
 
 	let table = circuit
-		.populate_batch(LOG_INSTANCES, |instance, filler| {
+		.populate_batch(&GlobalAllocator, LOG_INSTANCES, |instance, filler| {
 			for lane in 0..STATE_LANES {
 				filler[input[lane]] = keccak_input_word(instance, lane);
 			}
@@ -158,7 +158,7 @@ fn build_table_fixture() -> (ValueTable, Vec<Word>) {
 
 	let circuit = builder.build();
 	let table = circuit
-		.populate_batch(LOG_INSTANCES, |instance, filler| {
+		.populate_batch(&GlobalAllocator, LOG_INSTANCES, |instance, filler| {
 			for (index, &wire) in witnesses.iter().enumerate() {
 				filler[wire] = fixture_witness_word(instance, index);
 			}
