@@ -23,6 +23,21 @@ use super::{LeGraph, Stat};
 /// It trades committed words against operand size, and both costs are prover-side.
 pub const MAX_DEPTH: usize = 6;
 
+/// How many terms inlining a definition may add before the pass commits it instead.
+///
+/// This gates the paths that need a second shift slot, and only those: a path a single slot can
+/// spell is inlined on the same terms as it always was. Inlining such a definition adds
+/// `(k - 1)(c - 1) - 2` terms over committing it, so the bound is on that product.
+///
+/// # Why this value
+///
+/// Empirical, like [`MAX_DEPTH`]. Across the example circuits the product is concentrated at 4 —
+/// the shape of a three-term definition read from three places, which is what the σ-functions of
+/// the SHA and BLAKE families look like — and 4 admits 84% of the definitions a second slot could
+/// dissolve while adding at most two terms to each. Above it the distribution thins out and the
+/// terms per definition climb quickly.
+pub(super) const MAX_TERM_GROWTH: usize = 4;
+
 /// The largest shift budget any caller of this pass asks for.
 ///
 /// A shifted term carries a sequence of shifts, and the pass is told how many slots of that
@@ -326,6 +341,10 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat, shift_slots: us
 			let outcoming = leg.pg.edges_directed(node, Direction::Outgoing);
 
 			let mut composable = true;
+			// Whether every path spells this definition's shifts without reaching for a second
+			// slot. Such a path is one today's single-slot pass would have inlined too, so it is
+			// held to today's rules and to no more.
+			let mut fits_one_slot = true;
 			let mut depth = 0;
 
 			'out: for out_edge in outcoming.clone() {
@@ -335,9 +354,12 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat, shift_slots: us
 				depth = out_edge_cx.depth.max(depth);
 				for in_edge in incoming.clone() {
 					let in_shift = in_edge.weight().shift;
-					if !out_edge_cx.composable(in_shift, shift_slots) {
-						composable = false;
-						break 'out;
+					if !out_edge_cx.composable(in_shift, 1) {
+						fits_one_slot = false;
+						if !out_edge_cx.composable(in_shift, shift_slots) {
+							composable = false;
+							break 'out;
+						}
 					}
 				}
 			}
@@ -351,10 +373,31 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat, shift_slots: us
 			//
 			// The operand keeps its size, so no operand can grow out of a chain of these.
 			// The depth cap guards against operands growing, so it has nothing to guard here.
-			let single_term = incoming.clone().count() == 1;
+			let term_count = incoming.clone().count();
+			let single_term = term_count == 1;
 			let too_deep = depth > MAX_DEPTH && !single_term;
 
-			if too_deep || !composable {
+			// A path that has to spend the second shift slot is one a single-slot pass refuses
+			// outright, and refusing it is usually right: inlining substitutes the definition's
+			// `k` terms into each of its `c` consumers, where committing costs `k + 1 + c` terms
+			// and one word. So the second slot is spent only where the terms it multiplies out
+			// are worth the word they save.
+			//
+			//     inlined:    k * c terms
+			//     committed:  (k + 1) + c terms, one committed word, one Zero constraint
+			//     growth:     k*c - (k + c + 1) = (k - 1)(c - 1) - 2
+			//
+			// `MAX_DEPTH` does not cover this: it counts how long a chain is, not how many terms
+			// fan out across it.
+			//
+			// The counts are read before inlining, so a definition whose own cone is inlined into
+			// it later can grow past what was weighed here. This is a brake rather than an
+			// optimizer, and that direction only makes it more conservative than the true cost.
+			let consumer_count = outcoming.clone().count();
+			let growth = term_count.saturating_sub(1) * consumer_count.saturating_sub(1);
+			let multiplies_out = !fits_one_slot && growth > MAX_TERM_GROWTH;
+
+			if too_deep || !composable || multiplies_out {
 				// Decision: commit.
 				//
 				// Every incoming edge context is going to be a brand new one seeded with the

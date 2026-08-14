@@ -13,9 +13,9 @@ Constraints
 │  [░░░░░░░░░░] spare: 0
 ├─ BMUL constraints: 0 used (0.0% of 0)
 │  [░░░░░░░░░░] spare: 0
-└─ Distinct value indices: 19,332
-   ├─ Distinct shifted value indices: 11,486
-   └─ Distinct unshifted value indices: 7,846
+└─ Distinct value indices: 19,651
+   ├─ Distinct shifted value indices: 11,810
+   └─ Distinct unshifted value indices: 7,841
 
 Value Vector
 ├─ Public Section: 28 (not committed)
@@ -26,5 +26,5 @@ Value Vector
 │  └─ Internal: 7,696
 ├─ Committed Trace: 7,832 used (95.6% of 2^13)
 │  [▓▓▓▓▓▓▓▓▓░] spare: 360
-└─ Scratch (uncommitted): 7,728 (peak live: 21)
+└─ Scratch (uncommitted): 7,728 (peak live: 25)
 

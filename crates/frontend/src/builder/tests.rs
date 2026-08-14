@@ -129,18 +129,22 @@ fn test_linear_constraints_lower_to_zero_constraints() {
 	cs.verify(&filler.value_vec).unwrap();
 }
 
-/// Builds `((x << 32) >> 32) & y == z` with gate fusion left on.
+/// Builds `sar(rotr(x << 3, 5), 7) & y == z` with gate fusion left on.
 ///
-/// A left-then-right shift pair is not expressible as one shifted operand, so fusion cannot
-/// inline the intermediate into the `band` and has to commit it. That committed definition lowers
-/// to a ZERO constraint like any other linear constraint.
+/// A term carries two shifts, and none of these three collapse into another, so the chain does not
+/// fit however it is grouped. Fusion therefore cannot inline the intermediate into the `band` and
+/// has to commit it. That committed definition lowers to a ZERO constraint like any other linear
+/// constraint.
+///
+/// Two shifts would not do it: `(x << 32) >> 32` is one term now, which is the point of carrying a
+/// sequence.
 fn build_committed_lin_def_circuit() -> (Circuit, Wire, Wire, Wire) {
 	let builder = CircuitBuilder::new();
 	let x = builder.add_inout();
 	let y = builder.add_inout();
 	let z = builder.add_inout();
-	let low = builder.shr(builder.shl(x, 32), 32);
-	builder.assert_eq("and", builder.band(low, y), z);
+	let chained = builder.sar(builder.rotr(builder.shl(x, 3), 5), 7);
+	builder.assert_eq("and", builder.band(chained, y), z);
 	(builder.build(), x, y, z)
 }
 
@@ -161,9 +165,10 @@ fn test_zero_constraints_reach_a_fused_committed_lin_def() {
 	);
 
 	let mut filler = zero_circuit.new_witness_filler();
-	filler[x] = Word(0x1234_5678_9abc_def0);
-	filler[y] = Word(0x0fed_cba9_8765_4321);
-	filler[z] = Word(0x9abc_def0 & 0x0fed_cba9_8765_4321);
+	let (x_val, y_val) = (0x1234_5678_9abc_def0u64, 0x0fed_cba9_8765_4321u64);
+	filler[x] = Word(x_val);
+	filler[y] = Word(y_val);
+	filler[z] = Word(((x_val << 3).rotate_right(5) as i64 >> 7) as u64 & y_val);
 	zero_circuit.populate_wire_witness(&mut filler).unwrap();
 	zero_cs.verify(&filler.value_vec).unwrap();
 }

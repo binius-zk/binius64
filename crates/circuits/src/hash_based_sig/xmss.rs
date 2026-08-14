@@ -197,7 +197,7 @@ pub fn circuit_xmss_verify(
 				builder,
 				public_param,
 				TWEAK_TYPE_MERKLE,
-				level as u32 + 1,
+				builder.add_constant_64(level as u64 + 1),
 				parent_index,
 				&payload,
 			)
