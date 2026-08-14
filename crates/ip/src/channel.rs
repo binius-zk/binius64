@@ -190,7 +190,7 @@ pub trait WordIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 ///
 /// A channel that packs the words into wires rather than computing them needs the count on its
 /// own, so the layout stays in one place.
-pub fn n_packed_elems<F: BinaryField>(n_words: usize) -> usize {
+pub const fn n_packed_elems<F: BinaryField>(n_words: usize) -> usize {
 	n_words.div_ceil(F::N_BITS / Word::BITS)
 }
 
