@@ -44,6 +44,14 @@ impl Shared {
 		&self.builder
 	}
 
+	/// Consumes the shared state, returning the builder alone.
+	///
+	/// Building needs to own the builder outright.
+	/// So a caller reaches for this only once every wire allocation is done.
+	pub fn into_builder(self) -> CircuitBuilder {
+		self.builder
+	}
+
 	/// Allocates a wire the witness must supply, recording which operation asked for it.
 	pub fn input_wire(&self, kind: &'static str) -> Wire {
 		let wire = self.builder.add_witness();

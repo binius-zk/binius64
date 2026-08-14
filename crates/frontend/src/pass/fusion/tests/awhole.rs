@@ -180,7 +180,7 @@ fn mk_circuit_builder() -> CircuitBuilder {
 	CircuitBuilder::with_opts(opts)
 }
 
-fn compile(circuit_builder: &CircuitBuilder) -> ConstraintSystem {
+fn compile(circuit_builder: CircuitBuilder) -> ConstraintSystem {
 	let circuit = circuit_builder.build();
 	circuit.constraint_system().clone()
 }
@@ -200,7 +200,7 @@ fn test_mul_inlining_duplicate_linear_in_mul() {
 
 	let (_hi, _lo) = b.imul(y, y);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"IMUL[0]: (v[0] ⊕ v[1]) * (v[0] ⊕ v[1]) = (HI: v[2], LO: v[3])");
 }
@@ -223,7 +223,7 @@ fn test_mul_and_and_shared_linear_uses() {
 	let z = b.add_witness();
 	let (_hi, _lo) = b.imul(y, z);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"
 	AND[0]: (v[0] ⊕ v[1]) ∧ (v[2]) = (v[4])
 	IMUL[0]: (v[0] ⊕ v[1]) * (v[3]) = (HI: v[5], LO: v[6])
@@ -252,7 +252,7 @@ fn test_mul_inlining_into_hi_lo() {
 	// We cannot directly modify outputs, but using them later in ANDs will keep them alive
 	// The important check is that IMUL constraint references should inline hi_src and lo_src
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"
 	ZERO[0]: (v[0] ⊕ v[1] ⊕ v[6]) = 0
 	ZERO[1]: (v[2] ⊕ v[3] ⊕ v[7]) = 0
@@ -279,7 +279,7 @@ fn test_mul_inlining_distinct_linears() {
 
 	let (_hi, _lo) = b.imul(y1, y2);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"IMUL[0]: (v[0] ⊕ v[1]) * (v[2]≪3 ⊕ v[3]) = (HI: v[4], LO: v[5])");
 }
 
@@ -290,7 +290,7 @@ fn test_xor_unused_preserved() {
 	let v0 = b.add_constant_64(0xe4);
 	let v1 = b.add_witness();
 	let _v2 = b.bxor(v0, v1);
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"ZERO[0]: (0xe4 ⊕ v[0] ⊕ v[1]) = 0");
 }
 
@@ -301,7 +301,7 @@ fn test_xor_into_assert() {
 	let v1 = b.add_witness();
 	let v2 = b.bxor(v0, v1);
 	b.assert_zero("derp", v2);
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(
 		stringify_constraint_system(&cs),
 		@"ZERO[0]: (0xe4 ⊕ v[0]) = 0",
@@ -322,7 +322,7 @@ fn test_xor_into_and_single_use() {
 	let v3 = b.add_witness();
 	let _v4 = b.band(v3, v2);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(
 		stringify_constraint_system(&cs),
 		@"AND[0]: (v[2]) ∧ (v[0] ⊕ v[1]) = (v[3])",
@@ -346,7 +346,7 @@ fn test_xor_used_on_both_sides() {
 	let rhs = b.bxor(v4, v2); // v4 ^ v2
 	let _v6 = b.band(lhs, rhs);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	// v2 is preserved since it's still referenced after lhs and rhs are inlined
 	// Expected: v[6] (which is v2 = v0^v1) should be fully inlined as (v[2] ⊕ v[3])
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0] ⊕ v[1] ⊕ v[2]) ∧ (v[3] ⊕ v[0] ⊕ v[1]) = (v[4])");
@@ -365,7 +365,7 @@ fn test_shifted_base_into_and() {
 	let v2 = b.add_witness();
 	let _v3 = b.band(v2, v1);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[1]) ∧ (v[0]≪33) = (v[2])");
 }
 
@@ -385,7 +385,7 @@ fn test_mixed_xor_of_shifts_into_and() {
 	let v3 = b.add_witness();
 	let _v4 = b.band(v3, v2);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[2]) ∧ (v[0]≫7 ⊕ v[1]≪3) = (v[3])");
 }
 
@@ -408,7 +408,7 @@ fn test_deep_xor_in_both_a_and_c() {
 	let mask = b.add_witness();
 	let _v7 = b.band(lhs, mask);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0] ⊕ v[1] ⊕ v[2]a≫1 ⊕ v[3]) ∧ (v[4]) = (v[5])");
 }
 
@@ -431,7 +431,7 @@ fn test_fuse_across_parens() {
 	let v5 = b.add_witness();
 	let _v6 = b.band(lhs, v5);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0]≪33 ⊕ v[1] ⊕ v[2] ⊕ v[3]) ∧ (v[4]) = (v[5])");
 }
 
@@ -459,7 +459,7 @@ fn test_multiple_producers_into_one_consumer() {
 	let v4 = b.add_witness();
 	let _v5 = b.band(lhs, v4);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0] ⊕ v[1] ⊕ v[2]≫5) ∧ (v[3]) = (v[4])");
 }
 
@@ -480,7 +480,7 @@ fn test_xor_producer_used_twice_inside_one_side() {
 	let v4 = b.add_witness();
 	let _v5 = b.band(lhs, v4);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	// When used twice, the XOR terms should be inlined twice
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0] ⊕ v[1] ⊕ v[0] ⊕ v[1] ⊕ v[2]) ∧ (v[3]) = (v[4])");
 }
@@ -503,7 +503,7 @@ fn test_chain_two_level_fusion() {
 	let v5 = b.add_witness();
 	let _v6 = b.band(v5, v4);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[3]) ∧ (v[0] ⊕ v[1] ⊕ v[2]) = (v[4])");
 }
 
@@ -528,7 +528,7 @@ fn test_chain_with_shifts_inside_producers() {
 	let v5 = b.add_witness();
 	let _v6 = b.band(v5, v4);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[3]) ∧ (v[0]≫2 ⊕ v[1]a≫7 ⊕ v[2]≪11) = (v[4])");
 }
 
@@ -554,7 +554,7 @@ fn test_fuse_into_both_a_and_b() {
 
 	let _v6 = b.band(lhs, rhs);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0] ⊕ v[1]≫3 ⊕ v[2]) ∧ (v[3] ⊕ v[0] ⊕ v[1]≫3 ⊕ v[4]) = (v[5])");
 }
 
@@ -577,7 +577,7 @@ fn test_xor_feeding_xor_via_all_one() {
 	let mask = b.add_witness();
 	let _v5 = b.band(lhs, mask);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0] ⊕ v[1]≪2 ⊕ v[2] ⊕ v[3]) ∧ (v[4]) = (v[5])");
 }
 
@@ -595,7 +595,7 @@ fn test_not_pattern_via_xor_with_all_one() {
 	let v2 = b.add_witness();
 	let _v3 = b.band(v2, v1);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[1]) ∧ (v[0] ⊕ all-1) = (v[2])");
 }
 
@@ -614,7 +614,7 @@ fn test_dont_inline_xor_into_shifted_use() {
 	let v3 = b.add_witness();
 	let _v4 = b.band(v2_sll, v3);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	// The optimization successfully inlines despite the shift at the use site
 	// This shows gate fusion can handle shifts in the consuming constraint
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0]≪5 ⊕ v[1]≪5) ∧ (v[2]) = (v[3])");
@@ -634,7 +634,7 @@ fn test_dont_inline_shifted_producer_into_shifted_use() {
 	let v2 = b.add_witness();
 	let _v3 = b.band(v1_sll, v2);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	// Cannot compose different shift types (srl then sll), so it commits the intermediate
 	insta::assert_snapshot!(
 		stringify_constraint_system(&cs),
@@ -660,7 +660,7 @@ fn test_dont_inline_xor_into_shifted_xor_use() {
 	let v4 = b.add_witness();
 	let _v5 = b.band(lhs, v4);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	// The optimization can actually compose shifts of the same type (shr)
 	// So it inlines despite the shift at use site
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[0]≫9 ⊕ v[1]≫11 ⊕ v[2]) ∧ (v[3]) = (v[4])");
@@ -685,7 +685,7 @@ fn test_mixed_one_unshifted_use_one_shifted_use() {
 	let v5 = b.add_witness();
 	let _v6 = b.band(v2_srl, v5);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	// The optimization can inline into both uses since shifts distribute over XOR
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"
 	AND[0]: (v[2]) ∧ (v[0] ⊕ v[1]) = (v[4])
@@ -709,7 +709,7 @@ fn test_rotr_overflow_to_zero() {
 	let v3 = b.add_witness();
 	let _v4 = b.band(v3, v2);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	// rotr(v0, 64) should be simplified to v0 (no rotation)
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[1]) ∧ (v[0]) = (v[2])");
 }
@@ -730,7 +730,7 @@ fn test_rotr_wrap_around() {
 	let v3 = b.add_witness();
 	let _v4 = b.band(v3, v2);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[1]) ∧ (v[0]≫≫16) = (v[2])");
 }
 
@@ -754,7 +754,7 @@ fn test_rotr_in_xor_overflow() {
 	let v5 = b.add_witness();
 	let _v6 = b.band(v5, v4);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	// rotr(v0 ^ v1, 64) should be just v0 ^ v1
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[2]) ∧ (v[0] ⊕ v[1]) = (v[3])");
 }
@@ -776,7 +776,7 @@ fn test_rotr_chain_with_wrap() {
 	let v4 = b.add_witness();
 	let _v5 = b.band(v4, v3);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[1]) ∧ (v[0]≫≫11) = (v[2])");
 }
 
@@ -797,7 +797,7 @@ fn test_rotr_distributes_over_xor_expanded() {
 	let v4 = b.add_witness();
 	let _v5 = b.band(v4, v3);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[2]) ∧ (v[0]≫≫6 ⊕ v[1]≫≫6) = (v[3])");
 }
 
@@ -847,7 +847,7 @@ fn test_depth_limit_deep_chain() {
 	let w9 = b.add_witness();
 	let _result = b.band(v8, w9);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 
 	// The deep chain should cause intermediate commitments due to depth limit
 	// We expect the optimizer to commit some intermediate value and create multiple AND constraints
@@ -901,7 +901,7 @@ fn test_depth_limit_with_shifts() {
 	let w9 = b.add_witness();
 	let _result = b.band(v8, w9);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 
 	// With shifts in the chain, the depth limit should still apply
 	// The optimizer should handle the complexity and commit when needed
@@ -930,7 +930,7 @@ fn test_chained_shifts_beyond_the_word_width_compile() {
 	let y = b.add_witness();
 	let _out = b.band(v, y);
 
-	let cs = compile(&b);
+	let cs = compile(b);
 
 	// The break lands on the topmost link, which is committed as v[4].
 	// The three links below it merge into the single shift of 60 in the AND operand.

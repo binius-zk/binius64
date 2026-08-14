@@ -216,7 +216,7 @@ pub(crate) struct Shared {
 pub struct CircuitBuilder {
 	/// Current path at which this circuit builder is positioned.
 	current_path: PathSpec,
-	shared: Rc<RefCell<Option<Shared>>>,
+	shared: Rc<RefCell<Shared>>,
 }
 
 impl Default for CircuitBuilder {
@@ -238,7 +238,7 @@ impl CircuitBuilder {
 		let root = graph.path_spec_tree.root();
 		CircuitBuilder {
 			current_path: root,
-			shared: Rc::new(RefCell::new(Some(Shared {
+			shared: Rc::new(RefCell::new(Shared {
 				graph,
 				opts,
 				force_committed: EntitySet::new(),
@@ -246,7 +246,7 @@ impl CircuitBuilder {
 				chips: Vec::new(),
 				chip_calls: Vec::new(),
 				chip_gadgets: HashMap::new(),
-			}))),
+			})),
 		}
 	}
 
@@ -267,10 +267,7 @@ impl CircuitBuilder {
 	/// carrying any.
 	pub fn add_chip(&self, chip: CircuitM4) -> ChipRef {
 		let mut shared = self.shared.borrow_mut();
-		let chips = &mut shared
-			.as_mut()
-			.expect("CircuitBuilder used after build")
-			.chips;
+		let chips = &mut shared.chips;
 
 		let chip_id = chips.len();
 		// The system's main takes the next slot and its own chips follow it, so an ID naming its
@@ -319,7 +316,6 @@ impl CircuitBuilder {
 	/// Panics if the wire count differs from the callee's inout word count.
 	pub fn call_chip(&self, chip: ChipRef, inout: &[Wire]) {
 		let mut shared = self.shared.borrow_mut();
-		let shared = shared.as_mut().expect("CircuitBuilder used after build");
 
 		let n_inout = shared.chips[chip.chip_id()].circuit.inout().len();
 		assert_eq!(inout.len(), n_inout, "chip #{} takes {n_inout} inout words", chip.chip_id());
@@ -386,8 +382,6 @@ impl CircuitBuilder {
 
 		let mut shared = self.shared.borrow_mut();
 		let previous = shared
-			.as_mut()
-			.expect("CircuitBuilder used after build")
 			.chip_gadgets
 			.insert((G::NAME, dimensions.to_vec()), RegisteredGadget { chip, inout_order });
 		assert!(
@@ -461,8 +455,6 @@ impl CircuitBuilder {
 	) -> Option<RegisteredGadget> {
 		self.shared
 			.borrow()
-			.as_ref()
-			.expect("CircuitBuilder used after build")
 			.chip_gadgets
 			.get(&(name, dimensions.to_vec()))
 			.cloned()
@@ -470,14 +462,18 @@ impl CircuitBuilder {
 
 	/// Returns the circuit built by this builder.
 	///
-	/// Note that cloning the circuit builder only clones the reference and as such is treated
-	/// as a shallow copy.
+	/// Consumes the builder, so building is a one-shot operation.
+	/// There is no builder left afterward for the type system to reject a second call on.
 	///
-	/// # Preconditions
+	/// # Panics
 	///
-	/// Must be called only once, on a builder with no chip registered by [`Self::add_chip`].
-	pub fn build(&self) -> Circuit {
-		let shared = self.take_shared();
+	/// Panics if a clone or a subcircuit of this builder is still alive elsewhere.
+	/// Reclaiming the state needs sole ownership of it.
+	///
+	/// Panics if the builder carries a chip registered by [`Self::add_chip`].
+	/// Build that one with [`Self::build_m4`] instead.
+	pub fn build(self) -> Circuit {
+		let shared = self.into_shared();
 		assert!(
 			shared.chips.is_empty(),
 			"a builder carrying chips builds with CircuitBuilder::build_m4"
@@ -492,11 +488,15 @@ impl CircuitBuilder {
 	/// indices the build assigned them, and each chip's active-instance count is counted off the
 	/// resulting call graph.
 	///
-	/// # Preconditions
+	/// Consumes the builder, so building is a one-shot operation.
+	/// There is no builder left afterward for the type system to reject a second call on.
 	///
-	/// Must be called only once.
-	pub fn build_m4(&self) -> CircuitM4 {
-		let mut shared = self.take_shared();
+	/// # Panics
+	///
+	/// Panics if a clone or a subcircuit of this builder is still alive elsewhere.
+	/// Reclaiming the state needs sole ownership of it.
+	pub fn build_m4(self) -> CircuitM4 {
+		let mut shared = self.into_shared();
 		let chips = mem::take(&mut shared.chips);
 		let pending = mem::take(&mut shared.chip_calls);
 		let circuit = Self::compile(shared, &pending);
@@ -527,17 +527,16 @@ impl CircuitBuilder {
 		circuit
 	}
 
-	/// Takes the builder's state, leaving it spent.
+	/// Reclaims the state behind the shared handle, requiring sole ownership of it.
 	///
 	/// # Panics
 	///
-	/// Panics if the state was already taken, which is what makes building a one-shot operation.
-	fn take_shared(&self) -> Shared {
-		let shared = self.shared.borrow_mut().take();
-		let Some(shared) = shared else {
-			panic!("CircuitBuilder::build called twice");
-		};
-		shared
+	/// Panics if a clone or a subcircuit still holds a live handle to the same shared state.
+	/// Only sole ownership can be unwrapped out of a reference count.
+	fn into_shared(self) -> Shared {
+		Rc::into_inner(self.shared)
+			.expect("a clone or subcircuit of this builder is still alive")
+			.into_inner()
 	}
 
 	/// Compiles the builder's state into a circuit, running every optimization pass it enables.
@@ -761,12 +760,7 @@ impl CircuitBuilder {
 	/// This annotate the wire to be forcefully committed. This instructs optimization passes
 	/// (ATOW only gate fusion) to forcibly materialize wire.
 	pub fn force_commit(&self, wire: Wire) {
-		self.shared
-			.borrow_mut()
-			.as_mut()
-			.unwrap()
-			.force_committed
-			.insert(wire);
+		self.shared.borrow_mut().force_committed.insert(wire);
 	}
 
 	/// Promotes a gate-created wire to a public output.
@@ -813,21 +807,7 @@ impl CircuitBuilder {
 	}
 
 	fn graph_mut(&self) -> RefMut<'_, GateGraph> {
-		RefMut::map(self.shared.borrow_mut(), |shared| &mut shared.as_mut().unwrap().graph)
-	}
-
-	/// The compile-time value of a wire, when it is a constant.
-	///
-	/// Returns `None` for inputs, witnesses, and gate outputs whose value is only known at
-	/// proving time.
-	/// Used by the builder to fold trivial gate identities at construction.
-	fn const_of(&self, wire: Wire) -> Option<Word> {
-		let shared = self.shared.borrow();
-		let shared = shared.as_ref().expect("CircuitBuilder used after build");
-		match shared.graph.wires[wire] {
-			WireKind::Constant(word) => Some(word),
-			_ => None,
-		}
+		RefMut::map(self.shared.borrow_mut(), |shared| &mut shared.graph)
 	}
 
 	/// Creates a wire from a 64-bit word.
@@ -902,22 +882,6 @@ impl CircuitBuilder {
 		self.graph_mut().add_witness()
 	}
 
-	/// Adds a wire similar to [`Self::add_witness`]. Internal wires are meant to designate wires
-	/// that are prunable.
-	fn add_internal(&self) -> Wire {
-		self.graph_mut().add_internal()
-	}
-
-	/// Whether build-time algebraic identity folding is enabled.
-	fn algebraic_folding(&self) -> bool {
-		self.shared
-			.borrow()
-			.as_ref()
-			.expect("CircuitBuilder used after build")
-			.opts
-			.enable_algebraic_folding
-	}
-
 	/// Bitwise AND.
 	///
 	/// Returns z = x & y
@@ -926,23 +890,25 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint, or none when both operands are the same wire.
 	pub fn band(&self, x: Wire, y: Wire) -> Wire {
+		let mut shared = self.shared.borrow_mut();
 		// Idempotent: x & x = x, bit for bit, so return x and emit no gate.
-		if self.algebraic_folding() && x == y {
+		if shared.opts.enable_algebraic_folding && x == y {
 			return x;
 		}
 		// Identities that hold bit for bit, so they need no AND constraint:
 		//   c & d  -> fold        0 & y -> 0        all-1 & y -> y
-		match (self.const_of(x), self.const_of(y)) {
-			(Some(a), Some(b)) => return self.add_constant(Word(a.0 & b.0)),
+		match (const_of(&shared.graph, x), const_of(&shared.graph, y)) {
+			(Some(a), Some(b)) => return shared.graph.add_constant(Word(a.0 & b.0)),
 			(Some(a), _) if a == Word::ZERO => return x,
 			(Some(a), _) if a == Word::ALL_ONE => return y,
 			(_, Some(b)) if b == Word::ZERO => return y,
 			(_, Some(b)) if b == Word::ALL_ONE => return x,
 			_ => {}
 		}
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Band, [x, y], [z]);
+		let z = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::Band, [x, y], [z]);
 		z
 	}
 
@@ -954,21 +920,23 @@ impl CircuitBuilder {
 	///
 	/// 1 linear constraint, or none when both operands are the same wire.
 	pub fn bxor(&self, a: Wire, b: Wire) -> Wire {
+		let mut shared = self.shared.borrow_mut();
 		// Self-inverse: x ^ x = 0, so return the zero constant and emit no gate.
-		if self.algebraic_folding() && a == b {
-			return self.add_constant(Word::ZERO);
+		if shared.opts.enable_algebraic_folding && a == b {
+			return shared.graph.add_constant(Word::ZERO);
 		}
 		// Identities that hold bit for bit, so they need no linear constraint:
 		//   c ^ d  -> fold        0 ^ b -> b        a ^ 0 -> a
-		match (self.const_of(a), self.const_of(b)) {
-			(Some(x), Some(y)) => return self.add_constant(Word(x.0 ^ y.0)),
+		match (const_of(&shared.graph, a), const_of(&shared.graph, b)) {
+			(Some(x), Some(y)) => return shared.graph.add_constant(Word(x.0 ^ y.0)),
 			(Some(x), _) if x == Word::ZERO => return b,
 			(_, Some(y)) if y == Word::ZERO => return a,
 			_ => {}
 		}
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Bxor, [a, b], [z]);
+		let z = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::Bxor, [a, b], [z]);
 		z
 	}
 
@@ -992,9 +960,9 @@ impl CircuitBuilder {
 			return self.bxor(wires[0], wires[1]);
 		}
 
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_generic(
+		let mut shared = self.shared.borrow_mut();
+		let z = shared.graph.add_internal();
+		shared.graph.emit_gate_generic(
 			self.current_path,
 			Opcode::BxorMulti,
 			wires.iter().copied(),
@@ -1025,23 +993,25 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint, or none when both operands are the same wire.
 	pub fn bor(&self, a: Wire, b: Wire) -> Wire {
+		let mut shared = self.shared.borrow_mut();
 		// Idempotent: x | x = x, bit for bit, so return x and emit no gate.
-		if self.algebraic_folding() && a == b {
+		if shared.opts.enable_algebraic_folding && a == b {
 			return a;
 		}
 		// Identities that hold bit for bit, so they need no AND constraint:
 		//   c | d  -> fold        0 | b -> b        all-1 | b -> all-1
-		match (self.const_of(a), self.const_of(b)) {
-			(Some(x), Some(y)) => return self.add_constant(Word(x.0 | y.0)),
+		match (const_of(&shared.graph, a), const_of(&shared.graph, b)) {
+			(Some(x), Some(y)) => return shared.graph.add_constant(Word(x.0 | y.0)),
 			(Some(x), _) if x == Word::ZERO => return b,
 			(Some(x), _) if x == Word::ALL_ONE => return a,
 			(_, Some(y)) if y == Word::ZERO => return a,
 			(_, Some(y)) if y == Word::ALL_ONE => return b,
 			_ => {}
 		}
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Bor, [a, b], [z]);
+		let z = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::Bor, [a, b], [z]);
 		z
 	}
 
@@ -1055,9 +1025,11 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint.
 	pub fn fax(&self, x: Wire, y: Wire, w: Wire) -> Wire {
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Fax, [x, y, w], [z]);
+		let mut shared = self.shared.borrow_mut();
+		let z = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::Fax, [x, y, w], [z]);
 		z
 	}
 
@@ -1070,10 +1042,12 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint, 1 linear constraint.
 	pub fn iadd_32(&self, a: Wire, b: Wire) -> Wire {
-		let sum = self.add_internal();
-		let cout = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Iadd32, [a, b], [sum, cout]);
+		let mut shared = self.shared.borrow_mut();
+		let sum = shared.graph.add_internal();
+		let cout = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::Iadd32, [a, b], [sum, cout]);
 		sum
 	}
 
@@ -1091,10 +1065,12 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint, 1 linear constraint.
 	pub fn iadd32_cin_cout(&self, a: Wire, b: Wire, cin: Wire) -> (Wire, Wire) {
-		let sum = self.add_internal();
-		let cout = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Iadd32CinCout, [a, b, cin], [sum, cout]);
+		let mut shared = self.shared.borrow_mut();
+		let sum = shared.graph.add_internal();
+		let cout = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::Iadd32CinCout, [a, b, cin], [sum, cout]);
 		(sum, cout)
 	}
 
@@ -1112,10 +1088,12 @@ impl CircuitBuilder {
 	/// - 1 AND constraint,
 	/// - 1 linear constraint.
 	pub fn iadd_cin_cout(&self, a: Wire, b: Wire, cin: Wire) -> (Wire, Wire) {
-		let sum = self.add_internal();
-		let cout = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::IaddCinCout, [a, b, cin], [sum, cout]);
+		let mut shared = self.shared.borrow_mut();
+		let sum = shared.graph.add_internal();
+		let cout = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::IaddCinCout, [a, b, cin], [sum, cout]);
 		(sum, cout)
 	}
 
@@ -1133,10 +1111,12 @@ impl CircuitBuilder {
 	/// - 1 AND constraint,
 	/// - 1 linear constraint.
 	pub fn isub_bin_bout(&self, a: Wire, b: Wire, bin: Wire) -> (Wire, Wire) {
-		let diff = self.add_internal();
-		let bout = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::IsubBinBout, [a, b, bin], [diff, bout]);
+		let mut shared = self.shared.borrow_mut();
+		let diff = shared.graph.add_internal();
+		let bout = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::IsubBinBout, [a, b, bin], [diff, bout]);
 		(diff, bout)
 	}
 
@@ -1145,9 +1125,9 @@ impl CircuitBuilder {
 	/// The variant and amount are carried as the gate's two immediates.
 	/// The caller enforces the amount range and any identity fast-paths.
 	fn emit_shift(&self, variant: ShiftVariant, x: Wire, n: u32) -> Wire {
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_generic(
+		let mut shared = self.shared.borrow_mut();
+		let z = shared.graph.add_internal();
+		shared.graph.emit_gate_generic(
 			self.current_path,
 			Opcode::Shift,
 			[x],
@@ -1456,10 +1436,12 @@ impl CircuitBuilder {
 	///
 	/// 1 IMUL constraint.
 	pub fn imul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
-		let hi = self.add_internal();
-		let lo = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Imul, [a, b], [hi, lo]);
+		let mut shared = self.shared.borrow_mut();
+		let hi = shared.graph.add_internal();
+		let lo = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::Imul, [a, b], [hi, lo]);
 		(hi, lo)
 	}
 
@@ -1475,10 +1457,15 @@ impl CircuitBuilder {
 	///
 	/// - 1 BMUL constraint.
 	pub fn bmul(&self, a_lo: Wire, a_hi: Wire, b_lo: Wire, b_hi: Wire) -> (Wire, Wire) {
-		let c_lo = self.add_internal();
-		let c_hi = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Bmul, [a_lo, a_hi, b_lo, b_hi], [c_lo, c_hi]);
+		let mut shared = self.shared.borrow_mut();
+		let c_lo = shared.graph.add_internal();
+		let c_hi = shared.graph.add_internal();
+		shared.graph.emit_gate(
+			self.current_path,
+			Opcode::Bmul,
+			[a_lo, a_hi, b_lo, b_hi],
+			[c_lo, c_hi],
+		);
 		(c_lo, c_hi)
 	}
 
@@ -1512,9 +1499,11 @@ impl CircuitBuilder {
 	/// - 1 AND constraint,
 	/// - 1 linear constraint.
 	pub fn icmp_ult(&self, x: Wire, y: Wire) -> Wire {
-		let out_wire = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::IcmpUlt, [x, y], [out_wire]);
+		let mut shared = self.shared.borrow_mut();
+		let out_wire = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::IcmpUlt, [x, y], [out_wire]);
 		out_wire
 	}
 
@@ -1590,9 +1579,11 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint.
 	pub fn icmp_eq(&self, x: Wire, y: Wire) -> Wire {
-		let out_wire = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::IcmpEq, [x, y], [out_wire]);
+		let mut shared = self.shared.borrow_mut();
+		let out_wire = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::IcmpEq, [x, y], [out_wire]);
 		out_wire
 	}
 
@@ -1649,19 +1640,21 @@ impl CircuitBuilder {
 	///
 	/// 1 BMUL constraint, or none when both arms are the same wire.
 	pub fn select(&self, cond: Wire, t: Wire, f: Wire) -> Wire {
+		let mut shared = self.shared.borrow_mut();
 		// Both arms identical: the result is that wire regardless of the condition.
 		// This reads no bit of `cond`, so it is independent of the MSB-boolean convention.
-		if self.algebraic_folding() && t == f {
+		if shared.opts.enable_algebraic_folding && t == f {
 			return t;
 		}
 		// A constant condition resolves the branch at compile time.
 		// The selector reads only the most significant bit (bit 63), the MSB-bool.
-		if let Some(c) = self.const_of(cond) {
+		if let Some(c) = const_of(&shared.graph, cond) {
 			return if (c.0 >> 63) == 1 { t } else { f };
 		}
-		let out = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Select, [cond, t, f], [out]);
+		let out = shared.graph.add_internal();
+		shared
+			.graph
+			.emit_gate(self.current_path, Opcode::Select, [cond, t, f], [out]);
 		out
 	}
 
@@ -1688,18 +1681,10 @@ impl CircuitBuilder {
 			inputs.len(),
 		);
 
-		let hint_id = self
-			.shared
-			.borrow_mut()
-			.as_mut()
-			.expect("CircuitBuilder used after build")
-			.hint_registry
-			.register(hint);
-
-		let outputs: Vec<Wire> = (0..n_out).map(|_| self.add_internal()).collect();
-
-		let mut graph = self.graph_mut();
-		graph.emit_hint_gate(
+		let mut shared = self.shared.borrow_mut();
+		let hint_id = shared.hint_registry.register(hint);
+		let outputs: Vec<Wire> = (0..n_out).map(|_| shared.graph.add_internal()).collect();
+		shared.graph.emit_hint_gate(
 			self.current_path,
 			hint_id,
 			dimensions,
@@ -1739,5 +1724,16 @@ impl CircuitBuilder {
 	/// The high word is the sign extension of the product.
 	pub fn smul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
 		smul64(self, a, b)
+	}
+}
+
+/// The compile-time value of a wire, when it is a constant.
+///
+/// Returns `None` for a wire whose value is only known at proving time.
+/// Takes the graph by reference, so a caller already holding a borrow can call this directly.
+fn const_of(graph: &GateGraph, wire: Wire) -> Option<Word> {
+	match graph.wires[wire] {
+		WireKind::Constant(word) => Some(word),
+		_ => None,
 	}
 }

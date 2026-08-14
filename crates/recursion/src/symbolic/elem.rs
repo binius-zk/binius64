@@ -459,7 +459,10 @@ mod tests {
 		let inv_wires = [builder.add_inout(), builder.add_inout()];
 		constrain_inverse(builder, (x_wires[0], x_wires[1]), (inv_wires[0], inv_wires[1]));
 
-		let circuit = builder.build();
+		let circuit = Rc::try_unwrap(shared)
+			.unwrap_or_else(|_| panic!("no SymbolicElem or SymbolicWord should still be alive"))
+			.into_builder()
+			.build();
 		let mut w = circuit.new_witness_filler();
 		for (wires, value) in [(x_wires, x), (inv_wires, inv)] {
 			for (wire, word) in wires.iter().zip(element_words(u128::from(value))) {
@@ -529,7 +532,10 @@ mod tests {
 			fill.push((claimed, want));
 		}
 
-		let circuit = builder.build();
+		let circuit = Rc::try_unwrap(shared)
+			.unwrap_or_else(|_| panic!("no SymbolicElem or SymbolicWord should still be alive"))
+			.into_builder()
+			.build();
 		let stat = CircuitStat::collect(&circuit);
 		let mut w = circuit.new_witness_filler();
 		for (wires, value) in fill {

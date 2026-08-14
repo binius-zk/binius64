@@ -97,6 +97,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt"] }
 tracing-profile = "0.10.11"
 tracing-forest = { version = "0.3.1", features = ["ansi", "env-filter"] }
 trait-set = "0.3.0"
+trybuild = "1.0"
 uninit = "0.6.2"
 ureq = "3.1"
 

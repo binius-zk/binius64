@@ -588,6 +588,9 @@ mod tests {
 			})
 			.collect();
 
+		// The gadget holds its own clone of the builder.
+		// It must be dropped before building can reclaim sole ownership of the shared state.
+		drop(gadget);
 		let circuit = builder.build();
 		let cs = circuit.constraint_system();
 		let mut w = circuit.new_witness_filler();
@@ -733,6 +736,9 @@ mod tests {
 		builder.assert_eq("low", low, builder.add_inout());
 		builder.assert_eq("high", high, builder.add_inout());
 
+		// The gadget holds its own clone of the builder.
+		// It must be dropped before building can reclaim sole ownership of the shared state.
+		drop(gadget);
 		CircuitStat::collect(&builder.build())
 	}
 
