@@ -474,14 +474,13 @@ impl CircuitBuilder {
 	/// Panics if the builder carries a chip registered by [`Self::add_chip`].
 	/// Build that one with [`Self::build_m4`] instead.
 	///
-	/// Panics if constant propagation is enabled and finds a gate whose constant inputs can
-	/// never satisfy it.
+	/// Panics if an enabled constant-propagation pass finds an unsatisfiable gate.
 	pub fn build(self) -> Circuit {
 		self.try_build().unwrap_or_else(|err| panic!("{err}"))
 	}
 
-	/// Returns the circuit built by this builder, or an error instead of panicking on an
-	/// unsatisfiable constant gate.
+	/// Returns the circuit built by this builder.
+	/// Returns an error instead of panicking on an unsatisfiable constant gate.
 	///
 	/// # Panics
 	///
@@ -493,8 +492,7 @@ impl CircuitBuilder {
 	///
 	/// # Errors
 	///
-	/// Returns an error when constant propagation is enabled and finds a gate whose constant
-	/// inputs can never satisfy it.
+	/// Returns an error when an enabled constant-propagation pass finds an unsatisfiable gate.
 	pub fn try_build(self) -> Result<Circuit, AlwaysFailingGateError> {
 		let shared = self.into_shared();
 		assert!(
@@ -519,14 +517,13 @@ impl CircuitBuilder {
 	/// Panics if a clone or a subcircuit still holds a live handle to the same shared state.
 	/// Only sole ownership can be unwrapped out of a reference count.
 	///
-	/// Panics if constant propagation is enabled and finds a gate whose constant inputs can
-	/// never satisfy it.
+	/// Panics if an enabled constant-propagation pass finds an unsatisfiable gate.
 	pub fn build_m4(self) -> CircuitM4 {
 		self.try_build_m4().unwrap_or_else(|err| panic!("{err}"))
 	}
 
-	/// Returns the chip-composed circuit built by this builder, or an error instead of
-	/// panicking on an unsatisfiable constant gate.
+	/// Returns the chip-composed circuit built by this builder.
+	/// Returns an error instead of panicking on an unsatisfiable constant gate.
 	///
 	/// # Panics
 	///
@@ -535,8 +532,7 @@ impl CircuitBuilder {
 	///
 	/// # Errors
 	///
-	/// Returns an error when constant propagation is enabled and finds a gate whose constant
-	/// inputs can never satisfy it.
+	/// Returns an error when an enabled constant-propagation pass finds an unsatisfiable gate.
 	pub fn try_build_m4(self) -> Result<CircuitM4, AlwaysFailingGateError> {
 		let mut shared = self.into_shared();
 		let chips = mem::take(&mut shared.chips);
@@ -585,8 +581,7 @@ impl CircuitBuilder {
 	///
 	/// # Errors
 	///
-	/// Returns an error when constant propagation is enabled and finds a gate whose constant
-	/// inputs can never satisfy it.
+	/// Returns an error when an enabled constant-propagation pass finds an unsatisfiable gate.
 	fn compile(
 		shared: Shared,
 		chip_calls: &[PendingCall],
