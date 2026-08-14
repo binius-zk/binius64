@@ -1,14 +1,15 @@
 // Copyright 2026 The Binius Developers
-//! M4 proof of one XMSS verification, compressing through a BLAKE3 chip.
+//! M4 proof of a batch of XMSS verifications, each dispatched to a chip.
 //!
 //! The companion to `prove_hash_primitives`, one level up: that file proves a batch of bare
-//! primitives, this one proves a whole signature verification — the encoding, the 42 Winternitz
-//! chains, the leaf and the 32-level authentication path.
+//! primitives, this one proves whole signature verifications — the encoding, the 42 Winternitz
+//! chains, the leaf and the 32-level authentication path, once per signer.
 //!
-//! Registering the chip is the whole opt-in: `circuit_xmss_verify` reaches `blake3_compress_2x`
-//! through the paired chain steps without knowing whether it lands in gates or a chip call. The
-//! lone compressions the encoding, the leaf and the path use stay inline, so the chip serves the
-//! chain steps alone.
+//! The circuit is two chips deep. The main circuit holds no hash gates at all: it declares the
+//! statement — the message, the epoch and every signer's public key — witnesses the signatures, and
+//! dispatches one call per signer to the XMSS chip. That chip in turn reaches `blake3_compress_2x`
+//! through the paired chain steps as a chip of its own. So each verification's constraints are
+//! stated once and the trace pays for them once per instance, at both levels.
 //!
 //! The proof runs inside a timing span. With tracing enabled, the prover's internal spans nest
 //! beneath that span, so the per-phase breakdown of proving is visible.
@@ -24,15 +25,12 @@
 //!     -- --ignored --nocapture
 //! ```
 
-use binius_circuits::{
-	blake3::Blake3Compress2x,
-	hash_based_sig::{
-		DIGEST_WIRES, MESSAGE_LEN, MESSAGE_WIRES, Message, PUBLIC_PARAM_WIRES,
-		xmss::{XmssSignatureWires, circuit_xmss_verify, generate_signature},
-	},
+use binius_circuits::hash_based_sig::{
+	MESSAGE_LEN, Message,
+	aggregate::{MultiSigWires, circuit_xmss_multisig_chip},
+	xmss::generate_signature,
 };
-use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, CircuitM4, CircuitStat, Wire, WitnessFiller};
+use binius_frontend::{CircuitBuilder, CircuitM4, CircuitStat, WitnessFiller};
 use binius_hash::StdHashSuite;
 use binius_m4_prover::ProverM4;
 use binius_m4_verifier::VerifierM4;
@@ -46,6 +44,15 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 /// Base-2 logarithm of the inverse Reed-Solomon rate: rate 1/2, matching `prove_hash_primitives`.
 const LOG_INV_RATE: usize = 1;
+
+/// The number of signatures the batch verifies.
+///
+/// A power of two fills the XMSS chip's instances exactly. The BLAKE3 chip beneath it takes a
+/// number of calls per signature that is not a power of two, so its own count pads whatever this
+/// is set to — filling both at once is not on offer. The count is what makes the run a batch
+/// rather than a single verification; it trades proving time for a timing tree whose per-phase
+/// costs are legible.
+const NUM_SIGNERS: usize = 8;
 
 /// Installs a timing-tree tracing subscriber, once per test binary.
 ///
@@ -64,51 +71,19 @@ fn init_tracing() {
 		.try_init();
 }
 
-/// The public wires of one XMSS verification.
-struct XmssWires {
-	public_param: [Wire; PUBLIC_PARAM_WIRES],
-	message: [Wire; MESSAGE_WIRES],
-	merkle_root: [Wire; DIGEST_WIRES],
-	epoch: Wire,
-	signature: XmssSignatureWires,
-}
-
-/// Builds a circuit verifying one XMSS signature, with the paired BLAKE3 compression as a chip.
-fn build_xmss_circuit() -> (CircuitM4, XmssWires) {
+/// Builds a circuit verifying `NUM_SIGNERS` XMSS signatures on one message, each through the chip.
+fn build_multisig_circuit() -> (CircuitM4, MultiSigWires) {
 	let builder = CircuitBuilder::new();
-	builder.register_chip(Blake3Compress2x, &[]);
-
-	// Everything the verifier is given is public: the statement is the signature and what it
-	// signs. Nothing here is a witness, so the committed trace holds only derived values.
-	let public_param: [Wire; PUBLIC_PARAM_WIRES] = std::array::from_fn(|_| builder.add_inout());
-	let message: [Wire; MESSAGE_WIRES] = std::array::from_fn(|_| builder.add_inout());
-	let merkle_root: [Wire; DIGEST_WIRES] = std::array::from_fn(|_| builder.add_inout());
-	let epoch = builder.add_inout();
-	let signature = XmssSignatureWires {
-		randomness: std::array::from_fn(|_| builder.add_inout()),
-		chain_tips: std::array::from_fn(|_| std::array::from_fn(|_| builder.add_inout())),
-		merkle_path: std::array::from_fn(|_| std::array::from_fn(|_| builder.add_inout())),
-	};
-
-	circuit_xmss_verify(&builder, &public_param, &merkle_root, &message, epoch, &signature);
-
-	let circuit = builder.build_m4();
-	(
-		circuit,
-		XmssWires {
-			public_param,
-			message,
-			merkle_root,
-			epoch,
-			signature,
-		},
-	)
+	let wires = MultiSigWires::new(&builder, NUM_SIGNERS);
+	circuit_xmss_multisig_chip(&builder, &wires);
+	(builder.build_m4(), wires)
 }
 
-/// Generates a valid signature and writes it into the circuit's public wires.
+/// Generates a valid signature per signer and writes the statement and the signatures into the
+/// main circuit's wires.
 ///
-/// Every digest the circuit checks is derived from these inputs, so the evaluator fills the rest.
-fn fill_xmss(wires: &XmssWires, w: &mut WitnessFiller<'_>) {
+/// Every digest the chips check is derived from these words, so the evaluator fills the rest.
+fn fill_multisig(wires: &MultiSigWires, w: &mut WitnessFiller<'_>) {
 	let mut rng = StdRng::seed_from_u64(0);
 
 	let mut message: Message = [0u8; MESSAGE_LEN];
@@ -117,30 +92,29 @@ fn fill_xmss(wires: &XmssWires, w: &mut WitnessFiller<'_>) {
 	rng.fill_bytes(&mut epoch_bytes);
 	let epoch = u32::from_le_bytes(epoch_bytes);
 
-	// Grinding the randomness and walking the chains out of circuit is what makes the assignment
-	// a signature the circuit accepts rather than arbitrary words.
-	let (public_key, signature) = generate_signature(&mut rng, &message, epoch);
+	// Grinding the randomness and walking the chains out of circuit is what makes each assignment
+	// a signature the chip accepts rather than arbitrary words. The signers are independent, so
+	// each gets its own key; only the message and the epoch are shared.
+	let signatures = (0..NUM_SIGNERS)
+		.map(|_| generate_signature(&mut rng, &message, epoch))
+		.collect::<Vec<_>>();
 
-	w.pack_bytes_le(&wires.public_param, &public_key.public_param);
-	w.pack_bytes_le(&wires.message, &message);
-	w.pack_bytes_le(&wires.merkle_root, &public_key.merkle_root);
-	w[wires.epoch] = Word::from_u64(epoch as u64);
-	wires.signature.populate(w, &signature);
+	wires.populate(w, &message, epoch, &signatures);
 }
 
-// Proves one XMSS verification through M4 and verifies it.
+// Proves a batch of XMSS verifications through M4 and verifies it.
 #[test]
 #[ignore = "proving run for its timing tree; use --ignored --release"]
 fn prove_hash_based_sig() {
 	init_tracing();
 
-	let (circuit, wires) = build_xmss_circuit();
+	let (circuit, wires) = build_multisig_circuit();
 	circuit
 		.validate()
 		.expect("the system can be populated in one pass");
 
-	// Report what each sub-system costs. The chip's instance count is what the chain steps
-	// produced, and the spare-capacity lines show how much of each padded section is wasted.
+	// Report what each sub-system costs. Each chip's instance count is what its callers produced,
+	// and the spare-capacity lines show how much of each padded section is wasted.
 	debug!("xmss main circuit stats:\n{}", CircuitStat::collect(&circuit.main.circuit));
 	for (id, (chip, instances)) in circuit.chips.iter().enumerate() {
 		debug!(
@@ -152,8 +126,8 @@ fn prove_hash_based_sig() {
 	// Generate the witness in its own span: for this circuit that is every BLAKE3 compression,
 	// which is the bulk of it.
 	let witness = info_span!("witness_generation", primitive = "xmss")
-		.in_scope(|| circuit.generate_witness(|w| fill_xmss(&wires, w)))
-		.expect("the generated signature satisfies the circuit");
+		.in_scope(|| circuit.generate_witness(|w| fill_multisig(&wires, w)))
+		.expect("the generated signatures satisfy the circuit");
 
 	let cs = circuit.to_constraint_system();
 	cs.validate().unwrap();
@@ -161,7 +135,7 @@ fn prove_hash_based_sig() {
 	// The witness satisfying the system is what says the timing below is of a real proof.
 	witness
 		.verify(&cs)
-		.expect("the signature verifies in circuit");
+		.expect("the signatures verify in circuit");
 
 	let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
 	let prover = ProverM4::<OptimalPackedB128, StdHashSuite>::setup(&verifier);
