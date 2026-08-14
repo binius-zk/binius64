@@ -24,3 +24,4 @@ rustc-hash.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
 proptest = { workspace = true }
 insta = { workspace = true }
+trybuild = { workspace = true }

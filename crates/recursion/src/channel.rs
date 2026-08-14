@@ -118,12 +118,20 @@ impl Binius64BuilderChannel {
 	/// Every [`SymbolicElem`] and [`SymbolicWord`] derived from this channel must be dropped first:
 	/// they hold weak handles to the builder, and using one afterwards panics.
 	pub fn build(self) -> Recorded {
-		let shared = Rc::try_unwrap(self.shared).unwrap_or_else(|_| {
+		// The challenger keeps its own clone of the builder alive to absorb or sample from.
+		// Dropping it here is what leaves exactly one handle to the shared state below.
+		let Self {
+			shared, challenger, ..
+		} = self;
+		drop(challenger);
+
+		let shared = Rc::try_unwrap(shared).unwrap_or_else(|_| {
 			panic!("SymbolicElem and SymbolicWord values hold only weak handles")
 		});
+		let inputs = shared.inputs();
 		Recorded {
-			inputs: shared.inputs(),
-			circuit: shared.builder().build(),
+			inputs,
+			circuit: shared.into_builder().build(),
 		}
 	}
 

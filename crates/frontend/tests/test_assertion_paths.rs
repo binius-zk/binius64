@@ -18,6 +18,11 @@ fn test_assertion_failure_shows_path() {
 	// Add an assertion that will fail
 	submodule.assert_eq("test_assertion", x, y);
 
+	// Building reclaims sole ownership of the shared builder state.
+	// So every subcircuit handle must be dropped first.
+	drop(submodule);
+	drop(module_a);
+
 	// Build the circuit
 	let circuit = builder.build();
 
@@ -65,6 +70,10 @@ fn test_multiple_assertion_failures() {
 
 	module.assert_eq("check_a_equals_b", a, b);
 	module.assert_eq("check_b_equals_c", b, c);
+
+	// Building reclaims sole ownership of the shared builder state.
+	// So the subcircuit handle must be dropped first.
+	drop(module);
 
 	let circuit = builder.build();
 	let mut filler = circuit.new_witness_filler();
