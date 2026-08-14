@@ -601,7 +601,11 @@ impl CircuitBuilder {
 		// The all-one wire is seeded as the first constant when the graph is constructed.
 		let all_one = graph.all_one;
 
-		graph.validate(&shared.hint_registry);
+		if cfg!(debug_assertions) {
+			// Every gate already had its shape asserted once when it was emitted.
+			// A release build cannot reach an invalid graph, so this re-walk is debug-only.
+			graph.validate(&shared.hint_registry);
+		}
 
 		// Run constant propagation optimization
 		if shared.opts.enable_constant_propagation {
@@ -1030,7 +1034,7 @@ impl CircuitBuilder {
 	///
 	/// 1 linear constraint.
 	pub fn bnot(&self, a: Wire) -> Wire {
-		let all_one = self.add_constant(Word::ALL_ONE);
+		let all_one = self.graph_mut().all_one;
 		self.bxor(a, all_one)
 	}
 

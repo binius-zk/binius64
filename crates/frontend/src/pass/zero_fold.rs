@@ -69,10 +69,7 @@ pub fn zero_propagation(
 
 /// The zero constant wire, if the circuit already has one.
 fn find_zero_constant(graph: &GateGraph) -> Option<Wire> {
-	graph
-		.iter_const_wires()
-		.find(|(_, kind)| kind.const_value() == Some(Word::ZERO))
-		.map(|(wire, _)| wire)
+	graph.const_pool.get(&Word::ZERO).copied()
 }
 
 /// Where each of `gate`'s outputs moves to, when a zero operand makes the gate an identity.
