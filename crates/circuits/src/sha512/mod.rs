@@ -3,7 +3,7 @@ pub mod compress;
 
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
-pub use compress::{State, compress, pack_message_block};
+pub use compress::{Sha512Compress, State, compress, pack_message_block, ref_compress};
 
 use crate::{
 	bytes::swap_bytes,
@@ -275,7 +275,7 @@ mod tests {
 	use hex_literal::hex;
 	use sha2::Digest;
 
-	use super::{sha512_fixed, sha512_varlen};
+	use super::{Sha512Compress, sha512_fixed, sha512_varlen};
 	use crate::fixed_byte_vec::ByteVec;
 
 	// ---- Tests for sha512_fixed function ----
@@ -488,6 +488,66 @@ mod tests {
 			let expected_bytes: [u8; 64] = expected.into();
 
 			test_sha512_varlen_with_input(&message, expected_bytes, max_len_bytes);
+		}
+	}
+
+	/// Hashes `message` with [`Sha512Compress`] as a chip, and checks the digest and the system.
+	///
+	/// The digest wires are public and filled with the reference digest, so a disagreement fails
+	/// to populate. What the chip adds is checked after: every compression has to be served by an
+	/// instance that recomputes the same words.
+	fn check_fixed_with_compress_chip(message: &[u8]) {
+		let builder = CircuitBuilder::new();
+		builder.register_chip(Sha512Compress, &[]);
+
+		let n_words = message.len().div_ceil(8);
+		let message_wires: Vec<Wire> = (0..n_words).map(|_| builder.add_witness()).collect();
+		let computed_digest = sha512_fixed(&builder, &message_wires, message.len());
+		let digest_out: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		for i in 0..8 {
+			builder.assert_eq(format!("digest[{i}]"), computed_digest[i], digest_out[i]);
+		}
+
+		let circuit = builder.build_m4();
+		circuit.validate().unwrap();
+		let cs = circuit.to_constraint_system();
+		cs.validate().unwrap();
+
+		let expected: [u8; 64] = sha2::Sha512::digest(message).into();
+
+		let witness = circuit
+			.generate_witness(|w| {
+				for (i, wire) in message_wires.iter().enumerate() {
+					let byte_start = i * 8;
+					let byte_end = ((i + 1) * 8).min(message.len());
+
+					let mut word = 0u64;
+					for j in byte_start..byte_end {
+						word |= (message[j] as u64) << (56 - (j - byte_start) * 8);
+					}
+					w[*wire] = Word(word);
+				}
+				for (i, bytes) in expected.chunks(8).enumerate() {
+					w[digest_out[i]] = Word(u64::from_be_bytes(bytes.try_into().unwrap()));
+				}
+			})
+			.unwrap_or_else(|e| {
+				panic!("sha512_fixed failed for len_bytes={}: {e:?}", message.len())
+			});
+
+		witness.verify(&cs).unwrap();
+	}
+
+	// The block loop between `sha512_fixed` and `compress` is untouched by the chip: every block
+	// lands as a call because the builder holds the chip, not because anything in between was
+	// told. Every message length reaches `compress` at least once (there is no paired path to
+	// miss), so unlike the paired SHA-256 gadget there is no length that leaves the chip
+	// uncalled. Lengths cover one block, several, and a padding-boundary case.
+	#[test]
+	fn a_registered_chip_serves_every_compression() {
+		for &len in &[10usize, 112, 300, 1024, 5000] {
+			let message: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+			check_fixed_with_compress_chip(&message);
 		}
 	}
 }

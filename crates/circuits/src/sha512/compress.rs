@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
+use binius_frontend::{ChipGadget, CircuitBuilder, Hint, Wire, WitnessFiller};
 
 const IV: [u64; 8] = [
 	0x6a09e667f3bcc908,
@@ -126,7 +126,103 @@ impl State {
 ///
 /// Builds a circuit that updates the chaining state with one 1024-bit message block. Returns the
 /// next chaining state.
+///
+/// # Chips
+///
+/// This is a [`ChipGadget`]. A circuit that calls
+/// [`register_chip`](CircuitBuilder::register_chip) with [`Sha512Compress`] before building turns
+/// every compression under it into a chip call, including the ones `sha512_fixed` and
+/// `sha512_varlen` reach.
 pub fn compress(builder: &CircuitBuilder, state_in: State, m: [Wire; 16]) -> State {
+	let inputs: Vec<Wire> = state_in.0.into_iter().chain(m).collect();
+
+	let outputs = builder.build_gadget(Sha512Compress, &[], &inputs);
+	State(std::array::from_fn(|i| outputs[i]))
+}
+
+/// [`compress`] as a gadget, so that a circuit can make it a chip.
+///
+/// Its interface is the flat 24 input words `state[0..8]`, `m[0..16]`, and the 8 output state
+/// words. Every word is a full 64-bit SHA-512 word; there is no lane packing.
+pub struct Sha512Compress;
+
+impl Hint for Sha512Compress {
+	const NAME: &'static str = "binius.sha512_compress";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(24, 8)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		let state_in: [u64; 8] = std::array::from_fn(|i| inputs[i].as_u64());
+		let m: [u64; 16] = std::array::from_fn(|i| inputs[8 + i].as_u64());
+
+		for (slot, word) in outputs.iter_mut().zip(ref_compress(state_in, m)) {
+			*slot = Word(word);
+		}
+	}
+}
+
+impl ChipGadget for Sha512Compress {
+	fn build(&self, builder: &CircuitBuilder, _dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
+		let state_in = State(std::array::from_fn(|i| inputs[i]));
+		let m: [Wire; 16] = std::array::from_fn(|i| inputs[8 + i]);
+		compress_gates(builder, state_in, m).0.to_vec()
+	}
+}
+
+/// Pure-Rust SHA-512 compression of a single 1024-bit block.
+///
+/// Matches the in-circuit compression exactly.
+/// Used for prover-side witness generation and as the test reference.
+pub fn ref_compress(state_in: [u64; 8], m: [u64; 16]) -> [u64; 8] {
+	let mut w = [0u64; 80];
+	w[..16].copy_from_slice(&m);
+	for t in 16..80 {
+		let s0 = w[t - 15].rotate_right(1) ^ w[t - 15].rotate_right(8) ^ (w[t - 15] >> 7);
+		let s1 = w[t - 2].rotate_right(19) ^ w[t - 2].rotate_right(61) ^ (w[t - 2] >> 6);
+		w[t] = w[t - 16]
+			.wrapping_add(s0)
+			.wrapping_add(w[t - 7])
+			.wrapping_add(s1);
+	}
+
+	let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state_in;
+	for t in 0..80 {
+		let big_s1 = e.rotate_right(14) ^ e.rotate_right(18) ^ e.rotate_right(41);
+		let ch = (e & f) ^ ((!e) & g);
+		let t1 = h
+			.wrapping_add(big_s1)
+			.wrapping_add(ch)
+			.wrapping_add(K[t])
+			.wrapping_add(w[t]);
+		let big_s0 = a.rotate_right(28) ^ a.rotate_right(34) ^ a.rotate_right(39);
+		let maj = (a & b) ^ (a & c) ^ (b & c);
+		let t2 = big_s0.wrapping_add(maj);
+		h = g;
+		g = f;
+		f = e;
+		e = d.wrapping_add(t1);
+		d = c;
+		c = b;
+		b = a;
+		a = t1.wrapping_add(t2);
+	}
+
+	[
+		state_in[0].wrapping_add(a),
+		state_in[1].wrapping_add(b),
+		state_in[2].wrapping_add(c),
+		state_in[3].wrapping_add(d),
+		state_in[4].wrapping_add(e),
+		state_in[5].wrapping_add(f),
+		state_in[6].wrapping_add(g),
+		state_in[7].wrapping_add(h),
+	]
+}
+
+/// [`compress`] in gates, whatever the building circuit does with the gadget.
+fn compress_gates(builder: &CircuitBuilder, state_in: State, m: [Wire; 16]) -> State {
 	// ---- message-schedule ----
 	// W[0..15] = block_words
 	// for t = 16 .. 79:
@@ -268,9 +364,10 @@ fn small_sigma_1(b: &CircuitBuilder, x: Wire) -> Wire {
 #[cfg(test)]
 mod tests {
 	use binius_core::word::Word;
-	use binius_frontend::{CircuitBuilder, Wire};
+	use binius_frontend::{CircuitBuilder, Hint, Wire};
+	use proptest::prelude::*;
 
-	use super::{State, compress, pack_message_block};
+	use super::{Sha512Compress, State, compress, compress_gates, pack_message_block};
 
 	/// A test circuit that proves a knowledge of preimage for a given state vector S in
 	///
@@ -383,5 +480,44 @@ mod tests {
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 		cs.verify(&w.into_value_vec()).unwrap();
+	}
+
+	/// Runs [`compress`] in gates over its flat word interface.
+	fn run_compress_words(inputs: [u64; 24]) -> [u64; 8] {
+		let builder = CircuitBuilder::new();
+		let wires: [Wire; 24] = std::array::from_fn(|_| builder.add_witness());
+		let out = compress_gates(
+			&builder,
+			State(std::array::from_fn(|i| wires[i])),
+			std::array::from_fn(|i| wires[8 + i]),
+		);
+		for wire in out.0 {
+			builder.mark_inout(wire);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		for (wire, word) in std::iter::zip(wires, inputs) {
+			w[wire] = Word(word);
+		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		std::array::from_fn(|i| w[out.0[i]].as_u64())
+	}
+
+	proptest! {
+		// The chip path takes the outputs from `Sha512Compress::execute` and the chip recomputes
+		// them from its gates, so the two have to agree on every word a circuit can reach them
+		// with. Every SHA-512 word is a full 64-bit value, so random words cover the whole
+		// interface.
+		#[test]
+		fn compress_hint_matches_its_gates(words in prop::collection::vec(any::<u64>(), 24)) {
+			let inputs: [u64; 24] = std::array::from_fn(|i| words[i]);
+
+			let mut hinted = [Word::ZERO; 8];
+			Sha512Compress.execute(&[], &inputs.map(Word), &mut hinted);
+
+			prop_assert_eq!(hinted.map(|word| word.as_u64()), run_compress_words(inputs));
+		}
 	}
 }
