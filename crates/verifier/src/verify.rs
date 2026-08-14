@@ -25,7 +25,10 @@ use crate::{
 	config::{B1, B128, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
-	protocols::bitand::{AndCheckOutput, verify_with_channel},
+	protocols::{
+		bitand::{AndCheckOutput, verify_with_channel},
+		shift::WiringEvalClaim,
+	},
 	reduction::{Instances, reduce_constraints},
 	ring_switch,
 };
@@ -117,6 +120,7 @@ impl IOPVerifier {
 		let inout = vec![Word::ZERO; self.constraint_system.n_inout];
 		// The result is discarded: the setup channel performs no real verification (all `recv_*`
 		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle specs.
+		// Its wiring claim goes with it, since discharging one records no oracle.
 		let _ = self.verify(&inout, &mut channel);
 		channel.into_oracle_specs()
 	}
@@ -130,11 +134,15 @@ impl IOPVerifier {
 	/// [`WordIPVerifierChannel::observe_words`] returns: the caller observes the concrete words and
 	/// passes on what comes back. A channel that carries words as wires introduces them there, so
 	/// the verification below reads the statement symbolically rather than as fixed data.
+	///
+	/// The reduction's wiring evaluation comes back as a [`WiringEvalClaim`] rather than being
+	/// checked here, so the caller chooses how the constraint system is read: by computing the
+	/// evaluation, or by any other argument that opens the claim.
 	pub fn verify<Channel>(
 		&self,
 		inout: &[Channel::Word],
 		channel: &mut Channel,
-	) -> Result<(), Error>
+	) -> Result<WiringEvalClaim<'_, Channel::Elem>, Error>
 	where
 		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
@@ -206,7 +214,7 @@ impl IOPVerifier {
 
 		drop(pcs_guard);
 
-		Ok(())
+		Ok(reduction.wiring)
 	}
 }
 
@@ -327,7 +335,9 @@ where
 			.iop_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let inout = channel.observe_words(inout);
-		self.iop_verifier.verify(&inout, &mut channel)?;
+		self.iop_verifier
+			.verify(&inout, &mut channel)?
+			.check(&mut channel)?;
 		channel.finish()?;
 		Ok(())
 	}

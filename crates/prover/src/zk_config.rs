@@ -162,7 +162,9 @@ where
 					let inout = replay_channel.observe_words(inout_words);
 					inner_iop_verifier
 						.verify(&inout, replay_channel)
-						.expect("replay verification should not fail");
+						.expect("replay verification should not fail")
+						.check(replay_channel)
+						.expect("replay wiring check should not fail");
 				}
 			},
 		);

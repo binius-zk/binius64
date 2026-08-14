@@ -434,6 +434,10 @@ where
 /// The claimed value is kept beside the function rather than folded into it, so every input the
 /// function reads stays public-channel-derived — which is what
 /// [`IPVerifierChannel::compute_public_value`] requires of them.
+///
+/// Dropping a claim drops a check, so it is `#[must_use]`.
+#[must_use]
+#[derive(Debug)]
 pub struct WiringEvalClaim<'a, E> {
 	/// Evaluates the wiring multilinear from `inputs`.
 	pub eval_fn: WiringEvalFn<'a>,
@@ -441,6 +445,29 @@ pub struct WiringEvalClaim<'a, E> {
 	pub inputs: Vec<E>,
 	/// The evaluation the prover claims, which `eval_fn` must return.
 	pub claimed: E,
+}
+
+impl<E> WiringEvalClaim<'_, E> {
+	/// Discharges the claim over `channel`: evaluates the wiring multilinear and asserts it equals
+	/// the claimed value.
+	///
+	/// This is what a channel that opens claims by computing them does. A holder with another way
+	/// to open one — a sparse-polynomial argument, say — reads the fields instead.
+	pub fn check<F, C>(self, channel: &mut C) -> Result<(), Error>
+	where
+		F: BinaryField,
+		C: IPVerifierChannel<F, Elem = E>,
+		E: FieldOps<Scalar = F> + From<F>,
+	{
+		let Self {
+			eval_fn,
+			inputs,
+			claimed,
+		} = self;
+		let wiring_eval = channel.compute_public_value(&inputs, eval_fn);
+		channel.assert_zero(wiring_eval - claimed)?;
+		Ok(())
+	}
 }
 
 /// The wiring multilinear evaluation, as a [`FieldFn`] over public-channel-derived inputs.
@@ -456,6 +483,7 @@ pub struct WiringEvalClaim<'a, E> {
 ///
 /// The bit-index factors every shift scalar is scaled by are left out: they depend on prover
 /// messages, so [`check_eval`] multiplies them in outside.
+#[derive(Debug)]
 pub struct WiringEvalFn<'a> {
 	/// The AND, IMUL and BMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,

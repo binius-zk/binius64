@@ -133,9 +133,11 @@ impl IOPVerifierM4 {
 		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
-		self.main.verify(inout, channel)?;
+		// Each sub-proof leaves a wiring claim against its own constraint system, discharged here
+		// as the sub-proof it belongs to finishes.
+		self.main.verify(inout, channel)?.check(channel)?;
 		for chip in &self.chips {
-			chip.verify_chip(channel)?;
+			chip.verify_chip(channel)?.check(channel)?;
 		}
 		Ok(())
 	}

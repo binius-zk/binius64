@@ -80,9 +80,14 @@ where
 		let outer_builder = {
 			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
 			let mut builder_channel = IronSpartanBuilderChannel::new();
+			// The wiring claim is discharged here, where [`Self::verify`] discharges it too: the
+			// circuit built here is what the wrapped run's wires are allocated against, so the two
+			// must run the same checks in the same order.
 			inner_iop_verifier
 				.verify(&dummy_inout_words, &mut builder_channel)
-				.expect("symbolic verify should not fail");
+				.expect("symbolic verify should not fail")
+				.check(&mut builder_channel)
+				.expect("symbolic wiring check should not fail");
 			builder_channel.finish()
 		};
 		let (outer_cs, outer_layout) = {
@@ -211,7 +216,9 @@ where
 			// against — the same split the transparent verifier makes.
 			let inout = wrapped_channel.observe_words(inout);
 			self.inner_iop_verifier
-				.verify(&inout, &mut wrapped_channel)?;
+				.verify(&inout, &mut wrapped_channel)?
+				.check(&mut wrapped_channel)
+				.map_err(crate::error::Error::from)?;
 		};
 
 		// Finish runs the outer spartan verification.

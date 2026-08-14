@@ -18,6 +18,7 @@ use binius_utils::DeserializeBytes;
 use binius_verifier::{
 	Error, SECURITY_BITS,
 	config::{B1, B128},
+	protocols::shift::WiringEvalClaim,
 	reduction::{Instances, reduce_constraints},
 	ring_switch::{self, RingSwitchVerifyOutput},
 };
@@ -89,7 +90,9 @@ impl IOPVerifier {
 		// `assert_zero` is a no-op — so `verify` cannot fail here; it only records the
 		// `recv_oracle` calls read back below. An error would mean that invariant broke, so
 		// surface it rather than swallowing it.
-		self.verify_chip(&mut channel)
+		// The wiring claim is dropped: discharging one records no oracle.
+		let _ = self
+			.verify_chip(&mut channel)
 			.expect("verifying against the no-op OracleSetupChannel cannot fail");
 		channel.into_oracle_specs()
 	}
@@ -105,10 +108,16 @@ impl IOPVerifier {
 	/// The ring-switch therefore opens the trace at `r_j || r_rho || r_y`.
 	/// That evaluation equals the folded-witness claim the reduction produced.
 	///
+	/// The reduction's wiring evaluation comes back as a [`WiringEvalClaim`] rather than being
+	/// checked here, so the caller chooses how the constraint system is read.
+	///
 	/// # Errors
 	///
 	/// Returns an error if the reduction, the ring-switch, or the trace opening fails.
-	pub fn verify_chip<Channel>(&self, channel: &mut Channel) -> Result<(), Error>
+	pub fn verify_chip<Channel>(
+		&self,
+		channel: &mut Channel,
+	) -> Result<WiringEvalClaim<'_, Channel::Elem>, Error>
 	where
 		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
@@ -141,7 +150,7 @@ impl IOPVerifier {
 		let RingSwitchVerifyOutput {
 			eq_r_double_prime,
 			sumcheck_claim,
-		} = ring_switch::verify(reduction.shift.witness_eval, &trace_point, channel)?;
+		} = ring_switch::verify(reduction.shift.witness_eval.clone(), &trace_point, channel)?;
 
 		// Open the trace oracle against the ring-switch's transparent multilinear.
 		// BaseFold reduces to a challenge point where the transparent evaluates as below.
@@ -155,7 +164,7 @@ impl IOPVerifier {
 			sumcheck_claim,
 		)?;
 
-		Ok(())
+		Ok(reduction.wiring)
 	}
 }
 
@@ -268,7 +277,9 @@ where
 		let mut channel = self
 			.iop_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
-		self.iop_verifier.verify_chip(&mut channel)?;
+		self.iop_verifier
+			.verify_chip(&mut channel)?
+			.check(&mut channel)?;
 		channel.finish()?;
 
 		Ok(())
