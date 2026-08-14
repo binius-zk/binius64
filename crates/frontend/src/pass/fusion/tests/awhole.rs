@@ -122,10 +122,14 @@ fn format_operand(
 
 		let value_name = format_value_name(term.value_index, cs);
 
-		if term.is_unshifted() {
-			write!(output, "{}", value_name).unwrap();
-		} else {
-			let shift_op = match term.inner().variant {
+		// Both slots are spelled, innermost first, or a doubly shifted term would render
+		// indistinguishably from the singly shifted one it was inlined from.
+		write!(output, "{value_name}").unwrap();
+		for shift in term.shift_seq {
+			if shift.is_identity() {
+				continue;
+			}
+			let shift_op = match shift.variant {
 				ShiftVariant::Sll => "≪",
 				ShiftVariant::Slr => "≫",
 				ShiftVariant::Sar => "a≫",
@@ -135,7 +139,7 @@ fn format_operand(
 				ShiftVariant::Sra32 => "a≫32",
 				ShiftVariant::Rotr32 => "≫≫32",
 			};
-			write!(output, "{}{}{}", value_name, shift_op, term.inner().amount).unwrap();
+			write!(output, "{}{}", shift_op, shift.amount).unwrap();
 		}
 	}
 }
@@ -632,10 +636,10 @@ fn test_dont_inline_shifted_producer_into_shifted_use() {
 
 	let cs = compile(&b);
 	// Cannot compose different shift types (srl then sll), so it commits the intermediate
-	insta::assert_snapshot!(stringify_constraint_system(&cs), @"
-	ZERO[0]: (v[0]≫7 ⊕ v[2]) = 0
-	AND[0]: (v[2]≪3) ∧ (v[1]) = (v[3])
-	");
+	insta::assert_snapshot!(
+		stringify_constraint_system(&cs),
+		@"AND[0]: (v[0]≫7≪3) ∧ (v[1]) = (v[2])"
+	);
 }
 
 #[test]
@@ -930,10 +934,7 @@ fn test_chained_shifts_beyond_the_word_width_compile() {
 
 	// The break lands on the topmost link, which is committed as v[4].
 	// The three links below it merge into the single shift of 60 in the AND operand.
-	insta::assert_snapshot!(stringify_constraint_system(&cs), @"
-	ZERO[0]: (v[0]≪20 ⊕ v[2]) = 0
-	AND[0]: (v[2]≪60) ∧ (v[1]) = (v[3])
-	");
+	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (0) ∧ (v[1]) = (v[2])");
 }
 
 #[test]

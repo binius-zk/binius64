@@ -169,7 +169,7 @@ mod tests {
 		test_utils::random_scalars,
 	};
 	use binius_prover::fold_word::fold_words;
-	use binius_utils::checked_arithmetics::checked_log_2;
+	use binius_utils::checked_arithmetics::log2_ceil_usize;
 	use binius_verifier::config::B128;
 	use rand::prelude::*;
 
@@ -220,18 +220,31 @@ mod tests {
 		}
 	}
 
-	// A batch of 2^3 instances of a circuit whose committed word count is `3 * n_gates`: each gate
-	// commits two inputs and the conjunction it promotes to a public output.
+	// A batch of 2^3 instances of a circuit committing `3 * n_gates + n_filler` words: three per
+	// gate — two inputs and the conjunction it promotes to a public output — plus one per filler
+	// wire, which is committed because it is a witness value and kept alive by being XORed into
+	// the first gate.
 	//
-	// A multiple of three is a power of two only for a hand-picked gate count.
-	// That is what lets a caller choose whether the word axis needs padding.
-	fn and_chain_table(n_gates: usize) -> ValueTable {
+	// A multiple of three is never a power of two, so the filler is what lets a caller land on one
+	// and choose whether the word axis needs padding. Reaching that regime through a fixture the
+	// test sizes itself, rather than through whatever a real circuit happens to commit, is what
+	// keeps the coverage from lapsing when the compiler's word counts move.
+	fn and_chain_table(n_gates: usize, n_filler: usize) -> ValueTable {
 		// Each gate consumes two fresh input words and promotes its result to a public output.
 		// That promotion is what keeps the gate alive under dead-code elimination.
 		let builder = CircuitBuilder::new();
 		let inputs: Vec<Wire> = (0..2 * n_gates).map(|_| builder.add_inout()).collect();
-		for pair in inputs.chunks_exact(2) {
-			builder.mark_inout(builder.band(pair[0], pair[1]));
+		let filler: Vec<Wire> = (0..n_filler).map(|_| builder.add_witness()).collect();
+		for (gate, pair) in inputs.chunks_exact(2).enumerate() {
+			// The filler rides on the first gate's left operand, so every filler wire is read.
+			let lhs = if gate == 0 {
+				filler
+					.iter()
+					.fold(pair[0], |acc, &wire| builder.bxor(acc, wire))
+			} else {
+				pair[0]
+			};
+			builder.mark_inout(builder.band(lhs, pair[1]));
 		}
 		let circuit = builder.build();
 
@@ -239,7 +252,7 @@ mod tests {
 		circuit
 			.populate_batch(3, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
-				for &wire in &inputs {
+				for &wire in inputs.iter().chain(&filler) {
 					w[wire] = Word(rng.random());
 				}
 			})
@@ -272,11 +285,13 @@ mod tests {
 			let constants = &c.circuit.constraint_system().constants;
 
 			// The committed segment runs from the inout offset to the end of the value vector.
-			// Its length fixes the width of the word axis.
+			// Its length, rounded up, fixes the width of the word axis: a circuit commits whatever
+			// it commits, and the axis spans the power of two above it. The padding words are zero
+			// on both routes, so they cancel out of the identity rather than needing to be absent.
 			let offset = table.layout().offset_inout();
 			let n_committed = table.n_hidden_words();
 			assert_eq!(n_committed, table.layout().combined_len() - offset);
-			let log_committed = checked_log_2(n_committed);
+			let log_committed = log2_ceil_usize(n_committed);
 
 			// The instance-fold point, and a fresh point over the (bit, word) axes.
 			// This point is unrelated to the reduction's own challenges.
@@ -292,15 +307,21 @@ mod tests {
 			// Route B: collapse each word's bits against the bit coordinates first.
 			let bit_tensor = eq_ind_partial_eval_scalars::<B128>(r_bit);
 
-			// Gather every instance's committed words, instance-major:
+			// Gather every instance's committed words, instance-major, each run zero-padded to the
+			// width of the word axis:
 			//
-			//     index = rho * n_committed + w
+			//     index = rho * 2^log_committed + w
+			//
+			// Route A pads, so route B has to stride by the same width or the two read different
+			// words for the same coordinate.
 			//
 			// Each instance is reconstructed on its own, independently of the fold under test.
-			let mut committed = Vec::with_capacity(n_instances * n_committed);
+			let padded_words = 1 << log_committed;
+			let mut committed = Vec::with_capacity(n_instances * padded_words);
 			for rho in 0..n_instances {
 				let vv = table.instance_value_vec(rho, constants);
 				committed.extend_from_slice(&vv.combined_witness()[offset..]);
+				committed.resize(committed.len() + padded_words - n_committed, Word::ZERO);
 			}
 			let folded_words = fold_words::<B128, P, _>(&GlobalAllocator, &committed, &bit_tensor);
 
@@ -324,12 +345,10 @@ mod tests {
 		//
 		//     CRC-64:    1024 committed words  -> already a power of two, no padding
 		//     AND chain:    6 committed words  -> zero-padded up to 8
-		let c = crc64_circuit();
-		let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..8)
-			.map(|_| std::array::from_fn(|_| rng.random()))
-			.collect();
-		let unpadded = populate_crc64_witness(&c, &inputs);
-		let padded = and_chain_table(2);
+		// 3 words per gate plus one per filler, so the two regimes are picked rather than found:
+		// 3*2 + 2 = 8 lands on the power of two, 3*2 + 0 = 6 pads up to it.
+		let unpadded = and_chain_table(2, 2);
+		let padded = and_chain_table(2, 0);
 
 		// Pin which fixture is which, so neither regime can silently stop being covered.
 		assert!(unpadded.n_hidden_words().is_power_of_two(), "fixture must skip the padding");

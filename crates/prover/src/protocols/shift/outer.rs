@@ -30,7 +30,7 @@ use super::{
 /// # Panics
 ///
 /// Panics unless the index is below [`SHIFT_COUNT`].
-fn decode_shift(index: usize) -> (ShiftVariant, usize) {
+pub fn decode_shift(index: usize) -> (ShiftVariant, usize) {
 	assert!(index < SHIFT_COUNT, "a shift index names one slot's spelling");
 	let variant = ShiftVariant::from_u8((index >> Word::LOG_BITS) as u8)
 		.expect("an index below SHIFT_COUNT has a variant field below the variant count");
