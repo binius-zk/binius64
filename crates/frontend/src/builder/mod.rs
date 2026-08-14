@@ -29,7 +29,7 @@ use crate::{
 	},
 	lower::ConstraintBuilder,
 	pass::{
-		const_prop, cse, dce, fusion,
+		BuiltGates, const_prop, cse, dce, fusion,
 		layout::{
 			scratch_alloc::{ScratchAlloc, ScratchPolicy},
 			value_vec_alloc,
@@ -727,8 +727,12 @@ impl CircuitBuilder {
 			shared.hint_registry,
 		);
 
+		// Passes above needed the whole graph.
+		// A circuit only reads back path names and a per-gate record, so the rest drops now.
+		let built_gates = BuiltGates::from_graph(graph);
+
 		Circuit::new(
-			graph,
+			built_gates,
 			cs,
 			value_vec_layout,
 			wire_mapping,

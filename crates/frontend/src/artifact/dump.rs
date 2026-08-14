@@ -3,11 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::ser::SerializeStruct;
 
-use crate::ir::{Gate, GateBody, GateGraph, path::PathSpec};
+use crate::ir::{
+	GateBody,
+	path::{PathSpec, PathSpecTree},
+};
 
 struct PathSpecData {
 	name: String,
-	gates: Vec<Gate>,
+	gates: Vec<GateBody>,
 	parent: Option<PathSpec>,
 	children: Vec<PathSpec>,
 	breakdown: Option<GateBreakdown>,
@@ -34,12 +37,12 @@ struct GateBreakdown {
 }
 
 impl GateBreakdown {
-	fn count(gg: &GateGraph, gates: &[Gate]) -> GateBreakdown {
+	fn count(gates: &[GateBody]) -> GateBreakdown {
 		let mut breakdown = GateBreakdown {
 			by_kind: BTreeMap::new(),
 		};
-		for gate in gates {
-			*breakdown.by_kind.entry(gg.gates[*gate].body).or_insert(0) += 1;
+		for &kind in gates {
+			*breakdown.by_kind.entry(kind).or_insert(0) += 1;
 		}
 		breakdown
 	}
@@ -87,14 +90,17 @@ impl Cx {
 		}
 	}
 
-	fn bucket_gates(&mut self, gg: &GateGraph) {
-		self.data
-			.insert(gg.path_spec_tree.root(), PathSpecData::new());
+	fn bucket_gates(
+		&mut self,
+		path_spec_tree: &PathSpecTree,
+		gate_records: &[(PathSpec, GateBody)],
+	) {
+		self.data.insert(path_spec_tree.root(), PathSpecData::new());
 
 		// First, collect all PathSpecs that have gates
 		let mut path_specs_with_gates = BTreeSet::new();
-		for gate in gg.gates.keys() {
-			path_specs_with_gates.insert(gg.gate_origin[gate]);
+		for &(path, _) in gate_records {
+			path_specs_with_gates.insert(path);
 		}
 
 		// Add all ancestors of PathSpecs with gates to ensure complete hierarchy
@@ -103,7 +109,7 @@ impl Cx {
 			let mut current = path_spec;
 			loop {
 				all_needed_paths.insert(current);
-				if let Some(parent) = gg.path_spec_tree.parent(current) {
+				if let Some(parent) = path_spec_tree.parent(current) {
 					current = parent;
 				} else {
 					break;
@@ -117,34 +123,30 @@ impl Cx {
 		}
 
 		// Now add gates to their respective PathSpecs
-		for gate in gg.gates.keys() {
-			self.data
-				.get_mut(&gg.gate_origin[gate])
-				.unwrap()
-				.gates
-				.push(gate);
+		for &(path, body) in gate_records {
+			self.data.get_mut(&path).unwrap().gates.push(body);
 		}
 	}
 
-	fn recover_hierarchy(&mut self, gg: &GateGraph) {
+	fn recover_hierarchy(&mut self, path_spec_tree: &PathSpecTree) {
 		let paths = self.data.keys().cloned().collect::<Vec<_>>();
 		for current in paths {
-			if let Some(parent) = gg.path_spec_tree.parent(current) {
+			if let Some(parent) = path_spec_tree.parent(current) {
 				self.data.get_mut(&current).unwrap().parent = Some(parent);
 				self.data.get_mut(&parent).unwrap().children.push(current);
 			}
 		}
 	}
 
-	fn symbolicate_paths(&mut self, gg: &GateGraph) {
+	fn symbolicate_paths(&mut self, path_spec_tree: &PathSpecTree) {
 		for (path, data) in &mut self.data {
-			gg.path_spec_tree.stringify(*path, &mut data.name);
+			path_spec_tree.stringify(*path, &mut data.name);
 		}
 	}
 
-	fn compute_breakdowns(&mut self, gg: &GateGraph) {
+	fn compute_breakdowns(&mut self) {
 		for data in self.data.values_mut() {
-			data.breakdown = Some(GateBreakdown::count(gg, &data.gates));
+			data.breakdown = Some(GateBreakdown::count(&data.gates));
 		}
 	}
 
@@ -152,7 +154,7 @@ impl Cx {
 	/// then the parent.
 	///
 	/// Requires to be called after recovering the hierarchy.
-	fn compute_postorder(&mut self, gg: &GateGraph) {
+	fn compute_postorder(&mut self, path_spec_tree: &PathSpecTree) {
 		fn collect_postorder(
 			data: &BTreeMap<PathSpec, PathSpecData>,
 			visited: &mut BTreeSet<PathSpec>,
@@ -176,7 +178,7 @@ impl Cx {
 		let mut visited = BTreeSet::new();
 
 		// Start from root to ensure proper traversal
-		let root = gg.path_spec_tree.root();
+		let root = path_spec_tree.root();
 		collect_postorder(&self.data, &mut visited, &mut self.post_order, root);
 	}
 
@@ -203,8 +205,8 @@ impl Cx {
 	}
 
 	/// Builds the hierarchical SubcircuitInfo structure starting from root
-	fn build_subcircuit_info(&self, gg: &GateGraph) -> SubcircuitInfo {
-		let root = gg.path_spec_tree.root();
+	fn build_subcircuit_info(&self, path_spec_tree: &PathSpecTree) -> SubcircuitInfo {
+		let root = path_spec_tree.root();
 		self.build_subcircuit_info_recursive(root)
 	}
 
@@ -239,23 +241,30 @@ struct SubcircuitInfo {
 }
 
 /// Dumps a hierarchical JSON representation of the given circuit.
-pub(crate) fn dump_composition(gg: &GateGraph) -> String {
+pub(crate) fn dump_composition(
+	path_spec_tree: &PathSpecTree,
+	gate_records: &[(PathSpec, GateBody)],
+) -> String {
 	let mut cx = Cx::new();
-	cx.bucket_gates(gg);
-	cx.recover_hierarchy(gg);
-	cx.compute_postorder(gg);
-	cx.compute_breakdowns(gg);
+	cx.bucket_gates(path_spec_tree, gate_records);
+	cx.recover_hierarchy(path_spec_tree);
+	cx.compute_postorder(path_spec_tree);
+	cx.compute_breakdowns();
 	cx.compute_cum_breakdowns();
-	cx.symbolicate_paths(gg);
+	cx.symbolicate_paths(path_spec_tree);
 
-	let subcircuit_info = cx.build_subcircuit_info(gg);
+	let subcircuit_info = cx.build_subcircuit_info(path_spec_tree);
 	serde_json::to_string_pretty(&subcircuit_info).unwrap()
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{gates::Opcode, ir::hints::hint_id_of};
+	use crate::{
+		gates::Opcode,
+		ir::{GateGraph, hints::hint_id_of},
+		pass::BuiltGates,
+	};
 
 	#[test]
 	fn every_hint_is_counted_under_one_name() {
@@ -273,7 +282,8 @@ mod tests {
 		let o3 = graph.add_internal();
 		graph.emit_gate(root, Opcode::Band, vec![x, y], vec![o3]);
 
-		let dump = dump_composition(&graph);
+		let built = BuiltGates::from_graph(graph);
+		let dump = dump_composition(&built.path_spec_tree, &built.gate_records);
 
 		assert!(dump.contains("\"Hint\": 2"), "{dump}");
 		assert!(dump.contains("\"Band\": 1"), "{dump}");
