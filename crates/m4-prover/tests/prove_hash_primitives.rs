@@ -26,7 +26,7 @@
 //!     --features rayon prove_blake3_compression -- --ignored --nocapture
 //! ```
 
-use binius_compute::GlobalAllocator;
+use binius_compute::BufferPool;
 use binius_frontend::CircuitStat;
 use binius_hash::StdHashSuite;
 use binius_m4_prover::{
@@ -104,12 +104,13 @@ fn prove_once<C: TestCircuit>(name: &str, log_instances: usize) {
 	// The spare-capacity lines show how much of each padded section is wasted.
 	debug!("{name} circuit stats:\n{}", CircuitStat::collect(circuit));
 
-	// Generate the batch witness in its own span.
+	// Generate the batch witness in its own span, out of a pool. One batch is generated here, so
+	// nothing is recycled; the pool is what a prover proving batch after batch would hand in.
+	let pool = BufferPool::new();
+	let alloc = &pool;
 	let table = info_span!("witness_generation", primitive = name)
 		.in_scope(|| {
-			circuit.populate_batch_parallel(&GlobalAllocator, log_instances, |i, w| {
-				test_circuit.fill(i, w)
-			})
+			circuit.populate_batch_parallel(&alloc, log_instances, |i, w| test_circuit.fill(i, w))
 		})
 		.unwrap();
 
