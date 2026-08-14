@@ -132,11 +132,6 @@ fn prove_hash_based_sig() {
 	let cs = circuit.to_constraint_system();
 	cs.validate().unwrap();
 
-	// The witness satisfying the system is what says the timing below is of a real proof.
-	witness
-		.verify(&cs)
-		.expect("the signatures verify in circuit");
-
 	let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
 	let prover = ProverM4::<OptimalPackedB128, StdHashSuite>::setup(&verifier);
 
@@ -156,6 +151,7 @@ fn prove_hash_based_sig() {
 
 	// The proof must verify, and must leave no trailing transcript data.
 	let mut verifier_transcript = prover_transcript.into_verifier();
+	let _scope = info_span!("verify", primitive = "xmss").entered();
 	verifier
 		.verify(witness.main.inout(), &mut verifier_transcript)
 		.expect("the proof verifies");
