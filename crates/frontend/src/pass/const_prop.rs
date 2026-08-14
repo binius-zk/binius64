@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 
 use rustc_hash::FxHashSet;
 
+use super::AlwaysFailingGateError;
 use crate::{
 	eval_form::evaluate_gate_constants,
 	ir::{Gate, GateGraph, WireKind, hints::HintRegistry},
@@ -20,8 +21,18 @@ use crate::{
 /// and replaces their outputs with constant wires. The process iterates until no more constants
 /// can be propagated.
 ///
-/// Returns the number of wires that were replaced with constants.
-pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry) -> usize {
+/// # Errors
+///
+/// Returns an error when a gate with all-constant inputs fails to evaluate.
+/// That means the circuit can never be satisfied.
+///
+/// # Returns
+///
+/// The number of wires that were replaced with constants.
+pub fn constant_propagation(
+	graph: &mut GateGraph,
+	hint_registry: &HintRegistry,
+) -> Result<usize, AlwaysFailingGateError> {
 	// This pass reads both halves: readers to seed the worklist, definitions to follow the graph.
 	graph.rebuild_use_def_chains(hint_registry);
 
@@ -79,15 +90,14 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 						}
 					}
 				}
-				Err(err) => {
-					// TODO: bubble up the error. For now we just panic.
-					panic!("Constant propagation detected an always-failing gate: {err}");
+				Err(reason) => {
+					return Err(AlwaysFailingGateError { gate, reason });
 				}
 			}
 		}
 	}
 
-	total_replaced
+	Ok(total_replaced)
 }
 
 /// Tries to evaluate a gate with constant inputs.
@@ -151,7 +161,7 @@ mod tests {
 		assert!(!matches!(graph.wires[and_out], WireKind::Constant(_)));
 
 		// Run constant propagation
-		let replaced = constant_propagation(&mut graph, &HintRegistry::new());
+		let replaced = constant_propagation(&mut graph, &HintRegistry::new()).unwrap();
 
 		// We replace: xor_out in and_gate, and_out in test_gate (twice, since both inputs)
 		assert_eq!(replaced, 3);
@@ -215,7 +225,7 @@ mod tests {
 		let test_gate = graph.emit_gate(root, Opcode::Bxor, vec![shl_out, shl_out], vec![test_out]);
 
 		// Run constant propagation
-		let replaced = constant_propagation(&mut graph, &HintRegistry::new());
+		let replaced = constant_propagation(&mut graph, &HintRegistry::new()).unwrap();
 		// We replace: shr_out in shl_gate, shl_out in test_gate (twice)
 		assert_eq!(replaced, 3);
 
@@ -292,7 +302,7 @@ mod tests {
 		let test_r_gate =
 			graph.emit_gate(root, Opcode::Bxor, vec![remainder, remainder], vec![test_r]);
 
-		let replaced = constant_propagation(&mut graph, &hint_registry);
+		let replaced = constant_propagation(&mut graph, &hint_registry).unwrap();
 		// quotient used twice in test_q_gate, remainder used twice in test_r_gate.
 		assert_eq!(replaced, 4);
 
@@ -317,18 +327,20 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "Constant propagation detected an always-failing gate")]
 	fn test_constant_propagation_with_failing_gate() {
 		let mut graph = GateGraph::new();
 		let root = graph.path_spec_tree.root();
 
-		// Create an Assert0 gate with a non-zero constant input
-		// This should fail evaluation because Assert0 expects the input to be zero
-		let non_zero_const = graph.add_constant(Word(42)); // Non-zero value
-		let _assert_gate = graph.emit_gate(root, Opcode::AssertZero, vec![non_zero_const], vec![]);
+		// AssertZero requires its input to equal zero.
+		// A non-zero constant input can never satisfy it.
+		let non_zero_const = graph.add_constant(Word(42));
+		let assert_gate = graph.emit_gate(root, Opcode::AssertZero, vec![non_zero_const], vec![]);
 
-		// This should panic when the Assert0 gate fails during evaluation
-		// because the constant input (42) is not zero
-		constant_propagation(&mut graph, &HintRegistry::new());
+		// Constant evaluation runs the gate and finds it fails.
+		// So the pass reports the error instead of panicking.
+		let err = constant_propagation(&mut graph, &HintRegistry::new())
+			.expect_err("an AssertZero gate fed a non-zero constant can never be satisfied");
+		assert_eq!(err.gate, assert_gate);
+		assert!(!err.reason.is_empty());
 	}
 }
