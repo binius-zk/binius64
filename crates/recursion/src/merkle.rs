@@ -43,27 +43,33 @@
 //! One single-lane block compression is 726 AND constraints.
 //! A gate costs one constraint whatever its width, so two compressions can share one core.
 //! Running them as the two 32-bit lanes of that core brings each to about 380.
-//! Both places that hash independent values take this route:
+//! Every place that hashes independent values takes this route:
 //!
 //! - folding a layer of digests up to the root above it
 //! - hashing the leaves of a whole committed vector
+//! - climbing two openings' authentication paths in step
 //!
-//! | what is measured                        | AND          | BMUL          |
-//! | --------------------------------------- | ------------ | ------------- |
-//! | a one-element leaf digest               | 697          | 0             |
-//! | a sixteen-element leaf digest           | 2279         | 0             |
-//! | two one-element leaves sharing a core   | 707 per pair | 0             |
-//! | one inner node on its own core          | 742          | 0             |
-//! | one inner node sharing a core           | 380 per node | 0             |
-//! | one node of a verified layer's fold     | 380 per node | 0             |
-//! | one climbed level of an opening         | 738          | 8             |
-//! | picking the layer entry of an opening   | 0            | 4 * (2^L - 1) |
+//! A climb is sequential, so an opening cannot share cores with itself.
+//! Two openings can, since the queries are independent, which is what the last of those does.
+//! An odd query count leaves one opening climbing on its own.
+//!
+//! | what is measured                        | AND           | BMUL          |
+//! | --------------------------------------- | ------------- | ------------- |
+//! | a one-element leaf digest               | 697           | 0             |
+//! | a sixteen-element leaf digest           | 2279          | 0             |
+//! | two one-element leaves sharing a core   | 707 per pair  | 0             |
+//! | one inner node on its own core          | 742           | 0             |
+//! | one inner node sharing a core           | 380 per node  | 0             |
+//! | one node of a verified layer's fold     | 380 per node  | 0             |
+//! | one climbed level of a lone opening     | 738           | 8             |
+//! | one climbed level of a paired opening   | 377 per query | 8 per query   |
+//! | picking the layer entry of an opening   | 0             | 4 * (2^L - 1) |
 //!
 //! Write `D` for the tree depth and `L` for the depth of the layer an opening climbs to.
-//! One opening therefore costs
+//! One opening of a pair therefore costs
 //!
 //! ```text
-//!     AND  = leaf digest + 738 * (D - L)
+//!     AND  = half a shared leaf digest + 377 * (D - L)
 //!     BMUL = 8 * (D - L) + 4 * (2^L - 1)
 //! ```
 //!
@@ -74,13 +80,13 @@
 //! Raising `L` by one level changes the bill per query, out of `n_q` queries, by
 //!
 //! ```text
-//!     AND  :  -738 + 380 * 2^L / n_q
+//!     AND  :  -377 + 380 * 2^L / n_q
 //!     BMUL :  +4 * 2^L - 8
 //! ```
 //!
 //! The two columns behave nothing alike.
 //!
-//! - The AND column breaks even at `2^L = 1.94 * n_q`, one level above the native rule.
+//! - The AND column breaks even at `2^L = 0.99 * n_q`, which is the native rule itself.
 //! - That native rule sets the layer depth to `ceil(log2(n_q))`.
 //! - The BMUL column gains nothing past `L = 1`, since the entry selector grows with the layer.
 //! - The climb it shortens gives back only eight selects a level, which never covers that.
@@ -89,25 +95,19 @@
 //! At `D = 20`, `n_q = 100` and one-element leaves, charging a BMUL like an AND:
 //!
 //! ```text
-//!     L = 6 :  11280 AND + 364 BMUL
-//!     L = 7 :  10782 AND + 612 BMUL
-//!     L = 8 :  10526 AND + 1116 BMUL
+//!     L = 6 :  5876 AND + 364 BMUL
+//!     L = 7 :  5740 AND + 612 BMUL
+//!     L = 8 :  5846 AND + 1116 BMUL
 //! ```
 //!
-//! AND leads BMUL by more than an order of magnitude, so the AND column decides.
+//! AND still leads BMUL several times over, so the AND column decides.
 //!
-//! - On AND alone the cheapest choice is `L = 8`.
-//! - Charging BMUL at the same rate moves it to `L = 7`.
+//! - On AND alone the cheapest choice is `L = 7`.
+//! - Charging BMUL at the same rate moves it to `L = 6`.
+//! - Both sit a level below where lone climbs would put them, since a level now costs half.
 //! - Neither is a constant, since both track `log2(n_q)`.
 //! - A different query count means re-running the arithmetic above.
 //! - Which column is scarce depends on what the rest of the circuit put in each one.
-//!
-//! One lever is still open.
-//! A climb is sequential, so an opening cannot share cores with itself.
-//! Two openings can, since the queries are independent.
-//!
-//! Verifying a pair of them in shared cores costs about 380 AND per level per query.
-//! That halves what raising `L` saves, so the AND-optimal `L` drops by roughly one level.
 
 use std::array;
 
@@ -273,6 +273,8 @@ pub fn verify_vector(builder: &CircuitBuilder, root: Digest, data: &[Element], b
 /// The digest the climb arrives at must equal the layer entry the remaining index bits address.
 /// That is what ties the opened leaf to the root the layer was verified against.
 ///
+/// [`verify_opening_2x`] climbs two openings at once, for about half the AND cost a level here.
+///
 /// # Why the index is a wire
 ///
 /// A caller may derive the query index in-circuit, so it cannot be a build-time constant.
@@ -343,6 +345,92 @@ pub fn verify_opening(
 			.try_into()
 			.expect("the multiplexer returns one wire per digest wire"),
 	);
+}
+
+/// Verifies two Merkle openings at once, climbing them in the two lanes of shared cores.
+///
+/// A climb is sequential, so an opening cannot share cores with itself.
+/// Two openings can, since the queries are independent at every level:
+///
+/// ```text
+///     level k:  (running digest of query q, sibling k of query q)  ->  its digest at level k + 1
+/// ```
+///
+/// Both queries open the same commitment, so their climbs span the same levels.
+/// Only the hashing is shared: each query orders its own pair by its own index bit, as
+/// [`verify_opening`] does, and matches its own layer entry at the top.
+///
+/// # Panics
+///
+/// Panics unless all of the following hold.
+///
+/// - The layer depth is at most the tree depth.
+/// - The tree depth is below the wire width.
+/// - The layer holds one digest per node at its own depth.
+/// - Both leaves hold the same number of elements.
+/// - Both authentication paths hold one sibling per level between the two depths.
+pub fn verify_opening_2x(
+	builder: &CircuitBuilder,
+	indices: [Wire; 2],
+	values: [&[Element]; 2],
+	layer_depth: usize,
+	tree_depth: usize,
+	layer_digests: &[Digest],
+	branches: [&[Digest]; 2],
+) {
+	assert!(layer_depth <= tree_depth, "precondition: layer_depth must be at most tree_depth");
+	assert!(tree_depth < Word::BITS, "precondition: tree_depth must be below the wire width");
+	assert_eq!(
+		layer_digests.len(),
+		1 << layer_depth,
+		"precondition: layer_digests must have 2^layer_depth entries"
+	);
+	for branch in branches {
+		assert_eq!(
+			branch.len(),
+			tree_depth - layer_depth,
+			"precondition: each branch must have tree_depth - layer_depth siblings"
+		);
+	}
+
+	let builder = builder.subcircuit("verify_opening_2x");
+
+	// Both leaves hold the same number of elements, so the two lanes hash them in lockstep.
+	let mut digests = leaf_digest_2x(&builder.subcircuit("leaf"), values);
+
+	for level in 0..tree_depth - layer_depth {
+		let b = builder.subcircuit(format!("climb[{level}]"));
+
+		// Ordering a pair reads one query's own index bit, so it stays per query.
+		let nodes = array::from_fn(|q| {
+			// A select gate reads bit 63 alone, so lift this level's index bit up to it.
+			let on_right = b.shl(indices[q], (Word::BITS - 1 - level) as u32);
+			let (digest, sibling) = (digests[q], branches[q][level]);
+			// Order the pair by that bit, putting the running digest on the side it names.
+			let left = array::from_fn(|j| b.select(on_right, sibling[j], digest[j]));
+			let right = array::from_fn(|j| b.select(on_right, digest[j], sibling[j]));
+			(left, right)
+		});
+
+		// The two nodes are independent, so one two-lane compression carries both up a level.
+		digests = compress_node_2x(&b, nodes);
+	}
+
+	// The multiplexer reads its candidates as slices, one per layer entry.
+	let entries = layer_digests.iter().map(|d| &d[..]).collect::<Vec<_>>();
+	for (q, digest) in digests.into_iter().enumerate() {
+		// The climb consumed one index bit per level, so the bits above them address the layer.
+		let layer_index = builder.shr(indices[q], (tree_depth - layer_depth) as u32);
+		let selected = multi_wire_multiplex(&builder, &entries, layer_index);
+		// Each query is bound to the entry its own index addresses, hence to the root above it.
+		builder.assert_eq_v(
+			format!("layer_digest[{q}]"),
+			digest,
+			selected
+				.try_into()
+				.expect("the multiplexer returns one wire per digest wire"),
+		);
+	}
 }
 
 /// The digest of one leaf: SHA-256 over its elements, sixteen little-endian bytes each.
