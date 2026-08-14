@@ -18,26 +18,28 @@
 //! `--ignored` to run. Run it `--release` as well: an unoptimized prover over this circuit is
 //! slower by orders of magnitude.
 //!
-//! Run it with the timing tree:
+//! Run it with the timing tree. Signing, witness generation and proving all parallelize behind the
+//! `rayon` feature, so pass it or read single-threaded times:
 //!
 //! ```text
 //! RUST_LOG=debug cargo test --release -p binius-m4-prover --test prove_hash_based_sig \
-//!     -- --ignored --nocapture
+//!     --features rayon -- --ignored --nocapture
 //! ```
 
 use binius_circuits::hash_based_sig::{
 	MESSAGE_LEN, Message,
 	aggregate::{MultiSigWires, circuit_xmss_multisig_chip},
-	xmss::generate_signature,
+	xmss::{XmssPublicKey, XmssSignature, generate_signature},
 };
-use binius_frontend::{CircuitBuilder, CircuitM4, CircuitStat, WitnessFiller};
+use binius_frontend::{CircuitBuilder, CircuitM4, CircuitStat};
 use binius_hash::StdHashSuite;
 use binius_m4_prover::ProverM4;
 use binius_m4_verifier::VerifierM4;
 use binius_prover::OptimalPackedB128;
 use binius_transcript::ProverTranscript;
+use binius_utils::rayon::prelude::*;
 use binius_verifier::config::StdChallenger;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 use tracing::{debug, info_span, level_filters::LevelFilter};
 use tracing_forest::ForestLayer;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -52,7 +54,7 @@ const LOG_INV_RATE: usize = 1;
 /// is set to — filling both at once is not on offer. The count is what makes the run a batch
 /// rather than a single verification; it trades proving time for a timing tree whose per-phase
 /// costs are legible.
-const NUM_SIGNERS: usize = 8;
+const NUM_SIGNERS: usize = 512;
 
 /// Installs a timing-tree tracing subscriber, once per test binary.
 ///
@@ -79,11 +81,14 @@ fn build_multisig_circuit() -> (CircuitM4, MultiSigWires) {
 	(builder.build_m4(), wires)
 }
 
-/// Generates a valid signature per signer and writes the statement and the signatures into the
-/// main circuit's wires.
+/// Generates the message and epoch the batch is over, and one valid signature per signer.
 ///
-/// Every digest the chips check is derived from these words, so the evaluator fills the rest.
-fn fill_multisig(wires: &MultiSigWires, w: &mut WitnessFiller<'_>) {
+/// Grinding the randomness and walking the chains out of circuit is what makes each assignment a
+/// signature the chip accepts rather than arbitrary words. The grind is what the work is: the
+/// target sum sits far enough above the mean digit sum that a signature costs tens of thousands of
+/// encoding hashes. The signers are independent, so each draws its own seed and they run in
+/// parallel; only the message and the epoch are shared.
+fn generate_statement() -> (Message, u32, Vec<(XmssPublicKey, XmssSignature)>) {
 	let mut rng = StdRng::seed_from_u64(0);
 
 	let mut message: Message = [0u8; MESSAGE_LEN];
@@ -92,14 +97,17 @@ fn fill_multisig(wires: &MultiSigWires, w: &mut WitnessFiller<'_>) {
 	rng.fill_bytes(&mut epoch_bytes);
 	let epoch = u32::from_le_bytes(epoch_bytes);
 
-	// Grinding the randomness and walking the chains out of circuit is what makes each assignment
-	// a signature the chip accepts rather than arbitrary words. The signers are independent, so
-	// each gets its own key; only the message and the epoch are shared.
-	let signatures = (0..NUM_SIGNERS)
-		.map(|_| generate_signature(&mut rng, &message, epoch))
+	// Drawing the seeds in order keeps the batch a function of the one seed above, whatever order
+	// the signers then run in.
+	let seeds = (0..NUM_SIGNERS)
+		.map(|_| rng.random::<u64>())
 		.collect::<Vec<_>>();
+	let signatures = seeds
+		.into_par_iter()
+		.map(|seed| generate_signature(&mut StdRng::seed_from_u64(seed), &message, epoch))
+		.collect();
 
-	wires.populate(w, &message, epoch, &signatures);
+	(message, epoch, signatures)
 }
 
 // Proves a batch of XMSS verifications through M4 and verifies it.
@@ -123,10 +131,15 @@ fn prove_hash_based_sig() {
 		);
 	}
 
+	// Signing is the test's own work rather than the circuit's, and at this batch size it costs
+	// more than proving does, so it is timed on its own and outside the span below.
+	let (message, epoch, signatures) =
+		info_span!("sign", primitive = "xmss").in_scope(generate_statement);
+
 	// Generate the witness in its own span: for this circuit that is every BLAKE3 compression,
 	// which is the bulk of it.
 	let witness = info_span!("witness_generation", primitive = "xmss")
-		.in_scope(|| circuit.generate_witness(|w| fill_multisig(&wires, w)))
+		.in_scope(|| circuit.generate_witness(|w| wires.populate(w, &message, epoch, &signatures)))
 		.expect("the generated signatures satisfy the circuit");
 
 	let cs = circuit.to_constraint_system();

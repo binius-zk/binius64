@@ -18,11 +18,12 @@
 //! magnitude. `prove_integer_multiplication_single_instance` is the exception — it proves a batch
 //! of one to cover a degenerate case, costs a fraction of a second, and runs by default.
 //!
-//! Run one with the timing tree:
+//! Run one with the timing tree. Witness generation and proving both parallelize behind the
+//! `rayon` feature, so pass it or read single-threaded times:
 //!
 //! ```text
 //! RUST_LOG=debug cargo test --release -p binius-m4-prover --test prove_hash_primitives \
-//!     prove_blake3_compression -- --ignored --nocapture
+//!     --features rayon prove_blake3_compression -- --ignored --nocapture
 //! ```
 
 use binius_frontend::CircuitStat;
