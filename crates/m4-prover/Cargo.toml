@@ -27,6 +27,7 @@ binius-verifier = { path = "../verifier" }
 bytemuck.workspace = true
 digest.workspace = true
 # Enabled by the `test-circuits` feature only.
+k256 = { workspace = true, features = ["arithmetic"], optional = true }
 rand = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
@@ -46,8 +47,8 @@ tracing-subscriber = { workspace = true }
 [features]
 default = []
 rayon = ["binius-utils/rayon"]
-# Circuits over hash primitives, shared by this crate's proving benchmarks and timing tests.
-test-circuits = ["dep:binius-circuits", "dep:rand"]
+# Circuits over primitives, shared by this crate's proving benchmarks and timing tests.
+test-circuits = ["dep:binius-circuits", "dep:k256", "dep:rand"]
 
 [[bench]]
 name = "keccak_witness_gen"

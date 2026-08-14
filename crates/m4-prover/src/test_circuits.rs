@@ -1,20 +1,24 @@
 // Copyright 2026 The Binius Developers
-//! Single-instance circuits over hash primitives and integer multiplication.
+//! Single-instance circuits over hash primitives, integer multiplication, and elliptic-curve
+//! point addition.
 //!
 //! The proving benchmarks and the proving timing tests both prove batches of these, so the circuits
-//! live here rather than in either. Each is generic over the number `N` of independent primitives
-//! one instance computes: a larger `N` fills the value vector more densely, so a smaller share of
-//! the committed trace is padding.
+//! live here rather than in either. The hash circuits are generic over the number `N` of
+//! independent primitives one instance computes: a larger `N` fills the value vector more densely,
+//! so a smaller share of the committed trace is padding.
 
-use std::array;
+use std::{array, iter};
 
 use binius_circuits::{
+	bignum::BigUint,
 	blake3::blake3_compress_2x,
 	keccak::permutation::keccak_f1600,
+	secp256k1::{N_LIMBS, Secp256k1, Secp256k1Affine},
 	sha256::{State, sha256_compress_2x},
 };
 use binius_core::word::Word;
 use binius_frontend::{BatchWitnessFiller, Circuit, CircuitBuilder, Wire};
+use k256::{ProjectivePoint, elliptic_curve::sec1::ToSec1Point};
 use rand::prelude::*;
 
 /// The number of 64-bit lanes in a Keccak-f1600 state.
@@ -311,4 +315,134 @@ impl TestCircuit for ImulCircuit {
 			w[wire] = Word(rng.next_u64());
 		}
 	}
+}
+
+/// The number of on-curve summand pairs the point-addition circuit precomputes.
+///
+/// Instances cycle through the pool. The circuit's shape, and so its proving cost, does not depend
+/// on the coordinate values, so reusing pairs across a larger batch does not bias the measurement.
+/// Precomputing keeps witness filling — which the benchmark times — free of the host-side curve
+/// arithmetic that generating a fresh pair per instance would cost.
+const N_SUMMAND_PAIRS: usize = 1 << 10;
+
+/// The affine coordinates of a curve point, each as little-endian 64-bit limbs.
+struct AffineLimbs {
+	x: [u64; N_LIMBS],
+	y: [u64; N_LIMBS],
+}
+
+/// A circuit of one incomplete secp256k1 affine point addition.
+///
+/// The two summands are public inputs, their point-at-infinity flags included. Those flags are
+/// wires rather than constants because the scalar-multiplication circuits call
+/// [`Secp256k1::add_incomplete`] with flags computed in-circuit; folding a constant flag would
+/// drop the point-at-infinity handling from the measured circuit.
+///
+/// Unlike the hash primitives, this circuit is built from 256-bit modular arithmetic — three
+/// 4-limb multiplications and a modular-division hint — so its proof exercises the IntMul
+/// reduction, which the purely bitwise hash circuits do not.
+pub struct Secp256k1AddIncompleteCircuit {
+	circuit: Circuit,
+	summands: [Secp256k1Affine; 2],
+	/// Pairs of distinct on-curve points, cycled over the batch's instances.
+	summand_pairs: Vec<[AffineLimbs; 2]>,
+}
+
+impl TestCircuit for Secp256k1AddIncompleteCircuit {
+	const PRIMITIVES_PER_INSTANCE: u64 = 1;
+
+	fn new() -> Self {
+		let builder = CircuitBuilder::new();
+		let curve = Secp256k1::new(&builder);
+
+		// Both summands are public, filled per instance.
+		let summands: [Secp256k1Affine; 2] = array::from_fn(|_| Secp256k1Affine {
+			x: BigUint::new_inout(&builder, N_LIMBS),
+			y: BigUint::new_inout(&builder, N_LIMBS),
+			is_point_at_infinity: builder.add_inout(),
+		});
+
+		// Promote the sum to public outputs.
+		// That promotion keeps the addition alive under dead-code elimination.
+		let sum = curve.add_incomplete(&builder, &summands[0], &summands[1]);
+		for &wire in sum
+			.x
+			.limbs
+			.iter()
+			.chain(&sum.y.limbs)
+			.chain(iter::once(&sum.is_point_at_infinity))
+		{
+			builder.mark_inout(wire);
+		}
+
+		Self {
+			circuit: builder.build(),
+			summands,
+			summand_pairs: summand_pairs(),
+		}
+	}
+
+	fn circuit(&self) -> &Circuit {
+		&self.circuit
+	}
+
+	/// Assigns one instance's summands from the precomputed pool, cycling over it.
+	fn fill(&self, instance: usize, w: &mut BatchWitnessFiller<'_, '_>) {
+		let pair = &self.summand_pairs[instance % self.summand_pairs.len()];
+
+		for (point, limbs) in iter::zip(&self.summands, pair) {
+			for (&wire, &limb) in iter::zip(&point.x.limbs, &limbs.x) {
+				w[wire] = Word(limb);
+			}
+			for (&wire, &limb) in iter::zip(&point.y.limbs, &limbs.y) {
+				w[wire] = Word(limb);
+			}
+			// Every summand is a genuine curve point, never the identity.
+			w[point.is_point_at_infinity] = Word::ZERO;
+		}
+	}
+}
+
+/// Precomputes [`N_SUMMAND_PAIRS`] pairs of on-curve points that are valid incomplete-addition
+/// summands.
+///
+/// Pair `j` is `((2j + 1)·G, (2j + 2)·G)`. Consecutive multiples of the generator are neither equal
+/// — [`Secp256k1::add_incomplete`] asserts against doubling — nor negatives of each other, which
+/// would make their sum the point at infinity.
+fn summand_pairs() -> Vec<[AffineLimbs; 2]> {
+	let generator = ProjectivePoint::GENERATOR;
+	let step = generator + generator;
+
+	iter::successors(Some(generator), |&first| Some(first + step))
+		.take(N_SUMMAND_PAIRS)
+		.map(|first| [affine_limbs(&first), affine_limbs(&(first + generator))])
+		.collect()
+}
+
+/// The affine coordinates of `point`, each as little-endian 64-bit limbs.
+///
+/// # Panics
+///
+/// Panics if `point` is the identity, which has no affine coordinates.
+fn affine_limbs(point: &ProjectivePoint) -> AffineLimbs {
+	// Uncompressed SEC1 encoding: `0x04 || x (32 bytes) || y (32 bytes)`, coordinates big-endian.
+	let bytes = point.to_affine().to_sec1_point(false).to_bytes();
+	assert_eq!(bytes.len(), 65, "the identity has no affine coordinates");
+
+	AffineLimbs {
+		x: le_limbs(&bytes[1..33]),
+		y: le_limbs(&bytes[33..65]),
+	}
+}
+
+/// Converts a big-endian 256-bit integer into little-endian 64-bit limbs.
+fn le_limbs(be_bytes: &[u8]) -> [u64; N_LIMBS] {
+	array::from_fn(|i| {
+		let end = be_bytes.len() - i * 8;
+		u64::from_be_bytes(
+			be_bytes[end - 8..end]
+				.try_into()
+				.expect("the slice is 8 bytes"),
+		)
+	})
 }
