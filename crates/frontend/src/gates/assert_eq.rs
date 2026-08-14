@@ -36,6 +36,6 @@ impl GateKind for AssertEq {
 	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
 		let [x, y] = gate.in_wires();
 
-		bc.emit_assert_eq(ctx.reg(x), ctx.reg(y), ctx.path().as_u32());
+		bc.emit_assert_eq(ctx.reg(x), ctx.reg(y), ctx.path());
 	}
 }

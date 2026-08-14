@@ -5,7 +5,7 @@ use binius_core::{ValueVec, ValueVecLayout, word::Word};
 
 use crate::{
 	eval_form::{BytecodeBuilder, exec::Executor, scalar::ExecutionContext},
-	ir::hints::HintRegistry,
+	ir::{hints::HintRegistry, path::PathSpec},
 };
 
 /// Test harness for interpreter tests that makes them much more concise
@@ -30,7 +30,8 @@ impl InterpreterTest {
 
 	/// Emit an assert_eq_cond instruction
 	fn assert_eq_cond(mut self, cond: u32, x: u32, y: u32) -> Self {
-		self.builder.emit_assert_eq_cond(cond, x, y, 1);
+		self.builder
+			.emit_assert_eq_cond(cond, x, y, PathSpec::from_u32(1));
 		self
 	}
 

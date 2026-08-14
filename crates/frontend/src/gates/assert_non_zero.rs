@@ -71,7 +71,7 @@ impl GateKind for AssertNonZero {
 		// Carry bits of all-1 + x. Only the carries matter, so the sum is not stored.
 		bc.emit_iadd_carry(ctx.reg(cout), ctx.reg(all_one), ctx.reg(x));
 
-		bc.emit_assert_non_zero(ctx.reg(cout), ctx.path().as_u32());
+		bc.emit_assert_non_zero(ctx.reg(cout), ctx.path());
 	}
 }
 

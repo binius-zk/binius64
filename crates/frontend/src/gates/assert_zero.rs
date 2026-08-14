@@ -32,6 +32,6 @@ impl GateKind for AssertZero {
 	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
 		let [x] = gate.in_wires();
 
-		bc.emit_assert_zero(ctx.reg(x), ctx.path().as_u32());
+		bc.emit_assert_zero(ctx.reg(x), ctx.path());
 	}
 }

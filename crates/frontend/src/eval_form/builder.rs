@@ -5,6 +5,7 @@
 use binius_core::constraint_system::ShiftVariant;
 
 use super::opcode::EvalOpcode;
+use crate::ir::path::PathSpec;
 
 /// Builder for constructing bytecode during circuit compilation
 pub struct BytecodeBuilder {
@@ -197,49 +198,49 @@ impl BytecodeBuilder {
 	}
 
 	// Assertions
-	pub fn emit_assert_eq(&mut self, src1: u32, src2: u32, error_id: u32) {
+	pub fn emit_assert_eq(&mut self, src1: u32, src2: u32, path_spec: PathSpec) {
 		self.n_eval_insn += 1;
 		self.emit_opcode(EvalOpcode::AssertEq);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
-		self.emit_u32(error_id);
+		self.emit_path_spec(path_spec);
 	}
 
-	pub fn emit_assert_eq_cond(&mut self, cond: u32, src1: u32, src2: u32, error_id: u32) {
+	pub fn emit_assert_eq_cond(&mut self, cond: u32, src1: u32, src2: u32, path_spec: PathSpec) {
 		self.n_eval_insn += 1;
 		self.emit_opcode(EvalOpcode::AssertEqCond);
 		self.emit_reg(cond);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
-		self.emit_u32(error_id);
+		self.emit_path_spec(path_spec);
 	}
 
-	pub fn emit_assert_zero(&mut self, src: u32, error_id: u32) {
+	pub fn emit_assert_zero(&mut self, src: u32, path_spec: PathSpec) {
 		self.n_eval_insn += 1;
 		self.emit_opcode(EvalOpcode::AssertZero);
 		self.emit_reg(src);
-		self.emit_u32(error_id);
+		self.emit_path_spec(path_spec);
 	}
 
-	pub fn emit_assert_non_zero(&mut self, src: u32, error_id: u32) {
+	pub fn emit_assert_non_zero(&mut self, src: u32, path_spec: PathSpec) {
 		self.n_eval_insn += 1;
 		self.emit_opcode(EvalOpcode::AssertNonZero);
 		self.emit_reg(src);
-		self.emit_u32(error_id);
+		self.emit_path_spec(path_spec);
 	}
 
-	pub fn emit_assert_false(&mut self, src: u32, error_id: u32) {
+	pub fn emit_assert_false(&mut self, src: u32, path_spec: PathSpec) {
 		self.n_eval_insn += 1;
 		self.emit_opcode(EvalOpcode::AssertFalse);
 		self.emit_reg(src);
-		self.emit_u32(error_id);
+		self.emit_path_spec(path_spec);
 	}
 
-	pub fn emit_assert_true(&mut self, src: u32, error_id: u32) {
+	pub fn emit_assert_true(&mut self, src: u32, path_spec: PathSpec) {
 		self.n_eval_insn += 1;
 		self.emit_opcode(EvalOpcode::AssertTrue);
 		self.emit_reg(src);
-		self.emit_u32(error_id);
+		self.emit_path_spec(path_spec);
 	}
 
 	// Hint calls
@@ -286,6 +287,11 @@ impl BytecodeBuilder {
 
 	fn emit_reg(&mut self, reg: u32) {
 		self.emit_u32(reg);
+	}
+
+	/// Encodes a path spec as the `u32` an assertion instruction carries on the wire.
+	fn emit_path_spec(&mut self, path_spec: PathSpec) {
+		self.emit_u32(path_spec.as_u32());
 	}
 
 	pub fn finalize(self) -> (Vec<u8>, usize) {
