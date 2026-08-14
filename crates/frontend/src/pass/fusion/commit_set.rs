@@ -7,7 +7,7 @@ use petgraph::{
 	visit::{DfsPostOrder, EdgeRef},
 };
 
-use super::{LeGraph, Stat};
+use super::{LeGraph, Stat, legraph::NodeKind};
 
 /// Longest inline chain a definition of two or more terms may sit at the top of.
 ///
@@ -315,28 +315,27 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat, shift_slots: us
 	// every user's shifts compose with the current node shifts which are stored in the incoming
 	// edges and additionally the node does not lie too deep in the graph for any of the users.
 	let mut postorder = DfsPostOrder::empty(&leg.pg);
-	for source in &leg.opaque {
-		postorder.move_to(*source);
+	for &source in leg.opaque.values() {
+		postorder.move_to(source);
 		while let Some(node) = postorder.next(&leg.pg) {
-			if leg.is_root(node) {
-				// Special handling for the root nodes.
-				//
-				// Just create a new context for each root node with the seed shift.
-				for in_edge in leg.pg.edges_directed(node, Direction::Incoming) {
-					let shift = in_edge.weight().shift;
-					per_edge[in_edge.id().index()] = Some(CommitSetCx::new(shift));
+			// Classify the node once.
+			// Only a linear definition carries edges that need composing.
+			// The other two kinds are handled and skipped right here.
+			let lin_def_id = match leg.node_kind(node) {
+				NodeKind::Root => {
+					// Just create a new context for each root node with the seed shift.
+					for in_edge in leg.pg.edges_directed(node, Direction::Incoming) {
+						let shift = in_edge.weight().shift;
+						per_edge[in_edge.id().index()] = Some(CommitSetCx::new(shift));
+					}
+					continue;
 				}
-				continue;
-			}
-			if leg.is_opaque(node) {
-				// Special handling for opaque nodes, or lack of there of.
-				continue;
-			}
+				NodeKind::Opaque => continue,
+				NodeKind::LinDef(id) => id,
+			};
 
-			// Must be a linear definition then.
-			//
 			// Check whether the incoming edges are composing with every outcoming edges.
-			let lin_def_wire = leg.lin_dst(node);
+			let lin_def_wire = leg.lin_dst(lin_def_id);
 			let incoming = leg.pg.edges_directed(node, Direction::Incoming);
 			let outcoming = leg.pg.edges_directed(node, Direction::Outgoing);
 

@@ -3,7 +3,7 @@
 //! linear expression graph.
 
 use binius_core::constraint_system::Shift;
-use cranelift_entity::{EntitySet, SecondaryMap};
+use cranelift_entity::{EntityRef, EntitySet, PrimaryMap, SecondaryMap, entity_impl};
 use petgraph::graph::{DiGraph, NodeIndex};
 
 use crate::{
@@ -20,66 +20,51 @@ pub enum ConstraintRef {
 	Linear { index: usize },
 }
 
-/// Represents the different types of nodes in the Linear Expression Graph.
-#[derive(Debug)]
-pub enum NodeData {
-	/// Root node - represents a use site in a constraint that defines no wire.
-	///
-	/// These nodes are the "sinks" of the graph where linear expressions flow into
-	/// AND/IMUL/BMUL/ZERO constraints. They have no outgoing edges and represent
-	/// the termination points for inlining decisions.
-	///
-	/// # Example
-	/// ```text
-	/// y = x ^ a       // Linear definition
-	/// z = y & b       // AND constraint creates a Root node for y's use
-	/// ```
-	Root {
-		/// Reference to the non-linear constraint using the linear definition.
-		constraint: ConstraintRef,
-	},
+/// Identifies a linear-definition node: a linear constraint that assigns a wire.
+///
+/// Its position matches the constraint's own position in the constraint builder's linear list.
+/// So an id's index doubles as that list's index.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinDefId(u32);
+entity_impl!(LinDefId);
 
-	/// Linear definition node - represents a linear constraint.
-	///
-	/// These nodes define a wire as an XOR combination of shifted values.
-	/// They are candidates for inlining into their consumers.
-	///
-	/// # Example
-	/// ```text
-	/// y = x ^ (a << 5) ^ (b >> 3)  // Creates a LinDef node for y
-	/// ```
-	LinDef {
-		/// The wire being defined by this linear constraint.
-		dst: Wire,
-		/// Index in the linear constraint list.
-		///
-		/// The operand itself stays in the constraint builder rather than being copied here.
-		/// Copying it would allocate once per linear constraint, and there is one per fused wire.
-		index: usize,
-	},
+/// Identifies a root node: a use site in a constraint that defines no wire.
+///
+/// A root is a sink of the graph.
+/// A linear definition flows into it as an AND, IMUL, BMUL, or Zero constraint.
+/// A root has no consumer of its own.
+/// Inlining always terminates here.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RootId(u32);
+entity_impl!(RootId);
 
-	/// Opaque node - represents a wire not defined by a linear constraint.
+/// Identifies an opaque node: a wire that is not defined by a linear constraint.
+///
+/// Inputs, constants, and the outputs of non-linear operations are opaque.
+/// Inlining cannot reach past one.
+/// So an opaque node is a source of the graph.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OpaqueId(u32);
+entity_impl!(OpaqueId);
+
+/// Which of the three node kinds a graph node holds.
+///
+/// A traversal walks the graph through petgraph's own untyped node index.
+/// This is the one place all three kinds still meet.
+/// Everywhere else a node is named by its own specific kind of id.
+/// So the compiler rejects handing one kind's id to code that expects another.
+#[derive(Debug, Copy, Clone)]
+pub(super) enum NodeKind {
+	/// A linear definition, named by its id.
+	LinDef(LinDefId),
+	/// A root use.
 	///
-	/// These are wires that come from inputs, constants, or outputs of non-linear
-	/// operations. They cannot be inlined and serve as terminal nodes in the
-	/// inlining traversal.
-	///
-	/// # Example
-	/// ```text
-	/// x = input()     // Creates an Opaque node for x
-	/// y = a * b       // Creates Opaque nodes for y (IMUL output)
-	/// ```
+	/// Its constraint lives in a separate collection, addressed by discovery order.
+	/// That is not by this node.
+	/// So the variant itself carries no id.
+	Root,
+	/// A wire that is not defined by a linear constraint.
 	Opaque,
-}
-
-impl NodeData {
-	const fn is_root(&self) -> bool {
-		matches!(self, NodeData::Root { .. })
-	}
-
-	const fn is_opaque(&self) -> bool {
-		matches!(self, NodeData::Opaque)
-	}
 }
 
 /// Data associated with edges in the Linear Expression Graph.
@@ -139,15 +124,21 @@ pub struct EdgeData {
 /// In this example, both `y` and `z` can potentially be inlined into the AND constraint,
 /// resulting in `w = ((a ^ b) >> 5) & c` without intermediate wire commitments.
 pub struct LeGraph {
-	pub pg: DiGraph<NodeData, EdgeData>,
+	pub pg: DiGraph<NodeKind, EdgeData>,
 	/// Node holding each wire, for the wires that have one.
 	///
 	/// Wire identifiers are dense, so this indexes directly instead of hashing.
 	pub wire_to_node: SecondaryMap<Wire, Option<NodeIndex>>,
 	pub lin_def: EntitySet<Wire>,
 	pub lin_committed: EntitySet<Wire>,
-	pub roots: Vec<NodeIndex>,
-	pub opaque: Vec<NodeIndex>,
+	/// The linear-definition id that assigns each wire, for wires that have one.
+	wire_to_lin_def: SecondaryMap<Wire, Option<LinDefId>>,
+	/// The wire each linear-definition id assigns.
+	lin_defs: PrimaryMap<LinDefId, Wire>,
+	/// The constraint each root id names, in the order the roots were discovered.
+	pub roots: PrimaryMap<RootId, ConstraintRef>,
+	/// The graph node each opaque id names, in the order the wires were discovered.
+	pub opaque: PrimaryMap<OpaqueId, NodeIndex>,
 }
 
 impl LeGraph {
@@ -168,19 +159,18 @@ impl LeGraph {
 			wire_to_node: SecondaryMap::new(),
 			lin_committed: EntitySet::new(),
 			lin_def: EntitySet::new(),
-			roots: Vec::new(),
-			opaque: Vec::new(),
+			wire_to_lin_def: SecondaryMap::new(),
+			lin_defs: PrimaryMap::new(),
+			roots: PrimaryMap::new(),
+			opaque: PrimaryMap::new(),
 		};
 		build_use_def(cb, &mut leg);
 		leg
 	}
 
-	pub(super) fn is_root(&self, node: NodeIndex) -> bool {
-		self.pg.node_weight(node).unwrap().is_root()
-	}
-
-	pub(super) fn is_opaque(&self, node: NodeIndex) -> bool {
-		self.pg.node_weight(node).unwrap().is_opaque()
+	/// Classifies a graph node as a linear definition, a root, or an opaque wire.
+	pub(super) fn node_kind(&self, node: NodeIndex) -> NodeKind {
+		self.pg[node]
 	}
 
 	/// Returns the set of wires that must be committed (converted to AND constraints).
@@ -198,20 +188,17 @@ impl LeGraph {
 	///
 	/// Panics if `wire` is not assigned by a linear definition.
 	pub fn lin_def_operand<'a>(&self, cb: &'a ConstraintBuilder, wire: Wire) -> &'a WireOperand {
-		&cb.linear_constraints[self.lin_def_index(wire)].rhs
+		&cb.linear_constraints[self.lin_def_id(wire).index()].rhs
 	}
 
-	/// The position of the linear definition that assigns `wire`.
+	/// The id of the linear definition that assigns `wire`.
 	///
 	/// # Panics
 	///
 	/// Panics if `wire` is not assigned by a linear definition.
-	fn lin_def_index(&self, wire: Wire) -> usize {
-		let node = self.node_of(wire);
-		match self.pg.node_weight(node).unwrap() {
-			NodeData::LinDef { index, .. } => *index,
-			_ => panic!("{wire:?} is not assigned by a linear definition"),
-		}
+	fn lin_def_id(&self, wire: Wire) -> LinDefId {
+		self.wire_to_lin_def[wire]
+			.unwrap_or_else(|| panic!("{wire:?} is not assigned by a linear definition"))
 	}
 
 	/// Returns the node holding the given wire.
@@ -223,23 +210,14 @@ impl LeGraph {
 		self.wire_to_node[wire].unwrap_or_else(|| panic!("{wire:?} has no node in the graph"))
 	}
 
-	pub fn lin_dst(&self, node: NodeIndex) -> Wire {
-		match self.pg.node_weight(node).unwrap() {
-			NodeData::LinDef { dst, .. } => *dst,
-			_ => panic!("supposed to be a linear assignment"),
-		}
+	/// The wire a linear-definition id assigns.
+	pub fn lin_dst(&self, id: LinDefId) -> Wire {
+		self.lin_defs[id]
 	}
 
 	pub fn lin_def_constraint_ref(&self, wire: Wire) -> ConstraintRef {
 		ConstraintRef::Linear {
-			index: self.lin_def_index(wire),
-		}
-	}
-
-	pub fn root_constraint_ref(&self, node: NodeIndex) -> ConstraintRef {
-		match self.pg.node_weight(node).unwrap() {
-			NodeData::Root { constraint } => *constraint,
-			_ => panic!("supposed to be a root"),
+			index: self.lin_def_id(wire).index(),
 		}
 	}
 
@@ -251,15 +229,17 @@ impl LeGraph {
 		self.lin_def.contains(wire)
 	}
 
-	/// Add a linear definition node to the graph.
+	/// Adds a linear-definition node to the graph for the constraint that assigns `dst`.
 	///
-	/// Creates a new node representing a linear constraint that defines `dst` as
-	/// the XOR combination specified by `operand`.
-	fn add_lin_def(&mut self, dst: Wire, index: usize) {
-		let lin_node = self.pg.add_node(NodeData::LinDef { dst, index });
+	/// Returns the id the new node is addressed by.
+	fn add_lin_def(&mut self, dst: Wire) -> LinDefId {
+		let lin_def_id = self.lin_defs.push(dst);
+		let lin_node = self.pg.add_node(NodeKind::LinDef(lin_def_id));
 		let prev = self.wire_to_node[dst].replace(lin_node);
 		assert!(prev.is_none(), "wire already has a node");
+		self.wire_to_lin_def[dst] = Some(lin_def_id);
 		self.lin_def.insert(dst);
+		lin_def_id
 	}
 
 	/// Notes a use of a wire by a linear user.
@@ -281,7 +261,7 @@ impl LeGraph {
 			let opaque_node = match self.wire_to_node[producer] {
 				Some(node) => node,
 				None => {
-					let node = self.pg.add_node(NodeData::Opaque);
+					let node = self.pg.add_node(NodeKind::Opaque);
 					self.opaque.push(node);
 					self.wire_to_node[producer] = Some(node);
 					node
@@ -294,8 +274,8 @@ impl LeGraph {
 	/// Notes a use of a wire of a linear producer by a user that defines no wire.
 	fn note_root_use(&mut self, producer: Wire, shift: Shift, constraint: ConstraintRef) {
 		let node_p = self.node_of(producer);
-		let root_node = self.pg.add_node(NodeData::Root { constraint });
-		self.roots.push(root_node);
+		self.roots.push(constraint);
+		let root_node = self.pg.add_node(NodeKind::Root);
 		self.pg.add_edge(node_p, root_node, EdgeData { shift });
 	}
 }
@@ -305,8 +285,8 @@ fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph) {
 	//
 	// Linear constraints are simple definitions. We assert that this is the case here.
 	// In future we should actually define `linear_constraints`.
-	for (index, lin) in cb.linear_constraints.iter().enumerate() {
-		leg.add_lin_def(lin.dst, index);
+	for lin in &cb.linear_constraints {
+		leg.add_lin_def(lin.dst);
 	}
 
 	for lin in &cb.linear_constraints {

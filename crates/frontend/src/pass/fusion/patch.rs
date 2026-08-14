@@ -117,11 +117,9 @@ pub fn build(cb: &ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
 
 /// Collect patches for the root constraints that inline linear definitions.
 fn build_root_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<Patch>) {
-	// Collect *distinct* constraint references for each root constraint.
-	let mut constraints = Vec::with_capacity(leg.roots.len());
-	for root in leg.roots.iter() {
-		constraints.push(leg.root_constraint_ref(*root));
-	}
+	// Collect *distinct* constraint references.
+	// Several roots may name the same constraint, e.g. two operands of one AND both inlined.
+	let mut constraints: Vec<ConstraintRef> = leg.roots.values().copied().collect();
 	constraints.sort_unstable();
 	constraints.dedup();
 
