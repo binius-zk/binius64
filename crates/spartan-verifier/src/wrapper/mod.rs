@@ -21,11 +21,12 @@ pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 mod tests {
 	use std::rc::Rc;
 
+	use binius_core::word::Word;
 	use binius_field::{
 		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, Field, Random,
 		arithmetic_traits::InvertOrZero, field::FieldOps,
 	};
-	use binius_ip::channel::IPVerifierChannel;
+	use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -142,6 +143,28 @@ mod tests {
 		for elem in &c {
 			assert!(matches!(elem, BuildElem::Wire { .. }));
 		}
+	}
+
+	/// The packed statement enters the circuit as inout wires, not as constants.
+	///
+	/// The wrapper circuit is built once, against whatever statement the symbolic run was handed,
+	/// and reused for every other one. Packing the words into constants would fix that first
+	/// statement into the circuit, so the words become wires the concrete channels fill in.
+	#[test]
+	fn test_pack_words_allocates_inout_wires() {
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
+
+		// Two words to a `B128`, so three words span two elements. The zero word is deliberate:
+		// nothing about the packing may turn on the values.
+		let words = [Word::from_u64(7), Word::ZERO, Word::from_u64(9)];
+		let elems = channel.pack_words(&words);
+
+		assert_eq!(elems.len(), 2);
+		assert!(
+			elems
+				.iter()
+				.all(|elem| matches!(elem, BuildElem::Wire { .. }))
+		);
 	}
 
 	#[test]

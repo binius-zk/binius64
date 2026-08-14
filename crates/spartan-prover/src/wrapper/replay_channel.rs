@@ -68,6 +68,15 @@ impl<F: Field> ReplayChannel<F> {
 			.next()
 			.unwrap_or_else(|| panic!("replay exhausted: no more events"));
 
+		self.alloc_inout_elem(value)
+	}
+
+	/// Allocates the next inout wire around a value the replay computes rather than reads back.
+	///
+	/// Most inout wires carry a recorded value, since they stand for what crossed the channel. The
+	/// packed statement does not cross it: both sides hold the words and pack them, so the value
+	/// comes from the caller.
+	fn alloc_inout_elem(&mut self, value: F) -> CircuitElem<F, WitnessGenerator<F>> {
 		let wire = self.inout_alloc.alloc();
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
 		CircuitElem::wire(&self.witness_gen, witness_wire)
@@ -167,7 +176,12 @@ impl<F: BinaryField> WordIPVerifierChannel<F> for ReplayChannel<F> {
 	}
 
 	fn pack_words(&mut self, words: &[Word]) -> Vec<Self::Elem> {
-		pack_words_concrete::<F, Self::Elem>(words)
+		// One inout wire per packed element, matching the symbolic phase; the prover holds the same
+		// words the verifier does, so it packs them itself rather than replaying them.
+		pack_words_concrete::<F, F>(words)
+			.into_iter()
+			.map(|value| self.alloc_inout_elem(value))
+			.collect()
 	}
 }
 

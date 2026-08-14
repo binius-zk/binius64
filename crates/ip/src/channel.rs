@@ -186,6 +186,14 @@ pub trait WordIPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	fn pack_words(&mut self, words: &[Self::Word]) -> Vec<Self::Elem>;
 }
 
+/// The number of elements [`WordIPVerifierChannel::pack_words`] returns for `n_words` words.
+///
+/// A channel that packs the words into wires rather than computing them needs the count on its
+/// own, so the layout stays in one place.
+pub const fn n_packed_elems<F: BinaryField>(n_words: usize) -> usize {
+	n_words.div_ceil(F::N_BITS / Word::BITS)
+}
+
 /// [`WordIPVerifierChannel::pack_words`] over concrete words, for channels carrying [`Word`].
 ///
 /// A set bit contributes the basis element at its position in the packed layout, which is what

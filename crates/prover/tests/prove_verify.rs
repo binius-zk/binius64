@@ -3,7 +3,14 @@
 
 use std::collections::HashSet;
 
-use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
+use binius_circuits::{
+	hash_based_sig::{
+		MESSAGE_LEN, Message,
+		aggregate::{MultiSigWires, circuit_xmss_multisig},
+		xmss::{XmssPublicKey, XmssSignature, generate_signature},
+	},
+	sha256::{State, populate_message_block, sha256_compress},
+};
 use binius_core::{
 	constraint_system::{
 		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, InoutSegment,
@@ -18,7 +25,7 @@ use binius_prover::{Prover, zk_config::ZKProver};
 use binius_transcript::ProverTranscript;
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use binius_verifier::{Verifier, config::StdChallenger, zk_config::ZKVerifier};
-use rand::{SeedableRng, rngs::StdRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 fn prove_verify(cs: ConstraintSystem, witness: &ValueVec) {
 	const LOG_INV_RATE: usize = 1;
@@ -622,4 +629,78 @@ fn test_plain_proof_rejects_message() {
 	let (cs, witness) = sha256_preimage_circuit();
 	// A plain proof of knowledge must not verify when a message is supplied.
 	assert!(!sign_verify(cs, &witness, None, Some(b"hello world")));
+}
+
+/// An aggregate XMSS verification, with `n_pad` extra public words pinned to zero.
+///
+/// The padding is inert: every padded word is a constant-zero assertion, and nothing else about
+/// the circuit depends on `n_pad`. It exists only to move the public segment's width.
+fn xmss_aggregate_circuit(num_signers: usize, n_pad: usize) -> (ConstraintSystem, ValueVec) {
+	const EPOCH: u32 = 42;
+
+	let mut rng = StdRng::seed_from_u64(1);
+	let mut message: Message = [0u8; MESSAGE_LEN];
+	rng.fill_bytes(&mut message);
+	let signatures: Vec<(XmssPublicKey, XmssSignature)> = (0..num_signers)
+		.map(|_| generate_signature(&mut rng, &message, EPOCH))
+		.collect();
+
+	let builder = CircuitBuilder::new();
+	let wires = MultiSigWires::new(&builder, num_signers);
+	circuit_xmss_multisig(&builder, &wires);
+
+	let zero = builder.add_constant(Word::ZERO);
+	let pad = (0..n_pad).map(|_| builder.add_inout()).collect::<Vec<_>>();
+	for &wire in &pad {
+		builder.assert_eq("pad_is_zero", wire, zero);
+	}
+
+	let circuit = builder.build();
+	let mut w = circuit.new_witness_filler();
+	wires.populate(&mut w, &message, EPOCH, &signatures);
+	for &wire in &pad {
+		w[wire] = Word::ZERO;
+	}
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	let cs = circuit.constraint_system().clone();
+	let witness = w.into_value_vec();
+	cs.verify(&witness).unwrap();
+	(cs, witness)
+}
+
+/// The padding that takes a `num_signers` circuit's public segment to exactly `n_public` words.
+///
+/// The unpadded width is whatever the XMSS circuit currently needs, and it moves whenever that
+/// circuit does, so the tests below state the width they mean to exercise and derive the padding
+/// from it rather than hard-coding a count that drifts out from under them. The probe pads by one
+/// rather than none so that the zero constant the padding introduces is already inside the
+/// measured base.
+fn pad_for_public_words(num_signers: usize, n_public: usize) -> usize {
+	let (cs, _) = xmss_aggregate_circuit(num_signers, 1);
+	let base = cs.n_public_words(InoutSegment::Public) - 1;
+	n_public - base
+}
+
+/// A public segment of exactly 2^9 words proves and verifies, plain and ZK.
+#[test]
+fn test_zk_prove_verify_aggregate_public_segment_at_power_of_two() {
+	let (cs, witness) = xmss_aggregate_circuit(1, pad_for_public_words(1, 512));
+	assert_eq!(cs.n_public_words(InoutSegment::Public), 512);
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
+}
+
+/// One public word past the power of two proves and verifies too.
+///
+/// This is the case the packed statement broke: the wrapper circuit read the statement back as
+/// constants, so a public segment that crossed 2^9 words disagreed with the one the concrete
+/// channels packed, and the outer Spartan check rejected an honest proof with
+/// `IPChannel(InvalidAssert)`. The only difference from the test above is one inert padding word.
+#[test]
+fn test_zk_prove_verify_aggregate_public_segment_over_power_of_two() {
+	let (cs, witness) = xmss_aggregate_circuit(1, pad_for_public_words(1, 513));
+	assert_eq!(cs.n_public_words(InoutSegment::Public), 513);
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
 }

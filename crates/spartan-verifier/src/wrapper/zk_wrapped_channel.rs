@@ -256,8 +256,13 @@ where
 	}
 
 	fn pack_words(&mut self, words: &[Word]) -> Vec<Self::Elem> {
-		// The words are concrete, so the packed elements are constants of the wrapper circuit.
-		pack_words_concrete::<F, Self::Elem>(words)
+		// The symbolic phase allocated an inout wire per packed element, since the statement is not
+		// the circuit's to fix. Fill them here: the words are concrete, so the verifier packs them
+		// itself and writes the result into the public segment.
+		pack_words_concrete::<F, F>(words)
+			.into_iter()
+			.map(|value| self.alloc_inout_elem(value))
+			.collect()
 	}
 }
 
