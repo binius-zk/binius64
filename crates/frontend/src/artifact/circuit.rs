@@ -3,7 +3,7 @@
 
 //! The artifact a build hands back: a constraint system plus what it takes to fill a witness.
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::{Allocator, BufferData, VecLike};
 use binius_core::{
 	ValueTable,
 	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
@@ -381,16 +381,15 @@ impl Circuit {
 			}
 		}
 
-		// Keep the hidden segment: rows `[offset_inout, combined_len)`, the inout values followed
-		// by the private ones. In the wire-major working buffer these rows are contiguous, so
-		// this is a single slice of the words. The constants and scratch are dropped, and so is
-		// the working buffer itself once the words are copied out.
+		// Keep the hidden segment: inout rows, then private rows.
+		// Shift it down to the front in place, then truncate the rest away.
+		// The buffer becomes the returned data, so no second allocation is ever live.
 		let start = layout.offset_inout() << log_instances;
 		let end = layout.combined_len() << log_instances;
-		let mut data = alloc.alloc::<Word>(end - start);
-		data.extend_from_slice(&working[start..end]);
+		working.copy_within(start..end, 0);
+		working.truncate(end - start);
 
-		Ok(ValueTable::from_hidden_words(layout, log_instances, data))
+		Ok(ValueTable::from_hidden_words(layout, log_instances, working))
 	}
 }
 
