@@ -1,12 +1,13 @@
 // Copyright 2026 The Binius Developers
-//! End-to-end M4 proving throughput for batches of independent hash primitives.
+//! End-to-end M4 proving throughput for batches of independent primitives.
 //!
 //! One benchmark runs per primitive, each proving a batch of instances of a single-instance circuit
 //! from [`binius_m4_prover::test_circuits`], which the `prove_hash_primitives` timing tests share.
 //! The `_3x` variants pack three primitives into one instance instead of one, filling the value
 //! vector more densely, so a smaller share of the committed trace is padding. Throughput is
 //! reported in primitives, not instances: the BLAKE3 and SHA-256 cores each compute two
-//! independent compressions from the two 32-bit lanes of a 64-bit word.
+//! independent compressions from the two 32-bit lanes of a 64-bit word, while one instance of the
+//! secp256k1 circuit is one point addition.
 //!
 //! Witness generation is inside the timed unit. Published Flock figures include it in the proof
 //! path, so the measured unit matches.
@@ -21,7 +22,9 @@ use binius_frontend::BatchWitnessFiller;
 use binius_hash::StdHashSuite;
 use binius_m4_prover::{
 	Prover,
-	test_circuits::{Blake3Circuit, KeccakCircuit, Sha256Circuit, TestCircuit},
+	test_circuits::{
+		Blake3Circuit, KeccakCircuit, Secp256k1AddIncompleteCircuit, Sha256Circuit, TestCircuit,
+	},
 };
 use binius_m4_verifier::Verifier;
 use binius_prover::OptimalPackedB128;
@@ -118,6 +121,12 @@ fn bench_prove_hash_primitives(c: &mut Criterion) {
 	bench_primitive::<Sha256Circuit<3>>(&mut group, "sha256_3x", log_instances, log_inv_rate);
 	bench_primitive::<KeccakCircuit<1>>(&mut group, "keccak", log_instances, log_inv_rate);
 	bench_primitive::<KeccakCircuit<3>>(&mut group, "keccak_3x", log_instances, log_inv_rate);
+	bench_primitive::<Secp256k1AddIncompleteCircuit>(
+		&mut group,
+		"secp256k1_add",
+		log_instances,
+		log_inv_rate,
+	);
 
 	group.finish();
 }

@@ -29,7 +29,10 @@ use binius_frontend::CircuitStat;
 use binius_hash::StdHashSuite;
 use binius_m4_prover::{
 	Prover,
-	test_circuits::{Blake3Circuit, ImulCircuit, KeccakCircuit, Sha256Circuit, TestCircuit},
+	test_circuits::{
+		Blake3Circuit, ImulCircuit, KeccakCircuit, Secp256k1AddIncompleteCircuit, Sha256Circuit,
+		TestCircuit,
+	},
 };
 use binius_m4_verifier::Verifier;
 use binius_prover::OptimalPackedB128;
@@ -219,6 +222,18 @@ fn prove_keccak_permutation_3x() {
 fn prove_integer_multiplication() {
 	let log_instances = log_size_from_env("LOG_IMUL_INSTANCES", 13);
 	prove_once::<ImulCircuit>("imul", log_instances);
+}
+
+// Proves incomplete secp256k1 point additions through M4 and verifies them.
+//
+// The heaviest primitive here: one addition is three 256-bit modular multiplications plus a
+// modular-division hint, so its circuit dwarfs a hash compression. Overridable via
+// `LOG_SECP256K1_ADDITIONS`.
+#[test]
+#[ignore = "proving run for its timing tree; use --ignored --release"]
+fn prove_secp256k1_add_incomplete() {
+	let log_additions = log_size_from_env("LOG_SECP256K1_ADDITIONS", 10);
+	prove_once::<Secp256k1AddIncompleteCircuit>("secp256k1_add", log_additions);
 }
 
 // A batch of one instance, with IMUL constraints.
