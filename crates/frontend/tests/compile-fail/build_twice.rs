@@ -1,3 +1,5 @@
+// Copyright 2026 The Binius Developers
+
 use binius_frontend::CircuitBuilder;
 
 fn main() {

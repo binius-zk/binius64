@@ -1,20 +1,20 @@
 error[E0382]: use of moved value: `builder`
- --> tests/compile-fail/build_twice.rs:8:23
-  |
-4 |     let builder = CircuitBuilder::new();
-  |         ------- move occurs because `builder` has type `CircuitBuilder`, which does not implement the `Copy` trait
-5 |     let _circuit = builder.build();
-  |                            ------- `builder` moved due to this method call
+  --> tests/compile-fail/build_twice.rs:10:23
+   |
+ 6 |     let builder = CircuitBuilder::new();
+   |         ------- move occurs because `builder` has type `CircuitBuilder`, which does not implement the `Copy` trait
+ 7 |     let _circuit = builder.build();
+   |                            ------- `builder` moved due to this method call
 ...
-8 |     let _circuit_again = builder.build();
-  |                          ^^^^^^^ value used here after move
-  |
+10 |     let _circuit_again = builder.build();
+   |                          ^^^^^^^ value used here after move
+   |
 note: `CircuitBuilder::build` takes ownership of the receiver `self`, which moves `builder`
- --> src/builder/mod.rs
-  |
-  |     pub fn build(self) -> Circuit {
-  |                  ^^^^
+  --> src/builder/mod.rs
+   |
+   |     pub fn build(self) -> Circuit {
+   |                  ^^^^
 help: you can `clone` the value and consume it, but this might not be your desired behavior
-  |
-5 |     let _circuit = builder.clone().build();
-  |                           ++++++++
+   |
+ 7 |     let _circuit = builder.clone().build();
+   |                           ++++++++
