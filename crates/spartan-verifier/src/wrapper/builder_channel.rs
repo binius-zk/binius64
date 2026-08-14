@@ -12,7 +12,7 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, Field, util::FieldFn};
 use binius_iop::channel::{IOPVerifierChannel, OracleSpec, TransparentEvalFn};
 use binius_ip::channel::{
-	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
+	IPVerifierChannel, WordIPVerifierChannel, n_packed_elems, select_word, subset_sum_word,
 };
 use binius_spartan_frontend::circuit_builder::{CircuitBuilder, ConstraintBuilder};
 
@@ -149,8 +149,13 @@ impl<F: BinaryField> WordIPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 	}
 
 	fn pack_words(&mut self, words: &[Word]) -> Vec<Self::Elem> {
-		// The words are concrete, so the packed elements are settled while building.
-		pack_words_concrete::<F, Self::Elem>(words)
+		// The words are the statement, and this circuit is built once to be reused across every
+		// statement, so the packed elements cannot be settled here: a constant would fix the
+		// statement it was built against into the circuit. They enter as inout wires instead, which
+		// `ZKWrappedVerifierChannel` and `ReplayChannel` fill with the concrete packing.
+		(0..n_packed_elems::<F>(words.len()))
+			.map(|_| self.alloc_inout_elem())
+			.collect()
 	}
 }
 
