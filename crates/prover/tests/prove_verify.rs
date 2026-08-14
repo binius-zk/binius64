@@ -671,24 +671,37 @@ fn xmss_aggregate_circuit(num_signers: usize, n_pad: usize) -> (ConstraintSystem
 	(cs, witness)
 }
 
+/// The padding that takes a `num_signers` circuit's public segment to exactly `n_public` words.
+///
+/// The unpadded width is whatever the XMSS circuit currently needs, and it moves whenever that
+/// circuit does, so the tests below state the width they mean to exercise and derive the padding
+/// from it rather than hard-coding a count that drifts out from under them. The probe pads by one
+/// rather than none so that the zero constant the padding introduces is already inside the
+/// measured base.
+fn pad_for_public_words(num_signers: usize, n_public: usize) -> usize {
+	let (cs, _) = xmss_aggregate_circuit(num_signers, 1);
+	let base = cs.n_public_words(InoutSegment::Public) - 1;
+	n_public - base
+}
+
 /// A public segment of exactly 2^9 words proves and verifies, plain and ZK.
 #[test]
 fn test_zk_prove_verify_aggregate_public_segment_at_power_of_two() {
-	let (cs, witness) = xmss_aggregate_circuit(1, 151);
+	let (cs, witness) = xmss_aggregate_circuit(1, pad_for_public_words(1, 512));
 	assert_eq!(cs.n_public_words(InoutSegment::Public), 512);
 	prove_verify(cs.clone(), &witness);
 	prove_verify_zk(cs, &witness);
 }
 
-/// One public word more, and the ZK wrapper rejects an honest proof.
+/// One public word past the power of two proves and verifies too.
 ///
-/// The plain prover accepts the same circuit and witness, so this is the ZK composition alone:
-/// verification fails in the outer Spartan check with `IPChannel(InvalidAssert)`. The only
-/// difference from the test above is one inert padding word, which takes the public segment from
-/// 512 words to 513.
+/// This is the case the packed statement broke: the wrapper circuit read the statement back as
+/// constants, so a public segment that crossed 2^9 words disagreed with the one the concrete
+/// channels packed, and the outer Spartan check rejected an honest proof with
+/// `IPChannel(InvalidAssert)`. The only difference from the test above is one inert padding word.
 #[test]
 fn test_zk_prove_verify_aggregate_public_segment_over_power_of_two() {
-	let (cs, witness) = xmss_aggregate_circuit(1, 152);
+	let (cs, witness) = xmss_aggregate_circuit(1, pad_for_public_words(1, 513));
 	assert_eq!(cs.n_public_words(InoutSegment::Public), 513);
 	prove_verify(cs.clone(), &witness);
 	prove_verify_zk(cs, &witness);
