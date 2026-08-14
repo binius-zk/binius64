@@ -882,6 +882,146 @@ fn test_scratch_pooling_rejects_a_bad_assignment() {
 	assert!(!err.failures[0].detail.is_empty());
 }
 
+/// Compiles one fixture under one option, returning the resulting statistics.
+///
+/// `opts` names the flag under test; every other flag stays at its default.
+fn stat_with(opts: Options, build: impl FnOnce(&CircuitBuilder)) -> crate::CircuitStat {
+	let builder = CircuitBuilder::with_opts(opts);
+	build(&builder);
+	let circuit = builder.build();
+	crate::CircuitStat::collect(&circuit)
+}
+
+#[test]
+fn constant_propagation_flag_is_honoured() {
+	// Invariant: the flag decides whether an all-constant gate folds away or stays a gate.
+	//
+	// A comparison never folds at build time the way `band`/`bxor` do, so the flag is the
+	// only thing standing between two constants and a real AND constraint.
+	let and_count = |enable| {
+		stat_with(
+			Options {
+				enable_constant_propagation: enable,
+				..Options::default()
+			},
+			|b| {
+				let a = b.add_constant(Word(3));
+				let c = b.add_constant(Word(5));
+				let lt = b.icmp_ult(a, c);
+				let out = b.add_inout();
+				b.assert_eq("lt", lt, out);
+			},
+		)
+		.n_and_constraints
+	};
+	assert_eq!(and_count(true), 0, "folded away, so no AND constraint remains");
+	assert_eq!(and_count(false), 1, "left as a gate, so its AND constraint stands");
+}
+
+#[test]
+fn algebraic_folding_flag_is_honoured() {
+	// Invariant: `x & x = x` bit for bit, so the flag decides whether that identity is applied
+	// at build time instead of spending an AND constraint on it.
+	let and_count = |enable| {
+		stat_with(
+			Options {
+				enable_algebraic_folding: enable,
+				..Options::default()
+			},
+			|b| {
+				let x = b.add_inout();
+				let z = b.band(x, x);
+				let out = b.add_inout();
+				b.assert_eq("self_and", z, out);
+			},
+		)
+		.n_and_constraints
+	};
+	assert_eq!(and_count(true), 0, "the identity fires, so no gate is emitted");
+	assert_eq!(and_count(false), 1, "the identity is skipped, so a real AND gate remains");
+}
+
+#[test]
+fn gate_fusion_flag_is_honoured() {
+	// Invariant: fusion inlines a linear definition into the AND constraint that consumes it,
+	// dropping the linear constraint that would otherwise commit it on its own.
+	//
+	//     x --xor-- y --> lin --and-- z --> out
+	//
+	// With fusion, `lin`'s definition is folded into the AND's operand, leaving one constraint.
+	// Without it, `lin` is committed by its own linear constraint, and the AND references it.
+	let zero_count = |enable| {
+		stat_with(
+			Options {
+				enable_gate_fusion: enable,
+				..Options::default()
+			},
+			|b| {
+				let x = b.add_inout();
+				let y = b.add_inout();
+				let z = b.add_inout();
+				let lin = b.bxor(x, y);
+				let out = b.band(lin, z);
+				b.mark_inout(out);
+			},
+		)
+		.n_zero_constraints
+	};
+	assert_eq!(zero_count(true), 0, "the linear step is inlined into the AND operand");
+	assert_eq!(zero_count(false), 1, "the linear step is committed on its own");
+}
+
+#[test]
+fn common_subexpression_elimination_flag_is_honoured() {
+	// Invariant: two gates over the same operation and operands compute the same value, so one
+	// of them is redundant. The flag decides whether the pass notices.
+	//
+	// Dead-code elimination is turned off so its own removal cannot be mistaken for this one.
+	let and_count = |enable| {
+		stat_with(
+			Options {
+				enable_common_subexpression_elimination: enable,
+				enable_dead_code_elimination: false,
+				..Options::default()
+			},
+			|b| {
+				let x = b.add_inout();
+				let y = b.add_inout();
+				let z1 = b.band(x, y);
+				let z2 = b.band(x, y);
+				let out1 = b.add_inout();
+				let out2 = b.add_inout();
+				b.assert_eq("z1", z1, out1);
+				b.assert_eq("z2", z2, out2);
+			},
+		)
+		.n_and_constraints
+	};
+	assert_eq!(and_count(true), 1, "the duplicate collapses onto the first gate");
+	assert_eq!(and_count(false), 2, "both gates keep their own AND constraint");
+}
+
+#[test]
+fn dead_code_elimination_flag_is_honoured() {
+	// Invariant: a gate nothing reads contributes no constraint, but only once the pass says so.
+	let and_count = |enable| {
+		stat_with(
+			Options {
+				enable_dead_code_elimination: enable,
+				..Options::default()
+			},
+			|b| {
+				let x = b.add_inout();
+				let y = b.add_inout();
+				let _unread = b.band(x, y);
+			},
+		)
+		.n_and_constraints
+	};
+	assert_eq!(and_count(true), 0, "the unread gate is dropped before constraining");
+	assert_eq!(and_count(false), 1, "the unread gate still constrains, unread or not");
+}
+
 #[test]
 fn test_scratch_pooling_matches_scalar_per_instance_batched() {
 	// Invariant: the batched fill and the one-at-a-time fill must agree for every instance.

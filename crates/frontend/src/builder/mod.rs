@@ -53,11 +53,12 @@ use gadget::smul64;
 /// ```
 /// use binius_frontend::{CircuitBuilder, Options};
 ///
-/// let builder = CircuitBuilder::with_opts(Options {
-///     enable_gate_fusion: false,
-///     ..Options::default()
-/// });
+/// let mut opts = Options::default();
+/// opts.enable_gate_fusion = false;
+/// let builder = CircuitBuilder::with_opts(opts);
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Options {
 	/// Inline linear definitions into the non-linear gates that consume them.
 	pub enable_gate_fusion: bool,
