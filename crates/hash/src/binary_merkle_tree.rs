@@ -1,17 +1,13 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{fmt, mem::MaybeUninit};
+use std::{fmt, mem::MaybeUninit, slice};
 
 use binius_compute::{Allocator, GlobalAllocator, VecLike};
 use binius_field::Field;
 use binius_utils::{
 	checked_arithmetics::checked_log_2,
-	rayon::{
-		prelude::*,
-		slice::ParallelSlice,
-		task_size::{WorkPerItem, min_len_for_work},
-	},
+	rayon::{self, prelude::*, slice::ParallelSlice},
 };
 use digest::{
 	Digest, FixedOutputReset, Output, OutputSizeUser,
@@ -206,45 +202,25 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 			);
 		}
 
-		let (leaf_layer, mut remaining) =
-			inner_nodes.spare_capacity_mut().split_at_mut(1 << log_len);
+		let (leaf_layer, remaining) = inner_nodes.spare_capacity_mut().split_at_mut(1 << log_len);
 
-		let mut prev_layer = unsafe {
+		let leaves: &[Array<u8, N>] = unsafe {
 			// SAFETY: the leaf digests were just written over the whole widest layer
 			leaf_layer.assume_init_mut()
 		};
 
-		// Fold several levels per round instead of one.
-		// One synchronization then covers a group of levels rather than a single level.
-		let parallel_compression = H::ParCompression::default();
-		let mut levels_remaining = log_len;
-		while levels_remaining > 0 {
-			let depth = SUBTREE_LOG_DEPTH.min(levels_remaining);
-
-			// Carve out this round's layers, narrowest last.
-			// Keep the narrowest one's raw parts to rebuild it after the fold below.
-			let mut group_layers = Vec::with_capacity(depth);
-			let mut last_layer_raw = None;
-			for j in 1..=depth {
-				let (layer, next_remaining) = remaining.split_at_mut(1 << (levels_remaining - j));
-				remaining = next_remaining;
-				if j == depth {
-					last_layer_raw = Some((layer.as_mut_ptr(), layer.len()));
-				}
-				group_layers.push(layer);
-			}
-
-			fold_subtrees(prev_layer, group_layers, &parallel_compression);
-
-			let (last_layer_ptr, last_layer_len) =
-				last_layer_raw.expect("depth is always at least 1");
-			prev_layer = unsafe {
-				// SAFETY: the fold above has returned, so no task still borrows this layer.
-				// Every slot in it was written before that fold returned.
-				std::slice::from_raw_parts_mut(last_layer_ptr, last_layer_len).assume_init_mut()
+		// One synchronization point: the leaves are already written, so build every level
+		// above them as a single recursive tree of rayon tasks.
+		// A node is written the instant both its children are ready, with no other barrier.
+		if log_len > 0 {
+			let parallel_compression = H::ParCompression::default();
+			let ctx = BuildContext {
+				leaves,
+				log_len,
+				nodes: SendPtr(remaining.as_mut_ptr()),
+				compression: &parallel_compression,
 			};
-
-			levels_remaining -= depth;
+			build_node(&ctx, 0, log_len);
 		}
 
 		unsafe {
@@ -260,90 +236,100 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 	}
 }
 
-/// Tree levels one subtree folds before the next synchronization point.
+/// Leaf-span depth below which a subtree folds without spawning further rayon tasks.
 ///
-/// Folding one layer at a time pays a barrier every layer.
-/// A narrow layer falls below one task's floor and then runs single-threaded.
-/// That happens regardless of how many cores are idle.
-///
-/// Grouping levels into subtrees keeps each group large enough to split across cores.
-/// A subtree's intermediates also stay small enough to fit in cache for its whole fold.
+/// Below this depth, a subtree's whole span already fills one SIMD-batched compression
+/// call per level, so splitting it further would only add task overhead.
 ///
 /// 6 was picked from per-layer costs measured on a 2^17-leaf SHA-256 tree.
 const SUBTREE_LOG_DEPTH: usize = 6;
 
-/// Minimum subtrees one rayon task folds.
+/// A raw pointer that can cross into another rayon task.
 ///
-/// A subtree at this depth costs `2^depth - 1` compressions, not one.
-/// Scaling the per-compression time budget down by that count floors task size
-/// on real work instead of on item count.
-fn min_subtrees_per_task(depth: usize) -> usize {
-	let compressions_per_subtree = (1usize << depth) - 1;
-	(min_len_for_work(WorkPerItem::HashCompression) / compressions_per_subtree).max(1)
+/// Every write through it targets a disjoint element, checked by hand at each write site.
+#[derive(Clone, Copy)]
+struct SendPtr<T>(*mut T);
+
+unsafe impl<T: Send> Send for SendPtr<T> {}
+unsafe impl<T: Sync> Sync for SendPtr<T> {}
+
+/// State shared by every recursive call building the tree above the leaves.
+struct BuildContext<'a, D, C> {
+	/// The leaf digests, already written.
+	leaves: &'a [D],
+	/// Base-2 logarithm of the leaf count.
+	log_len: usize,
+	/// The first node above the leaf layer, addressed by [`node_offset`].
+	nodes: SendPtr<MaybeUninit<D>>,
+	/// Two-to-one compression, used both one pair at a time and in SIMD-batched groups.
+	compression: &'a C,
 }
 
-/// Folds `layers.len()` consecutive tree levels over `inputs`.
+/// Flat-buffer offset of the node spanning `1 << log_width` leaves starting at `leaves_start`.
 ///
-/// Each subtree is `1 << layers.len()` consecutive inputs, folded to one root
-/// entirely inside a single rayon task.
-/// No task synchronizes with another until every subtree is done.
+/// The offset is relative to the first node above the leaf layer, matching `nodes` in
+/// [`BuildContext`].
+const fn node_offset(log_len: usize, leaves_start: usize, log_width: usize) -> usize {
+	// Depth counted from the root, matching `BinaryMerkleTree::layer`.
+	let layer_depth = log_len - log_width;
+	let layer_start = (1 << log_len) - (1 << (layer_depth + 1));
+	layer_start + (leaves_start >> log_width)
+}
+
+/// Folds `1 << log_width` leaves down to their single root without spawning rayon tasks.
 ///
-/// `layers[j]` is the `(j + 1)`-th layer above `inputs`.
-/// Its length is `inputs.len() >> (j + 1)`.
-/// The last layer is the round's output: the layer every subtree folds down to.
-///
-/// # Panics
-///
-/// Panics if `layers` is empty.
-/// Panics if any layer does not have the width the formula above requires.
-fn fold_subtrees<D, C>(inputs: &[D], layers: Vec<&mut [MaybeUninit<D>]>, compression: &C)
+/// Every level still runs through the hash suite's SIMD-batched compression, since a small
+/// subtree's whole level is one batch, not one task.
+fn fold_small_subtree<D, C>(ctx: &BuildContext<D, C>, leaves_start: usize, log_width: usize) -> D
 where
-	D: Send + Sync,
+	D: Clone,
+	C: ParallelPseudoCompression<D, 2>,
+{
+	let mut cur = &ctx.leaves[leaves_start..leaves_start + (1 << log_width)];
+	for depth in 1..=log_width {
+		let width = 1 << (log_width - depth);
+		let offset = node_offset(ctx.log_len, leaves_start, depth);
+		let out = unsafe {
+			// SAFETY: this subtree owns a leaf range disjoint from every other subtree's, so
+			// its node offset at every depth is disjoint from every other subtree's.
+			slice::from_raw_parts_mut(ctx.nodes.0.add(offset), width)
+		};
+		ctx.compression.parallel_compress(cur, out);
+		cur = unsafe {
+			// SAFETY: the compression above wrote every slot of this layer
+			out.assume_init_mut()
+		};
+	}
+	cur[0].clone()
+}
+
+/// Builds every node from `1 << log_width` leaves starting at `leaves_start` up to their root.
+///
+/// Levels past [`SUBTREE_LOG_DEPTH`] recurse as two independent halves, run in parallel by
+/// rayon, with no synchronization beyond a node waiting on its own two children.
+fn build_node<D, C>(ctx: &BuildContext<D, C>, leaves_start: usize, log_width: usize) -> D
+where
+	D: Clone + Send + Sync,
 	C: ParallelPseudoCompression<D, 2> + Sync,
 {
-	let depth = layers.len();
-	assert!(depth > 0, "fold_subtrees requires at least one layer");
-	for (j, layer) in layers.iter().enumerate() {
-		assert_eq!(layer.len(), inputs.len() >> (j + 1), "layer {j} has the wrong width");
+	if log_width <= SUBTREE_LOG_DEPTH {
+		return fold_small_subtree(ctx, leaves_start, log_width);
 	}
 
-	let num_subtrees = inputs.len() >> depth;
+	let half = log_width - 1;
+	let mid = leaves_start + (1 << half);
+	let (left, right) =
+		rayon::join(|| build_node(ctx, leaves_start, half), || build_node(ctx, mid, half));
 
-	// Split every layer into `num_subtrees` equal stripes.
-	// Transpose those per-layer chunk sequences into one stripe set per subtree.
-	// Each subtree then owns a disjoint slice of every layer it writes.
-	let mut layer_chunks: Vec<_> = layers
-		.into_iter()
-		.map(|layer| {
-			let chunk_len = layer.len() / num_subtrees;
-			layer.chunks_mut(chunk_len)
-		})
-		.collect();
-	let subtree_layers: Vec<Vec<&mut [MaybeUninit<D>]>> = (0..num_subtrees)
-		.map(|_| {
-			layer_chunks
-				.iter_mut()
-				.map(|chunks| chunks.next().expect("every layer has num_subtrees stripes"))
-				.collect()
-		})
-		.collect();
+	let node = ctx.compression.compression().compress([left, right]);
 
-	inputs
-		.chunks_exact(1 << depth)
-		.zip(subtree_layers)
-		.collect::<Vec<_>>()
-		.into_par_iter()
-		.with_min_len(min_subtrees_per_task(depth))
-		.for_each(|(subtree_inputs, subtree_layers)| {
-			let mut cur = subtree_inputs;
-			for layer in subtree_layers {
-				compression.parallel_compress(cur, layer);
-				cur = unsafe {
-					// SAFETY: the compression above wrote every slot of this layer
-					layer.assume_init_mut()
-				};
-			}
-		});
+	let offset = node_offset(ctx.log_len, leaves_start, log_width);
+	unsafe {
+		// SAFETY: this subtree owns a leaf range disjoint from every other subtree's, so its
+		// node offset is disjoint from every other subtree's.
+		(*ctx.nodes.0.add(offset)).write(node.clone());
+	}
+	node
 }
 
 impl<D: Clone + Send, A: Allocator> BinaryMerkleTree<D, A> {
@@ -535,14 +521,10 @@ mod tests {
 	}
 
 	#[test]
-	fn test_new_matches_a_naive_layer_by_layer_fold_across_subtree_rounds() {
-		// Sizes chosen to land on both sides of a subtree round boundary:
-		// one round exactly, one round plus a partial round, two full rounds.
-		for log_len in [
-			SUBTREE_LOG_DEPTH,
-			SUBTREE_LOG_DEPTH + 3,
-			2 * SUBTREE_LOG_DEPTH,
-		] {
+	fn test_new_matches_a_naive_layer_by_layer_fold_across_the_recursion_cutoff() {
+		// Sizes chosen to land on both sides of the small-subtree cutoff:
+		// a single leaf, two leaves, exactly at the cutoff, and twice past it.
+		for log_len in [0, 1, SUBTREE_LOG_DEPTH, 2 * SUBTREE_LOG_DEPTH] {
 			let tree = commit(1 << log_len, 1).unwrap();
 
 			// Reference: fold the same leaves one pair at a time, one full layer at a time.
