@@ -16,7 +16,7 @@ use itertools::izip;
 
 use super::{
 	error::{Error, VerificationError},
-	output::{LogupOutput, LogupTableOutput},
+	output::{LogupOutput, LogupTableOutput, LogupTransparentOutput, LogupTransparentTableOutput},
 	pushforward::{Pushforward, TableClaim, denominator_eval, verify_pushforward},
 };
 use crate::{
@@ -134,6 +134,86 @@ pub fn verify_reduction<'a, F, C>(
 	tables: impl IntoIterator<Item = TableLookup<'a, C::Elem>>,
 	channel: &mut C,
 ) -> Result<LogupOutput<C::Elem>, Error>
+where
+	F: Field + ExtensionField<BinaryField1b>,
+	C: IPVerifierChannel<F>,
+	C::Elem: From<F> + 'a,
+{
+	let LogupTransparentOutput {
+		index_eval_point,
+		tables,
+	} = verify_reduction_transparent::<F, C>(gamma, tables, channel)?;
+
+	// Reduce every table's leaf claim on Y_t and its product claim <T_t, Y_t> = e_t to one shared
+	// evaluation point.
+	let table_claims = tables.iter().map(|table| TableClaim {
+		eval_claim: table.product_claim.clone(),
+		pushforward_eval_claim: table.pushforward_eval_claim.clone(),
+		pushforward_eval_point: &table.pushforward_eval_point,
+	});
+	let Pushforward {
+		table_eval_point,
+		table_eval_claims,
+		pushforward_eval_claims,
+	} = verify_pushforward::<F, C>(table_claims, channel)?;
+
+	Ok(LogupOutput {
+		table_eval_point,
+		index_eval_point,
+		tables: izip!(table_eval_claims, pushforward_eval_claims, tables)
+			.map(|(eval_claim, pushforward_claim, table)| LogupTableOutput {
+				eval_claim,
+				pushforward_claim,
+				index_eval_claims: table.index_eval_claims,
+			})
+			.collect(),
+	})
+}
+
+/// Verify a logUp* reduction over transparent tables, leaving the table side open.
+///
+/// The same reduction as [`verify_reduction`], stopped one step short of the pushforward sumcheck.
+/// Each table ends with two claims on its pushforward and none on itself:
+///
+/// ```text
+///     <Y_t, eq_{z_t}> = Y_t(z_t)      the fractional-addition leaf claim
+///     <Y_t, T_t>      = e_t           the product claim
+/// ```
+///
+/// Both are linear relations on the one multilinear `Y_t`.
+/// A caller holding `Y_t` as a committed oracle opens the two together against that commitment.
+/// Skipping the sumcheck drops `max m` rounds of round polynomials and two evaluations per table.
+/// It asks the verifier to evaluate `T_t` itself, so a committed table must use
+/// [`verify_reduction`].
+///
+/// # Arguments
+///
+/// * `gamma` - The looker batching challenge, as in [`verify_reduction`].
+/// * `tables` - One [`TableLookup`] per table.
+/// * `channel` - The verifier channel.
+///
+/// # Transcript layout
+///
+/// Steps 1 to 4 of [`verify_reduction`]'s layout, and nothing after them.
+///
+/// # Soundness
+///
+/// The returned product claims are **unchecked**: this routine never reads a table.
+/// A lookup claim is proved only once its caller opens `<Y_t, T_t> = e_t`.
+/// Everything else — the logUp identity that pins `Y_t` to the pushforward — is checked here.
+///
+/// # Preconditions
+///
+/// The preconditions of [`verify_reduction`].
+///
+/// # Errors
+///
+/// The errors of [`verify_reduction`], less the pushforward reduction, which does not run here.
+pub fn verify_reduction_transparent<'a, F, C>(
+	gamma: &C::Elem,
+	tables: impl IntoIterator<Item = TableLookup<'a, C::Elem>>,
+	channel: &mut C,
+) -> Result<LogupTransparentOutput<C::Elem>, Error>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	C: IPVerifierChannel<F>,
@@ -297,44 +377,32 @@ where
 		.assert_zero(leaf_den - evaluate_inplace_scalars(leaf_dens, selector_coords))
 		.map_err(|_| VerificationError::IncorrectIndexEvaluation)?;
 
-	// Reduce every table's leaf claim on Y_t and its product claim <T_t, Y_t> = e_t to one shared
-	// evaluation point. A table's product check binds it to the gamma-combination of the claims of
-	// the lookers that read it.
-	let table_claims = izip!(&tables, pushforward_evals, &table_points).map(
-		|(table, pushforward_eval_claim, &point)| {
-			// Its lookers are weighted gamma^0, gamma^1, ..., so the combination is the univariate
-			// evaluation of their claims at gamma.
+	// Every table's two claims on its pushforward: the leaf claim just read at the leaf point, and
+	// the product claim binding <T_t, Y_t> to the gamma-combination of the claims of the lookers
+	// that read it.
+	let tables = izip!(&tables, pushforward_evals, &table_points, index_eval_claims)
+		.map(|(table, pushforward_eval_claim, &point, index_eval_claims)| {
+			// Its lookers are weighted gamma^0, gamma^1, ..., so the combination is the
+			// univariate evaluation of their claims at gamma.
 			let claims = table
 				.lookers
 				.iter()
 				.map(|looker| looker.eval_claim.clone())
 				.collect::<Vec<_>>();
-			let eval_claim = evaluate_univariate(&claims, gamma);
-			TableClaim {
-				eval_claim,
+			LogupTransparentTableOutput {
+				pushforward_eval_point: point.to_vec(),
 				pushforward_eval_claim,
-				pushforward_eval_point: point,
+				product_claim: evaluate_univariate(&claims, gamma),
+				index_eval_claims,
 			}
-		},
-	);
-	let Pushforward {
-		table_eval_point,
-		table_eval_claims,
-		pushforward_eval_claims,
-	} = verify_pushforward::<F, C>(table_claims, channel)?;
+		})
+		.collect();
 
-	Ok(LogupOutput {
-		table_eval_point,
+	Ok(LogupTransparentOutput {
 		// Spans the deepest looker, not the whole node point: when a table is deeper than every
 		// looker its extra coordinates belong to the tables alone. A looker reads the last n.
 		index_eval_point: node_point[n_node_vars - max_n..].to_vec(),
-		tables: izip!(table_eval_claims, pushforward_eval_claims, index_eval_claims)
-			.map(|(eval_claim, pushforward_claim, index_eval_claims)| LogupTableOutput {
-				eval_claim,
-				pushforward_claim,
-				index_eval_claims,
-			})
-			.collect(),
+		tables,
 	})
 }
 

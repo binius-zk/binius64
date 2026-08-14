@@ -138,7 +138,8 @@ where
 	///
 	/// The output of this protocol is a set of evaluation claims on the `b` selectors representing
 	/// all of `a`, `b`, `c_lo` and `c_hi` as column-major bit matrices, at a common evaluation
-	/// point. The logup* pushforward commitment is opened through the channel inside phase 5.
+	/// point. The logup* pushforward commitment carries its two relations into the channel inside
+	/// phase 5.
 	pub fn prove(&mut self, witness: Witness<'_, 'alloc, A, P>) -> IntMulOutput<F> {
 		let Witness {
 			a_exponents,
@@ -281,9 +282,9 @@ where
 		drop(columns_guard);
 
 		// Read the N_LIMB_COLUMNS looked-up columns from the shared table via the committed multi-
-		// looker logup* reduction. The pushforward oracle is committed inside; its opening relation
-		// is returned to the caller. The reduction returns one index claim per column, all at the
-		// shared content point.
+		// looker logup* reduction. The pushforward oracle is committed inside; its opening
+		// relations are returned to the caller. The reduction returns one index claim per column,
+		// all at the shared content point.
 		let lookers = izip!(&index_columns, &twisted_claims)
 			.map(|(index, (twisted_point, twisted_eval))| Looker {
 				index,
@@ -292,14 +293,15 @@ where
 			})
 			.collect::<Vec<_>>();
 		let log_cols = log2_ceil_usize(N_LIMB_COLUMNS);
-		// Every limb column reads the one shared power table, so the reduction runs over a
-		// single-table list.
-		let logup_proof = logup_star::prove(
+		// The power table is succinct, so the transparent reduction runs: the pushforward is opened
+		// against the table itself instead of a sumcheck reducing the two to a shared point. Every
+		// limb column reads that one shared table.
+		let logup_proof = logup_star::prove_transparent(
 			[logup_star::TableLookup { table, lookers }],
 			self.channel,
 			self.alloc,
 		);
-		let [table_output] = logup_proof.tables.as_slice() else {
+		let [column_index_evals] = logup_proof.index_eval_claims.as_slice() else {
 			unreachable!("the reduction runs over the one power table")
 		};
 
@@ -320,7 +322,7 @@ where
 		// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by
 		// sampling ρ, so the final unification runs over the content variables only.
 		let rho = self.channel.sample_many(log_cols);
-		let mut padded_column_evals = table_output.index_eval_claims.clone();
+		let mut padded_column_evals = column_index_evals.clone();
 		padded_column_evals.resize(1 << log_cols, F::ZERO);
 		let folded_index_claim =
 			evaluate(&FieldBuffer::<P>::from_values(&padded_column_evals), &rho);

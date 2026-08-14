@@ -8,7 +8,9 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, PackedField};
 use binius_ip::{
 	MultilinearEvalClaim,
-	logup_star::{LogupOutput, LogupTableOutput},
+	logup_star::{
+		LogupOutput, LogupTableOutput, LogupTransparentOutput, LogupTransparentTableOutput,
+	},
 };
 use binius_math::{FieldBuffer, FieldSlice, FieldVec, univariate::evaluate_univariate};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -117,6 +119,40 @@ where
 	prove_reduction(alloc, gamma, &tables, numerators, &pushforward_slices, channel)
 }
 
+/// Prove a logUp* reduction over transparent tables, leaving the table side open.
+///
+/// This is the prover for [`binius_ip::logup_star::verify_reduction_transparent`], the counterpart
+/// of [`prove`] for a caller that evaluates its tables itself. It runs the same reduction and stops
+/// before the pushforward sumcheck, returning each table's two open claims on its pushforward.
+///
+/// # Arguments
+///
+/// The arguments of [`prove`]. The table multilinears are still needed: the reduction reads each
+/// one to build its table-side fractional-addition circuit.
+///
+/// # Preconditions
+///
+/// The preconditions of [`prove`].
+pub fn prove_transparent<'a, A, F, P>(
+	alloc: &A,
+	gamma: F,
+	tables: impl IntoIterator<Item = TableLookup<'a, P>>,
+	channel: &mut impl IPProverChannel<F>,
+) -> LogupTransparentOutput<F>
+where
+	A: Allocator,
+	F: BinaryField<Underlier: Divisible<u64>>,
+	P: PackedField<Scalar = F> + 'a,
+{
+	let tables = tables.into_iter().collect::<Vec<_>>();
+	let (numerators, pushforwards) = witness::combined_lookers::<A, F, P>(alloc, gamma, &tables);
+	let pushforward_slices = pushforwards
+		.iter()
+		.map(FieldBuffer::to_ref)
+		.collect::<Vec<_>>();
+	prove_reduction_transparent(alloc, gamma, &tables, numerators, &pushforward_slices, channel)
+}
+
 /// Run the logUp* reduction over the pre-built witnesses `numerators` and pushforwards `Y_t`.
 ///
 /// This is the reduction core of [`prove`], split out so a caller can build the `Y_t` once and
@@ -154,6 +190,72 @@ pub fn prove_reduction<A, F, P>(
 	pushforwards: &[FieldSlice<P>],
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
+where
+	A: Allocator,
+	F: BinaryField<Underlier: Divisible<u64>>,
+	P: PackedField<Scalar = F>,
+{
+	let LogupTransparentOutput {
+		index_eval_point,
+		tables: open_tables,
+	} = prove_reduction_transparent(alloc, gamma, tables, numerators, pushforwards, channel);
+
+	// Reduce every table's leaf claim on Y_t and its product claim <T_t, Y_t> = e_t to one shared
+	// evaluation point.
+	let table_witnesses =
+		izip!(tables, pushforwards, &open_tables).map(|(table, &pushforward, open)| TableWitness {
+			table: table.table,
+			pushforward,
+			eval_claim: open.product_claim,
+			pushforward_eval_claim: open.pushforward_eval_claim,
+			pushforward_eval_point: &open.pushforward_eval_point,
+		});
+	let PushforwardOutput {
+		table_eval_point,
+		table_eval_claims,
+		pushforward_eval_claims,
+	} = prove_pushforward(alloc, table_witnesses, channel);
+
+	LogupOutput {
+		table_eval_point,
+		index_eval_point,
+		tables: izip!(table_eval_claims, pushforward_eval_claims, open_tables)
+			.map(|(eval_claim, pushforward_claim, open)| LogupTableOutput {
+				eval_claim,
+				pushforward_claim,
+				index_eval_claims: open.index_eval_claims,
+			})
+			.collect(),
+	}
+}
+
+/// Run the transparent-table logUp* reduction over the pre-built witnesses.
+///
+/// This is the prover for [`binius_ip::logup_star::verify_reduction_transparent`], and the
+/// reduction core of [`prove_transparent`] the way [`prove_reduction`] is the core of [`prove`].
+/// It stops before the pushforward sumcheck, returning each table's two open claims on its `Y_t`.
+///
+/// # Arguments
+///
+/// The arguments of [`prove_reduction`].
+///
+/// # Preconditions
+///
+/// The preconditions of [`prove_reduction`].
+#[tracing::instrument(
+	skip_all,
+	level = "debug",
+	name = "logup* fracadd reduction",
+	fields(n_tables = tables.len())
+)]
+pub fn prove_reduction_transparent<A, F, P>(
+	alloc: &A,
+	gamma: F,
+	tables: &[TableLookup<'_, P>],
+	numerators: Vec<Vec<FieldVec<P, A>>>,
+	pushforwards: &[FieldSlice<P>],
+	channel: &mut impl IPProverChannel<F>,
+) -> LogupTransparentOutput<F>
 where
 	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
@@ -330,40 +432,25 @@ where
 	}
 	channel.send_many(&pushforward_evals);
 
-	// Reduce every table's leaf claim on Y_t and its product claim <T_t, Y_t> = e_t to one shared
-	// evaluation point.
-	let table_witnesses =
-		izip!(tables, pushforwards, &table_leaves).map(|(table, &pushforward, leaf)| {
-			// Its lookers are weighted gamma^0, gamma^1, ..., so the combination is the univariate
-			// evaluation of their claims at gamma.
-			let claims = table
-				.lookers
-				.iter()
-				.map(|looker| looker.eval_claim)
-				.collect::<Vec<_>>();
-			let eval_claim = evaluate_univariate(&claims, &gamma);
-			TableWitness {
-				table: table.table,
-				pushforward,
-				eval_claim,
-				pushforward_eval_claim: leaf.num_eval,
-				pushforward_eval_point: &leaf.point,
-			}
-		});
-	let PushforwardOutput {
-		table_eval_point,
-		table_eval_claims,
-		pushforward_eval_claims,
-	} = prove_pushforward(alloc, table_witnesses, channel);
-
-	LogupOutput {
-		table_eval_point,
+	// Every table's two claims on its pushforward: the leaf claim at the leaf point, and the
+	// product claim binding <T_t, Y_t> to the gamma-combination of its lookers' claims.
+	LogupTransparentOutput {
 		index_eval_point,
-		tables: izip!(table_eval_claims, pushforward_eval_claims, index_eval_claims)
-			.map(|(eval_claim, pushforward_claim, index_eval_claims)| LogupTableOutput {
-				eval_claim,
-				pushforward_claim,
-				index_eval_claims,
+		tables: izip!(tables, table_leaves, index_eval_claims)
+			.map(|(table, leaf, index_eval_claims)| {
+				// Its lookers are weighted gamma^0, gamma^1, ..., so the combination is the
+				// univariate evaluation of their claims at gamma.
+				let claims = table
+					.lookers
+					.iter()
+					.map(|looker| looker.eval_claim)
+					.collect::<Vec<_>>();
+				LogupTransparentTableOutput {
+					pushforward_eval_point: leaf.point,
+					pushforward_eval_claim: leaf.num_eval,
+					product_claim: evaluate_univariate(&claims, &gamma),
+					index_eval_claims,
+				}
 			})
 			.collect(),
 	}
@@ -380,6 +467,7 @@ mod tests {
 	use binius_ip::{channel::IPVerifierChannel, logup_star};
 	use binius_math::{
 		FieldBuffer,
+		inner_product::inner_product_buffers,
 		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -456,20 +544,9 @@ mod tests {
 			.collect()
 	}
 
-	/// Round-trip a whole instance and check every reduced claim against the honest witness.
-	///
-	/// `spec` gives one `(table_n_vars, [looker_n_vars])` per table, so one helper covers the
-	/// single-table, multi-looker, unequal-length and multi-table shapes alike.
-	fn check_round_trip(spec: &[(usize, Vec<usize>)], seed: u64) {
-		let alloc = GlobalAllocator;
-		let tables = random_instance(spec, seed);
-		let shape = format!("{spec:?}");
-
-		// Prove, then replay the transcript through the verifier. Each table's batching challenge
-		// is the caller's to sample, one per table, before the reduction runs.
-		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let gamma = IPProverChannel::<F>::sample(&mut prover_transcript);
-		let prover_tables = tables
+	// The prover-side witnesses of an instance.
+	fn prover_tables(tables: &[TestTable]) -> Vec<TableLookup<'_, P>> {
+		tables
 			.iter()
 			.map(|table| TableLookup {
 				table: table.values.to_ref(),
@@ -483,14 +560,12 @@ mod tests {
 					})
 					.collect(),
 			})
-			.collect::<Vec<_>>();
-		let prover_out =
-			prove::<GlobalAllocator, F, P>(&alloc, gamma, prover_tables, &mut prover_transcript);
+			.collect()
+	}
 
-		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
-		assert_eq!(verifier_gamma, gamma, "both sides must draw the same challenge ({shape})");
-		let verifier_tables = tables
+	// The verifier-side claims of an instance.
+	fn verifier_tables(tables: &[TestTable]) -> Vec<logup_star::TableLookup<'_, F>> {
+		tables
 			.iter()
 			.map(|table| logup_star::TableLookup {
 				n_vars: table.values.log_len(),
@@ -503,53 +578,33 @@ mod tests {
 					})
 					.collect(),
 			})
-			.collect::<Vec<_>>();
-		let verifier_out = logup_star::verify_reduction::<F, _>(
-			&verifier_gamma,
-			verifier_tables,
-			&mut verifier_transcript,
-		)
-		.expect("verification succeeds");
+			.collect()
+	}
 
-		// The prover and verifier must derive identical reduced claims from the same transcript.
-		assert_eq!(prover_out, verifier_out, "outputs disagree ({shape})");
-
-		// The table point spans the widest table; table t's claims are at its first m_t
-		// coordinates.
-		let table_point = &prover_out.table_eval_point;
-		for (table_index, table) in tables.iter().enumerate() {
-			let m = table.values.log_len();
-			let own_point = &table_point[..m];
-
-			assert_eq!(
-				prover_out.tables[table_index].eval_claim,
-				evaluate(&table.values, own_point),
-				"table claim wrong for table {table_index} ({shape})"
-			);
-
-			// The honest pushforward of this table: its own lookers' numerators, weighted by
-			// gamma^i within the table — the same power series serves every table — scattered onto
-			// its cube.
-			let mut pushforward = vec![F::ZERO; 1usize << m];
-			for (looker, power) in iter::zip(&table.lookers, powers(gamma)) {
-				for (&j, &eq) in iter::zip(&looker.index, &looker.eq_r) {
-					pushforward[j] += power * eq;
-				}
+	// The honest pushforward of one table: its own lookers' numerators, weighted by gamma^i within
+	// the table — the same power series serves every table — scattered onto its cube.
+	fn honest_pushforward(table: &TestTable, gamma: F) -> FieldBuffer<P> {
+		let mut pushforward = vec![F::ZERO; table.values.len()];
+		for (looker, power) in iter::zip(&table.lookers, powers(gamma)) {
+			for (&j, &eq) in iter::zip(&looker.index, &looker.eq_r) {
+				pushforward[j] += power * eq;
 			}
-			let pushforward = FieldBuffer::<P>::from_values(&pushforward);
-			assert_eq!(
-				prover_out.tables[table_index].pushforward_claim,
-				evaluate(&pushforward, own_point),
-				"pushforward claim wrong for table {table_index} ({shape})"
-			);
 		}
+		FieldBuffer::from_values(&pushforward)
+	}
 
-		// The index point spans the deepest looker; a looker's claim is at its last n coordinates,
-		// so a shorter looker reads a suffix of it. The claims come back grouped by table.
-		let index_point = &prover_out.index_eval_point;
-		for (table_index, table) in tables.iter().enumerate() {
+	// Check every looker's index claim, given the claims grouped by table.
+	//
+	// The index point spans the deepest looker; a looker's claim is at its last n coordinates, so a
+	// shorter looker reads a suffix of it.
+	fn check_index_claims(
+		index_point: &[F],
+		claims_by_table: &[Vec<F>],
+		tables: &[TestTable],
+		shape: &str,
+	) {
+		for (table_index, (table, claims)) in iter::zip(tables, claims_by_table).enumerate() {
 			let m = table.values.log_len();
-			let claims = &prover_out.tables[table_index].index_eval_claims;
 			assert_eq!(claims.len(), table.lookers.len(), "claim count ({shape})");
 			for (looker, claim) in iter::zip(&table.lookers, claims) {
 				let embedded = looker.index.iter().map(|&j| iota(j, m)).collect::<Vec<_>>();
@@ -563,6 +618,114 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	/// Round-trip a whole instance and check every reduced claim against the honest witness.
+	///
+	/// `spec` gives one `(table_n_vars, [looker_n_vars])` per table, so one helper covers the
+	/// single-table, multi-looker, unequal-length and multi-table shapes alike.
+	fn check_round_trip(spec: &[(usize, Vec<usize>)], seed: u64) {
+		let alloc = GlobalAllocator;
+		let tables = random_instance(spec, seed);
+		let shape = format!("{spec:?}");
+
+		// Prove, then replay the transcript through the verifier. The batching challenge is the
+		// caller's to sample, before the reduction runs.
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let gamma = IPProverChannel::<F>::sample(&mut prover_transcript);
+		let prover_out = prove::<GlobalAllocator, F, P>(
+			&alloc,
+			gamma,
+			prover_tables(&tables),
+			&mut prover_transcript,
+		);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
+		assert_eq!(verifier_gamma, gamma, "both sides must draw the same challenge ({shape})");
+		let verifier_out = logup_star::verify_reduction::<F, _>(
+			&verifier_gamma,
+			verifier_tables(&tables),
+			&mut verifier_transcript,
+		)
+		.expect("verification succeeds");
+
+		// The prover and verifier must derive identical reduced claims from the same transcript.
+		assert_eq!(prover_out, verifier_out, "outputs disagree ({shape})");
+
+		// The table point spans the widest table; table t's claims are at its first m_t
+		// coordinates.
+		let table_point = &prover_out.table_eval_point;
+		for (table_index, table) in tables.iter().enumerate() {
+			let own_point = &table_point[..table.values.log_len()];
+
+			assert_eq!(
+				prover_out.tables[table_index].eval_claim,
+				evaluate(&table.values, own_point),
+				"table claim wrong for table {table_index} ({shape})"
+			);
+			assert_eq!(
+				prover_out.tables[table_index].pushforward_claim,
+				evaluate(&honest_pushforward(table, gamma), own_point),
+				"pushforward claim wrong for table {table_index} ({shape})"
+			);
+		}
+
+		let claims_by_table = prover_out
+			.tables
+			.iter()
+			.map(|table| table.index_eval_claims.clone())
+			.collect::<Vec<_>>();
+		check_index_claims(&prover_out.index_eval_point, &claims_by_table, &tables, &shape);
+	}
+
+	/// Round-trip the transparent-table variant and check both open claims on every pushforward.
+	fn check_transparent_round_trip(spec: &[(usize, Vec<usize>)], seed: u64) {
+		let alloc = GlobalAllocator;
+		let tables = random_instance(spec, seed);
+		let shape = format!("{spec:?}");
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let gamma = IPProverChannel::<F>::sample(&mut prover_transcript);
+		let prover_out = prove_transparent::<GlobalAllocator, F, P>(
+			&alloc,
+			gamma,
+			prover_tables(&tables),
+			&mut prover_transcript,
+		);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
+		let verifier_out = logup_star::verify_reduction_transparent::<F, _>(
+			&verifier_gamma,
+			verifier_tables(&tables),
+			&mut verifier_transcript,
+		)
+		.expect("verification succeeds");
+		assert_eq!(prover_out, verifier_out, "outputs disagree ({shape})");
+
+		// Both open claims must be true statements about the honest witness, since the caller opens
+		// them against its Y commitment rather than having them checked here.
+		for (table_index, (table, out)) in iter::zip(&tables, &prover_out.tables).enumerate() {
+			let pushforward = honest_pushforward(table, gamma);
+			assert_eq!(
+				out.pushforward_eval_claim,
+				evaluate(&pushforward, &out.pushforward_eval_point),
+				"leaf claim wrong for table {table_index} ({shape})"
+			);
+			assert_eq!(
+				out.product_claim,
+				inner_product_buffers::<F, P, _, _>(&table.values.to_ref(), &pushforward.to_ref()),
+				"product claim wrong for table {table_index} ({shape})"
+			);
+		}
+
+		let claims_by_table = prover_out
+			.tables
+			.iter()
+			.map(|table| table.index_eval_claims.clone())
+			.collect::<Vec<_>>();
+		check_index_claims(&prover_out.index_eval_point, &claims_by_table, &tables, &shape);
 	}
 
 	#[test]
@@ -633,6 +796,81 @@ mod tests {
 		// Each table carries its own gamma and its own logUp challenge, so two tables holding the
 		// same values but different lookers must still both verify.
 		check_round_trip(&[(3, vec![4, 2]), (3, vec![5])], 29);
+	}
+
+	#[test]
+	fn test_prove_verify_transparent_round_trip() {
+		// The transparent variant shares every step but the last, so one spread covers it: m << n
+		// (the target regime), m == n, a wide table, and a one-variable table.
+		for (n, m) in [(6, 2), (4, 4), (3, 5), (7, 1)] {
+			check_transparent_round_trip(&[(m, vec![n])], 0);
+		}
+	}
+
+	#[test]
+	fn test_transparent_multi_table_round_trip() {
+		// Several tables of differing sizes, mixing looker counts and lengths, with the deepest
+		// instance on either side.
+		for spec in [
+			vec![(3usize, vec![5usize, 3usize]), (2, vec![2, 6])],
+			vec![(4, vec![1]), (2, vec![3]), (5, vec![2])],
+			vec![(1, vec![0]), (4, vec![3])],
+		] {
+			check_transparent_round_trip(&spec, 23);
+		}
+	}
+
+	#[test]
+	fn test_transparent_reduction_leaves_the_product_claim_unchecked() {
+		// The transparent reduction never reads a table, so it cannot catch a wrong looked-up
+		// evaluation: only the caller's opening of <T, Y> = e binds it. This pins that contract.
+		let alloc = GlobalAllocator;
+		let tables = random_instance(&[(3, vec![5])], 3);
+		let table = &tables[0];
+		let looker = &table.lookers[0];
+		let wrong_claim = looker.eval_claim + F::ONE;
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let gamma = IPProverChannel::<F>::sample(&mut prover_transcript);
+		prove_transparent::<GlobalAllocator, F, P>(
+			&alloc,
+			gamma,
+			[TableLookup {
+				table: table.values.to_ref(),
+				lookers: vec![Looker {
+					index: &looker.index,
+					eval_point: &looker.eval_point,
+					eval_claim: wrong_claim,
+				}],
+			}],
+			&mut prover_transcript,
+		);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
+		let out = logup_star::verify_reduction_transparent::<F, _>(
+			&gamma,
+			[logup_star::TableLookup {
+				n_vars: 3,
+				lookers: vec![logup_star::LookerClaim {
+					eval_point: &looker.eval_point,
+					eval_claim: wrong_claim,
+				}],
+			}],
+			&mut verifier_transcript,
+		)
+		.expect("the reduction itself still verifies");
+
+		// The wrong claim comes straight back out, and it is not the honest inner product — which
+		// is exactly what the caller's opening would reject.
+		assert_eq!(out.tables[0].product_claim, wrong_claim);
+		assert_ne!(
+			out.tables[0].product_claim,
+			inner_product_buffers::<F, P, _, _>(
+				&table.values.to_ref(),
+				&honest_pushforward(table, gamma).to_ref()
+			)
+		);
 	}
 
 	#[test]

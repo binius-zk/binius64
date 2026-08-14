@@ -5,7 +5,10 @@ use std::iter;
 
 use binius_core::word::Word;
 use binius_field::{BinaryField, BinaryField1b, ExtensionField, Field, field::FieldOps};
-use binius_iop::{channel::IOPVerifierChannel, logup_star};
+use binius_iop::{
+	channel::IOPVerifierChannel,
+	logup_star::{self, TransparentTableLookup},
+};
 use binius_ip::{
 	channel::IPVerifierChannel,
 	logup_star::{LookerClaim, TableLookup},
@@ -238,11 +241,12 @@ where
 ///
 /// The per-limb claims from Phase 4 are Frobenius-twisted onto the shared table of generator
 /// powers `i ↦ g^i`, batched to a single stacked lookup claim, and read from the table via a
-/// committed logup* reduction. The reduced table claim is checked against the table's succinct
-/// MLE; the pushforward claim is opened through the channel inside the reduction;
-/// the reduced index claims are carried into a final batched sumcheck — together with the
-/// $\widetilde{b}(r_I^b, \cdot)$ rerandomization and the parity zerocheck $a_0 \cdot b_0 =
-/// c_{\textsf{lo},0}$ — that brings every output claim to one shared point.
+/// committed logup* reduction. The table is succinct, so the reduction's transparent variant runs:
+/// the pushforward oracle carries both its claims into the channel opening, one against `eq_z` and
+/// one against the table's own MLE, and no table claim is left over. The reduced index claims are
+/// carried into a final batched sumcheck — together with the $\widetilde{b}(r_I^b, \cdot)$
+/// rerandomization and the parity zerocheck $a_0 \cdot b_0 = c_{\textsf{lo},0}$ — that brings every
+/// output claim to one shared point.
 fn verify_phase_5<F, C>(
 	phase_4_output: &Phase4Output<C::Elem>,
 	b_eval_point: &[C::Elem],
@@ -272,7 +276,7 @@ where
 		.collect::<Vec<_>>();
 
 	// Read the N_LIMB_COLUMNS looked-up columns from the shared table via the committed multi-
-	// looker logup* reduction. The pushforward oracle is received inside; its opening relation is
+	// looker logup* reduction. The pushforward oracle is received inside; its opening relations are
 	// returned to the caller. The reduction returns one index claim per column, all at the shared
 	// content point.
 	let looker_claims = twisted_claims
@@ -283,27 +287,27 @@ where
 		})
 		.collect::<Vec<_>>();
 	let log_cols = log2_ceil_usize(N_LIMB_COLUMNS);
-	// Every limb column reads the one shared power table, so the reduction runs over a single-table
-	// list and returns a single table claim.
-	let logup_proof = logup_star::verify::<F, C>(
-		[TableLookup {
-			n_vars: LIMB_BITS,
-			lookers: looker_claims,
+	// The power table is succinct, so the transparent reduction runs: it weighs the pushforward
+	// against the table's own MLE in the oracle opening rather than through a sumcheck, which
+	// leaves no table claim to check here. Every limb column reads that one shared table.
+	let logup_proof = logup_star::verify_transparent::<F, C>(
+		[TransparentTableLookup {
+			lookup: TableLookup {
+				n_vars: LIMB_BITS,
+				lookers: looker_claims,
+			},
+			table_eval: Box::new(eval_power_table_mle::<F, C::Elem>),
 		}],
 		channel,
 	)?;
-	let [table_output] = logup_proof.tables.as_slice() else {
+	let [column_index_evals] = logup_proof.index_eval_claims.as_slice() else {
 		unreachable!("the reduction runs over the one power table")
 	};
-
-	// The table is succinct: the verifier evaluates its MLE directly.
-	let expected_table_eval = eval_power_table_mle::<F, C::Elem>(&logup_proof.table_eval_point);
-	channel.assert_zero(expected_table_eval - table_output.eval_claim.clone())?;
 
 	// The reduction hands back the per-column embedded-index claims directly, all at the shared
 	// content point (padding columns read row 0, whose embedding is zero).
 	let index_content_point = logup_proof.index_eval_point.as_slice();
-	let mut padded_column_evals = table_output.index_eval_claims.clone();
+	let mut padded_column_evals = column_index_evals.clone();
 	padded_column_evals.resize(1 << log_cols, C::Elem::zero());
 
 	// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by sampling
@@ -459,12 +463,12 @@ where
 ///   shared table $T\colon i \mapsto g^i$ of $2^w$ generator powers (where $w$ is the limb bit
 ///   width). The per-limb claims are Frobenius-twisted onto $T$, batched to one stacked lookup
 ///   claim, and reduced via committed logup* ([Soukhanov25]): the pushforward oracle is committed
-///   mid-protocol and its opening relation returned to the caller; the table claim is checked
-///   against the table's succinct product-of-selects MLE; the index claim is bound to the per-bit
-///   output evals in a final batched sumcheck, together with (a) a single-claim rerandomization of
-///   the recombined $\widetilde{b}(r_I^b, \cdot)$ exponent claim from Phase 3 and (b) a zerocheck
-///   verifying $a_0 \cdot b_0 = c_{\textsf{lo},0}$ (least significant bits), ruling out the
-///   wraparound edge case.
+///   mid-protocol and its two opening relations returned to the caller, the second weighing it
+///   against the table's succinct product-of-selects MLE, so the table needs no claim of its own;
+///   the index claim is bound to the per-bit output evals in a final batched sumcheck, together
+///   with (a) a single-claim rerandomization of the recombined $\widetilde{b}(r_I^b, \cdot)$
+///   exponent claim from Phase 3 and (b) a zerocheck verifying $a_0 \cdot b_0 = c_{\textsf{lo},0}$
+///   (least significant bits), ruling out the wraparound edge case.
 ///
 /// [Soukhanov25]: <https://eprint.iacr.org/2025/946>
 ///
@@ -473,7 +477,8 @@ where
 /// The protocol outputs evaluation claims on $\widetilde{a}_i$, $\widetilde{b}_i$,
 /// $\widetilde{c}_{\textsf{lo},i}$, $\widetilde{c}_{\textsf{hi},i}$ (for $i \in \{0, \ldots,
 /// 2^k - 1\}$) at a common $n$-dimensional evaluation point. The claims are passed to the shift
-/// reduction; the logup* pushforward commitment is opened through the channel inside phase 5.
+/// reduction; the logup* pushforward commitment carries its two relations into the channel inside
+/// phase 5.
 ///
 /// ### Parameters
 ///

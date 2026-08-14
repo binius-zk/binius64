@@ -12,6 +12,9 @@
 //! unchanged. The pushforwards are the only oracles this protocol introduces, per
 //! [Soukhanov25, Section 3].
 //!
+//! [`verify_transparent`] is the variant for tables the verifier evaluates itself.
+//! It opens each `Y` against both `eq_z` and the table, and so needs no pushforward sumcheck.
+//!
 //! [Soukhanov25]: <https://eprint.iacr.org/2025/946>
 
 use binius_field::{BinaryField1b, ExtensionField, Field};
@@ -19,7 +22,7 @@ use binius_ip::logup_star as reduction;
 use binius_math::multilinear::eq::eq_ind;
 use itertools::izip;
 
-use crate::channel::{Error as ChannelError, IOPVerifierChannel};
+use crate::channel::{Error as ChannelError, IOPVerifierChannel, TransparentEvalFn};
 
 /// An error raised while verifying a committed logUp* reduction.
 #[derive(Debug, thiserror::Error)]
@@ -121,5 +124,97 @@ where
 		table_eval_point: output.table_eval_point,
 		index_eval_point: output.index_eval_point,
 		tables: output.tables,
+	})
+}
+
+/// One transparent table, the lookers that read it, and the closure evaluating its MLE.
+pub struct TransparentTableLookup<'a, Elem> {
+	/// The table's variable count and the claims of the lookers reading it.
+	pub lookup: reduction::TableLookup<'a, Elem>,
+	/// Evaluates the table's multilinear extension at a point of `lookup.n_vars` coordinates.
+	pub table_eval: TransparentEvalFn<Elem>,
+}
+
+/// The reduced claims of a committed logUp* verification over transparent tables.
+///
+/// Nothing is left on the tables or the pushforwards: both of a table's claims are opened here,
+/// against the one `Y` commitment. Only the index claims are the caller's to verify.
+pub struct LogupTransparentProof<Elem> {
+	/// The point the index claims are drawn from, spanning the deepest looker.
+	///
+	/// A looker over `n` variables is claimed at its **last `n`** coordinates.
+	pub index_eval_point: Vec<Elem>,
+	/// One entry per table, in the order the tables were given, holding that table's lookers'
+	/// index claims in its own looker order.
+	pub index_eval_claims: Vec<Vec<Elem>>,
+}
+
+/// Verify a logUp* reduction over transparent tables, with the pushforwards committed as oracles.
+///
+/// This wraps [`binius_ip::logup_star::verify_reduction_transparent`] the way [`verify`] wraps the
+/// committed-table reduction. The reduction leaves two claims on each pushforward instead of one,
+/// and both are opened here through the channel:
+///
+/// ```text
+///     <Y, eq_z> = Y(z)      the fractional-addition leaf claim
+///     <Y, T>    = e         the product claim, against the caller's transparent table
+/// ```
+///
+/// The two are queued in that order, so the prover must queue them the same way.
+/// A channel that batches an oracle's relations folds them into one opening.
+///
+/// # Arguments
+///
+/// * `tables` - One [`TransparentTableLookup`] per table, by value.
+/// * `channel` - The IOP verifier channel carrying the `Y` commitments.
+///
+/// # Errors
+///
+/// Returns an error when a pushforward commitment is missing or the reduction identity fails.
+pub fn verify_transparent<'a, F, C>(
+	tables: impl IntoIterator<Item = TransparentTableLookup<'a, C::Elem>>,
+	channel: &mut C,
+) -> Result<LogupTransparentProof<C::Elem>, Error>
+where
+	F: Field + ExtensionField<BinaryField1b>,
+	C: IOPVerifierChannel<F>,
+	C::Elem: From<F> + 'a,
+{
+	// The reduction consumes the lookups, so the transparent closures are split off up front.
+	let (lookups, table_evals): (Vec<_>, Vec<_>) = tables
+		.into_iter()
+		.map(|table| (table.lookup, table.table_eval))
+		.unzip();
+	let table_n_vars = lookups.iter().map(|table| table.n_vars).collect::<Vec<_>>();
+
+	// Sample gamma, then receive the commitments, exactly as [`verify`] does: the prover needs
+	// gamma to build the pushforwards, and the reduction's logUp challenges must bind them.
+	let gamma = channel.sample();
+	let oracles = table_n_vars
+		.iter()
+		.map(|&n_vars| channel.recv_oracle(n_vars, true))
+		.collect::<Result<Vec<_>, _>>()?;
+
+	let output = reduction::verify_reduction_transparent::<F, C>(&gamma, lookups, channel)?;
+
+	// Open both of a table's claims against its one pushforward commitment. The table side never
+	// reaches the caller: the product relation weighs Y directly against the transparent T.
+	for (oracle, table_eval, table) in izip!(oracles, table_evals, &output.tables) {
+		let point = table.pushforward_eval_point.clone();
+		channel.verify_oracle_relation(
+			oracle.clone(),
+			Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
+			table.pushforward_eval_claim.clone(),
+		)?;
+		channel.verify_oracle_relation(oracle, table_eval, table.product_claim.clone())?;
+	}
+
+	Ok(LogupTransparentProof {
+		index_eval_point: output.index_eval_point,
+		index_eval_claims: output
+			.tables
+			.into_iter()
+			.map(|table| table.index_eval_claims)
+			.collect(),
 	})
 }
