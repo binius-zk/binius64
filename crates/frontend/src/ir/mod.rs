@@ -44,14 +44,6 @@ impl WireKind {
 	pub const fn is_const(&self) -> bool {
 		matches!(self, WireKind::Constant(_))
 	}
-
-	/// The word this wire holds, when it is a constant.
-	pub const fn const_value(&self) -> Option<Word> {
-		match self {
-			WireKind::Constant(word) => Some(*word),
-			_ => None,
-		}
-	}
 }
 
 /// Gate ID - identifies a gate in the graph
