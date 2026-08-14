@@ -2,6 +2,8 @@
 
 //! Transformations over the gate graph, each rewriting it in place or reporting what it found.
 
+use crate::ir::Gate;
+
 pub mod const_prop;
 pub mod cse;
 pub mod dce;
@@ -45,4 +47,19 @@ impl BuiltGates {
 			gate_records,
 		}
 	}
+}
+
+/// A gate whose constant inputs can never satisfy it.
+///
+/// Constant propagation evaluates a gate once every one of its inputs is a constant.
+/// If that evaluation fails, no assignment elsewhere in the circuit can make the gate hold.
+/// So the circuit is unsatisfiable regardless of the witness.
+#[derive(Debug, thiserror::Error)]
+#[error("gate {gate:?} always fails when evaluated with constant inputs: {reason}")]
+#[non_exhaustive]
+pub struct AlwaysFailingGateError {
+	/// The gate whose constant evaluation failed.
+	pub gate: Gate,
+	/// The message the failing evaluation reported.
+	pub reason: String,
 }

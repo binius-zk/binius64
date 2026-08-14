@@ -29,7 +29,7 @@ use crate::{
 	},
 	lower::ConstraintBuilder,
 	pass::{
-		BuiltGates, const_prop, cse, dce, fusion,
+		AlwaysFailingGateError, BuiltGates, const_prop, cse, dce, fusion,
 		layout::{
 			scratch_alloc::{ScratchAlloc, ScratchPolicy},
 			value_vec_alloc,
@@ -468,12 +468,34 @@ impl CircuitBuilder {
 	///
 	/// # Panics
 	///
-	/// Panics if a clone or a subcircuit of this builder is still alive elsewhere.
-	/// Reclaiming the state needs sole ownership of it.
+	/// Panics if a clone or a subcircuit still holds a live handle to the same shared state.
+	/// Only sole ownership can be unwrapped out of a reference count.
 	///
 	/// Panics if the builder carries a chip registered by [`Self::add_chip`].
 	/// Build that one with [`Self::build_m4`] instead.
+	///
+	/// Panics if constant propagation is enabled and finds a gate whose constant inputs can
+	/// never satisfy it.
 	pub fn build(self) -> Circuit {
+		self.try_build().unwrap_or_else(|err| panic!("{err}"))
+	}
+
+	/// Returns the circuit built by this builder, or an error instead of panicking on an
+	/// unsatisfiable constant gate.
+	///
+	/// # Panics
+	///
+	/// Panics if a clone or a subcircuit still holds a live handle to the same shared state.
+	/// Only sole ownership can be unwrapped out of a reference count.
+	///
+	/// Panics if the builder carries a chip registered by [`Self::add_chip`].
+	/// Build that one with [`Self::build_m4`] instead.
+	///
+	/// # Errors
+	///
+	/// Returns an error when constant propagation is enabled and finds a gate whose constant
+	/// inputs can never satisfy it.
+	pub fn try_build(self) -> Result<Circuit, AlwaysFailingGateError> {
 		let shared = self.into_shared();
 		assert!(
 			shared.chips.is_empty(),
@@ -494,13 +516,32 @@ impl CircuitBuilder {
 	///
 	/// # Panics
 	///
-	/// Panics if a clone or a subcircuit of this builder is still alive elsewhere.
-	/// Reclaiming the state needs sole ownership of it.
+	/// Panics if a clone or a subcircuit still holds a live handle to the same shared state.
+	/// Only sole ownership can be unwrapped out of a reference count.
+	///
+	/// Panics if constant propagation is enabled and finds a gate whose constant inputs can
+	/// never satisfy it.
 	pub fn build_m4(self) -> CircuitM4 {
+		self.try_build_m4().unwrap_or_else(|err| panic!("{err}"))
+	}
+
+	/// Returns the chip-composed circuit built by this builder, or an error instead of
+	/// panicking on an unsatisfiable constant gate.
+	///
+	/// # Panics
+	///
+	/// Panics if a clone or a subcircuit still holds a live handle to the same shared state.
+	/// Only sole ownership can be unwrapped out of a reference count.
+	///
+	/// # Errors
+	///
+	/// Returns an error when constant propagation is enabled and finds a gate whose constant
+	/// inputs can never satisfy it.
+	pub fn try_build_m4(self) -> Result<CircuitM4, AlwaysFailingGateError> {
 		let mut shared = self.into_shared();
 		let chips = mem::take(&mut shared.chips);
 		let pending = mem::take(&mut shared.chip_calls);
-		let circuit = Self::compile(shared, &pending);
+		let circuit = Self::compile(shared, &pending)?;
 
 		// The instances and the active-instance counts are the whole call graph's to settle, so
 		// both are left to `recompute_instances` below.
@@ -525,7 +566,7 @@ impl CircuitBuilder {
 			chips: chips.into_iter().map(|chip| (chip, 0)).collect(),
 		};
 		circuit.recompute_instances();
-		circuit
+		Ok(circuit)
 	}
 
 	/// Reclaims the state behind the shared handle, requiring sole ownership of it.
@@ -541,7 +582,15 @@ impl CircuitBuilder {
 	}
 
 	/// Compiles the builder's state into a circuit, running every optimization pass it enables.
-	fn compile(shared: Shared, chip_calls: &[PendingCall]) -> Circuit {
+	///
+	/// # Errors
+	///
+	/// Returns an error when constant propagation is enabled and finds a gate whose constant
+	/// inputs can never satisfy it.
+	fn compile(
+		shared: Shared,
+		chip_calls: &[PendingCall],
+	) -> Result<Circuit, AlwaysFailingGateError> {
 		let mut graph = shared.graph;
 
 		// A chip call is a constraint on the words its wires hold, but the compiler passes have
@@ -561,7 +610,7 @@ impl CircuitBuilder {
 
 		// Run constant propagation optimization
 		if shared.opts.enable_constant_propagation {
-			const_prop::constant_propagation(&mut graph, &shared.hint_registry);
+			const_prop::constant_propagation(&mut graph, &shared.hint_registry)?;
 		}
 
 		// Zero propagation: drop the gates a zero operand turns into the identity.
@@ -731,7 +780,7 @@ impl CircuitBuilder {
 		// A circuit only reads back path names and a per-gate record, so the rest drops now.
 		let built_gates = BuiltGates::from_graph(graph);
 
-		Circuit::new(
+		Ok(Circuit::new(
 			built_gates,
 			cs,
 			value_vec_layout,
@@ -739,7 +788,7 @@ impl CircuitBuilder {
 			inout,
 			eval_form,
 			scratch_alloc.peak_live(),
-		)
+		))
 	}
 
 	/// Creates a reference to the same underlying circuit builder that is namespaced to the

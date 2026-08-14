@@ -282,6 +282,28 @@ fn test_call_hint_user_registered() {
 	assert_eq!(w[out2[0]], expected);
 }
 
+#[test]
+fn test_try_build_reports_an_always_failing_constant_gate() {
+	// Constant propagation evaluates a gate once every one of its inputs is a constant.
+	//
+	// An assert-zero gate fed the constant 1 fails that evaluation.
+	// So no witness for the rest of the circuit can ever satisfy it.
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_constant_propagation: true,
+		..Options::default()
+	});
+
+	let non_zero = builder.add_constant_64(1);
+	builder.assert_zero("always_fails", non_zero);
+
+	// The build reports the unsatisfiable gate as an error instead of panicking.
+	// `Circuit` has no `Debug` impl, so match instead of `unwrap_err`.
+	match builder.try_build() {
+		Ok(_) => panic!("an assert-zero gate fed the constant 1 can never be satisfied"),
+		Err(err) => assert!(!err.reason.is_empty()),
+	}
+}
+
 fn prop_check_icmp_ult(a: u64, b: u64, expected_result: Word) {
 	let builder = CircuitBuilder::new();
 	let a_wire = builder.add_constant_64(a);
