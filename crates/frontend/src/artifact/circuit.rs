@@ -17,7 +17,11 @@ use crate::{
 		witness::{BatchWitnessFiller, PopulateError, WitnessFiller},
 	},
 	eval_form::{BatchPopulateError, EvalForm},
-	ir::{GateGraph, Wire},
+	ir::{
+		GateBody, Wire,
+		path::{PathSpec, PathSpecTree},
+	},
+	pass::BuiltGates,
 };
 
 /// Default number of instance columns evaluated by one parallel witness-generation task.
@@ -28,7 +32,8 @@ const DEFAULT_PARALLEL_STRIPE_WIDTH: usize = 1024;
 /// The difference from [`ConstraintSystem`] is that a circuit retains enough information to
 /// perform circuit evaluation to generate internal witness values.
 pub struct Circuit {
-	gate_graph: GateGraph,
+	path_spec_tree: PathSpecTree,
+	gate_records: Vec<(PathSpec, GateBody)>,
 	constraint_system: ConstraintSystem,
 	value_vec_layout: ValueVecLayout,
 	wire_mapping: SecondaryMap<Wire, ValueIndex>,
@@ -40,8 +45,8 @@ pub struct Circuit {
 impl Circuit {
 	/// Creates a new circuit with the given shared data and wire mapping. Only used during building
 	/// by the circuit builder.
-	pub(crate) const fn new(
-		gate_graph: GateGraph,
+	pub(crate) fn new(
+		built_gates: BuiltGates,
 		constraint_system: ConstraintSystem,
 		value_vec_layout: ValueVecLayout,
 		wire_mapping: SecondaryMap<Wire, ValueIndex>,
@@ -49,8 +54,13 @@ impl Circuit {
 		eval_form: EvalForm,
 		scratch_peak_live: usize,
 	) -> Self {
+		let BuiltGates {
+			path_spec_tree,
+			gate_records,
+		} = built_gates;
 		Self {
-			gate_graph,
+			path_spec_tree,
+			gate_records,
 			constraint_system,
 			value_vec_layout,
 			wire_mapping,
@@ -140,7 +150,7 @@ impl Circuit {
 		// Execute the evaluation form - it modifies the ValueVec in place
 		// Pass the PathSpecTree for assertion error symbolication
 		self.eval_form
-			.evaluate(&mut w.value_vec, Some(&self.gate_graph.path_spec_tree))?;
+			.evaluate(&mut w.value_vec, Some(&self.path_spec_tree))?;
 
 		Ok(())
 	}
@@ -178,7 +188,7 @@ impl Circuit {
 
 		// Evaluate the bytecode across all instances, symbolicating assertion failures.
 		self.eval_form
-			.evaluate_batched(values, Some(&self.gate_graph.path_spec_tree))
+			.evaluate_batched(values, Some(&self.path_spec_tree))
 	}
 
 	/// Populates non-input values for a batch of instances split into vertical stripes.
@@ -209,11 +219,8 @@ impl Circuit {
 		}
 
 		// Evaluate independent instance stripes in parallel, symbolicating assertion failures.
-		self.eval_form.evaluate_batched_parallel(
-			values,
-			stripe_width,
-			Some(&self.gate_graph.path_spec_tree),
-		)
+		self.eval_form
+			.evaluate_batched_parallel(values, stripe_width, Some(&self.path_spec_tree))
 	}
 
 	/// Returns the constraint system for this circuit.
@@ -230,8 +237,8 @@ impl Circuit {
 	///
 	/// Depending on what type of gates this circuit uses, the number of constraints might be
 	/// significantly larger.
-	pub fn n_gates(&self) -> usize {
-		self.gate_graph.gates.len()
+	pub const fn n_gates(&self) -> usize {
+		self.gate_records.len()
 	}
 
 	/// Returns the number of evaluation instructions in this circuit.
@@ -241,7 +248,7 @@ impl Circuit {
 
 	/// Returns a string with a JSON dump that is useful to profile the circuit.
 	pub fn simple_json_dump(&self) -> String {
-		dump_composition(&self.gate_graph)
+		dump_composition(&self.path_spec_tree, &self.gate_records)
 	}
 
 	/// Builds the batch witness in wire-major order, populating all `2^log_instances` instances.
