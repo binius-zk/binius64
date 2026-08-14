@@ -41,11 +41,13 @@ pub struct Circuit {
 	inout: Vec<Wire>,
 	eval_form: EvalForm,
 	scratch_peak_live: usize,
+	scratch_pooled: bool,
 }
 
 impl Circuit {
 	/// Creates a new circuit with the given shared data and wire mapping. Only used during building
 	/// by the circuit builder.
+	#[allow(clippy::too_many_arguments)]
 	pub(crate) fn new(
 		built_gates: BuiltGates,
 		constraint_system: ConstraintSystem,
@@ -54,6 +56,7 @@ impl Circuit {
 		inout: Vec<Wire>,
 		eval_form: EvalForm,
 		scratch_peak_live: usize,
+		scratch_pooled: bool,
 	) -> Self {
 		let BuiltGates {
 			path_spec_tree,
@@ -68,6 +71,7 @@ impl Circuit {
 			inout,
 			eval_form,
 			scratch_peak_live,
+			scratch_pooled,
 		}
 	}
 
@@ -107,6 +111,15 @@ impl Circuit {
 	#[inline(always)]
 	pub fn witness_row(&self, wire: Wire) -> usize {
 		self.value_vec_layout.word_offset(self.witness_index(wire))
+	}
+
+	/// Whether this circuit's scratch segment shares slots between uncommitted values.
+	///
+	/// A shared slot can end up holding a different value than the wire that first wrote it.
+	/// So a scratch-segment wire is safe to read back only when this is `false`.
+	#[inline(always)]
+	pub(crate) const fn scratch_pooled(&self) -> bool {
+		self.scratch_pooled
 	}
 
 	/// Creates a new witness filler for this circuit.

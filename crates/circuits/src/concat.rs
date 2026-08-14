@@ -379,6 +379,11 @@ mod tests {
 			.collect();
 
 		let output = concat(&b, &inputs);
+		// A hint emits no constraint of its own, so pinning alone leaves these uncommitted.
+		// Promoting them to public outputs is what the test needs to read them back.
+		for &wire in &output.data {
+			b.mark_inout(wire);
+		}
 
 		let circuit = b.build();
 		let mut filler = circuit.new_witness_filler();

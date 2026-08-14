@@ -8,10 +8,27 @@ use std::{
 	ops::{Index, IndexMut},
 };
 
-use binius_core::{ValueVec, Word};
+use binius_core::{ValueIndex, ValueSegment, ValueVec, Word};
 use binius_utils::strided_array::StridedArray2DViewMut;
 
 use crate::{Circuit, Wire};
+
+/// Panics if the wire's storage is a scratch slot shared with another value.
+///
+/// Scratch pooling reclaims a slot once its current value's last read has run.
+/// A shared slot then holds whatever value most recently claimed it, not this wire's.
+/// So this rejects the read outright rather than returning that wrong value.
+fn assert_not_pooled(circuit: &Circuit, wire: Wire, index: ValueIndex) {
+	assert!(
+		!circuit.scratch_pooled() || index.segment() != ValueSegment::Scratch,
+		"wire {wire:?} cannot be read back through a witness filler: its storage is a scratch \
+		 slot shared with another value under scratch pooling, and the slot may already hold a \
+		 different value by the time the circuit has finished evaluating. Disable scratch \
+		 pooling for this build (set `Options::enable_scratch_pooling` to `false`), or make this \
+		 value committed instead of scratch, e.g. by marking it inout or referencing it from a \
+		 constraint."
+	);
+}
 
 /// A single assertion that did not hold while populating the witness.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,14 +143,24 @@ impl WitnessFiller<'_> {
 impl Index<Wire> for WitnessFiller<'_> {
 	type Output = Word;
 
+	/// # Panics
+	///
+	/// Panics if the wire's storage is a pooled scratch slot shared with another value.
 	fn index(&self, wire: Wire) -> &Self::Output {
-		&self.value_vec[self.circuit.witness_index(wire)]
+		let index = self.circuit.witness_index(wire);
+		assert_not_pooled(self.circuit, wire, index);
+		&self.value_vec[index]
 	}
 }
 
 impl IndexMut<Wire> for WitnessFiller<'_> {
+	/// # Panics
+	///
+	/// Panics if the wire's storage is a pooled scratch slot shared with another value.
 	fn index_mut(&mut self, wire: Wire) -> &mut Self::Output {
-		&mut self.value_vec[self.circuit.witness_index(wire)]
+		let index = self.circuit.witness_index(wire);
+		assert_not_pooled(self.circuit, wire, index);
+		&mut self.value_vec[index]
 	}
 }
 

@@ -72,11 +72,10 @@ pub struct Options {
 	pub enable_algebraic_folding: bool,
 	/// Share scratch slots between values whose lifetimes do not overlap.
 	///
-	/// - Shrinks the uncommitted segment to the most values alive at once, saved once per
-	///   instance.
+	/// - Shrinks the uncommitted segment to the largest number of values alive at once.
 	/// - Changes no constraint, since an uncommitted value appears in no operand.
-	/// - Stops slots being one-to-one with values, so only committed values read back
-	///   meaningfully.
+	/// - An uncommitted value's slot can then be reused by a later one.
+	/// - Reading an uncommitted value back through a witness filler panics as a result.
 	pub enable_scratch_pooling: bool,
 	/// Forward past the gates a zero operand turns into the identity.
 	pub enable_zero_propagation: bool,
@@ -90,9 +89,9 @@ impl Default for Options {
 			enable_common_subexpression_elimination: true,
 			enable_dead_code_elimination: true,
 			enable_algebraic_folding: true,
-			// Why off: sharing slots stops an uncommitted value from being readable afterwards.
-			// A caller that inspects one has to opt in knowingly.
-			enable_scratch_pooling: false,
+			// Sharing slots shrinks the uncommitted segment, saved once per instance.
+			// A witness filler now panics on a stale read instead of returning it silently.
+			enable_scratch_pooling: true,
 			enable_zero_propagation: true,
 		}
 	}
@@ -787,6 +786,7 @@ impl CircuitBuilder {
 			inout,
 			eval_form,
 			scratch_alloc.peak_live(),
+			scratch_policy == ScratchPolicy::Pooled,
 		))
 	}
 

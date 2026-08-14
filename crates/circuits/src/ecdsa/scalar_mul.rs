@@ -330,6 +330,9 @@ mod tests {
 		assert_eq(&builder, "result_x", &result.x, &expected_x);
 		assert_eq(&builder, "result_y", &result.y, &expected_y);
 
+		// The infinity flag is never constrained, only read below, so pin it before build.
+		builder.force_commit(result.is_point_at_infinity);
+
 		// Build and verify the circuit
 		let cs = builder.build();
 		let mut w = cs.new_witness_filler();
@@ -395,6 +398,9 @@ mod tests {
 
 		assert_eq(&builder, "msm_x", &result.x, &expected_x);
 		assert_eq(&builder, "msm_y", &result.y, &expected_y);
+
+		// The infinity flag is never constrained, only read below, so pin it before build.
+		builder.force_commit(result.is_point_at_infinity);
 
 		let cs = builder.build();
 		let mut w = cs.new_witness_filler();
