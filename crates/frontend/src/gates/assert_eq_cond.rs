@@ -40,6 +40,6 @@ impl GateKind for AssertEqCond {
 
 		// The condition is read as an MSB-bool, and broadcasting the sign bit preserves it.
 		// So the condition is passed as it stands, with no mask to compute or hold.
-		bc.emit_assert_eq_cond(ctx.reg(cond), ctx.reg(x), ctx.reg(y), ctx.path().as_u32());
+		bc.emit_assert_eq_cond(ctx.reg(cond), ctx.reg(x), ctx.reg(y), ctx.path());
 	}
 }

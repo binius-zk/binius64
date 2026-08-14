@@ -41,6 +41,6 @@ impl GateKind for AssertTrue {
 	fn emit(gate: GateParam<'_>, ctx: EmitCtx<'_>, bc: &mut BytecodeBuilder) {
 		let [x] = gate.in_wires();
 
-		bc.emit_assert_true(ctx.reg(x), ctx.path().as_u32());
+		bc.emit_assert_true(ctx.reg(x), ctx.path());
 	}
 }

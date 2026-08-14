@@ -346,8 +346,7 @@ impl<'a> Executor<'a> {
 	fn exec_assert_eq<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		let error_id = self.read_u32();
-		let path_spec = PathSpec::from_u32(error_id);
+		let path_spec = self.read_path_spec();
 
 		for i in 0..ctx.n_instances() {
 			let val1 = ctx.load(src1, i);
@@ -362,8 +361,7 @@ impl<'a> Executor<'a> {
 		let cond = self.read_reg();
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		let error_id = self.read_u32();
-		let path_spec = PathSpec::from_u32(error_id);
+		let path_spec = self.read_path_spec();
 
 		for i in 0..ctx.n_instances() {
 			if ctx.load(cond, i).is_msb_true() {
@@ -382,8 +380,7 @@ impl<'a> Executor<'a> {
 
 	fn exec_assert_zero<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src = self.read_reg();
-		let error_id = self.read_u32();
-		let path_spec = PathSpec::from_u32(error_id);
+		let path_spec = self.read_path_spec();
 
 		for i in 0..ctx.n_instances() {
 			let val = ctx.load(src, i);
@@ -395,8 +392,7 @@ impl<'a> Executor<'a> {
 
 	fn exec_assert_non_zero<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src = self.read_reg();
-		let error_id = self.read_u32();
-		let path_spec = PathSpec::from_u32(error_id);
+		let path_spec = self.read_path_spec();
 
 		for i in 0..ctx.n_instances() {
 			let val = ctx.load(src, i);
@@ -408,8 +404,7 @@ impl<'a> Executor<'a> {
 
 	fn exec_assert_false<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src = self.read_reg();
-		let error_id = self.read_u32();
-		let path_spec = PathSpec::from_u32(error_id);
+		let path_spec = self.read_path_spec();
 
 		for i in 0..ctx.n_instances() {
 			let val = ctx.load(src, i);
@@ -421,8 +416,7 @@ impl<'a> Executor<'a> {
 
 	fn exec_assert_true<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src = self.read_reg();
-		let error_id = self.read_u32();
-		let path_spec = PathSpec::from_u32(error_id);
+		let path_spec = self.read_path_spec();
 
 		for i in 0..ctx.n_instances() {
 			let val = ctx.load(src, i);
@@ -500,5 +494,10 @@ impl<'a> Executor<'a> {
 
 	fn read_reg(&mut self) -> u32 {
 		self.read_u32()
+	}
+
+	/// Decodes the `u32` an assertion instruction carries on the wire back into a path spec.
+	fn read_path_spec(&mut self) -> PathSpec {
+		PathSpec::from_u32(self.read_u32())
 	}
 }
