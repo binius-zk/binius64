@@ -13,6 +13,10 @@ use crate::{
 	pass::fusion::legraph::ConstraintRef,
 };
 
+// Every operand's terms live in one shared arena.
+// Rebuilding an operand means appending to that same arena, not allocating one of its own.
+// That is why every function below takes mutable access to the constraint builder.
+
 /// A patch is a description of a change to the constraint system.
 ///
 /// It specifies a list of constraints that are going to be removed and a list of constraints that
@@ -105,7 +109,7 @@ fn retain_unsubsumed<T>(constraints: &mut Vec<T>, subsumed: &[bool]) {
 /// AND constraints.
 ///
 /// NB: patches may have overlapping subsumes.
-pub fn build(cb: &ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
+pub fn build(cb: &mut ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
 	let mut patches = vec![];
 	build_root_patches(cb, leg, &mut patches);
 	for committed in leg.commit_set().iter() {
@@ -116,7 +120,7 @@ pub fn build(cb: &ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
 }
 
 /// Collect patches for the root constraints that inline linear definitions.
-fn build_root_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<Patch>) {
+fn build_root_patches(cb: &mut ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<Patch>) {
 	// Collect *distinct* constraint references.
 	// Several roots may name the same constraint, e.g. two operands of one AND both inlined.
 	let mut constraints: Vec<ConstraintRef> = leg.roots.values().copied().collect();
@@ -130,31 +134,46 @@ fn build_root_patches(cb: &ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<P
 	}
 }
 
-fn build_root_patch(cb: &ConstraintBuilder, leg: &LeGraph, constraint_ref: ConstraintRef) -> Patch {
+fn build_root_patch(
+	cb: &mut ConstraintBuilder,
+	leg: &LeGraph,
+	constraint_ref: ConstraintRef,
+) -> Patch {
 	let mut subsumes = vec![constraint_ref];
 
 	let new_constraint = match constraint_ref {
 		ConstraintRef::And { index } => {
-			let a = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].a);
-			let b = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].b);
-			let c = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].c);
+			let (old_a, old_b, old_c) = {
+				let and = &cb.and_constraints[index];
+				(and.a, and.b, and.c)
+			};
+			let a = process_operand(cb, leg, &mut subsumes, old_a);
+			let b = process_operand(cb, leg, &mut subsumes, old_b);
+			let c = process_operand(cb, leg, &mut subsumes, old_c);
 			AddedConstraint::And(WireAndConstraint { a, b, c })
 		}
 		ConstraintRef::Imul { index } => {
-			let a = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].a);
-			let b = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].b);
-			let lo = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].lo);
-			let hi = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].hi);
+			let (old_a, old_b, old_lo, old_hi) = {
+				let mul = &cb.imul_constraints[index];
+				(mul.a, mul.b, mul.lo, mul.hi)
+			};
+			let a = process_operand(cb, leg, &mut subsumes, old_a);
+			let b = process_operand(cb, leg, &mut subsumes, old_b);
+			let lo = process_operand(cb, leg, &mut subsumes, old_lo);
+			let hi = process_operand(cb, leg, &mut subsumes, old_hi);
 			AddedConstraint::Imul(WireImulConstraint { a, b, lo, hi })
 		}
 		ConstraintRef::Bmul { index } => {
-			let bmul = &cb.bmul_constraints[index];
-			let a_lo = process_operand(cb, leg, &mut subsumes, &bmul.a_lo);
-			let a_hi = process_operand(cb, leg, &mut subsumes, &bmul.a_hi);
-			let b_lo = process_operand(cb, leg, &mut subsumes, &bmul.b_lo);
-			let b_hi = process_operand(cb, leg, &mut subsumes, &bmul.b_hi);
-			let c_lo = process_operand(cb, leg, &mut subsumes, &bmul.c_lo);
-			let c_hi = process_operand(cb, leg, &mut subsumes, &bmul.c_hi);
+			let (old_a_lo, old_a_hi, old_b_lo, old_b_hi, old_c_lo, old_c_hi) = {
+				let bmul = &cb.bmul_constraints[index];
+				(bmul.a_lo, bmul.a_hi, bmul.b_lo, bmul.b_hi, bmul.c_lo, bmul.c_hi)
+			};
+			let a_lo = process_operand(cb, leg, &mut subsumes, old_a_lo);
+			let a_hi = process_operand(cb, leg, &mut subsumes, old_a_hi);
+			let b_lo = process_operand(cb, leg, &mut subsumes, old_b_lo);
+			let b_hi = process_operand(cb, leg, &mut subsumes, old_b_hi);
+			let c_lo = process_operand(cb, leg, &mut subsumes, old_c_lo);
+			let c_hi = process_operand(cb, leg, &mut subsumes, old_c_hi);
 			AddedConstraint::Bmul(WireBmulConstraint {
 				a_lo,
 				a_hi,
@@ -165,7 +184,8 @@ fn build_root_patch(cb: &ConstraintBuilder, leg: &LeGraph, constraint_ref: Const
 			})
 		}
 		ConstraintRef::Zero { index } => {
-			let val = process_operand(cb, leg, &mut subsumes, &cb.zero_constraints[index].val);
+			let old_val = cb.zero_constraints[index].val;
+			let val = process_operand(cb, leg, &mut subsumes, old_val);
 			AddedConstraint::Zero(WireZeroConstraint { val })
 		}
 		ConstraintRef::Linear { .. } => unreachable!(),
@@ -190,7 +210,7 @@ fn build_root_patch(cb: &ConstraintBuilder, leg: &LeGraph, constraint_ref: Const
 /// the Zero constraint
 /// [`ConstraintBuilder::build`](crate::lower::ConstraintBuilder::build)
 /// lowers it to.
-fn build_committed_lin_def_patch(cb: &ConstraintBuilder, leg: &LeGraph, root: Wire) -> Patch {
+fn build_committed_lin_def_patch(cb: &mut ConstraintBuilder, leg: &LeGraph, root: Wire) -> Patch {
 	// `subsumes` is a list of constraints that become redundant with application of this patch.
 	// The first redundant constraint is the linear definition that's being committed.
 	let mut subsumes = vec![leg.lin_def_constraint_ref(root)];
@@ -208,17 +228,25 @@ fn build_committed_lin_def_patch(cb: &ConstraintBuilder, leg: &LeGraph, root: Wi
 	}
 }
 
+/// Rebuilds one operand into a fresh arena range.
+///
+/// Every non-committed linear definition the operand reaches is inlined along the way.
+///
+/// - The new range is appended to the same shared arena the untouched operands already live in.
+/// - No `Vec` of its own gets allocated.
+/// - The only growth is the arena's own amortized growth, shared across every rebuilt operand.
 fn process_operand(
-	cb: &ConstraintBuilder,
+	cb: &mut ConstraintBuilder,
 	leg: &LeGraph,
 	subsumes: &mut Vec<ConstraintRef>,
-	old_operand: &WireOperand,
+	old_operand: WireOperand,
 ) -> WireOperand {
-	let mut new_operand = WireOperand::new();
-	for term in old_operand {
-		process_term(cb, leg, &mut new_operand, subsumes, term.wire, term.shift_seq);
+	let start = cb.next_term_start();
+	for i in 0..old_operand.len() {
+		let term = cb.term(old_operand, i);
+		process_term(cb, leg, subsumes, term.wire, term.shift_seq);
 	}
-	new_operand
+	cb.operand_since(start)
 }
 
 /// Recursively process a term, inlining non-committed linear definitions.
@@ -226,10 +254,12 @@ fn process_operand(
 /// `shift_seq` is what the consumers above have accumulated, to be applied to `wire`. Inlining
 /// folds the definition's own shift inside it, greedily, so a slot is spent only where the two
 /// genuinely do not collapse.
+///
+/// Every push lands at the tail of the operand under construction.
+/// Nothing else appends to the shared arena while one such call is still running.
 fn process_term(
-	cb: &ConstraintBuilder,
+	cb: &mut ConstraintBuilder,
 	leg: &LeGraph,
-	new_operand: &mut WireOperand,
 	subsumes: &mut Vec<ConstraintRef>,
 	wire: Wire,
 	shift_seq: [Shift; 2],
@@ -237,7 +267,7 @@ fn process_term(
 	// Check if this wire is committed or not a linear def (i.e., opaque)
 	if leg.commit_set().contains(wire) || !leg.is_lin_def(wire) {
 		// This is a terminal or committed wire - add it to the result with the accumulated shifts
-		new_operand.push(ShiftedWire { wire, shift_seq });
+		cb.push_term(ShiftedWire { wire, shift_seq });
 	} else {
 		// This is a non-committed linear def - we need to inline it!
 		let inner_operand = leg.lin_def_operand(cb, wire);
@@ -246,14 +276,15 @@ fn process_term(
 
 		// Distribute the accumulated shifts over all terms in the inner operand
 		// This is crucial for correctness: shift(a ^ b) = shift(a) ^ shift(b)
-		for inner_term in inner_operand {
+		for i in 0..inner_operand.len() {
+			let inner_term = cb.term(inner_operand, i);
 			// The definition's own shift is applied before anything accumulated above it, so it
 			// folds into the sequence from the inside.
 			let inner_shift = inner_term.sole_shift();
 			match push_inner(shift_seq, inner_shift, LOWERED_SHIFT_SLOTS) {
 				PushInner::Seq(composed) => {
 					// Recursively process this term with the composed sequence
-					process_term(cb, leg, new_operand, subsumes, inner_term.wire, composed);
+					process_term(cb, leg, subsumes, inner_term.wire, composed);
 				}
 				// The shifts clear the word, so the term is identically zero. An operand is
 				// an XOR, so a zero term contributes nothing and the inlining simply drops it.
@@ -370,7 +401,7 @@ mod tests {
 		cb.linear(expr::xor2(w(0), w(2)), w(3));
 
 		let leg = LeGraph::new(&cb);
-		let patch = super::build_committed_lin_def_patch(&cb, &leg, w(3));
+		let patch = super::build_committed_lin_def_patch(&mut cb, &leg, w(3));
 		match patch.added {
 			AddedConstraint::Linear(ref linc) => {
 				assert!(!linc.rhs.is_empty());
@@ -399,7 +430,7 @@ mod tests {
 		let mut leg = LeGraph::new(&cb);
 		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
-		let patches = super::build(&cb, &leg);
+		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
@@ -434,7 +465,7 @@ mod tests {
 		let mut leg = LeGraph::new(&cb);
 		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
-		let patches = super::build(&cb, &leg);
+		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
@@ -507,7 +538,7 @@ mod tests {
 				let mut stat = Stat::default();
 				let mut leg = LeGraph::new(&cb);
 				crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
-				let patches = super::build(&cb, &leg);
+				let patches = super::build(&mut cb, &leg);
 				let mut cb2 = cb;
 				super::apply_patches(&mut cb2, patches);
 
@@ -528,7 +559,7 @@ mod tests {
 		}
 
 		let operand = leg.lin_def_operand(cb, wire);
-		for term in operand {
+		for term in cb.operand_terms(operand) {
 			expand_term_recursive(cb, leg, &mut result, term.wire, term.shift_seq);
 		}
 		result
@@ -548,7 +579,7 @@ mod tests {
 		} else {
 			// This is a non-committed linear def - expand recursively
 			let inner = leg.lin_def_operand(cb, wire);
-			for term in inner {
+			for term in cb.operand_terms(inner) {
 				match push_inner(shift_seq, term.sole_shift(), LOWERED_SHIFT_SLOTS) {
 					PushInner::Seq(composed) => {
 						expand_term_recursive(cb, leg, result, term.wire, composed)
@@ -574,13 +605,19 @@ mod tests {
 		map
 	}
 
-	fn assert_operand_eq(actual: &WireOperand, expected: &[ShiftedWire], ctx: &str) {
-		let am = operand_count_map(actual.as_slice());
+	fn assert_operand_eq(
+		cb: &ConstraintBuilder,
+		actual: WireOperand,
+		expected: &[ShiftedWire],
+		ctx: &str,
+	) {
+		let actual_terms = cb.operand_terms(actual);
+		let am = operand_count_map(actual_terms);
 		let em = operand_count_map(expected);
 		assert_eq!(
 			am, em,
 			"operand mismatch for {}\nexpected: {:?}\nactual:   {:?}",
-			ctx, expected, actual
+			ctx, expected, actual_terms
 		);
 	}
 
@@ -747,30 +784,33 @@ mod tests {
 		// 1. Replace AND constraint at index 1 with a new one
 		// 2. Replace LINEAR constraint at index 0 with an AND constraint
 		// 3. Replace IMUL constraint at index 0 with a new one
+		//
+		// Every added operand's term joins the same shared arena.
+		// The pre-existing constraints already live there too.
 		let patches = vec![
 			Patch {
 				subsumes: vec![ConstraintRef::And { index: 1 }],
 				added: AddedConstraint::And(WireAndConstraint {
-					a: vec![ShiftedWire::single(w(30), Shift::IDENTITY)].into(),
-					b: vec![ShiftedWire::single(w(31), Shift::IDENTITY)].into(),
-					c: vec![ShiftedWire::single(w(32), Shift::IDENTITY)].into(),
+					a: cb.push_operand([ShiftedWire::single(w(30), Shift::IDENTITY)]),
+					b: cb.push_operand([ShiftedWire::single(w(31), Shift::IDENTITY)]),
+					c: cb.push_operand([ShiftedWire::single(w(32), Shift::IDENTITY)]),
 				}),
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Linear { index: 0 }],
 				added: AddedConstraint::And(WireAndConstraint {
-					a: vec![ShiftedWire::single(w(33), Shift::IDENTITY)].into(),
-					b: vec![ShiftedWire::single(w(34), Shift::IDENTITY)].into(),
-					c: vec![ShiftedWire::single(w(35), Shift::IDENTITY)].into(),
+					a: cb.push_operand([ShiftedWire::single(w(33), Shift::IDENTITY)]),
+					b: cb.push_operand([ShiftedWire::single(w(34), Shift::IDENTITY)]),
+					c: cb.push_operand([ShiftedWire::single(w(35), Shift::IDENTITY)]),
 				}),
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Imul { index: 0 }],
 				added: AddedConstraint::Imul(WireImulConstraint {
-					a: vec![ShiftedWire::single(w(36), Shift::IDENTITY)].into(),
-					b: vec![ShiftedWire::single(w(37), Shift::IDENTITY)].into(),
-					lo: vec![ShiftedWire::single(w(38), Shift::IDENTITY)].into(),
-					hi: vec![ShiftedWire::single(w(39), Shift::IDENTITY)].into(),
+					a: cb.push_operand([ShiftedWire::single(w(36), Shift::IDENTITY)]),
+					b: cb.push_operand([ShiftedWire::single(w(37), Shift::IDENTITY)]),
+					lo: cb.push_operand([ShiftedWire::single(w(38), Shift::IDENTITY)]),
+					hi: cb.push_operand([ShiftedWire::single(w(39), Shift::IDENTITY)]),
 				}),
 			},
 		];
@@ -782,23 +822,23 @@ mod tests {
 		// AND constraints: originally 3, removed index 1, added 2 new ones = 4 total
 		assert_eq!(cb.and_constraints.len(), 4);
 		// Check that original constraints at indices 0 and 2 are preserved
-		assert_eq!(cb.and_constraints[0].a[0].wire, w(0));
-		assert_eq!(cb.and_constraints[1].a[0].wire, w(6)); // was index 2, now index 1
+		assert_eq!(cb.operand_terms(cb.and_constraints[0].a)[0].wire, w(0));
+		assert_eq!(cb.operand_terms(cb.and_constraints[1].a)[0].wire, w(6)); // was index 2, now index 1
 		// Check new constraints are added at the end
-		assert_eq!(cb.and_constraints[2].a[0].wire, w(30));
-		assert_eq!(cb.and_constraints[3].a[0].wire, w(33));
+		assert_eq!(cb.operand_terms(cb.and_constraints[2].a)[0].wire, w(30));
+		assert_eq!(cb.operand_terms(cb.and_constraints[3].a)[0].wire, w(33));
 
 		// IMUL constraints: originally 2, removed index 0, added 1 new one = 2 total
 		assert_eq!(cb.imul_constraints.len(), 2);
 		// Check that original constraint at index 1 is preserved (now at index 0)
-		assert_eq!(cb.imul_constraints[0].a[0].wire, w(13));
+		assert_eq!(cb.operand_terms(cb.imul_constraints[0].a)[0].wire, w(13));
 		// Check new constraint is added at the end
-		assert_eq!(cb.imul_constraints[1].a[0].wire, w(36));
+		assert_eq!(cb.operand_terms(cb.imul_constraints[1].a)[0].wire, w(36));
 
 		// LINEAR constraints: originally 2, removed index 0 = 1 total
 		assert_eq!(cb.linear_constraints.len(), 1);
 		// Check that original constraint at index 1 is preserved (now at index 0)
-		assert_eq!(cb.linear_constraints[0].rhs[0].wire, w(20));
+		assert_eq!(cb.operand_terms(cb.linear_constraints[0].rhs)[0].wire, w(20));
 	}
 
 	#[test]
@@ -839,7 +879,7 @@ mod tests {
 		assert!(!leg.commit_set().contains(w(2)), "t should not be committed");
 		assert!(!leg.commit_set().contains(w(4)), "z should not be committed");
 
-		let patches = super::build(&cb, &leg);
+		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb; // clone-by-move and apply patches
 		super::apply_patches(&mut cb2, patches);
 
@@ -872,14 +912,15 @@ mod tests {
 		let mut leg = LeGraph::new(&cb);
 		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
-		let patches = super::build(&cb, &leg);
+		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
 		// Verify results: one IMUL remains, and its operand a equals x ^ c ^ x ^ c ^ z
 		assert_eq!(cb2.imul_constraints.len(), 1);
-		let a = &cb2.imul_constraints[0].a;
+		let a = cb2.imul_constraints[0].a;
 		assert_operand_eq(
+			&cb2,
 			a,
 			&[
 				ShiftedWire::single(w(0), Shift::IDENTITY),
@@ -914,15 +955,22 @@ mod tests {
 		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		assert!(leg.commit_set().contains(w(1)), "t_committed should be committed");
-		let patches = super::build(&cb, &leg);
+		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
 		assert_eq!(cb2.imul_constraints.len(), 1);
 		let m = &cb2.imul_constraints[0];
-		assert_operand_eq(&m.a, &[ShiftedWire::single(w(1), Shift::sll(30))], "mul.a (committed)");
+		let (a, b) = (m.a, m.b);
 		assert_operand_eq(
-			&m.b,
+			&cb2,
+			a,
+			&[ShiftedWire::single(w(1), Shift::sll(30))],
+			"mul.a (committed)",
+		);
+		assert_operand_eq(
+			&cb2,
+			b,
 			&[
 				ShiftedWire::single(w(3), Shift::IDENTITY),
 				ShiftedWire::single(w(4), Shift::IDENTITY),
@@ -952,19 +1000,22 @@ mod tests {
 		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
 
 		assert!(leg.commit_set().contains(w(1)), "inner t should be committed");
-		let patches = super::build(&cb, &leg);
+		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
 		assert_eq!(cb2.imul_constraints.len(), 1);
 		let m = &cb2.imul_constraints[0];
+		let (hi, lo) = (m.hi, m.lo);
 		assert_operand_eq(
-			&m.hi,
+			&cb2,
+			hi,
 			&[ShiftedWire::single(w(1), Shift::sll(20))],
 			"mul.hi (committed)",
 		);
 		assert_operand_eq(
-			&m.lo,
+			&cb2,
+			lo,
 			&[
 				ShiftedWire::single(w(3), Shift::IDENTITY),
 				ShiftedWire::single(w(4), Shift::IDENTITY),

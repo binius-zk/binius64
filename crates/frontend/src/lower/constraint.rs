@@ -8,7 +8,7 @@ use binius_core::constraint_system::{
 };
 use cranelift_entity::{EntitySet, SecondaryMap};
 
-use super::operand::WireOperand;
+use super::operand::{ShiftedWire, WireOperand};
 use crate::ir::Wire;
 
 /// AND constraint `A & B == C`, over wire operands.
@@ -24,19 +24,20 @@ pub struct WireAndConstraint {
 impl WireAndConstraint {
 	pub(super) fn into_constraint(
 		self,
+		arena: &[ShiftedWire],
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> AndConstraint {
 		AndConstraint([
-			self.a.into_value_indices(wire_mapping),
-			self.b.into_value_indices(wire_mapping),
-			self.c.into_value_indices(wire_mapping),
+			self.a.into_value_indices(arena, wire_mapping),
+			self.b.into_value_indices(arena, wire_mapping),
+			self.c.into_value_indices(arena, wire_mapping),
 		])
 	}
 
-	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
-		self.a.mark_used(used_set);
-		self.b.mark_used(used_set);
-		self.c.mark_used(used_set);
+	pub(super) fn mark_used(&self, arena: &[ShiftedWire], used_set: &mut EntitySet<Wire>) {
+		self.a.mark_used(arena, used_set);
+		self.b.mark_used(arena, used_set);
+		self.c.mark_used(arena, used_set);
 	}
 }
 
@@ -55,21 +56,22 @@ pub struct WireImulConstraint {
 impl WireImulConstraint {
 	pub(super) fn into_constraint(
 		self,
+		arena: &[ShiftedWire],
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> ImulConstraint {
 		ImulConstraint([
-			self.a.into_value_indices(wire_mapping),
-			self.b.into_value_indices(wire_mapping),
-			self.lo.into_value_indices(wire_mapping),
-			self.hi.into_value_indices(wire_mapping),
+			self.a.into_value_indices(arena, wire_mapping),
+			self.b.into_value_indices(arena, wire_mapping),
+			self.lo.into_value_indices(arena, wire_mapping),
+			self.hi.into_value_indices(arena, wire_mapping),
 		])
 	}
 
-	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
-		self.a.mark_used(used_set);
-		self.b.mark_used(used_set);
-		self.hi.mark_used(used_set);
-		self.lo.mark_used(used_set);
+	pub(super) fn mark_used(&self, arena: &[ShiftedWire], used_set: &mut EntitySet<Wire>) {
+		self.a.mark_used(arena, used_set);
+		self.b.mark_used(arena, used_set);
+		self.hi.mark_used(arena, used_set);
+		self.lo.mark_used(arena, used_set);
 	}
 }
 
@@ -92,25 +94,26 @@ pub struct WireBmulConstraint {
 impl WireBmulConstraint {
 	pub(super) fn into_constraint(
 		self,
+		arena: &[ShiftedWire],
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> BmulConstraint {
 		BmulConstraint([
-			self.a_lo.into_value_indices(wire_mapping),
-			self.a_hi.into_value_indices(wire_mapping),
-			self.b_lo.into_value_indices(wire_mapping),
-			self.b_hi.into_value_indices(wire_mapping),
-			self.c_lo.into_value_indices(wire_mapping),
-			self.c_hi.into_value_indices(wire_mapping),
+			self.a_lo.into_value_indices(arena, wire_mapping),
+			self.a_hi.into_value_indices(arena, wire_mapping),
+			self.b_lo.into_value_indices(arena, wire_mapping),
+			self.b_hi.into_value_indices(arena, wire_mapping),
+			self.c_lo.into_value_indices(arena, wire_mapping),
+			self.c_hi.into_value_indices(arena, wire_mapping),
 		])
 	}
 
-	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
-		self.a_lo.mark_used(used_set);
-		self.a_hi.mark_used(used_set);
-		self.b_lo.mark_used(used_set);
-		self.b_hi.mark_used(used_set);
-		self.c_lo.mark_used(used_set);
-		self.c_hi.mark_used(used_set);
+	pub(super) fn mark_used(&self, arena: &[ShiftedWire], used_set: &mut EntitySet<Wire>) {
+		self.a_lo.mark_used(arena, used_set);
+		self.a_hi.mark_used(arena, used_set);
+		self.b_lo.mark_used(arena, used_set);
+		self.b_hi.mark_used(arena, used_set);
+		self.c_lo.mark_used(arena, used_set);
+		self.c_hi.mark_used(arena, used_set);
 	}
 }
 
@@ -126,13 +129,14 @@ pub struct WireZeroConstraint {
 impl WireZeroConstraint {
 	pub(super) fn into_constraint(
 		self,
+		arena: &[ShiftedWire],
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> ZeroConstraint {
-		ZeroConstraint([self.val.into_value_indices(wire_mapping)])
+		ZeroConstraint([self.val.into_value_indices(arena, wire_mapping)])
 	}
 
-	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
-		self.val.mark_used(used_set);
+	pub(super) fn mark_used(&self, arena: &[ShiftedWire], used_set: &mut EntitySet<Wire>) {
+		self.val.mark_used(arena, used_set);
 	}
 }
 
@@ -151,16 +155,17 @@ impl WireLinearConstraint {
 	/// AND constraint carries.
 	pub(super) fn into_zero_constraint(
 		self,
+		arena: &[ShiftedWire],
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> ZeroConstraint {
 		let dst = wire_mapping[self.dst];
-		let mut operand = self.rhs.into_value_indices(wire_mapping);
+		let mut operand = self.rhs.into_value_indices(arena, wire_mapping);
 		operand.push(ShiftedValueIndex::plain(dst));
 		ZeroConstraint([operand])
 	}
 
-	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
-		self.rhs.mark_used(used_set);
+	pub(super) fn mark_used(&self, arena: &[ShiftedWire], used_set: &mut EntitySet<Wire>) {
+		self.rhs.mark_used(arena, used_set);
 		used_set.insert(self.dst);
 	}
 }

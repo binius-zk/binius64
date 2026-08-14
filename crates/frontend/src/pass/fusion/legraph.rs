@@ -182,13 +182,14 @@ impl LeGraph {
 
 	/// The operand of the linear definition that assigns `wire`.
 	///
-	/// The operand lives in `cb`; this only resolves which constraint to read.
+	/// The handle's terms live in `cb`'s arena.
+	/// This only resolves which constraint to read.
 	///
 	/// # Panics
 	///
 	/// Panics if `wire` is not assigned by a linear definition.
-	pub fn lin_def_operand<'a>(&self, cb: &'a ConstraintBuilder, wire: Wire) -> &'a WireOperand {
-		&cb.linear_constraints[self.lin_def_id(wire).index()].rhs
+	pub fn lin_def_operand(&self, cb: &ConstraintBuilder, wire: Wire) -> WireOperand {
+		cb.linear_constraints[self.lin_def_id(wire).index()].rhs
 	}
 
 	/// The id of the linear definition that assigns `wire`.
@@ -291,40 +292,45 @@ fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph) {
 
 	for lin in &cb.linear_constraints {
 		let consumer = lin.dst;
-		for term in &lin.rhs {
+		for term in cb.operand_terms(lin.rhs) {
 			leg.note_lin_use(term.wire, term.sole_shift(), consumer);
 		}
 	}
 
 	for (index, and) in cb.and_constraints.iter().enumerate() {
-		harvest_root_uses(&and.a, leg, ConstraintRef::And { index });
-		harvest_root_uses(&and.b, leg, ConstraintRef::And { index });
-		harvest_root_uses(&and.c, leg, ConstraintRef::And { index });
+		harvest_root_uses(cb, and.a, leg, ConstraintRef::And { index });
+		harvest_root_uses(cb, and.b, leg, ConstraintRef::And { index });
+		harvest_root_uses(cb, and.c, leg, ConstraintRef::And { index });
 	}
 
 	for (index, mul) in cb.imul_constraints.iter().enumerate() {
-		harvest_root_uses(&mul.a, leg, ConstraintRef::Imul { index });
-		harvest_root_uses(&mul.b, leg, ConstraintRef::Imul { index });
-		harvest_root_uses(&mul.hi, leg, ConstraintRef::Imul { index });
-		harvest_root_uses(&mul.lo, leg, ConstraintRef::Imul { index });
+		harvest_root_uses(cb, mul.a, leg, ConstraintRef::Imul { index });
+		harvest_root_uses(cb, mul.b, leg, ConstraintRef::Imul { index });
+		harvest_root_uses(cb, mul.hi, leg, ConstraintRef::Imul { index });
+		harvest_root_uses(cb, mul.lo, leg, ConstraintRef::Imul { index });
 	}
 
 	for (index, mul) in cb.bmul_constraints.iter().enumerate() {
-		harvest_root_uses(&mul.a_lo, leg, ConstraintRef::Bmul { index });
-		harvest_root_uses(&mul.a_hi, leg, ConstraintRef::Bmul { index });
-		harvest_root_uses(&mul.b_lo, leg, ConstraintRef::Bmul { index });
-		harvest_root_uses(&mul.b_hi, leg, ConstraintRef::Bmul { index });
-		harvest_root_uses(&mul.c_lo, leg, ConstraintRef::Bmul { index });
-		harvest_root_uses(&mul.c_hi, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(cb, mul.a_lo, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(cb, mul.a_hi, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(cb, mul.b_lo, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(cb, mul.b_hi, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(cb, mul.c_lo, leg, ConstraintRef::Bmul { index });
+		harvest_root_uses(cb, mul.c_hi, leg, ConstraintRef::Bmul { index });
 	}
 
 	for (index, zero) in cb.zero_constraints.iter().enumerate() {
-		harvest_root_uses(&zero.val, leg, ConstraintRef::Zero { index });
+		harvest_root_uses(cb, zero.val, leg, ConstraintRef::Zero { index });
 	}
 }
 
-fn harvest_root_uses(operand: &WireOperand, leg: &mut LeGraph, constraint: ConstraintRef) {
-	for term in operand {
+fn harvest_root_uses(
+	cb: &ConstraintBuilder,
+	operand: WireOperand,
+	leg: &mut LeGraph,
+	constraint: ConstraintRef,
+) {
+	for term in cb.operand_terms(operand) {
 		if leg.is_lin_def(term.wire) {
 			leg.note_root_use(term.wire, term.sole_shift(), constraint);
 		}
