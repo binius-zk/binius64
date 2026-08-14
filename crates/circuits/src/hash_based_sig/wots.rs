@@ -331,6 +331,21 @@ pub fn circuit_recover_public_key(
 		.collect();
 	let table_rows = table.iter().map(|row| row.as_slice()).collect::<Vec<_>>();
 
+	// Which chains an entry can possibly belong to. A chain contributes at most
+	// `CHAIN_LENGTH - 1` entries, of which at most `CHAIN_LENGTH - 2` can fall on one side of any
+	// entry of its own. So of the `k` entries before this one, all but `CHAIN_LENGTH - 2` need
+	// chains strictly below its own, and likewise above for the entries after it. That confines
+	// each entry to about two thirds of the chains, and only that window has to be muxed over.
+	let window = |k: usize| -> (usize, usize) {
+		let per_chain = CHAIN_LENGTH - 1;
+		let own_side = CHAIN_LENGTH - 2;
+		let before = k.saturating_sub(own_side).div_ceil(per_chain);
+		let after = (NUM_CHAIN_HASHES - 1 - k)
+			.saturating_sub(own_side)
+			.div_ceil(per_chain);
+		(before, V - 1 - after)
+	};
+
 	// The hashes. Every entry's input is hinted rather than carried from the entry before it, so
 	// they are independent and pair two to a core.
 	let sub_position = |k: usize| builder.bxor(builder.shl(chain_of(k), W as u32), step_of(k));
@@ -362,7 +377,6 @@ pub fn circuit_recover_public_key(
 
 	let one = builder.add_constant_64(1);
 	let last_step = builder.add_constant_64((CHAIN_LENGTH - 2) as u64);
-	let all_chains = builder.add_constant_64(V as u64);
 	let never = builder.add_constant(Word::ZERO);
 	let always = builder.add_constant(Word::ALL_ONE);
 
@@ -370,7 +384,16 @@ pub fn circuit_recover_public_key(
 		let b = builder.subcircuit(format!("chain_hash[{k}]"));
 		let (chain, step, input) = (chain_of(k), step_of(k), input_of(k));
 
-		let row = multi_wire_multiplex(&b, &table_rows, chain);
+		// The window is asserted rather than merely implied: the mux reads only the low bits of
+		// its selector, so a chain outside the window would alias onto a row that is not its own.
+		let (lowest, highest) = window(k);
+		let lowest_wire = b.add_constant_64(lowest as u64);
+		b.assert_true("chain_at_least_window", b.icmp_ule(lowest_wire, chain));
+		b.assert_true("chain_at_most_window", b.icmp_ule(chain, b.add_constant_64(highest as u64)));
+
+		let zero = b.add_constant_64(0);
+		let offset = b.isub_bin_bout(chain, lowest_wire, zero).0;
+		let row = multi_wire_multiplex(&b, &table_rows[lowest..=highest], offset);
 		let tip: [Wire; DIGEST_WIRES] = std::array::from_fn(|w| row[w]);
 		let digit = row[DIGEST_WIRES];
 		let end: [Wire; DIGEST_WIRES] = std::array::from_fn(|w| row[DIGEST_WIRES + 1 + w]);
@@ -423,13 +446,6 @@ pub fn circuit_recover_public_key(
 			);
 		}
 	}
-
-	// The table is indexed by a hinted chain, so the chain has to name a real one. Monotonicity
-	// carries the bound to every entry.
-	builder.assert_true(
-		"chain_in_range",
-		builder.icmp_ult(chain_of(NUM_CHAIN_HASHES - 1), all_chains),
-	);
 
 	// A chain at the last digit owes no hashes and so has no entry to close it: its end is the
 	// tip the signature already gave.
