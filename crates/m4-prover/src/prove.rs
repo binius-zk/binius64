@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, ops::Deref};
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
@@ -112,18 +112,23 @@ impl IOPProver {
 	///
 	/// This is the core proving logic, independent of the specific IOP compilation strategy. For
 	/// most users, [`Prover::prove_chip`] is the simpler interface.
-	pub fn prove_chip<P, Channel, A>(&self, table: &ValueTable, channel: &mut Channel, alloc: &A)
-	where
+	pub fn prove_chip<P, Channel, A, Data>(
+		&self,
+		table: &ValueTable<Data>,
+		channel: &mut Channel,
+		alloc: &A,
+	) where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P, A>,
 		A: Allocator,
+		Data: Deref<Target = [Word]>,
 	{
 		let cs = &self.cs;
 
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
 		let trace_packed = {
 			let _scope = tracing::debug_span!("Prepare trace").entered();
-			pack_table::<P, _>(table, alloc)
+			pack_table::<P, _, _>(table, alloc)
 		};
 		let trace_oracle = {
 			let _scope = tracing::debug_span!("Commit trace").entered();
@@ -419,12 +424,13 @@ where
 	///
 	/// Creates the IOP channel from the transcript, delegates to [`IOPProver::prove_chip`], then
 	/// finishes the channel with the combined FRI opening.
-	pub fn prove_chip<Challenger_>(
+	pub fn prove_chip<Challenger_, Data>(
 		&self,
-		table: &ValueTable,
+		table: &ValueTable<Data>,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) where
 		Challenger_: Challenger,
+		Data: Deref<Target = [Word]>,
 	{
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs. The channel commits its Merkle trees out of the same pool.
@@ -433,7 +439,7 @@ where
 			.basefold_compiler
 			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
 		self.iop_prover
-			.prove_chip::<P, _, _>(table, &mut channel, &alloc);
+			.prove_chip::<P, _, _, _>(table, &mut channel, &alloc);
 
 		let _scope = tracing::debug_span!("PCS opening").entered();
 		channel.finish();
@@ -684,6 +690,7 @@ mod tests {
 	use std::array;
 
 	use assert_matches::assert_matches;
+	use binius_compute::GlobalAllocator;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::CircuitBuilder;
 	use binius_hash::StdHashSuite;
@@ -756,7 +763,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -829,7 +836,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -885,7 +892,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -966,7 +973,7 @@ mod tests {
 		// two product words.
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				w[x] = Word(rng.next_u64());
 				w[y] = Word(rng.next_u64());
@@ -1022,7 +1029,7 @@ mod tests {
 		// data.
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				let input_word = rng.next_u64();
 				let secret_word = rng.next_u64();
@@ -1086,7 +1093,7 @@ mod tests {
 		// Fill each instance's inputs from a per-instance seed; the compression derives the rest.
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				// A 32-bit value per chaining-value word.
 				for wire in cv {
@@ -1161,7 +1168,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -1216,7 +1223,7 @@ mod tests {
 		// product words.
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				w[x_lo] = Word(rng.next_u64());
 				w[x_hi] = Word(rng.next_u64());
@@ -1290,7 +1297,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -1358,7 +1365,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in &inputs {
 					w[wire] = Word(rng.next_u64());
@@ -1429,7 +1436,7 @@ mod tests {
 
 		let log_instances = 6;
 		let table = circuit
-			.populate_batch(log_instances, |i, w| {
+			.populate_batch(&GlobalAllocator, log_instances, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64 + 1);
 				w[x] = Word(rng.next_u64());
 				w[y] = Word(rng.next_u64());

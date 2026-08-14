@@ -6,6 +6,7 @@
 
 use std::mem;
 
+use binius_compute::GlobalAllocator;
 use binius_core::{
 	ValueTable, ValueVec, Word,
 	error::{ChipName, OperandFault},
@@ -322,7 +323,7 @@ impl CircuitM4 {
 			let log_instances = log2_ceil_usize(call_data.len());
 			let table = chip
 				.circuit
-				.populate_batch_parallel(log_instances, |instance, filler| {
+				.populate_batch_parallel(&GlobalAllocator, log_instances, |instance, filler| {
 					// Instances past the last invocation repeat it.
 					let inout = &call_data[instance.min(call_data.len() - 1)];
 					for (i, &wire) in chip.circuit.inout().iter().enumerate() {

@@ -1,5 +1,7 @@
 // Copyright 2026 The Binius Developers
 
+use std::ops::Deref;
+
 use super::{ValueIndex, ValueVec, ValueVecLayout};
 use crate::word::Word;
 
@@ -39,8 +41,11 @@ use crate::word::Word;
 ///
 /// Populating one is the circuit frontend's business, since it takes a circuit to evaluate — see
 /// `Circuit::populate_batch`.
+///
+/// `Data` is the buffer backing the words. It defaults to [`Vec<Word>`], but the prover populates
+/// a table straight into a buffer drawn from its pool, so any `Deref<Target = [Word]>` will do.
 #[derive(Clone, Debug)]
-pub struct ValueTable {
+pub struct ValueTable<Data = Vec<Word>> {
 	/// The per-instance value layout, shared by every instance in the batch.
 	layout: ValueVecLayout,
 	/// The base-2 logarithm of the instance count.
@@ -56,10 +61,10 @@ pub struct ValueTable {
 	/// Row `r` (for `r` in `0..n_hidden_words`) holds the `2^log_instances` values of hidden wire
 	/// `r` — inout value `r`, then private value `r - n_inout` — one per instance. The rows are
 	/// laid out contiguously, so the length is `n_hidden_words << log_instances`.
-	data: Vec<Word>,
+	data: Data,
 }
 
-impl ValueTable {
+impl<Data: Deref<Target = [Word]>> ValueTable<Data> {
 	/// Builds a table from the hidden words of every instance, in wire-major order.
 	///
 	/// `data` is what [`Self::as_words`] returns: the rows of the hidden segment laid out
@@ -72,11 +77,7 @@ impl ValueTable {
 	/// # Panics
 	///
 	/// Panics if `data` is not `n_hidden_words << log_instances` words long.
-	pub fn from_hidden_words(
-		layout: ValueVecLayout,
-		log_instances: usize,
-		data: Vec<Word>,
-	) -> Self {
+	pub fn from_hidden_words(layout: ValueVecLayout, log_instances: usize, data: Data) -> Self {
 		let n_hidden_words = layout.combined_len() - layout.offset_inout();
 		assert_eq!(
 			data.len(),

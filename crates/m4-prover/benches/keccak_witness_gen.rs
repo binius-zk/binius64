@@ -8,6 +8,7 @@
 use std::array;
 
 use binius_circuits::keccak::permutation::keccak_f1600;
+use binius_compute::GlobalAllocator;
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -57,7 +58,7 @@ fn bench_keccak_witness_gen(c: &mut Criterion) {
 	group.bench_function("value_table", |b| {
 		b.iter(|| {
 			circuit
-				.populate_batch(LOG_INSTANCES, |instance, w| {
+				.populate_batch(&GlobalAllocator, LOG_INSTANCES, |instance, w| {
 					for lane in 0..STATE_LANES {
 						w[input[lane]] = input_word(instance, lane);
 					}
@@ -71,6 +72,7 @@ fn bench_keccak_witness_gen(c: &mut Criterion) {
 			b.iter(|| {
 				circuit
 					.populate_batch_parallel_with_stripe_width(
+						&GlobalAllocator,
 						LOG_INSTANCES,
 						stripe_width,
 						|instance, w| {

@@ -2,6 +2,8 @@
 
 //! The committed witness with its instance axis collapsed at a challenge point.
 
+use std::ops::Deref;
+
 use binius_compute::{Allocator, VecLike};
 use binius_core::{ValueTable, word::Word};
 use binius_field::{BinaryField, PackedField};
@@ -64,7 +66,11 @@ impl<F: BinaryField, A: Allocator> FoldedWitness<F, A> {
 	/// # Panics
 	///
 	/// Panics if the point width does not match the batch dimension.
-	pub fn fold_instances(table: &ValueTable, r_rho: &[F], alloc: &A) -> Self {
+	pub fn fold_instances<Data: Deref<Target = [Word]>>(
+		table: &ValueTable<Data>,
+		r_rho: &[F],
+		alloc: &A,
+	) -> Self {
 		// Invariant: one challenge coordinate per instance-axis variable.
 		assert_eq!(r_rho.len(), table.log_instances(), "r_rho must match the batch dimension");
 
@@ -250,7 +256,7 @@ mod tests {
 
 		// Every instance gets its own seed, so no two instances share an input.
 		circuit
-			.populate_batch(3, |i, w| {
+			.populate_batch(&GlobalAllocator, 3, |i, w| {
 				let mut rng = StdRng::seed_from_u64(i as u64);
 				for &wire in inputs.iter().chain(&filler) {
 					w[wire] = Word(rng.random());
