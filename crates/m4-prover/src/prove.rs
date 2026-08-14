@@ -807,10 +807,9 @@ mod tests {
 		//
 		// Gate fusion is off: it inlines a linear definition into the gate that consumes it, which
 		// would leave no linear constraint to lower.
-		let builder = CircuitBuilder::with_opts(Options {
-			enable_gate_fusion: false,
-			..Options::default()
-		});
+		let mut opts = Options::default();
+		opts.enable_gate_fusion = false;
+		let builder = CircuitBuilder::with_opts(opts);
 		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_inout());
 		let x = builder.bxor(inputs[0], inputs[1]);
 		let y = builder.bxor(x, inputs[2]);
@@ -866,10 +865,9 @@ mod tests {
 		use binius_frontend::{Options, Wire};
 
 		// Gate fusion off, so the `bxor` survives as a linear constraint to lower.
-		let builder = CircuitBuilder::with_opts(Options {
-			enable_gate_fusion: false,
-			..Options::default()
-		});
+		let mut opts = Options::default();
+		opts.enable_gate_fusion = false;
+		let builder = CircuitBuilder::with_opts(opts);
 		let inputs: [Wire; 3] = array::from_fn(|_| builder.add_inout());
 		builder.mark_inout(builder.bxor(inputs[0], inputs[1]));
 		let circuit = builder.build();

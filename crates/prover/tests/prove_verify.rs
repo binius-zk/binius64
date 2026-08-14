@@ -353,13 +353,12 @@ fn zero_constraint_circuit(
 	n_rotr: usize,
 	n_and: usize,
 ) -> (ConstraintSystem, ValueVec) {
-	let builder = CircuitBuilder::with_opts(Options {
-		enable_gate_fusion: false,
-		enable_common_subexpression_elimination: false,
-		enable_dead_code_elimination: false,
-		enable_algebraic_folding: false,
-		..Options::default()
-	});
+	let mut opts = Options::default();
+	opts.enable_gate_fusion = false;
+	opts.enable_common_subexpression_elimination = false;
+	opts.enable_dead_code_elimination = false;
+	opts.enable_algebraic_folding = false;
+	let builder = CircuitBuilder::with_opts(opts);
 	let a = builder.add_witness();
 	let b = builder.add_witness();
 
@@ -436,13 +435,12 @@ fn test_prove_verify_fewer_zero_than_and_constraints() {
 /// values the circuit declares. The optimization passes are off so that the repeated assertions
 /// survive as distinct constraints.
 fn public_heavy_circuit(n_inout: usize) -> (ConstraintSystem, ValueVec) {
-	let builder = CircuitBuilder::with_opts(Options {
-		enable_gate_fusion: false,
-		enable_common_subexpression_elimination: false,
-		enable_dead_code_elimination: false,
-		enable_algebraic_folding: false,
-		..Options::default()
-	});
+	let mut opts = Options::default();
+	opts.enable_gate_fusion = false;
+	opts.enable_common_subexpression_elimination = false;
+	opts.enable_dead_code_elimination = false;
+	opts.enable_algebraic_folding = false;
+	let builder = CircuitBuilder::with_opts(opts);
 	let a = builder.add_witness();
 	let b = builder.add_witness();
 	let and_out = builder.band(a, b);
