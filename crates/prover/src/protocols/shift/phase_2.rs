@@ -57,8 +57,8 @@ use crate::fold_word::fold_words;
 /// - `channel`: The prover's channel
 ///
 /// # Returns
-/// Returns `SumcheckOutput` containing the combined challenges `[r_j, r_y]` and the witness
-/// evaluation, or an error if the protocol fails.
+/// Returns the combined challenges `[r_j, r_y]` with the witness evaluation, and the wiring
+/// multilinear's evaluation.
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "prove_phase_2")]
 pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
@@ -70,7 +70,7 @@ pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	epsilon: F,
 	channel: &mut Channel,
 	alloc: &A,
-) -> SumcheckOutput<F>
+) -> ShiftOutput<F>
 where
 	F: BinaryField,
 	Channel: IPProverChannel<F>,
@@ -117,6 +117,7 @@ where
 		hidden_folded,
 		&public_monster,
 		hidden_monster,
+		shift_ind_eval,
 		words.public,
 		r_j,
 		epsilon,
@@ -250,9 +251,12 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>, Data: DerefMut<Target = [
 /// evaluating the public segment (cheap, like the verifier does), subtracting its padded
 /// contribution off and scaling.
 ///
+/// It also divides the three bit-index factors `shift_ind_eval` scales the monster by back out of
+/// the monster's evaluation, leaving the wiring evaluation the verifier's claim is about.
+///
 /// # Returns
-/// Returns `SumcheckOutput` with concatenated challenges `[r_j, r_y]` and the witness
-/// evaluation.
+/// Returns the sumcheck's concatenated challenges `[r_j, r_y]` with the witness evaluation, and
+/// the wiring evaluation for the caller to send.
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "run_sumcheck")]
 pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>, A: Allocator>(
@@ -260,12 +264,13 @@ pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>, 
 	hidden_folded: FieldVec<P, A>,
 	public_monster: &FieldVec<P, A>,
 	hidden_monster: FieldVec<P, A>,
+	shift_ind_eval: F,
 	public_words: &[Word],
 	r_j: Vec<F>,
 	gamma: F,
 	channel: &mut Channel,
 	alloc: &A,
-) -> SumcheckOutput<F>
+) -> ShiftOutput<F>
 where
 	F: BinaryField,
 {
@@ -298,9 +303,14 @@ where
 	// Reverse the challenges to get the evaluation point.
 	r_y.reverse();
 
-	let [trace_eval, _monster_eval] = multilinear_evals
+	let [trace_eval, monster_eval] = multilinear_evals
 		.try_into()
 		.expect("prover has 2 multilinear polynomials");
+
+	// Every monster entry carries the three bit-index factors, so dividing them out of its
+	// evaluation leaves the bare wiring evaluation. Like the witness evaluation below, this makes
+	// the protocol incomplete with negligible probability, when the scale is zero.
+	let wiring_eval = monster_eval * shift_ind_eval.invert_or_zero();
 
 	// Derive the witness evaluation from the combined evaluation by evaluating the public
 	// segment (cheap, like the verifier does), subtracting its padded contribution off and
@@ -317,8 +327,23 @@ where
 		(trace_eval - (F::ONE - r_segment) * padded_public_eval) * r_segment.invert_or_zero();
 	channel.send_one(witness_eval);
 
-	SumcheckOutput {
-		challenges: [r_j, r_y].concat(),
-		eval: witness_eval,
+	ShiftOutput {
+		sumcheck: SumcheckOutput {
+			challenges: [r_j, r_y].concat(),
+			eval: witness_eval,
+		},
+		wiring_eval,
 	}
+}
+
+/// What the shift reduction leaves for its caller.
+///
+/// The wiring evaluation is not sent here: the verifier reads it after the public segment's
+/// evaluation claim, which the caller proves, so the caller sends it at that point.
+#[derive(Debug)]
+pub struct ShiftOutput<F> {
+	/// The sumcheck's challenges `[r_j, r_y]` and the witness evaluation.
+	pub sumcheck: SumcheckOutput<F>,
+	/// The wiring multilinear's evaluation at the reduced point.
+	pub wiring_eval: F,
 }

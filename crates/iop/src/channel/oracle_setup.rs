@@ -12,7 +12,6 @@ use binius_core::word::Word;
 use binius_field::{
 	BinaryField, ExtensionField, Field, FieldOps,
 	arithmetic_traits::{InvertOrZero, Square},
-	util::FieldFn,
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 
@@ -190,16 +189,6 @@ impl<F: Field> IPVerifierChannel<F> for OracleSetupChannel {
 
 	fn assert_zero(&mut self, _val: DummyElem<F>) -> Result<(), binius_ip::channel::Error> {
 		Ok(())
-	}
-
-	fn compute_public_value(
-		&mut self,
-		_inputs: &[DummyElem<F>],
-		_f: impl FieldFn<F>,
-	) -> DummyElem<F> {
-		// The setup channel performs no real computation; skipping `f` is permitted (see the
-		// `IPVerifierChannel::compute_public_value` contract).
-		DummyElem(PhantomData)
 	}
 }
 

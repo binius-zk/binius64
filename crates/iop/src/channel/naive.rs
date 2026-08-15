@@ -2,7 +2,7 @@
 
 //! Naive [`IOPVerifierChannel`] for testing: reads full polynomials instead of verifying FRI.
 
-use binius_field::{Field, util::FieldFn};
+use binius_field::Field;
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
 use binius_transcript::{
@@ -128,10 +128,6 @@ where
 		} else {
 			Err(binius_ip::channel::Error::InvalidAssert)
 		}
-	}
-
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
-		f.call_native(inputs)
 	}
 }
 

@@ -5,7 +5,7 @@
 use std::{marker::PhantomData, mem::size_of};
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, util::FieldFn};
+use binius_field::BinaryField;
 use binius_ip::channel::{
 	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
 };
@@ -99,10 +99,6 @@ where
 
 	fn assert_zero(&mut self, _val: F) -> Result<(), binius_ip::channel::Error> {
 		Ok(())
-	}
-
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
-		f.call_native(inputs)
 	}
 }
 

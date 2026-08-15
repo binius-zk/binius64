@@ -251,6 +251,14 @@ where
 		self.interaction.push(encrypted);
 	}
 
+	fn send_public_claim(&mut self, elem: F) {
+		// A claim is a function of public values, so it is sent in the clear and consumes no OTP
+		// key. `interaction` records the plaintext, which is what the outer witness's inout wire
+		// holds and what the replay hands the inner verifier.
+		self.inner_channel.send_one(elem);
+		self.interaction.push(elem);
+	}
+
 	fn observe_one(&mut self, val: F) {
 		self.inner_channel.observe_one(val);
 		self.interaction.push(val);

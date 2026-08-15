@@ -33,7 +33,7 @@ pub mod constraint_system;
 pub mod wiring;
 pub mod wrapper;
 
-use std::{marker::PhantomData, rc::Rc, slice};
+use std::{marker::PhantomData, rc::Rc};
 
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -205,16 +205,9 @@ impl<F: Field> IOPVerifier<F> {
 		// channel never cross a thread boundary.
 		let r_x_tensor: Rc<[Channel::Elem]> = eq_ind_partial_eval_scalars(&r_x).into();
 
-		// The public-segment contribution to the operand evaluations is purely a function of
-		// public-channel inputs (the public scalars, λ, and rₓ). Trade in those Elems for plain
-		// field values, run the MLE evaluation in plaintext, and materialize the result as a
-		// single inout wire instead of building the entire sub-circuit.
-		let public_eval = {
-			let inputs = [public, slice::from_ref(&lambda), r_x_tensor.as_ref()].concat();
-
-			let eval_fn = wiring::PublicWiringEvalFn::new(cs.mul_constraints(), public.len());
-			channel.compute_public_value(&inputs, eval_fn)
-		};
+		// The public segment's contribution to the operand evaluations.
+		let public_eval =
+			wiring::evaluate_wiring_mle_public(cs.mul_constraints(), public, &lambda, &r_x_tensor);
 
 		// Prover sends the precommit segment's contribution to the operand evaluations.
 		let precommit_claim = channel.recv_one()?;

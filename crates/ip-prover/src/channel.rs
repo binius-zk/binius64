@@ -43,6 +43,17 @@ pub trait IPProverChannel<F: Field> {
 		}
 	}
 
+	/// Sends a value the verifier could compute for itself, as advice.
+	///
+	/// The verifier's counterpart is
+	/// [`recv_public_claim`](binius_ip::channel::IPVerifierChannel::recv_public_claim), which
+	/// documents what a claim is. A claim depends on public-channel-derived values alone, so a
+	/// channel that masks the prover's messages sends this one in the clear. The default is the
+	/// plain send, for a channel that draws no such distinction.
+	fn send_public_claim(&mut self, elem: F) {
+		self.send_one(elem);
+	}
+
 	/// Observes a single field element, feeding it into the Fiat-Shamir state.
 	fn observe_one(&mut self, val: F);
 

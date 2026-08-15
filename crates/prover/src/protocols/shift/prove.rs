@@ -4,7 +4,6 @@
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, util::powers};
-use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, inner_product::inner_product,
@@ -12,8 +11,12 @@ use binius_math::{
 };
 
 use super::{
-	SegmentWords, claims::OperatorClaims, key_collection::KeyCollection, phase_1::prove_phase_1,
-	phase_2::prove_phase_2, shift_ind::ShiftIndSumcheck,
+	SegmentWords,
+	claims::OperatorClaims,
+	key_collection::KeyCollection,
+	phase_1::prove_phase_1,
+	phase_2::{ShiftOutput, prove_phase_2},
+	shift_ind::ShiftIndSumcheck,
 };
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
@@ -146,7 +149,8 @@ impl<F: Field> PreparedOperatorData<F> {
 /// - `alloc`: the allocator backing the reduction's intermediate buffers.
 ///
 /// # Returns
-/// The `SumcheckOutput` with the final challenges and the witness evaluation.
+/// The final challenges with the witness evaluation, and the wiring multilinear's evaluation for
+/// the caller to send.
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
@@ -155,7 +159,7 @@ pub fn prove<F, P, Channel, A>(
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,
-) -> SumcheckOutput<F>
+) -> ShiftOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,

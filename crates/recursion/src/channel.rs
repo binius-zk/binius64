@@ -6,7 +6,7 @@ use std::{array, rc::Rc};
 
 use binius_circuits::{bytes::swap_bytes_32, multiplexer::multi_wire_multiplex};
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash as B128, Field, FieldOps, util::FieldFn};
+use binius_field::{BinaryField128bGhash as B128, Field, FieldOps};
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_hash::StdHashSuite;
 use binius_iop::{
@@ -213,17 +213,6 @@ impl IPVerifierChannel<B128> for Binius64BuilderChannel {
 				Ok(())
 			}
 		}
-	}
-
-	fn compute_public_value(
-		&mut self,
-		inputs: &[SymbolicElem],
-		f: impl FieldFn<B128>,
-	) -> SymbolicElem {
-		// Evaluated symbolically rather than hinted, so the circuit constrains it. For the
-		// constraint system's monster multilinear that is proportional to the inner circuit's
-		// size, which is what an accumulation or Spark argument would remove.
-		f.call::<SymbolicElem>(inputs)
 	}
 }
 

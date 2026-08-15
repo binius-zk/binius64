@@ -271,8 +271,8 @@ where
 ///
 /// After the shift reduction protocol completes, this function checks that the
 /// prover-provided witness evaluation is consistent with the expected values.
-/// It computes the monster multilinear evaluations for the AND, IMUL and BMUL constraints
-/// and verifies the final equation relating the witness and monster evaluations.
+/// It reads the wiring multilinear's evaluation from the prover and verifies the final equation
+/// relating the witness and monster evaluations.
 ///
 /// # Protocol Details
 ///
@@ -281,9 +281,13 @@ where
 /// eval = trace_eval * monster_eval
 /// ```
 ///
-/// where `monster_eval` is the sum of evaluations for AND, IMUL and BMUL constraint polynomials,
-/// scaled by the sumcheck's two bit-index factors — the Lagrange weights and the interpolated
-/// shift indicators, both at `r_i`.
+/// where `monster_eval` is the prover's claimed wiring evaluation — the AND, IMUL and BMUL
+/// constraint polynomials summed — scaled by the sumcheck's two bit-index factors, the Lagrange
+/// weights and the interpolated shift indicators, both at `r_i`.
+///
+/// That claim is not checked here. It comes back as a [`WiringEvalClaim`], holding the function
+/// that evaluates the wiring multilinear from public-channel-derived values together with the
+/// claimed value it must equal, for the caller to discharge however it opens claims.
 ///
 /// `trace_eval` is the witness evaluation reconstructed from its two segments:
 /// ```text
@@ -299,10 +303,10 @@ where
 /// # Errors
 ///
 /// - `Error::VerificationFailure` if the evaluation equation doesn't hold
-/// - Propagates errors from monster multilinear evaluation
+/// - Propagates errors from reading the wiring evaluation off the channel
 #[allow(clippy::too_many_arguments)]
-pub fn check_eval<F, C>(
-	constraint_system: &ConstraintSystem,
+pub fn check_eval<'a, F, C>(
+	constraint_system: &'a ConstraintSystem,
 	inout: InoutSegment,
 	public_eval: C::Elem,
 	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
@@ -313,7 +317,7 @@ pub fn check_eval<F, C>(
 	r_zhat_prime: &C::Elem,
 	output: &VerifyOutput<C::Elem>,
 	channel: &mut C,
-) -> Result<(), Error>
+) -> Result<WiringEvalClaim<'a, C::Elem>, Error>
 where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,
@@ -350,15 +354,21 @@ where
 		evaluate_inplace_scalars(&mut evaluate_shift_inds(r_k, r_j, r_s_inner)[..], r_v_inner);
 	let shift_ind_eval = outer_ind_eval * inner_ind_eval;
 
-	// `monster_eval` is a function of purely public-channel-derived elements
-	// (`bitand_lambda`, `intmul_lambda`, the operator data's `r_x_prime` vectors, both shift slots'
-	// challenges, `r_y`) plus the constant `constraint_system`. Trade those Elems for plain field
-	// values, run the MLE evaluation in plaintext, and materialize the result as a single inout
-	// wire instead of building the entire sub-circuit in wrapper channels.
-	//
-	// The three bit-index factors scale every shift scalar of the monster; they multiply the result
-	// out here rather than entering the function, which keeps its input free of `r_i` and `r_k`.
-	let monster_eval = {
+	// The wiring multilinear's evaluation comes from the prover, as a claim the verifier could
+	// compute for itself. Checking it against the constraint system is left to the caller, which is
+	// handed the function that computes it below.
+	let wiring_eval = channel.recv_public_claim()?;
+
+	// The three bit-index factors scale every shift scalar of the wiring multilinear; they multiply
+	// the claim out here rather than entering the function, which keeps its input free of `r_i` and
+	// `r_k`.
+	let monster_eval = l_tilde_eval * shift_ind_eval * wiring_eval.clone();
+
+	// The function the caller checks the claim with, and the flat input it reads. Every entry is a
+	// public-channel-derived element (`bitand_lambda`, `intmul_lambda`, the operator data's
+	// `r_x_prime` vectors, both shift slots' challenges, `r_y`); the constraint system it sums over
+	// is fixed.
+	let claim = {
 		let zero_r_x_prime_len = zero_data.r_x_prime.len();
 		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
 		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
@@ -383,7 +393,7 @@ where
 			.chain(iter::once(r_segment.clone()))
 			.collect();
 
-		let eval_fn = MonsterEvalFn {
+		let eval_fn = WiringEvalFn {
 			constraint_system,
 			inout,
 			zero_r_x_prime_len,
@@ -394,7 +404,11 @@ where
 			r_v_len,
 			r_y_len,
 		};
-		l_tilde_eval * shift_ind_eval * channel.compute_public_value(&inputs, eval_fn)
+		WiringEvalClaim {
+			eval_fn,
+			inputs,
+			claimed: wiring_eval,
+		}
 	};
 
 	// Reconstruct the witness evaluation from its two segments.
@@ -408,10 +422,72 @@ where
 	let expected_eval = trace_eval * monster_eval;
 	channel.assert_zero(expected_eval - eval)?;
 
-	Ok(())
+	Ok(claim)
 }
 
-/// The monster multilinear evaluation, as a [`FieldFn`] over public-channel-derived inputs.
+/// The prover's wiring multilinear evaluation, with what it takes to check it.
+///
+/// [`check_eval`] reads the evaluation from the prover and closes the shift reduction with it,
+/// leaving this behind: the claimed value, and the function and inputs that recompute it from the
+/// constraint system. The holder discharges the claim by evaluating the function and requiring the
+/// two to agree.
+///
+/// Both discharges below evaluate the same function; they differ in where. A verifier holding
+/// values checks it in the field, and one building a circuit checks it in constraints — which is
+/// why the function is kept rather than a value, and why the claimed value sits beside it rather
+/// than folded into it.
+///
+/// Dropping a claim drops a check, so it is `#[must_use]`.
+#[must_use]
+#[derive(Debug)]
+pub struct WiringEvalClaim<'a, E> {
+	/// Evaluates the wiring multilinear from `inputs`.
+	pub eval_fn: WiringEvalFn<'a>,
+	/// The flat input `eval_fn` reads.
+	pub inputs: Vec<E>,
+	/// The evaluation the prover claims, which `eval_fn` must return.
+	pub claimed: E,
+}
+
+impl<F: BinaryField> WiringEvalClaim<'_, F> {
+	/// Discharges the claim in the field: evaluates the wiring multilinear and compares.
+	///
+	/// This is the discharge for a verifier holding values rather than wires, and it takes
+	/// [`FieldFn::call_native`]'s accelerated path.
+	pub fn check_native(self) -> Result<(), Error> {
+		if self.eval_fn.call_native(&self.inputs) == self.claimed {
+			Ok(())
+		} else {
+			Err(Error::VerificationFailure)
+		}
+	}
+}
+
+impl<E> WiringEvalClaim<'_, E> {
+	/// Discharges the claim over `channel`'s elements: evaluates the wiring multilinear there and
+	/// asserts it equals the claimed value.
+	///
+	/// This is the discharge for a channel carrying elements as wires, where the evaluation becomes
+	/// a sub-circuit and the comparison an assertion within it. A holder with another way to open a
+	/// claim — a sparse-polynomial argument, say — reads the fields instead.
+	pub fn check_symbolic<F, C>(self, channel: &mut C) -> Result<(), Error>
+	where
+		F: BinaryField,
+		C: IPVerifierChannel<F, Elem = E>,
+		E: FieldOps<Scalar = F> + From<F>,
+	{
+		let Self {
+			eval_fn,
+			inputs,
+			claimed,
+		} = self;
+		let wiring_eval = FieldFn::<F>::call::<E>(&eval_fn, &inputs);
+		channel.assert_zero(wiring_eval - claimed)?;
+		Ok(())
+	}
+}
+
+/// The wiring multilinear evaluation, as a [`FieldFn`] over public-channel-derived inputs.
 ///
 /// The inputs are the flat concatenation of these sections, in order:
 ///
@@ -424,7 +500,8 @@ where
 ///
 /// The bit-index factors every shift scalar is scaled by are left out: they depend on prover
 /// messages, so [`check_eval`] multiplies them in outside.
-struct MonsterEvalFn<'a> {
+#[derive(Debug)]
+pub struct WiringEvalFn<'a> {
 	/// The AND, IMUL and BMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,
 	/// Which segment holds the inout values, which fixes where the word-index tensor is cut.
@@ -445,7 +522,7 @@ struct MonsterEvalFn<'a> {
 	r_y_len: usize,
 }
 
-/// The per-operation [`OperationEvalFn`] inputs [`MonsterEvalFn::operation_inputs`] splits out of
+/// The per-operation [`OperationEvalFn`] inputs [`WiringEvalFn::operation_inputs`] splits out of
 /// its flat input slice. A `None` marks an operation with no constraints, whose reduction is
 /// skipped.
 struct OperationInputs<E> {
@@ -455,7 +532,7 @@ struct OperationInputs<E> {
 	binmul: Option<Vec<E>>,
 }
 
-impl MonsterEvalFn<'_> {
+impl WiringEvalFn<'_> {
 	/// Shared setup for [`FieldFn::call`] and [`FieldFn::call_native`]: splits the flat `vals`
 	/// slice, builds the shared shift-scalar and word-index tensors, and re-encodes them (with each
 	/// operation's `r_x'` and `lambda`) into the per-operation [`OperationEvalFn`] input via
@@ -603,7 +680,7 @@ impl MonsterEvalFn<'_> {
 	}
 }
 
-impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_> {
+impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
 		let OperationInputs {
 			zero: zero_input,
