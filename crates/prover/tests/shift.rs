@@ -13,7 +13,6 @@ use binius_core::{
 };
 use binius_field::{AESTowerField8b, BinaryField};
 use binius_frontend::{CircuitBuilder, Wire};
-use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace,
@@ -30,8 +29,7 @@ use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
 	protocols::shift::{
-		OperatorData as VerifierOperatorData, WiringEvalClaim, check_eval, evaluate_words_mle,
-		verify,
+		OperatorData as VerifierOperatorData, check_eval, evaluate_words_mle, verify,
 	},
 };
 use itertools::Itertools;
@@ -504,11 +502,7 @@ fn test_shift_prove_and_verify() {
 		);
 
 		// Check consistency with verifier output
-		let WiringEvalClaim {
-			eval_fn,
-			inputs,
-			claimed,
-		} = check_eval(
+		let wiring_claim = check_eval(
 			&cs,
 			InoutSegment::Public,
 			public_eval,
@@ -523,11 +517,8 @@ fn test_shift_prove_and_verify() {
 		)
 		.unwrap();
 
-		// Discharge the wiring claim the way the full reduction does.
-		let wiring_eval = verifier_transcript.compute_public_value(&inputs, eval_fn);
-		verifier_transcript
-			.assert_zero(wiring_eval - claimed)
-			.unwrap();
+		// Discharge the wiring claim the way the full reduction's caller does.
+		wiring_claim.check_native().unwrap();
 		verifier_transcript.finalize().unwrap();
 
 		// Check the claimed witness eval matches the direct evaluation of the non-public words.

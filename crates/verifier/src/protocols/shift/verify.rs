@@ -432,9 +432,10 @@ where
 /// constraint system. The holder discharges the claim by evaluating the function and requiring the
 /// two to agree.
 ///
-/// The claimed value is kept beside the function rather than folded into it, so every input the
-/// function reads stays public-channel-derived — which is what
-/// [`IPVerifierChannel::compute_public_value`] requires of them.
+/// Both discharges below evaluate the same function; they differ in where. A verifier holding
+/// values checks it in the field, and one building a circuit checks it in constraints — which is
+/// why the function is kept rather than a value, and why the claimed value sits beside it rather
+/// than folded into it.
 ///
 /// Dropping a claim drops a check, so it is `#[must_use]`.
 #[must_use]
@@ -448,13 +449,28 @@ pub struct WiringEvalClaim<'a, E> {
 	pub claimed: E,
 }
 
-impl<E> WiringEvalClaim<'_, E> {
-	/// Discharges the claim over `channel`: evaluates the wiring multilinear and asserts it equals
-	/// the claimed value.
+impl<F: BinaryField> WiringEvalClaim<'_, F> {
+	/// Discharges the claim in the field: evaluates the wiring multilinear and compares.
 	///
-	/// This is what a channel that opens claims by computing them does. A holder with another way
-	/// to open one — a sparse-polynomial argument, say — reads the fields instead.
-	pub fn check<F, C>(self, channel: &mut C) -> Result<(), Error>
+	/// This is the discharge for a verifier holding values rather than wires, and it takes
+	/// [`FieldFn::call_native`]'s accelerated path.
+	pub fn check_native(self) -> Result<(), Error> {
+		if self.eval_fn.call_native(&self.inputs) == self.claimed {
+			Ok(())
+		} else {
+			Err(Error::VerificationFailure)
+		}
+	}
+}
+
+impl<E> WiringEvalClaim<'_, E> {
+	/// Discharges the claim over `channel`'s elements: evaluates the wiring multilinear there and
+	/// asserts it equals the claimed value.
+	///
+	/// This is the discharge for a channel carrying elements as wires, where the evaluation becomes
+	/// a sub-circuit and the comparison an assertion within it. A holder with another way to open a
+	/// claim — a sparse-polynomial argument, say — reads the fields instead.
+	pub fn check_symbolic<F, C>(self, channel: &mut C) -> Result<(), Error>
 	where
 		F: BinaryField,
 		C: IPVerifierChannel<F, Elem = E>,
@@ -465,7 +481,7 @@ impl<E> WiringEvalClaim<'_, E> {
 			inputs,
 			claimed,
 		} = self;
-		let wiring_eval = channel.compute_public_value(&inputs, eval_fn);
+		let wiring_eval = FieldFn::<F>::call::<E>(&eval_fn, &inputs);
 		channel.assert_zero(wiring_eval - claimed)?;
 		Ok(())
 	}

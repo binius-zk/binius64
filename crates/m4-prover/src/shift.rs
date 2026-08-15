@@ -239,7 +239,6 @@ mod tests {
 		word::Word,
 	};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
-	use binius_ip::channel::IPVerifierChannel;
 	use binius_math::{
 		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 		test_utils::random_scalars,
@@ -253,8 +252,8 @@ mod tests {
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{
-			LOG_SHIFT_COUNT, OperatorData as VerifierOperatorData, SHIFT_COUNT, WiringEvalClaim,
-			check_eval, evaluate_words_mle, verify,
+			LOG_SHIFT_COUNT, OperatorData as VerifierOperatorData, SHIFT_COUNT, check_eval,
+			evaluate_words_mle, verify,
 		},
 	};
 	use rand::prelude::*;
@@ -427,11 +426,7 @@ mod tests {
 			verifier_output.r_y(),
 		);
 
-		let WiringEvalClaim {
-			eval_fn,
-			inputs,
-			claimed,
-		} = check_eval(
+		let wiring_claim = check_eval(
 			&cs,
 			InoutSegment::Hidden,
 			public_eval,
@@ -446,11 +441,8 @@ mod tests {
 		)
 		.unwrap();
 
-		// Discharge the wiring claim the way the full reduction does.
-		let wiring_eval = verifier_transcript.compute_public_value(&inputs, eval_fn);
-		verifier_transcript
-			.assert_zero(wiring_eval - claimed)
-			.unwrap();
+		// Discharge the wiring claim the way the full reduction's caller does.
+		wiring_claim.check_native().unwrap();
 		verifier_transcript.finalize().unwrap();
 
 		// The witness evaluation equals the instance-folded witness evaluated at the point, with

@@ -3,7 +3,7 @@
 //! BaseFold ZK implementation of the IOP verifier channel.
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, util::FieldFn};
+use binius_field::BinaryField;
 use binius_ip::{
 	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{self, BatchSumcheckOutput},
@@ -351,10 +351,6 @@ where
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		self.channel.assert_zero(val)
-	}
-
-	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem {
-		self.channel.compute_public_value(inputs, f)
 	}
 }
 

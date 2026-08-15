@@ -337,7 +337,7 @@ where
 		let inout = channel.observe_words(inout);
 		self.iop_verifier
 			.verify(&inout, &mut channel)?
-			.check(&mut channel)?;
+			.check_native()?;
 		channel.finish()?;
 		Ok(())
 	}

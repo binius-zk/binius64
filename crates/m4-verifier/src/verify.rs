@@ -279,7 +279,7 @@ where
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		self.iop_verifier
 			.verify_chip(&mut channel)?
-			.check(&mut channel)?;
+			.check_native()?;
 		channel.finish()?;
 
 		Ok(())

@@ -14,7 +14,7 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, util::FieldFn};
+use binius_field::BinaryField;
 use binius_iop::{
 	basefold::channel::{BaseFoldOracle, BaseFoldVerifierChannel},
 	channel::{IOPVerifierChannel, OracleSpec, TransparentEvalFn},
@@ -24,7 +24,7 @@ use binius_ip::channel::{
 	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
 };
 use binius_spartan_frontend::{
-	circuit_builder::{CircuitBuilder, InstanceGenerator, WireAllocator},
+	circuit_builder::{InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
 };
 
@@ -136,6 +136,18 @@ where
 		CircuitElem::wire(&self.instance_gen, public_wire)
 	}
 
+	/// The value of an element, when the verifier holds it.
+	///
+	/// A constant, an inout wire, or anything derived from those alone has a value here; an element
+	/// that reads a precommit wire has none. This is what lets a check over public values run
+	/// outside the wrapper circuit — the verifier evaluates it directly instead of constraining it.
+	pub const fn public_value(&self, elem: &CircuitElem<F, InstanceGenerator<F>>) -> Option<F> {
+		match elem {
+			CircuitElem::Constant(val) => Some(*val),
+			CircuitElem::Wire { wire, .. } => wire.value(),
+		}
+	}
+
 	/// Allocates the next precommit wire (value-less to the verifier) as an element.
 	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, InstanceGenerator<F>> {
 		let wire = self.precommit_alloc.alloc();
@@ -219,21 +231,6 @@ where
 			// checked by the outer verifier over the reconstructed public segment.
 			CircuitElem::Wire { .. } => Ok(()),
 		}
-	}
-
-	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem {
-		// The function's result enters as a single derived public wire (matching the symbolic
-		// builder's `hint_varsize`), whose value the verifier computes natively from the
-		// public-derived inputs. See `IronSpartanBuilderChannel::compute_public_value`.
-		let out_wire = {
-			let mut instance_gen = self.instance_gen.borrow_mut();
-			let input_wires: Vec<_> = inputs
-				.iter()
-				.map(|elem| elem.to_wire(&mut instance_gen))
-				.collect();
-			instance_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call_native(vals)])[0]
-		};
-		CircuitElem::wire(&self.instance_gen, out_wire)
 	}
 }
 

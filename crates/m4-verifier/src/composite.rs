@@ -18,7 +18,7 @@ use binius_iop::{
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
-use binius_verifier::{Error, SECURITY_BITS, config::B128};
+use binius_verifier::{Error, SECURITY_BITS, config::B128, protocols::shift::WiringEvalClaim};
 use digest::Output;
 
 use crate::{
@@ -121,6 +121,9 @@ impl IOPVerifierM4 {
 	/// [`WordIPVerifierChannel::observe_words`] returns. The chips have no statement: their inout
 	/// values are committed.
 	///
+	/// Each sub-proof leaves a wiring claim against its own constraint system. They come back in
+	/// sub-proof order, main chip first, for the caller to discharge.
+	///
 	/// # Errors
 	///
 	/// Returns an error if any sub-proof fails.
@@ -128,18 +131,16 @@ impl IOPVerifierM4 {
 		&self,
 		inout: &[Channel::Word],
 		channel: &mut Channel,
-	) -> Result<(), Error>
+	) -> Result<Vec<WiringEvalClaim<'_, Channel::Elem>>, Error>
 	where
 		Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
-		// Each sub-proof leaves a wiring claim against its own constraint system, discharged here
-		// as the sub-proof it belongs to finishes.
-		self.main.verify(inout, channel)?.check(channel)?;
+		let mut claims = vec![self.main.verify(inout, channel)?];
 		for chip in &self.chips {
-			chip.verify_chip(channel)?.check(channel)?;
+			claims.push(chip.verify_chip(channel)?);
 		}
-		Ok(())
+		Ok(claims)
 	}
 }
 
@@ -242,7 +243,9 @@ where
 			.iop_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let inout = channel.observe_words(inout);
-		self.iop_verifier.verify(&inout, &mut channel)?;
+		for claim in self.iop_verifier.verify(&inout, &mut channel)? {
+			claim.check_native()?;
+		}
 		channel.finish()?;
 
 		Ok(())

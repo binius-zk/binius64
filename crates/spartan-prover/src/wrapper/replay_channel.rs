@@ -11,7 +11,7 @@ use std::{
 };
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, util::FieldFn};
+use binius_field::{BinaryField, Field};
 use binius_iop::channel::{IOPVerifierChannel, OracleSpec, TransparentEvalFn};
 use binius_ip::channel::{
 	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
@@ -142,21 +142,6 @@ impl<F: Field> IPVerifierChannel<F> for ReplayChannel<F> {
 				Ok(())
 			}
 		}
-	}
-
-	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem {
-		// The function's result enters as a single derived public wire (matching the symbolic
-		// builder's `hint_varsize`), whose value the prover computes natively from the
-		// public-derived inputs. See `IronSpartanBuilderChannel::compute_public_value`.
-		let out_wire = {
-			let mut witness_gen = self.witness_gen.borrow_mut();
-			let input_wires: Vec<_> = inputs
-				.iter()
-				.map(|elem| elem.to_wire(&mut witness_gen))
-				.collect();
-			witness_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call_native(vals)])[0]
-		};
-		CircuitElem::wire(&self.witness_gen, out_wire)
 	}
 }
 

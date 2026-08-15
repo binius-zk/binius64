@@ -162,7 +162,7 @@ fn record(proved: &Proved) -> Recording {
 		.iop_verifier()
 		.verify(&statement, &mut channel)
 		.expect("the symbolic run records rather than checks, so it cannot fail")
-		.check(&mut channel)
+		.check_symbolic(&mut channel)
 		.expect("the symbolic run records rather than checks, so it cannot fail");
 
 	// Binding every word is this caller's choice, not the channel's.
@@ -193,7 +193,7 @@ fn replay(proved: &Proved, recorded: &Recorded, filler: &mut WitnessFiller) {
 		.iop_verifier()
 		.verify(&inout, &mut channel)
 		.unwrap()
-		.check(&mut channel)
+		.check_symbolic(&mut channel)
 		.unwrap();
 	channel.finish().unwrap().finish();
 }
