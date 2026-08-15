@@ -78,6 +78,13 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		Ok(inout - key)
 	}
 
+	fn recv_public_claim(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+		// A claim is public, so the wrapped prover sends it unencrypted: one inout wire, no
+		// precommit key. What it leaves behind is a public-derivable wire, which is what the
+		// checks reading it need it to be.
+		Ok(self.alloc_inout_elem())
+	}
+
 	fn sample(&mut self) -> Self::Elem {
 		self.alloc_inout_elem()
 	}

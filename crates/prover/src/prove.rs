@@ -318,7 +318,7 @@ impl IOPProver {
 
 		// The wiring evaluation the verifier closes the shift check with, sent where it reads it:
 		// after the public segment's claim.
-		channel.send_one(wiring_eval);
+		channel.send_public_claim(wiring_eval);
 
 		// [phase] Ring-Switching + PCS Opening
 		let pcs_guard = tracing::info_span!(

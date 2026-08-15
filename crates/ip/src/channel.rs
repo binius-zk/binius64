@@ -57,6 +57,23 @@ pub trait IPVerifierChannel<F: Field> {
 		array_util::try_from_fn(|_| self.recv_one())
 	}
 
+	/// Receives a value the verifier could compute for itself, taken as advice.
+	///
+	/// The prover states it and the verifier checks it — by recomputing it, or by any argument
+	/// that establishes the same thing — which is worth doing when the check is cheaper than the
+	/// computation, or when several such claims are better checked at once.
+	///
+	/// The caller MUST check what it receives here. Nothing else does.
+	///
+	/// A claim is a function of public-channel-derived values alone, so it carries nothing about
+	/// the witness. Channels that mask the prover's messages must therefore leave this one in the
+	/// clear, and channels that carry elements as wires allocate it as a public wire rather than a
+	/// masked private one. The default is the plain read, for a channel that draws no such
+	/// distinction.
+	fn recv_public_claim(&mut self) -> Result<Self::Elem, Error> {
+		self.recv_one()
+	}
+
 	/// Samples a random challenge.
 	///
 	/// In a Fiat-Shamir transcript, this derives the challenge deterministically from

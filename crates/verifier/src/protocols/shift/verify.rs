@@ -354,9 +354,10 @@ where
 		evaluate_inplace_scalars(&mut evaluate_shift_inds(r_k, r_j, r_s_inner)[..], r_v_inner);
 	let shift_ind_eval = outer_ind_eval * inner_ind_eval;
 
-	// The wiring multilinear's evaluation comes from the prover. Checking it against the constraint
-	// system is left to the caller, which is handed the function that computes it below.
-	let wiring_eval = channel.recv_one()?;
+	// The wiring multilinear's evaluation comes from the prover, as a claim the verifier could
+	// compute for itself. Checking it against the constraint system is left to the caller, which is
+	// handed the function that computes it below.
+	let wiring_eval = channel.recv_public_claim()?;
 
 	// The three bit-index factors scale every shift scalar of the wiring multilinear; they multiply
 	// the claim out here rather than entering the function, which keeps its input free of `r_i` and

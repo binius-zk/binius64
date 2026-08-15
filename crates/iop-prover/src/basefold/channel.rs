@@ -542,6 +542,10 @@ where
 		self.channel.send_many(elems);
 	}
 
+	fn send_public_claim(&mut self, elem: F) {
+		self.channel.send_public_claim(elem);
+	}
+
 	fn observe_one(&mut self, val: F) {
 		self.channel.observe_one(val);
 	}

@@ -333,6 +333,10 @@ where
 		self.channel.recv_array()
 	}
 
+	fn recv_public_claim(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+		self.channel.recv_public_claim()
+	}
+
 	fn sample(&mut self) -> Self::Elem {
 		self.channel.sample()
 	}

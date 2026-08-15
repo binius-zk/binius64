@@ -400,7 +400,7 @@ mod tests {
 
 		// The full reduction sends this after the public segment's evaluation claim; driving the
 		// shift alone, it follows the reduction directly.
-		prover_transcript.send_one(prover_output.wiring_eval);
+		prover_transcript.send_public_claim(prover_output.wiring_eval);
 
 		// Verify against the single-instance shift verifier.
 		let mut verifier_transcript = prover_transcript.into_verifier();

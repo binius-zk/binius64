@@ -339,7 +339,7 @@ impl IOPProver {
 
 		// The wiring evaluation the verifier closes the shift check with, sent where it reads it:
 		// after the public segment's claim.
-		channel.send_one(witness_claim.wiring_eval);
+		channel.send_public_claim(witness_claim.wiring_eval);
 
 		let RingSwitchOutput {
 			rs_eq_ind,

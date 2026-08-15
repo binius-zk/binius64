@@ -187,6 +187,13 @@ where
 		Ok(inout - key)
 	}
 
+	fn recv_public_claim(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+		// Mirror `IronSpartanBuilderChannel::recv_public_claim`: the value arrives unencrypted, so
+		// it enters as one inout wire carrying it, with no precommit key to subtract.
+		let val = self.inner_channel.recv_one()?;
+		Ok(self.alloc_inout_elem(val))
+	}
+
 	fn sample(&mut self) -> Self::Elem {
 		let val = self.inner_channel.sample();
 		self.alloc_inout_elem(val)

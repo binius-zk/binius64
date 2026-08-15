@@ -111,6 +111,12 @@ impl<F: Field> IPVerifierChannel<F> for ReplayChannel<F> {
 		Ok(encrypted_elem + key)
 	}
 
+	fn recv_public_claim(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+		// Mirror `IronSpartanBuilderChannel::recv_public_claim`: the recorded interaction holds the
+		// claim unencrypted, so it fills one inout wire and no precommit key.
+		Ok(self.next_inout_elem())
+	}
+
 	fn sample(&mut self) -> Self::Elem {
 		self.next_inout_elem()
 	}
