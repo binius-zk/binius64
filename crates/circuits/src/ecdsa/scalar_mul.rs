@@ -208,7 +208,6 @@ fn strauss_accumulate(
 		.map(|table| table.iter().map(Vec::as_slice).collect())
 		.collect();
 
-	let one = b.add_constant_64(1);
 	let n_windows = exponent_bits.div_ceil(window);
 	let mut acc = Secp256k1Affine::point_at_infinity(b);
 
@@ -223,23 +222,28 @@ fn strauss_accumulate(
 
 		let base_bit = w_idx * window;
 		for (point_idx, subscalar) in subscalars.iter().enumerate() {
-			// Pack this base point's `window`-bit exponent chunk into a selector word, bit by bit
-			// so that windows crossing 64-bit limb boundaries (and bit positions past
-			// `exponent_bits`) are handled uniformly. `multi_wire_multiplex` reads selector bit
-			// `j` as bit `j` of the table index, matching `table[x] = x · P`.
-			let mut sel = b.add_constant(Word::ZERO);
-			for j in 0..window {
-				let bit_index = base_bit + j;
-				if bit_index >= exponent_bits {
-					continue; // past the top of the exponent — contributes a zero bit
+			// Selector = this window's exponent bits, low bit first; bits at or past
+			// `exponent_bits` read as zero. `multi_wire_multiplex` reads bit `j` of `sel` as bit
+			// `j` of the table index, matching `table[x] = x · P`. One masked shift pulls the whole
+			// chunk, where the old code spent a band per bit (two limbs when the chunk straddles a
+			// 64-bit boundary).
+			let sel = if base_bit >= exponent_bits {
+				b.add_constant(Word::ZERO)
+			} else {
+				let n_bits = (base_bit + window).min(exponent_bits) - base_bit;
+				let mask = b.add_constant_64((1u64 << n_bits) - 1);
+				let offset = (base_bit % Word::BITS) as u32;
+				let lo = base_bit / Word::BITS;
+				let hi = (base_bit + n_bits - 1) / Word::BITS;
+				if lo == hi {
+					b.band(b.shr(subscalar[lo], offset), mask)
+				} else {
+					// The halves land in disjoint bit ranges, so XOR joins them before the mask.
+					let low = b.shr(subscalar[lo], offset);
+					let high = b.shl(subscalar[hi], Word::BITS as u32 - offset);
+					b.band(b.bxor(low, high), mask)
 				}
-				let limb = bit_index / Word::BITS;
-				let bit = bit_index % Word::BITS;
-				let bit_val = b.band(b.shr(subscalar[limb], bit as u32), one);
-				// Each iteration sets a distinct bit `j`, disjoint from the bits already in
-				// `sel`, so XOR matches the OR.
-				sel = b.bxor(sel, b.shl(bit_val, j as u32));
-			}
+			};
 
 			let selected = point_from_wires(&multi_wire_multiplex(b, &table_refs[point_idx], sel));
 			acc = curve.add_incomplete(b, &acc, &selected);
