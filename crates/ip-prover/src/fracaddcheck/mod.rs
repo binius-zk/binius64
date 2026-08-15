@@ -11,7 +11,7 @@ use binius_ip::{
 use binius_math::{
 	FieldBuffer, FieldVec,
 	batch_invert::BatchInversion,
-	line::extrapolate_line_packed,
+	line::extrapolate_line,
 	multilinear::eq::{eq_ind_partial_eval, eq_one_var},
 };
 use binius_utils::rayon::{
@@ -340,8 +340,8 @@ where
 			// Fold the highest variable to combine the two halves into the next layer's claim.
 			let r = channel.sample();
 
-			let next_num = extrapolate_line_packed(num_0, num_1, r);
-			let next_den = extrapolate_line_packed(den_0, den_1, r);
+			let next_num = extrapolate_line(num_0, num_1, r);
+			let next_den = extrapolate_line(den_0, den_1, r);
 
 			// Sumcheck binds variables high-to-low; reverse to low-to-high for the claim point.
 			let mut next_point = output.challenges;
@@ -615,7 +615,7 @@ where
 	// aligned with the selector `eq` weights on subsequent layers; the padded entries are 0/1.
 	let next_fractions = izip!(&num_0s, &num_1s, &den_0s, &den_1s)
 		.map(|(&num_0, &num_1, &den_0, &den_1)| {
-			(extrapolate_line_packed(num_0, num_1, r), extrapolate_line_packed(den_0, den_1, r))
+			(extrapolate_line(num_0, num_1, r), extrapolate_line(den_0, den_1, r))
 		})
 		.collect();
 

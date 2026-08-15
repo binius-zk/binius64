@@ -14,8 +14,7 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField, util::powers};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
-	FieldVec, field_buffer::FieldBuffer, line::extrapolate_line_packed,
-	univariate::evaluate_univariate,
+	FieldVec, field_buffer::FieldBuffer, line::extrapolate_line, univariate::evaluate_univariate,
 };
 
 use super::{common::MleCheckProver, round_state::RoundState};
@@ -178,7 +177,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> Mask<P, Da
 			.map(|(i, &z_i)| {
 				let g_at_0 = self.get_coeff(i, 0);
 				let g_at_1 = self.evaluate_univariate(i, F::ONE);
-				extrapolate_line_packed(g_at_0, g_at_1, z_i)
+				extrapolate_line(g_at_0, g_at_1, z_i)
 			})
 			.sum()
 	}
@@ -231,12 +230,12 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>
 		let n_vars = eval_point.len();
 
 		// Precompute suffix_sums[j] = (1-z_j)*g_j(0) + z_j*g_j(1)
-		// This equals extrapolate_line_packed(g_j(0), g_j(1), z_j)
+		// This equals extrapolate_line(g_j(0), g_j(1), z_j)
 		let suffix_sums: Vec<F> = iter::zip(0..n_vars, &eval_point)
 			.map(|(i, &z_j)| {
 				let g_at_0 = mask.get_coeff(i, 0);
 				let g_at_1 = mask.evaluate_univariate(i, F::ONE);
-				extrapolate_line_packed(g_at_0, g_at_1, z_j)
+				extrapolate_line(g_at_0, g_at_1, z_j)
 			})
 			.collect();
 

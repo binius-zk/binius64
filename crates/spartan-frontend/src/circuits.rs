@@ -119,7 +119,7 @@ mod tests {
 
 	use binius_field::{BinaryField128bGhash as B128, Field, Random, arithmetic_traits::Square};
 	use binius_math::{
-		line::extrapolate_line_packed,
+		line::extrapolate_line as extrapolate_line_math,
 		multilinear,
 		test_utils::{random_field_buffer, random_scalars},
 		univariate,
@@ -217,7 +217,7 @@ mod tests {
 		let y0_val = B128::random(&mut rng);
 		let y1_val = B128::random(&mut rng);
 		let z_val = B128::random(&mut rng);
-		let expected = extrapolate_line_packed(y0_val, y1_val, z_val);
+		let expected = extrapolate_line_math(y0_val, y1_val, z_val);
 
 		test_helper::<ExtrapolateLineCircuit, 4>([y0_val, y1_val, z_val, expected]).unwrap();
 	}

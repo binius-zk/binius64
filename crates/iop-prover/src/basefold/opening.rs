@@ -122,7 +122,7 @@ mod test {
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_buffers,
-		line::extrapolate_line_packed,
+		line::extrapolate_line,
 		multilinear::eq::eq_ind_partial_eval,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
@@ -202,7 +202,7 @@ mod test {
 		(witness_prime.as_mut(), mask.as_ref())
 			.into_par_iter()
 			.for_each(|(w, &m)| {
-				*w = extrapolate_line_packed(*w, m, gamma_broadcast);
+				*w = extrapolate_line(*w, m, gamma_broadcast);
 			});
 
 		let eval_point_eq = eq_ind_partial_eval::<P>(evaluation_point);
