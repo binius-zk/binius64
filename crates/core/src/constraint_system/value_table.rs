@@ -2,7 +2,7 @@
 
 use std::ops::Deref;
 
-use super::{ValueIndex, ValueVec, ValueVecLayout};
+use super::{ValueIndex, ValueSegment, ValueVec, ValueVecLayout, WordSource};
 use crate::word::Word;
 
 /// The witness for a batch of `2^k` independent instances of one circuit, in wire-major order.
@@ -153,10 +153,61 @@ impl<Data: Deref<Target = [Word]>> ValueTable<Data> {
 
 		values
 	}
+
+	/// Returns a [`WordSource`] view of one instance's row.
+	///
+	/// Reads only the words an operand names, each straight off its strided row.
+	/// [`Self::instance_value_vec`] gathers the whole hidden segment instead.
+	///
+	/// # Panics
+	///
+	/// Panics under the same conditions as [`Self::instance_value_vec`].
+	pub fn instance_words<'a>(
+		&'a self,
+		instance: usize,
+		constants: &'a [Word],
+	) -> TableInstance<'a, Data> {
+		assert!(instance < self.n_instances(), "instance index out of range");
+		assert_eq!(
+			constants.len(),
+			self.layout.n_const,
+			"constants length must match the layout's constant count"
+		);
+		TableInstance {
+			table: self,
+			instance,
+			constants,
+		}
+	}
+}
+
+/// A [`WordSource`] view of one instance of a [`ValueTable`], as returned by
+/// [`ValueTable::instance_words`].
+#[derive(Clone, Copy)]
+pub struct TableInstance<'a, Data> {
+	table: &'a ValueTable<Data>,
+	instance: usize,
+	constants: &'a [Word],
+}
+
+impl<Data: Deref<Target = [Word]>> WordSource for TableInstance<'_, Data> {
+	#[inline]
+	fn word(&self, index: ValueIndex) -> Word {
+		// Constants live outside the table; the caller supplies them.
+		if index.segment() == ValueSegment::Constant {
+			return self.constants[index.index() as usize];
+		}
+
+		// Every other segment is a hidden row, the same one `instance_value_vec` gathers.
+		let row = self.table.layout.word_offset(index) - self.table.layout.offset_inout();
+		self.table.data[(row << self.table.log_instances) + self.instance]
+	}
 }
 
 #[cfg(test)]
 mod tests {
+	use proptest::{collection, prelude::any, prop_assert_eq, proptest};
+
 	use super::*;
 
 	/// A layout of one constant, two inout values and one private value.
@@ -222,5 +273,59 @@ mod tests {
 	#[should_panic(expected = "constants length must match")]
 	fn the_wrong_number_of_constants_is_rejected() {
 		table().instance_value_vec(0, &[]);
+	}
+
+	#[test]
+	fn instance_words_reads_back_as_its_own_column() {
+		let table = table();
+		let constants = [Word::from_u64(0xc0)];
+
+		for instance in 0..2 {
+			let words = table.instance_words(instance, &constants);
+			assert_eq!(words.word(ValueIndex::constant(0)), constants[0]);
+			assert_eq!(words.word(ValueIndex::inout(0)), Word::from_u64(instance as u64));
+			assert_eq!(words.word(ValueIndex::inout(1)), Word::from_u64(0x10 + instance as u64));
+			assert_eq!(words.word(ValueIndex::private(0)), Word::from_u64(0x20 + instance as u64));
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "instance index out of range")]
+	fn instance_words_past_the_last_instance_panics() {
+		table().instance_words(2, &[Word::from_u64(0xc0)]);
+	}
+
+	#[test]
+	#[should_panic(expected = "constants length must match")]
+	fn instance_words_rejects_the_wrong_number_of_constants() {
+		table().instance_words(0, &[]);
+	}
+
+	proptest! {
+		// Pins the table-row reads `TableInstance` does against the reference: reconstructing the
+		// instance as a whole `ValueVec` and indexing into that instead.
+		#[test]
+		fn instance_words_matches_instance_value_vec(
+			data in collection::vec(any::<u64>(), 6..=6),
+			constant in any::<u64>(),
+		) {
+			let data: Vec<Word> = data.into_iter().map(Word::from_u64).collect();
+			let table = ValueTable::from_hidden_words(layout(), 1, data);
+			let constants = [Word::from_u64(constant)];
+			let indices = [
+				ValueIndex::constant(0),
+				ValueIndex::inout(0),
+				ValueIndex::inout(1),
+				ValueIndex::private(0),
+			];
+
+			for instance in 0..table.n_instances() {
+				let reference = table.instance_value_vec(instance, &constants);
+				let words = table.instance_words(instance, &constants);
+				for &index in &indices {
+					prop_assert_eq!(words.word(index), reference[index]);
+				}
+			}
+		}
 	}
 }
