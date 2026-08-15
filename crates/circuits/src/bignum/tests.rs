@@ -108,6 +108,11 @@ fn test_karatsuba_sqr_single_case() {
 	let a = BigUint::new_witness(&builder, n);
 	let mul = karatsuba_mul(&builder, &a, &a);
 
+	// Nothing else reads these limbs, so pin them or pooling could reclaim their slots first.
+	for &limb in &mul.limbs {
+		builder.force_commit(limb);
+	}
+
 	let cs = builder.build();
 	let mut w = cs.new_witness_filler();
 
@@ -321,6 +326,11 @@ proptest! {
 
 		let result = textbook_mul(&builder, &a, &b);
 
+		// Nothing else reads these limbs, so pin them or pooling could reclaim their slots first.
+		for &limb in &result.limbs {
+			builder.force_commit(limb);
+		}
+
 		let cs = builder.build();
 		let mut w = cs.new_witness_filler();
 
@@ -353,6 +363,11 @@ proptest! {
 
 		let a = BigUint::new_witness(&builder, a_limbs.len());
 		let result = textbook_square(&builder, &a);
+
+		// Nothing else reads these limbs, so pin them or pooling could reclaim their slots first.
+		for &limb in &result.limbs {
+			builder.force_commit(limb);
+		}
 
 		let cs = builder.build();
 
@@ -394,6 +409,10 @@ proptest! {
 		let lt_flag = biguint_lt(&builder, &a, &b);
 		let eq_flag = biguint_eq(&builder, &a, &b);
 
+		// Nothing else reads these, so pin them or pooling could reclaim their slots first.
+		builder.force_commit(lt_flag);
+		builder.force_commit(eq_flag);
+
 		let cs = builder.build();
 		let mut w = cs.new_witness_filler();
 
@@ -421,6 +440,11 @@ proptest! {
 
 		let square_result = textbook_square(&builder, &a);
 		let mul_result = textbook_mul(&builder, &a, &a);
+
+		// Nothing else reads these limbs, so pin them or pooling could reclaim their slots first.
+		for &limb in square_result.limbs.iter().chain(&mul_result.limbs) {
+			builder.force_commit(limb);
+		}
 
 		let cs = builder.build();
 		let mut w = cs.new_witness_filler();

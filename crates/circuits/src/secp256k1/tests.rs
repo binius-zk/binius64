@@ -28,6 +28,9 @@ fn test_secp256k1_group_order() {
 		}
 	}
 
+	// The test reads this directly, so pin it or pooling could reclaim its slot first.
+	builder.force_commit(acc.is_point_at_infinity);
+
 	let cs = builder.build();
 	let mut w = cs.new_witness_filler();
 	cs.populate_wire_witness(&mut w).unwrap();
@@ -48,6 +51,11 @@ fn test_secp256k1_pow2pow137() {
 	for _i in 0..137 {
 		acc = curve.double(&builder, &acc);
 		acc = curve.add(&builder, &generator, &acc);
+	}
+
+	// The test reads these directly, so pin them or pooling could reclaim their slots first.
+	for &limb in acc.x.limbs.iter().chain(acc.y.limbs.iter()) {
+		builder.force_commit(limb);
 	}
 
 	let cs = builder.build();
@@ -76,6 +84,18 @@ fn test_secp256k1_generator_double_and_add() {
 	let generator = Secp256k1Affine::generator(&builder);
 	let double = curve.double(&builder, &generator);
 	let triple = curve.add(&builder, &double, &generator);
+
+	// The test reads these directly, so pin them or pooling could reclaim their slots first.
+	for &limb in double
+		.x
+		.limbs
+		.iter()
+		.chain(double.y.limbs.iter())
+		.chain(triple.x.limbs.iter())
+		.chain(triple.y.limbs.iter())
+	{
+		builder.force_commit(limb);
+	}
 
 	let cs = builder.build();
 	let mut w = cs.new_witness_filler();

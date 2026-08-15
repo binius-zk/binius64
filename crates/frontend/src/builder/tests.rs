@@ -181,6 +181,9 @@ fn test_iadd_cin_cout_max_values() {
 	let b = builder.add_constant_64(0xFFFFFFFFFFFFFFFF);
 	let cin_wire = builder.add_constant(Word::ZERO);
 	let (sum_wire, cout_wire) = builder.iadd_cin_cout(a, b, cin_wire);
+	// Nothing else reads these, so pin them or pooling could reclaim their slots first.
+	builder.force_commit(sum_wire);
+	builder.force_commit(cout_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -198,6 +201,9 @@ fn test_iadd_cin_cout_zero() {
 	let b = builder.add_constant_64(0);
 	let cin_wire = builder.add_constant(Word::ZERO);
 	let (sum_wire, cout_wire) = builder.iadd_cin_cout(a, b, cin_wire);
+	// Nothing else reads these, so pin them or pooling could reclaim their slots first.
+	builder.force_commit(sum_wire);
+	builder.force_commit(cout_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -215,6 +221,9 @@ fn test_isub_bin_bout_from_zero() {
 	let b = builder.add_constant_64(u64::MAX);
 	let bin_wire = builder.add_constant(Word::ONE << 63);
 	let (diff_wire, bout_wire) = builder.isub_bin_bout(a, b, bin_wire);
+	// Nothing else reads these, so pin them or pooling could reclaim their slots first.
+	builder.force_commit(diff_wire);
+	builder.force_commit(bout_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -272,6 +281,10 @@ fn test_call_hint_user_registered() {
 	let out2 = builder.call_hint(XorAllHint, &[inputs.len()], &inputs);
 	assert_eq!(out1.len(), 1);
 	assert_eq!(out2.len(), 1);
+	// A hint emits no constraint of its own, so pinning alone leaves this uncommitted.
+	// Promoting it to a public output is what the test needs to read it back.
+	builder.mark_inout(out1[0]);
+	builder.mark_inout(out2[0]);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -309,6 +322,8 @@ fn prop_check_icmp_ult(a: u64, b: u64, expected_result: Word) {
 	let a_wire = builder.add_constant_64(a);
 	let b_wire = builder.add_constant_64(b);
 	let result_wire = builder.icmp_ult(a_wire, b_wire);
+	// Nothing else reads this, so pin it or pooling could reclaim its slot first.
+	builder.force_commit(result_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -325,6 +340,8 @@ fn prop_check_icmp_eq(a: u64, b: u64, expected_result: Word) {
 	let a_wire = builder.add_constant_64(a);
 	let b_wire = builder.add_constant_64(b);
 	let result_wire = builder.icmp_eq(a_wire, b_wire);
+	// Nothing else reads this, so pin it or pooling could reclaim its slot first.
+	builder.force_commit(result_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -346,11 +363,17 @@ proptest! {
 		let b1_wire = builder.add_constant_64(b1);
 		let cin_wire = builder.add_constant(Word::ZERO);
 		let (sum1_wire, cout1_wire) = builder.iadd_cin_cout(a1_wire, b1_wire, cin_wire);
+		// The test reads both of these, so pin them before pooling reclaims their slots.
+		// The carry output also feeds the second addition, but that alone does not commit it.
+		builder.force_commit(sum1_wire);
+		builder.force_commit(cout1_wire);
 
 		// Second addition with carry from first
 		let a2_wire = builder.add_constant_64(a2);
 		let b2_wire = builder.add_constant_64(b2);
 		let (sum2_wire, cout2_wire) = builder.iadd_cin_cout(a2_wire, b2_wire, cout1_wire);
+		builder.force_commit(sum2_wire);
+		builder.force_commit(cout2_wire);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
@@ -436,6 +459,8 @@ fn test_bxor_linear_constraint() {
 
 	// bxor internally creates a linear constraint
 	let c = builder.bxor(a, b);
+	// Nothing else reads this, so pin it or pooling could reclaim its slot first.
+	builder.force_commit(c);
 
 	let circuit = builder.build();
 
@@ -469,6 +494,10 @@ fn test_shift_operations_with_linear_constraints() {
 	let shr_result = builder.shr(b, 16);
 	// Combine with XOR
 	let combined = builder.bxor(shl_result, shr_result);
+	// The test reads these directly, so pin them or pooling could reclaim their slots first.
+	builder.force_commit(shl_result);
+	builder.force_commit(shr_result);
+	builder.force_commit(combined);
 
 	let circuit = builder.build();
 
@@ -498,6 +527,10 @@ fn test_32bit_half_shift_operations() {
 	let srl32_result = builder.srl32(a, 4);
 	let sra32_result = builder.sra32(a, 4);
 	let rotr32_result = builder.rotr32(a, 4);
+	// The test reads these directly, so pin them or pooling could reclaim their slots first.
+	for wire in [sll32_result, srl32_result, sra32_result, rotr32_result] {
+		builder.force_commit(wire);
+	}
 
 	let circuit = builder.build();
 
@@ -540,6 +573,9 @@ fn test_rotr_operation_expansion() {
 	// rotr internally expands to: (a >> 12) XOR (a << 52)
 	let rotr_result = builder.rotr(a, 12);
 	let combined = builder.bxor(rotr_result, b);
+	// The test reads these directly, so pin them or pooling could reclaim their slots first.
+	builder.force_commit(rotr_result);
+	builder.force_commit(combined);
 
 	let circuit = builder.build();
 
@@ -575,6 +611,10 @@ fn test_multiple_xor_operations() {
 	let result2 = builder.bxor(c, d);
 	// Chain XOR operations
 	let final_result = builder.bxor(result1, result2);
+	// The test reads these directly, so pin them or pooling could reclaim their slots first.
+	builder.force_commit(result1);
+	builder.force_commit(result2);
+	builder.force_commit(final_result);
 
 	let circuit = builder.build();
 
@@ -624,6 +664,9 @@ fn test_linear_constraint_conversion_to_zero() {
 	// Pin the result as committed so its linear cone survives dead-code elimination.
 	// A computation read by nothing is otherwise dropped, leaving no constraint to check.
 	builder.force_commit(final_result);
+	// The first XOR sits outside that cone, so it is pinned on its own.
+	// The test reads it directly, and pooling could otherwise reclaim its slot first.
+	builder.force_commit(xor_result);
 
 	let circuit = builder.build();
 
@@ -645,17 +688,19 @@ fn test_linear_constraint_conversion_to_zero() {
 
 	circuit.populate_wire_witness(&mut w).unwrap();
 
-	// Verify all operations computed correctly
+	// The first XOR is pinned on its own, so it reads back directly.
 	assert_eq!(w[xor_result], Word(0xdeadbeefcafe1234 ^ 0x1234567890abcdef));
-	assert_eq!(w[shift_left], Word(0xdeadbeefcafe1234 << 5));
-	assert_eq!(w[shift_right], Word(0x1234567890abcdef >> 10));
-	assert_eq!(w[sar_result], Word(((0xdeadbeefcafe1234u64 as i64) >> 3) as u64));
-	assert_eq!(w[rotr_result], Word(0x1234567890abcdef_u64.rotate_right(7)));
 
-	// Verify final results
-	assert_eq!(w[combined1], Word(w[shift_left].0 ^ w[shift_right].0));
-	assert_eq!(w[combined2], Word(w[sar_result].0 ^ w[rotr_result].0));
-	assert_eq!(w[final_result], Word(w[combined1].0 ^ w[combined2].0));
+	// Only the final result is pinned here, so everything under it is free to fuse away.
+	// The values below are computed natively instead of read back from the witness.
+	// Only the fused result is then checked against it.
+	let expected_shift_left = 0xdeadbeefcafe1234u64 << 5;
+	let expected_shift_right = 0x1234567890abcdefu64 >> 10;
+	let expected_sar = ((0xdeadbeefcafe1234u64 as i64) >> 3) as u64;
+	let expected_rotr = 0x1234567890abcdefu64.rotate_right(7);
+	let expected_combined1 = expected_shift_left ^ expected_shift_right;
+	let expected_combined2 = expected_sar ^ expected_rotr;
+	assert_eq!(w[final_result], Word(expected_combined1 ^ expected_combined2));
 
 	// Verify all constraints are satisfied
 	cs.verify(&w.value_vec).unwrap();
@@ -680,6 +725,8 @@ proptest! {
 
 		// XOR the shifted values
 		let result = builder.bxor(shifted_a, shifted_b);
+		// Nothing else reads this, so pin it or pooling could reclaim its slot first.
+		builder.force_commit(result);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
@@ -704,6 +751,8 @@ proptest! {
 
 		let wire_value = builder.add_constant_64(value);
 		let rotr_result = builder.rotr(wire_value, shift);
+		// Nothing else reads this, so pin it or pooling could reclaim its slot first.
+		builder.force_commit(rotr_result);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
@@ -743,6 +792,14 @@ const CHAIN_ROUNDS: u32 = 48;
 fn pooled_opts() -> Options {
 	Options {
 		enable_scratch_pooling: true,
+		..Options::default()
+	}
+}
+
+/// The default pass set with scratch-slot sharing turned off.
+fn unpooled_opts() -> Options {
+	Options {
+		enable_scratch_pooling: false,
 		..Options::default()
 	}
 }
@@ -793,7 +850,7 @@ fn test_scratch_pooling_preserves_the_committed_witness() {
 	//
 	//   unpooled:  one slot per uncommitted value
 	//   pooled:    slots reused once a value's last reader has run
-	let unpooled = CircuitBuilder::new();
+	let unpooled = CircuitBuilder::with_opts(unpooled_opts());
 	let (x_unpooled, expected_unpooled) = build_chain(&unpooled);
 	let unpooled = unpooled.build();
 
@@ -1106,6 +1163,42 @@ fn test_scratch_pooling_matches_scalar_per_instance_batched() {
 			);
 		}
 	}
+}
+
+#[test]
+#[should_panic(expected = "scratch slot shared with another value")]
+fn test_reading_a_pooled_scratch_wire_panics() {
+	// Invariant: a witness filler rejects a read of a poolable value.
+	// Otherwise it would silently return whatever now occupies that shared slot.
+	//
+	// Fixture state: a linear XOR feeding an AND, with pooling on.
+	//
+	//   a, b --xor--> t --and(a)--> masked --assert_eq--> out
+	//
+	// Gate fusion inlines the XOR into the AND operand, so no constraint ever names it.
+	// It lands in the scratch segment, and pooling can hand its slot to a later value.
+	let builder = CircuitBuilder::with_opts(pooled_opts());
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let lin = builder.bxor(a, b);
+	let masked = builder.band(lin, a);
+	let out = builder.add_inout();
+	builder.assert_eq("masked", masked, out);
+	let circuit = builder.build();
+
+	// Confirm the fixture actually lands the XOR's result in the scratch segment.
+	// Otherwise the panic below would prove nothing about pooling.
+	assert_eq!(circuit.witness_index(lin).segment(), ValueSegment::Scratch);
+
+	let (a_val, b_val) = (5u64, 3u64);
+	let mut w = circuit.new_witness_filler();
+	w[a] = Word(a_val);
+	w[b] = Word(b_val);
+	w[out] = Word((a_val ^ b_val) & a_val);
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	// The read below must panic: that slot is not guaranteed to still hold this value.
+	let _ = w[lin];
 }
 
 #[test]
@@ -1493,6 +1586,10 @@ fn build_gadget_emits_gates_where_no_chip_serves_the_gadget() {
 	let builder = CircuitBuilder::new();
 	let (a, b) = (builder.add_inout(), builder.add_inout());
 	let out = builder.build_gadget(AndThenXor, &[], &[a, b]);
+	// The test reads both outputs, so pin them or pooling could reclaim their slots first.
+	for &wire in &out {
+		builder.force_commit(wire);
+	}
 
 	// `build` accepts this builder, which is what says no chip was registered.
 	let circuit = builder.build();

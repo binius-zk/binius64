@@ -215,6 +215,10 @@ mod tests {
 
 		let mut state_wires = input_wires;
 		circuit_fn(&builder, &mut state_wires);
+		// The test reads these directly, so pin them or pooling could reclaim their slots first.
+		for &wire in &state_wires {
+			builder.force_commit(wire);
+		}
 		let circuit = builder.build();
 
 		let mut expected_output = input_state;

@@ -84,6 +84,12 @@ mod tests {
 		let c = builder.add_constant_64(0x123456789abcdef0);
 		let modpow = BigUintModPowHint::call(&builder, &[c], &[c, c], &[c, c, c]);
 
+		// A hint emits no constraint of its own, so pinning alone leaves these uncommitted.
+		// Promoting them to public outputs is what the test needs to read them back.
+		for &wire in &modpow {
+			builder.mark_inout(wire);
+		}
+
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
 		circuit.populate_wire_witness(&mut w).unwrap();

@@ -34,6 +34,9 @@ pub fn test_bitcoin_ecdsa_test_vector() {
 
 	let signature_valid = bitcoin_verify(&builder, pk, &z, &r, &s);
 
+	// The validity flag is never constrained, only read below, so pin it before build.
+	builder.force_commit(signature_valid);
+
 	let cs = builder.build();
 	let mut w = cs.new_witness_filler();
 	cs.populate_wire_witness(&mut w).unwrap();

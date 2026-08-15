@@ -108,6 +108,12 @@ mod tests {
 
 		let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m]);
 
+		// A hint emits no constraint of its own, so pinning alone leaves these uncommitted.
+		// Promoting them to public outputs is what the test needs to read them back.
+		for &wire in q.iter().chain(&r) {
+			builder.mark_inout(wire);
+		}
+
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
 		circuit.populate_wire_witness(&mut w).unwrap();
@@ -131,6 +137,12 @@ mod tests {
 		let m1 = builder.add_constant_64(0);
 
 		let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m0, m1]);
+
+		// A hint emits no constraint of its own, so pinning alone leaves these uncommitted.
+		// Promoting them to public outputs is what the test needs to read them back.
+		for &wire in q.iter().chain(&r) {
+			builder.mark_inout(wire);
+		}
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();

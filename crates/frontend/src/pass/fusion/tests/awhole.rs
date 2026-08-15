@@ -40,6 +40,9 @@ fn test_bmul_gate_end_to_end() {
 	let b_lo = builder.add_witness();
 	let b_hi = builder.add_witness();
 	let (c_lo, c_hi) = builder.bmul(a_lo, a_hi, b_lo, b_hi);
+	// Pin the product: nothing else consumes it, so pooling could reclaim its slot first.
+	builder.force_commit(c_lo);
+	builder.force_commit(c_hi);
 	let circuit = builder.build();
 
 	let mut w = circuit.new_witness_filler();

@@ -199,6 +199,15 @@ mod tests {
 			let (k1_neg, k2_neg, k1_abs, k2_abs) =
 				Secp256k1EndosplitHint::call(&builder, &k);
 
+			// A hint emits no constraint of its own, so pinning alone leaves these uncommitted.
+			// Promoting them to public outputs is what the test needs to read them back.
+			builder.mark_inout(k1_neg);
+			builder.mark_inout(k2_neg);
+			builder.mark_inout(k1_abs[0]);
+			builder.mark_inout(k1_abs[1]);
+			builder.mark_inout(k2_abs[0]);
+			builder.mark_inout(k2_abs[1]);
+
 			let circuit = builder.build();
 			let mut w = circuit.new_witness_filler();
 			circuit.populate_wire_witness(&mut w).unwrap();

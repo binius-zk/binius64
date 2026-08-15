@@ -369,6 +369,8 @@ mod tests {
 		let slice = byte_vec.slice_const_range(&b, 3..11);
 
 		assert_eq!(slice.data.len(), 1, "Slice should have 1 word");
+		// The test writes this directly, so pin it or pooling could reclaim its slot first.
+		b.force_commit(slice.data[0]);
 
 		let circuit = b.build();
 		let mut filler = circuit.new_witness_filler();
@@ -432,6 +434,8 @@ mod tests {
 		let slice = byte_vec.slice_const_range(&b, 3..8);
 
 		assert_eq!(slice.data.len(), 1, "Slice should have 1 word");
+		// The test writes this directly, so pin it or pooling could reclaim its slot first.
+		b.force_commit(slice.data[0]);
 
 		let circuit = b.build();
 		let mut filler = circuit.new_witness_filler();
@@ -559,6 +563,10 @@ mod tests {
 		let slice = byte_vec.slice_const_range(&b, 5..21);
 
 		assert_eq!(slice.data.len(), 2, "Slice should have 2 words");
+		// The test writes these directly, so pin them or pooling could reclaim their slots first.
+		for &wire in &slice.data {
+			b.force_commit(wire);
+		}
 
 		let circuit = b.build();
 		let mut filler = circuit.new_witness_filler();
@@ -621,6 +629,10 @@ mod tests {
 		let slice = byte_vec.slice_const_range(&b, 5..16);
 
 		assert_eq!(slice.data.len(), 2, "Slice should have 2 words");
+		// The test writes these directly, so pin them or pooling could reclaim their slots first.
+		for &wire in &slice.data {
+			b.force_commit(wire);
+		}
 
 		let circuit = b.build();
 		let mut filler = circuit.new_witness_filler();
