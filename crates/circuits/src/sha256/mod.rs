@@ -144,11 +144,19 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 		block_idx += 2;
 	}
 	if block_idx < n_blocks {
-		state = sha256_compress(
-			&builder.subcircuit(format!("sha256_fixed_compress[{block_idx}]")),
-			state,
-			blocks[block_idx],
-		);
+		let sub = builder.subcircuit(format!("sha256_fixed_compress[{block_idx}]"));
+		state = if block_idx > 0 {
+			// The trailing odd block has no partner, but it still runs through the paired core
+			// with the second lane dead, so a registered chip serves it instead of leaving one
+			// compression behind in main. The dead lane chews on the leftover high halves and
+			// its output lands in the high halves, which the digest clearing below discards.
+			// In gates the two cores emit the same circuit, so nothing changes without a chip.
+			sha256_compress_2x(&sub, state, blocks[block_idx])
+		} else {
+			// A single-block message keeps the single-lane core: its empty high halves are what
+			// lets the digest skip the clearing below.
+			sha256_compress(&sub, state, blocks[block_idx])
+		};
 	}
 
 	// The escaping digest is the one place a clean high half is required.
@@ -621,9 +629,9 @@ mod tests {
 	}
 
 	// The layers between `sha256_fixed` and `sha256_compress_2x` are untouched by the chip: block
-	// pairs land as calls because the builder holds the chip, not because anything in between was
-	// told. Lengths cover one pair, a pair plus a trailing single-lane block, two pairs, and two
-	// pairs plus a trailing single.
+	// pairs, and the trailing odd block riding the paired core with a dead lane, land as calls
+	// because the builder holds the chip, not because anything in between was told. Lengths cover
+	// one pair, a pair plus a trailing block, two pairs, and two pairs plus a trailing block.
 	#[test]
 	fn a_registered_chip_serves_every_paired_compression() {
 		for &len in &[64usize, 128, 192, 300] {

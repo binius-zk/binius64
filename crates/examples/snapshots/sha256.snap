@@ -13,13 +13,13 @@ Constraints
 │  [░░░░░░░░░░] spare: 0
 ├─ BMUL constraints: 0 used (0.0% of 0)
 │  [░░░░░░░░░░] spare: 0
-└─ Distinct value indices: 21,021
+└─ Distinct value indices: 20,957
    ├─ Distinct shifted value indices: 12,629
-   └─ Distinct unshifted value indices: 8,392
+   └─ Distinct unshifted value indices: 8,328
 
 Value Vector
-├─ Public Section: 404 (not committed)
-│  ├─ Constants: 140
+├─ Public Section: 340 (not committed)
+│  ├─ Constants: 76
 │  └─ Inout: 264
 ├─ Private Section: 8,254
 │  ├─ Witness: 0
