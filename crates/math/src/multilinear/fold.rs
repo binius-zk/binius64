@@ -12,7 +12,7 @@ use binius_utils::{
 	},
 };
 
-use crate::{FieldBuffer, FieldVec, field_buffer::BufferData, line::extrapolate_line_packed};
+use crate::{FieldBuffer, FieldVec, field_buffer::BufferData, line::extrapolate_line};
 
 /// Computes the partial evaluation of a multilinear on its highest variable, inplace.
 ///
@@ -33,9 +33,7 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: BufferData<P>>(
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()
 			.with_min_task(WorkPerItem::FieldMuls)
-			.for_each(|(lo_i, hi_i)| {
-				*lo_i = extrapolate_line_packed(*lo_i, *hi_i, broadcast_scalar)
-			});
+			.for_each(|(lo_i, hi_i)| *lo_i = extrapolate_line(*lo_i, *hi_i, broadcast_scalar));
 	}
 
 	values.truncate(values.log_len() - 1);
@@ -72,7 +70,7 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 		.into_par_iter()
 		.with_min_task(WorkPerItem::FieldMuls)
 		.for_each(|(out, &lo_i, &hi_i)| {
-			out.write(extrapolate_line_packed(lo_i, hi_i, broadcast_scalar));
+			out.write(extrapolate_line(lo_i, hi_i, broadcast_scalar));
 		});
 	// SAFETY: the parallel loop initialized all `len` slots.
 	unsafe { data.set_len(len) };

@@ -253,7 +253,7 @@ pub fn libra_eval<F: FieldOps>(
 #[cfg(test)]
 mod tests {
 	use binius_field::{Random, arch::OptimalB128 as B128};
-	use binius_math::{line::extrapolate_line_packed, test_utils::random_scalars};
+	use binius_math::{line::extrapolate_line, test_utils::random_scalars};
 	use rand::prelude::*;
 
 	use super::*;
@@ -263,7 +263,7 @@ mod tests {
 
 		let v0 = coeffs.evaluate(&F::ZERO);
 		let v1 = coeffs.evaluate(&F::ONE);
-		let eval = extrapolate_line_packed(v0, v1, alpha);
+		let eval = extrapolate_line(v0, v1, alpha);
 
 		let proof = RoundProof::truncate(coeffs.clone());
 		assert_eq!(proof.recover(eval, alpha), coeffs);

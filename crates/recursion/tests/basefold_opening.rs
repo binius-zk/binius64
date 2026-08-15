@@ -61,7 +61,7 @@ use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::{
 	inner_product::inner_product_buffers,
-	line::extrapolate_line_packed,
+	line::extrapolate_line,
 	multilinear::eq::eq_ind_partial_eval,
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{random_field_buffer, random_scalars},
@@ -224,7 +224,7 @@ fn prove(shape: &Shape, setup: &Setup, seed: u64) -> Opening {
 	let broadcast = P::broadcast(gamma);
 	(witness_prime.as_mut(), mask.as_ref())
 		.into_par_iter()
-		.for_each(|(w, &m)| *w = extrapolate_line_packed(*w, m, broadcast));
+		.for_each(|(w, &m)| *w = extrapolate_line(*w, m, broadcast));
 
 	// The claim is the folded polynomial against the equality indicator, which is pi'(r).
 	// It exists only once gamma does, so it is bound here rather than up front.

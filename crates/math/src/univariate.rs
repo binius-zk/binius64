@@ -271,7 +271,7 @@ mod tests {
 	use crate::{
 		BinarySubspace,
 		inner_product::inner_product,
-		line::extrapolate_line_packed,
+		line::extrapolate_line,
 		test_utils::{B128, random_scalars},
 	};
 
@@ -379,7 +379,7 @@ mod tests {
 			let x1 = B128::random(&mut rng);
 			// Use a smaller field element for z to test the subfield scalar multiplication
 			let z = B128::from(rng.next_u64() as u128);
-			assert_eq!(extrapolate_line_packed(x0, x1, z), x0 + (x1 - x0) * z);
+			assert_eq!(extrapolate_line(x0, x1, z), x0 + (x1 - x0) * z);
 		}
 	}
 

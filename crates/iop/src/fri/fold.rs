@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::{BinaryField, ExtensionField};
-use binius_math::{line::extrapolate_line_packed, ntt::AdditiveNTT};
+use binius_math::{line::extrapolate_line, ntt::AdditiveNTT};
 
 use super::{FRIParams, error::Error};
 use crate::merkle_channel::MerkleIPVerifierChannel;
@@ -24,7 +24,7 @@ where
 	let (mut u, mut v) = values;
 	v += u;
 	u += v * t;
-	extrapolate_line_packed(u, v, r)
+	extrapolate_line(u, v, r)
 }
 
 /// Calculate FRI fold of `values` at a `chunk_index` with random folding challenges.

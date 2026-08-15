@@ -18,7 +18,7 @@ use binius_ip_prover::{
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
 	inner_product::inner_product_par,
-	line::{extrapolate_line, extrapolate_line_packed},
+	line::extrapolate_line,
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
 	ntt::AdditiveNTT,
 };
@@ -283,7 +283,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 				.into_par_iter()
 				.with_min_task(WorkPerItem::FieldMuls)
 				.for_each(|(message_i, &mask_i)| {
-					*message_i = extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
+					*message_i = extrapolate_line(*message_i, mask_i, gamma_broadcast);
 				});
 		}
 	}
