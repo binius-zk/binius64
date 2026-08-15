@@ -160,7 +160,10 @@ where
 					// A faithful replay of the verifier's call sequence, which observes the
 					// statement before delegating.
 					let inout = replay_channel.observe_words(inout_words);
-					inner_iop_verifier
+					// The wiring claim is dropped, as it is in the symbolic build: the verifier
+					// checks it over the public segment, outside the wrapper circuit, so there is
+					// nothing here to fill.
+					let _ = inner_iop_verifier
 						.verify(&inout, replay_channel)
 						.expect("replay verification should not fail");
 				}

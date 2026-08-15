@@ -22,9 +22,7 @@
 use std::{iter::repeat_with, ops::Shr};
 
 use binius_core::word::Word;
-use binius_field::{
-	BinaryField, BinaryField1b, ExtensionField, Field, field::FieldOps, util::FieldFn,
-};
+use binius_field::{BinaryField, BinaryField1b, ExtensionField, Field, field::FieldOps};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, CanSampleBits, Challenger},
@@ -55,6 +53,23 @@ pub trait IPVerifierChannel<F: Field> {
 	/// Receives a fixed-size array of field elements from the prover.
 	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], Error> {
 		array_util::try_from_fn(|_| self.recv_one())
+	}
+
+	/// Receives a value the verifier could compute for itself, taken as advice.
+	///
+	/// The prover states it and the verifier checks it — by recomputing it, or by any argument
+	/// that establishes the same thing — which is worth doing when the check is cheaper than the
+	/// computation, or when several such claims are better checked at once.
+	///
+	/// The caller MUST check what it receives here. Nothing else does.
+	///
+	/// A claim is a function of public-channel-derived values alone, so it carries nothing about
+	/// the witness. Channels that mask the prover's messages must therefore leave this one in the
+	/// clear, and channels that carry elements as wires allocate it as a public wire rather than a
+	/// masked private one. The default is the plain read, for a channel that draws no such
+	/// distinction.
+	fn recv_public_claim(&mut self) -> Result<Self::Elem, Error> {
+		self.recv_one()
 	}
 
 	/// Samples a random challenge.
@@ -89,31 +104,6 @@ pub trait IPVerifierChannel<F: Field> {
 	///
 	/// Returns [`Error::InvalidAssert`] if the value is not zero.
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), Error>;
-
-	/// Computes a value that is a function of public-channel-derived elements and returns it
-	/// as a freshly allocated `Elem`.
-	///
-	/// In wrapper channels that build constraints (e.g. `IronSpartanBuilderChannel`), the result
-	/// is materialized as a single derived public wire (a one-output `hint_varsize`) holding the
-	/// function's return value, replacing what would otherwise be a sub-circuit's worth of
-	/// constraints. In non-wrapper channels where `Elem = F`, the impl is just `f.call(inputs)`.
-	///
-	/// The caller MUST ensure each entry in `inputs` is either a `Constant` or a `Wire` whose
-	/// public-tag is true — i.e. produced by `sample_*` / `observe_*` / `compute_public_value`
-	/// on this channel, or derived purely from such values via the channel's `Elem` arithmetic.
-	/// Inputs from `recv_*` (or anything that mixed in a non-public value) MUST NOT be passed.
-	/// The contract is documented; wrapper impls debug-assert it but it is not statically enforced.
-	///
-	/// The function may or may not be invoked: the symbolic-builder channel skips it, and other
-	/// impls run it on either real or dummy values. Callers must therefore supply a pure function
-	/// with no observable side effects.
-	///
-	/// A [`FieldFn`] is taken rather than a closure to keep the run field generic.
-	/// The same function then evaluates natively or over a circuit-element field.
-	///
-	/// HACK: This is a temporary hack to fix a performance regression. This feature should be
-	/// killed and handled more elegantly with better witness generation code.
-	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem;
 }
 
 /// A verifier channel whose protocol carries 64-bit words alongside field elements.
@@ -291,10 +281,6 @@ where
 		} else {
 			Err(Error::InvalidAssert)
 		}
-	}
-
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
-		f.call_native(inputs)
 	}
 }
 

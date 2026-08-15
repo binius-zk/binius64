@@ -15,7 +15,7 @@
 use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, util::FieldFn};
+use binius_field::{BinaryField, Field};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
@@ -141,10 +141,6 @@ where
 
 	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::Error> {
 		self.transcript.borrow_mut().assert_zero(val)
-	}
-
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
-		self.transcript.borrow_mut().compute_public_value(inputs, f)
 	}
 }
 

@@ -5,7 +5,7 @@
 use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash as B128, util::FieldFn};
+use binius_field::BinaryField128bGhash as B128;
 use binius_frontend::WitnessFiller;
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
@@ -132,11 +132,6 @@ where
 		// The build emitted a ZERO constraint for this, so a bad proof surfaces as an
 		// unsatisfied circuit rather than as an error out of a witness generator.
 		Ok(())
-	}
-
-	fn compute_public_value(&mut self, inputs: &[B128], f: impl FieldFn<B128>) -> B128 {
-		// The builder evaluates this symbolically, so it records no wires and none are filled.
-		self.transcript.borrow_mut().compute_public_value(inputs, f)
 	}
 }
 

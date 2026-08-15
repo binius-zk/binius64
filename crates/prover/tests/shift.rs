@@ -13,6 +13,7 @@ use binius_core::{
 };
 use binius_field::{AESTowerField8b, BinaryField};
 use binius_frontend::{CircuitBuilder, Wire};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace,
 	inner_product::{inner_product, inner_product_buffers},
@@ -468,6 +469,10 @@ fn test_shift_prove_and_verify() {
 			&GlobalAllocator,
 		);
 
+		// The full reduction sends this after the public segment's evaluation claim; driving the
+		// shift alone, it follows the reduction directly.
+		prover_transcript.send_public_claim(prover_output.wiring_eval);
+
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
@@ -497,7 +502,7 @@ fn test_shift_prove_and_verify() {
 		);
 
 		// Check consistency with verifier output
-		check_eval(
+		let wiring_claim = check_eval(
 			&cs,
 			InoutSegment::Public,
 			public_eval,
@@ -511,6 +516,9 @@ fn test_shift_prove_and_verify() {
 			&mut verifier_transcript,
 		)
 		.unwrap();
+
+		// Discharge the wiring claim the way the full reduction's caller does.
+		wiring_claim.check_native().unwrap();
 		verifier_transcript.finalize().unwrap();
 
 		// Check the claimed witness eval matches the direct evaluation of the non-public words.
@@ -532,7 +540,7 @@ fn test_shift_prove_and_verify() {
 			std::slice::from_ref(&verifier_output.r_segment),
 		]
 		.concat();
-		assert_eq!(prover_output.challenges, eval_point);
-		assert_eq!(prover_output.eval, verifier_output.witness_eval);
+		assert_eq!(prover_output.sumcheck.challenges, eval_point);
+		assert_eq!(prover_output.sumcheck.eval, verifier_output.witness_eval);
 	}
 }

@@ -42,7 +42,10 @@ use binius_utils::{DeserializeBytes, SerializeBytes, serialization::Serializatio
 use bytes::{Buf, BufMut};
 use digest::Output;
 
-use crate::verify::{IOPVerifier, SECURITY_BITS};
+use crate::{
+	protocols::shift::WiringEvalClaim,
+	verify::{IOPVerifier, SECURITY_BITS},
+};
 
 /// Zero-knowledge verifier for Binius64 constraint systems.
 ///
@@ -80,7 +83,9 @@ where
 		let outer_builder = {
 			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
 			let mut builder_channel = IronSpartanBuilderChannel::new();
-			inner_iop_verifier
+			// The wiring claim is dropped rather than discharged: [`Self::verify`] checks it over
+			// the public segment instead, so the circuit built here carries none of it.
+			let _ = inner_iop_verifier
 				.verify(&dummy_inout_words, &mut builder_channel)
 				.expect("symbolic verify should not fail");
 			builder_channel.finish()
@@ -210,8 +215,27 @@ where
 			// The statement is observed here, and what comes back is what the IOP verifies
 			// against — the same split the transparent verifier makes.
 			let inout = wrapped_channel.observe_words(inout);
-			self.inner_iop_verifier
+			let claim = self
+				.inner_iop_verifier
 				.verify(&inout, &mut wrapped_channel)?;
+
+			// The wiring claim and every input it reads are public wires of the wrapper circuit, so
+			// tying the claim to the constraint system is an equation between values this verifier
+			// holds. Checking it here keeps the evaluation out of the circuit entirely, and the
+			// wrapper's other two runs — the symbolic build and the prover's replay — emit nothing
+			// for it either.
+			let public_value = |elem| {
+				wrapped_channel
+					.public_value(elem)
+					.expect("a public claim and its inputs are public wires")
+			};
+			WiringEvalClaim {
+				inputs: claim.inputs.iter().map(public_value).collect(),
+				claimed: public_value(&claim.claimed),
+				eval_fn: claim.eval_fn,
+			}
+			.check_native()
+			.map_err(crate::error::Error::from)?;
 		};
 
 		// Finish runs the outer spartan verification.

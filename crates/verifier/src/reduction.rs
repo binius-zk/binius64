@@ -46,7 +46,7 @@ use crate::{
 		binmul::{BinMulOutput, verify as verify_binmul_reduction},
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
-		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData},
+		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData, WiringEvalClaim},
 		zero,
 	},
 	ring_switch::{self, RingSwitchVerifyOutput, eval_rs_eq},
@@ -94,18 +94,21 @@ impl Instances {
 	}
 }
 
-/// What [`reduce_constraints`] leaves for the caller to open against the committed trace.
+/// What [`reduce_constraints`] leaves for the caller: the claim on the committed trace, and the
+/// wiring claim the constraint system is read through.
 #[derive(Debug)]
-pub struct ReductionOutput<F> {
+pub struct ReductionOutput<'a, F> {
 	/// The instance point every operand claim was transported onto.
 	///
 	/// Empty for the monolithic reduction, which transports nothing.
 	pub r_rho: Vec<F>,
 	/// The shift reduction's output, holding the claimed witness evaluation.
 	pub shift: shift::VerifyOutput<F>,
+	/// The prover's wiring evaluation, still to be tied to the constraint system.
+	pub wiring: WiringEvalClaim<'a, F>,
 }
 
-impl<F: Clone> ReductionOutput<F> {
+impl<F: Clone> ReductionOutput<'_, F> {
 	/// The point the committed trace is opened at.
 	///
 	/// The trace's bit index is `[bit | instance | wire]`, low to high:
@@ -151,13 +154,13 @@ impl<F: Clone> ReductionOutput<F> {
 /// Committing those evaluations first stops a prover choosing them as a function of it.
 ///
 /// Do not reorder these, and keep the same order in the prover.
-pub fn reduce_constraints<Channel>(
-	cs: &ConstraintSystem,
+pub fn reduce_constraints<'a, Channel>(
+	cs: &'a ConstraintSystem,
 	instances: Instances,
 	inout: InoutSegment,
 	public: &[Channel::Word],
 	channel: &mut Channel,
-) -> Result<ReductionOutput<Channel::Elem>, Error>
+) -> Result<ReductionOutput<'a, Channel::Elem>, Error>
 where
 	Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
 	Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
@@ -285,7 +288,7 @@ where
 	// Tie in the public values through the public-input consistency check.
 	// The reduction reads them over the layout's power-of-two word count.
 	// Their count need not be a power of two, so they are passed unpadded.
-	{
+	let wiring = {
 		let _guard = tracing::info_span!(
 			"[phase] Verify Public Input",
 			phase = "verify_public_input",
@@ -305,10 +308,14 @@ where
 			&z_challenge,
 			&shift,
 			channel,
-		)?;
-	}
+		)?
+	};
 
-	Ok(ReductionOutput { r_rho, shift })
+	Ok(ReductionOutput {
+		r_rho,
+		shift,
+		wiring,
+	})
 }
 
 /// Reads the public segment's evaluation and reduces it onto the segment's packed form.

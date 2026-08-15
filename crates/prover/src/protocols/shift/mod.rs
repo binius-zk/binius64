@@ -37,5 +37,6 @@ pub use claims::{OperatorClaims, PreparedOperatorClaims};
 pub use key_collection::{
 	DenseShiftEncoding, KeyCollection, KeySegment, Operation, build_key_collection,
 };
+pub use phase_2::ShiftOutput;
 pub use prove::{OperatorData, PreparedOperatorData, prove};
 pub use shift_ind::{ShiftIndOutput, ShiftIndSumcheck};

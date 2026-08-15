@@ -9,7 +9,7 @@ use std::{
 };
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, util::FieldFn};
+use binius_field::{BinaryField, Field};
 use binius_iop::channel::{IOPVerifierChannel, OracleSpec, TransparentEvalFn};
 use binius_ip::channel::{
 	IPVerifierChannel, WordIPVerifierChannel, n_packed_elems, select_word, subset_sum_word,
@@ -78,6 +78,13 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		Ok(inout - key)
 	}
 
+	fn recv_public_claim(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+		// A claim is public, so the wrapped prover sends it unencrypted: one inout wire, no
+		// precommit key. What it leaves behind is a public-derivable wire, which is what the
+		// checks reading it need it to be.
+		Ok(self.alloc_inout_elem())
+	}
+
 	fn sample(&mut self) -> Self::Elem {
 		self.alloc_inout_elem()
 	}
@@ -106,24 +113,6 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 				Ok(())
 			}
 		}
-	}
-
-	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem {
-		// The function is an arbitrary native computation the constraint system cannot replay, so
-		// its result enters as a single derived public wire (a one-output `hint_varsize`,
-		// computed from the public inputs, emitting no constraints) rather than a sub-circuit's
-		// worth of constraints. Symbolically we only allocate the wire; the value is filled
-		// concretely by the instance/witness channels, which recompute it via their own
-		// `hint_varsize`.
-		let out_wire = {
-			let mut builder = self.builder.borrow_mut();
-			let input_wires: Vec<_> = inputs
-				.iter()
-				.map(|elem| elem.to_wire(&mut builder))
-				.collect();
-			builder.hint_varsize(&input_wires, 1, move |vals| vec![f.call_native(vals)])[0]
-		};
-		CircuitElem::wire(&self.builder, out_wire)
 	}
 }
 
