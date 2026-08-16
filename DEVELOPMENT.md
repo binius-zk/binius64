@@ -7,11 +7,26 @@ Quick-start context for AI agents and developers working with Binius64.
 ```bash
 cargo build                    # Debug build
 cargo build --release          # Release build
-cargo test                     # Run tests
-cargo test -p <crate>          # Test specific crate
 ```
 
 For optimal performance: `export RUSTFLAGS="-C target-cpu=native"`
+
+## Testing
+
+Run the tests with [cargo-nextest](https://nexte.st/), which is what CI runs. It executes each test in its own process,
+so a panic or a hang is attributed to a single test, and its output is easier to read than libtest's.
+
+```bash
+$ cargo install cargo-nextest --locked     # one-time setup
+
+$ cargo nextest run --workspace            # Run the test suite
+$ cargo nextest run -p <crate>             # Test a specific crate
+$ cargo nextest run -E 'test(<substring>)' # Run the tests matching a filter expression
+$ cargo test --doc --workspace             # Doc tests; nextest does not run these
+```
+
+nextest cannot run doc tests ([nextest#16](https://github.com/nextest-rs/nextest/issues/16)), so `cargo test --doc`
+stays a separate command. CI runs it as its own step for the same reason.
 
 ## Running automated checks
 
