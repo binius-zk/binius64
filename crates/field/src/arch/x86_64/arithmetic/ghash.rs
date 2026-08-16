@@ -245,7 +245,7 @@ mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::{ClMulUnderlier, WideGhashProduct};
-	use crate::{Divisible, Random, WideMul, arch::OptimalPackedB128, arithmetic_traits::MulXWide};
+	use crate::{Random, WideMul, arch::OptimalPackedB128, arithmetic_traits::MulXWide};
 
 	/// Scaling by X commutes with the reduction: scaling the unreduced product matches multiplying
 	/// the reduced product by X (the field element 2) in every 128-bit lane.
