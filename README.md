@@ -69,6 +69,11 @@ $ RUSTFLAGS="-Ctarget-cpu=native" cargo run --release --example sha512 prove --m
 
 Multithreading using [Rayon](https://github.com/rayon-rs/rayon) is available, but it is disabled by default. This is controlled by the `rayon` Cargo feature. To run an example with multithreading enabled, use `--features rayon`.
 
+## Development
+
+For build, test, and lint commands, project terminology, and an index of the project documentation,
+see [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## Architecture
 
 For repository structure and architectural details, see [ARCHITECTURE.md](ARCHITECTURE.md).

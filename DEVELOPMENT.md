@@ -1,4 +1,4 @@
-# AGENTS.md
+# Development
 
 Quick-start context for AI agents and developers working with Binius64.
 
