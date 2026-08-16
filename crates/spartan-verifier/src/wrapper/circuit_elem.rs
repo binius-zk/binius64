@@ -471,7 +471,7 @@ impl<F: Field, B: CircuitBuilder<Field = F>> FieldOps for CircuitElem<F, B> {
 	where
 		Self::Scalar: ExtensionField<FSub>,
 	{
-		let degree = <F as ExtensionField<FSub>>::DEGREE;
+		let degree = F::DEGREE;
 		assert_eq!(elems.len(), degree);
 
 		if degree == 1 {

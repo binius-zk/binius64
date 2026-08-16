@@ -205,7 +205,7 @@ where
 	U: Divisible<T> + Pod + Send + Sync,
 	T: Send + 'static,
 {
-	const LOG_N: usize = <U as Divisible<T>>::LOG_N + checked_log_2(N);
+	const LOG_N: usize = U::LOG_N + checked_log_2(N);
 
 	#[inline]
 	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = T> + Send + Clone {
@@ -224,8 +224,8 @@ where
 
 	#[inline]
 	unsafe fn get_unchecked(&self, index: usize) -> T {
-		let u_index = index >> <U as Divisible<T>>::LOG_N;
-		let sub_index = index & (<U as Divisible<T>>::N - 1);
+		let u_index = index >> U::LOG_N;
+		let sub_index = index & (U::N - 1);
 		// Safety: `index < Self::N` by the caller's contract, so `sub_index < <U as
 		// Divisible<T>>::N` and `u_index < N`.
 		unsafe { Divisible::<T>::get_unchecked(self.0.get_unchecked(u_index), sub_index) }
@@ -233,8 +233,8 @@ where
 
 	#[inline]
 	unsafe fn set_unchecked(&mut self, index: usize, val: T) {
-		let u_index = index >> <U as Divisible<T>>::LOG_N;
-		let sub_index = index & (<U as Divisible<T>>::N - 1);
+		let u_index = index >> U::LOG_N;
+		let sub_index = index & (U::N - 1);
 		// Safety: `index < Self::N` by the caller's contract, so `sub_index < <U as
 		// Divisible<T>>::N` and `u_index < N`.
 		unsafe { Divisible::<T>::set_unchecked(self.0.get_unchecked_mut(u_index), sub_index, val) };

@@ -245,13 +245,13 @@ mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::{ClMulUnderlier, WideGhashProduct};
-	use crate::{Divisible, Random, WideMul, arch::OptimalPackedB128, arithmetic_traits::MulXWide};
+	use crate::{Random, WideMul, arch::OptimalPackedB128, arithmetic_traits::MulXWide};
 
 	/// Scaling by X commutes with the reduction: scaling the unreduced product matches multiplying
 	/// the reduced product by X (the field element 2) in every 128-bit lane.
 	#[allow(dead_code)]
 	fn check_mul_x_wide<U: ClMulUnderlier>(mut rng: impl Rng) {
-		let x = <U as Divisible<u128>>::broadcast(2);
+		let x = U::broadcast(2);
 
 		for _ in 0..64 {
 			let wide = WideGhashProduct::wide_mul(U::random(&mut rng), U::random(&mut rng));

@@ -4,7 +4,7 @@
 use std::iter;
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, BinaryField1b, ExtensionField, Field, field::FieldOps};
+use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_iop::{channel::IOPVerifierChannel, logup_star};
 use binius_ip::{
 	channel::IPVerifierChannel,
@@ -338,7 +338,7 @@ where
 			let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
 			(0..LIMB_BITS)
 				.map(|u| {
-					let basis = <F as ExtensionField<BinaryField1b>>::basis(u);
+					let basis = F::basis(u);
 					per_word_evals[tree][limb * LIMB_BITS + u].clone() * C::Elem::from(basis)
 				})
 				.fold(C::Elem::zero(), |acc, term| acc + term)

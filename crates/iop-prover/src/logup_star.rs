@@ -163,7 +163,7 @@ mod tests {
 	fn iota<E: Field + ExtensionField<BinaryField1b>>(j: usize, m: usize) -> E {
 		(0..m)
 			.filter(|t| (j >> t) & 1 == 1)
-			.map(<E as ExtensionField<BinaryField1b>>::basis)
+			.map(E::basis)
 			.fold(E::ZERO, |acc, b| acc + b)
 	}
 

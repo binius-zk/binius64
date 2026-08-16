@@ -127,7 +127,7 @@ pub trait FieldOps:
 	///
 	/// ## Preconditions
 	///
-	/// * `elems.len()` must equal `<Self::Scalar as ExtensionField<FSub>>::DEGREE`
+	/// * `elems.len()` must equal `Self::Scalar::DEGREE`
 	fn square_transpose<FSub: Field>(elems: &mut [Self])
 	where
 		Self::Scalar: ExtensionField<FSub>;

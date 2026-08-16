@@ -55,7 +55,7 @@ where
 	C: IPVerifierChannel<F>,
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
-	let log_packing = <F as ExtensionField<B1>>::LOG_DEGREE;
+	let log_packing = F::LOG_DEGREE;
 	let (eval_point_low, _eval_point_high) = eval_point.split_at(log_packing);
 
 	// Receive s_hat_v
@@ -106,7 +106,7 @@ where
 	F: FieldOps<Scalar: BinaryField>,
 {
 	assert_eq!(z_vals.len(), query.len()); // pre-condition
-	assert_eq!(expanded_row_batch_query.len(), <F::Scalar as ExtensionField<B1>>::DEGREE,); // pre-condition
+	assert_eq!(expanded_row_batch_query.len(), F::Scalar::DEGREE,); // pre-condition
 
 	let tensor_eval = iter::zip(z_vals, query).fold(
 		TensorAlgebra::<B1, F>::from_vertical(F::one()),

@@ -485,23 +485,17 @@ where
 	#[inline]
 	unsafe fn set_unchecked(&mut self, index: usize, val: Scalar) {
 		// Safety: `index < Self::N` by the caller's contract.
-		unsafe {
-			<U as Divisible<Scalar::Underlier>>::set_unchecked(
-				&mut self.0,
-				index,
-				val.to_underlier(),
-			)
-		};
+		unsafe { U::set_unchecked(&mut self.0, index, val.to_underlier()) };
 	}
 
 	#[inline]
 	fn broadcast(val: Scalar) -> Self {
-		<U as Divisible<Scalar::Underlier>>::broadcast(val.to_underlier()).into()
+		U::broadcast(val.to_underlier()).into()
 	}
 
 	#[inline]
 	fn from_iter(iter: impl Iterator<Item = Scalar>) -> Self {
-		<U as Divisible<Scalar::Underlier>>::from_iter(iter.map(Scalar::to_underlier)).into()
+		U::from_iter(iter.map(Scalar::to_underlier)).into()
 	}
 }
 
@@ -518,12 +512,10 @@ where
 	fn make_mask(selectors: impl Iterator<Item = bool>) -> U {
 		// Build a per-lane all-ones/all-zeros sub-underlier for each scalar slot and pack into U.
 		// A selected lane produces fill_with_bit(1) (every bit set); unselected gives ZERO.
-		<U as Divisible<Scalar::Underlier>>::from_iter(
+		U::from_iter(
 			selectors
-				.take(<Self as Divisible<Scalar>>::N)
-				.map(|selected| {
-					<Scalar::Underlier as UnderlierType>::fill_with_bit(u8::from(selected))
-				}),
+				.take(Self::N)
+				.map(|selected| Scalar::Underlier::fill_with_bit(u8::from(selected))),
 		)
 	}
 
@@ -540,7 +532,7 @@ where
 	U: UnderlierType + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
-	// LOG_WIDTH defaults to `<Self as Divisible<Scalar>>::LOG_N`, the same `(U::BITS /
+	// LOG_WIDTH defaults to `Self::LOG_N`, the same `(U::BITS /
 	// Scalar::N_BITS).ilog2()` count. Scalar element access (`get_unchecked`/`set_unchecked`) is
 	// provided by the `Divisible<Scalar>` impl, which routes through `U:
 	// Divisible<Scalar::Underlier>`.

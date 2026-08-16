@@ -64,7 +64,7 @@ use crate::{
 /// A packed extension field stored as `N` packed subfield coordinate registers.
 ///
 /// `F` is the extension scalar, `PSub` the packed subfield holding one coordinate of every lane,
-/// and `N = <F as ExtensionField<PSub::Scalar>>::DEGREE` the extension degree. See the module
+/// and `N = F::DEGREE` the extension degree. See the module
 /// documentation for the layout and for which operations are generic here versus supplied per
 /// concrete extension.
 ///
@@ -277,7 +277,7 @@ where
 {
 	#[inline]
 	fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(<Self as Divisible<F>>::broadcast(F::ONE), |acc, x| acc * x)
+		iter.fold(Self::broadcast(F::ONE), |acc, x| acc * x)
 	}
 }
 
@@ -288,7 +288,7 @@ where
 {
 	#[inline]
 	fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(<Self as Divisible<F>>::broadcast(F::ONE), |acc, x| acc * *x)
+		iter.fold(Self::broadcast(F::ONE), |acc, x| acc * *x)
 	}
 }
 
@@ -303,7 +303,7 @@ where
 
 	#[inline]
 	fn add(self, rhs: F) -> Self {
-		self + <Self as Divisible<F>>::broadcast(rhs)
+		self + Self::broadcast(rhs)
 	}
 }
 
@@ -316,7 +316,7 @@ where
 
 	#[inline]
 	fn sub(self, rhs: F) -> Self {
-		self - <Self as Divisible<F>>::broadcast(rhs)
+		self - Self::broadcast(rhs)
 	}
 }
 
@@ -330,7 +330,7 @@ where
 
 	#[inline]
 	fn mul(self, rhs: F) -> Self {
-		self * <Self as Divisible<F>>::broadcast(rhs)
+		self * Self::broadcast(rhs)
 	}
 }
 
@@ -364,7 +364,7 @@ where
 {
 	#[inline]
 	fn mul_assign(&mut self, rhs: F) {
-		*self = *self * <Self as Divisible<F>>::broadcast(rhs);
+		*self = *self * Self::broadcast(rhs);
 	}
 }
 
@@ -469,7 +469,7 @@ where
 
 	#[inline]
 	fn one() -> Self {
-		<Self as Divisible<F>>::broadcast(F::ONE)
+		Self::broadcast(F::ONE)
 	}
 
 	fn square_transpose<FSub: Field>(elems: &mut [Self])
@@ -486,7 +486,7 @@ where
 			let column = (0..degree).map(|j| elems[j].get(lane)).collect::<Vec<F>>();
 			for (i, elem) in elems.iter_mut().enumerate() {
 				let transposed = <F as ExtensionField<FSub>>::from_bases(
-					(0..degree).map(|j| <F as ExtensionField<FSub>>::get_base(&column[j], i)),
+					(0..degree).map(|j| F::get_base(&column[j], i)),
 				);
 				elem.set(lane, transposed);
 			}
@@ -501,7 +501,7 @@ where
 	Self:
 		Square + InvertOrZero + Mul<Output = Self> + WideMul<Output: Debug + Send + Sync + 'static>,
 {
-	// LOG_WIDTH defaults to `<Self as Divisible<F>>::LOG_N == PSub::LOG_WIDTH`; scalar access is
+	// LOG_WIDTH defaults to `Self::LOG_N == PSub::LOG_WIDTH`; scalar access is
 	// provided by the `Divisible<F>` impl above.
 
 	#[inline]

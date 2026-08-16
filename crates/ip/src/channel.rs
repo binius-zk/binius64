@@ -22,7 +22,7 @@
 use std::{iter::repeat_with, ops::Shr};
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, BinaryField1b, ExtensionField, Field, field::FieldOps};
+use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, CanSampleBits, Challenger},
@@ -203,9 +203,7 @@ where
 				.flat_map(|(i, word)| {
 					(0..Word::BITS)
 						.filter(|&bit| word.extract_bit(bit))
-						.map(move |bit| {
-							<F as ExtensionField<BinaryField1b>>::basis(i * Word::BITS + bit)
-						})
+						.map(move |bit| F::basis(i * Word::BITS + bit))
 				})
 				.sum::<F>();
 			E::from(packed)
