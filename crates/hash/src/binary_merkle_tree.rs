@@ -220,7 +220,7 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 				nodes: SendPtr(remaining.as_mut_ptr()),
 				compression: &parallel_compression,
 			};
-			build_node(&ctx, 0, log_len);
+			ctx.build_node(0, log_len);
 		}
 
 		unsafe {
@@ -276,60 +276,56 @@ const fn node_offset(log_len: usize, leaves_start: usize, log_width: usize) -> u
 	layer_start + (leaves_start >> log_width)
 }
 
-/// Folds `1 << log_width` leaves down to their single root without spawning rayon tasks.
-///
-/// Every level still runs through the hash suite's SIMD-batched compression, since a small
-/// subtree's whole level is one batch, not one task.
-fn fold_small_subtree<D, C>(ctx: &BuildContext<D, C>, leaves_start: usize, log_width: usize) -> D
-where
-	D: Clone,
-	C: ParallelPseudoCompression<D, 2>,
-{
-	let mut cur = &ctx.leaves[leaves_start..leaves_start + (1 << log_width)];
-	for depth in 1..=log_width {
-		let width = 1 << (log_width - depth);
-		let offset = node_offset(ctx.log_len, leaves_start, depth);
-		let out = unsafe {
-			// SAFETY: this subtree owns a leaf range disjoint from every other subtree's, so
-			// its node offset at every depth is disjoint from every other subtree's.
-			slice::from_raw_parts_mut(ctx.nodes.0.add(offset), width)
-		};
-		ctx.compression.parallel_compress(cur, out);
-		cur = unsafe {
-			// SAFETY: the compression above wrote every slot of this layer
-			out.assume_init_mut()
-		};
+impl<D: Clone, C: ParallelPseudoCompression<D, 2>> BuildContext<'_, D, C> {
+	/// Folds `1 << log_width` leaves down to their single root without spawning rayon tasks.
+	///
+	/// Every level still runs through the hash suite's SIMD-batched compression, since a small
+	/// subtree's whole level is one batch, not one task.
+	fn fold_small_subtree(&self, leaves_start: usize, log_width: usize) -> D {
+		let mut cur = &self.leaves[leaves_start..leaves_start + (1 << log_width)];
+		for depth in 1..=log_width {
+			let width = 1 << (log_width - depth);
+			let offset = node_offset(self.log_len, leaves_start, depth);
+			let out = unsafe {
+				// SAFETY: this subtree owns a leaf range disjoint from every other subtree's, so
+				// its node offset at every depth is disjoint from every other subtree's.
+				slice::from_raw_parts_mut(self.nodes.0.add(offset), width)
+			};
+			self.compression.parallel_compress(cur, out);
+			cur = unsafe {
+				// SAFETY: the compression above wrote every slot of this layer
+				out.assume_init_mut()
+			};
+		}
+		cur[0].clone()
 	}
-	cur[0].clone()
 }
 
-/// Builds every node from `1 << log_width` leaves starting at `leaves_start` up to their root.
-///
-/// Levels past [`SUBTREE_LOG_DEPTH`] recurse as two independent halves, run in parallel by
-/// rayon, with no synchronization beyond a node waiting on its own two children.
-fn build_node<D, C>(ctx: &BuildContext<D, C>, leaves_start: usize, log_width: usize) -> D
-where
-	D: Clone + Send + Sync,
-	C: ParallelPseudoCompression<D, 2> + Sync,
-{
-	if log_width <= SUBTREE_LOG_DEPTH {
-		return fold_small_subtree(ctx, leaves_start, log_width);
+impl<D: Clone + Send + Sync, C: ParallelPseudoCompression<D, 2> + Sync> BuildContext<'_, D, C> {
+	/// Builds every node from `1 << log_width` leaves starting at `leaves_start` up to their root.
+	///
+	/// Levels past [`SUBTREE_LOG_DEPTH`] recurse as two independent halves, run in parallel by
+	/// rayon, with no synchronization beyond a node waiting on its own two children.
+	fn build_node(&self, leaves_start: usize, log_width: usize) -> D {
+		if log_width <= SUBTREE_LOG_DEPTH {
+			return self.fold_small_subtree(leaves_start, log_width);
+		}
+
+		let half = log_width - 1;
+		let mid = leaves_start + (1 << half);
+		let (left, right) =
+			rayon::join(|| self.build_node(leaves_start, half), || self.build_node(mid, half));
+
+		let node = self.compression.compression().compress([left, right]);
+
+		let offset = node_offset(self.log_len, leaves_start, log_width);
+		unsafe {
+			// SAFETY: this subtree owns a leaf range disjoint from every other subtree's, so its
+			// node offset is disjoint from every other subtree's.
+			(*self.nodes.0.add(offset)).write(node.clone());
+		}
+		node
 	}
-
-	let half = log_width - 1;
-	let mid = leaves_start + (1 << half);
-	let (left, right) =
-		rayon::join(|| build_node(ctx, leaves_start, half), || build_node(ctx, mid, half));
-
-	let node = ctx.compression.compression().compress([left, right]);
-
-	let offset = node_offset(ctx.log_len, leaves_start, log_width);
-	unsafe {
-		// SAFETY: this subtree owns a leaf range disjoint from every other subtree's, so its
-		// node offset is disjoint from every other subtree's.
-		(*ctx.nodes.0.add(offset)).write(node.clone());
-	}
-	node
 }
 
 impl<D: Clone + Send, A: Allocator> BinaryMerkleTree<D, A> {
