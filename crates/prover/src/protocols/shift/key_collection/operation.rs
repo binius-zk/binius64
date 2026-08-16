@@ -14,7 +14,7 @@ pub enum Operation {
 	/// a = 0
 	/// ```
 	Zero,
-	/// Two words ANDed together, XORed with a third, equal zero.
+	/// The bitwise AND of two words, XORed with a third, equals zero.
 	///
 	/// ```text
 	/// a & b ^ c = 0
