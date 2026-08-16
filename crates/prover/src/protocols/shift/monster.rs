@@ -9,7 +9,6 @@ use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
-use bytemuck::zeroed_vec;
 use tracing::instrument;
 
 use super::{
@@ -187,18 +186,36 @@ where
 	F: BinaryField,
 {
 	assert_eq!(psi.len(), Word::BITS, "the weights are indexed by bit position");
+	assert_eq!(
+		Word::BITS % P::WIDTH,
+		0,
+		"a row of Word::BITS weights must be packed-element aligned"
+	);
 
-	// One row of `Word::BITS` weights per `(variant, amount)`, variant most significant.
-	let mut data = zeroed_vec::<F>(1 << SHIFT_OPERATOR_LOG_LEN);
-	for (variant, block) in
-		iter::zip(ShiftVariant::ALL, data.chunks_exact_mut(Word::BITS * Word::BITS))
-	{
-		for (amount, row) in block.chunks_exact_mut(Word::BITS).enumerate() {
-			shift_operator_row(variant, amount, row, psi);
+	// One row of `Word::BITS` weights per `(variant, amount)`, variant most significant, packed
+	// `P::WIDTH` scalars at a time straight into the destination buffer. The scratch row is
+	// reused across every pair rather than collected into a second full-size buffer.
+	let row_packed_len = Word::BITS / P::WIDTH;
+	let packed_len = 1 << SHIFT_OPERATOR_LOG_LEN.saturating_sub(P::LOG_WIDTH);
+	let mut values = alloc.alloc::<P>(packed_len);
+	let mut row = [F::ZERO; Word::BITS];
+	for (variant, block) in iter::zip(
+		ShiftVariant::ALL,
+		values
+			.spare_capacity_mut()
+			.chunks_exact_mut(Word::BITS * row_packed_len),
+	) {
+		for (amount, packed_row) in block.chunks_exact_mut(row_packed_len).enumerate() {
+			shift_operator_row(variant, amount, &mut row, psi);
+			for (slot, chunk) in iter::zip(packed_row, row.chunks_exact(P::WIDTH)) {
+				slot.write(P::from_scalars(chunk.iter().copied()));
+			}
 		}
 	}
+	// Safety: the loop above wrote every one of the `packed_len` slots.
+	unsafe { values.set_len(packed_len) };
 
-	FieldBuffer::from_values_in(alloc, &data)
+	FieldBuffer::new(SHIFT_OPERATOR_LOG_LEN, values)
 }
 
 /// Constructs the "monster multilinear" that combines all shift operations into a single
