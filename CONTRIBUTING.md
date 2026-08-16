@@ -12,6 +12,10 @@ and [Clippy](https://doc.rust-lang.org/clippy/). See [DEVELOPMENT.md](DEVELOPMEN
 cross-compilation checks that architecture-specific crates need. The remaining sections document conventions that
 cannot be enforced with automated tooling.
 
+### Code comments
+
+**Code comments explain current behavior, not change history.** Do not write comments that reference how the code used to work ("Previously X", "Changed from A to B", "Used to call Y"). Comments must make sense in the context of the current code, independently of its history. Context about what changed and why belongs in the commit description and PR body, not in source code.
+
 ### Documentation
 
 We follow guidance from the [rustdoc book](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html). The

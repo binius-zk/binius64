@@ -104,14 +104,10 @@ does, swap in `cargo clippy --target <triple> -p binius-field -p binius-arith-be
 | **Circuit** | High-level representation of computation built with `CircuitBuilder` |
 | **Constraint system** | Low-level AND/MUL constraints compiled from a circuit |
 
-## Coding Guidelines
-
-**Code comments explain current behavior, not change history.** Do not write comments that reference how the code used to work ("Previously X", "Changed from A to B", "Used to call Y"). Comments must make sense in the context of the current code, independently of its history. Context about what changed and why belongs in the commit description and PR body, not in source code.
-
 ## Documentation
 
 ### Development Guidelines
-[CONTRIBUTING.md](CONTRIBUTING.md) covers code style, naming conventions, copyright headers, error handling, and other development conventions.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers code style, naming conventions, copyright headers, code comment conventions, error handling, and other development conventions.
 
 ### README
 The [README.md](README.md) is the project's entry point, covering what Binius64 is, dependencies, build instructions, and links to external documentation.
