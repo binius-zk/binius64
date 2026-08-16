@@ -1,7 +1,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, BinaryField1b, ExtensionField, field::FieldOps};
+use binius_field::{BinaryField, field::FieldOps};
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck::SumcheckOutput};
 use binius_math::inner_product::inner_product_scalars;
 
@@ -79,10 +79,10 @@ where
 	// Precompute the basis-element vectors used to recombine a (lo, hi) per-bit column pair into
 	// the packed field element evaluation alpha = sum_i basis(i) * lo[i] + basis(64 + i) * hi[i].
 	let basis_lo: Vec<C::Elem> = (0..Word::BITS)
-		.map(|i| C::Elem::from(<F as ExtensionField<BinaryField1b>>::basis(i)))
+		.map(|i| C::Elem::from(F::basis(i)))
 		.collect();
 	let basis_hi: Vec<C::Elem> = (0..Word::BITS)
-		.map(|i| C::Elem::from(<F as ExtensionField<BinaryField1b>>::basis(Word::BITS + i)))
+		.map(|i| C::Elem::from(F::basis(Word::BITS + i)))
 		.collect();
 	let recombine = |lo: &[C::Elem], hi: &[C::Elem]| -> C::Elem {
 		inner_product_scalars(lo.iter().cloned(), basis_lo.iter().cloned())

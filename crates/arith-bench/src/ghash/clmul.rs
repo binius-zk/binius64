@@ -32,7 +32,7 @@ use crate::{PackedUnderlier, Underlier, underlier::OpsClmul};
 /// by 1 and conditionally XOR with X^{-1} if the LSB was set.
 #[inline]
 pub fn mul_inv_x<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
-	let inv_x = <U as PackedUnderlier<u128>>::broadcast(super::INV_X);
+	let inv_x = U::broadcast(super::INV_X);
 
 	// Put bit 0 of each 64-bit lane into bit 63.
 	let lsb_at_top = U::slli_epi64::<63>(x);
@@ -61,7 +61,7 @@ pub fn mul_inv_x<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
 /// (`X^128 ≡ X^7 + X^2 + X + 1 = 0x87`).
 #[inline]
 pub fn mul_x<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
-	let poly = <U as PackedUnderlier<u128>>::broadcast(0x87);
+	let poly = U::broadcast(0x87);
 
 	// Full 128-bit left shift by one, per 128-bit lane.
 	let shifted = shift_left_1(x);
@@ -165,7 +165,7 @@ pub fn square<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
 fn gf2_128_reduce<U: Underlier + OpsClmul + PackedUnderlier<u128>>(mut t0: U, t1: U) -> U {
 	// The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87
 	const POLY: u128 = 0x87;
-	let poly = <U as PackedUnderlier<u128>>::broadcast(POLY);
+	let poly = U::broadcast(POLY);
 
 	// t0 = t0 XOR (t1 << 64)
 	// In SIMD, left shift by 64 bits is shifting by 8 bytes
@@ -183,7 +183,7 @@ fn gf2_128_reduce<U: Underlier + OpsClmul + PackedUnderlier<u128>>(mut t0: U, t1
 fn gf2_128_shift_reduce<U: Underlier + OpsClmul + PackedUnderlier<u128>>(t1: U) -> U {
 	// The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87
 	const POLY: u128 = 0x87;
-	let poly = <U as PackedUnderlier<u128>>::broadcast(POLY);
+	let poly = U::broadcast(POLY);
 
 	// t0 = t1 << 64
 	// In SIMD, left shift by 64 bits is shifting by 8 bytes
@@ -263,7 +263,7 @@ pub fn reduce_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
 ) -> [U; 2] {
 	// The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87
 	const POLY: u128 = 0x87;
-	let poly = <U as PackedUnderlier<u128>>::broadcast(POLY);
+	let poly = U::broadcast(POLY);
 
 	let t2_hi_times_poly = [
 		U::clmulepi64::<0x01>(t2[0], poly),

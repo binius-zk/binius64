@@ -47,7 +47,7 @@ pub trait RijndaelBytewise: Underlier + PackedUnderlier<u8> {
 pub fn mul<U: RijndaelBytewise>(a: U, b: U) -> U {
 	// Low byte of the reduction polynomial (x^4 + x^3 + x + 1), XORed in whenever a byte doubling
 	// carries out of bit 7.
-	let poly = <U as PackedUnderlier<u8>>::broadcast(0x1b);
+	let poly = U::broadcast(0x1b);
 
 	let mut r = U::ZERO;
 	// MSB-first double-and-add. On step `k` we test bit `i = 7 - k` of `b`: shifting `b` left by

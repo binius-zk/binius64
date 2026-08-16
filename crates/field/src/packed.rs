@@ -52,7 +52,7 @@ pub trait PackedField:
 	/// Base-2 logarithm of the number of field elements packed into one packed element.
 	///
 	/// This is the number of scalars the packed field divides into, i.e. its `Divisible` log-count.
-	const LOG_WIDTH: usize = <Self as Divisible<Self::Scalar>>::LOG_N;
+	const LOG_WIDTH: usize = Self::LOG_N;
 
 	/// The number of field elements packed into one packed element.
 	///

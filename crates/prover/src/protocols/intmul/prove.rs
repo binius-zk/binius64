@@ -5,7 +5,7 @@ use std::{iter, marker::PhantomData};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField, BinaryField1b, Divisible, ExtensionField, PackedField};
+use binius_field::{BinaryField, Divisible, PackedField};
 use binius_iop_prover::{
 	channel::IOPProverChannel,
 	logup_star::{self, Looker},
@@ -309,8 +309,7 @@ where
 		let mut iota_table = Vec::with_capacity(1usize << LIMB_BITS);
 		iota_table.push(F::ZERO);
 		for row in 1..1usize << LIMB_BITS {
-			let low_bit_basis =
-				<F as ExtensionField<BinaryField1b>>::basis(row.trailing_zeros() as usize);
+			let low_bit_basis = F::basis(row.trailing_zeros() as usize);
 			iota_table.push(iota_table[row & (row - 1)] + low_bit_basis);
 		}
 		drop(embed_guard);

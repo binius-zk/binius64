@@ -38,7 +38,7 @@ where
 	/// * `elems` must have length equal to the extension degree, otherwise this will pad or
 	///   truncate.
 	pub fn new(mut elems: Vec<FE>) -> Self {
-		elems.resize(<FE::Scalar as ExtensionField<F>>::DEGREE, FE::zero());
+		elems.resize(FE::Scalar::DEGREE, FE::zero());
 		Self {
 			elems,
 			_marker: PhantomData,
@@ -47,12 +47,12 @@ where
 
 	/// Returns $\kappa$, the base-2 logarithm of the extension degree.
 	pub const fn kappa() -> usize {
-		<FE::Scalar as ExtensionField<F>>::LOG_DEGREE
+		FE::Scalar::LOG_DEGREE
 	}
 
 	/// Returns the multiplicative identity element, one.
 	pub fn one() -> Self {
-		let mut elems = vec![FE::zero(); <FE::Scalar as ExtensionField<F>>::DEGREE];
+		let mut elems = vec![FE::zero(); FE::Scalar::DEGREE];
 		elems[0] = FE::one();
 		Self {
 			elems,
@@ -67,7 +67,7 @@ where
 
 	/// Constructs a [`TensorAlgebra`] in the vertical subring.
 	pub fn from_vertical(x: FE) -> Self {
-		let mut elems = vec![FE::zero(); <FE::Scalar as ExtensionField<F>>::DEGREE];
+		let mut elems = vec![FE::zero(); FE::Scalar::DEGREE];
 		elems[0] = x;
 		Self {
 			elems,
@@ -117,7 +117,7 @@ where
 {
 	fn default() -> Self {
 		Self {
-			elems: vec![FE::zero(); <FE::Scalar as ExtensionField<F>>::DEGREE],
+			elems: vec![FE::zero(); FE::Scalar::DEGREE],
 			_marker: PhantomData,
 		}
 	}
@@ -130,7 +130,7 @@ where
 {
 	/// Returns the byte size of an element.
 	pub const fn byte_size() -> usize {
-		mem::size_of::<FE>() << <FE as ExtensionField<F>>::LOG_DEGREE
+		mem::size_of::<FE>() << FE::LOG_DEGREE
 	}
 
 	/// Tensor product of a vertical subring element and a horizontal subring element.

@@ -60,7 +60,7 @@ where
 	FE: PackedField<Scalar: ExtensionField<F>> + WithUnderlier,
 	PackedSubfield<FE, F>: PackedField<Scalar = F>,
 {
-	square_transpose(<FE::Scalar as ExtensionField<F>>::LOG_DEGREE, cast_bases_mut::<F, FE>(values))
+	square_transpose(FE::Scalar::LOG_DEGREE, cast_bases_mut::<F, FE>(values))
 }
 
 #[cfg(test)]

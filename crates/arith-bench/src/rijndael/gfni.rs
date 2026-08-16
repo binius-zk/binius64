@@ -23,6 +23,6 @@ pub fn inv<U: Underlier + OpsGfni + PackedUnderlier<u64>>(x: U) -> U {
 		0b00000001,
 	]);
 
-	let identity_map = <U as PackedUnderlier<u64>>::broadcast(IDENTITY_MAP);
+	let identity_map = U::broadcast(IDENTITY_MAP);
 	OpsGfni::gf2p8affineinv::<0>(x, identity_map)
 }

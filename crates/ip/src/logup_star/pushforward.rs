@@ -180,7 +180,7 @@ where
 		.iter()
 		.enumerate()
 		.map(|(t, coord)| {
-			let basis_t = E::from(<F as ExtensionField<BinaryField1b>>::basis(t));
+			let basis_t = E::from(F::basis(t));
 			basis_t * coord.clone()
 		})
 		.fold(E::zero(), |acc, term| acc + term);

@@ -151,7 +151,7 @@ mod tests {
 	where
 		GhashSq256b: ExtensionField<F>,
 	{
-		let degree = <GhashSq256b as ExtensionField<F>>::DEGREE;
+		let degree = GhashSq256b::DEGREE;
 		assert_eq!(values.len(), degree);
 		let coords: Vec<F> = values
 			.iter()

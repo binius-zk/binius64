@@ -311,7 +311,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		Divisible, Field, PackedField, Random,
+		Field, PackedField, Random,
 		arithmetic_traits::{InvertOrZero, Square},
 		field::FieldOps,
 	};
@@ -362,7 +362,7 @@ mod tests {
 		let a = P::random(&mut rng);
 		let s = GhashSq256b::random(&mut rng);
 
-		let broadcast = <P as Divisible<GhashSq256b>>::broadcast(s);
+		let broadcast = P::broadcast(s);
 		let scaled = a * s;
 		for i in 0..P::WIDTH {
 			assert_eq!(broadcast.get(i), s);

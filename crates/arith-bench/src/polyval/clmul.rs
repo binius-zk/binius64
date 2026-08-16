@@ -91,7 +91,7 @@ fn mont_reduce<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x23: U, x01: U) 
 	//    [D1:D0] = [B0 ⊕ C1 : B1 ⊕ C0]
 	// Output: [D1 ⊕ X3 : D0 ⊕ X2]
 	static POLY: u128 = (1 << 127) | (1 << 126) | (1 << 121) | (1 << 63) | (1 << 62) | (1 << 57);
-	let poly = <U as PackedUnderlier<u128>>::broadcast(POLY);
+	let poly = U::broadcast(POLY);
 	let a = pmull(x01, poly);
 	let b = U::xor(x01, U::swap_hi_lo_64(a));
 	let c = pmull2(b, poly);

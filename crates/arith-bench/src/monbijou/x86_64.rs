@@ -227,7 +227,7 @@ pub fn reduce<U: Underlier + OpsClmul + PackedUnderlier<u64>>([prod_0, prod_1]: 
 	// The reduction polynomial X^64 + X^4 + X^3 + X + 1 is represented as 0x1B
 	// This is the bit representation of the lower-degree terms (X^4 + X^3 + X + 1)
 	const POLY: u64 = 0x1B;
-	let poly = <U as PackedUnderlier<u64>>::broadcast(POLY);
+	let poly = U::broadcast(POLY);
 
 	// Step 2: First reduction - multiply high 64 bits by reduction polynomial
 	// This effectively computes: high_bits * (X^4 + X^3 + X + 1) mod X^128

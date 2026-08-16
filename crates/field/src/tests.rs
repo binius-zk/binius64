@@ -122,7 +122,7 @@ where
 	FSub: Field,
 	F: ExtensionField<FSub> + FieldOps<Scalar = F>,
 {
-	let degree = <F as ExtensionField<FSub>>::DEGREE;
+	let degree = F::DEGREE;
 
 	let elems: Vec<F> = (0..degree).map(|i| F::basis(i)).collect();
 
@@ -145,12 +145,12 @@ where
 	FSub: Field,
 	P: FieldOps<Scalar: ExtensionField<FSub>> + PackedField,
 {
-	let degree = <P::Scalar as ExtensionField<FSub>>::DEGREE;
+	let degree = P::Scalar::DEGREE;
 
 	let elems: Vec<P> = (0..degree)
 		.map(|i| {
 			P::from_fn(|_k| {
-				<P::Scalar as ExtensionField<FSub>>::from_bases(
+				P::Scalar::from_bases(
 					(0..degree).map(|j| if j == i { FSub::ONE } else { FSub::ZERO }),
 				)
 			})
