@@ -202,9 +202,10 @@ pub fn build_g_from_folded_words<F: BinaryField>(
 	// below adds straight into it.
 	let mut rows = vec![F::ZERO; segment.dense_shift_enc.len() * Word::BITS].into_boxed_slice();
 
-	// Each folded word carries the keys named by the segment-relative range at its position.
-	for (word, range) in folded_words.iter().zip(&segment.key_ranges) {
-		let keys = &segment.keys[range.start as usize..range.end as usize];
+	// Each folded word carries the keys `word_keys` names at its position; words past
+	// `n_words()` are power-of-two padding.
+	for (index, word) in folded_words.iter().enumerate().take(segment.n_words()) {
+		let keys = segment.word_keys(index);
 		for key in keys {
 			let operator_data = &prepared[key.operation];
 
