@@ -117,9 +117,13 @@ jobs:
       - name: Run platform diagnostics
         if: github.event_name != 'push'
         run: cargo test -p binius-utils --features platform-diagnostics test_platform_diagnostics -- --nocapture
+      # `--all-features` so that feature-gated code (rayon, perfetto, trace_multiplications, …) is
+      # linted too. Every optional feature in the workspace is off by default, so without this the
+      # gated code is never compiled and bitrots silently. The cost is that clippy cannot reuse the
+      # Compile step's artifacts, since the feature unification differs.
       - name: Run clippy
         if: github.event_name != 'push'
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Run tests
         if: github.event_name != 'push'
         run: cargo nextest run --workspace --no-fail-fast ${{ matrix.arch.test_args }}

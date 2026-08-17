@@ -38,5 +38,5 @@ done
 
 ((${#args[@]} == 0)) && exit 0
 
-echo "clippy: cargo clippy ${args[*]} --all-targets" >&2
-exec cargo clippy "${args[@]}" --all-targets -- -D warnings
+echo "clippy: cargo clippy ${args[*]} --all-targets --all-features" >&2
+exec cargo clippy "${args[@]}" --all-targets --all-features -- -D warnings

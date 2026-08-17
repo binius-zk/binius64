@@ -595,7 +595,7 @@ where
 			// Try to extract params from the appropriate matches for richer context
 			// This will succeed for most commands (prove, stat, save, etc.)
 			// and fail gracefully for commands without params (like load-prove)
-			let matches_for_params = matches.subcommand().map(|(_, sub)| sub).unwrap_or(&matches);
+			let matches_for_params = matches.subcommand().map(|(_, sub)| sub).unwrap_or(matches);
 
 			if let Ok(params) = E::Params::from_arg_matches(matches_for_params)
 				&& let Some(param_summary) = E::param_summary(&params)
