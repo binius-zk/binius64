@@ -323,10 +323,10 @@ where
 	let r_out = challenges.as_slice();
 
 	// The prover sends the raw per-bit evaluations at r_out.
-	let a_evals = channel.recv_many(Word::BITS)?;
-	let c_lo_evals = channel.recv_many(Word::BITS)?;
-	let c_hi_evals = channel.recv_many(Word::BITS)?;
-	let b_evals = channel.recv_many(Word::BITS)?;
+	let a_evals = channel.recv_array::<{ Word::BITS }>()?;
+	let c_lo_evals = channel.recv_array::<{ Word::BITS }>()?;
+	let c_hi_evals = channel.recv_array::<{ Word::BITS }>()?;
+	let b_evals = channel.recv_array::<{ Word::BITS }>()?;
 
 	// Bind the per-bit evals to the folded index claim. The index entries are the GF(2)-linear
 	// embeddings iota(e_{t,l}) = Σ_u basis(u) · bit_u(e_{t,l}), and bit u of limb l is bit
@@ -368,7 +368,7 @@ where
 
 	// Bind the prover's raw per-bit evals to the single recombined rerandomization claim:
 	// b(r_I^b, r_out) = sum_i eq(r_I^b, i) * b(i, r_out).
-	let b_at_rx = evaluate_inplace_scalars(b_evals.clone(), r_ib);
+	let b_at_rx = evaluate_inplace_scalars(&mut b_evals.clone()[..], r_ib);
 	let expected_b_rerand_eval = b_eq_eval * &b_at_rx;
 
 	let expected_unbatched_evals = [

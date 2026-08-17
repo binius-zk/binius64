@@ -400,8 +400,7 @@ where
 		// verifier binds the stacked-index claim via the GF(2)-linearity of the embedding, the `b`
 		// evals via sum_i eq(r_I^b, i) * b(i, r_out) = B(r_out), and the parity bits directly.
 		let output_guard = tracing::debug_span!("Compute output bit evals").entered();
-		let per_bit_evals =
-			|exponents: &[Word]| fold_across_words::<_, P>(exponents, r_out).to_vec();
+		let per_bit_evals = |exponents: &[Word]| fold_across_words::<_, P>(exponents, r_out);
 		let a_evals = per_bit_evals(a_exponents);
 		let c_lo_evals = per_bit_evals(c_lo_exponents);
 		let c_hi_evals = per_bit_evals(c_hi_exponents);

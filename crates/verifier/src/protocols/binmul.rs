@@ -15,17 +15,17 @@ use crate::Error;
 /// constraint to per-bit evaluation claims on the six word columns at a common evaluation point
 /// `eval_point` ($r_x \in K^\ell$).
 ///
-/// Each `*_evals` vector holds `Word::BITS` per-bit evaluation claims $\widetilde{z}(r_x, i)$ for
+/// Each `*_evals` array holds `Word::BITS` per-bit evaluation claims $\widetilde{z}(r_x, i)$ for
 /// $i \in \{0, \ldots, 63\}$.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinMulOutput<F> {
 	pub eval_point: Vec<F>,
-	pub a_lo_evals: Vec<F>,
-	pub a_hi_evals: Vec<F>,
-	pub b_lo_evals: Vec<F>,
-	pub b_hi_evals: Vec<F>,
-	pub c_lo_evals: Vec<F>,
-	pub c_hi_evals: Vec<F>,
+	pub a_lo_evals: [F; Word::BITS],
+	pub a_hi_evals: [F; Word::BITS],
+	pub b_lo_evals: [F; Word::BITS],
+	pub b_hi_evals: [F; Word::BITS],
+	pub c_lo_evals: [F; Word::BITS],
+	pub c_hi_evals: [F; Word::BITS],
 }
 
 /// Verify the binary-field multiplication check (BinMul) reduction.
@@ -69,12 +69,12 @@ where
 	eval_point.reverse();
 
 	// The prover sends the six per-bit evaluation columns at r_x.
-	let a_lo_evals = channel.recv_many(Word::BITS)?;
-	let a_hi_evals = channel.recv_many(Word::BITS)?;
-	let b_lo_evals = channel.recv_many(Word::BITS)?;
-	let b_hi_evals = channel.recv_many(Word::BITS)?;
-	let c_lo_evals = channel.recv_many(Word::BITS)?;
-	let c_hi_evals = channel.recv_many(Word::BITS)?;
+	let a_lo_evals = channel.recv_array::<{ Word::BITS }>()?;
+	let a_hi_evals = channel.recv_array::<{ Word::BITS }>()?;
+	let b_lo_evals = channel.recv_array::<{ Word::BITS }>()?;
+	let b_hi_evals = channel.recv_array::<{ Word::BITS }>()?;
+	let c_lo_evals = channel.recv_array::<{ Word::BITS }>()?;
+	let c_hi_evals = channel.recv_array::<{ Word::BITS }>()?;
 
 	// Precompute the basis-element vectors used to recombine a (lo, hi) per-bit column pair into
 	// the packed field element evaluation alpha = sum_i basis(i) * lo[i] + basis(64 + i) * hi[i].

@@ -10,10 +10,10 @@ use itertools::iterate;
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntMulOutput<F> {
 	pub eval_point: Vec<F>,
-	pub a_evals: Vec<F>,
-	pub b_evals: Vec<F>,
-	pub c_lo_evals: Vec<F>,
-	pub c_hi_evals: Vec<F>,
+	pub a_evals: [F; Word::BITS],
+	pub b_evals: [F; Word::BITS],
+	pub c_lo_evals: [F; Word::BITS],
+	pub c_hi_evals: [F; Word::BITS],
 }
 
 /// Output of Phase 1: GKR reduction of the exponentiation product tree.
