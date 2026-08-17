@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{marker::PhantomData, ops::Deref};
+use std::ops::Deref;
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -28,14 +28,10 @@ use crate::fold_word::BitAxisFolder;
 ///
 /// See [`binius_verifier::protocols::bitand`] for the protocol specification.
 ///
-/// The type parameter `PChallenge` is the packed field over the challenge field `FChallenge` used
-/// for the multilinear sumcheck rounds that follow the univariate round. Packing these rounds over
-/// a wide field provides SIMD acceleration.
-///
 /// The columns are generic over their backing store `Data` (anything that dereferences to
 /// `[Word]`), so callers can supply pooled buffers ([`PoolVec`](binius_compute::PoolVec)) or plain
 /// `Vec<Word>` interchangeably.
-pub struct OblongZerocheckProver<FChallenge, PChallenge, Data>
+pub struct OblongZerocheckProver<FChallenge, Data>
 where
 	FChallenge: BinaryField,
 {
@@ -45,13 +41,11 @@ where
 	big_field_zerocheck_challenges: Vec<FChallenge>,
 	univariate_round_message: [FChallenge; ROWS_PER_HYPERCUBE_VERTEX],
 	univariate_round_message_domain: BinarySubspace<FChallenge>,
-	_marker: PhantomData<PChallenge>,
 }
 
-impl<F, PChallenge, Data> OblongZerocheckProver<F, PChallenge, Data>
+impl<F, Data> OblongZerocheckProver<F, Data>
 where
 	F: BinaryField + From<B8>,
-	PChallenge: PackedField<Scalar = F>,
 	Data: Deref<Target = [Word]>,
 {
 	/// Creates a new oblong zerocheck prover for AND constraint reduction.
@@ -116,7 +110,6 @@ where
 			univariate_round_message,
 			big_field_zerocheck_challenges,
 			univariate_round_message_domain: prover_message_domain.isomorphic(),
-			_marker: PhantomData,
 		}
 	}
 
@@ -167,7 +160,11 @@ where
 	/// 3. Combines the zerocheck challenges (small field + big field)
 	/// 4. Evaluates the univariate polynomial at the challenge to get the sumcheck claim
 	/// 5. Constructs the AND reduction sumcheck prover with the folded multilinears
-	pub fn fold_and_send_reduced_prover<'alloc, A: Allocator>(
+	pub fn fold_and_send_reduced_prover<
+		'alloc,
+		PChallenge: PackedField<Scalar = F>,
+		A: Allocator,
+	>(
 		self,
 		round_message_domain: &BinarySubspace<F>,
 		challenge: F,
@@ -233,7 +230,7 @@ where
 	/// 2. **Challenge**: Sample univariate challenge z via Fiat-Shamir
 	/// 3. **Transition**: Fold oblong multilinears at Z = z
 	/// 4. **Phase 2**: Execute sumcheck protocol on folded multilinears
-	pub fn prove_with_channel<A: Allocator>(
+	pub fn prove_with_channel<PChallenge: PackedField<Scalar = F>, A: Allocator>(
 		self,
 		channel: &mut impl IPProverChannel<F>,
 		alloc: &A,
@@ -245,7 +242,7 @@ where
 		let univariate_sumcheck_challenge = channel.sample();
 		let univariate_round_message_domain = self.univariate_round_message_domain.clone();
 		let sumcheck_prover = tracing::debug_span!("Fold univariate round").in_scope(|| {
-			self.fold_and_send_reduced_prover(
+			self.fold_and_send_reduced_prover::<PChallenge, A>(
 				&univariate_round_message_domain,
 				univariate_sumcheck_challenge,
 				alloc,
@@ -326,7 +323,7 @@ mod test {
 		// Prover is instantiated
 		let big_field_zerocheck_challenges = prover_challenger
 			.sample_vec(log_num_rows - PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
-		let prover = OblongZerocheckProver::<_, OptimalPackedB128, _>::new(
+		let prover = OblongZerocheckProver::<_, _>::new(
 			log_num_rows,
 			first_mlv.clone(),
 			second_mlv.clone(),
@@ -334,7 +331,8 @@ mod test {
 			&prover_message_domain,
 		);
 
-		let prove_output = prover.prove_with_channel(&mut prover_challenger, &GlobalAllocator);
+		let prove_output = prover
+			.prove_with_channel::<OptimalPackedB128, _>(&mut prover_challenger, &GlobalAllocator);
 
 		// Verifier is instantiated
 		let mut verifier_challenger = prover_challenger.into_verifier();
