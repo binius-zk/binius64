@@ -18,6 +18,19 @@ use itertools::izip;
 use super::ntt_lookup::NTTLookup;
 
 /// Number of big field zerocheck challenges whose equality indicator is expanded per window.
+///
+/// This value controls a memory-versus-parallelism trade-off.
+///
+/// Doubling it doubles the number of precomputed multiplication tables built for one call.
+/// Each table holds 256 field elements.
+/// That is real, measurable memory cost.
+///
+/// Doubling it also doubles the number of words handled together in one parallel chunk of the
+/// round message computation.
+/// That makes the parallel work coarser-grained.
+///
+/// Halving it shrinks both costs.
+/// The price is building more, smaller tables and chunks.
 const N_FIXED_LARGE_CHALLENGES: usize = 4;
 
 /// Generates a univariate polynomial for the sumcheck protocol in AND constraint reduction.
