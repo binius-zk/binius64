@@ -36,6 +36,10 @@ use super::prover::OblongZerocheckProver;
 ///
 /// See [`binius_verifier::protocols::bitand`] for the protocol specification and
 /// [`AndCheckOutput`] for the output shape.
+///
+/// # Panics
+///
+/// Panics if the two operand columns don't have equal length.
 pub fn prove<A, F, PChallenge, Channel, Data>(
 	columns: [Data; 2],
 	channel: &mut Channel,

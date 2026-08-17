@@ -71,7 +71,8 @@ where
 	/// * `log_words` - Base-2 logarithm of the constraint axis's length
 	/// * `first_col` - The oblong multilinear polynomial A in the AND constraint A & B ^ C = 0
 	/// * `second_col` - The oblong multilinear polynomial B in the AND constraint
-	/// * `big_field_zerocheck_challenges` - Challenges Z_{k+1},...,Zₙ in the large field FChallenge
+	/// * `big_field_zerocheck_challenges` - Challenges Z_{k+1},...,Zₙ in the large field
+	///   `FChallenge`
 	/// * `prover_message_domain` - The domain for evaluating the univariate polynomial
 	///
 	/// The two columns must have equal length, at most `1 << log_words`. A column shorter than the
@@ -230,6 +231,11 @@ where
 	/// 2. **Challenge**: Sample univariate challenge z via Fiat-Shamir
 	/// 3. **Transition**: Fold oblong multilinears at Z = z
 	/// 4. **Phase 2**: Execute sumcheck protocol on folded multilinears
+	///
+	/// # Panics
+	///
+	/// Panics if the MLE-check sumcheck does not resolve to exactly 3 evaluation claims (one each
+	/// for A, B, and C).
 	pub fn prove_with_channel<PChallenge: PackedField<Scalar = F>, A: Allocator>(
 		self,
 		channel: &mut impl IPProverChannel<F>,
@@ -327,7 +333,7 @@ mod test {
 			log_num_rows,
 			first_mlv.clone(),
 			second_mlv.clone(),
-			big_field_zerocheck_challenges.to_vec(),
+			big_field_zerocheck_challenges,
 			&prover_message_domain,
 		);
 

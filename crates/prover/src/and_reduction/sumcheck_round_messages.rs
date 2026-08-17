@@ -87,6 +87,13 @@ const N_FIXED_LARGE_CHALLENGES: usize = 4;
 /// # Type Parameters
 ///
 /// * `F` - The challenge field type (must be a binary field)
+///
+/// # Panics
+///
+/// Panics if any of the following don't hold:
+/// - `big_field_challenges.len() == log_words.saturating_sub(N_FIXED_SMALL_CHALLENGES)`
+/// - `a_words.len() == b_words.len()`
+/// - `a_words.len() <= 1 << log_words`
 pub fn univariate_round_message_extension_domain<F>(
 	log_words: usize,
 	a_words: &[Word],
@@ -100,6 +107,8 @@ where
 	const N_FIXED_SMALL_CHALLENGES: usize = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len();
 
 	const LOG_CHUNK_SIZE: usize = N_FIXED_SMALL_CHALLENGES + N_FIXED_LARGE_CHALLENGES;
+
+	const CHUNK_SIZE: usize = 1 << LOG_CHUNK_SIZE;
 
 	assert_eq!(big_field_challenges.len(), log_words.saturating_sub(N_FIXED_SMALL_CHALLENGES));
 	assert_eq!(a_words.len(), b_words.len());
@@ -119,8 +128,6 @@ where
 	let (eq_ind_fixed_large, extra_challenges) = eq_ind_fixed_large(big_field_challenges);
 	let outer_weight_mul_maps = eq_ind_fixed_large.map(B8ToExtMulMap::new);
 	let eq_ind_extra = eq_ind_partial_eval::<F>(extra_challenges);
-
-	const CHUNK_SIZE: usize = 1 << LOG_CHUNK_SIZE;
 
 	let a_chunks_iter = padded_chunks::<CHUNK_SIZE>(a_words);
 	let b_chunks_iter = padded_chunks::<CHUNK_SIZE>(b_words);
@@ -263,7 +270,7 @@ fn padded_chunks<const CHUNK_SIZE: usize>(
 }
 
 /// Represents a precomputed multiplication map by an extension field constant for
-/// [`B8`].`
+/// [`B8`].
 ///
 /// Multiplication by a constant for a binary field is an $\mathbb{F}_2$-linear transform. For small
 /// inputs, such as $\mathbb{F}_{2^8}$ elements, this can be represented by a small lookup table.
