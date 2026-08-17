@@ -35,7 +35,7 @@ options we use. You can run the formatter, the linter, the documentation build a
 
 ```bash
 $ cargo +nightly-2026-07-01 fmt  # see prek.toml for the exact nightly version checked by CI
-$ cargo clippy --all --all-features --tests --benches --examples -- -D warnings
+$ cargo clippy --workspace --all-targets --all-features -- -D warnings
 $ cargo doc --no-deps --document-private-items
 $ typos
 ```
