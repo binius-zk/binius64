@@ -180,7 +180,7 @@ impl<P: PackedField> SparseShiftRows<P> {
 	///
 	/// # Panics
 	///
-	/// Panics unless there is one [`row_len`] run of values per index, and every index is below
+	/// Panics unless there is one `row_len` run of values per index, and every index is below
 	/// the row space.
 	pub fn new(indices: Vec<u32>, values: Vec<P>, log_rows: usize) -> Self {
 		assert_eq!(

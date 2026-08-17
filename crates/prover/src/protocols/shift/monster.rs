@@ -78,7 +78,7 @@ impl<F: Field> OuterSlotWeights<F> {
 /// # Arguments
 ///
 /// The amount is an index over the reduction's amount axis rather than a validated
-/// [`Shift`](binius_core::constraint_system::Shift) amount: that axis spans `Word::BITS` for every
+/// [`Shift`] amount: that axis spans `Word::BITS` for every
 /// variant, and a half-word variant reads it modulo its own 32-bit width.
 ///
 /// Every cell of `row` is written, so the caller need not zero it first. A caller reading one
