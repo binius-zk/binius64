@@ -93,6 +93,10 @@ impl NTTLookup {
 	/// ## Constraints
 	///
 	/// - Subspace dimension must equal `SKIPPED_VARS + 1`
+	///
+	/// # Panics
+	///
+	/// Panics if `subspace.dim() != SKIPPED_VARS + 1`.
 	pub fn new(subspace: &BinarySubspace<B8>) -> Self {
 		assert_eq!(subspace.dim(), SKIPPED_VARS + 1);
 
@@ -130,6 +134,7 @@ impl NTTLookup {
 	/// A [`Packed64xB8`] holding the `ROWS_PER_HYPERCUBE_VERTEX` LDE evaluations over the output
 	/// domain.
 	#[inline]
+	#[must_use]
 	pub fn ntt(&self, input: Word) -> Packed64xB8 {
 		let input_bytes = input.as_u64().to_le_bytes();
 
