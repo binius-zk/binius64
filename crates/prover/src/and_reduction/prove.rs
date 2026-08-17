@@ -65,7 +65,7 @@ where
 		log_constraint_count.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
 	let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
 
-	let prover = OblongZerocheckProver::<_, PChallenge, _>::new(
+	let prover = OblongZerocheckProver::<_, _>::new(
 		log_constraint_count,
 		a,
 		b,
@@ -73,7 +73,7 @@ where
 		&prover_message_domain,
 	);
 
-	prover.prove_with_channel(channel, alloc)
+	prover.prove_with_channel::<PChallenge, _>(channel, alloc)
 }
 
 #[cfg(test)]
