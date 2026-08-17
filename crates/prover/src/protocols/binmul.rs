@@ -128,12 +128,12 @@ where
 	// Send the raw per-bit output evaluations of each word column at r_x. One folder is built for
 	// the shared point and reused across all six columns.
 	let folder = WordFolder::<F>::new(&eval_point);
-	let a_lo_evals = folder.fold(a_lo).to_vec();
-	let a_hi_evals = folder.fold(a_hi).to_vec();
-	let b_lo_evals = folder.fold(b_lo).to_vec();
-	let b_hi_evals = folder.fold(b_hi).to_vec();
-	let c_lo_evals = folder.fold(c_lo).to_vec();
-	let c_hi_evals = folder.fold(c_hi).to_vec();
+	let a_lo_evals = folder.fold(a_lo);
+	let a_hi_evals = folder.fold(a_hi);
+	let b_lo_evals = folder.fold(b_lo);
+	let b_hi_evals = folder.fold(b_hi);
+	let c_lo_evals = folder.fold(c_lo);
+	let c_hi_evals = folder.fold(c_hi);
 
 	channel.send_many(&a_lo_evals);
 	channel.send_many(&a_hi_evals);
@@ -268,7 +268,7 @@ mod tests {
 		let z_tensor = eq_ind_partial_eval::<F>(&z_challenge);
 		let consistency_check_eval_point = [z_challenge, eval_point].concat();
 		let get_consistency_check_eval =
-			|evals: Vec<F>| izip!(evals, z_tensor.as_ref()).map(|(x, y)| x * y).sum();
+			|evals: [F; Word::BITS]| izip!(evals, z_tensor.as_ref()).map(|(x, y)| x * y).sum();
 
 		let test_cases = [
 			(&a_lo, a_lo_evals),
