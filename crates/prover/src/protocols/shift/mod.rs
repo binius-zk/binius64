@@ -18,4 +18,4 @@ pub use key_collection::{
 pub use phase_2::ShiftOutput;
 pub use prove::{OperatorData, PreparedOperatorData, prove};
 pub use segment_words::SegmentWords;
-pub use shift_ind::{ShiftIndOutput, ShiftIndSumcheck};
+pub use shift_ind::{ShiftChallenge, ShiftChallengePoint, ShiftIndOutput, ShiftIndSumcheck};

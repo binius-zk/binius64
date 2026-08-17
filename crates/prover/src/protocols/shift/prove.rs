@@ -16,7 +16,7 @@ use super::{
 	key_collection::KeyCollection,
 	phase_1::prove_phase_1,
 	phase_2::{ShiftOutput, prove_phase_2},
-	shift_ind::ShiftIndSumcheck,
+	shift_ind::{ShiftChallengePoint, ShiftIndSumcheck},
 };
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
@@ -209,9 +209,7 @@ where
 	let inner = ShiftIndSumcheck::<P, _>::new(
 		alloc,
 		&phase_1_output.psi,
-		&phase_1_output.r_j,
-		&phase_1_output.r_s_inner,
-		&phase_1_output.r_v_inner,
+		&ShiftChallengePoint::new(&phase_1_output.r_j, &phase_1_output.inner),
 		phase_1_output.g_eval,
 	);
 	debug_assert_eq!(inner.beta(), phase_1_output.gamma);
@@ -224,9 +222,7 @@ where
 	let outer = ShiftIndSumcheck::<P, _>::new(
 		alloc,
 		oblong_weights.as_ref(),
-		&inner_output.point,
-		&phase_1_output.r_s_outer,
-		&phase_1_output.r_v_outer,
+		&ShiftChallengePoint::new(&inner_output.point, &phase_1_output.outer),
 		inner_output.ind_eval * phase_1_output.g_eval,
 	);
 	debug_assert_eq!(outer.beta(), inner_output.eval);

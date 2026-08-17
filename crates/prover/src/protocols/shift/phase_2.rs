@@ -78,10 +78,8 @@ where
 {
 	let Phase1Output {
 		r_j,
-		r_s_inner,
-		r_v_inner,
-		r_s_outer,
-		r_v_outer,
+		inner,
+		outer,
 		psi: _,
 		gamma: _,
 		g_eval: _,
@@ -94,16 +92,8 @@ where
 	let public_folded = fold_words::<_, P, _>(alloc, words.public, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<_, P, _>(alloc, words.hidden, r_j_tensor.as_ref());
 
-	let (public_monster, hidden_monster) = build_monster_segments(
-		alloc,
-		key_collection,
-		prepared,
-		shift_ind_eval,
-		&r_s_inner,
-		&r_v_inner,
-		&r_s_outer,
-		&r_v_outer,
-	);
+	let (public_monster, hidden_monster) =
+		build_monster_segments(alloc, key_collection, prepared, shift_ind_eval, &inner, &outer);
 
 	// Both halves of the sumcheck share one word-index address space, spanning the wider of the
 	// two segments. The hidden segment is normally the wider one, but a system with more public

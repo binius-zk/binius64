@@ -14,8 +14,8 @@ use binius_math::{
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftIndOutput,
-		ShiftIndSumcheck, ShiftOutput,
+		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftChallengePoint,
+		ShiftIndOutput, ShiftIndSumcheck, ShiftOutput,
 		monster::build_monster_segments,
 		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
 		phase_2::run_sumcheck,
@@ -88,10 +88,8 @@ where
 	let oblong_weights = lagrange_evals(domain_subspace, prepared.bitand.r_zhat_prime);
 	let Phase1Output {
 		r_j,
-		r_s_inner,
-		r_v_inner,
-		r_s_outer,
-		r_v_outer,
+		inner: inner_shift,
+		outer: outer_shift,
 		psi,
 		gamma,
 		g_eval,
@@ -105,16 +103,19 @@ where
 
 	// Phases 2 and 3 bind the two bit indices the shift indicators chain through, working back up
 	// the chain — see the single-instance prover for what each run carries.
-	let inner = ShiftIndSumcheck::<P, _>::new(alloc, &psi, &r_j, &r_s_inner, &r_v_inner, g_eval);
+	let inner = ShiftIndSumcheck::<P, _>::new(
+		alloc,
+		&psi,
+		&ShiftChallengePoint::new(&r_j, &inner_shift),
+		g_eval,
+	);
 	debug_assert_eq!(inner.beta(), gamma);
 	let inner_output = inner.prove(channel, alloc);
 
 	let outer = ShiftIndSumcheck::<P, _>::new(
 		alloc,
 		oblong_weights.as_ref(),
-		&inner_output.point,
-		&r_s_outer,
-		&r_v_outer,
+		&ShiftChallengePoint::new(&inner_output.point, &outer_shift),
 		inner_output.ind_eval * g_eval,
 	);
 	debug_assert_eq!(outer.beta(), inner_output.eval);
@@ -139,10 +140,8 @@ where
 		key_collection,
 		&prepared,
 		shift_ind_eval,
-		&r_s_inner,
-		&r_v_inner,
-		&r_s_outer,
-		&r_v_outer,
+		&inner_shift,
+		&outer_shift,
 	);
 
 	run_sumcheck::<F, P, _, _>(

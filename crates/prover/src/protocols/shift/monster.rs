@@ -15,6 +15,7 @@ use super::{
 	claims::PreparedOperatorClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment, Operation},
 	phase_1::SHIFT_OPERATOR_LOG_LEN,
+	shift_ind::ShiftChallenge,
 };
 
 /// The width the half-word (`*32`) shift variants act over.
@@ -45,10 +46,10 @@ struct OuterSlotWeights<F: Field> {
 
 impl<F: Field> OuterSlotWeights<F> {
 	/// The equality indicators of the outer slot's challenge point.
-	fn new(r_s_outer: &[F], r_v_outer: &[F]) -> Self {
+	fn new(outer: &ShiftChallenge<F>) -> Self {
 		Self {
-			variant: eq_ind_partial_eval::<F>(r_v_outer),
-			amount: eq_ind_partial_eval::<F>(r_s_outer),
+			variant: eq_ind_partial_eval::<F>(&outer.variant),
+			amount: eq_ind_partial_eval::<F>(&outer.amount),
 		}
 	}
 
@@ -259,16 +260,14 @@ pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 	key_collection: &KeyCollection,
 	prepared: &PreparedOperatorClaims<F>,
 	h_eval: F,
-	r_s_inner: &[F],
-	r_v_inner: &[F],
-	r_s_outer: &[F],
-	r_v_outer: &[F],
+	inner: &ShiftChallenge<F>,
+	outer: &ShiftChallenge<F>,
 ) -> (FieldVec<P, A>, FieldVec<P, A>)
 where
 	F: BinaryField,
 {
-	let r_v_tensor = eq_ind_partial_eval::<F>(r_v_inner);
-	let r_s_tensor = eq_ind_partial_eval::<F>(r_s_inner);
+	let r_v_tensor = eq_ind_partial_eval::<F>(&inner.variant);
+	let r_s_tensor = eq_ind_partial_eval::<F>(&inner.amount);
 
 	// Invariant: a key's sequence weight factorizes across its two slots.
 	//
@@ -276,7 +275,7 @@ where
 	//     \______ inner slot _________/     \______ outer slot ________/
 	//
 	// So one table per slot suffices, at `2 * SHIFT_COUNT` entries instead of `SHIFT_COUNT^2`.
-	let outer = OuterSlotWeights::<F>::new(r_s_outer, r_v_outer);
+	let outer_weights = OuterSlotWeights::<F>::new(outer);
 
 	// The scalars of one operation, laid out with the operand index innermost so that the `arity`
 	// weights for one `key.dense_shift_idx` form a contiguous chunk that [`Key::accumulate_wide`]
@@ -284,21 +283,22 @@ where
 	//
 	// A key's sequence selects itself through an equality indicator over both slots' axes.
 	// The h evaluation is one factor shared by every key of the operation.
-	let build_scalars =
-		|arity: usize, lambda_powers: &[F], dense_shift_enc: &DenseShiftEncoding| {
-			let mut scalars = vec![F::ZERO; arity * dense_shift_enc.len()];
-			for (dense_shift_idx, [inner, outer_shift]) in dense_shift_enc.iter().enumerate() {
-				let shift_scalar = h_eval
-					* r_v_tensor.as_ref()[inner.variant as usize]
-					* r_s_tensor.as_ref()[inner.amount as usize]
-					* outer.weight(outer_shift);
-				for operand_idx in 0..arity {
-					scalars[dense_shift_idx * arity + operand_idx] =
-						lambda_powers[operand_idx] * shift_scalar;
-				}
+	let build_scalars = |arity: usize,
+	                     lambda_powers: &[F],
+	                     dense_shift_enc: &DenseShiftEncoding| {
+		let mut scalars = vec![F::ZERO; arity * dense_shift_enc.len()];
+		for (dense_shift_idx, [inner_shift, outer_shift]) in dense_shift_enc.iter().enumerate() {
+			let shift_scalar = h_eval
+				* r_v_tensor.as_ref()[inner_shift.variant as usize]
+				* r_s_tensor.as_ref()[inner_shift.amount as usize]
+				* outer_weights.weight(outer_shift);
+			for operand_idx in 0..arity {
+				scalars[dense_shift_idx * arity + operand_idx] =
+					lambda_powers[operand_idx] * shift_scalar;
 			}
-			scalars
-		};
+		}
+		scalars
+	};
 
 	// Each segment has its own dense shift encoding, so it has its own scalar tables.
 	let build_scalar_tables = |dense_shift_enc: &DenseShiftEncoding| ScalarTables {
@@ -387,7 +387,10 @@ mod tests {
 	use proptest::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
-	use super::{super::ShiftIndSumcheck, *};
+	use super::{
+		super::{ShiftChallenge, ShiftChallengePoint, ShiftIndSumcheck},
+		*,
+	};
 
 	/// Phase 1's h multilinear and the claim phase 3 starts from must agree.
 	///
@@ -410,6 +413,7 @@ mod tests {
 			let r_j = random_scalars::<F>(&mut rng, Word::LOG_BITS);
 			let r_s = random_scalars::<F>(&mut rng, Word::LOG_BITS);
 			let r_v = random_scalars::<F>(&mut rng, LOG_SHIFT_VARIANT_COUNT);
+			let shift = ShiftChallenge::new(r_s.clone(), r_v.clone());
 
 			// Method 1: the claim phase 3 starts from, with the carried constant set to one.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
@@ -417,9 +421,7 @@ mod tests {
 			let claimed = ShiftIndSumcheck::<P, _>::new(
 				&GlobalAllocator,
 				l_tilde.as_ref(),
-				&r_j,
-				&r_s,
-				&r_v,
+				&ShiftChallengePoint::new(&r_j, &shift),
 				F::ONE,
 			)
 			.beta();
