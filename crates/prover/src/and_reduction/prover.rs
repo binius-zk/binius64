@@ -89,7 +89,8 @@ where
 	/// The constructor:
 	/// 1. Computes the equality indicator polynomial from the big field challenges
 	/// 2. Uses the NTT lookup to efficiently compute the univariate polynomial evaluations
-	/// 3. Caches these evaluations for later use in the execute() method
+	/// 3. Caches these evaluations for later use in the [`round_message`](Self::round_message)
+	///    method
 	pub fn new(
 		log_words: usize,
 		first_col: Data,
@@ -136,7 +137,7 @@ where
 	///
 	/// The polynomial evaluations are precomputed in the constructor using the NTT lookup table
 	/// for efficiency. This method simply returns the cached result.
-	pub const fn execute(&self) -> &[F; ROWS_PER_HYPERCUBE_VERTEX] {
+	pub const fn round_message(&self) -> &[F; ROWS_PER_HYPERCUBE_VERTEX] {
 		&self.univariate_round_message
 	}
 
@@ -237,7 +238,7 @@ where
 		channel: &mut impl IPProverChannel<F>,
 		alloc: &A,
 	) -> AndCheckOutput<F> {
-		let univariate_message_coeffs = self.execute();
+		let univariate_message_coeffs = self.round_message();
 
 		channel.send_many(univariate_message_coeffs);
 
