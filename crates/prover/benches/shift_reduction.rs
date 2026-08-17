@@ -314,10 +314,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let oblong_weights = lagrange_evals(&subspace, prepared.bitand.r_zhat_prime);
 	let Phase1Output {
 		r_j,
-		r_s_inner,
-		r_v_inner,
-		r_s_outer,
-		r_v_outer,
+		inner: inner_shift,
+		outer: outer_shift,
 		psi: _,
 		gamma,
 		g_eval: _,
@@ -342,10 +340,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 		&key_collection,
 		&prepared,
 		shift_ind_eval,
-		&r_s_inner,
-		&r_v_inner,
-		&r_s_outer,
-		&r_v_outer,
+		&inner_shift,
+		&outer_shift,
 	);
 
 	let mut group = c.benchmark_group("shift_reduction_phases");
@@ -385,10 +381,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 				&key_collection,
 				&prepared,
 				shift_ind_eval,
-				&r_s_inner,
-				&r_v_inner,
-				&r_s_outer,
-				&r_v_outer,
+				&inner_shift,
+				&outer_shift,
 			)
 		});
 	});

@@ -34,6 +34,7 @@ use super::{
 	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment},
 	monster::shift_operator_table,
 	outer::OuterShiftStage,
+	shift_ind::ShiftChallenge,
 };
 
 /// The number of variables the shift-and-bit phases of the reduction span.
@@ -61,14 +62,12 @@ pub const SHIFT_OPERATOR_LOG_LEN: usize = Word::LOG_BITS + LOG_SHIFT_COUNT;
 pub struct Phase1Output<F> {
 	/// The bit position within a word.
 	pub r_j: Vec<F>,
-	/// The inner shift's amount.
-	pub r_s_inner: Vec<F>,
-	/// The inner shift's variant, called the operation in the paper.
-	pub r_v_inner: Vec<F>,
-	/// The outer shift's amount.
-	pub r_s_outer: Vec<F>,
-	/// The outer shift's variant.
-	pub r_v_outer: Vec<F>,
+	/// The inner shift's amount and variant.
+	///
+	/// Called the operation in the paper.
+	pub inner: ShiftChallenge<F>,
+	/// The outer shift's amount and variant.
+	pub outer: ShiftChallenge<F>,
 	/// The oblong weights carried through the outer shift, at the outer challenge point.
 	///
 	/// This is the terminal fold of the outer rounds' table, and it is the weight vector the
@@ -516,10 +515,8 @@ pub fn run_phase_1_sumcheck<
 
 	Phase1Output {
 		r_j,
-		r_s_inner,
-		r_v_inner,
-		r_s_outer,
-		r_v_outer,
+		inner: ShiftChallenge::new(r_s_inner, r_v_inner),
+		outer: ShiftChallenge::new(r_s_outer, r_v_outer),
 		psi,
 		gamma: g_eval * h_eval,
 		g_eval,
