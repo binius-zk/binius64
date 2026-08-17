@@ -8,8 +8,9 @@ use std::mem;
 
 use binius_compute::GlobalAllocator;
 use binius_core::{
-	ValueTable, ValueVec, Word,
+	ValueTable, Word, WordSource,
 	error::{ChipName, OperandFault},
+	eval_operand,
 	m4::{ChipCall, ConstraintSystemM4, EmbeddedConstraintSystem, WitnessM4},
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -332,14 +333,12 @@ impl CircuitM4 {
 				})
 				.map_err(|source| PopulateM4Error::Chip { chip_id, source })?;
 
-			// Read this chip's own calls off each active instance, for the chips after it to
-			// serve. Building the instance is what costs here — a value vector allocated and
-			// gathered word by word — so the instances are walked on the outside and every call
-			// one makes is read off it, rather than the chip being walked once per callee.
+			// Read this chip's own calls off each active instance, for the chips after it to serve.
+			// `instance_words` reads each call's operands straight off the table's strided rows.
 			if !chip.chip_calls.is_empty() {
 				let constants = &chip.circuit.constraint_system().constants;
 				for instance in 0..*n_active {
-					let values = table.instance_value_vec(instance, constants);
+					let values = table.instance_words(instance, constants);
 					for call in &chip.chip_calls {
 						pending[call.chip_id][call.first_instance + instance] =
 							eval_call(&values, call);
@@ -358,10 +357,10 @@ impl CircuitM4 {
 }
 
 /// Evaluates the inout operands of one chip call against the caller's values.
-fn eval_call(values: &ValueVec, call: &ChipCall) -> Vec<Word> {
+fn eval_call(values: &impl WordSource, call: &ChipCall) -> Vec<Word> {
 	call.inout
 		.iter()
-		.map(|operand| values.eval_operand(operand))
+		.map(|operand| eval_operand(values, operand))
 		.collect()
 }
 

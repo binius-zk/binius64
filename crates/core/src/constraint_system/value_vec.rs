@@ -209,10 +209,7 @@ impl ValueVec {
 	/// An empty operand evaluates to the zero word, the XOR identity.
 	#[inline]
 	pub fn eval_operand(&self, operand: &[ShiftedValueIndex]) -> Word {
-		// Fold each shifted term into the running XOR, starting from the identity.
-		operand
-			.iter()
-			.fold(Word::ZERO, |acc, term| acc ^ term.eval(self))
+		super::shift::eval_operand(self, operand)
 	}
 }
 
@@ -228,6 +225,22 @@ impl IndexMut<ValueIndex> for ValueVec {
 	fn index_mut(&mut self, index: ValueIndex) -> &mut Self::Output {
 		let offset = self.word_offset(index);
 		&mut self.data[offset]
+	}
+}
+
+/// A source of words addressable by [`ValueIndex`].
+///
+/// [`ValueVec`] reads its own buffer.
+/// A [`ValueTable`](super::ValueTable) row reads a strided column instead.
+pub trait WordSource {
+	/// Returns the word at the given index.
+	fn word(&self, index: ValueIndex) -> Word;
+}
+
+impl WordSource for ValueVec {
+	#[inline]
+	fn word(&self, index: ValueIndex) -> Word {
+		self[index]
 	}
 }
 

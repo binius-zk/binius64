@@ -5,7 +5,9 @@ use std::{iter, mem::MaybeUninit};
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
-use super::{ValueIndex, ValueVec};
+#[cfg(test)]
+use super::ValueVec;
+use super::{ValueIndex, WordSource};
 use crate::word::Word;
 
 /// A different variants of shifting a value.
@@ -832,16 +834,26 @@ impl ShiftedValueIndex {
 		Self::single(value_index, Shift::rotr32(amount))
 	}
 
-	/// Evaluates this term against a witness.
+	/// Evaluates this term against a word source.
 	///
 	/// A term names one value and a sequence of two shifts to apply to it.
 	/// It contributes one shifted word to the XOR that forms an operand.
 	#[inline]
-	pub fn eval(&self, witness: &ValueVec) -> Word {
+	pub fn eval(&self, source: &impl WordSource) -> Word {
 		// Look up the referenced word, then apply the two shifts in sequence, inner first.
 		let [inner, outer] = self.shift_seq;
-		outer.apply(inner.apply(witness[self.value_index]))
+		outer.apply(inner.apply(source.word(self.value_index)))
 	}
+}
+
+/// Evaluates an operand — the XOR of its shifted-value terms — against any [`WordSource`].
+///
+/// An empty operand evaluates to the zero word, the XOR identity.
+#[inline]
+pub fn eval_operand(source: &impl WordSource, operand: &[ShiftedValueIndex]) -> Word {
+	operand
+		.iter()
+		.fold(Word::ZERO, |acc, term| acc ^ term.eval(source))
 }
 
 impl SerializeBytes for ShiftedValueIndex {
