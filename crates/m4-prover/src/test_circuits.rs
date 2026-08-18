@@ -25,7 +25,9 @@ use rand::prelude::*;
 const KECCAK_STATE_LANES: usize = 25;
 
 /// A single-instance circuit over some primitive, together with a filler for its witness inputs.
-pub trait TestCircuit {
+///
+/// `Sync` so many threads can assign this circuit's witness inputs at once.
+pub trait TestCircuit: Sync {
 	/// The number of primitives one instance computes.
 	///
 	/// This is a throughput count only: a batch of `2^n` instances proves
