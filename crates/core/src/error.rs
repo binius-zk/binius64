@@ -4,12 +4,17 @@
 
 use std::fmt;
 
-use crate::constraint_system::{Composition, ConstraintKind, ValueSegment};
+use crate::constraint_system::{Composition, ConstraintKind, ConstraintSystem, ValueSegment};
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
 #[derive(Debug, thiserror::Error)]
 pub enum ConstraintSystemError {
+	#[error(
+		"the {segment:?} segment declares {len} values, over the maximum of {}",
+		ConstraintSystem::MAX_VALUES_PER_SEGMENT
+	)]
+	SegmentTooLarge { segment: ValueSegment, len: usize },
 	#[error("{constraint_kind} #{constraint_index} operand {operand_name} is malformed: {source}")]
 	ConstraintOperand {
 		constraint_kind: ConstraintKind,

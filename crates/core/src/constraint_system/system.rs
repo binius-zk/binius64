@@ -99,6 +99,28 @@ impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
 	pub const SERIALIZATION_VERSION: u32 = 10;
 
+	/// The maximum number of values [`Self::validate`] accepts in the inout or private segment.
+	///
+	/// These two counts are declared rather than derived: unlike [`Self::constants`], `n_inout`
+	/// and `n_private` serialize as plain numbers with no backing data, so a payload can claim a
+	/// segment of any size while staying small. `ZKVerifier::setup`, in the binius-verifier
+	/// crate, allocates a word per inout value before reaching anything that would reveal the
+	/// claim as false — so a single four-byte edit to an honest payload is enough to ask for
+	/// gigabytes. Both it and `Verifier::setup` call [`Self::validate`] first, which is what puts
+	/// this bound ahead of the allocation.
+	///
+	/// This is a policy limit rather than a structural one: 2^26 values is 512 MiB per segment.
+	/// The largest circuit in the examples is zklogin, at 302 inout and 259,584 private values,
+	/// so the headroom is 258x on the binding one. It is deliberately sized against the largest
+	/// *intended* circuit rather than the largest present one — a statement aggregating a few
+	/// hundred zklogin-scale proofs approaches the limit, and rejecting a legitimate circuit
+	/// would be worse than the allocation this prevents.
+	///
+	/// Raising it is fine. Note what the ceiling buys, though: it converts an unbounded
+	/// allocation into a bounded one, and 512 MiB per request is still worth pairing with a
+	/// payload-size limit wherever constraint systems arrive from unauthenticated peers.
+	pub const MAX_VALUES_PER_SEGMENT: usize = 1 << 26;
+
 	/// Returns the number of constants.
 	pub const fn n_const(&self) -> usize {
 		self.constants.len()
@@ -202,6 +224,7 @@ impl ConstraintSystem {
 	///
 	/// Specifically checks that:
 	///
+	/// - the declared segment sizes are within [`Self::MAX_VALUES_PER_SEGMENT`].
 	/// - every [shifted value index][super::ShiftedValueIndex] is canonical.
 	/// - referenced value indices are within their segment.
 	/// - constraints do not reference scratch values.
@@ -210,6 +233,16 @@ impl ConstraintSystem {
 	/// - a genuine shift pair does not collapse to one shift, nor clear the word.
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
 		tracing::debug_span!("Validating constraint system");
+
+		// Bound the two declared counts before anything reads them; see
+		// `MAX_VALUES_PER_SEGMENT`. The constants need no bound of their own: they are backed by
+		// the words in the payload, so claiming more of them costs the sender proportionally.
+		for segment in [ValueSegment::InOut, ValueSegment::Private] {
+			let len = self.segment_len(segment);
+			if len > Self::MAX_VALUES_PER_SEGMENT {
+				return Err(ConstraintSystemError::SegmentTooLarge { segment, len });
+			}
+		}
 
 		self.validate_constraints(
 			&self.zero_constraints,
@@ -1352,5 +1385,48 @@ mod tests {
 			}
 			other => panic!("wrong error: {other:?}"),
 		}
+	}
+
+	/// `n_inout` is declared, not derived: it serializes as a plain number with no backing data.
+	/// `ZKVerifier::setup` allocates a word per inout value, so a payload of a few hundred bytes
+	/// could otherwise demand gigabytes.
+	#[test]
+	fn an_oversized_inout_segment_is_rejected() {
+		let mut cs = test_shape();
+		cs.n_inout = ConstraintSystem::MAX_VALUES_PER_SEGMENT + 1;
+
+		assert!(matches!(
+			cs.validate(),
+			Err(ConstraintSystemError::SegmentTooLarge {
+				segment: ValueSegment::InOut,
+				..
+			})
+		));
+	}
+
+	#[test]
+	fn an_oversized_private_segment_is_rejected() {
+		let mut cs = test_shape();
+		cs.n_private = ConstraintSystem::MAX_VALUES_PER_SEGMENT + 1;
+
+		assert!(matches!(
+			cs.validate(),
+			Err(ConstraintSystemError::SegmentTooLarge {
+				segment: ValueSegment::Private,
+				..
+			})
+		));
+	}
+
+	/// The bound is inclusive, so a system sitting exactly on it still validates. Pinned
+	/// separately because an off-by-one here would reject the largest legitimate circuit rather
+	/// than only crafted ones.
+	#[test]
+	fn segments_exactly_at_the_cap_are_accepted() {
+		let mut cs = test_shape();
+		cs.n_inout = ConstraintSystem::MAX_VALUES_PER_SEGMENT;
+		cs.n_private = ConstraintSystem::MAX_VALUES_PER_SEGMENT;
+
+		assert!(cs.validate().is_ok());
 	}
 }
