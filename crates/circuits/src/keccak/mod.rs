@@ -5,7 +5,7 @@ pub mod permutation;
 
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
-use permutation::keccak_f1600;
+pub use permutation::{KeccakF1600, keccak_f1600, ref_keccak_f1600};
 
 use crate::{
 	fixed_byte_vec::ByteVec,
@@ -161,7 +161,7 @@ pub fn keccak256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; N
 #[cfg(test)]
 mod tests {
 	use binius_core::Word;
-	use binius_frontend::{CircuitBuilder, Wire};
+	use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 	use rand::prelude::*;
 	use rstest::rstest;
 	use sha3::Digest;
@@ -230,5 +230,113 @@ mod tests {
 		rng.fill_bytes(&mut message);
 
 		test_keccak_varlen_with_input(&message, max_message_len_bytes);
+	}
+
+	/// Checks an M4 system built with [`KeccakF1600`] as a chip.
+	///
+	/// The digest wires are public and filled with the reference digest, so a disagreement fails
+	/// to populate. What the chip adds is checked twice over: the system has to hold one chip
+	/// serving exactly the `n_permutations` calls the sponge makes, and every one of those
+	/// instances has to recompute the lanes its call named, which is what `WitnessM4::verify`
+	/// reports on.
+	fn check_chip_serves(
+		b: CircuitBuilder,
+		computed_digest: [Wire; N_WORDS_PER_DIGEST],
+		expected: [u8; 32],
+		n_permutations: usize,
+		fill: impl FnOnce(&mut WitnessFiller<'_>),
+	) {
+		let digest_out: [Wire; N_WORDS_PER_DIGEST] = std::array::from_fn(|_| b.add_inout());
+		for i in 0..N_WORDS_PER_DIGEST {
+			b.assert_eq(format!("digest[{i}]"), computed_digest[i], digest_out[i]);
+		}
+
+		let circuit = b.build_m4();
+		circuit.validate().unwrap();
+		assert_eq!(circuit.chips.len(), 1, "the permutation is the system's only chip");
+		assert_eq!(
+			circuit.chips[0].1, n_permutations,
+			"every permutation the sponge runs has to reach the chip"
+		);
+
+		let cs = circuit.to_constraint_system();
+		cs.validate().unwrap();
+
+		let witness = circuit
+			.generate_witness(|w| {
+				fill(w);
+				for (i, bytes) in expected.chunks(8).enumerate() {
+					w[digest_out[i]] = Word(u64::from_le_bytes(bytes.try_into().unwrap()));
+				}
+			})
+			.unwrap();
+
+		witness.verify(&cs).unwrap();
+	}
+
+	// The block loop between `fixed_length::keccak256` and `keccak_f1600` is untouched by the
+	// chip: every block lands as a call because the builder holds the chip, not because anything
+	// in between was told. Lengths cover the empty message, one byte, and both sides of the one-
+	// and two-block boundaries. Every message permutes at least once, the empty one included,
+	// since `(len_bytes + 1).div_ceil(136)` is never zero, so unlike the paired SHA-256 gadget
+	// there is no length that leaves the chip uncalled.
+	#[test]
+	fn a_registered_chip_serves_every_fixed_length_permutation() {
+		for &len in &[0usize, 1, 135, 136, 137, 271, 272, 500] {
+			let message: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+
+			let b = CircuitBuilder::new();
+			b.register_chip(KeccakF1600, &[]);
+			let message_wires: Vec<Wire> = (0..len.div_ceil(8)).map(|_| b.add_witness()).collect();
+			let digest = fixed_length::keccak256(&b, &message_wires, len);
+
+			check_chip_serves(
+				b,
+				digest,
+				sha3::Keccak256::digest(&message).into(),
+				(len + 1).div_ceil(RATE_BYTES),
+				|w| {
+					for (wire, chunk) in std::iter::zip(&message_wires, message.chunks(8)) {
+						let mut bytes = [0u8; 8];
+						bytes[..chunk.len()].copy_from_slice(chunk);
+						w[*wire] = Word(u64::from_le_bytes(bytes));
+					}
+				},
+			);
+		}
+	}
+
+	// The variable-length sponge permutes every block its capacity allows rather than its
+	// message's, and the runtime length only picks which state the digest is read from. So the
+	// call count follows the `ByteVec`, not the message: 135 bytes reach the chip once through
+	// `fixed_length::keccak256` and twice through a 136-byte capacity.
+	#[test]
+	fn a_registered_chip_serves_every_variable_length_permutation() {
+		for &(len, max_len) in &[
+			(0usize, 100usize),
+			(1, 144),
+			(135, 136),
+			(137, 272),
+			(272, 272),
+		] {
+			let message: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+
+			let b = CircuitBuilder::new();
+			b.register_chip(KeccakF1600, &[]);
+			let max_len_words = max_len.div_ceil(8);
+			let input = ByteVec::new_witness(&b, max_len_words);
+			let digest = keccak256_varlen(&b, &input);
+
+			check_chip_serves(
+				b,
+				digest,
+				sha3::Keccak256::digest(&message).into(),
+				((max_len_words << 3) + 1).div_ceil(RATE_BYTES),
+				|w| {
+					input.populate_data(w, &message);
+					input.populate_len_bytes(w, message.len());
+				},
+			);
+		}
 	}
 }
