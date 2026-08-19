@@ -359,11 +359,8 @@ impl<B: BufMut> TranscriptWriter<'_, B> {
 	/// due to insufficient space.
 	pub fn write_slice<T: SerializeBytes>(&mut self, values: &[T]) {
 		self.proof_size_event_wrapper(move |buffer| {
-			for value in values {
-				value
-					.serialize(&mut *buffer)
-					.expect("serialization to a growable transcript buffer is infallible");
-			}
+			T::serialize_slice(values, buffer)
+				.expect("serialization to a growable transcript buffer is infallible");
 		});
 	}
 
@@ -393,7 +390,10 @@ impl<B: BufMut> TranscriptWriter<'_, B> {
 	}
 
 	pub fn write_scalar_slice<F: Field>(&mut self, elems: &[F]) {
-		self.write_scalar_iter(elems.iter().copied());
+		self.proof_size_event_wrapper(move |buffer| {
+			F::serialize_slice(elems, buffer)
+				.expect("serialization to a growable transcript buffer is infallible");
+		});
 	}
 
 	pub fn write_debug(&mut self, msg: &str) {

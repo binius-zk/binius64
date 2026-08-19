@@ -13,6 +13,7 @@ use std::{
 use binius_utils::{
 	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
+	serialization::assert_enough_space_for,
 };
 use bytemuck::{Pod, Zeroable};
 
@@ -98,6 +99,21 @@ mul_by_binary_field_1b!(BinaryField128bGhash);
 impl SerializeBytes for BinaryField128bGhash {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.0.serialize(write_buf)
+	}
+
+	fn serialize_slice(
+		slice: &[Self],
+		mut write_buf: impl BufMut,
+	) -> Result<(), SerializationError> {
+		// `Self` is `Pod` (asserted above) and every supported target is little-endian, so
+		// `M128::serialize`'s `put_u128_le(u128::from(self))` writes exactly the value's own
+		// byte pattern here: there is no byte reordering left for a little-endian store to do.
+		// A slice's raw bytes therefore already equal the concatenation of each element's
+		// serialized bytes, and one `put_slice` replaces `slice.len()` separate 16-byte writes.
+		let bytes: &[u8] = bytemuck::cast_slice(slice);
+		assert_enough_space_for(&write_buf, bytes.len())?;
+		write_buf.put_slice(bytes);
+		Ok(())
 	}
 }
 
@@ -384,7 +400,7 @@ impl From<AESTowerField8b> for BinaryField128bGhash {
 
 #[cfg(test)]
 mod tests {
-	use proptest::{prelude::any, proptest};
+	use proptest::{collection::vec, prelude::any, proptest};
 
 	use super::*;
 	use crate::{
@@ -549,6 +565,37 @@ mod tests {
 			let wide =
 				BinaryField128bGhash::wide_mul(a1, b1) + BinaryField128bGhash::wide_mul(a2, b2);
 			assert_eq!(BinaryField128bGhash::reduce(wide), a1 * b1 + a2 * b2);
+		}
+
+		/// Pins the bulk `serialize_slice` override to the per-element loop it replaces.
+		///
+		/// Every input length from empty through a few cache lines is covered, plus every
+		/// generated element is fully random, so a byte-order or off-by-one slip in the bulk
+		/// path shows up as a mismatch here rather than in a live proof transcript.
+		#[test]
+		fn test_ghash_serialize_slice_matches_loop(values in vec(any::<u128>(), 0..300)) {
+			let values: Vec<BinaryField128bGhash> =
+				values.into_iter().map(BinaryField128bGhash::from).collect();
+
+			let mut expected = Vec::new();
+			for value in &values {
+				value.serialize(&mut expected).unwrap();
+			}
+
+			let mut actual = Vec::new();
+			BinaryField128bGhash::serialize_slice(&values, &mut actual).unwrap();
+
+			assert_eq!(actual, expected);
+
+			// `serialize_slice` writes no length prefix, so read back exactly `values.len()`
+			// elements from a cursor, matching how a transcript reader consumes
+			// `write_scalar_slice`'s output.
+			let mut cursor = actual.as_slice();
+			let deserialized: Vec<BinaryField128bGhash> = (0..values.len())
+				.map(|_| BinaryField128bGhash::deserialize(&mut cursor).unwrap())
+				.collect();
+			assert_eq!(deserialized, values);
+			assert!(cursor.is_empty());
 		}
 	}
 }
