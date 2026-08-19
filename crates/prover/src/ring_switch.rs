@@ -17,7 +17,7 @@ use binius_ip_prover::{
 	sumcheck::{bivariate_product_prover, prove_single},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product,
+	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_packed,
 	multilinear::eq::eq_ind_partial_eval, tensor_algebra::TensorAlgebra,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -323,8 +323,12 @@ where
 	let r_double_prime = channel.sample_many(log_packing);
 	let eq_r_double_prime = eq_ind_partial_eval::<B128>(&r_double_prime);
 
-	// Compute sumcheck claim
-	let sumcheck_claim = inner_product(s_hat_u, eq_r_double_prime.as_ref().iter().copied());
+	// Defers the reduction across all `log_packing` products instead of reducing each one eagerly.
+	let sumcheck_claim = inner_product_packed::<B128, B128>(
+		log_packing,
+		s_hat_u.into_iter(),
+		eq_r_double_prime.as_ref().iter().copied(),
+	);
 
 	// Compute ring-switching equality indicator (transparent poly)
 	let rs_eq_ind = tracing::debug_span!("Compute ring-switching equality indicator")

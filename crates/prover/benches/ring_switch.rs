@@ -3,8 +3,9 @@
 use std::mem::size_of;
 
 use binius_compute::BufferPool;
-use binius_field::{ExtensionField, arch::OptimalPackedB128};
+use binius_field::{ExtensionField, Random, arch::OptimalPackedB128};
 use binius_math::{
+	inner_product::{inner_product_packed, inner_product_subfield},
 	multilinear::eq::eq_ind_partial_eval,
 	test_utils::{random_field_buffer, random_scalars},
 };
@@ -86,5 +87,47 @@ fn bench_suffix_tensor_pipeline(c: &mut Criterion) {
 	group.finish();
 }
 
-criterion_group!(ring_switch, bench_fold_1b_rows_split, bench_suffix_tensor_pipeline);
+/// The sumcheck-claim inner product at its one real shape: `N = 2^log_packing = 128` terms.
+///
+/// In-binary A/B: the naive per-term reduce (`inner_product_subfield`, what `ring_switch::prove`
+/// called before) against the deferred-reduce path (`inner_product_packed`, what it calls now).
+fn bench_sumcheck_claim_inner_product(c: &mut Criterion) {
+	let mut group = c.benchmark_group("ring_switch/sumcheck_claim_inner_product");
+
+	let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+	let n = 1usize << log_packing;
+	group.throughput(Throughput::Elements(n as u64));
+
+	let mut rng = rand::rng();
+	let s_hat_u: Vec<B128> = (0..n).map(|_| B128::random(&mut rng)).collect();
+	let eq_r_double_prime: Vec<B128> = (0..n).map(|_| B128::random(&mut rng)).collect();
+
+	group.bench_function("naive_per_term_reduce", |b| {
+		b.iter(|| {
+			inner_product_subfield::<B128, B128>(
+				s_hat_u.iter().copied(),
+				eq_r_double_prime.iter().copied(),
+			)
+		});
+	});
+
+	group.bench_function("deferred_reduce", |b| {
+		b.iter(|| {
+			inner_product_packed::<B128, B128>(
+				log_packing,
+				s_hat_u.iter().copied(),
+				eq_r_double_prime.iter().copied(),
+			)
+		});
+	});
+
+	group.finish();
+}
+
+criterion_group!(
+	ring_switch,
+	bench_fold_1b_rows_split,
+	bench_suffix_tensor_pipeline,
+	bench_sumcheck_claim_inner_product
+);
 criterion_main!(ring_switch);
