@@ -163,6 +163,10 @@ pub struct Crc64ChipCircuit {
 	pub circuit: CircuitM4,
 	pub input: Vec<Wire>,
 	pub output: Wire,
+	/// The register state the last word leaves behind.
+	///
+	/// Main takes it from a hint, and the output XOR is the only constraint it appears in.
+	pub last_state: Wire,
 }
 
 /// Builds a composite CRC-64/GO-ISO circuit over `n_words` message words: one chip, called once
@@ -204,6 +208,7 @@ pub fn crc64_chip_circuit(n_words: usize) -> Crc64ChipCircuit {
 		circuit: builder.build_m4(),
 		input,
 		output,
+		last_state: crc,
 	}
 }
 

@@ -214,14 +214,16 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{ValueTable, constraint_system::m4::ConstraintSystemM4};
+	use binius_core::{
+		ValueTable, constraint_system::m4::ConstraintSystemM4, error::VerificationM4Error,
+	};
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_hash::StdHashSuite;
 	use binius_transcript::VerifierTranscript;
 	use binius_verifier::config::StdChallenger;
 
 	use super::*;
-	use crate::test_utils::{crc64_chip_circuit, crc64_iso_reference};
+	use crate::test_utils::{Crc64ChipCircuit, crc64_chip_circuit, crc64_iso_reference};
 
 	type P = PackedBinaryGhash1x128b;
 
@@ -231,8 +233,13 @@ mod tests {
 	/// The message the fixture absorbs, one chip call per word.
 	const MESSAGE: [u64; 4] = [0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210, 0, u64::MAX];
 
-	/// Builds the composite fixture and a witness over [`MESSAGE`].
-	fn fixture() -> (ConstraintSystemM4, WitnessM4) {
+	/// A message the fixture never absorbs.
+	///
+	/// Every word differs from the absorbed one, so no instance of an honest run holds any of them.
+	const OTHER_MESSAGE: [u64; 4] = [0xdead_beef_dead_beef, 0xcafe_babe_cafe_babe, 1, 0];
+
+	/// Builds the composite fixture and an honest witness over the message it absorbs.
+	fn fixture() -> (Crc64ChipCircuit, ConstraintSystemM4, WitnessM4) {
 		let c = crc64_chip_circuit(MESSAGE.len());
 		let cs = c.circuit.to_constraint_system();
 		let witness = c
@@ -250,7 +257,7 @@ mod tests {
 		assert_eq!(witness.main[output], Word(crc64_iso_reference(&MESSAGE)));
 		witness.verify(&cs).unwrap();
 
-		(cs, witness)
+		(c, cs, witness)
 	}
 
 	/// Proves `witness` against `cs` and returns the proof bytes.
@@ -263,9 +270,24 @@ mod tests {
 		transcript.finalize()
 	}
 
+	/// Proves `witness` and checks that the argument accepts the statement it carries.
+	fn assert_the_argument_accepts(cs: &ConstraintSystemM4, witness: &WitnessM4) {
+		let proof = prove(cs, witness);
+		let verifier = VerifierM4::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
+		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
+
+		// Chip calls being unconstrained is what makes accepting a false statement possible.
+		// An error here means they have become constrained, so a test built on this pins nothing
+		// any more and should assert rejection instead.
+		verifier
+			.verify(witness.main.inout(), &mut transcript)
+			.expect("chip calls are unconstrained, so a statement no instance attests to verifies");
+		transcript.finalize().expect("no trailing proof data");
+	}
+
 	#[test]
 	fn a_composite_proof_verifies() {
-		let (cs, witness) = fixture();
+		let (_, cs, witness) = fixture();
 		let proof = prove(&cs, &witness);
 
 		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
@@ -278,7 +300,7 @@ mod tests {
 
 	#[test]
 	fn the_prover_mirrors_the_verifier_sub_system_for_sub_system() {
-		let (cs, _) = fixture();
+		let (_, cs, _) = fixture();
 		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
 		let prover = ProverM4::<P, StdHashSuite>::setup(&verifier);
 
@@ -287,7 +309,7 @@ mod tests {
 
 	#[test]
 	fn a_proof_is_rejected_against_another_statement() {
-		let (cs, witness) = fixture();
+		let (_, cs, witness) = fixture();
 		let proof = prove(&cs, &witness);
 
 		// Mutation: one inout word of the statement differs from the one proved.
@@ -304,7 +326,7 @@ mod tests {
 
 	#[test]
 	fn a_chip_instance_that_breaks_its_constraints_is_rejected() {
-		let (cs, mut witness) = fixture();
+		let (_, cs, mut witness) = fixture();
 
 		// Mutation: flip a bit of the chip's committed table, so one instance no longer satisfies
 		// the chip's constraints. Nothing about main changes, so only the chip's sub-proof can
@@ -325,5 +347,109 @@ mod tests {
 				.is_err(),
 			"a chip instance that breaks the chip's constraints must not verify"
 		);
+	}
+
+	#[test]
+	fn a_composite_proof_does_not_bind_the_message_a_statement_names() {
+		// A composite proof establishes two things: main's constraints hold, and every committed
+		// instance satisfies the chip it belongs to.
+		// It does not establish that an instance is the one a call asked for.
+		//
+		// This fixture makes the difference visible, because main constrains almost nothing:
+		//
+		//     main       : 1 linear constraint, 0 AND constraints, 4 chip calls
+		//     constraint : last state ^ final XOR constant ^ digest = 0
+		//     call i     : (state before word i, word i, state after word i)
+		//
+		// Main takes every state from a hint rather than computing it, so the message words reach
+		// the CRC through the calls alone and appear in no constraint at all.
+		let (c, cs, mut forged) = fixture();
+		let slot = |wire| c.circuit.main.circuit.witness_index(wire);
+
+		// Mutation: overwrite the message words, leaving every state and every instance alone.
+		//
+		//     statement   : the words of one message, the digest of another
+		//     instance #0 : holds the word that was absorbed
+		//     call #0     : passes the word that replaced it
+		for (&wire, &word) in iter::zip(&c.input, &OTHER_MESSAGE) {
+			forged.main[slot(wire)] = Word(word);
+		}
+
+		// The digest still belongs to the absorbed message, so the statement is now false.
+		assert_ne!(
+			forged.main[slot(c.output)],
+			Word(crc64_iso_reference(&OTHER_MESSAGE)),
+			"the restated statement must be false, or this test pins nothing"
+		);
+
+		// Walking call to instance catches it on the first word the two disagree on, which is the
+		// callee's second inout value: the message word it absorbs.
+		let err = forged.verify(&cs).unwrap_err();
+		assert!(
+			matches!(
+				err,
+				VerificationM4Error::CallMismatch {
+					chip_id: 0,
+					row: 0,
+					caller: None,
+					call_index: 0,
+					word: 1,
+					passed,
+					served,
+				} if passed == OTHER_MESSAGE[0] && served == MESSAGE[0]
+			),
+			"{err}"
+		);
+
+		assert_the_argument_accepts(&cs, &forged);
+	}
+
+	#[test]
+	fn a_composite_proof_does_not_bind_the_digest_a_statement_claims() {
+		// The register states are as free as the message words: main takes them from hints too, and
+		// the only constraint holding any of them is the output XOR on the last one.
+		//
+		//     last state ^ final XOR constant ^ digest = 0
+		//
+		// That is linear in both words, so shifting the two by one delta keeps it satisfied.
+		// The digest is therefore free to be anything at all, not merely another run's.
+		let (c, cs, mut forged) = fixture();
+		let slot = |wire| c.circuit.main.circuit.witness_index(wire);
+
+		// Mutation: shift the last state and the digest by the same delta.
+		// Every instance is left alone, so the only call that stops matching is the last one.
+		const DELTA: u64 = 0xdead_beef_dead_beef;
+		let honest_state = forged.main[slot(c.last_state)].as_u64();
+		let honest_digest = forged.main[slot(c.output)].as_u64();
+		forged.main[slot(c.last_state)] = Word(honest_state ^ DELTA);
+		forged.main[slot(c.output)] = Word(honest_digest ^ DELTA);
+
+		// The claimed digest is no longer the one the absorbed message hashes to.
+		assert_ne!(
+			forged.main[slot(c.output)],
+			Word(crc64_iso_reference(&MESSAGE)),
+			"the claimed digest must be false, or this test pins nothing"
+		);
+
+		// The last of the four calls is where it shows: its third inout value is the state the call
+		// asks for, and the instance serving it still holds the honest one.
+		let err = forged.verify(&cs).unwrap_err();
+		assert!(
+			matches!(
+				err,
+				VerificationM4Error::CallMismatch {
+					chip_id: 0,
+					row: 3,
+					caller: None,
+					call_index: 3,
+					word: 2,
+					passed,
+					served,
+				} if passed == honest_state ^ DELTA && served == honest_state
+			),
+			"{err}"
+		);
+
+		assert_the_argument_accepts(&cs, &forged);
 	}
 }
