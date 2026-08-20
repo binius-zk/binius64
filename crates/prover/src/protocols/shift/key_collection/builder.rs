@@ -320,9 +320,11 @@ fn build_segment(offsets: &[usize], refs: &[PackedRef], seqs: &SeqTable) -> KeyS
 		keys.extend(k);
 		key_ranges.extend(r);
 	}
+	// Consuming the chunks frees each one's buffers as its references are appended, rather than
+	// holding every chunk alive until the whole segment copy is built.
 	let mut constraint_indices = Vec::with_capacity(n_refs);
-	for chunk in &chunks {
-		constraint_indices.extend_from_slice(&chunk.constraint_indices);
+	for mut chunk in chunks {
+		constraint_indices.append(&mut chunk.constraint_indices);
 	}
 
 	KeySegment {
@@ -652,6 +654,18 @@ mod tests {
 	/// words (constants) referenced far more often than the rest — the shape that makes the
 	/// per-word key lists long and interleaved.
 	fn random_constraint_system(seed: u64, n_and: usize) -> ConstraintSystem {
+		random_constraint_system_over(seed, n_and, 4096)
+	}
+
+	/// As [`random_constraint_system`], with the private word count chosen by the caller.
+	///
+	/// The count is what decides how many chunks a segment spans, so a caller that wants the
+	/// cross-chunk paths exercised picks a multiple of `WORDS_PER_CHUNK`.
+	fn random_constraint_system_over(
+		seed: u64,
+		n_and: usize,
+		n_private: usize,
+	) -> ConstraintSystem {
 		use binius_core::constraint_system::{
 			BmulConstraint, ImulConstraint, ShiftVariant, ZeroConstraint,
 		};
@@ -659,7 +673,6 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(seed);
 		let n_const = 8usize;
 		let n_inout = 6usize;
-		let n_private = 4096usize;
 		let variants = [
 			ShiftVariant::Sll,
 			ShiftVariant::Slr,
@@ -732,6 +745,26 @@ mod tests {
 				assert_eq!(fast.public.keys.len(), slow.public.keys.len(), "seed {seed}");
 				assert_eq!(fast.hidden.keys.len(), slow.hidden.keys.len(), "seed {seed}");
 				assert_eq!(serialized(&fast), serialized(&slow), "seed {seed} inout {inout:?}");
+			}
+		}
+	}
+
+	// The cases above all land at two chunks, the second holding a handful of words: the default
+	// private word count is `WORDS_PER_CHUNK`. Nothing there exercises rebasing a chunk whose bases
+	// are neither zero nor the last, or unioning shift sequences that appear in some chunks only.
+	// This spans five chunks and seventy-four, where both are ordinary rather than edge cases.
+	#[test]
+	fn counting_sort_builder_matches_the_reference_across_many_chunks() {
+		for n_private in [5 * WORDS_PER_CHUNK, 74 * WORDS_PER_CHUNK] {
+			let cs = random_constraint_system_over(4, 2_000, n_private);
+			for inout in [InoutSegment::Public, InoutSegment::Hidden] {
+				let fast = build_key_collection(&cs, inout);
+				let slow = build_key_collection_reference(&cs, inout);
+				assert_eq!(
+					serialized(&fast),
+					serialized(&slow),
+					"n_private {n_private} inout {inout:?}"
+				);
 			}
 		}
 	}
