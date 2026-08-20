@@ -1,9 +1,6 @@
 // Copyright 2026 The Binius Developers
 
 //! A smoke test that the channel records arithmetic into a circuit that compiles.
-//!
-//! This exercises the paths the skeleton implements — receiving elements, multiplying them, and
-//! asserting — and deliberately avoids the ones it does not, which panic with `todo!()`.
 
 use binius_field::BinaryField128bGhash as B128;
 use binius_frontend::CircuitStat;
