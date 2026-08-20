@@ -57,7 +57,16 @@ const fn variant_of(imm: u32) -> ShiftVariant {
 }
 
 /// Builds the shifted-operand term for the given variant and amount.
+///
+/// A zero amount is the identity in every variant, and the identity has one canonical
+/// spelling ([`Shift::IDENTITY`](binius_core::constraint_system::Shift::IDENTITY), i.e. `Sll 0`)
+/// — see [`Shift::is_canonical`](binius_core::constraint_system::Shift::is_canonical). Emitting
+/// `Slr 0` or `Sar 0` here would put a non-canonical shift in an operand, which
+/// `ConstraintSystem::validate` rejects.
 const fn shifted_term(variant: ShiftVariant, x: Wire, n: u32) -> WireExprTerm {
+	if n == 0 {
+		return WireExprTerm::Wire(x);
+	}
 	match variant {
 		ShiftVariant::Sll => expr::sll(x, n),
 		ShiftVariant::Slr => expr::srl(x, n),
@@ -67,5 +76,51 @@ const fn shifted_term(variant: ShiftVariant, x: Wire, n: u32) -> WireExprTerm {
 		ShiftVariant::Srl32 => expr::srl32(x, n),
 		ShiftVariant::Sra32 => expr::sra32(x, n),
 		ShiftVariant::Rotr32 => expr::rotr32(x, n),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_core::{Word, constraint_system::ShiftVariant};
+
+	use crate::{CircuitBuilder, Options};
+
+	/// A shift by zero is the identity in every variant, and the constraint system carries
+	/// only the canonical spelling of it. Gate fusion used to hide a non-canonical one by
+	/// rebuilding the operand at the consumer, so this builds with fusion off.
+	#[test]
+	fn a_zero_amount_shift_lowers_to_the_canonical_identity() {
+		for variant in [
+			ShiftVariant::Sll,
+			ShiftVariant::Slr,
+			ShiftVariant::Sar,
+			ShiftVariant::Rotr,
+			ShiftVariant::Sll32,
+			ShiftVariant::Srl32,
+			ShiftVariant::Sra32,
+			ShiftVariant::Rotr32,
+		] {
+			let opts = Options {
+				enable_gate_fusion: false,
+				..Options::default()
+			};
+			let b = CircuitBuilder::with_opts(opts);
+			let x = b.add_witness();
+			let shifted = match variant {
+				ShiftVariant::Sll => b.shl(x, 0),
+				ShiftVariant::Slr => b.shr(x, 0),
+				ShiftVariant::Sar => b.sar(x, 0),
+				ShiftVariant::Rotr => b.rotr(x, 0),
+				ShiftVariant::Sll32 => b.sll32(x, 0),
+				ShiftVariant::Srl32 => b.srl32(x, 0),
+				ShiftVariant::Sra32 => b.sra32(x, 0),
+				ShiftVariant::Rotr32 => b.rotr32(x, 0),
+			};
+			b.assert_eq("shifted", shifted, b.add_constant(Word::ZERO));
+			let circuit = b.build();
+			circuit.constraint_system().validate().unwrap_or_else(|e| {
+				panic!("{variant:?} by 0 lowered to a non-canonical shift: {e:?}")
+			});
+		}
 	}
 }
