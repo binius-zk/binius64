@@ -1,12 +1,13 @@
 // Copyright 2026 The Binius Developers
 
-//! Benchmark serializing a slice of field elements two ways: the per-element loop every
-//! `SerializeBytes` implementor gets by default, and the bulk byte copy `BinaryField128bGhash`
-//! overrides it with.
+//! Benchmark serializing a slice of field elements two ways.
 //!
-//! Every supported target here is little-endian, and `BinaryField128bGhash` is `Pod`, so a
-//! slice's raw bytes already equal the concatenation of each element's serialized bytes. The
-//! bulk path exploits that to replace `n` bounds-checked 16-byte writes with one `memcpy`.
+//! Every `SerializeBytes` implementor gets a per-element loop by default.
+//! `BinaryField128bGhash` overrides it with a bulk byte copy instead.
+//!
+//! Every supported target here is little-endian.
+//! `BinaryField128bGhash` is also `Pod`, so its serialized form is just its raw memory bytes.
+//! The bulk path copies a whole slice at once instead of writing each element separately.
 
 use std::hint::black_box;
 

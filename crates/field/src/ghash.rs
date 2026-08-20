@@ -105,11 +105,9 @@ impl SerializeBytes for BinaryField128bGhash {
 		slice: &[Self],
 		mut write_buf: impl BufMut,
 	) -> Result<(), SerializationError> {
-		// `Self` is `Pod` (asserted above) and every supported target is little-endian, so
-		// `M128::serialize`'s `put_u128_le(u128::from(self))` writes exactly the value's own
-		// byte pattern here: there is no byte reordering left for a little-endian store to do.
-		// A slice's raw bytes therefore already equal the concatenation of each element's
-		// serialized bytes, and one `put_slice` replaces `slice.len()` separate 16-byte writes.
+		// `Self` is `Pod` and little-endian on every supported target.
+		// So each element's serialized bytes are already its raw memory representation.
+		// One `put_slice` over the whole slice replaces `slice.len()` separate 16-byte writes.
 		let bytes: &[u8] = bytemuck::cast_slice(slice);
 		assert_enough_space_for(&write_buf, bytes.len())?;
 		write_buf.put_slice(bytes);
@@ -569,9 +567,9 @@ mod tests {
 
 		/// Pins the bulk `serialize_slice` override to the per-element loop it replaces.
 		///
-		/// Every input length from empty through a few cache lines is covered, plus every
-		/// generated element is fully random, so a byte-order or off-by-one slip in the bulk
-		/// path shows up as a mismatch here rather than in a live proof transcript.
+		/// Covers every input length from empty through a few cache lines.
+		/// Every generated element is fully random.
+		/// A byte-order or off-by-one slip in the bulk path shows up here, not in a live proof.
 		#[test]
 		fn test_ghash_serialize_slice_matches_loop(values in vec(any::<u128>(), 0..300)) {
 			let values: Vec<BinaryField128bGhash> =
@@ -587,9 +585,9 @@ mod tests {
 
 			assert_eq!(actual, expected);
 
-			// `serialize_slice` writes no length prefix, so read back exactly `values.len()`
-			// elements from a cursor, matching how a transcript reader consumes
-			// `write_scalar_slice`'s output.
+			// `serialize_slice` writes no length prefix.
+			// Read back exactly `values.len()` elements from a cursor over the same buffer.
+			// That matches how a transcript reader consumes `write_scalar_slice`'s output.
 			let mut cursor = actual.as_slice();
 			let deserialized: Vec<BinaryField128bGhash> = (0..values.len())
 				.map(|_| BinaryField128bGhash::deserialize(&mut cursor).unwrap())

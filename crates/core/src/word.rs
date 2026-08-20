@@ -369,9 +369,9 @@ impl SerializeBytes for Word {
 		slice: &[Self],
 		mut write_buf: impl BufMut,
 	) -> Result<(), SerializationError> {
-		// `Word` is `#[repr(transparent)]` around a `u64`, and every supported target here is
-		// little-endian, so a slice's raw bytes already equal the concatenation of each word's
-		// `put_u64_le` output. One `put_slice` replaces `slice.len()` separate 8-byte writes.
+		// `Word` is `#[repr(transparent)]` and little-endian on every supported target.
+		// So each word's serialized bytes are already its raw memory representation.
+		// One `put_slice` over the whole slice replaces `slice.len()` separate 8-byte writes.
 		let bytes: &[u8] = bytemuck::cast_slice(slice);
 		assert_enough_space_for(&write_buf, bytes.len())?;
 		write_buf.put_slice(bytes);
@@ -1022,9 +1022,9 @@ mod tests {
 	proptest! {
 		/// Pins the bulk `serialize_slice` override to the per-element loop it replaces.
 		///
-		/// Every input length from empty through a few cache lines is covered, plus every
-		/// generated word is fully random, so a byte-order or off-by-one slip in the bulk path
-		/// shows up as a mismatch here rather than in a live proof.
+		/// Covers every input length from empty through a few cache lines.
+		/// Every generated word is fully random.
+		/// A byte-order or off-by-one slip in the bulk path shows up here, not in a live proof.
 		#[test]
 		fn test_word_serialize_slice_matches_loop(words in proptest::collection::vec(any::<u64>(), 0..300)) {
 			let words: Vec<Word> = words.into_iter().map(Word).collect();
@@ -1039,9 +1039,9 @@ mod tests {
 
 			prop_assert_eq!(&actual, &expected);
 
-			// `serialize_slice` writes no length prefix, so read back exactly `words.len()`
-			// words from a cursor over the same buffer, matching how a transcript reader
-			// consumes `write_scalar_slice`'s output.
+			// `serialize_slice` writes no length prefix.
+			// Read back exactly `words.len()` words from a cursor over the same buffer.
+			// That matches how a transcript reader consumes `write_scalar_slice`'s output.
 			let mut cursor = actual.as_slice();
 			let deserialized: Vec<Word> = (0..words.len())
 				.map(|_| Word::deserialize(&mut cursor).unwrap())

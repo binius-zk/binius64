@@ -10,12 +10,11 @@ pub trait SerializeBytes {
 
 	/// Serializes every element of `slice` back-to-back, with no length prefix.
 	///
-	/// The default loops calling [`serialize`](Self::serialize) once per element.
-	/// That is always correct, so overriding this method is an optimization, never a
-	/// correctness requirement.
-	/// A type overrides it only when the slice's own byte representation is already
-	/// identical to the concatenation of each element's serialized bytes, so the whole
-	/// call collapses to one bulk copy instead of N small bounds-checked writes.
+	/// The default loops, calling [`serialize`](Self::serialize) once per element.
+	/// That default is always correct.
+	/// Overriding this method is an optimization, never a correctness requirement.
+	/// Override it only when `slice`'s byte layout already matches its serialized form.
+	/// Then the whole call collapses to one bulk copy instead of N small writes.
 	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError>
 	where
 		Self: Sized,
