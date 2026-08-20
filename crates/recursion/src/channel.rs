@@ -342,9 +342,13 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 	/// The opened values stay circuit inputs, since they are proof data.
 	/// They stop being *free*: each leaf is hashed and climbed to a layer the root fixes.
 	///
-	/// The index is a wire, so no range check is possible while the circuit is built.
-	/// An opening is verified at the index reduced modulo the leaf count.
-	/// Masking the sampled index so that reduction is a no-op is BINIUS-470.
+	/// Only the low index bits spanning the tree depth are ever read while climbing.
+	/// A caller must therefore supply an index already bounded below the leaf count.
+	///
+	/// The channel's own query indices satisfy this by construction.
+	/// They are drawn through a gadget that masks the raw sampled bytes with a real gate, so
+	/// the drawn value provably lies below the tree's width before it is ever used as an
+	/// index.
 	fn recv_openings(
 		&mut self,
 		commitment: &Commitment,
