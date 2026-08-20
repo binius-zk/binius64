@@ -323,7 +323,8 @@ where
 	let r_double_prime = channel.sample_many(log_packing);
 	let eq_r_double_prime = eq_ind_partial_eval::<B128>(&r_double_prime);
 
-	// Defers the reduction across all `log_packing` products instead of reducing each one eagerly.
+	// GF(2^128) reduction is F2-linear, so it commutes with XOR.
+	// Summing 128 wide products then reducing once matches reducing each term first.
 	let sumcheck_claim = inner_product_packed::<B128, B128>(
 		log_packing,
 		s_hat_u.into_iter(),

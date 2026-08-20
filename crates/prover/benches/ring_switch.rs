@@ -89,8 +89,8 @@ fn bench_suffix_tensor_pipeline(c: &mut Criterion) {
 
 /// The sumcheck-claim inner product at its one real shape: `N = 2^log_packing = 128` terms.
 ///
-/// In-binary A/B: the naive per-term reduce (`inner_product_subfield`, what `ring_switch::prove`
-/// called before) against the deferred-reduce path (`inner_product_packed`, what it calls now).
+/// In-binary A/B against `inner_product_subfield` (naive per-term reduce).
+/// `inner_product_packed` (deferred reduce) is the path `ring_switch::prove` uses in production.
 fn bench_sumcheck_claim_inner_product(c: &mut Criterion) {
 	let mut group = c.benchmark_group("ring_switch/sumcheck_claim_inner_product");
 
