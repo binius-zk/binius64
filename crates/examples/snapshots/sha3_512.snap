@@ -1,0 +1,30 @@
+sha3_512 circuit
+--
+Gates & Instructions
+├─ Number of gates: 41,513
+└─ Number of evaluation instructions: 41,513
+
+Constraints
+├─ ZERO constraints: 8 used (100.0% of 2^3)
+│  [▓▓▓▓▓▓▓▓▓▓] spare: 0
+├─ AND constraints: 8,983 used (54.8% of 2^14)
+│  [▓▓▓▓▓░░░░░] spare: 7,401
+├─ IMUL constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
+├─ BMUL constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
+└─ Distinct value indices: 106,477
+   ├─ Distinct shifted value indices: 97,434
+   └─ Distinct unshifted value indices: 9,043
+
+Value Vector
+├─ Public Section: 162 (not committed)
+│  ├─ Constants: 26
+│  └─ Inout: 136
+├─ Private Section: 8,983
+│  ├─ Witness: 0
+│  └─ Internal: 8,983
+├─ Committed Trace: 8,983 used (54.8% of 2^14)
+│  [▓▓▓▓▓░░░░░] spare: 7,401
+└─ Scratch (uncommitted): 27 (peak live: 27)
+

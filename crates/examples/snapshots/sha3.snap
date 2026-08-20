@@ -1,0 +1,30 @@
+sha3 circuit
+--
+Gates & Instructions
+├─ Number of gates: 22,189
+└─ Number of evaluation instructions: 22,189
+
+Constraints
+├─ ZERO constraints: 4 used (100.0% of 2^2)
+│  [▓▓▓▓▓▓▓▓▓▓] spare: 0
+├─ AND constraints: 4,779 used (58.3% of 2^13)
+│  [▓▓▓▓▓░░░░░] spare: 3,413
+├─ IMUL constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
+├─ BMUL constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
+└─ Distinct value indices: 57,197
+   ├─ Distinct shifted value indices: 52,360
+   └─ Distinct unshifted value indices: 4,837
+
+Value Vector
+├─ Public Section: 158 (not committed)
+│  ├─ Constants: 26
+│  └─ Inout: 132
+├─ Private Section: 4,779
+│  ├─ Witness: 0
+│  └─ Internal: 4,779
+├─ Committed Trace: 4,779 used (58.3% of 2^13)
+│  [▓▓▓▓▓░░░░░] spare: 3,413
+└─ Scratch (uncommitted): 27 (peak live: 27)
+
