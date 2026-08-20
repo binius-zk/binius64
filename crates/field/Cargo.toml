@@ -86,7 +86,3 @@ harness = false
 [[bench]]
 name = "ghash_invert"
 harness = false
-
-[[bench]]
-name = "serialize_slice"
-harness = false
