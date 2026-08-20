@@ -7,6 +7,23 @@ use thiserror::Error;
 /// Serialize data to a byte buffer.
 pub trait SerializeBytes {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError>;
+
+	/// Serializes every element of `slice` back-to-back, with no length prefix.
+	///
+	/// The default loops, calling [`serialize`](Self::serialize) once per element.
+	/// That default is always correct.
+	/// Overriding this method is an optimization, never a correctness requirement.
+	/// Override it only when `slice`'s byte layout already matches its serialized form.
+	/// Then the whole call collapses to one bulk copy instead of N small writes.
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError>
+	where
+		Self: Sized,
+	{
+		let mut write_buf = write_buf;
+		slice
+			.iter()
+			.try_for_each(|item| item.serialize(&mut write_buf))
+	}
 }
 
 /// Deserialize data from a byte buffer.
@@ -232,8 +249,7 @@ impl DeserializeBytes for String {
 impl<T: SerializeBytes> SerializeBytes for [T] {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
 		SerializeBytes::serialize(&self.len(), &mut write_buf)?;
-		self.iter()
-			.try_for_each(|item| SerializeBytes::serialize(item, &mut write_buf))
+		T::serialize_slice(self, write_buf)
 	}
 }
 

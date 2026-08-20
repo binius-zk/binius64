@@ -8,7 +8,9 @@ use std::{
 
 use binius_utils::{
 	checked_arithmetics::checked_log_2,
-	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
+	serialization::{
+		DeserializeBytes, SerializationError, SerializeBytes, assert_enough_space_for,
+	},
 };
 use bytemuck::{Pod, Zeroable};
 use bytes::{Buf, BufMut};
@@ -361,6 +363,19 @@ impl Not for Word {
 impl SerializeBytes for Word {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.0.serialize(write_buf)
+	}
+
+	fn serialize_slice(
+		slice: &[Self],
+		mut write_buf: impl BufMut,
+	) -> Result<(), SerializationError> {
+		// `Word` is `#[repr(transparent)]` and little-endian on every supported target.
+		// So each word's serialized bytes are already its raw memory representation.
+		// One `put_slice` over the whole slice replaces `slice.len()` separate 8-byte writes.
+		let bytes: &[u8] = bytemuck::cast_slice(slice);
+		assert_enough_space_for(&write_buf, bytes.len())?;
+		write_buf.put_slice(bytes);
+		Ok(())
 	}
 }
 
@@ -1002,5 +1017,37 @@ mod tests {
 
 		let deserialized = Word::deserialize(&mut buf.as_slice()).unwrap();
 		assert_eq!(word, deserialized);
+	}
+
+	proptest! {
+		/// Pins the bulk `serialize_slice` override to the per-element loop it replaces.
+		///
+		/// Covers every input length from empty through a few cache lines.
+		/// Every generated word is fully random.
+		/// A byte-order or off-by-one slip in the bulk path shows up here, not in a live proof.
+		#[test]
+		fn test_word_serialize_slice_matches_loop(words in proptest::collection::vec(any::<u64>(), 0..300)) {
+			let words: Vec<Word> = words.into_iter().map(Word).collect();
+
+			let mut expected = Vec::new();
+			for word in &words {
+				word.serialize(&mut expected).unwrap();
+			}
+
+			let mut actual = Vec::new();
+			Word::serialize_slice(&words, &mut actual).unwrap();
+
+			prop_assert_eq!(&actual, &expected);
+
+			// `serialize_slice` writes no length prefix.
+			// Read back exactly `words.len()` words from a cursor over the same buffer.
+			// That matches how a transcript reader consumes `write_scalar_slice`'s output.
+			let mut cursor = actual.as_slice();
+			let deserialized: Vec<Word> = (0..words.len())
+				.map(|_| Word::deserialize(&mut cursor).unwrap())
+				.collect();
+			prop_assert_eq!(deserialized, words);
+			prop_assert!(cursor.is_empty());
+		}
 	}
 }
