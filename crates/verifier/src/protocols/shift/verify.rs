@@ -366,8 +366,8 @@ where
 
 	// The function the caller checks the claim with, and the flat input it reads. Every entry is a
 	// public-channel-derived element (`bitand_lambda`, `intmul_lambda`, the operator data's
-	// `r_x_prime` vectors, both shift slots' challenges, `r_y`); the constraint system it sums over
-	// is fixed.
+	// `r_x_prime` vectors, both shift slots' challenges, `r_y`, and `r_segment` last); the
+	// constraint system it sums over is fixed.
 	let claim = {
 		let zero_r_x_prime_len = zero_data.r_x_prime.len();
 		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
@@ -492,11 +492,13 @@ impl<E> WiringEvalClaim<'_, E> {
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y..
+/// zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y.. | r_segment
 /// ```
 ///
 /// The stored lengths recover each variable-length section from that flat slice. Both shift slots
-/// have the same shape, so one pair of lengths covers the two.
+/// have the same shape, so one pair of lengths covers the two. `r_segment` is the single element
+/// after them all: it is the top word-index coordinate, and it has no stored length because it is
+/// always one element.
 ///
 /// The bit-index factors every shift scalar is scaled by are left out: they depend on prover
 /// messages, so [`check_eval`] multiplies them in outside.
