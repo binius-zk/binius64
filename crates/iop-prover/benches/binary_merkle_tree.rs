@@ -92,17 +92,20 @@ fn bench_blake3_merkle_tree(c: &mut Criterion) {
 
 /// Base-2 log of the message dimension the RS-encode+commit bench encodes from.
 ///
-/// Matches `LOG_LEAVES + LOG_ELEMS_IN_LEAF` at `LOG_INV_RATE = 1`, so the resulting codeword is
-/// the same `2^(LOG_LEAVES + LOG_ELEMS_IN_LEAF)`-scalar shape [`bench_binary_merkle_tree`] commits.
+/// Matches `LOG_LEAVES + LOG_ELEMS_IN_LEAF` at `LOG_INV_RATE = 1`.
+/// So the codeword here is the same shape [`bench_binary_merkle_tree`] commits.
 const LOG_DIM: usize = LOG_LEAVES + LOG_ELEMS_IN_LEAF - 1;
 const LOG_INV_RATE: usize = 1;
 
 /// Benchmarks the full commit phase — RS-encode then Merkle-commit — two ways.
 ///
-/// "sequential" runs [`ReedSolomonCode::encode_batch`] to completion, then commits the finished
-/// codeword, exactly as every prover call site does today.
-/// "pipelined" runs [`encode_and_commit_pipelined`], which hashes each independent NTT chunk's
-/// leaves the instant that chunk finishes, instead of waiting for the whole codeword.
+/// "sequential" runs [`ReedSolomonCode::encode_batch`] to completion, then commits the result.
+/// That's exactly what every prover call site does today.
+///
+/// "pipelined" runs [`encode_and_commit_pipelined`] instead.
+/// It hashes each independent NTT chunk's leaves the instant that chunk finishes.
+/// It does not wait for the whole codeword first.
+///
 /// Both arms are timed in one binary, back to back, so they meet identical machine conditions.
 fn bench_commit_pipeline(c: &mut Criterion) {
 	let mut rng = rand::rng();

@@ -170,13 +170,14 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		output
 	}
 
-	/// Same encoding as [`Self::encode_batch`], but invokes `on_chunk_ready` the instant each
-	/// independent post-shared-layer chunk of the codeword finishes transforming.
+	/// Same encoding as [`Self::encode_batch`].
 	///
-	/// A caller that wants to start downstream work on a finished region of the codeword, without
-	/// waiting for the whole encode to complete, hooks in here.
-	/// See [`NeighborsLastMultiThread::forward_transform_with_callback`] for the chunking this
-	/// callback rides on.
+	/// Invokes `on_chunk_ready` as each independent post-shared-layer chunk finishes.
+	/// [`Self::encode_batch`] instead waits for the whole codeword to finish.
+	///
+	/// Use this to start downstream work on a finished region of the codeword.
+	/// That avoids waiting for the whole encode to complete.
+	/// See [`NeighborsLastMultiThread::forward_transform_with_callback`] for the chunking.
 	///
 	/// ## Preconditions
 	///

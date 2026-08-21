@@ -1,12 +1,13 @@
 // Copyright 2026 The Binius Developers
 
-//! Encode-and-commit a Reed-Solomon codeword with the Merkle leaf-hash overlapped against the
-//! additive NTT, instead of run strictly after it finishes.
+//! Encode-and-commit a Reed-Solomon codeword, overlapping Merkle leaf-hashing against the NTT.
+//!
+//! The sequential path runs the leaf-hash strictly after the whole NTT finishes.
 //!
 //! [`ReedSolomonCode::encode_batch`] splits its NTT into disjoint chunks, one per thread.
 //! Each chunk finishes independently of its siblings, well before the whole codeword is done.
-//! [`encode_and_commit_pipelined`] hashes a chunk's leaves the instant that chunk finishes,
-//! concurrently with the NTT still transforming the remaining chunks.
+//! [`encode_and_commit_pipelined`] hashes a chunk's leaves the instant that chunk finishes.
+//! That runs concurrently with the NTT still transforming the remaining chunks.
 
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
@@ -26,14 +27,14 @@ pub type PipelinedCommit<P, H, A> = (
 
 /// Encodes `message` with `rs_code` and commits the resulting codeword.
 ///
-/// Hashes each independent NTT chunk's leaves the instant that chunk finishes transforming,
-/// rather than waiting for the whole codeword before hashing any of it.
+/// Hashes each independent NTT chunk's leaves the instant that chunk finishes transforming.
+/// That's instead of waiting for the whole codeword before hashing any of it.
 ///
-/// The returned codeword and Merkle tree are byte-identical to encoding with
-/// [`ReedSolomonCode::encode_batch`] and then committing with
-/// [`BinaryMerkleTree::from_leaves`](binius_hash::binary_merkle_tree::BinaryMerkleTree::from_leaves) —
-/// only the scheduling of leaf-hashing relative to the NTT changes, not any hashed or transformed
-/// value.
+/// The returned codeword and Merkle tree are byte-identical to the sequential path:
+/// [`ReedSolomonCode::encode_batch`], then
+/// [`BinaryMerkleTree::from_leaves`](binius_hash::binary_merkle_tree::BinaryMerkleTree::from_leaves).
+/// Only the scheduling of leaf-hashing relative to the NTT changes.
+/// No hashed or transformed value differs.
 ///
 /// ## Preconditions
 ///
@@ -41,8 +42,9 @@ pub type PipelinedCommit<P, H, A> = (
 /// * `log_leaf_len` must be at most the codeword's log length.
 /// * Every independent NTT chunk (see
 ///   [`NeighborsLastMultiThread::forward_transform_with_callback`]) must span at least one whole
-///   leaf. This holds unless `log_leaf_len` is unusually large relative to `ntt.log_num_shares`,
-///   and is checked by an assertion inside the leaf writer.
+///   leaf.
+/// * That holds unless `log_leaf_len` is unusually large relative to `ntt.log_num_shares`, in which
+///   case an assertion inside the leaf writer catches it.
 pub fn encode_and_commit_pipelined<F, P, DC, H, N, A>(
 	rs_code: &ReedSolomonCode<F>,
 	ntt: &NeighborsLastMultiThread<DC>,
@@ -64,8 +66,8 @@ where
 	assert!(log_leaf_len <= log_output_len, "precondition: log_leaf_len <= codeword log length");
 	let log_n_leaves = log_output_len - log_leaf_len;
 
-	// `from_leaves_pipelined`'s `populate` closure runs exactly once, so this is written exactly
-	// once before being read back below.
+	// `from_leaves_pipelined`'s `populate` closure runs exactly once.
+	// So this is written exactly once before being read back below.
 	let mut codeword_slot: Option<FieldBuffer<P, A::Vec<P>>> = None;
 
 	let tree = BinaryMerkleTree::from_leaves_pipelined::<F, H>(
@@ -79,14 +81,15 @@ where
 				log_batch_size,
 				alloc,
 				|block, chunk: &[P]| {
-					// A leaf is `leaf_scalars` scalars, and every chunk this NTT split produces
-					// is the same size, so the chunk index alone gives its leaf offset.
+					// A leaf is `leaf_scalars` scalars.
+					// Every chunk this NTT split produces is the same size.
+					// So the chunk index alone gives its leaf offset.
 					let chunk_log_len = chunk.len().ilog2() as usize + P::LOG_WIDTH;
 					let n_leaves_per_chunk = (1usize << chunk_log_len) / leaf_scalars;
 					let leaf_start = block * n_leaves_per_chunk;
 
-					// Zero-copy: reads scalars straight out of the packed chunk, so a finished
-					// chunk's leaves hash without first flattening it into an owned buffer.
+					// Zero-copy: reads scalars straight out of the packed chunk.
+					// So a finished chunk's leaves hash without first flattening into a buffer.
 					let chunk_view = FieldSlice::from_slice(chunk_log_len, chunk);
 					writer.write_range(leaf_start, chunk_view.par_chunk_scalars(log_leaf_len));
 				},
@@ -112,8 +115,8 @@ mod tests {
 
 	use super::*;
 
-	/// Pins [`encode_and_commit_pipelined`] to the sequential encode-then-commit path it
-	/// overlaps: same codeword, same committed root.
+	/// Pins [`encode_and_commit_pipelined`] against the sequential encode-then-commit path.
+	/// Same codeword, same committed root.
 	fn check<P: PackedField<Scalar = B128>>(
 		log_dim: usize,
 		log_inv_rate: usize,
@@ -159,8 +162,8 @@ mod tests {
 
 	#[test]
 	fn test_matches_sequential_encode_then_commit() {
-		// Every case below spans 1 to 8 independent NTT chunks (log_num_shares 0..=3), each
-		// spanning several leaves, so the leaf-range split exercises more than one chunk.
+		// Every case below spans 1 to 8 independent NTT chunks (log_num_shares 0..=3).
+		// Each chunk spans several leaves, so the leaf-range split exercises more than one.
 		for log_num_shares in 0..=3 {
 			check::<OptimalPackedB128>(10, 2, log_num_shares);
 		}

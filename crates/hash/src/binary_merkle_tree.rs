@@ -235,13 +235,16 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 		}
 	}
 
-	/// Commits leaves written through a [`LeafRangeWriter`] instead of hashed from one
-	/// contiguous input all at once.
+	/// Commits leaves written through a [`LeafRangeWriter`].
 	///
-	/// `populate` must write every leaf in `0..2^log_len` exactly once through the writer it is
-	/// handed, from any thread, in any order, before it returns.
-	/// That is what lets a caller start hashing an early leaf range while a later one is still
-	/// being produced, instead of waiting for all of it before hashing starts.
+	/// Unlike [`Self::from_leaves`], leaves don't come from one contiguous input all at once.
+	///
+	/// `populate` must write every leaf in `0..2^log_len` exactly once, through the writer.
+	/// It may write from any thread, in any order.
+	/// Every leaf must be written before `populate` returns.
+	///
+	/// That lets a caller start hashing an early leaf range while a later one is still produced.
+	/// Without this, hashing would have to wait for the whole leaf layer first.
 	///
 	/// # Panics
 	///
@@ -288,8 +291,8 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 		ctx.build_node(0, log_len);
 
 		unsafe {
-			// SAFETY: the leaf layer is fully written by `populate`'s contract, and `build_node`
-			// just wrote every remaining node above it.
+			// SAFETY: the leaf layer is fully written, by `populate`'s contract.
+			// `build_node` just wrote every remaining node above it.
 			inner_nodes.set_len(total_length);
 		}
 		Self {
@@ -299,14 +302,15 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 	}
 }
 
-/// Lets [`BinaryMerkleTree::from_leaves_pipelined`]'s caller write disjoint leaf ranges from any
-/// thread, in any order, instead of hashing the whole leaf layer from one contiguous input.
+/// Lets [`BinaryMerkleTree::from_leaves_pipelined`]'s caller write disjoint leaf ranges.
 ///
-/// Every scalar range handed to [`Self::write_range`] must be disjoint from every other range
-/// written through the same writer.
-/// Together, the ranges must cover every leaf exactly once before the `populate` closure that
-/// received this writer returns — that return is the only signal
-/// [`BinaryMerkleTree::from_leaves_pipelined`] has that every leaf is ready to read.
+/// A caller may write from any thread, in any order.
+/// That replaces hashing the whole leaf layer from one contiguous input.
+///
+/// Every range handed to [`Self::write_range`] must be disjoint from every other range.
+/// Together, the ranges must cover every leaf exactly once.
+/// That must happen before the `populate` closure holding this writer returns.
+/// That return is the only signal the tree builder has that every leaf is ready.
 pub struct LeafRangeWriter<'a, F, H: HashSuite> {
 	leaves: SendPtr<MaybeUninit<Output<H::LeafHash>>>,
 	n_items_per_input: usize,
@@ -316,19 +320,21 @@ pub struct LeafRangeWriter<'a, F, H: HashSuite> {
 impl<F: Field, H: HashSuite> LeafRangeWriter<'_, F, H> {
 	/// Hashes `leaves` into the tree's leaf layer starting at `leaf_start`.
 	///
-	/// `leaves` yields one iterator per leaf, each yielding exactly
-	/// [`n_items_per_input`](Self::write_range) scalars — the same shape
-	/// [`BinaryMerkleTree::from_leaves`] itself consumes, so a caller can hand this a zero-copy
-	/// view over packed data (e.g. `binius_math::FieldSlice::par_chunk_scalars`) instead of
-	/// first flattening it into an owned buffer.
+	/// `leaves` yields one iterator per leaf, each yielding exactly `n_items_per_input` scalars.
+	/// That's the same shape [`BinaryMerkleTree::from_leaves`] itself consumes.
+	///
+	/// So a caller can hand this a zero-copy view over packed data, such as
+	/// `binius_math::FieldSlice::par_chunk_scalars`.
+	/// That avoids first flattening the data into an owned buffer.
 	pub fn write_range<ParIter>(&self, leaf_start: usize, leaves: ParIter)
 	where
 		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 	{
 		let n_leaves = leaves.len();
 		let dst = unsafe {
-			// SAFETY: `Self`'s contract guarantees every range written through this writer is
-			// disjoint from every other one, so this range does not alias any other write.
+			// SAFETY: `Self`'s contract guarantees every range written through this writer
+			// is disjoint from every other one.
+			// So this range does not alias any other write.
 			slice::from_raw_parts_mut(self.leaves.0.add(leaf_start), n_leaves)
 		};
 		H::ParLeafHash::default().digest_with_const_len(self.n_items_per_input, leaves, dst);

@@ -459,23 +459,22 @@ impl<DC> NeighborsLastMultiThread<DC> {
 }
 
 impl<DC: DomainContext + Sync> NeighborsLastMultiThread<DC> {
-	/// Same transform as [`AdditiveNTT::forward_transform`], but invokes `on_chunk_ready` the
-	/// instant each independent post-shared-layer chunk finishes, instead of only after the whole
-	/// buffer is done.
+	/// Same transform as [`AdditiveNTT::forward_transform`].
 	///
-	/// The independent chunks this splits into are disjoint memory ranges, one per
-	/// [`Self::log_num_shares`] share.
-	/// Each one is fully transformed the moment its own [`forward_depth_first`] call returns.
-	/// A caller that wants to start downstream work on a finished region, without waiting for
-	/// every sibling region to finish too, hooks in here instead of after
-	/// [`AdditiveNTT::forward_transform`] returns.
+	/// Invokes `on_chunk_ready` as soon as each independent post-shared-layer chunk finishes.
+	/// [`AdditiveNTT::forward_transform`] instead waits for the whole buffer to finish.
 	///
-	/// `on_chunk_ready` runs on whichever worker thread finished that chunk, concurrently with
-	/// the other chunks' own transforms, so it must be `Sync` and safe to run from any thread.
+	/// The independent chunks are disjoint memory ranges, one per [`Self::log_num_shares`] share.
+	/// Each chunk is fully transformed the moment its own [`forward_depth_first`] call returns.
 	///
-	/// When the input is too small to split (the fallback path below
-	/// [`PackedField::LOG_WIDTH`]), the whole buffer is one chunk, and `on_chunk_ready` runs once
-	/// for block 0 after the fallback transform completes.
+	/// Use this to start downstream work on a finished region without waiting on its siblings.
+	///
+	/// `on_chunk_ready` runs on whichever worker thread finished that chunk.
+	/// Other chunks' transforms may still be running concurrently on other threads.
+	/// So the callback must be `Sync` and safe to call from any thread.
+	///
+	/// Below [`PackedField::LOG_WIDTH`] the fallback path treats the whole buffer as one chunk.
+	/// There, `on_chunk_ready` runs once for block 0, after the fallback transform completes.
 	pub fn forward_transform_with_callback<P: PackedField<Scalar = DC::Field>>(
 		&self,
 		mut data: FieldSliceMut<P>,
