@@ -86,13 +86,21 @@ fn forward_depth_first<P: PackedField>(
 	let block_size_half = 1 << (log_d - 1 - P::LOG_WIDTH);
 	if layer >= layer_range.start {
 		// process only one layer of this block
-		let twiddle = domain_context.twiddle(layer, block);
-		let packed_twiddle = P::broadcast(twiddle);
 		let (block0, block1) = data.split_at_mut(block_size_half);
-		for (u, v) in iter::zip(block0, block1) {
-			// perform butterfly
-			*u += *v * packed_twiddle;
-			*v += *u;
+		if block == 0 {
+			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+			// So the butterfly collapses to `v += u`, with `u` left unchanged.
+			for (u, v) in iter::zip(block0, block1) {
+				*v += *u;
+			}
+		} else {
+			let twiddle = domain_context.twiddle(layer, block);
+			let packed_twiddle = P::broadcast(twiddle);
+			for (u, v) in iter::zip(block0, block1) {
+				// perform butterfly
+				*u += *v * packed_twiddle;
+				*v += *u;
+			}
 		}
 
 		layer_range.start += 1;
@@ -156,11 +164,25 @@ fn forward_breadth_first<P: PackedField>(
 
 		// log2 the number of blocks to process in this layer
 		let log_blocks = layer - base_layer;
-		let layer_twiddles = domain_context
+		let mut layer_twiddles = domain_context
 			.iter_twiddles(layer, 0)
 			.skip(base_block << log_blocks)
 			.take(1 << log_blocks);
-		let blocks = data.chunks_exact_mut(1 << log_block_size);
+		let mut blocks = data.chunks_exact_mut(1 << log_block_size);
+
+		// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+		// `base_block == 0` is the only case where this call's first block is the domain's block 0.
+		// Peel it off once per layer instead of branching per element.
+		if base_block == 0 {
+			layer_twiddles.next();
+			if let Some(block) = blocks.next() {
+				let (block0, block1) = block.split_at_mut(1 << log_half_block_size);
+				for (u, v) in iter::zip(block0, block1) {
+					*v += *u;
+				}
+			}
+		}
+
 		for (block, twiddle) in iter::zip(blocks, layer_twiddles) {
 			let packed_twiddle = P::broadcast(twiddle);
 			let (block0, block1) = block.split_at_mut(1 << log_half_block_size);
@@ -260,22 +282,89 @@ fn forward_shared_layer<P: PackedField>(
 			let chunk1 = unsafe {
 				from_raw_parts_mut(data_ptr.add(chunk1 << log_chunk_len), 1 << log_chunk_len)
 			};
-			let twiddle = domain_context.twiddle(layer, block);
-			let twiddle = P::broadcast(twiddle);
+			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+			// `None` signals a task whose butterfly collapses to an add, no multiply.
+			let twiddle = (block != 0).then(|| P::broadcast(domain_context.twiddle(layer, block)));
 			(chunk0, chunk1, twiddle)
 		})
 		.collect();
 
-	tasks.into_par_iter().for_each(|(chunk0, chunk1, twiddle)| {
-		for i in 0..chunk0.len() {
-			let mut u = chunk0[i];
-			let mut v = chunk1[i];
-			u += v * twiddle;
-			v += u;
-			chunk0[i] = u;
-			chunk1[i] = v;
+	tasks
+		.into_par_iter()
+		.for_each(|(chunk0, chunk1, twiddle)| match twiddle {
+			Some(twiddle) => {
+				for i in 0..chunk0.len() {
+					if let Some(j) = i
+						.checked_add(PREFETCH_DISTANCE)
+						.filter(|&j| j < chunk0.len())
+					{
+						prefetch_read(chunk0.as_ptr().wrapping_add(j));
+						prefetch_read(chunk1.as_ptr().wrapping_add(j));
+					}
+
+					let mut u = chunk0[i];
+					let mut v = chunk1[i];
+					u += v * twiddle;
+					v += u;
+					chunk0[i] = u;
+					chunk1[i] = v;
+				}
+			}
+			None => {
+				for i in 0..chunk0.len() {
+					if let Some(j) = i
+						.checked_add(PREFETCH_DISTANCE)
+						.filter(|&j| j < chunk0.len())
+					{
+						prefetch_read(chunk0.as_ptr().wrapping_add(j));
+					}
+
+					chunk1[i] += chunk0[i];
+				}
+			}
+		});
+}
+
+/// How many elements ahead [`prefetch_read`] hints the CPU to fetch.
+///
+/// Each loop iteration does at most one packed GF(2^128) multiply-add.
+/// That's cheap relative to a DRAM round trip, roughly 100-300 cycles on this hardware class.
+/// 16 elements gives the fetch several iterations of head start before the loop reaches it.
+/// That's short enough that the line isn't evicted again before use.
+const PREFETCH_DISTANCE: usize = 16;
+
+/// Hints the CPU to start fetching `ptr` into L1 cache, for reads only.
+///
+/// A pure hint: every architecture may silently ignore it.
+/// None of them can let it observe or change the program's result.
+#[inline(always)]
+fn prefetch_read<T>(ptr: *const T) {
+	#[cfg(target_arch = "x86_64")]
+	{
+		use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+		// Safety: `_mm_prefetch` never faults, even for an invalid or out-of-bounds address.
+		// It's documented as a hint the CPU may discard, not a memory access.
+		unsafe { _mm_prefetch(ptr.cast::<i8>(), _MM_HINT_T0) };
+	}
+	#[cfg(target_arch = "aarch64")]
+	{
+		// Safety: `prfm` is a hint instruction.
+		// The ARM architecture reference manual specifies it never raises a data abort,
+		// even for an unmapped or misaligned address.
+		// So an address past a slice's end, for lookahead near a buffer's tail, is sound.
+		unsafe {
+			std::arch::asm!(
+				"prfm pldl1keep, [{ptr}]",
+				ptr = in(reg) ptr,
+				options(nostack, readonly, preserves_flags),
+			);
 		}
-	});
+	}
+	#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+	{
+		// No portable prefetch hint on this architecture; the loop still runs, just without it.
+		let _ = ptr;
+	}
 }
 
 /// Inserts a bit into `k`. Returns both the version with `0` inserted and `1` inserted.
