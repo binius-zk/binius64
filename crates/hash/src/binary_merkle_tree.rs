@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{fmt, mem::MaybeUninit, slice};
+use std::{fmt, marker::PhantomData, mem::MaybeUninit, slice};
 
 use binius_compute::{Allocator, GlobalAllocator, VecLike};
 use binius_field::Field;
@@ -233,6 +233,111 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 			log_len,
 			inner_nodes,
 		}
+	}
+
+	/// Commits leaves written through a [`LeafRangeWriter`].
+	///
+	/// Unlike [`Self::from_leaves`], leaves don't come from one contiguous input all at once.
+	///
+	/// `populate` must write every leaf in `0..2^log_len` exactly once, through the writer.
+	/// It may write from any thread, in any order.
+	/// Every leaf must be written before `populate` returns.
+	///
+	/// That lets a caller start hashing an early leaf range while a later one is still produced.
+	/// Without this, hashing would have to wait for the whole leaf layer first.
+	///
+	/// # Panics
+	///
+	/// Panics unless `log_len` is nonzero.
+	pub fn from_leaves_pipelined<F, H>(
+		log_len: usize,
+		n_items_per_input: usize,
+		alloc: &A,
+		populate: impl FnOnce(&LeafRangeWriter<'_, F, H>),
+	) -> Self
+	where
+		F: Field,
+		H: HashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
+	{
+		assert!(log_len > 0, "a tree over a single leaf has no nodes to build");
+
+		let total_length = (1 << (log_len + 1)) - 1;
+		let mut inner_nodes = alloc.alloc::<Array<u8, N>>(total_length);
+
+		let (leaf_layer, remaining) = inner_nodes.spare_capacity_mut().split_at_mut(1 << log_len);
+
+		{
+			let _span = tracing::debug_span!("hash_leaves_pipelined").entered();
+			let writer = LeafRangeWriter {
+				leaves: SendPtr(leaf_layer.as_mut_ptr()),
+				n_items_per_input,
+				_marker: PhantomData,
+			};
+			populate(&writer);
+		}
+
+		let leaves: &[Array<u8, N>] = unsafe {
+			// SAFETY: `populate`'s contract guarantees every leaf was written before it returned.
+			leaf_layer.assume_init_ref()
+		};
+
+		let parallel_compression = H::ParCompression::default();
+		let ctx = BuildContext {
+			leaves,
+			log_len,
+			nodes: SendPtr(remaining.as_mut_ptr()),
+			compression: &parallel_compression,
+		};
+		ctx.build_node(0, log_len);
+
+		unsafe {
+			// SAFETY: the leaf layer is fully written, by `populate`'s contract.
+			// `build_node` just wrote every remaining node above it.
+			inner_nodes.set_len(total_length);
+		}
+		Self {
+			log_len,
+			inner_nodes,
+		}
+	}
+}
+
+/// Lets [`BinaryMerkleTree::from_leaves_pipelined`]'s caller write disjoint leaf ranges.
+///
+/// A caller may write from any thread, in any order.
+/// That replaces hashing the whole leaf layer from one contiguous input.
+///
+/// Every range handed to [`Self::write_range`] must be disjoint from every other range.
+/// Together, the ranges must cover every leaf exactly once.
+/// That must happen before the `populate` closure holding this writer returns.
+/// That return is the only signal the tree builder has that every leaf is ready.
+pub struct LeafRangeWriter<'a, F, H: HashSuite> {
+	leaves: SendPtr<MaybeUninit<Output<H::LeafHash>>>,
+	n_items_per_input: usize,
+	_marker: PhantomData<&'a [F]>,
+}
+
+impl<F: Field, H: HashSuite> LeafRangeWriter<'_, F, H> {
+	/// Hashes `leaves` into the tree's leaf layer starting at `leaf_start`.
+	///
+	/// `leaves` yields one iterator per leaf, each yielding exactly `n_items_per_input` scalars.
+	/// That's the same shape [`BinaryMerkleTree::from_leaves`] itself consumes.
+	///
+	/// So a caller can hand this a zero-copy view over packed data, such as
+	/// `binius_math::FieldSlice::par_chunk_scalars`.
+	/// That avoids first flattening the data into an owned buffer.
+	pub fn write_range<ParIter>(&self, leaf_start: usize, leaves: ParIter)
+	where
+		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
+	{
+		let n_leaves = leaves.len();
+		let dst = unsafe {
+			// SAFETY: `Self`'s contract guarantees every range written through this writer
+			// is disjoint from every other one.
+			// So this range does not alias any other write.
+			slice::from_raw_parts_mut(self.leaves.0.add(leaf_start), n_leaves)
+		};
+		H::ParLeafHash::default().digest_with_const_len(self.n_items_per_input, leaves, dst);
 	}
 }
 

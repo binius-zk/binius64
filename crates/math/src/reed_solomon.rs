@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
 	bit_reverse::{bit_reverse_indices, bit_reverse_packed},
-	ntt::{DomainContext, domain_context::GaoMateerOnTheFly},
+	ntt::{DomainContext, NeighborsLastMultiThread, domain_context::GaoMateerOnTheFly},
 };
 
 /// [Reed–Solomon] codes over binary fields.
@@ -167,6 +167,79 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		let mut output = FieldBuffer::new(log_output_len, output_data);
 
 		ntt.forward_transform(output.to_mut(), self.log_inv_rate, log_batch_size);
+		output
+	}
+
+	/// Same encoding as [`Self::encode_batch`].
+	///
+	/// Invokes `on_chunk_ready` as each independent post-shared-layer chunk finishes.
+	/// [`Self::encode_batch`] instead waits for the whole codeword to finish.
+	///
+	/// Use this to start downstream work on a finished region of the codeword.
+	/// That avoids waiting for the whole encode to complete.
+	/// See [`NeighborsLastMultiThread::forward_transform_with_callback`] for the chunking.
+	///
+	/// ## Preconditions
+	///
+	/// Same as [`Self::encode_batch`].
+	pub fn encode_batch_with_callback<P, DC, A>(
+		&self,
+		ntt: &NeighborsLastMultiThread<DC>,
+		data: FieldSlice<P>,
+		log_batch_size: usize,
+		alloc: &A,
+		on_chunk_ready: impl Fn(usize, &[P]) + Sync,
+	) -> FieldBuffer<P, A::Vec<P>>
+	where
+		P: PackedField<Scalar = F>,
+		DC: DomainContext<Field = F> + Sync,
+		A: Allocator,
+	{
+		assert_eq!(
+			ntt.subspace(self.log_len()),
+			self.subspace(),
+			"precondition: NTT subspace must match code subspace"
+		);
+		assert_eq!(
+			data.log_len(),
+			self.log_dim() + log_batch_size,
+			"precondition: data.log_len() must equal log_dim() + log_batch_size"
+		);
+
+		let _scope = tracing::trace_span!(
+			"Reed-Solomon encode (pipelined)",
+			log_len = self.log_len(),
+			log_batch_size = log_batch_size,
+			symbol_bits = F::N_BITS,
+		)
+		.entered();
+
+		let log_output_len = self.log_dim() + log_batch_size + self.log_inv_rate;
+		let output_data = if data.log_len() < P::LOG_WIDTH {
+			let mut scalars = data.iter_scalars().collect::<Vec<_>>();
+			bit_reverse_indices(&mut scalars);
+			let elem_0 = P::from_scalars(scalars.into_iter().cycle());
+			let len = 1 << log_output_len.saturating_sub(P::LOG_WIDTH);
+			let mut output = alloc.alloc::<P>(len);
+			output.resize(len, elem_0);
+			on_chunk_ready(0, &output);
+			return FieldBuffer::new(log_output_len, output);
+		} else {
+			let output_packed_len = 1 << (log_output_len - P::LOG_WIDTH);
+			let run = data
+				.as_ref()
+				.len()
+				.min(task_chunk_len::<P>().next_power_of_two());
+			repeated_message_buffer(data, output_packed_len, run, alloc)
+		};
+		let mut output = FieldBuffer::new(log_output_len, output_data);
+
+		ntt.forward_transform_with_callback(
+			output.to_mut(),
+			self.log_inv_rate,
+			log_batch_size,
+			on_chunk_ready,
+		);
 		output
 	}
 }
