@@ -83,6 +83,14 @@ harness = false
 name = "sha512"
 harness = false
 
+[[bench]]
+name = "sha3"
+harness = false
+
+[[bench]]
+name = "sha3_512"
+harness = false
+
 [features]
 default = []
 perfetto = ["tracing-profile/perfetto"]
