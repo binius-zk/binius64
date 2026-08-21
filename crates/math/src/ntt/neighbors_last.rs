@@ -88,8 +88,8 @@ fn forward_depth_first<P: PackedField>(
 		// process only one layer of this block
 		let (block0, block1) = data.split_at_mut(block_size_half);
 		if block == 0 {
-			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`'s
-			// doc), so the butterfly collapses to `v += u` with `u` left unchanged.
+			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+			// So the butterfly collapses to `v += u`, with `u` left unchanged.
 			for (u, v) in iter::zip(block0, block1) {
 				*v += *u;
 			}
@@ -170,9 +170,9 @@ fn forward_breadth_first<P: PackedField>(
 			.take(1 << log_blocks);
 		let mut blocks = data.chunks_exact_mut(1 << log_block_size);
 
-		// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`'s
-		// doc). `base_block == 0` is the only case where this call's own first block is the
-		// domain's block 0, so peel it off once per layer instead of branching per element.
+		// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+		// `base_block == 0` is the only case where this call's first block is the domain's block 0.
+		// Peel it off once per layer instead of branching per element.
 		if base_block == 0 {
 			layer_twiddles.next();
 			if let Some(block) = blocks.next() {
@@ -282,8 +282,8 @@ fn forward_shared_layer<P: PackedField>(
 			let chunk1 = unsafe {
 				from_raw_parts_mut(data_ptr.add(chunk1 << log_chunk_len), 1 << log_chunk_len)
 			};
-			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`'s
-			// doc). `None` signals a task whose butterfly collapses to an add, no multiply.
+			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+			// `None` signals a task whose butterfly collapses to an add, no multiply.
 			let twiddle = (block != 0).then(|| P::broadcast(domain_context.twiddle(layer, block)));
 			(chunk0, chunk1, twiddle)
 		})
@@ -327,32 +327,31 @@ fn forward_shared_layer<P: PackedField>(
 
 /// How many elements ahead [`prefetch_read`] hints the CPU to fetch.
 ///
-/// Each loop iteration of [`forward_shared_layer`] does at most one packed GF(2^128)
-/// multiply-add, cheap relative to a DRAM round trip (order 100-300 cycles on this hardware
-/// class).
-/// A distance of 16 elements gives the fetch several iterations of head start before the loop
-/// reaches it, without prefetching so far ahead that the line is evicted before use.
+/// Each loop iteration does at most one packed GF(2^128) multiply-add.
+/// That's cheap relative to a DRAM round trip, roughly 100-300 cycles on this hardware class.
+/// 16 elements gives the fetch several iterations of head start before the loop reaches it.
+/// That's short enough that the line isn't evicted again before use.
 const PREFETCH_DISTANCE: usize = 16;
 
 /// Hints the CPU to start fetching `ptr` into L1 cache, for reads only.
 ///
-/// Never faults and never changes the value read: on every architecture the hint may be silently
-/// ignored, and on none of them can it observe or produce a different program result.
+/// A pure hint: every architecture may silently ignore it.
+/// None of them can let it observe or change the program's result.
 #[inline(always)]
 fn prefetch_read<T>(ptr: *const T) {
 	#[cfg(target_arch = "x86_64")]
 	{
 		use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-		// Safety: `_mm_prefetch` never faults, even for an invalid or out-of-bounds address — it
-		// is documented as a hint the CPU may discard, not a memory access.
+		// Safety: `_mm_prefetch` never faults, even for an invalid or out-of-bounds address.
+		// It's documented as a hint the CPU may discard, not a memory access.
 		unsafe { _mm_prefetch(ptr.cast::<i8>(), _MM_HINT_T0) };
 	}
 	#[cfg(target_arch = "aarch64")]
 	{
-		// Safety: `prfm` is a hint instruction. The ARM architecture reference manual specifies
-		// it never raises a data abort, even for an unmapped or misaligned address, so passing
-		// an address that may be past the end of a slice (for lookahead near a buffer's tail) is
-		// sound.
+		// Safety: `prfm` is a hint instruction.
+		// The ARM architecture reference manual specifies it never raises a data abort,
+		// even for an unmapped or misaligned address.
+		// So an address past a slice's end, for lookahead near a buffer's tail, is sound.
 		unsafe {
 			std::arch::asm!(
 				"prfm pldl1keep, [{ptr}]",
