@@ -15,6 +15,7 @@
 //!
 //! - [`basefold`] - BaseFold polynomial commitment scheme verification
 //! - [`fri`] - FRI (Fast Reed-Solomon Interactive Oracle Proof) verification
+//! - [`ligerito`] - Ligerito parameter selection and proof-size accounting
 //! - [`merkle_tree`] - Merkle tree commitment verification
 //! - [`channel`] - IOP verifier channel traits for abstracting oracle interactions
 //!
@@ -28,6 +29,7 @@
 pub mod basefold;
 pub mod channel;
 pub mod fri;
+pub mod ligerito;
 pub mod logup_star;
 pub mod merkle_channel;
 pub mod merkle_tree;
