@@ -52,3 +52,7 @@ harness = false
 [[bench]]
 name = "eq_ind_partial_eval"
 harness = false
+
+[[bench]]
+name = "shared_layer_prefetch"
+harness = false
