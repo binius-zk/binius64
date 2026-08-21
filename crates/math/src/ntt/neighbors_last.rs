@@ -465,7 +465,7 @@ impl<DC: DomainContext + Sync> NeighborsLastMultiThread<DC> {
 	/// [`AdditiveNTT::forward_transform`] instead waits for the whole buffer to finish.
 	///
 	/// The independent chunks are disjoint memory ranges, one per [`Self::log_num_shares`] share.
-	/// Each chunk is fully transformed the moment its own [`forward_depth_first`] call returns.
+	/// Each chunk is fully transformed the moment its own `forward_depth_first` call returns.
 	///
 	/// Use this to start downstream work on a finished region without waiting on its siblings.
 	///
