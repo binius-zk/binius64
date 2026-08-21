@@ -458,21 +458,39 @@ impl<DC> NeighborsLastMultiThread<DC> {
 	}
 }
 
-impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
-	type Field = DC::Field;
-
-	fn forward_transform<P: PackedField<Scalar = Self::Field>>(
+impl<DC: DomainContext + Sync> NeighborsLastMultiThread<DC> {
+	/// Same transform as [`AdditiveNTT::forward_transform`], but invokes `on_chunk_ready` the
+	/// instant each independent post-shared-layer chunk finishes, instead of only after the whole
+	/// buffer is done.
+	///
+	/// The independent chunks this splits into are disjoint memory ranges, one per
+	/// [`Self::log_num_shares`] share.
+	/// Each one is fully transformed the moment its own [`forward_depth_first`] call returns.
+	/// A caller that wants to start downstream work on a finished region, without waiting for
+	/// every sibling region to finish too, hooks in here instead of after
+	/// [`AdditiveNTT::forward_transform`] returns.
+	///
+	/// `on_chunk_ready` runs on whichever worker thread finished that chunk, concurrently with
+	/// the other chunks' own transforms, so it must be `Sync` and safe to run from any thread.
+	///
+	/// When the input is too small to split (the fallback path below
+	/// [`PackedField::LOG_WIDTH`]), the whole buffer is one chunk, and `on_chunk_ready` runs once
+	/// for block 0 after the fallback transform completes.
+	pub fn forward_transform_with_callback<P: PackedField<Scalar = DC::Field>>(
 		&self,
 		mut data: FieldSliceMut<P>,
 		skip_early: usize,
 		skip_late: usize,
+		on_chunk_ready: impl Fn(usize, &[P]) + Sync,
 	) {
 		let log_d = data.log_len();
 		if log_d <= P::LOG_WIDTH {
 			let fallback_ntt = NeighborsLastReference {
 				domain_context: &self.domain_context,
 			};
-			return fallback_ntt.forward_transform(data, skip_early, skip_late);
+			fallback_ntt.forward_transform(data.to_mut(), skip_early, skip_late);
+			on_chunk_ready(0, data.as_ref());
+			return;
 		}
 
 		input_check(&self.domain_context, log_d, skip_early, skip_late);
@@ -522,7 +540,21 @@ impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
 					independent_layers.clone(),
 					self.log_base_len,
 				);
+				on_chunk_ready(block, chunk);
 			});
+	}
+}
+
+impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
+	type Field = DC::Field;
+
+	fn forward_transform<P: PackedField<Scalar = Self::Field>>(
+		&self,
+		data: FieldSliceMut<P>,
+		skip_early: usize,
+		skip_late: usize,
+	) {
+		self.forward_transform_with_callback(data, skip_early, skip_late, |_block, _chunk| {});
 	}
 
 	fn inverse_transform<P: PackedField<Scalar = Self::Field>>(

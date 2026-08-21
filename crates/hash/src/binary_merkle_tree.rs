@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{fmt, mem::MaybeUninit, slice};
+use std::{fmt, marker::PhantomData, mem::MaybeUninit, slice};
 
 use binius_compute::{Allocator, GlobalAllocator, VecLike};
 use binius_field::Field;
@@ -233,6 +233,113 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 			log_len,
 			inner_nodes,
 		}
+	}
+
+	/// Commits leaves written through a [`LeafRangeWriter`] instead of hashed from one
+	/// contiguous input all at once.
+	///
+	/// `populate` must write every leaf in `0..2^log_len` exactly once through the writer it is
+	/// handed, from any thread, in any order, before it returns.
+	/// That is what lets a caller start hashing an early leaf range while a later one is still
+	/// being produced, instead of waiting for all of it before hashing starts.
+	///
+	/// # Panics
+	///
+	/// Panics unless `log_len` is nonzero.
+	pub fn from_leaves_pipelined<F, H>(
+		log_len: usize,
+		n_items_per_input: usize,
+		alloc: &A,
+		populate: impl FnOnce(&LeafRangeWriter<'_, F, H>),
+	) -> Self
+	where
+		F: Field,
+		H: HashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
+	{
+		assert!(log_len > 0, "a tree over a single leaf has no nodes to build");
+
+		let total_length = (1 << (log_len + 1)) - 1;
+		let mut inner_nodes = alloc.alloc::<Array<u8, N>>(total_length);
+
+		let (leaf_layer, remaining) = inner_nodes.spare_capacity_mut().split_at_mut(1 << log_len);
+
+		{
+			let _span = tracing::debug_span!("hash_leaves_pipelined").entered();
+			let writer = LeafRangeWriter {
+				leaves: SendPtr(leaf_layer.as_mut_ptr()),
+				n_items_per_input,
+				_marker: PhantomData,
+			};
+			populate(&writer);
+		}
+
+		let leaves: &[Array<u8, N>] = unsafe {
+			// SAFETY: `populate`'s contract guarantees every leaf was written before it returned.
+			leaf_layer.assume_init_ref()
+		};
+
+		let parallel_compression = H::ParCompression::default();
+		let ctx = BuildContext {
+			leaves,
+			log_len,
+			nodes: SendPtr(remaining.as_mut_ptr()),
+			compression: &parallel_compression,
+		};
+		ctx.build_node(0, log_len);
+
+		unsafe {
+			// SAFETY: the leaf layer is fully written by `populate`'s contract, and `build_node`
+			// just wrote every remaining node above it.
+			inner_nodes.set_len(total_length);
+		}
+		Self {
+			log_len,
+			inner_nodes,
+		}
+	}
+}
+
+/// Lets [`BinaryMerkleTree::from_leaves_pipelined`]'s caller write disjoint leaf ranges from any
+/// thread, in any order, instead of hashing the whole leaf layer from one contiguous input.
+///
+/// Every scalar range handed to [`Self::write_range`] must be disjoint from every other range
+/// written through the same writer.
+/// Together, the ranges must cover every leaf exactly once before the `populate` closure that
+/// received this writer returns — that return is the only signal
+/// [`BinaryMerkleTree::from_leaves_pipelined`] has that every leaf is ready to read.
+pub struct LeafRangeWriter<'a, F, H: HashSuite> {
+	leaves: SendPtr<MaybeUninit<Output<H::LeafHash>>>,
+	n_items_per_input: usize,
+	_marker: PhantomData<&'a [F]>,
+}
+
+impl<F: Field, H: HashSuite> LeafRangeWriter<'_, F, H> {
+	/// Hashes `scalars` into the leaves starting at `leaf_start`, `n_items_per_input` scalars
+	/// per leaf.
+	///
+	/// # Panics
+	///
+	/// Panics unless `scalars.len()` is a multiple of `n_items_per_input`.
+	pub fn write_range(&self, leaf_start: usize, scalars: &[F]) {
+		assert_eq!(
+			scalars.len() % self.n_items_per_input,
+			0,
+			"a leaf range must cover a whole number of leaves"
+		);
+		let n_leaves = scalars.len() / self.n_items_per_input;
+
+		let dst = unsafe {
+			// SAFETY: `Self`'s contract guarantees every range written through this writer is
+			// disjoint from every other one, so this range does not alias any other write.
+			slice::from_raw_parts_mut(self.leaves.0.add(leaf_start), n_leaves)
+		};
+		H::ParLeafHash::default().digest_with_const_len(
+			self.n_items_per_input,
+			scalars
+				.par_chunks(self.n_items_per_input)
+				.map(|chunk| chunk.iter().copied()),
+			dst,
+		);
 	}
 }
 

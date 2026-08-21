@@ -27,6 +27,7 @@
 
 pub mod basefold;
 pub mod channel;
+pub mod commit_pipeline;
 pub mod fri;
 pub mod logup_star;
 pub mod merkle_channel;
