@@ -110,8 +110,9 @@ fn bench_commit_pipeline(c: &mut Criterion) {
 
 	let rs_code = ReedSolomonCode::<B128>::new(LOG_DIM, LOG_INV_RATE);
 	let domain_context = GaoMateerOnTheFly::<B128>::generate(rs_code.log_len());
-	let log_num_shares =
-		binius_utils::checked_arithmetics::log2_ceil_usize(binius_utils::rayon::current_num_threads());
+	let log_num_shares = binius_utils::checked_arithmetics::log2_ceil_usize(
+		binius_utils::rayon::current_num_threads(),
+	);
 	let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
 	let mut group = c.benchmark_group("slow/commit_pipeline/SHA-256");

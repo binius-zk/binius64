@@ -80,10 +80,15 @@ where
 				alloc,
 				|block, chunk: &[P]| {
 					// A leaf is `leaf_scalars` scalars, and every chunk this NTT split produces
-					// is the same size, so the chunk index alone gives its scalar offset.
-					let scalars: Vec<F> = chunk.iter().flat_map(PackedField::iter).collect();
-					let leaf_start = block * scalars.len() / leaf_scalars;
-					writer.write_range(leaf_start, &scalars);
+					// is the same size, so the chunk index alone gives its leaf offset.
+					let chunk_log_len = chunk.len().ilog2() as usize + P::LOG_WIDTH;
+					let n_leaves_per_chunk = (1usize << chunk_log_len) / leaf_scalars;
+					let leaf_start = block * n_leaves_per_chunk;
+
+					// Zero-copy: reads scalars straight out of the packed chunk, so a finished
+					// chunk's leaves hash without first flattening it into an owned buffer.
+					let chunk_view = FieldSlice::from_slice(chunk_log_len, chunk);
+					writer.write_range(leaf_start, chunk_view.par_chunk_scalars(log_leaf_len));
 				},
 			);
 			codeword_slot = Some(codeword);

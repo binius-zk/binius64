@@ -314,32 +314,24 @@ pub struct LeafRangeWriter<'a, F, H: HashSuite> {
 }
 
 impl<F: Field, H: HashSuite> LeafRangeWriter<'_, F, H> {
-	/// Hashes `scalars` into the leaves starting at `leaf_start`, `n_items_per_input` scalars
-	/// per leaf.
+	/// Hashes `leaves` into the tree's leaf layer starting at `leaf_start`.
 	///
-	/// # Panics
-	///
-	/// Panics unless `scalars.len()` is a multiple of `n_items_per_input`.
-	pub fn write_range(&self, leaf_start: usize, scalars: &[F]) {
-		assert_eq!(
-			scalars.len() % self.n_items_per_input,
-			0,
-			"a leaf range must cover a whole number of leaves"
-		);
-		let n_leaves = scalars.len() / self.n_items_per_input;
-
+	/// `leaves` yields one iterator per leaf, each yielding exactly
+	/// [`n_items_per_input`](Self::write_range) scalars — the same shape
+	/// [`BinaryMerkleTree::from_leaves`] itself consumes, so a caller can hand this a zero-copy
+	/// view over packed data (e.g. `binius_math::FieldSlice::par_chunk_scalars`) instead of
+	/// first flattening it into an owned buffer.
+	pub fn write_range<ParIter>(&self, leaf_start: usize, leaves: ParIter)
+	where
+		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
+	{
+		let n_leaves = leaves.len();
 		let dst = unsafe {
 			// SAFETY: `Self`'s contract guarantees every range written through this writer is
 			// disjoint from every other one, so this range does not alias any other write.
 			slice::from_raw_parts_mut(self.leaves.0.add(leaf_start), n_leaves)
 		};
-		H::ParLeafHash::default().digest_with_const_len(
-			self.n_items_per_input,
-			scalars
-				.par_chunks(self.n_items_per_input)
-				.map(|chunk| chunk.iter().copied()),
-			dst,
-		);
+		H::ParLeafHash::default().digest_with_const_len(self.n_items_per_input, leaves, dst);
 	}
 }
 
