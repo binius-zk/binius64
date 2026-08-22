@@ -29,7 +29,6 @@ getrandom = { workspace = true, features = ["wasm_js"] }
 
 [features]
 default = []
-benchmark_alternative_strategies = []
 trace_multiplications = ["dep:tracing"]
 
 [lib]

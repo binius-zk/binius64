@@ -17,9 +17,6 @@ use crate::{
 	underlier::{Divisible, UnderlierType},
 };
 
-/// Pairwise strategy. Apply the result of the operation to each packed element independently.
-pub struct PairwiseStrategy;
-
 /// Strategy that splits the underlier into `SubU`-sized lanes, applies the sub-packing
 /// `PackedPrimitiveType<SubU, F>`'s op to each lane, and recombines — a generic fallback for
 /// packings that lack a specialized full-width [`Square`], [`InvertOrZero`], or [`WideMul`]. The

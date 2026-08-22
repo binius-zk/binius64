@@ -33,16 +33,6 @@ impl M128 {
 	pub(super) const fn from_u128(value: u128) -> Self {
 		Self(u64x2(value as u64, (value >> 64) as u64))
 	}
-
-	#[inline]
-	pub fn from_lanes_u64(lo: u64, hi: u64) -> Self {
-		Self(u64x2(lo, hi))
-	}
-
-	#[inline]
-	pub fn split_lanes_u64(self) -> (u64, u64) {
-		(u64x2_extract_lane::<0>(self.0), u64x2_extract_lane::<1>(self.0))
-	}
 }
 
 impl Default for M128 {
