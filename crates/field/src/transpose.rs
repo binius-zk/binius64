@@ -22,7 +22,7 @@ use crate::{BinaryField, ExtensionField, PackedSubfield, WithUnderlier, cast_bas
 ///
 /// * `log_n` must be at most `P::LOG_WIDTH`.
 /// * `elems.len()` must be a power of two and at least `2^log_n`.
-pub fn square_transpose<P: PackedField>(log_n: usize, elems: &mut [P]) {
+pub fn transpose_square_blocks<P: PackedField>(log_n: usize, elems: &mut [P]) {
 	assert!(P::LOG_WIDTH >= log_n, "dimension n of square blocks must divide packing width");
 
 	let size = elems.len();
@@ -60,7 +60,7 @@ where
 	FE: PackedField<Scalar: ExtensionField<F>> + WithUnderlier,
 	PackedSubfield<FE, F>: PackedField<Scalar = F>,
 {
-	square_transpose(FE::Scalar::LOG_DEGREE, cast_bases_mut::<F, FE>(values))
+	transpose_square_blocks(FE::Scalar::LOG_DEGREE, cast_bases_mut::<F, FE>(values))
 }
 
 #[cfg(test)]
@@ -69,7 +69,7 @@ mod tests {
 	use crate::PackedBinaryField128x1b;
 
 	#[test]
-	fn test_square_transpose_128x1b() {
+	fn test_transpose_square_blocks_128x1b() {
 		let mut elems = [
 			PackedBinaryField128x1b::from(0x00000000000000000000000000000000u128),
 			PackedBinaryField128x1b::from(0x00000000000000000000000000000000u128),
@@ -80,7 +80,7 @@ mod tests {
 			PackedBinaryField128x1b::from(0xffffffffffffffffffffffffffffffffu128),
 			PackedBinaryField128x1b::from(0xffffffffffffffffffffffffffffffffu128),
 		];
-		square_transpose(3, &mut elems);
+		transpose_square_blocks(3, &mut elems);
 
 		let expected = [
 			PackedBinaryField128x1b::from(0xf0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0u128),
@@ -96,7 +96,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_square_transpose_128x1b_multi_row() {
+	fn test_transpose_square_blocks_128x1b_multi_row() {
 		let mut elems = [
 			PackedBinaryField128x1b::from(0x00000000000000000000000000000000u128),
 			PackedBinaryField128x1b::from(0x00000000000000000000000000000000u128),
@@ -107,7 +107,7 @@ mod tests {
 			PackedBinaryField128x1b::from(0xffffffffffffffffffffffffffffffffu128),
 			PackedBinaryField128x1b::from(0xffffffffffffffffffffffffffffffffu128),
 		];
-		square_transpose(1, &mut elems);
+		transpose_square_blocks(1, &mut elems);
 
 		let expected = [
 			PackedBinaryField128x1b::from(0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaau128),

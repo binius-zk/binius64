@@ -2,7 +2,7 @@
 
 use std::ptr;
 
-use binius_field::{PackedField, square_transpose};
+use binius_field::{PackedField, transpose_square_blocks};
 use binius_utils::{
 	checked_arithmetics::checked_log_2,
 	rayon::{prelude::*, task_size::min_len_for_bytes},
@@ -226,7 +226,7 @@ fn transpose_tile<P: PackedField, const LOG_TILE_PACKED: usize>(tile: &mut [P], 
 	// A matrix one sub-block wide is already a single square of lanes.
 	// So it needs neither the mirror swaps nor the gather below.
 	if LOG_TILE_PACKED == 0 {
-		return square_transpose(P::LOG_WIDTH, tile);
+		return transpose_square_blocks(P::LOG_WIDTH, tile);
 	}
 
 	// Element holding lane row `a` of sub-block `(r, c)`.
@@ -253,7 +253,7 @@ fn transpose_tile<P: PackedField, const LOG_TILE_PACKED: usize>(tile: &mut [P], 
 				for (a, block_i) in block.iter_mut().enumerate() {
 					*block_i = tile[block_elem(r, a, c)];
 				}
-				square_transpose(P::LOG_WIDTH, block);
+				transpose_square_blocks(P::LOG_WIDTH, block);
 				for (a, &block_i) in block.iter().enumerate() {
 					tile[block_elem(r, a, c)] = block_i;
 				}
