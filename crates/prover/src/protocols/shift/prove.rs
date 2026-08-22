@@ -17,8 +17,7 @@ use super::{
 	SegmentWords,
 	claims::{OperatorClaims, PreparedOperatorClaims},
 	key_collection::KeyCollection,
-	monster::build_monster_segments,
-	phase_1::{Phase1Output, SparseShiftRows, build_g},
+	phase_1::{Phase1Output, SparseShiftRows},
 	phase_2::{ShiftOutput, run_sumcheck, zero_extend},
 	shift_ind::{ShiftChallengePoint, ShiftIndSumcheck},
 };
@@ -271,8 +270,12 @@ where
 		// separately.
 		// The public words are the prefix of the value vector, and each segment's key ranges
 		// are relative to its own segment.
-		let public = build_g::<_, P>(words.public, &key_collection.public, prepared);
-		let hidden = build_g::<_, P>(words.hidden, &key_collection.hidden, prepared);
+		let public = key_collection
+			.public
+			.build_g::<_, P>(words.public, prepared);
+		let hidden = key_collection
+			.hidden
+			.build_g::<_, P>(words.hidden, prepared);
 		let g = SparseShiftRows::from_segments([
 			(&public, &key_collection.public.dense_shift_enc),
 			(&hidden, &key_collection.hidden.dense_shift_enc),
@@ -328,9 +331,8 @@ where
 		let public_folded = fold_words::<_, P, _>(self.alloc, words.public, r_j_tensor.as_ref());
 		let hidden_folded = fold_words::<_, P, _>(self.alloc, words.hidden, r_j_tensor.as_ref());
 
-		let (public_monster, hidden_monster) = build_monster_segments(
+		let (public_monster, hidden_monster) = key_collection.build_monster_segments(
 			self.alloc,
-			key_collection,
 			prepared,
 			shift_ind_eval,
 			&inner,

@@ -17,8 +17,8 @@ use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		OperatorClaims, OperatorData, ShiftProver, build_key_collection,
-		monster::{build_monster_segments, shift_operator_table},
-		phase_1::{Phase1Output, SparseShiftRows, build_g},
+		monster::shift_operator_table,
+		phase_1::{Phase1Output, SparseShiftRows},
 		phase_2::run_sumcheck,
 	},
 };
@@ -301,8 +301,12 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// The witness-and-batching multilinear is built once per key segment; the combined
 	// multilinear is the two segments' rows concatenated.
 	let build_combined_g = || {
-		let public = build_g::<F, P>(public_words, &key_collection.public, &prepared);
-		let hidden = build_g::<F, P>(hidden_words, &key_collection.hidden, &prepared);
+		let public = key_collection
+			.public
+			.build_g::<F, P>(public_words, &prepared);
+		let hidden = key_collection
+			.hidden
+			.build_g::<F, P>(hidden_words, &prepared);
 		SparseShiftRows::from_segments([
 			(&public, &key_collection.public.dense_shift_enc),
 			(&hidden, &key_collection.hidden.dense_shift_enc),
@@ -333,9 +337,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());
-	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
+	let (public_monster, hidden_monster) = key_collection.build_monster_segments::<F, P, _>(
 		&GlobalAllocator,
-		&key_collection,
 		&prepared,
 		shift_ind_eval,
 		&inner_shift,
@@ -373,13 +376,12 @@ fn bench_shift_phases(c: &mut Criterion) {
 		);
 	});
 
-	// Phase 2. `build_monster_segments` takes its inputs by reference; `run_sumcheck` consumes
-	// its buffers and `r_j` by value.
+	// Phase 2 builds its monster segments from its inputs by reference; the sumcheck that
+	// follows consumes its buffers and challenge point by value.
 	group.bench_function("phase2_build_monster_segments", |b| {
 		b.iter(|| {
-			build_monster_segments::<F, P, _>(
+			key_collection.build_monster_segments::<F, P, _>(
 				&GlobalAllocator,
-				&key_collection,
 				&prepared,
 				shift_ind_eval,
 				&inner_shift,

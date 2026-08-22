@@ -16,8 +16,7 @@ use binius_prover::{
 	protocols::shift::{
 		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftChallengePoint,
 		ShiftIndOutput, ShiftIndSumcheck, ShiftOutput,
-		monster::build_monster_segments,
-		phase_1::{Phase1Output, SparseShiftRows, build_g},
+		phase_1::{Phase1Output, SparseShiftRows},
 		phase_2::run_sumcheck,
 	},
 };
@@ -75,7 +74,9 @@ where
 	// by every instance, so the single-instance builder folds them directly from their bits; the
 	// hidden words are already folded over instances. This scalar path drives the single-instance
 	// phase-1 sumcheck.
-	let public = build_g::<F, F>(public_words, &key_collection.public, &prepared);
+	let public = key_collection
+		.public
+		.build_g::<F, F>(public_words, &prepared);
 	let hidden =
 		build_g_from_folded_words(folded_witness.words(), &key_collection.hidden, &prepared);
 	// `g` is the sum of its rows, so the two segments' rows concatenate rather than merge.
@@ -129,9 +130,8 @@ where
 	let public_folded = fold_words::<F, P, _>(alloc, public_words, r_j_tensor.as_ref());
 	let hidden_folded = folded_witness.fold_bits::<P>(r_j_tensor.as_ref(), alloc);
 
-	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
+	let (public_monster, hidden_monster) = key_collection.build_monster_segments::<F, P, _>(
 		alloc,
-		key_collection,
 		&prepared,
 		shift_ind_eval,
 		&inner_shift,
@@ -154,7 +154,7 @@ where
 
 /// Accumulates the phase-1 "g" rows of one key segment, from instance-folded words.
 ///
-/// This is the batched analogue of the single-instance [`build_g`].
+/// This is the batched analogue of the single-instance key-segment method.
 /// It consumes a key segment's words already folded over the instance axis.
 /// So each word is a [`FoldedWord`], whose bits are field elements rather than a packed `u64`.
 ///
@@ -163,7 +163,7 @@ where
 /// The two coincide when the folded bit is 0 or 1.
 ///
 /// Use this for the hidden (committed) segment, whose words are folded over instances.
-/// Use [`build_g`] for the public segment, whose words are shared constants.
+/// Use the single-instance method for the public segment, whose words are shared constants.
 /// Collecting both results' rows gives the complete g multilinear.
 ///
 /// # Arguments
@@ -534,7 +534,9 @@ mod tests {
 		// The g rows: the public segment folds from raw constant words via the single-instance
 		// builder, the hidden segment from the instance-folded words. The h multilinear comes
 		// from the single-instance prover.
-		let public = build_g::<B128, B128>(public_words, &key_collection.public, &prepared);
+		let public = key_collection
+			.public
+			.build_g::<B128, B128>(public_words, &prepared);
 		let hidden = build_g_from_folded_words(&hidden_folded, &key_collection.hidden, &prepared);
 		let psi = lagrange_evals(&domain_subspace, r_z);
 
