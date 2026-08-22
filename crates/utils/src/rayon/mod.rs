@@ -15,8 +15,6 @@
 
 cfg_if::cfg_if! {
 	if #[cfg(any(not(feature = "rayon"), all(target_arch="wasm32", not(target_feature = "atomics"))))] {
-		use std::marker::PhantomData;
-
 		pub mod iter;
 		pub mod slice;
 
@@ -89,32 +87,6 @@ cfg_if::cfg_if! {
 			RB: Send,
 		{
 			(oper_a(), oper_b())
-		}
-
-		pub struct Scope<'scope> {
-			#[allow(clippy::type_complexity)]
-			marker: PhantomData<Box<dyn FnOnce(&Scope<'scope>) + Send + Sync + 'scope>>,
-		}
-
-		impl<'scope> Scope<'scope> {
-			#[inline(always)]
-			pub fn spawn<BODY>(&self, body: BODY)
-			where
-				BODY: FnOnce(&Self) + Send + 'scope,
-			{
-				body(self)
-			}
-		}
-
-		#[inline(always)]
-		pub fn scope<'scope, OP, R>(op: OP) -> R
-		where
-			OP: for<'s> FnOnce(&'s Scope<'scope>) -> R + 'scope + Send,
-			R: Send,
-		{
-			op(&Scope {
-				marker: PhantomData,
-			})
 		}
 	} else {
 		pub use rayon::*;
