@@ -487,11 +487,6 @@ impl<F: Field> WitnessLayout<F> {
 		self.log_private
 	}
 
-	/// Returns the first index of the inout
-	pub const fn inout_offset(&self) -> WitnessIndex {
-		WitnessIndex::public(self.constants.len() as u32)
-	}
-
 	pub fn get(&self, wire: &ConstraintWire) -> Option<WitnessIndex> {
 		match wire.kind {
 			WireKind::Constant => {
