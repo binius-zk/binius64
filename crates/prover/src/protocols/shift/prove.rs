@@ -3,7 +3,7 @@
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, PackedField, util::powers};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, inner_product::inner_product,
@@ -117,7 +117,7 @@ impl<F: Field> PreparedOperatorData<F> {
 			r_x_prime,
 		} = operator_data;
 		let r_x_prime_tensor = eq_ind_partial_eval::<F>(&r_x_prime);
-		let lambda_powers: Vec<F> = powers(lambda).skip(1).take(ARITY).collect();
+		let lambda_powers: Vec<F> = lambda.powers().skip(1).take(ARITY).collect();
 		Self {
 			batched_eval: inner_product(evals, lambda_powers.iter().copied()),
 			r_zhat_prime,

@@ -307,7 +307,7 @@ mod tests {
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let x_val = B128::random(&mut rng);
-		let expected_vals = binius_field::util::powers(x_val)
+		let expected_vals = binius_field::field::FieldOps::powers(&x_val)
 			.skip(1)
 			.take(4)
 			.collect::<Vec<_>>();

@@ -12,7 +12,7 @@
 use std::iter;
 
 use binius_compute::{Allocator, VecLike};
-use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
+use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec, multilinear::eq::scaled_eq_ind_partial_eval_into,
 };
@@ -99,7 +99,7 @@ where
 		.map(|table| table.lookers.len())
 		.max()
 		.expect("tables is non-empty");
-	let scales = powers(gamma).take(max_table_lookers).collect::<Vec<_>>();
+	let scales = gamma.powers().take(max_table_lookers).collect::<Vec<_>>();
 	let flat = tables
 		.iter()
 		.flat_map(|table| iter::zip(&table.lookers, &scales))

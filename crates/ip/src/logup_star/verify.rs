@@ -4,7 +4,7 @@
 
 use std::{iter, slice};
 
-use binius_field::{BinaryField1b, ExtensionField, Field, field::FieldOps, util::powers};
+use binius_field::{BinaryField1b, ExtensionField, Field, field::FieldOps};
 use binius_math::{
 	multilinear::{
 		eq::{eq_ind, eq_ind_zero},
@@ -179,9 +179,7 @@ where
 		.map(|table| table.lookers.len())
 		.max()
 		.expect("tables is non-empty");
-	let looker_powers = powers(gamma.clone())
-		.take(max_table_lookers)
-		.collect::<Vec<_>>();
+	let looker_powers = gamma.powers().take(max_table_lookers).collect::<Vec<_>>();
 
 	// Sample one logUp challenge per table. Distinct challenges are what make the single root check
 	// certify every table separately: a table's contribution to the root fraction is a rational

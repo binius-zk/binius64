@@ -4,7 +4,7 @@
 use std::{
 	fmt::Display,
 	hash::Hash,
-	iter::{Product, Sum},
+	iter::{self, Product, Sum},
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
@@ -117,6 +117,12 @@ pub trait FieldOps:
 
 	/// Returns the one element (multiplicative identity).
 	fn one() -> Self;
+
+	/// Iterate the powers of this value, beginning with 1 (the 0'th power).
+	fn powers(&self) -> impl Iterator<Item = Self> {
+		let val = self.clone();
+		iter::successors(Some(Self::one()), move |power| Some(power.clone() * val.clone()))
+	}
 
 	/// Transpose the subfield elements in a slice of field elements.
 	///

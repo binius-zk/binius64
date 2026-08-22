@@ -375,7 +375,7 @@ mod tests {
 	use binius_field::{
 		BinaryField1b, ExtensionField, Field,
 		arch::{OptimalB128, OptimalPackedB128},
-		util::powers,
+		field::FieldOps,
 	};
 	use binius_ip::{channel::IPVerifierChannel, logup_star};
 	use binius_math::{
@@ -531,7 +531,7 @@ mod tests {
 			// gamma^i within the table — the same power series serves every table — scattered onto
 			// its cube.
 			let mut pushforward = vec![F::ZERO; 1usize << m];
-			for (looker, power) in iter::zip(&table.lookers, powers(gamma)) {
+			for (looker, power) in iter::zip(&table.lookers, gamma.powers()) {
 				for (&j, &eq) in iter::zip(&looker.index, &looker.eq_r) {
 					pushforward[j] += power * eq;
 				}

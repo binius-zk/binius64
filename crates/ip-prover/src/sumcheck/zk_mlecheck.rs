@@ -11,7 +11,7 @@
 use std::{iter, ops::Deref};
 
 use binius_compute::Allocator;
-use binius_field::{Field, PackedField, util::powers};
+use binius_field::{Field, PackedField, field::FieldOps};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
 	FieldVec, field_buffer::FieldBuffer, line::extrapolate_line, univariate::evaluate_univariate,
@@ -73,7 +73,7 @@ pub fn expand_libra_eval<A: Allocator, P: PackedField>(
 
 	for (j, &r_j) in challenge_point.iter().enumerate() {
 		let base_idx = j * row_stride;
-		for (k, power) in powers(r_j).take(degree + 1).enumerate() {
+		for (k, power) in r_j.powers().take(degree + 1).enumerate() {
 			buffer.set(base_idx + k, power);
 		}
 	}

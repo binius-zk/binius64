@@ -4,10 +4,7 @@
 use std::iter;
 
 use binius_core::constraint_system::Operand;
-use binius_field::{
-	BinaryField, FieldOps, WideMul,
-	util::{FieldFn, powers},
-};
+use binius_field::{BinaryField, FieldOps, WideMul, util::FieldFn};
 use binius_math::multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars};
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
@@ -156,8 +153,7 @@ where
 		let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
 		// The batching coefficients fan into the inner table only, holding it to
 		// `SHIFT_COUNT * arity`; the outer weight multiplies in per term.
-		let operand_shift_scalars =
-			operand_shift_scalar_table(shift_scalars.inner, lambda.clone(), ARITY);
+		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars.inner, lambda, ARITY);
 
 		// One contribution per constraint.
 		// Each term is weighted by its two slots' shift scalars and its word-index tensor entry.
@@ -197,7 +193,7 @@ where
 		// The packed expansion threads the tensor's multiplications.
 		// It applies over the base field, which is its own single-element packing.
 		let r_x_prime_tensor = eq_ind_partial_eval::<F>(r_x_prime);
-		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars.inner, *lambda, ARITY);
+		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars.inner, lambda, ARITY);
 
 		// One unreduced wide product per constraint. The constraints partition cleanly across
 		// rayon: each produces a single wide element and they are summed, so there is no large
@@ -270,10 +266,10 @@ pub fn encode_operation_input<E: Clone>(
 /// So the table is `SHIFT_COUNT * arity` entries rather than `SHIFT_COUNT^2 * arity`.
 fn operand_shift_scalar_table<E: FieldOps>(
 	shift_scalars: &[E; SHIFT_COUNT],
-	lambda: E,
+	lambda: &E,
 	arity: usize,
 ) -> Vec<E> {
-	let lambda_powers = powers(lambda).skip(1).take(arity).collect::<Vec<_>>();
+	let lambda_powers = lambda.powers().skip(1).take(arity).collect::<Vec<_>>();
 	let mut table = Vec::with_capacity(shift_scalars.len() * arity);
 	for shift_scalar in shift_scalars {
 		for lambda_power in &lambda_powers {
