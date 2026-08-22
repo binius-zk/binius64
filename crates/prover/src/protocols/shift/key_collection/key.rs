@@ -133,6 +133,11 @@ impl DeserializeBytes for Key {
 		let dense_shift_idx = u16::deserialize(&mut read_buf)?;
 		let start = u32::deserialize(&mut read_buf)?;
 		let end = u32::deserialize(&mut read_buf)?;
+		// `accumulate_wide` slices the segment's constraint list with this range.
+		// Only the ordering is checkable here; the upper bound needs the segment's own list.
+		if start > end {
+			return Err(SerializationError::InvalidConstruction { name: "Key::range" });
+		}
 		Ok(Key {
 			operation,
 			dense_shift_idx,
@@ -182,6 +187,41 @@ mod tests {
 
 	fn f(value: u128) -> F {
 		F::new(value)
+	}
+
+	// Serializes a key built raw, bypassing `KeySegment::build`, so a malformed range reaches the
+	// deserializer.
+	fn deserialize_raw(key: &Key) -> Result<Key, SerializationError> {
+		let mut buf = Vec::new();
+		key.serialize(&mut buf).unwrap();
+		Key::deserialize(buf.as_slice())
+	}
+
+	#[test]
+	fn key_rejects_a_reversed_range() {
+		// `accumulate_wide` slices `start..end`, which panics when start runs past end.
+		let reversed = Key {
+			operation: Operation::Zero,
+			dense_shift_idx: 0,
+			range: Range { start: 5, end: 3 },
+		};
+		match deserialize_raw(&reversed).unwrap_err() {
+			SerializationError::InvalidConstruction { name } => {
+				assert_eq!(name, "Key::range");
+			}
+			other => panic!("Expected InvalidConstruction, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn key_accepts_an_empty_range() {
+		// A key covering no constraints is legitimate: `accumulate_wide` returns early on it.
+		let empty = Key {
+			operation: Operation::Zero,
+			dense_shift_idx: 0,
+			range: Range { start: 3, end: 3 },
+		};
+		assert_eq!(deserialize_raw(&empty).unwrap().range, Range { start: 3, end: 3 });
 	}
 
 	/// Reference oracle for the weighted accumulation above.
