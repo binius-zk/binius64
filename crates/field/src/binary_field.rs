@@ -398,7 +398,7 @@ macro_rules! mul_by_binary_field_1b {
 			fn mul(self, rhs: BinaryField1b) -> Self::Output {
 				use $crate::underlier::{UnderlierType, WithUnderlier};
 
-				$crate::tracing::trace_multiplication!(BinaryField128b, BinaryField1b);
+				$crate::tracing::trace_multiplication!($name, BinaryField1b);
 
 				Self(self.0 & <$name as WithUnderlier>::Underlier::fill_with_bit(u8::from(rhs.0)))
 			}
