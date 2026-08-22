@@ -6,8 +6,9 @@ use std::ops::Range;
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
+#[cfg(test)]
+use super::builder::BuilderKey;
 use super::{
-	builder::BuilderKey,
 	dense_shift_encoding::DenseShiftEncoding,
 	key::{ConstraintIndex, Key},
 };
@@ -40,6 +41,8 @@ impl KeySegment {
 	}
 
 	/// Builds the segment's keys from the builder keys lists of its words.
+	/// The reference layout the counting-sort builder is checked against.
+	#[cfg(test)]
 	pub(super) fn build(builder_key_lists: Vec<Vec<BuilderKey>>) -> Self {
 		// Every distinct shift sequence across every word, before any per-key index is assigned.
 		let dense_shift_enc = DenseShiftEncoding::new(
