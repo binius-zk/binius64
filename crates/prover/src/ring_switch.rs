@@ -6,7 +6,7 @@ use std::{iter, ops::Deref};
 use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{
-	ExtensionField, Field, PackedBinaryField128x1b, PackedField, cast_base,
+	ExtensionField, Field, PackedBinaryField128x1b, PackedExtension, PackedField,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, InputWrappingTransformationFactory,
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
@@ -144,7 +144,7 @@ where
 					// so each view is free.
 					let mut group = [PackedBinaryField128x1b::default(); ROW_GROUP];
 					iter::zip(&mut group, &mut rows)
-						.for_each(|(dst, src)| *dst = cast_base::<B1, _>(src));
+						.for_each(|(dst, src)| *dst = PackedExtension::<B1>::cast_base(src));
 
 					fold_row_group(&group, table, &mut columns);
 				}
@@ -402,7 +402,7 @@ mod test {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		BinaryField128bGhash, ExtensionField, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-		PackedField, PackedSubfield, cast_ext,
+		PackedExtension, PackedField, PackedSubfield,
 	};
 	use binius_math::{
 		FieldBuffer,
@@ -600,7 +600,7 @@ mod test {
 			bit_matrix
 				.as_ref()
 				.iter()
-				.map(|&bits_packed| cast_ext::<B1, P>(bits_packed))
+				.map(|&bits_packed| <P as PackedExtension<B1>>::cast_ext(bits_packed))
 				.collect(),
 		);
 		let (eq_lo, eq_hi) = expand_tensor_factors(suffix);
