@@ -69,399 +69,152 @@ impl<U: UnderlierType> WideMul for PackedPrimitiveType<U, BinaryField1b> {
 /// Common code to test different multiply, square and invert implementations
 #[cfg(test)]
 pub mod test_utils {
-	use crate::{
-		PackedField,
-		underlier::{U1, U2, U4, WithUnderlier},
+	use proptest::{
+		arbitrary::{Arbitrary, any},
+		strategy::{BoxedStrategy, Strategy},
 	};
 
-	pub struct Unit;
+	use crate::{
+		Field, PackedField,
+		arch::{M128, M256, M512},
+		underlier::WithUnderlier,
+	};
 
-	impl From<U1> for Unit {
-		fn from(_: U1) -> Self {
-			Self
+	// Proptest generates primitive underliers itself; a SIMD underlier borrows the strategy of the
+	// `u128` array it converts from, so `any::<P::Underlier>()` resolves at every packing width.
+	impl Arbitrary for M128 {
+		type Parameters = ();
+		type Strategy = BoxedStrategy<Self>;
+
+		fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+			any::<u128>().prop_map(Self::from).boxed()
 		}
 	}
 
-	impl From<U2> for Unit {
-		fn from(_: U2) -> Self {
-			Self
+	impl Arbitrary for M256 {
+		type Parameters = ();
+		type Strategy = BoxedStrategy<Self>;
+
+		fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+			any::<[u128; 2]>().prop_map(Self::from).boxed()
 		}
 	}
 
-	impl From<U4> for Unit {
-		fn from(_: U4) -> Self {
-			Self
+	impl Arbitrary for M512 {
+		type Parameters = ();
+		type Strategy = BoxedStrategy<Self>;
+
+		fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+			any::<[u128; 4]>().prop_map(Self::from).boxed()
 		}
 	}
 
-	impl From<u8> for Unit {
-		fn from(_: u8) -> Self {
-			Self
+	/// Every lane of the product is the product of the operands' lanes.
+	pub fn check_mul<P: PackedField + WithUnderlier>(a: P::Underlier, b: P::Underlier) {
+		let (a, b) = (P::from_underlier(a), P::from_underlier(b));
+
+		let c = a * b;
+		for i in 0..P::WIDTH {
+			assert_eq!(c.get(i), a.get(i) * b.get(i));
 		}
 	}
 
-	impl From<u16> for Unit {
-		fn from(_: u16) -> Self {
-			Self
+	/// Every lane of the square is its own lane multiplied by itself.
+	pub fn check_square<P: PackedField + WithUnderlier>(a: P::Underlier) {
+		let a = P::from_underlier(a);
+
+		let c = a.square();
+		for i in 0..P::WIDTH {
+			assert_eq!(c.get(i), a.get(i) * a.get(i));
 		}
 	}
 
-	impl From<u32> for Unit {
-		fn from(_: u32) -> Self {
-			Self
-		}
-	}
+	/// A non-zero lane inverts to its multiplicative inverse, and a zero lane inverts to zero.
+	pub fn check_invert_or_zero<P: PackedField + WithUnderlier>(a: P::Underlier) {
+		let a = P::from_underlier(a);
 
-	impl From<u64> for Unit {
-		fn from(_: u64) -> Self {
-			Self
-		}
-	}
-
-	impl From<u128> for Unit {
-		fn from(_: u128) -> Self {
-			Self
-		}
-	}
-
-	impl From<[u128; 2]> for Unit {
-		fn from(_: [u128; 2]) -> Self {
-			Self
-		}
-	}
-
-	impl From<[u128; 4]> for Unit {
-		fn from(_: [u128; 4]) -> Self {
-			Self
-		}
-	}
-
-	/// We use such helper macros to run tests only for the
-	/// types that implement the `constraint` trait.
-	/// The idea is inspired by `impls` trait.
-	macro_rules! define_check_packed_mul {
-		($mult_func:path, $constraint:path) => {
-			#[allow(unused)]
-			trait TestMulTrait<T> {
-				fn test_mul(_a: T, _b: T) {}
+		let c = a.invert_or_zero();
+		for i in 0..P::WIDTH {
+			if a.get(i).is_zero() {
+				assert!(c.get(i).is_zero());
+			} else {
+				assert_eq!(a.get(i) * c.get(i), P::Scalar::ONE);
 			}
+		}
+	}
 
-			impl<T> TestMulTrait<$crate::packed_binary_field::test_utils::Unit> for T {}
+	/// One deferred product, reduced immediately, equals the plain multiply.
+	pub fn check_wide_mul<P: PackedField + WithUnderlier>(a: P::Underlier, b: P::Underlier) {
+		let (a, b) = (P::from_underlier(a), P::from_underlier(b));
 
-			struct TestMult<T>(std::marker::PhantomData<T>);
+		assert_eq!(P::reduce(P::wide_mul(a, b)), a * b);
+	}
 
-			impl<T: $constraint + PackedField + $crate::underlier::WithUnderlier> TestMult<T> {
-				#[allow(unused)]
-				fn test_mul(
-					a: <T as $crate::underlier::WithUnderlier>::Underlier,
-					b: <T as $crate::underlier::WithUnderlier>::Underlier,
-				) {
-					let a = T::from_underlier(a);
-					let b = T::from_underlier(b);
+	/// Two deferred products summed and reduced once equal the sum of the plain multiplies.
+	pub fn check_wide_mul_linearity<P: PackedField + WithUnderlier>(
+		a1: P::Underlier,
+		b1: P::Underlier,
+		a2: P::Underlier,
+		b2: P::Underlier,
+	) {
+		let (a1, b1) = (P::from_underlier(a1), P::from_underlier(b1));
+		let (a2, b2) = (P::from_underlier(a2), P::from_underlier(b2));
 
-					let c = $mult_func(a, b);
-					for i in 0..T::WIDTH {
-						assert_eq!(c.get(i), a.get(i) * b.get(i));
+		// The sum reaches wide values no single product produces, so this exercises the reduction
+		// over its full accumulated domain.
+		let sum = P::wide_mul(a1, b1) + P::wide_mul(a2, b2);
+		assert_eq!(P::reduce(sum), a1 * b1 + a2 * b2);
+	}
+
+	/// Check the packed arithmetic of `$ty` lane-by-lane against its own scalar field.
+	macro_rules! packed_field_tests {
+		($mod:ident, $ty:ty) => {
+			mod $mod {
+				use proptest::{prelude::any, proptest};
+				use $crate::packed_binary_field::test_utils::{
+					check_invert_or_zero, check_mul, check_square, check_wide_mul,
+					check_wide_mul_linearity,
+				};
+
+				use super::*;
+
+				// The underlier is the packing's raw bit pattern, so one strategy fits every width.
+				type U = <$ty as $crate::underlier::WithUnderlier>::Underlier;
+
+				proptest! {
+					#[test]
+					fn mul(a in any::<U>(), b in any::<U>()) {
+						check_mul::<$ty>(a, b);
+					}
+
+					#[test]
+					fn square(a in any::<U>()) {
+						check_square::<$ty>(a);
+					}
+
+					#[test]
+					fn invert_or_zero(a in any::<U>()) {
+						check_invert_or_zero::<$ty>(a);
+					}
+
+					#[test]
+					fn wide_mul(a in any::<U>(), b in any::<U>()) {
+						check_wide_mul::<$ty>(a, b);
+					}
+
+					#[test]
+					fn wide_mul_linearity(
+						a1 in any::<U>(), b1 in any::<U>(),
+						a2 in any::<U>(), b2 in any::<U>(),
+					) {
+						check_wide_mul_linearity::<$ty>(a1, b1, a2, b2);
 					}
 				}
 			}
 		};
 	}
 
-	pub(crate) use define_check_packed_mul;
-
-	macro_rules! define_check_packed_square {
-		($square_func:path, $constraint:path) => {
-			#[allow(unused)]
-			trait TestSquareTrait<T> {
-				fn test_square(_a: T) {}
-			}
-
-			impl<T> TestSquareTrait<$crate::packed_binary_field::test_utils::Unit> for T {}
-
-			struct TestSquare<T>(std::marker::PhantomData<T>);
-
-			impl<T: $constraint + PackedField + $crate::underlier::WithUnderlier> TestSquare<T> {
-				#[allow(unused)]
-				fn test_square(a: <T as $crate::underlier::WithUnderlier>::Underlier) {
-					let a = T::from_underlier(a);
-
-					let c = $square_func(a);
-					for i in 0..T::WIDTH {
-						assert_eq!(c.get(i), a.get(i) * a.get(i));
-					}
-				}
-			}
-		};
-	}
-
-	pub(crate) use define_check_packed_square;
-
-	macro_rules! define_check_packed_inverse {
-		($invert_func:path, $constraint:path) => {
-			#[allow(unused)]
-			trait TestInvertTrait<T> {
-				fn test_invert(_a: T) {}
-			}
-
-			impl<T> TestInvertTrait<$crate::packed_binary_field::test_utils::Unit> for T {}
-
-			struct TestInvert<T>(std::marker::PhantomData<T>);
-
-			#[allow(unused)]
-			impl<T: $constraint + PackedField + $crate::underlier::WithUnderlier> TestInvert<T> {
-				fn test_invert(a: <T as $crate::underlier::WithUnderlier>::Underlier) {
-					use crate::Field;
-
-					let a = T::from_underlier(a);
-
-					let c = $invert_func(a);
-					for i in 0..T::WIDTH {
-						assert!(
-							(c.get(i).is_zero().into()
-								&& a.get(i).is_zero().into()
-								&& c.get(i).is_zero().into())
-								|| T::Scalar::ONE == a.get(i) * c.get(i)
-						);
-					}
-				}
-			}
-		};
-	}
-
-	pub(crate) use define_check_packed_inverse;
-
-	/// Test if `mult_func` operation is a valid multiply operation on the given values for
-	/// all possible packed fields defined on u128.
-	macro_rules! define_multiply_tests {
-		($mult_func:path, $constraint:path) => {
-			$crate::packed_binary_field::test_utils::define_check_packed_mul!(
-				$mult_func,
-				$constraint
-			);
-
-			proptest::proptest! {
-				#[test]
-				fn test_mul_packed_8(a_val in proptest::prelude::any::<u8>(), b_val in proptest::prelude::any::<u8>()) {
-					use $crate::PackedBinaryField8x1b;
-					use $crate::PackedAESBinaryField1x8b;
-
-					TestMult::<PackedBinaryField8x1b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedAESBinaryField1x8b>::test_mul(a_val.into(), b_val.into());
-				}
-
-				#[test]
-				fn test_mul_packed_16(a_val in proptest::prelude::any::<u16>(), b_val in proptest::prelude::any::<u16>()) {
-					use $crate::PackedBinaryField16x1b;
-
-					TestMult::<PackedBinaryField16x1b>::test_mul(a_val.into(), b_val.into());
-				}
-
-				#[test]
-				fn test_mul_packed_32(a_val in proptest::prelude::any::<u32>(), b_val in proptest::prelude::any::<u32>()) {
-					use $crate::PackedBinaryField32x1b;
-
-					TestMult::<PackedBinaryField32x1b>::test_mul(a_val.into(), b_val.into());
-				}
-
-				#[test]
-				fn test_mul_packed_64(a_val in proptest::prelude::any::<u64>(), b_val in proptest::prelude::any::<u64>()) {
-					use $crate::PackedBinaryField64x1b;
-
-					TestMult::<PackedBinaryField64x1b>::test_mul(a_val.into(), b_val.into());
-				}
-
-				#[test]
-				fn test_mul_packed_128(a_val in proptest::prelude::any::<u128>(), b_val in proptest::prelude::any::<u128>()) {
-					use $crate::PackedBinaryField128x1b;
-					use $crate::PackedAESBinaryField16x8b;
-					use $crate::PackedBinaryGhash1x128b;
-
-					TestMult::<PackedBinaryField128x1b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedAESBinaryField16x8b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedBinaryGhash1x128b>::test_mul(a_val.into(), b_val.into());
-				}
-
-				#[test]
-				fn test_mul_packed_256(a_val in proptest::prelude::any::<[u128; 2]>(), b_val in proptest::prelude::any::<[u128; 2]>()) {
-					use $crate::PackedBinaryField256x1b;
-					use $crate::PackedAESBinaryField32x8b;
-					use $crate::PackedBinaryGhash2x128b;
-
-					TestMult::<PackedBinaryField256x1b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedAESBinaryField32x8b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedBinaryGhash2x128b>::test_mul(a_val.into(), b_val.into());
-				}
-
-				#[test]
-				fn test_mul_packed_512(a_val in proptest::prelude::any::<[u128; 4]>(), b_val in proptest::prelude::any::<[u128; 4]>()) {
-					use $crate::PackedBinaryField512x1b;
-					use $crate::PackedAESBinaryField64x8b;
-					use $crate::PackedBinaryGhash4x128b;
-
-					TestMult::<PackedBinaryField512x1b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedAESBinaryField64x8b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedBinaryGhash4x128b>::test_mul(a_val.into(), b_val.into());
-				}
-			}
-		};
-	}
-
-	/// Test if `square_func` operation is a valid square operation on the given value for
-	/// all possible packed fields.
-	macro_rules! define_square_tests {
-		($square_func:path, $constraint:path) => {
-			$crate::packed_binary_field::test_utils::define_check_packed_square!(
-				$square_func,
-				$constraint
-			);
-
-			proptest::proptest! {
-				#[test]
-				fn test_square_packed_8(a_val in proptest::prelude::any::<u8>()) {
-					use $crate::PackedBinaryField8x1b;
-					use $crate::PackedAESBinaryField1x8b;
-
-					TestSquare::<PackedBinaryField8x1b>::test_square(a_val.into());
-					TestSquare::<PackedAESBinaryField1x8b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_16(a_val in proptest::prelude::any::<u16>()) {
-					use $crate::PackedBinaryField16x1b;
-
-					TestSquare::<PackedBinaryField16x1b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_32(a_val in proptest::prelude::any::<u32>()) {
-					use $crate::PackedBinaryField32x1b;
-
-					TestSquare::<PackedBinaryField32x1b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_64(a_val in proptest::prelude::any::<u64>()) {
-					use $crate::PackedBinaryField64x1b;
-
-					TestSquare::<PackedBinaryField64x1b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_128(a_val in proptest::prelude::any::<u128>()) {
-					use $crate::PackedBinaryField128x1b;
-					use $crate::PackedAESBinaryField16x8b;
-					use $crate::PackedBinaryGhash1x128b;
-
-					TestSquare::<PackedBinaryField128x1b>::test_square(a_val.into());
-					TestSquare::<PackedAESBinaryField16x8b>::test_square(a_val.into());
-					TestSquare::<PackedBinaryGhash1x128b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_256(a_val in proptest::prelude::any::<[u128; 2]>()) {
-					use $crate::PackedBinaryField256x1b;
-					use $crate::PackedAESBinaryField32x8b;
-					use $crate::PackedBinaryGhash2x128b;
-
-					TestSquare::<PackedBinaryField256x1b>::test_square(a_val.into());
-					TestSquare::<PackedAESBinaryField32x8b>::test_square(a_val.into());
-					TestSquare::<PackedBinaryGhash2x128b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_512(a_val in proptest::prelude::any::<[u128; 4]>()) {
-					use $crate::PackedBinaryField512x1b;
-					use $crate::PackedAESBinaryField64x8b;
-					use $crate::PackedBinaryGhash4x128b;
-
-					TestSquare::<PackedBinaryField512x1b>::test_square(a_val.into());
-					TestSquare::<PackedAESBinaryField64x8b>::test_square(a_val.into());
-					TestSquare::<PackedBinaryGhash4x128b>::test_square(a_val.into());
-				}
-			}
-		};
-	}
-
-	/// Test if `invert_func` operation is a valid invert operation on the given value for
-	/// all possible packed fields.
-	macro_rules! define_invert_tests {
-		($invert_func:path, $constraint:path) => {
-			$crate::packed_binary_field::test_utils::define_check_packed_inverse!(
-				$invert_func,
-				$constraint
-			);
-
-			proptest::proptest! {
-				#[test]
-				fn test_invert_packed_8(a_val in proptest::prelude::any::<u8>()) {
-					use $crate::PackedBinaryField8x1b;
-					use $crate::PackedAESBinaryField1x8b;
-
-					TestInvert::<PackedBinaryField8x1b>::test_invert(a_val.into());
-					TestInvert::<PackedAESBinaryField1x8b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_16(a_val in proptest::prelude::any::<u16>()) {
-					use $crate::PackedBinaryField16x1b;
-
-					TestInvert::<PackedBinaryField16x1b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_32(a_val in proptest::prelude::any::<u32>()) {
-					use $crate::PackedBinaryField32x1b;
-
-					TestInvert::<PackedBinaryField32x1b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_64(a_val in proptest::prelude::any::<u64>()) {
-					use $crate::PackedBinaryField64x1b;
-
-					TestInvert::<PackedBinaryField64x1b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_128(a_val in proptest::prelude::any::<u128>()) {
-					use $crate::PackedBinaryField128x1b;
-					use $crate::PackedAESBinaryField16x8b;
-					use $crate::PackedBinaryGhash1x128b;
-
-					TestInvert::<PackedBinaryField128x1b>::test_invert(a_val.into());
-					TestInvert::<PackedAESBinaryField16x8b>::test_invert(a_val.into());
-					TestInvert::<PackedBinaryGhash1x128b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_256(a_val in proptest::prelude::any::<[u128; 2]>()) {
-					use $crate::PackedBinaryField256x1b;
-					use $crate::PackedAESBinaryField32x8b;
-					use $crate::PackedBinaryGhash2x128b;
-
-					TestInvert::<PackedBinaryField256x1b>::test_invert(a_val.into());
-					TestInvert::<PackedAESBinaryField32x8b>::test_invert(a_val.into());
-					TestInvert::<PackedBinaryGhash2x128b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_512(a_val in proptest::prelude::any::<[u128; 4]>()) {
-					use $crate::PackedBinaryField512x1b;
-					use $crate::PackedAESBinaryField64x8b;
-					use $crate::PackedBinaryGhash4x128b;
-
-					TestInvert::<PackedBinaryField512x1b>::test_invert(a_val.into());
-					TestInvert::<PackedAESBinaryField64x8b>::test_invert(a_val.into());
-					TestInvert::<PackedBinaryGhash4x128b>::test_invert(a_val.into());
-				}
-			}
-		};
-	}
-
-	pub(crate) use define_invert_tests;
-	pub(crate) use define_multiply_tests;
-	pub(crate) use define_square_tests;
+	pub(crate) use packed_field_tests;
 
 	pub fn check_interleave<P: PackedField + WithUnderlier>(
 		lhs: P::Underlier,
@@ -552,7 +305,7 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-	use std::{fmt::Debug, iter::repeat_with, ops::Mul};
+	use std::{fmt::Debug, iter::repeat_with};
 
 	use binius_utils::{
 		DeserializeBytes, FixedSizeSerializeBytes, SerializeBytes, bytes::BytesMut,
@@ -561,15 +314,11 @@ mod tests {
 	use rand::prelude::*;
 	use test_utils::check_interleave_all_heights;
 
-	use super::{
-		test_utils::{define_invert_tests, define_multiply_tests, define_square_tests},
-		*,
-	};
+	use super::{test_utils::packed_field_tests, *};
 	use crate::{
 		Divisible, PackedAESBinaryField1x8b, PackedAESBinaryField16x8b, PackedAESBinaryField32x8b,
 		PackedAESBinaryField64x8b, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
 		PackedBinaryGhash4x128b, PackedField, Random,
-		arithmetic_traits::{InvertOrZero, Square},
 		test_utils::check_transpose_all_heights,
 		underlier::{U2, U4},
 	};
@@ -703,11 +452,13 @@ mod tests {
 		assert_eq!(P::default().into_iter().count(), P::WIDTH);
 	}
 
-	define_multiply_tests!(Mul::mul, PackedField);
-
-	define_square_tests!(Square::square, PackedField);
-
-	define_invert_tests!(InvertOrZero::invert_or_zero, PackedField);
+	packed_field_tests!(packed_8x1b, PackedBinaryField8x1b);
+	packed_field_tests!(packed_16x1b, PackedBinaryField16x1b);
+	packed_field_tests!(packed_32x1b, PackedBinaryField32x1b);
+	packed_field_tests!(packed_64x1b, PackedBinaryField64x1b);
+	packed_field_tests!(packed_128x1b, PackedBinaryField128x1b);
+	packed_field_tests!(packed_256x1b, PackedBinaryField256x1b);
+	packed_field_tests!(packed_512x1b, PackedBinaryField512x1b);
 
 	proptest! {
 		#[test]
