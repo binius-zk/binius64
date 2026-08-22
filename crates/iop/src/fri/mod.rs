@@ -33,4 +33,4 @@ pub mod verify;
 pub use common::*;
 pub use error::*;
 pub use fold::FRIFoldVerifier;
-pub use size_estimation::proof_size;
+pub use size_estimation::{RateEstimate, best_rate, estimate_by_rate, proof_size};
