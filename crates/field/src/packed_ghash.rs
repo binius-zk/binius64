@@ -41,201 +41,12 @@ define_packed_binary_field!(
 );
 
 #[cfg(test)]
-mod test_utils {
-	/// Test if `mult_func` operation is a valid multiply operation on the given values for
-	/// all possible packed fields defined on 8-512 bits.
-	macro_rules! define_multiply_tests {
-		($mult_func:path, $constraint:ty) => {
-			$crate::packed_binary_field::test_utils::define_check_packed_mul!(
-				$mult_func,
-				$constraint
-			);
-
-			proptest! {
-				#[test]
-				fn test_mul_packed_128(a_val in any::<u128>(), b_val in any::<u128>()) {
-					TestMult::<$crate::PackedBinaryGhash1x128b>::test_mul(
-						a_val.into(),
-						b_val.into(),
-					);
-				}
-
-				#[test]
-				fn test_mul_packed_256(a_val in any::<[u128; 2]>(), b_val in any::<[u128; 2]>()) {
-					TestMult::<$crate::PackedBinaryGhash2x128b>::test_mul(
-						a_val.into(),
-						b_val.into(),
-					);
-				}
-
-				#[test]
-				fn test_mul_packed_512(a_val in any::<[u128; 4]>(), b_val in any::<[u128; 4]>()) {
-					TestMult::<$crate::PackedBinaryGhash4x128b>::test_mul(
-						a_val.into(),
-						b_val.into(),
-					);
-				}
-			}
-		};
-	}
-
-	/// Test if `square_func` operation is a valid square operation on the given value for
-	/// all possible packed fields.
-	macro_rules! define_square_tests {
-		($square_func:path, $constraint:ident) => {
-			$crate::packed_binary_field::test_utils::define_check_packed_square!(
-				$square_func,
-				$constraint
-			);
-
-			proptest! {
-				#[test]
-				fn test_square_packed_128(a_val in any::<u128>()) {
-					TestSquare::<$crate::PackedBinaryGhash1x128b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_256(a_val in any::<[u128; 2]>()) {
-					TestSquare::<$crate::PackedBinaryGhash2x128b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_512(a_val in any::<[u128; 4]>()) {
-					TestSquare::<$crate::PackedBinaryGhash4x128b>::test_square(a_val.into());
-				}
-			}
-		};
-	}
-
-	/// Test if `invert_func` operation is a valid invert operation on the given value for
-	/// all possible packed fields.
-	macro_rules! define_invert_tests {
-		($invert_func:path, $constraint:ident) => {
-			$crate::packed_binary_field::test_utils::define_check_packed_inverse!(
-				$invert_func,
-				$constraint
-			);
-
-			proptest! {
-				#[test]
-				fn test_invert_packed_128(a_val in any::<u128>()) {
-					TestInvert::<$crate::PackedBinaryGhash1x128b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_256(a_val in any::<[u128; 2]>()) {
-					TestInvert::<$crate::PackedBinaryGhash2x128b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_512(a_val in any::<[u128; 4]>()) {
-					TestInvert::<$crate::PackedBinaryGhash4x128b>::test_invert(a_val.into());
-				}
-			}
-		};
-	}
-
-	macro_rules! define_wide_mul_tests {
-		() => {
-			fn check_widening_correctness<P>(a: P::Underlier, b: P::Underlier)
-			where
-				P: $crate::PackedField<Scalar = $crate::BinaryField128bGhash>
-					+ $crate::WideMul
-					+ $crate::underlier::WithUnderlier,
-			{
-				let a = P::from_underlier(a);
-				let b = P::from_underlier(b);
-				let wide = P::wide_mul(a, b);
-				let reduced = P::reduce(wide);
-				assert_eq!(reduced, a * b);
-			}
-
-			fn check_widening_linearity<P>(
-				a1: P::Underlier,
-				b1: P::Underlier,
-				a2: P::Underlier,
-				b2: P::Underlier,
-			) where
-				P: $crate::PackedField<Scalar = $crate::BinaryField128bGhash>
-					+ $crate::WideMul
-					+ $crate::underlier::WithUnderlier,
-			{
-				let (a1, b1) = (P::from_underlier(a1), P::from_underlier(b1));
-				let (a2, b2) = (P::from_underlier(a2), P::from_underlier(b2));
-				let sum_reduced = P::reduce(P::wide_mul(a1, b1) + P::wide_mul(a2, b2));
-				assert_eq!(sum_reduced, a1 * b1 + a2 * b2);
-			}
-
-			proptest! {
-				#[test]
-				fn test_wide_mul_correctness_128(a in any::<u128>(), b in any::<u128>()) {
-					check_widening_correctness::<$crate::PackedBinaryGhash1x128b>(a.into(), b.into());
-				}
-
-				#[test]
-				fn test_wide_mul_correctness_256(a in any::<[u128; 2]>(), b in any::<[u128; 2]>()) {
-					check_widening_correctness::<$crate::PackedBinaryGhash2x128b>(a.into(), b.into());
-				}
-
-				#[test]
-				fn test_wide_mul_correctness_512(a in any::<[u128; 4]>(), b in any::<[u128; 4]>()) {
-					check_widening_correctness::<$crate::PackedBinaryGhash4x128b>(a.into(), b.into());
-				}
-
-				#[test]
-				fn test_wide_mul_linearity_128(
-					a1 in any::<u128>(), b1 in any::<u128>(),
-					a2 in any::<u128>(), b2 in any::<u128>(),
-				) {
-					check_widening_linearity::<$crate::PackedBinaryGhash1x128b>(
-						a1.into(), b1.into(), a2.into(), b2.into(),
-					);
-				}
-
-				#[test]
-				fn test_wide_mul_linearity_256(
-					a1 in any::<[u128; 2]>(), b1 in any::<[u128; 2]>(),
-					a2 in any::<[u128; 2]>(), b2 in any::<[u128; 2]>(),
-				) {
-					check_widening_linearity::<$crate::PackedBinaryGhash2x128b>(
-						a1.into(), b1.into(), a2.into(), b2.into(),
-					);
-				}
-
-				#[test]
-				fn test_wide_mul_linearity_512(
-					a1 in any::<[u128; 4]>(), b1 in any::<[u128; 4]>(),
-					a2 in any::<[u128; 4]>(), b2 in any::<[u128; 4]>(),
-				) {
-					check_widening_linearity::<$crate::PackedBinaryGhash4x128b>(
-						a1.into(), b1.into(), a2.into(), b2.into(),
-					);
-				}
-			}
-		};
-	}
-
-	pub(crate) use define_invert_tests;
-	pub(crate) use define_multiply_tests;
-	pub(crate) use define_square_tests;
-	pub(crate) use define_wide_mul_tests;
-}
-
-#[cfg(test)]
 mod tests {
-	use std::ops::Mul;
-
 	use proptest::{arbitrary::any, proptest};
 
-	use super::{
-		PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-		test_utils::{
-			define_invert_tests, define_multiply_tests, define_square_tests, define_wide_mul_tests,
-		},
-	};
+	use super::*;
 	use crate::{
-		BinaryField128bGhash, PackedField,
-		arithmetic_traits::{InvertOrZero, Square},
+		BinaryField128bGhash, PackedField, packed_binary_field::test_utils::packed_field_tests,
 		underlier::WithUnderlier,
 	};
 
@@ -264,13 +75,9 @@ mod tests {
 		}
 	}
 
-	define_multiply_tests!(Mul::mul, PackedField);
-
-	define_square_tests!(Square::square, PackedField);
-
-	define_invert_tests!(InvertOrZero::invert_or_zero, PackedField);
-
-	define_wide_mul_tests!();
+	packed_field_tests!(ghash_1x128b, PackedBinaryGhash1x128b);
+	packed_field_tests!(ghash_2x128b, PackedBinaryGhash2x128b);
+	packed_field_tests!(ghash_4x128b, PackedBinaryGhash4x128b);
 
 	#[test]
 	fn test_wide_mul_zero_inputs() {
