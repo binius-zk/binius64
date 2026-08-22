@@ -195,7 +195,9 @@ mod tests {
 		assert_eq!(layout.n_inout, 0, "fixture should have no inout wires");
 		let combined = layout.combined_len();
 		let full_len = combined + layout.n_scratch;
-		let n = 8usize;
+		// A large instance count, so the equivalence holds well beyond a handful of instances.
+		// This call goes through the plain batched evaluator, not the tiled parallel dispatch.
+		let n = 1024usize;
 
 		// Distinct inputs per instance.
 		let inputs: Vec<(u64, u64)> = (0..n)
