@@ -126,11 +126,192 @@ impl DeserializeBytes for KeySegment {
 		let constraint_indices = Vec::<ConstraintIndex>::deserialize(&mut read_buf)?;
 		let dense_shift_enc = DenseShiftEncoding::deserialize(&mut read_buf)?;
 
+		// A key indexes its own segment's shift encoding and constraint list.
+		// Rejecting a bad index here beats panicking mid-proof in `build_g` or `word_scalar`.
+		let keys_index_siblings = keys.iter().all(|key| {
+			(key.dense_shift_idx as usize) < dense_shift_enc.len()
+				&& key.range.end as usize <= constraint_indices.len()
+		});
+		if !keys_index_siblings {
+			return Err(SerializationError::InvalidConstruction {
+				name: "KeySegment::keys",
+			});
+		}
+		// A word's range names its keys inside the flattened keys vector, which `word_keys` slices.
+		let key_ranges_index_keys = key_ranges
+			.iter()
+			.all(|range| range.start <= range.end && range.end as usize <= keys.len());
+		if !key_ranges_index_keys {
+			return Err(SerializationError::InvalidConstruction {
+				name: "KeySegment::key_ranges",
+			});
+		}
+
 		Ok(KeySegment {
 			keys,
 			key_ranges,
 			constraint_indices,
 			dense_shift_enc,
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_core::constraint_system::Shift;
+
+	use super::{super::operation::Operation, *};
+
+	// Serializes a segment built raw, bypassing `build`, so malformed indices reach the
+	// deserializer.
+	fn deserialize_raw(segment: &KeySegment) -> Result<KeySegment, SerializationError> {
+		let mut buf = Vec::new();
+		segment.serialize(&mut buf).unwrap();
+		KeySegment::deserialize(buf.as_slice())
+	}
+
+	#[test]
+	fn key_segment_round_trips_a_well_formed_segment() {
+		// Pins the checks against the shape `build` produces: word ranges tile the keys vector, and
+		// every index addresses a sibling long enough to hold it.
+		let segment = KeySegment {
+			keys: vec![
+				Key {
+					operation: Operation::Zero,
+					dense_shift_idx: 0,
+					range: Range { start: 0, end: 2 },
+				},
+				Key {
+					operation: Operation::Zero,
+					dense_shift_idx: 1,
+					range: Range { start: 2, end: 3 },
+				},
+			],
+			key_ranges: vec![Range { start: 0, end: 1 }, Range { start: 1, end: 2 }],
+			constraint_indices: (0..3)
+				.map(|constraint_index| ConstraintIndex {
+					operand_index: 0,
+					constraint_index,
+				})
+				.collect(),
+			dense_shift_enc: DenseShiftEncoding::new([
+				[Shift::srl(1), Shift::IDENTITY],
+				[Shift::srl(2), Shift::IDENTITY],
+			]),
+		};
+
+		let segment = deserialize_raw(&segment).expect("a well-formed segment deserializes");
+
+		assert_eq!(segment.n_words(), 2);
+		assert_eq!(segment.keys.len(), 2);
+		assert_eq!(segment.constraint_indices.len(), 3);
+		assert_eq!(segment.dense_shift_enc.len(), 2);
+		assert_eq!(segment.word_keys(0).len(), 1);
+		assert_eq!(segment.word_keys(1).len(), 1);
+	}
+
+	#[test]
+	fn key_segment_rejects_a_key_indexing_past_the_shift_encoding() {
+		// `build_g` scales this index by the row length to reach into the multilinears buffer.
+		// The encoding holds two sequences, so index 2 is one past its end.
+		let segment = KeySegment {
+			keys: vec![Key {
+				operation: Operation::Zero,
+				dense_shift_idx: 2,
+				range: Range { start: 0, end: 1 },
+			}],
+			key_ranges: vec![Range { start: 0, end: 1 }],
+			constraint_indices: vec![ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 0,
+			}],
+			dense_shift_enc: DenseShiftEncoding::new([
+				[Shift::srl(1), Shift::IDENTITY],
+				[Shift::srl(2), Shift::IDENTITY],
+			]),
+		};
+
+		match deserialize_raw(&segment).unwrap_err() {
+			SerializationError::InvalidConstruction { name } => {
+				assert_eq!(name, "KeySegment::keys");
+			}
+			other => panic!("Expected InvalidConstruction, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn key_segment_rejects_a_key_range_past_the_constraint_indices() {
+		// `accumulate_wide` slices the segment's flattened constraint list with this range, which
+		// holds one entry against the key's claim of four.
+		let segment = KeySegment {
+			keys: vec![Key {
+				operation: Operation::Zero,
+				dense_shift_idx: 0,
+				range: Range { start: 0, end: 4 },
+			}],
+			key_ranges: vec![Range { start: 0, end: 1 }],
+			constraint_indices: vec![ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 0,
+			}],
+			dense_shift_enc: DenseShiftEncoding::new([[Shift::srl(1), Shift::IDENTITY]]),
+		};
+
+		match deserialize_raw(&segment).unwrap_err() {
+			SerializationError::InvalidConstruction { name } => {
+				assert_eq!(name, "KeySegment::keys");
+			}
+			other => panic!("Expected InvalidConstruction, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn key_segment_rejects_a_word_range_past_the_keys() {
+		// `word_keys` slices the flattened keys vector, which holds one key against a range of two.
+		let segment = KeySegment {
+			keys: vec![Key {
+				operation: Operation::Zero,
+				dense_shift_idx: 0,
+				range: Range { start: 0, end: 1 },
+			}],
+			key_ranges: vec![Range { start: 0, end: 2 }],
+			constraint_indices: vec![ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 0,
+			}],
+			dense_shift_enc: DenseShiftEncoding::new([[Shift::srl(1), Shift::IDENTITY]]),
+		};
+
+		match deserialize_raw(&segment).unwrap_err() {
+			SerializationError::InvalidConstruction { name } => {
+				assert_eq!(name, "KeySegment::key_ranges");
+			}
+			other => panic!("Expected InvalidConstruction, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn key_segment_rejects_a_reversed_word_range() {
+		// Slicing `start..end` panics when start runs past end, in bounds or not.
+		let segment = KeySegment {
+			keys: vec![Key {
+				operation: Operation::Zero,
+				dense_shift_idx: 0,
+				range: Range { start: 0, end: 1 },
+			}],
+			key_ranges: vec![Range { start: 1, end: 0 }],
+			constraint_indices: vec![ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 0,
+			}],
+			dense_shift_enc: DenseShiftEncoding::new([[Shift::srl(1), Shift::IDENTITY]]),
+		};
+
+		match deserialize_raw(&segment).unwrap_err() {
+			SerializationError::InvalidConstruction { name } => {
+				assert_eq!(name, "KeySegment::key_ranges");
+			}
+			other => panic!("Expected InvalidConstruction, got: {other:?}"),
+		}
 	}
 }
