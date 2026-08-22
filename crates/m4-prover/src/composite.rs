@@ -214,14 +214,16 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{ValueTable, constraint_system::m4::ConstraintSystemM4};
+	use binius_core::{
+		ValueTable, constraint_system::m4::ConstraintSystemM4, error::VerificationM4Error,
+	};
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_hash::StdHashSuite;
 	use binius_transcript::VerifierTranscript;
 	use binius_verifier::config::StdChallenger;
 
 	use super::*;
-	use crate::test_utils::{crc64_chip_circuit, crc64_iso_reference};
+	use crate::test_utils::{Crc64ChipCircuit, crc64_chip_circuit, crc64_iso_reference};
 
 	type P = PackedBinaryGhash1x128b;
 
@@ -230,6 +232,27 @@ mod tests {
 
 	/// The message the fixture absorbs, one chip call per word.
 	const MESSAGE: [u64; 4] = [0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210, 0, u64::MAX];
+
+	/// A second message, differing from [`MESSAGE`] in every word, so a run over it shares no
+	/// chip instance with the honest one and every call is mismatched rather than just the first.
+	const OTHER_MESSAGE: [u64; 4] = [0xdead_beef_dead_beef, 0xcafe_babe_cafe_babe, 1, 0];
+
+	/// Builds a witness over `message`, checked against the reference so a splice below starts
+	/// from two runs that are each honest about their own system.
+	fn witness_over(c: &Crc64ChipCircuit, message: &[u64; 4]) -> WitnessM4 {
+		let witness = c
+			.circuit
+			.generate_witness(|filler| {
+				for (&wire, &word) in iter::zip(&c.input, message) {
+					filler[wire] = Word(word);
+				}
+			})
+			.unwrap();
+
+		let output = c.circuit.main.circuit.witness_index(c.output);
+		assert_eq!(witness.main[output], Word(crc64_iso_reference(message)));
+		witness
+	}
 
 	/// Builds the composite fixture and a witness over [`MESSAGE`].
 	fn fixture() -> (ConstraintSystemM4, WitnessM4) {
@@ -325,5 +348,57 @@ mod tests {
 				.is_err(),
 			"a chip instance that breaks the chip's constraints must not verify"
 		);
+	}
+
+	/// Pins the gap [`IOPVerifierM4`] documents: chip calls are unconstrained, so a composite proof
+	/// does not establish that the instances are the ones main's calls asked for.
+	///
+	/// The fixture is the sharpest case for it. Main learns each register state from a hint rather
+	/// than computing it, so its own constraints relate the output to the last state and nothing
+	/// else — the input words reach the CRC only through the chip calls. Overwriting them therefore
+	/// leaves every main constraint satisfied and every chip instance satisfying the chip, while
+	/// the statement becomes a claim about a message that was never absorbed.
+	///
+	/// [`ConstraintSystemM4::verify`] walks call to instance and reports it. The argument accepts.
+	///
+	/// This asserts the CURRENT behaviour, gap included. When the permutation/lookup argument that
+	/// constrains chip calls lands, the second half turns into an error and this is the regression
+	/// that says the gap closed.
+	#[test]
+	fn a_composite_proof_does_not_bind_a_statement_to_the_work_that_produced_it() {
+		let c = crc64_chip_circuit(MESSAGE.len());
+		let cs = c.circuit.to_constraint_system();
+
+		// An honest run over one message: its states, its instances and its digest all agree.
+		let mut forged = witness_over(&c, &OTHER_MESSAGE);
+
+		// Restate it as a run over a different message, touching only the input words.
+		for (&wire, &word) in iter::zip(&c.input, &MESSAGE) {
+			forged.main[c.circuit.main.circuit.witness_index(wire)] = Word(word);
+		}
+
+		// The statement is now false, which is what makes the acceptance below worth pinning.
+		let claimed = forged.main[c.circuit.main.circuit.witness_index(c.output)];
+		assert_ne!(
+			claimed,
+			Word(crc64_iso_reference(&MESSAGE)),
+			"the restated statement must be false, or this test pins nothing"
+		);
+
+		// The reference checker walks call to instance and sees it.
+		assert!(
+			matches!(forged.verify(&cs), Err(VerificationM4Error::CallMismatch { .. })),
+			"the reference checker must catch a call served by another run's instance"
+		);
+
+		// The argument does not: main's constraints hold, every instance satisfies the chip, and
+		// nothing relates the two. See the gap documented on `IOPVerifierM4`.
+		let proof = prove(&cs, &forged);
+		let verifier = VerifierM4::<StdHashSuite>::setup(&cs, LOG_INV_RATE).unwrap();
+		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
+		verifier
+			.verify(forged.main.inout(), &mut transcript)
+			.expect("unconstrained chip calls: a false statement verifies");
+		transcript.finalize().expect("no trailing proof data");
 	}
 }
