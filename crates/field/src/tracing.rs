@@ -48,17 +48,25 @@ cfg_if! {
 
 		macro_rules! trace_multiplication {
 			($name: ty) => {
-				let _guard = $crate::tracing::TraceGuard::new(stringify!($name), stringify!($name));
+				$crate::tracing::trace_multiplication!($name, $name);
 			};
 			($lhs: ty, $rhs: ty) => {
+				// `stringify!` never resolves its argument, so also name both types where the
+				// compiler must resolve them, or a bogus label silently mislabels the trace.
+				const _: ::std::marker::PhantomData<($lhs, $rhs)> = ::std::marker::PhantomData;
 				let _guard = $crate::tracing::TraceGuard::new(stringify!($lhs), stringify!($rhs));
 			};
 		}
 
 	} else {
 		macro_rules! trace_multiplication {
-			($name: ty) => {};
-			($lhs: ty, $rhs: ty) => {};
+			($name: ty) => {
+				$crate::tracing::trace_multiplication!($name, $name);
+			};
+			($lhs: ty, $rhs: ty) => {
+				// Resolve the types even with tracing off, so a bogus label fails a plain build.
+				const _: ::std::marker::PhantomData<($lhs, $rhs)> = ::std::marker::PhantomData;
+			};
 		}
 	}
 }
