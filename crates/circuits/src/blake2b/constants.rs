@@ -39,5 +39,4 @@ pub const R4: u32 = 63;
 /// Algorithm parameters
 pub const ROUNDS: usize = 12;
 pub const BLOCK_BYTES: usize = 128;
-pub const STATE_WORDS: usize = 8;
 pub const MAX_OUTPUT_BYTES: usize = 64;
