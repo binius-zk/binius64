@@ -146,16 +146,6 @@ pub fn blake2b_256(data: &[u8]) -> [u8; 32] {
 	result
 }
 
-/// BLAKE2b-512: Fixed 512-bit (64-byte) output variant
-///
-/// This is a convenience function for the maximum 512-bit output case
-pub fn blake2b_512(data: &[u8]) -> [u8; 64] {
-	let hash = blake2b(data, 64);
-	let mut result = [0u8; 64];
-	result.copy_from_slice(&hash);
-	result
-}
-
 #[cfg(test)]
 mod tests {
 	use blake2::digest::{Update, VariableOutput};
