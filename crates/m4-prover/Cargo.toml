@@ -29,7 +29,6 @@ digest.workspace = true
 # Enabled by the `test-circuits` feature only.
 k256 = { workspace = true, features = ["arithmetic"], optional = true }
 rand = { workspace = true, optional = true }
-thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
