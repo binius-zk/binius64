@@ -9,6 +9,7 @@
 
 pub mod domain_context;
 mod neighbors_last;
+pub mod novel_basis;
 mod reference;
 #[cfg(test)]
 mod tests_evaluation;
