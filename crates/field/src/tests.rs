@@ -117,6 +117,17 @@ generate_spread_tests_small! {
 	spread_equals_basic_spread_64x1, PackedBinaryField64x1b, BinaryField1b, SmallU<1>, 64;
 }
 
+#[test]
+fn test_field_ops_powers() {
+	// The iterator starts at the 0'th power, so entry i must equal the base raised to i.
+	let generator = BinaryField128bGhash::MULTIPLICATIVE_GENERATOR;
+	let power_values: Vec<_> = generator.powers().take(10).collect();
+
+	for (i, power) in power_values.iter().enumerate() {
+		assert_eq!(*power, generator.pow(i as u64));
+	}
+}
+
 fn check_field_ops_square_transpose<FSub, F>()
 where
 	FSub: Field,

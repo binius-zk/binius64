@@ -264,7 +264,7 @@ fn compute_barycentric_weights<F: Field>(points: &[F]) -> Vec<F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{BinaryField128bGhash, Field, Random, util::powers};
+	use binius_field::{BinaryField128bGhash, Field, Random};
 	use rand::prelude::*;
 
 	use super::*;
@@ -276,7 +276,7 @@ mod tests {
 	};
 
 	fn evaluate_univariate_with_powers<F: Field>(coeffs: &[F], x: F) -> F {
-		inner_product(coeffs.iter().copied(), powers(x).take(coeffs.len()))
+		inner_product(coeffs.iter().copied(), x.powers().take(coeffs.len()))
 	}
 
 	type F = BinaryField128bGhash;
