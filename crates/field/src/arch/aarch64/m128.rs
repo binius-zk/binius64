@@ -44,11 +44,6 @@ impl M128 {
 	pub const fn from_u128(value: u128) -> Self {
 		Self(unsafe { std::mem::transmute::<u128, uint64x2_t>(value) })
 	}
-
-	#[inline]
-	pub fn shuffle_u8(self, src: [u8; 16]) -> Self {
-		unsafe { vqtbl1q_u8(self.into(), Self::from_le_bytes(src).into()).into() }
-	}
 }
 
 impl Default for M128 {
