@@ -30,16 +30,6 @@ pub enum Error {
 	IncorrectPublicInputLength { expected: usize, actual: usize },
 	#[error("constraint system error: {0}")]
 	ConstraintSystem(#[from] ConstraintSystemError),
-	#[error("invalid proof: {0}")]
-	Verification(#[from] VerificationError),
 	#[error("shift reduction error: {0}")]
 	ShiftReduction(#[from] shift::Error),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
-	#[error("public input check failed")]
-	PublicInputCheckFailed,
-	#[error("final evaluation check of sumcheck and FRI reductions failed")]
-	EvaluationInconsistency,
 }
