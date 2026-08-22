@@ -3,7 +3,6 @@
 use std::{
 	iter::Sum,
 	marker::PhantomData,
-	mem,
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
@@ -58,11 +57,6 @@ where
 			elems,
 			_marker: PhantomData,
 		}
-	}
-
-	/// Returns a slice of the vertical subfield elements composing the tensor algebra element.
-	pub fn vertical_elems(&self) -> &[FE] {
-		&self.elems
 	}
 
 	/// Constructs a [`TensorAlgebra`] in the vertical subring.
@@ -128,11 +122,6 @@ where
 	F: Field,
 	FE: ExtensionField<F>,
 {
-	/// Returns the byte size of an element.
-	pub const fn byte_size() -> usize {
-		mem::size_of::<FE>() << FE::LOG_DEGREE
-	}
-
 	/// Tensor product of a vertical subring element and a horizontal subring element.
 	pub fn tensor(vertical: FE, horizontal: FE) -> Self {
 		let elems = horizontal

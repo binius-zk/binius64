@@ -235,13 +235,6 @@ where
 		Ok(commitment)
 	}
 
-	/// Reports whether the round about to be processed carries a commitment.
-	pub fn needs_commitment(&self) -> bool {
-		// A commitment is due only when the schedule names this exact round.
-		self.next_commitment()
-			.is_some_and(|expected| expected.round == self.curr_round)
-	}
-
 	/// Reports whether every fold round has been processed.
 	pub const fn is_complete(&self) -> bool {
 		self.curr_round == self.n_rounds()
@@ -261,11 +254,6 @@ where
 		);
 
 		self.round_commitments
-	}
-
-	/// The round about to be processed, counted from zero.
-	pub const fn current_round(&self) -> usize {
-		self.curr_round
 	}
 
 	/// Number of rounds the fold phase runs.

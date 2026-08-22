@@ -149,11 +149,6 @@ where
 		self.params.n_fold_rounds()
 	}
 
-	/// Number of times `execute_fold_round` has been called.
-	pub const fn n_rounds_remaining(&self) -> usize {
-		self.n_rounds() - self.curr_round
-	}
-
 	fn is_commitment_round(&self) -> bool {
 		self.next_commit_round
 			.is_some_and(|round| round == self.curr_round)
