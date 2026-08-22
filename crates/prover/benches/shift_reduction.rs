@@ -16,11 +16,10 @@ use binius_math::{
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		OperatorClaims, OperatorData, build_key_collection,
+		OperatorClaims, OperatorData, ShiftProver, build_key_collection,
 		monster::{build_monster_segments, shift_operator_table},
-		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
+		phase_1::{Phase1Output, SparseShiftRows, build_g},
 		phase_2::run_sumcheck,
-		prove,
 	},
 };
 use binius_transcript::ProverTranscript;
@@ -152,7 +151,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-				prove::<F, P, _, _>(
+				ShiftProver::<_, P, _>::new(&mut prover_transcript, &alloc).prove(
 					&key_collection,
 					value_vec.public(),
 					value_vec.non_public(),
@@ -163,8 +162,6 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 						binmul: OperatorData::zero_claim(r_zhat_prime),
 					},
 					&subspace,
-					&mut prover_transcript,
-					&alloc,
 				)
 			})
 		});
@@ -188,7 +185,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-		prove::<F, P, _, _>(
+		ShiftProver::<_, P, _>::new(&mut prover_transcript, &&BufferPool::new()).prove(
 			&key_collection,
 			value_vec.public(),
 			value_vec.non_public(),
@@ -199,8 +196,6 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				binmul: OperatorData::zero_claim(r_zhat_prime),
 			},
 			&subspace,
-			&mut prover_transcript,
-			&&BufferPool::new(),
 		);
 
 		let setup_verifier_transcript = prover_transcript.into_verifier();
@@ -294,13 +289,17 @@ fn bench_shift_phases(c: &mut Criterion) {
 	}
 	.prepare(|| F::random(&mut rng));
 
-	// The phases are sequential and stateful: each consumes the previous one's outputs. Rather than
-	// re-deriving predecessors inside each phase's per-iteration setup, advance the protocol once
-	// here (with a throwaway transcript) to capture each phase's inputs; the setup closures below
-	// then only clone what a phase consumes by value. The specific transcript challenges do not
-	// change the work a phase performs.
-	// `build_g` runs per key segment; the full g multilinear is the two segments' entries
-	// concatenated, as `prove_phase_1` assembles them.
+	// The phases are sequential and stateful: each one consumes the previous phase's outputs.
+	//
+	// Rather than re-deriving predecessors inside each phase's own per-iteration setup, the
+	// protocol runs once here, ahead of time, with a throwaway transcript, to capture each
+	// phase's inputs.
+	// The benchmark closures below then only clone what a phase consumes by value.
+	// The specific transcript challenges do not change the work a phase performs, so reusing
+	// them here does not bias any of the timings below.
+	//
+	// The witness-and-batching multilinear is built once per key segment; the combined
+	// multilinear is the two segments' rows concatenated.
 	let build_combined_g = || {
 		let public = build_g::<F, P>(public_words, &key_collection.public, &prepared);
 		let hidden = build_g::<F, P>(hidden_words, &key_collection.hidden, &prepared);
@@ -321,8 +320,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		g_eval: _,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
-		run_phase_1_sumcheck::<F, P, _, _>(
-			g.clone(),
+		g.clone().run_phase_1_sumcheck(
 			oblong_weights.as_ref(),
 			prepared.batched_eval(),
 			&mut transcript,
@@ -347,8 +345,12 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let mut group = c.benchmark_group("shift_reduction_phases");
 	group.sample_size(10);
 
-	// Phase 1. `build_g` / `shift_operator_table` take their inputs by reference, so no
-	// per-iteration clone is needed; `run_phase_1_sumcheck` consumes `g` by value.
+	// Phase 1.
+	//
+	// The row-building and weight-table steps take their inputs by reference.
+	// So neither needs a per-iteration clone.
+	// The sumcheck step consumes the row list by value, so its benchmark clones it once per
+	// iteration instead.
 	group.bench_function("phase1_build_g_parts", |b| {
 		b.iter(&build_combined_g);
 	});
@@ -360,8 +362,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			|| g.clone(),
 			|g| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
-				run_phase_1_sumcheck::<F, P, _, _>(
-					g,
+				g.run_phase_1_sumcheck(
 					oblong_weights.as_ref(),
 					prepared.batched_eval(),
 					&mut transcript,
