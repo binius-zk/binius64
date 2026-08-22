@@ -7,7 +7,13 @@ use binius_compute::{Allocator, VecLike};
 use binius_core::{ShiftVariant, constraint_system::Shift, word::Word};
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
+};
 use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
 use tracing::instrument;
 
@@ -349,6 +355,7 @@ where
 		values.spare_capacity_mut()[..n_full]
 			.par_iter_mut()
 			.enumerate()
+			.with_min_task(WorkPerItem::FieldMuls)
 			.for_each(|(chunk_index, slot)| {
 				let start = chunk_index * P::WIDTH;
 				slot.write(P::from_scalars(
