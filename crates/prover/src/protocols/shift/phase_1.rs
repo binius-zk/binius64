@@ -29,93 +29,53 @@ use itertools::izip;
 use tracing::instrument;
 
 use super::{
-	SegmentWords,
 	claims::PreparedOperatorClaims,
-	key_collection::{DenseShiftEncoding, KeyCollection, KeySegment},
+	key_collection::{DenseShiftEncoding, KeySegment},
 	monster::shift_operator_table,
 	outer::OuterShiftStage,
 	shift_ind::ShiftChallenge,
 };
 
-/// The number of variables the shift-and-bit phases of the reduction span.
+/// The number of variables the shift-and-bit phases of the reduction span: the bit position
+/// within a word, the inner shift slot, and the outer shift slot.
 ///
-/// The axes run, from the low index positions up: the bit position within a word, then the inner
-/// shift slot, then the outer one. The `g` multilinear spans all of them; no single table the
-/// prover forms does, which is what the outer rounds exist to avoid.
+/// No table the prover ever builds spans all three axes at once — avoiding that table is why
+/// the outer-slot rounds exist.
 pub const PHASE_1_LOG_LEN: usize = Word::LOG_BITS + LOG_SHIFT_ROWS;
 
-/// The number of variables of the phase-1 multilinears that index the shift.
+/// The number of variables of the row-index axis: two shift slots, since a term names two
+/// shifts applied in sequence.
 ///
-/// A term names a sequence of two shifts, so the row axis is two slots wide. It is indexed
-/// **outer-major**, since the rounds peel the outer shift first.
+/// The slots are ordered outer-major, so the rounds binding this axis peel the outer shift
+/// first.
 pub const LOG_SHIFT_ROWS: usize = 2 * LOG_SHIFT_COUNT;
 
-/// The number of variables one shift operator table spans.
-///
-/// Such a table holds one row of `Word::BITS` weights per `(variant, amount)` pair of a single
-/// slot, the bit position running within a row.
+/// The number of variables one shift-weight table spans: one row of weights per (shift
+/// variant, shift amount) pair, one weight per bit position within a word.
 pub const SHIFT_OPERATOR_LOG_LEN: usize = Word::LOG_BITS + LOG_SHIFT_COUNT;
 
-/// What phase 1 leaves the phases after it: its sumcheck's challenge point, split into the axes
-/// it binds, and the two evaluations it reduced to.
+/// The output of the first proving phase.
+///
+/// The challenge point the phase's rounds bound, split into its axes, plus the two
+/// evaluations the reduction still needs to carry forward.
 #[derive(Debug, Clone)]
 pub struct Phase1Output<F> {
 	/// The bit position within a word.
 	pub r_j: Vec<F>,
 	/// The inner shift's amount and variant.
-	///
-	/// Called the operation in the paper.
 	pub inner: ShiftChallenge<F>,
 	/// The outer shift's amount and variant.
 	pub outer: ShiftChallenge<F>,
-	/// The oblong weights carried through the outer shift, at the outer challenge point.
+	/// The weights carried through the outer shift, at the outer challenge point.
 	///
-	/// This is the terminal fold of the outer rounds' table, and it is the weight vector the
-	/// rounds binding the intermediate bit index run against.
+	/// Read by the next phase's bit-index rounds.
 	pub psi: Vec<F>,
-	/// The evaluation claim the next phase proves, called gamma in the paper: the product of the
-	/// two evaluations below.
+	/// The evaluation claim the next phase proves: the product of the two evaluations below.
 	pub gamma: F,
-	/// `g` at the bound shift and bit point, the sum over the word index of the constraint matrix
-	/// against the witness. It is the scalar the bit-index phases carry through their rounds, so
-	/// the sum never has to be formed a second time.
+	/// The witness-and-batching multilinear, evaluated at the bound shift and bit point.
+	///
+	/// Carried through the remaining phases' rounds, so it is never recomputed.
 	pub g_eval: F,
-}
-
-/// Proves the first phase of the shift reduction.
-///
-/// Builds the g multilinear and runs one sumcheck over its product with `h`, which is never formed
-/// as a table — see [`run_phase_1_sumcheck`].
-///
-/// # Arguments
-///
-/// - `oblong_weights`: the oblong weights of the reduction's first factor, one per bit position.
-///   `h` is those weights pushed through both shift slots.
-#[instrument(skip_all, name = "prover_phase_1")]
-pub fn prove_phase_1<F, P, Channel, A>(
-	key_collection: &KeyCollection,
-	words: SegmentWords<'_>,
-	prepared: &PreparedOperatorClaims<F>,
-	oblong_weights: &[F],
-	channel: &mut Channel,
-	alloc: &A,
-) -> Phase1Output<F>
-where
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-	Channel: IPProverChannel<F>,
-	A: Allocator,
-{
-	// Accumulate the g rows of the public and hidden segments separately, then collect both. The
-	// public words are the prefix of `words`, and each segment's key ranges are segment-relative.
-	let public = build_g::<_, P>(words.public, &key_collection.public, prepared);
-	let hidden = build_g::<_, P>(words.hidden, &key_collection.hidden, prepared);
-	let g = SparseShiftRows::from_segments([
-		(&public, &key_collection.public.dense_shift_enc),
-		(&hidden, &key_collection.hidden.dense_shift_enc),
-	]);
-
-	run_phase_1_sumcheck::<_, P, _, _>(g, oblong_weights, prepared.batched_eval(), channel, alloc)
 }
 
 /// The number of packed elements one row of `Word::BITS` scalars occupies.
@@ -127,20 +87,22 @@ const fn row_len<P: PackedField>() -> usize {
 	Word::BITS >> P::LOG_WIDTH
 }
 
-/// The rows of the phase-1 `g` multilinear that a constraint system's shifts reach.
+/// The nonzero rows of the witness-and-batching multilinear that a constraint system's shifts
+/// reach: one row of weights per (shift variant, shift amount) pair actually named, each
+/// tagged with its row index.
 ///
-/// `g` spans one row of `Word::BITS` scalars per `(shift variant, shift amount)` pair, of which a
-/// constraint system names a few dozen out of the `1 << LOG_SHIFT_ROWS` the space holds — 16 for a
-/// SHA256 circuit, 40 for Keccak. Only the named rows are stored, each tagged with its row index.
+/// A constraint system only ever names a few dozen pairs — 16 for a SHA-256 circuit, 40 for
+/// Keccak.
 ///
-/// `g` is the sum of its stored rows, so **rows at a repeated index add up and need not be
-/// deduplicated**. That is what lets the two key segments' rows simply concatenate, and what keeps
-/// the list a flat run of the same length for the whole protocol.
+/// Rows at a repeated index add up wherever the multilinear is read, so two segments' rows can
+/// simply concatenate here with no deduplication step.
 #[derive(Debug, Clone)]
 pub struct SparseShiftRows<P: PackedField> {
-	/// The row index of each stored row, in `values` order and below `1 << log_rows`. Repeatable.
+	/// The row index of each stored row, in the same order as the row values below.
+	///
+	/// An index can repeat.
 	indices: Vec<u32>,
-	/// The stored rows end to end, [`row_len`] packed elements each, in `indices` order.
+	/// The stored rows end to end, in the same order as the indices above.
 	values: Vec<P>,
 	/// The number of row-index variables the sumcheck has yet to bind.
 	log_rows: usize,
@@ -149,38 +111,43 @@ pub struct SparseShiftRows<P: PackedField> {
 impl<P: PackedField> SparseShiftRows<P> {
 	/// Collects the rows two key segments accumulated, tagged with the shift index each sits at.
 	///
-	/// Each segment's rows arrive in its own dense shift index order, which its encoding decodes to
-	/// the shift indices this list keys on. The two segments concatenate: a shift both of them use
-	/// contributes one row each at the same index, and the two add up where `g` is read.
+	/// Each segment's rows arrive in its own dense encoding order, which decodes each position
+	/// back to the shift index this list keys on.
+	/// The two segments' rows simply concatenate: a shift both use appears twice, and the two
+	/// rows add up wherever the multilinear is read later.
 	///
 	/// # Panics
 	///
-	/// Panics unless each segment's rows number exactly what its encoding accounts for.
+	/// Panics unless each segment's row count matches what its encoding accounts for.
 	pub fn from_segments(segments: [(&[P], &DenseShiftEncoding); 2]) -> Self {
 		let mut indices = Vec::new();
 		let mut values = Vec::new();
+
+		// Each segment contributes its own rows, tagged with its own shift indices.
 		for (rows, dense_shift_enc) in segments {
 			assert_eq!(
 				rows.len(),
 				dense_shift_enc.len() * row_len::<P>(),
 				"a segment holds one row per shift its encoding names"
 			);
+			// Decode each stored row's position back to the shift index it belongs to.
 			indices.extend(dense_shift_enc.shift_indices().map(|index| index as u32));
+			// Rows just concatenate: a shift both segments use simply appears twice.
 			values.extend_from_slice(rows);
 		}
 
 		Self::new(indices, values, LOG_SHIFT_ROWS)
 	}
 
-	/// Collects stored rows sitting at the given indices of a row space `log_rows` variables wide.
+	/// Collects stored rows sitting at the given indices of a row space `log_rows` variables
+	/// wide.
 	///
-	/// Indices repeat freely: `g` is the sum of its rows, so two rows at one index add up where it
-	/// is read.
+	/// An index can repeat: rows at a repeated index add up wherever the multilinear is read
+	/// later.
 	///
 	/// # Panics
 	///
-	/// Panics unless there is one `row_len` run of values per index, and every index is below
-	/// the row space.
+	/// Panics unless there is one row of values per index and every index fits the row space.
 	pub fn new(indices: Vec<u32>, values: Vec<P>, log_rows: usize) -> Self {
 		assert_eq!(
 			values.len(),
@@ -214,9 +181,9 @@ impl<P: PackedField> SparseShiftRows<P> {
 
 	/// The index-space bit the next round binds, separating the two halves of the row space.
 	///
-	/// ## Preconditions
+	/// # Panics
 	///
-	/// * `self.log_rows() >= 1`
+	/// Panics unless at least one row-index variable remains to bind.
 	pub(crate) fn half(&self) -> usize {
 		assert!(self.log_rows > 0, "precondition: a row-index variable remains to bind");
 		1 << (self.log_rows - 1)
@@ -224,24 +191,28 @@ impl<P: PackedField> SparseShiftRows<P> {
 
 	/// Binds the highest row-index variable to a challenge.
 	///
-	/// Folding is linear in `g`, so a row keeps its identity across it: it is scaled by the
-	/// challenge weight of the half it sits in and moved down into the folded index space. The list
-	/// therefore stays the same length, and nothing has to be paired up or merged.
+	/// Folding is linear, so a row keeps its identity across it: it is scaled by the challenge
+	/// weight of its half, then moved down into the folded index space.
+	/// The list stays the same length, with nothing paired up or merged.
 	///
-	/// ## Preconditions
+	/// # Panics
 	///
-	/// * `self.log_rows() >= 1`
+	/// Panics unless at least one row-index variable remains to bind.
 	pub(crate) fn fold(&mut self, challenge: P::Scalar) {
 		let half = self.half();
 		let lower_weight = P::broadcast(P::Scalar::ONE - challenge);
 		let upper_weight = P::broadcast(challenge);
 
 		let row_len = row_len::<P>();
+		// Every stored row moves on its own: the fold is linear, so no row needs its
+		// counterpart from the other half to update.
 		for (position, index) in self.indices.iter_mut().enumerate() {
 			let row = &mut self.values[position * row_len..][..row_len];
 			if *index as usize & half == 0 {
+				// Lower half: scale by `1 - challenge` and keep the same index.
 				row.iter_mut().for_each(|value| *value *= lower_weight);
 			} else {
+				// Upper half: scale by `challenge` and fold the index into the lower half.
 				row.iter_mut().for_each(|value| *value *= upper_weight);
 				*index ^= half as u32;
 			}
@@ -250,16 +221,17 @@ impl<P: PackedField> SparseShiftRows<P> {
 		self.log_rows -= 1;
 	}
 
-	/// What is left of `g` once every row-index variable is bound: one dense row over the bit
-	/// position, the sum of the stored rows now that they all sit at the one remaining index.
+	/// Collapses every remaining row-index variable into one dense row over the bit position:
+	/// the sum of the stored rows, now that they all sit at the same index.
 	///
-	/// ## Preconditions
+	/// # Panics
 	///
-	/// * `self.log_rows() == 0`
+	/// Panics unless every row-index variable is already bound.
 	fn into_bit_multilinear<A: Allocator>(self, alloc: &A) -> FieldVec<P, A> {
 		assert_eq!(self.log_rows, 0, "precondition: every row-index variable is bound");
 
 		let mut multilinear = FieldBuffer::zeros_in(alloc, Word::LOG_BITS);
+		// Every stored row now sits at the same index, so they all add into one dense row.
 		for (_, row) in self.rows() {
 			for (slot, &value) in iter::zip(multilinear.as_mut(), row) {
 				*slot += value;
@@ -267,67 +239,214 @@ impl<P: PackedField> SparseShiftRows<P> {
 		}
 		multilinear
 	}
+
+	/// Computes one round message of the phase-1 sumcheck over the row index.
+	///
+	/// Sampled at 1 and at infinity, with the claim supplying the value at 0.
+	/// Both samples are linear in the stored rows, so each row contributes independently and
+	/// facing rows across the split never have to be paired up.
+	///
+	/// ```text
+	/// R(1)   = sum_v G_1(v) H_1(v)             row (i, c) adds <c, h[i]>, upper half only
+	/// R(inf) = sum_v (G_0 + G_1)(H_0 + H_1)    row (i, c) adds <c, h[i] + h[i ^ half]>, either half
+	/// ```
+	fn round_coeffs<F, Data>(&self, h: &FieldBuffer<P, Data>, claim: F) -> RoundCoeffs<F>
+	where
+		F: Field,
+		P: PackedField<Scalar = F>,
+		Data: Deref<Target = [P]>,
+	{
+		let half = self.half();
+		let row_len = row_len::<P>();
+		let h_rows = h.as_ref();
+
+		// The per-point products accumulate in unreduced (wide) form and reduce once at the
+		// end.
+		let mut y_1 = <P as WideMul>::Output::default();
+		let mut y_inf = <P as WideMul>::Output::default();
+		for (index, row) in self.rows() {
+			let own = &h_rows[index * row_len..][..row_len];
+			let facing = &h_rows[(index ^ half) * row_len..][..row_len];
+
+			for i in 0..row_len {
+				// The infinity evaluation reads H(0) + H(1), the same sum from either half.
+				// So a row's own half only decides its contribution to the evaluation at 1.
+				if index & half != 0 {
+					y_1 += P::wide_mul(row[i], own[i]);
+				}
+				y_inf += P::wide_mul(row[i], own[i] + facing[i]);
+			}
+		}
+
+		// A row is a whole number of packed elements, so every lane of the accumulators is
+		// live.
+		let sum_lanes = |wide| P::reduce(wide).iter().sum::<F>();
+		RoundEvals([sum_lanes(y_1), sum_lanes(y_inf)]).interpolate(claim)
+	}
+
+	/// Runs the phase-1 sumcheck over the product of this row list and a weight table.
+	///
+	/// This row list is zero outside the rows a constraint system's shifts name, dense within
+	/// a named row.
+	/// A weight table holding one row per possible shift sequence would need `2^24` entries
+	/// and is never built:
+	///
+	/// - The rounds binding the outer shift slot read only the stored rows, so their cost follows
+	///   the shifts the constraint system names, not the whole space.
+	/// - Once the outer slot is bound, both multilinears are one dense row, and a shared
+	///   dense-product prover runs the remaining rounds.
+	///
+	/// Every round message matches what a fully dense prover would send.
+	///
+	/// The outer rounds run here, rather than inside that dense-product prover, because the
+	/// weights they leave behind must outlive it: the next phase's rounds run against those
+	/// same weights.
+	///
+	/// # Arguments
+	///
+	/// - `oblong_weights`: the weights of the reduction's first factor, one per bit position.
+	/// - `sum`: the claim being proved, which must equal the true product exactly when the witness
+	///   satisfies the constraint system.
+	///
+	/// # Returns
+	///
+	/// The challenge point split into its axes, the leftover weights, and the two evaluations
+	/// this phase reduced to.
+	#[instrument(skip_all, name = "run_sumcheck")]
+	pub fn run_phase_1_sumcheck<F, Channel, A>(
+		mut self,
+		oblong_weights: &[F],
+		sum: F,
+		channel: &mut Channel,
+		alloc: &A,
+	) -> Phase1Output<F>
+	where
+		F: BinaryField,
+		P: PackedField<Scalar = F>,
+		Channel: IPProverChannel<F>,
+		A: Allocator,
+	{
+		assert_eq!(self.log_rows(), LOG_SHIFT_ROWS, "the row list spans both shift slots");
+
+		// Phase 1a: bind the outer shift slot, one round at a time.
+		//
+		// Each round asks the outer-slot driver for the round polynomial, sends it, samples
+		// the challenge, then folds both the driver and the row list by that challenge.
+		let mut outer = OuterShiftStage::new(alloc, oblong_weights);
+		let mut claim = sum;
+		let mut outer_point = Vec::with_capacity(LOG_SHIFT_COUNT);
+		for _ in 0..LOG_SHIFT_COUNT {
+			let round_coeffs = outer.round_coeffs(&self, claim);
+			channel.send_many(round_coeffs.clone().truncate().coeffs());
+			let challenge = channel.sample();
+			claim = round_coeffs.evaluate(&challenge);
+			outer.fold(challenge);
+			self.fold(challenge);
+			outer_point.push(challenge);
+		}
+		// The weights the outer rounds leave behind: what the next phase runs against.
+		let psi = outer.psi().to_vec();
+
+		// Phase 1b: bind the inner shift slot and the bit position.
+		//
+		// What is left is one shift slot and the bit position, against the weight table built
+		// from the outer rounds' leftover weights.
+		let h = shift_operator_table(alloc, &psi);
+
+		// The row list itself becomes the sparse half of the row-and-bit sumcheck prover.
+		let g = self;
+		let ProveSingleOutput {
+			multilinear_evals,
+			mut challenges,
+		} = prove_single(Phase1SumcheckProver::new(g, h, claim, alloc), channel);
+
+		// The rounds bind coordinates from the most significant one down.
+		// Reversing recovers the evaluation point in increasing order of significance: the bit
+		// position, then the inner slot's amount and variant, then the outer slot's.
+		challenges.reverse();
+		assert_eq!(challenges.len(), SHIFT_OPERATOR_LOG_LEN);
+		let mut r_j = challenges;
+		let r_v_inner = r_j.split_off(Word::LOG_BITS * 2);
+		let r_s_inner = r_j.split_off(Word::LOG_BITS);
+
+		outer_point.reverse();
+		let mut r_s_outer = outer_point;
+		let r_v_outer = r_s_outer.split_off(Word::LOG_BITS);
+
+		let [g_eval, h_eval] = multilinear_evals
+			.try_into()
+			.expect("prover has 2 multilinear polynomials");
+
+		Phase1Output {
+			r_j,
+			inner: ShiftChallenge::new(r_s_inner, r_v_inner),
+			outer: ShiftChallenge::new(r_s_outer, r_v_outer),
+			psi,
+			gamma: g_eval * h_eval,
+			g_eval,
+		}
+	}
 }
 
-/// Proves the phase-1 sumcheck: the product of `g` and `h` summed over the hypercube.
+/// A sumcheck prover for the product of a sparse row list and a dense weight table, both
+/// spanning one shift slot and the bit position.
 ///
-/// `g` is zero outside the rows a constraint system's shifts name, but *within* a named row it is
-/// dense — every one of the `Word::BITS` bit positions carries a value. Its sparsity is in long
-/// strides rather than scattered points, so the prover changes strategy halfway:
+/// The row list is zero outside the rows a constraint system's shifts name, dense within a
+/// named row.
+/// So this prover changes strategy halfway through:
 ///
-/// - The [`LOG_SHIFT_ROWS`] rounds binding the row index read the stored rows alone
-///   ([`SparseShiftRows`]), so their cost follows the shifts the system names rather than the 512
-///   the space holds. `h` stays dense across them and folds as any multilinear does, which is what
-///   keeps this simple: a round reads `h` at whichever row a live `g` row pairs with, so nothing
-///   has to work out in advance which rows of `h` a later round will reach.
-/// - Once the row index is bound, both multilinears are one dense row over the bit position and no
-///   sparsity is left to exploit. The shared [`bivariate_product_prover`] runs the remaining
-///   `Word::LOG_BITS` rounds.
+/// - While the row index has unbound variables, each round reads only the stored rows, at a cost
+///   that follows how many shifts the constraint system names, not the whole row space.
+/// - Once the row index is bound, both multilinears are one dense row, and a shared dense-product
+///   prover takes over.
 ///
-/// Every round message is the one a dense prover over the whole of `g` would have sent, so the
-/// transcript is unchanged and the verifier is untouched.
+/// Every round message matches what a fully dense prover would send.
 ///
-/// This adapts `SparseDenseProductSumcheckProver` to that stride structure, and inherits its
-/// central simplification: both sampled evaluations and the fold are linear in `g`, so a stored
-/// row contributes on its own and rows never have to be paired across the split or merged. That
-/// prover keys on single points, which costs a pass over `n_shifts * Word::BITS` entries in
-/// *every* round; keying on rows lets a round walk whole packed rows instead.
+/// # Performance
+///
+/// Both the sampled evaluations and the fold are linear in the sparse row list, so each
+/// stored row contributes independently, walking whole packed rows rather than individual
+/// scalar points.
 pub struct Phase1SumcheckProver<'alloc, A: Allocator, P: PackedField> {
 	alloc: &'alloc A,
 	/// The stage the protocol is in.
 	///
-	/// Always `Some` between calls. [`SumcheckProver::fold`] takes it out for the moment it moves
-	/// the row stage's buffers into the bit stage's prover.
+	/// Always holds a value between calls, only briefly emptied while the row-stage buffers
+	/// move into the bit-stage prover.
 	stage: Option<Stage<'alloc, A, P>>,
 }
 
 /// Which half of the protocol the prover is in.
 enum Stage<'alloc, A: Allocator, P: PackedField> {
-	/// Binding the row index, over the rows `g` stores.
+	/// Binding the row index, over the rows the sparse list stores.
 	Rows {
 		g: SparseShiftRows<P>,
 		h: FieldVec<P, A>,
 		/// This round's sum claim.
 		claim: P::Scalar,
-		/// The round polynomial, once `execute` has produced it and while it awaits the challenge
-		/// that reduces it to the next claim.
+		/// The round polynomial.
+		///
+		/// Set once the round's message is produced, and cleared again once the challenge
+		/// that reduces it to the next claim arrives.
 		coeffs: Option<RoundCoeffs<P::Scalar>>,
 	},
-	/// Binding the bit position, both multilinears now one dense row.
+	/// Binding the bit position, with both multilinears now one dense row.
 	Bits(SharedSumcheckProver<'alloc, A, P, BivariateProductEvaluator>),
 }
 
 impl<'alloc, A: Allocator, F: Field, P: PackedField<Scalar = F>>
 	Phase1SumcheckProver<'alloc, A, P>
 {
-	/// Creates a prover for the claim that `g * h` sums to `sum` over the hypercube.
+	/// Creates a prover for the claim that the two multilinears' product sums to the given
+	/// value over the hypercube.
 	///
-	/// The outer shift slot is already bound by the time this runs, so `h` is the shift operator
-	/// over the weights those rounds left behind, and `g`'s remaining row index is the inner slot.
+	/// The outer shift slot is already bound by the time this runs, so the dense multilinear
+	/// is the weight table over the weights those rounds left behind, and the row list's
+	/// remaining row index is the inner slot.
 	///
 	/// # Panics
 	///
-	/// Panics unless `g` and `h` both span one shift slot and the bit position.
+	/// Panics unless both multilinears span exactly one shift slot and the bit position.
 	pub fn new(g: SparseShiftRows<P>, h: FieldVec<P, A>, sum: F, alloc: &'alloc A) -> Self {
 		assert_eq!(h.log_len(), SHIFT_OPERATOR_LOG_LEN, "h spans one shift slot");
 		assert_eq!(g.log_rows(), LOG_SHIFT_COUNT, "g's rows span one shift slot");
@@ -349,7 +468,8 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 {
 	fn n_vars(&self) -> usize {
 		match self.stage.as_ref().expect("the stage is set between calls") {
-			// `h` spans both axes through the row rounds, so its length is what remains.
+			// The weight table spans both axes through the row rounds.
+			// So its length is what remains.
 			Stage::Rows { h, .. } => h.log_len(),
 			Stage::Bits(prover) => prover.n_vars(),
 		}
@@ -363,10 +483,13 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 				claim,
 				coeffs,
 			} => {
-				let round_coeffs = shift_round_coeffs(g, h, *claim);
+				// Row stage: compute this round's message from the stored rows alone, and
+				// hold onto it until the challenge that reduces the claim arrives.
+				let round_coeffs = g.round_coeffs(h, *claim);
 				*coeffs = Some(round_coeffs.clone());
 				vec![round_coeffs]
 			}
+			// Bit stage: delegate to the shared dense-product prover.
 			Stage::Bits(prover) => prover.execute(),
 		}
 	}
@@ -384,10 +507,14 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 				let claim = coeffs
 					.expect("execute is called before fold")
 					.evaluate(&challenge);
+				// Fold both multilinears by the same challenge.
+				// The sparse rows move into their half's slot of the shrunken row space.
+				// The dense weight table folds its highest variable the ordinary way.
 				g.fold(challenge);
 				fold_highest_var_inplace(&mut h, challenge);
 
 				if g.log_rows() > 0 {
+					// The row index still has unbound variables: stay in the row stage.
 					Stage::Rows {
 						g,
 						h,
@@ -395,8 +522,9 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 						coeffs: None,
 					}
 				} else {
-					// The row index is bound. What is left of each multilinear is one dense row
-					// over the bit position, which the shared prover handles from here.
+					// The row index is bound.
+					// What is left of each multilinear is one dense row over the bit
+					// position, which the shared prover handles from here.
 					Stage::Bits(bivariate_product_prover(
 						self.alloc,
 						[g.into_bit_multilinear(self.alloc), h],
@@ -405,6 +533,7 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 				}
 			}
 			Stage::Bits(mut prover) => {
+				// Bit stage: delegate the fold to the shared dense-product prover.
 				prover.fold(challenge);
 				Stage::Bits(prover)
 			}
@@ -420,184 +549,16 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 	}
 }
 
-/// Runs the phase 1 sumcheck protocol for shift constraint verification.
+/// Accumulates one key segment's rows of the witness-and-batching multilinear.
 ///
-/// One sumcheck over the product of `g` and `h`, multilinears of [`PHASE_1_LOG_LEN`] variables,
-/// binding the outer shift slot, then the inner one, then the bit position. Each slot's variant is
-/// the high
-/// [`LOG_SHIFT_VARIANT_COUNT`](binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT)
-/// variables of its run, so the sumcheck folds the variant axis rather than the prover summing a
-/// separate claim per variant.
-///
-/// The `g` multilinear carries the witness and the batching randomness; `h` says what each shift
-/// *sequence* does at the univariate challenge point. A table of `h` would hold `2^24` entries and
-/// is never formed:
-///
-/// - The [`LOG_SHIFT_COUNT`] rounds binding the outer slot run against [`OuterShiftStage`], which
-///   derives each live row from a folded `2^15` table one slice at a time.
-/// - Those rounds leave the weights `psi`, and `h` over what remains is the shift operator applied
-///   to them — a `2^15` table, which the remaining rounds fold as an ordinary multilinear through
-///   [`Phase1SumcheckProver`].
-///
-/// The outer rounds are driven here rather than folded into [`Phase1SumcheckProver`] because
-/// `prove_single` consumes its prover, and `psi` has to outlive it: the rounds binding the
-/// intermediate bit index run against those same weights.
-///
-/// # Arguments
-///
-/// - `oblong_weights`: the oblong weights of the reduction's first factor, one per bit position.
-/// - `sum`: the claim being proved, as the operations' batched evaluations give it. This is the
-///   same value the verifier feeds its own sumcheck, so the prover proves the statement it was
-///   handed rather than whatever `g · h` happens to come to.
-///
-/// The two agree exactly when the witness satisfies the constraint system — which is what this
-/// reduction exists to establish, so it is not something the prover can check on its way in. On an
-/// unsatisfying witness they differ, and that difference travels through both phases to the
-/// reduction's final evaluation check, which is where verification fails.
+/// Every witness word can carry several shift keys, one per operand position it feeds.
+/// For each key, this folds its constraint-index tensor and batching powers into one
+/// accumulator value, then scatters that value across the bit positions the word has set.
 ///
 /// # Returns
 ///
-/// The challenge point split into the axes the rounds bound, the weights the next phase runs
-/// against, and the evaluations this one reduced to.
-#[instrument(skip_all, name = "run_sumcheck")]
-pub fn run_phase_1_sumcheck<
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-	Channel: IPProverChannel<F>,
-	A: Allocator,
->(
-	mut g: SparseShiftRows<P>,
-	oblong_weights: &[F],
-	sum: F,
-	channel: &mut Channel,
-	alloc: &A,
-) -> Phase1Output<F> {
-	assert_eq!(g.log_rows(), LOG_SHIFT_ROWS, "g's rows span both shift slots");
-
-	// The rounds binding the outer slot, driven a round at a time.
-	let mut outer = OuterShiftStage::new(alloc, oblong_weights);
-	let mut claim = sum;
-	let mut outer_point = Vec::with_capacity(LOG_SHIFT_COUNT);
-	for _ in 0..LOG_SHIFT_COUNT {
-		let round_coeffs = outer.round_coeffs(&g, claim);
-		channel.send_many(round_coeffs.clone().truncate().coeffs());
-		let challenge = channel.sample();
-		claim = round_coeffs.evaluate(&challenge);
-		outer.fold(challenge);
-		g.fold(challenge);
-		outer_point.push(challenge);
-	}
-	let psi = outer.psi().to_vec();
-
-	// What is left is one shift slot and the bit position, against the operator over those weights.
-	let h = shift_operator_table(alloc, &psi);
-	let ProveSingleOutput {
-		multilinear_evals,
-		mut challenges,
-	} = prove_single(Phase1SumcheckProver::new(g, h, claim, alloc), channel);
-
-	// Reverse each run of challenges into its evaluation point, whose coordinates then run in
-	// increasing order of significance: the bit position within a word, then the inner shift slot's
-	// amount and variant, then the outer slot's.
-	challenges.reverse();
-	assert_eq!(challenges.len(), SHIFT_OPERATOR_LOG_LEN);
-	let mut r_j = challenges;
-	let r_v_inner = r_j.split_off(Word::LOG_BITS * 2);
-	let r_s_inner = r_j.split_off(Word::LOG_BITS);
-
-	outer_point.reverse();
-	let mut r_s_outer = outer_point;
-	let r_v_outer = r_s_outer.split_off(Word::LOG_BITS);
-
-	let [g_eval, h_eval] = multilinear_evals
-		.try_into()
-		.expect("prover has 2 multilinear polynomials");
-
-	Phase1Output {
-		r_j,
-		inner: ShiftChallenge::new(r_s_inner, r_v_inner),
-		outer: ShiftChallenge::new(r_s_outer, r_v_outer),
-		psi,
-		gamma: g_eval * h_eval,
-		g_eval,
-	}
-}
-
-/// Computes one round message of the phase-1 sumcheck over the row index.
-///
-/// The round polynomial is sampled at 1 and at infinity, as [`RoundEvals`] documents; the claim
-/// supplies its value at 0. Both are linear in `g`, so each stored row contributes on its own and
-/// rows facing each other across the split never have to be paired:
-///
-/// ```text
-/// R(1)   = sum_v G_1(v) H_1(v)             row (i, c) adds <c, h[i]>, upper half only
-/// R(inf) = sum_v (G_0 + G_1)(H_0 + H_1)    row (i, c) adds <c, h[i] + h[i ^ half]>, either half
-/// ```
-///
-/// `h` is dense, so the row facing a stored row is always there to read.
-fn shift_round_coeffs<F, P, Data>(
-	g: &SparseShiftRows<P>,
-	h: &FieldBuffer<P, Data>,
-	claim: F,
-) -> RoundCoeffs<F>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-	Data: Deref<Target = [P]>,
-{
-	let half = g.half();
-	let row_len = row_len::<P>();
-	let h_rows = h.as_ref();
-
-	// The per-point products accumulate in unreduced (wide) form and reduce once at the end.
-	let mut y_1 = <P as WideMul>::Output::default();
-	let mut y_inf = <P as WideMul>::Output::default();
-	for (index, row) in g.rows() {
-		let own = &h_rows[index * row_len..][..row_len];
-		let facing = &h_rows[(index ^ half) * row_len..][..row_len];
-
-		for i in 0..row_len {
-			// The infinity evaluation reads H(0) + H(1), the same sum from either half, so the
-			// row's own half only decides the evaluation at 1.
-			if index & half != 0 {
-				y_1 += P::wide_mul(row[i], own[i]);
-			}
-			y_inf += P::wide_mul(row[i], own[i] + facing[i]);
-		}
-	}
-
-	// A row is a whole number of packed elements, so every lane of the accumulators is live.
-	let sum_lanes = |wide| P::reduce(wide).iter().sum::<F>();
-	RoundEvals([sum_lanes(y_1), sum_lanes(y_inf)]).interpolate(claim)
-}
-
-/// Accumulates the phase-1 "g" rows of one key segment.
-///
-/// This builds the rows of the g multilinear used in phase 1 of the shift protocol, over the words
-/// of a single value-vector segment (public or hidden).
-///
-/// The value vector's public and hidden words participate through their own [`KeySegment`], so a
-/// caller accumulates each segment's rows with the matching words and merges the two results with
-/// [`SparseShiftRows::from_segments`].
-///
-/// # Construction Process
-///
-/// 1. **Parallel Processing**: Words are processed in parallel chunks for efficiency
-/// 2. **Key Processing**: For each word, iterate through its associated keys in the segment
-/// 3. **Accumulation**: For each key, accumulate its contribution weighted by the r_x' tensor
-/// 4. **Word Expansion**: Expand each witness word bitwise to populate the g rows
-/// 5. **Lambda Weighting**: Apply lambda powers to weight different operand positions
-///
-/// # Returns
-///
-/// One row of `Word::BITS` scalars per shift the segment uses, addressed by the keys' dense shift
-/// index. The segment's [`DenseShiftEncoding`] decodes that index to the `(variant, amount)` pair
-/// the row belongs to, and so to the row's place in the full shift space.
-///
-/// # Usage
-///
-/// Used in phase 1 to construct the constant size g multilinear
-/// that will participate in the phase 1 sumcheck protocol.
+/// One row of weights per shift the segment uses, one weight per bit position of a word, at
+/// the position the segment's own dense encoding assigns to that shift.
 #[instrument(skip_all, name = "build_g")]
 pub fn build_g<F: Field, P: PackedField<Scalar = F>>(
 	words: &[Word],
@@ -615,15 +576,20 @@ pub fn build_g<F: Field, P: PackedField<Scalar = F>>(
 		);
 	}
 
-	// Map from a u8 with `P::WIDTH` meaningful bits to the lane mask selecting exactly those lanes,
-	// precomputed once and reused across every accumulator below.
+	// Precompute once: a map from an 8-bit mask (one bit per candidate lane) to the packed
+	// lane-selection mask it names.
+	// Every accumulator below reuses this table instead of rebuilding a mask per word.
 	let packed_masks_map = (0..1 << P::WIDTH)
 		.map(|i| P::make_mask((0..P::WIDTH).map(|bit_index| (i >> bit_index) & 1 == 1)))
 		.collect::<Vec<_>>();
-	// A mask for low `P::WIDTH` bits.
+	// A mask for the low bits that actually address a lane.
 	let low_bits_mask = (1u8 << P::WIDTH) - 1;
 
-	// Each word carries the keys named by the segment-relative range at its position.
+	// Each word carries the keys its segment-relative range names.
+	//
+	// The fold runs in parallel.
+	// Each task owns a chunk of words and its own accumulator.
+	// The accumulators merge at the end.
 	words
 		.par_iter()
 		.zip(segment.key_ranges.par_iter())
@@ -633,9 +599,12 @@ pub fn build_g<F: Field, P: PackedField<Scalar = F>>(
 			|mut multilinears, (word, Range { start, end })| {
 				let keys = &segment.keys[*start as usize..*end as usize];
 
+				// A word can carry several keys, one per operand position it feeds.
 				for key in keys {
 					let operator_data = &prepared[key.operation];
 
+					// Fold this key's accumulator value: the constraint-index tensor
+					// weighted by the batching powers for this operand position.
 					let acc = key.accumulate(
 						&segment.constraint_indices,
 						operator_data.r_x_prime_tensor.as_ref(),
@@ -643,12 +612,15 @@ pub fn build_g<F: Field, P: PackedField<Scalar = F>>(
 					);
 					let acc_packed = P::broadcast(acc);
 
-					// The following loop is an optimized version of the following
-					// for i in 0..Word::BITS {
-					//     if get_bit(word, i) {
-					//         values[start + i] += acc;
-					//     }
-					// }
+					// Scatter the accumulator value into every bit position where the word
+					// is set to 1.
+					//
+					// A naive version would loop over all `Word::BITS` positions and test
+					// each bit in turn.
+					//
+					// This instead walks only the word's nonzero bytes.
+					// Inside each byte, it selects every set bit's lane in one packed
+					// operation, using the precomputed mask above.
 					debug_assert!(
 						(key.dense_shift_idx as usize) < segment.dense_shift_enc.len(),
 						"a key indexes the dense shift encoding of its own segment"
@@ -668,15 +640,14 @@ pub fn build_g<F: Field, P: PackedField<Scalar = F>>(
 									((byte >> (value_index * P::WIDTH)) & low_bits_mask) as usize;
 
 								// Safety:
-								// - `packed_masks_map` is guaranteed to have enough elements to be
-								//   indexed with a `P::WIDTH`-bits value.
+								// - `packed_masks_map` holds one entry per possible `P::WIDTH`-bit
+								//   value, so this index always fits.
 								let packed_mask = packed_masks_map.get_unchecked(packed_mask_index);
 
 								// Safety:
-								// - `values` is guaranteed to be (8 >> P::LOG_WIDTH) elements long
-								//   due to the chunking
-								// - `value_index` is always in bounds because we iterate over 0..(8
-								//   >> P::LOG_WIDTH)
+								// - `values` spans `(8 >> P::LOG_WIDTH)` elements after the
+								//   chunking above.
+								// - `value_index` stays within that range by construction.
 								*byte_values.get_unchecked_mut(value_index) +=
 									acc_packed.select(packed_mask);
 							}
@@ -689,15 +660,19 @@ pub fn build_g<F: Field, P: PackedField<Scalar = F>>(
 				multilinears
 			},
 		)
+		// Merge every task's accumulator pairwise.
+		//
 		// A merge seeded with a partial that already exists never touches a buffer of zeros.
-		// An identity would allocate and zero one accumulator per merge, then add all of it.
+		// An identity element instead would allocate and zero one accumulator per merge.
+		// Then it would add all of it for nothing.
 		.reduce_with(|mut acc, local| {
 			izip!(acc.iter_mut(), local.iter()).for_each(|(acc, local)| {
 				*acc += *local;
 			});
 			acc
 		})
-		// An empty word list yields no partials at all, and its rows are zero.
+		// An empty word list produces no partial accumulator at all.
+		// So its rows are zero.
 		.unwrap_or_else(|| zeroed_vec::<P>(acc_size).into_boxed_slice())
 }
 
@@ -719,11 +694,14 @@ mod tests {
 	type F = BinaryField128bGhash;
 
 	impl<P: PackedField> SparseShiftRows<P> {
-		/// Spreads the rows over the space they still span, as a dense multilinear. Rows at a
-		/// repeated index add up; every row the system does not name stays zero.
+		/// Spreads the rows over the space they still span, as a dense multilinear.
 		///
-		/// The prover never needs this — [`Phase1SumcheckProver`] reads the rows where they are.
-		/// It is the dense `g` these tests measure the sparse rounds against.
+		/// Rows at a repeated index add up.
+		/// Every row the constraint system does not name stays zero.
+		///
+		/// Nothing in the actual proving path needs this.
+		/// It exists only so these tests have a dense reference to check the sparse rounds
+		/// against.
 		fn scatter<A: Allocator>(&self, alloc: &A) -> FieldVec<P, A> {
 			let row_len = row_len::<P>();
 			let mut g = FieldBuffer::zeros_in(alloc, self.log_rows + Word::LOG_BITS);
@@ -884,11 +862,11 @@ mod tests {
 		}
 	}
 
-	/// Runs the sparse row and bit rounds the dense way: one bivariate-product prover over the
-	/// scattered `g` and the whole of `h`, with no round of it special-cased.
+	/// Runs the same claim through a single dense product-sumcheck prover, with no round handled
+	/// specially.
 	///
-	/// This is what [`Phase1SumcheckProver`] replaces, kept here as the reference its round
-	/// messages have to reproduce.
+	/// This is the reference the sparse-and-dense hybrid prover's round messages have to
+	/// reproduce.
 	fn run_dense_reference<P: PackedField<Scalar = F>>(
 		g: &SparseShiftRows<P>,
 		h: FieldVec<P, GlobalAllocator>,

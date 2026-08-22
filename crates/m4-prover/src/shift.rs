@@ -17,7 +17,7 @@ use binius_prover::{
 		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftChallengePoint,
 		ShiftIndOutput, ShiftIndSumcheck, ShiftOutput,
 		monster::build_monster_segments,
-		phase_1::{Phase1Output, SparseShiftRows, build_g, run_phase_1_sumcheck},
+		phase_1::{Phase1Output, SparseShiftRows, build_g},
 		phase_2::run_sumcheck,
 	},
 };
@@ -93,13 +93,7 @@ where
 		psi,
 		gamma,
 		g_eval,
-	} = run_phase_1_sumcheck::<F, F, _, _>(
-		g,
-		oblong_weights.as_ref(),
-		prepared.batched_eval(),
-		channel,
-		alloc,
-	);
+	} = g.run_phase_1_sumcheck(oblong_weights.as_ref(), prepared.batched_eval(), channel, alloc);
 
 	// Phases 2 and 3 bind the two bit indices the shift indicators chain through, working back up
 	// the chain — see the single-instance prover for what each run carries.

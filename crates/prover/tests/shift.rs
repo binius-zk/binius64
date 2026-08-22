@@ -22,7 +22,7 @@ use binius_math::{
 };
 use binius_prover::{
 	fold_word::fold_words,
-	protocols::shift::{OperatorClaims, OperatorData, build_key_collection, prove},
+	protocols::shift::{OperatorClaims, OperatorData, ShiftProver, build_key_collection},
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -454,20 +454,19 @@ fn test_shift_prove_and_verify() {
 			r_x_prime: r_x_prime_binmul.clone(),
 		};
 
-		let prover_output = prove::<F, P, _, _>(
-			&key_collection,
-			value_vec.public(),
-			value_vec.non_public(),
-			OperatorClaims {
-				zero: prover_zero_data.clone(),
-				bitand: prover_bitand_data.clone(),
-				intmul: prover_intmul_data.clone(),
-				binmul: prover_binmul_data.clone(),
-			},
-			&subspace,
-			&mut prover_transcript,
-			&GlobalAllocator,
-		);
+		let prover_output = ShiftProver::<_, P, _>::new(&mut prover_transcript, &GlobalAllocator)
+			.prove(
+				&key_collection,
+				value_vec.public(),
+				value_vec.non_public(),
+				OperatorClaims {
+					zero: prover_zero_data.clone(),
+					bitand: prover_bitand_data.clone(),
+					intmul: prover_intmul_data.clone(),
+					binmul: prover_binmul_data.clone(),
+				},
+				&subspace,
+			);
 
 		// The full reduction sends this after the public segment's evaluation claim; driving the
 		// shift alone, it follows the reduction directly.
