@@ -202,16 +202,13 @@ where
 	batch_with_coeff(provers, batch_coeff, channel)
 }
 
-/// Drives a group of provers with a batching coefficient the caller already drew.
+/// The round loop of [`batch`], once its batching coefficient has been drawn.
 ///
 /// The group's round polynomials are combined into one, so it costs a single round proof per
 /// variable. An empty group runs zero rounds.
 ///
-/// The coefficient must come from the same channel immediately before this call, so that the
-/// transcript matches the one [`batch`] would have produced.
-///
 /// The group arrives materialized because every round walks all of it.
-pub fn batch_with_coeff<F, Prover>(
+fn batch_with_coeff<F, Prover>(
 	mut provers: Vec<Prover>,
 	batch_coeff: F,
 	channel: &mut impl IPProverChannel<F>,
