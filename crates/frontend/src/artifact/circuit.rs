@@ -6,7 +6,7 @@
 use binius_compute::{Allocator, BufferData, VecLike};
 use binius_core::{
 	ValueTable,
-	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
+	constraint_system::{ConstraintSystem, ValueIndex, ValueSegment, ValueVec, ValueVecLayout},
 	word::Word,
 };
 use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
@@ -119,13 +119,21 @@ impl Circuit {
 		self.value_vec_layout.word_offset(self.witness_index(wire))
 	}
 
-	/// Whether this circuit's scratch segment shares slots between uncommitted values.
+	/// Panics if the wire's storage is a scratch slot shared with another value.
 	///
-	/// A shared slot can end up holding a different value than the wire that first wrote it.
-	/// So a scratch-segment wire is safe to read back only when this is `false`.
-	#[inline(always)]
-	pub(crate) const fn scratch_pooled(&self) -> bool {
-		self.scratch_pooled
+	/// Scratch pooling reclaims a slot once its current value's last read has run.
+	/// A shared slot then holds whatever value most recently claimed it, not this wire's.
+	/// So this rejects the read outright rather than returning that wrong value.
+	pub(crate) fn assert_not_pooled(&self, wire: Wire, index: ValueIndex) {
+		assert!(
+			!self.scratch_pooled || index.segment() != ValueSegment::Scratch,
+			"wire {wire:?} cannot be read back through a witness filler: its storage is a scratch \
+			 slot shared with another value under scratch pooling, and the slot may already hold a \
+			 different value by the time the circuit has finished evaluating. Disable scratch \
+			 pooling for this build (set `Options::enable_scratch_pooling` to `false`), or make \
+			 this value committed instead of scratch, e.g. by marking it inout or referencing it \
+			 from a constraint."
+		);
 	}
 
 	/// Creates a new witness filler for this circuit.

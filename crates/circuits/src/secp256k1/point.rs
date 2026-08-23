@@ -2,7 +2,7 @@
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
-use super::common::{coord_zero, coords_gen};
+use super::common::{N_LIMBS, coord_zero, coords_gen};
 use crate::bignum::{BigUint, select as select_biguint};
 
 /// Curve point in affine form - a tuple `(x, y)` that satisfies `y^2 = x^3 + 7`,
@@ -44,6 +44,42 @@ impl Secp256k1Affine {
 			x: self.x.clone(),
 			y: self.y.clone(),
 			is_point_at_infinity,
+		}
+	}
+
+	/// Flattens the point into a single wire list: x limbs, then y limbs, then the infinity flag.
+	///
+	/// This is the layout a wire-level multiplexer selects over.
+	///
+	/// # Panics
+	///
+	/// Panics unless both coordinates carry the full limb count.
+	pub(crate) fn to_wires(&self) -> Vec<Wire> {
+		assert_eq!(self.x.limbs.len(), N_LIMBS);
+		assert_eq!(self.y.limbs.len(), N_LIMBS);
+
+		let mut wires = Vec::with_capacity(2 * N_LIMBS + 1);
+		wires.extend_from_slice(&self.x.limbs);
+		wires.extend_from_slice(&self.y.limbs);
+		wires.push(self.is_point_at_infinity);
+		wires
+	}
+
+	/// Rebuilds a point from the flat wire layout, undoing the flattening.
+	///
+	/// # Panics
+	///
+	/// Panics unless the list is exactly two coordinates plus the infinity flag long.
+	pub(crate) fn from_wires(wires: &[Wire]) -> Self {
+		assert_eq!(wires.len(), 2 * N_LIMBS + 1);
+		Self {
+			x: BigUint {
+				limbs: wires[..N_LIMBS].to_vec(),
+			},
+			y: BigUint {
+				limbs: wires[N_LIMBS..2 * N_LIMBS].to_vec(),
+			},
+			is_point_at_infinity: wires[2 * N_LIMBS],
 		}
 	}
 }
