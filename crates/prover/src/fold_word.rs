@@ -32,6 +32,19 @@ const CHUNK_SIZE: usize = 1 << LOG_CHUNK_SIZE;
 /// Number of bits in a byte; [`fold_across_words`] processes each chunk in groups of this many
 /// words, one per byte of the words.
 const BITS_PER_BYTE: usize = Word::BITS / Word::BYTES;
+/// Minimum chunks one parallel task folds along the word axis.
+///
+/// A chunk is 64 words and folds in well under a microsecond, which is about what a handoff costs.
+/// Left unbounded, the split reaches one chunk per task and the handoffs dominate.
+///
+/// A floor also caps how far a loop can divide.
+/// A list of `n` chunks splits into at most `n / floor` tasks.
+/// So a floor set too high starves the cores on a short list, and one set too low drowns a long
+/// list in handoffs.
+///
+/// Sixteen chunks is 1024 words, which is the setting that loses at neither end.
+const MIN_CHUNKS_PER_TASK: usize = 16;
+
 /// Base-2 log of the row group a single subset-sum table covers.
 ///
 /// Eight rows is the widest group whose lookup index still fits one byte.
@@ -431,69 +444,20 @@ fn accumulate_word_chunk<F: BinaryField>(
 /// this computes a vector of `F` elements, where the entry at index $i$ is the inner product of the
 /// tensor expansion of the point and the bits at position $i$ across the words.
 ///
-/// Like [`fold_words`], this uses the [Method of Four Russians] to fold groups of words via
-/// precomputed lookup tables. The point is split into a `LOG_CHUNK_SIZE`-coordinate prefix and a
-/// suffix: the prefix tensor expansion is folded into each chunk of `CHUNK_SIZE` words by lookup,
-/// and the suffix tensor expansion scales each chunk's contribution before the chunks are summed.
+/// This builds the folding tables and then folds one list, running parallel over that list's
+/// chunks. A caller folding several lists against one point should build the folder once and reuse
+/// it, rather than calling this repeatedly.
 ///
-/// A list shorter than the word axis reads its missing high rows as zero, exactly as
-/// [`WordFolder::fold`] does.
+/// A list shorter than the word axis reads its missing high rows as zero.
 ///
 /// ## Preconditions
 ///
 /// * `words.len() <= 1 << point.len()`
-///
-/// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
-pub fn fold_across_words<F, P>(words: &[Word], point: &[F]) -> [F; Word::BITS]
+pub fn fold_across_words<F>(words: &[Word], point: &[F]) -> [F; Word::BITS]
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
 {
-	assert!(words.len() <= 1 << point.len());
-
-	// Build the point tables, then fold the one word-list over its chunks in parallel.
-	// A single list can span many chunks (up to 2^20 words in the benchmark).
-	// Parallelizing over the chunk axis is what keeps a lone fold fast.
-	let folder = WordFolder::<F>::new(point);
-	let (chunks, tail) = words.as_chunks::<CHUNK_SIZE>();
-
-	// Each chunk contributes to every bit position, scaled by that chunk's suffix weight. Summing
-	// the per-chunk accumulators contracts the word axis. Weights past the list's end pair with
-	// absent rows, so the zip drops them.
-	let folded_chunks = chunks
-		.par_iter()
-		.zip(folder.suffix_weights.as_ref().par_iter())
-		.map(|(chunk, &suffix_weight)| {
-			let mut acc = [F::ZERO; Word::BITS];
-			accumulate_word_chunk(chunk, &folder.lookups, suffix_weight, &mut acc);
-			acc
-		})
-		.reduce(
-			|| [F::ZERO; Word::BITS],
-			|mut lhs, rhs| {
-				for (lhs_i, rhs_i) in iter::zip(&mut lhs, rhs) {
-					*lhs_i += rhs_i;
-				}
-				lhs
-			},
-		);
-
-	// The chunk the list ends in, completed with its zero rows.
-	if tail.is_empty() {
-		return folded_chunks;
-	}
-
-	let mut chunk = [Word::ZERO; CHUNK_SIZE];
-	chunk[..tail.len()].copy_from_slice(tail);
-
-	let mut folded = folded_chunks;
-	accumulate_word_chunk(
-		&chunk,
-		&folder.lookups,
-		folder.suffix_weights.get(chunks.len()),
-		&mut folded,
-	);
-	folded
+	WordFolder::new(point).fold_par(words)
 }
 
 /// A reusable [Method of Four Russians] folder over a fixed evaluation point.
@@ -559,8 +523,9 @@ impl<F: BinaryField> WordFolder<F> {
 	///
 	/// with a clear bit read as zero and a set bit read as one.
 	///
-	/// This runs sequentially over the list's chunks.
-	/// A caller folding many lists against one point should parallelize across the lists instead.
+	/// This runs sequentially over the list's chunks, so it leaves every other core free.
+	/// It is the right driver for a caller already parallel over many lists.
+	/// A caller with few lists wants the parallel driver below instead.
 	///
 	/// A list shorter than the word axis reads its missing high rows as zero: an absent row's
 	/// weight multiplies nothing, so it contributes nothing to any bit position. Chunks lying
@@ -581,19 +546,77 @@ impl<F: BinaryField> WordFolder<F> {
 			accumulate_word_chunk(chunk, &self.lookups, suffix_weight, &mut folded);
 		}
 
-		// The chunk the list ends in, completed with its zero rows.
-		if !tail.is_empty() {
-			let mut chunk = [Word::ZERO; CHUNK_SIZE];
-			chunk[..tail.len()].copy_from_slice(tail);
-			accumulate_word_chunk(
-				&chunk,
-				&self.lookups,
-				self.suffix_weights.get(chunks.len()),
-				&mut folded,
+		self.accumulate_tail(tail, chunks.len(), &mut folded);
+		folded
+	}
+
+	/// Folds one word-list against the point, parallel over that list's chunks.
+	///
+	/// Returns the same array the sequential fold returns, under the same contract.
+	/// The two differ only in how the chunk axis is divided across workers.
+	///
+	/// Reach for this when few lists share the point, so the chunk axis is the only one wide enough
+	/// to divide. A caller folding many lists against one point should instead parallelize across
+	/// the lists and fold each one sequentially.
+	///
+	/// ## Preconditions
+	///
+	/// * `words.len() <= 1 << point.len()`
+	pub fn fold_par(&self, words: &[Word]) -> [F; Word::BITS] {
+		assert!(words.len() <= self.n_words, "words.len() must not exceed 2^point.len()");
+
+		let (chunks, tail) = words.as_chunks::<CHUNK_SIZE>();
+
+		// Each chunk contributes to every bit position, scaled by that chunk's suffix weight.
+		// Summing the per-chunk accumulators contracts the word axis.
+		// Weights past the list's end pair with absent rows, so the zip drops them.
+		let mut folded = chunks
+			.par_iter()
+			.zip(self.suffix_weights.as_ref().par_iter())
+			// One item is one chunk of 64 words, so the floor needs no conversion.
+			.with_min_len(MIN_CHUNKS_PER_TASK)
+			.map(|(chunk, &suffix_weight)| {
+				let mut acc = [F::ZERO; Word::BITS];
+				accumulate_word_chunk(chunk, &self.lookups, suffix_weight, &mut acc);
+				acc
+			})
+			.reduce(
+				|| [F::ZERO; Word::BITS],
+				|mut lhs, rhs| {
+					for (lhs_i, rhs_i) in iter::zip(&mut lhs, rhs) {
+						*lhs_i += rhs_i;
+					}
+					lhs
+				},
 			);
+
+		self.accumulate_tail(tail, chunks.len(), &mut folded);
+		folded
+	}
+
+	/// Accumulates the chunk the list ends in, completed with its zero rows.
+	///
+	/// A list whose length is a whole number of chunks has no such chunk, and this does nothing.
+	///
+	/// # Arguments
+	///
+	/// * `tail` - the words after the last whole chunk, fewer than one chunk of them
+	/// * `n_whole_chunks` - how many whole chunks came before, which selects the weight to use
+	/// * `folded` - the accumulator the tail's contribution is added into
+	fn accumulate_tail(&self, tail: &[Word], n_whole_chunks: usize, folded: &mut [F; Word::BITS]) {
+		if tail.is_empty() {
+			return;
 		}
 
-		folded
+		// Rows past the list's end read as zero, which contributes nothing to any bit position.
+		let mut chunk = [Word::ZERO; CHUNK_SIZE];
+		chunk[..tail.len()].copy_from_slice(tail);
+		accumulate_word_chunk(
+			&chunk,
+			&self.lookups,
+			self.suffix_weights.get(n_whole_chunks),
+			folded,
+		);
 	}
 }
 
@@ -1000,7 +1023,7 @@ mod tests {
 				.collect::<Vec<_>>();
 			let point = random_scalars::<B128>(&mut rng, log_n);
 
-			let result_optimized = fold_across_words::<_, OptimalPackedB128>(&words, &point);
+			let result_optimized = fold_across_words(&words, &point);
 			let result_naive = naive_fold_across_words(&words, &point);
 
 			assert_eq!(result_optimized, result_naive, "mismatch at log_n = {log_n}");
@@ -1043,9 +1066,51 @@ mod tests {
 				"short WordFolder::fold differs at log_rows = {log_rows}, n_words = {n_words}"
 			);
 			assert_eq!(
-				fold_across_words::<_, OptimalPackedB128>(&words, &point),
+				fold_across_words(&words, &point),
 				expected,
 				"short fold_across_words differs at log_rows = {log_rows}, n_words = {n_words}"
+			);
+		}
+	}
+
+	#[test]
+	fn parallel_driver_matches_sequential_driver() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Invariant: dividing the chunk axis across workers changes nothing about the result.
+		// Field addition is associative and exact, so any grouping of the chunk sums agrees.
+		//
+		//     sequential: (((c_0 + c_1) + c_2) + c_3)
+		//     parallel  : ((c_0 + c_1) + (c_2 + c_3))
+		//     → identical, because the merge order is the only difference
+		//
+		// Fixture state: word counts crossing every regime of both drivers.
+		//
+		//     0                 → empty list, no chunks and no tail
+		//     1                 → tail only, no whole chunk
+		//     CHUNK_SIZE        → exactly one whole chunk, no tail
+		//     CHUNK_SIZE + 1    → one whole chunk plus a tail
+		//     5 * CHUNK_SIZE    → several whole chunks, no tail
+		//     5 * CHUNK_SIZE+17 → several whole chunks plus a tail
+		let log_rows = LOG_CHUNK_SIZE + 3;
+		for n_words in [
+			0,
+			1,
+			CHUNK_SIZE,
+			CHUNK_SIZE + 1,
+			5 * CHUNK_SIZE,
+			5 * CHUNK_SIZE + 17,
+		] {
+			let words = (0..n_words)
+				.map(|_| Word::from_u64(rng.random()))
+				.collect::<Vec<_>>();
+			let point = random_scalars::<B128>(&mut rng, log_rows);
+
+			let folder = WordFolder::new(&point);
+			assert_eq!(
+				folder.fold_par(&words),
+				folder.fold(&words),
+				"drivers disagree at n_words = {n_words}"
 			);
 		}
 	}

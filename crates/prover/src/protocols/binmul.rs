@@ -127,13 +127,16 @@ where
 
 	// Send the raw per-bit output evaluations of each word column at r_x. One folder is built for
 	// the shared point and reused across all six columns.
+	//
+	// Six columns cannot fill a machine on their own, so each column divides its own chunk axis
+	// rather than the six being run against each other.
 	let folder = WordFolder::<F>::new(&eval_point);
-	let a_lo_evals = folder.fold(a_lo);
-	let a_hi_evals = folder.fold(a_hi);
-	let b_lo_evals = folder.fold(b_lo);
-	let b_hi_evals = folder.fold(b_hi);
-	let c_lo_evals = folder.fold(c_lo);
-	let c_hi_evals = folder.fold(c_hi);
+	let a_lo_evals = folder.fold_par(a_lo);
+	let a_hi_evals = folder.fold_par(a_hi);
+	let b_lo_evals = folder.fold_par(b_lo);
+	let b_hi_evals = folder.fold_par(b_hi);
+	let c_lo_evals = folder.fold_par(c_lo);
+	let c_hi_evals = folder.fold_par(c_hi);
 
 	channel.send_many(&a_lo_evals);
 	channel.send_many(&a_hi_evals);
