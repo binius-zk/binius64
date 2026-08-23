@@ -270,15 +270,15 @@ mod tests {
 		}
 
 		let mut rng = StdRng::seed_from_u64(0);
-		let coeffs_vals = random_field_buffer(&mut rng, 2);
+		let coeffs_vals = random_field_buffer::<B128>(&mut rng, 2);
 		let coords_vals = random_scalars(&mut rng, 2);
 		let expected = multilinear::evaluate::evaluate(&coeffs_vals, &coords_vals);
 
 		test_helper::<MultilinearCircuit, 7>([
-			coeffs_vals[0],
-			coeffs_vals[1],
-			coeffs_vals[2],
-			coeffs_vals[3],
+			coeffs_vals.get(0),
+			coeffs_vals.get(1),
+			coeffs_vals.get(2),
+			coeffs_vals.get(3),
 			coords_vals[0],
 			coords_vals[1],
 			expected,
