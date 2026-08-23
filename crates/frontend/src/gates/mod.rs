@@ -148,41 +148,43 @@ impl Opcode {
 	}
 }
 
-/// Appends the constraints one gate contributes.
-///
-/// A hint contributes none: the surrounding circuit constrains the value it computes.
-pub fn constrain(
-	gate: Gate,
-	graph: &GateGraph,
-	builder: &mut ConstraintBuilder,
-	hint_registry: &HintRegistry,
-) {
-	let data = &graph.gates[gate];
-	match data.body {
-		GateBody::Op(opcode) => {
-			(opcode.vtable().constrain)(data.gate_param(hint_registry), builder);
+impl Gate {
+	/// Appends the constraints this gate contributes.
+	///
+	/// A hint contributes none: the surrounding circuit constrains the value it computes.
+	pub fn constrain(
+		self,
+		graph: &GateGraph,
+		builder: &mut ConstraintBuilder,
+		hint_registry: &HintRegistry,
+	) {
+		let data = &graph.gates[self];
+		match data.body {
+			GateBody::Op(opcode) => {
+				(opcode.vtable().constrain)(data.gate_param(hint_registry), builder);
+			}
+			GateBody::Hint(_) => {}
 		}
-		GateBody::Hint(_) => {}
 	}
-}
 
-/// Emits the instructions that derive one gate's outputs at witness time.
-pub fn emit_gate_bytecode(
-	gate: Gate,
-	graph: &GateGraph,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32 + Copy,
-	hint_registry: &HintRegistry,
-) {
-	let data = &graph.gates[gate];
-	let params = data.gate_param(hint_registry);
-	let ctx = EmitCtx {
-		resolve: &wire_to_reg,
-		path: graph.assertion_names[gate],
-	};
-	match data.body {
-		GateBody::Op(opcode) => (opcode.vtable().emit)(params, ctx, builder),
-		GateBody::Hint(hint_id) => emit_hint(hint_id, params, &data.dimensions, ctx, builder),
+	/// Emits the instructions that derive this gate's outputs at witness time.
+	pub fn emit_bytecode(
+		self,
+		graph: &GateGraph,
+		builder: &mut BytecodeBuilder,
+		wire_to_reg: impl Fn(Wire) -> u32 + Copy,
+		hint_registry: &HintRegistry,
+	) {
+		let data = &graph.gates[self];
+		let params = data.gate_param(hint_registry);
+		let ctx = EmitCtx {
+			resolve: &wire_to_reg,
+			path: graph.assertion_names[self],
+		};
+		match data.body {
+			GateBody::Op(opcode) => (opcode.vtable().emit)(params, ctx, builder),
+			GateBody::Hint(hint_id) => emit_hint(hint_id, params, &data.dimensions, ctx, builder),
+		}
 	}
 }
 

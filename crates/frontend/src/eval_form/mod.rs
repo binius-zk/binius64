@@ -28,7 +28,6 @@ use scalar::ExecutionContext;
 
 use crate::{
 	artifact::witness::PopulateError,
-	gates,
 	ir::{GateGraph, Wire, hints::HintRegistry, path::PathSpecTree},
 };
 
@@ -67,13 +66,7 @@ impl EvalForm {
 
 		// Build bytecode for each gate
 		for gate_id in gate_graph.gates.keys() {
-			gates::emit_gate_bytecode(
-				gate_id,
-				gate_graph,
-				&mut builder,
-				wire_to_reg,
-				&hint_registry,
-			);
+			gate_id.emit_bytecode(gate_graph, &mut builder, wire_to_reg, &hint_registry);
 		}
 
 		let (bytecode, n_eval_insn) = builder.finalize();
