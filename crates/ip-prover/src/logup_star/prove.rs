@@ -7,7 +7,7 @@ use std::iter;
 use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, PackedField};
 use binius_ip::{
-	MultilinearEvalClaim,
+	fracaddcheck::FracAddEvalClaim,
 	logup_star::{LogupOutput, LogupTableOutput},
 };
 use binius_math::{FieldBuffer, FieldSlice, FieldVec, univariate::evaluate_univariate};
@@ -261,20 +261,15 @@ where
 	// t's tree depth m_t, so the batch pads every shallower instance up — the padding costs O(1)
 	// per round and the layer count depends only on that maximum.
 	let gkr_guard = tracing::debug_span!("Combined GKR").entered();
-	let (top_num_claim, _top_den_claim) = top_prover.prove(
-		(
-			MultilinearEvalClaim {
-				eval: F::ZERO,
-				point: Vec::new(),
-			},
-			MultilinearEvalClaim {
-				eval: root_den,
-				point: Vec::new(),
-			},
-		),
+	let top_claim = top_prover.prove(
+		FracAddEvalClaim {
+			num_eval: F::ZERO,
+			den_eval: root_den,
+			point: Vec::new(),
+		},
 		channel,
 	);
-	let selector_point = top_num_claim.point;
+	let selector_point = top_claim.point;
 	let fracaddcheck::BatchProveOutput {
 		eval_point,
 		fractions,

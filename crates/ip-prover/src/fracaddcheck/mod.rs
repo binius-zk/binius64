@@ -4,10 +4,7 @@ use std::iter;
 
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
-use binius_ip::{
-	fracaddcheck::FracAddEvalClaim, mlecheck, prodcheck::MultilinearEvalClaim,
-	sumcheck::RoundCoeffs,
-};
+use binius_ip::{fracaddcheck::FracAddEvalClaim, mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
 	FieldBuffer, FieldVec,
 	batch_invert::BatchInversion,
@@ -42,11 +39,6 @@ use fraction::Fraction;
 use zero_pad_mle::{ConstantFraction, ZeroPadMleCheckProver};
 
 pub use crate::sumcheck::frac_add_mle::LayerProver;
-
-/// The numerator and denominator evaluation claims of one fractional-addition layer.
-///
-/// Both claims share the same evaluation point, that of the layer they describe.
-pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 
 /// Prover for the fractional addition protocol.
 ///
@@ -189,14 +181,8 @@ where
 	/// layers and `None` otherwise.
 	pub fn layer_prover(
 		mut self,
-		claim: FracEvalClaim<F>,
+		claim: FracAddEvalClaim<F>,
 	) -> (Option<Self>, LayerProver<'a, A, F, P>) {
-		let (num_claim, den_claim) = claim;
-		assert_eq!(
-			num_claim.point, den_claim.point,
-			"fractional claims must share the evaluation point"
-		);
-
 		let alloc = self.alloc;
 		let Fraction { num, den } = self.layers.pop().expect("layers is non-empty");
 
@@ -214,8 +200,8 @@ where
 			alloc,
 			num,
 			den,
-			num_claim.point,
-			[num_claim.eval, den_claim.eval],
+			claim.point,
+			[claim.num_eval, claim.den_eval],
 		);
 		(remaining, layer_prover)
 	}
@@ -233,9 +219,9 @@ where
 	/// * `claim.0.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
 	pub fn prove(
 		self,
-		claim: FracEvalClaim<F>,
+		claim: FracAddEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> FracEvalClaim<F> {
+	) -> FracAddEvalClaim<F> {
 		// Proving the full circuit runs every layer, so delegate and drop the leftover prover.
 		let n_layers = self.n_layers();
 		let (remaining, claim) = self.prove_layers(n_layers, claim, channel);
@@ -269,9 +255,9 @@ where
 	pub fn prove_layers(
 		self,
 		n_layers: usize,
-		claim: FracEvalClaim<F>,
+		claim: FracAddEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> (Option<Self>, FracEvalClaim<F>) {
+	) -> (Option<Self>, FracAddEvalClaim<F>) {
 		// Each layer consumes the prover and returns the remainder, so thread it through an Option.
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
@@ -306,16 +292,11 @@ where
 			next_point.reverse();
 			next_point.push(r);
 
-			let num_claim = MultilinearEvalClaim {
-				eval: next_num,
-				point: next_point.clone(),
-			};
-			let den_claim = MultilinearEvalClaim {
-				eval: next_den,
+			claim = FracAddEvalClaim {
+				num_eval: next_num,
+				den_eval: next_den,
 				point: next_point,
 			};
-
-			claim = (num_claim, den_claim);
 		}
 
 		(prover_opt, claim)
@@ -603,16 +584,11 @@ where
 	let inner_coords = eval_point[k..].to_vec();
 	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_fractions)
 		.map(|(prover, &Fraction { num, den })| {
-			let (remaining, layer_prover) = prover.layer_prover((
-				MultilinearEvalClaim {
-					eval: num,
-					point: inner_coords.clone(),
-				},
-				MultilinearEvalClaim {
-					eval: den,
-					point: inner_coords.clone(),
-				},
-			));
+			let (remaining, layer_prover) = prover.layer_prover(FracAddEvalClaim {
+				num_eval: num,
+				den_eval: den,
+				point: inner_coords.clone(),
+			});
 			(layer_prover, remaining)
 		})
 		.unzip();
@@ -784,16 +760,11 @@ where
 				next_provers.push(prover);
 				Either::Right(ConstantFraction::new(num_claim, den_claim))
 			} else {
-				let (rest, layer_prover) = prover.layer_prover((
-					MultilinearEvalClaim {
-						eval: num_claim,
-						point: point.clone(),
-					},
-					MultilinearEvalClaim {
-						eval: den_claim,
-						point,
-					},
-				));
+				let (rest, layer_prover) = prover.layer_prover(FracAddEvalClaim {
+					num_eval: num_claim,
+					den_eval: den_claim,
+					point,
+				});
 				// Every tree is padded to the same depth, so one that pops here still holds a layer
 				// for each round below — until the final layer, whose remainders the caller drops.
 				next_provers.extend(rest);
@@ -904,17 +875,8 @@ mod tests {
 		// 4. Evaluate sums at challenge point to createzz claims
 		let sum_num_eval = evaluate(&sums.num, &eval_point);
 		let sum_den_eval = evaluate(&sums.den, &eval_point);
-		let prover_claim = (
-			MultilinearEvalClaim {
-				eval: sum_num_eval,
-				point: eval_point.clone(),
-			},
-			MultilinearEvalClaim {
-				eval: sum_den_eval,
-				point: eval_point.clone(),
-			},
-		);
-		let verifier_claim = fracaddcheck::FracAddEvalClaim {
+		// The prover and the verifier take the same claim type, so one claim serves both.
+		let claim = FracAddEvalClaim {
 			num_eval: sum_num_eval,
 			den_eval: sum_den_eval,
 			point: eval_point,
@@ -922,18 +884,14 @@ mod tests {
 
 		// 5. Run prover
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prover.prove(prover_claim, &mut prover_transcript);
+		let prover_output = prover.prove(claim.clone(), &mut prover_transcript);
 
 		// 6. Run verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_output =
-			fracaddcheck::verify(k, verifier_claim, &mut verifier_transcript).unwrap();
+		let verifier_output = fracaddcheck::verify(k, claim, &mut verifier_transcript).unwrap();
 
 		// 7. Check outputs match
-		assert_eq!(prover_output.0.point, prover_output.1.point);
-		assert_eq!(prover_output.0.point, verifier_output.point);
-		assert_eq!(prover_output.0.eval, verifier_output.num_eval);
-		assert_eq!(prover_output.1.eval, verifier_output.den_eval);
+		assert_eq!(prover_output, verifier_output);
 
 		// 8. Verify multilinear evaluation of original witness
 		let expected_num = evaluate(&witness_num, &verifier_output.point);
