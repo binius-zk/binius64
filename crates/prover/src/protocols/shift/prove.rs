@@ -18,7 +18,7 @@ use super::{
 	claims::{OperatorClaims, PreparedOperatorClaims},
 	key_collection::KeyCollection,
 	phase_1::{Phase1Output, SparseShiftRows},
-	phase_2::{ShiftOutput, run_sumcheck, zero_extend},
+	phase_2::{ShiftOutput, run_sumcheck},
 	shift_ind::{ShiftChallengePoint, ShiftIndSumcheck},
 };
 use crate::fold_word::fold_words;
@@ -344,8 +344,8 @@ where
 		// The hidden segment is normally wider, but a system with more public words than
 		// private values inverts that, so the hidden half is zero-extended to match.
 		let log_segment_words = max(public_folded.log_len(), hidden_folded.log_len());
-		let hidden_folded = zero_extend(self.alloc, hidden_folded, log_segment_words);
-		let hidden_monster = zero_extend(self.alloc, hidden_monster, log_segment_words);
+		let hidden_folded = hidden_folded.zero_extend_in(self.alloc, log_segment_words);
+		let hidden_monster = hidden_monster.zero_extend_in(self.alloc, log_segment_words);
 
 		run_sumcheck(
 			&public_folded,

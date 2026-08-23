@@ -24,34 +24,6 @@ use binius_utils::{
 use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
-/// Zero-extends a segment buffer to span `log_len` word-index variables.
-///
-/// Returns the buffer untouched when it already spans that many, which is the common case: the
-/// hidden segment is normally the wider of the two, so no copy happens.
-///
-/// # Panics
-///
-/// Panics if `log_len` is less than the buffer's own length.
-pub(super) fn zero_extend<F, P: PackedField<Scalar = F>, A: Allocator>(
-	alloc: &A,
-	buffer: FieldVec<P, A>,
-	log_len: usize,
-) -> FieldVec<P, A>
-where
-	F: BinaryField,
-{
-	assert!(log_len >= buffer.log_len());
-	if log_len == buffer.log_len() {
-		return buffer;
-	}
-
-	// Whole packed words copy across: a trailing partial word carries zero high lanes, which are
-	// exactly the zeros the extension pads with.
-	let mut extended = FieldVec::<P, A>::zeros_in(alloc, log_len);
-	extended.as_mut()[..buffer.as_ref().len()].copy_from_slice(buffer.as_ref());
-	extended
-}
-
 /// A witness or constraint-matrix buffer, split into the public and hidden segments the
 /// phase-2 sumcheck's selector variable chooses between.
 ///

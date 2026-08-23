@@ -181,6 +181,45 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 
 		FieldBuffer::new(log_len, packed_values)
 	}
+
+	/// Grows the buffer to span `log_len` variables, padding the new positions with zeros.
+	///
+	/// Returns the buffer untouched when it already spans that many.
+	/// Padding the shorter of two buffers to match the longer hits that case when both are equal.
+	///
+	/// New memory comes from `alloc`.
+	/// A pooled buffer therefore stays pooled, instead of escaping the pool on a reallocation.
+	///
+	/// # Panics
+	///
+	/// Panics if `log_len` is shorter than what the buffer already spans.
+	/// Shrinking is a separate operation.
+	/// Silently returning a narrower buffer than asked for would hide the mistake.
+	pub fn zero_extend_in<A>(self, alloc: &A, log_len: usize) -> Self
+	where
+		A: Allocator<Vec<P> = Data>,
+	{
+		assert!(
+			log_len >= self.log_len,
+			"precondition: log_len must be at least the buffer's own log_len"
+		);
+		// Nothing to pad, so the caller's buffer is handed straight back with no copy.
+		if log_len == self.log_len {
+			return self;
+		}
+
+		// The target starts fully zeroed, so only the occupied words need writing.
+		let mut extended = Self::zeros_in(alloc, log_len);
+
+		// Whole packed words move across untouched.
+		//
+		// Invariant: lanes past the logical length are zero.
+		// So a trailing partial word already carries zeros in its high lanes.
+		// Those are exactly the zeros the padding would otherwise write.
+		extended.as_mut()[..self.as_ref().len()].copy_from_slice(self.as_ref());
+
+		extended
+	}
 }
 
 #[allow(clippy::len_without_is_empty)]
@@ -904,7 +943,7 @@ mod tests {
 		}
 	}
 
-	/// Runs the two allocator-backed constructors against one allocator.
+	/// Runs every allocator-backed constructor and the zero-padding grow against one allocator.
 	///
 	/// Both a plain heap allocator and a recycling pool must satisfy the same contract.
 	fn check_alloc_constructors<A: Allocator>(alloc: &A) {
@@ -939,6 +978,40 @@ mod tests {
 		let zeros_small: FieldVec<P, A> = FieldBuffer::zeros_in(alloc, 1);
 		assert_eq!(zeros_small.as_ref().len(), 1);
 		assert!(zeros_small.iter_scalars().all(|scalar| scalar == F::ZERO));
+
+		// Padding to a wider length keeps the live scalars and zeros every position above them.
+		//
+		//     source (log_len 4)    [0 .. 16]
+		//     result (log_len 5)    [0 .. 16] unchanged, [16 .. 32] zero
+		//
+		// Under a pool the target may sit on memory a prior buffer dirtied.
+		// So the zeros above the copied words have to be written, never assumed.
+		let src_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		let extended = src_vec.zero_extend_in(alloc, 5);
+		assert_eq!(extended.log_len(), 5);
+		for i in 0..16 {
+			assert_eq!(extended.get(i), F::new(i as u128));
+		}
+		assert!((16..32).all(|i| extended.get(i) == F::ZERO));
+
+		// An already-wide-enough buffer comes back unchanged, with no copy taken.
+		let same: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		let same = same.zero_extend_in(alloc, 4);
+		assert_eq!(same.log_len(), 4);
+		assert_eq!(same.to_ref(), src.to_ref());
+
+		// A source narrower than one packed word pads out of that word's dead lanes.
+		//
+		//     source (log_len 1)    [0, 1 | dead, dead]
+		//     result (log_len 3)    [0, 1 | 0, 0] [0, 0 | 0, 0]
+		//
+		// The two dead lanes become live, so they read back as zeros, not stale scalars.
+		let small_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.to_ref());
+		let widened = small_vec.zero_extend_in(alloc, 3);
+		assert_eq!(widened.log_len(), 3);
+		assert_eq!(widened.get(0), F::new(0));
+		assert_eq!(widened.get(1), F::new(1));
+		assert!((2..8).all(|i| widened.get(i) == F::ZERO));
 	}
 
 	#[test]
