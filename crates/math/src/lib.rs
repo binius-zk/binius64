@@ -28,6 +28,6 @@ pub mod test_utils;
 pub mod univariate;
 
 pub use binary_subspace::BinarySubspace;
-pub use field_buffer::{AsSlicesMut, FieldBuffer, FieldSlice, FieldSliceMut, FieldVec};
+pub use field_buffer::{FieldBuffer, FieldSlice, FieldSliceMut, FieldVec};
 pub use matrix::Matrix;
 pub use reed_solomon::ReedSolomonCode;

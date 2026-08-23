@@ -6,6 +6,11 @@ use std::{
 	slice,
 };
 
+// The `BufferData` bound on `FieldBuffer`'s backing store lives in `binius-compute` so that it
+// can bound `Allocator::Vec` (letting an allocator's buffer back a `FieldBuffer` without a
+// `where`-clause on every signature) and so its `PoolVec` can implement it. Re-exported here
+// since it is part of this module's public API.
+pub use binius_compute::BufferData;
 use binius_compute::{Allocator, VecLike};
 use binius_field::{
 	Field, PackedField,
@@ -16,17 +21,6 @@ use binius_utils::{
 	rayon::{iter::Either, prelude::*, slice::ParallelSlice},
 };
 use bytemuck::zeroed_vec;
-
-/// Trait for types that can provide multiple mutable field slices.
-pub trait AsSlicesMut<P: PackedField, const N: usize> {
-	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; N];
-}
-
-// The `BufferData` bound on `FieldBuffer`'s backing store lives in `binius-compute` so that it can
-// bound `Allocator::Vec` (letting an allocator's buffer back a `FieldBuffer` without a
-// `where`-clause on every signature) and so its `PoolVec` can implement it. Re-exported here since
-// it is part of this module's public API.
-pub use binius_compute::BufferData;
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
@@ -689,14 +683,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> AsMut<[P]> for FieldBuffer<P,
 	}
 }
 
-impl<P: PackedField, Data: DerefMut<Target = [P]>, const N: usize> AsSlicesMut<P, N>
-	for [FieldBuffer<P, Data>; N]
-{
-	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; N] {
-		self.each_mut().map(|buf| buf.to_mut())
-	}
-}
-
 impl<F: Field, Data: Deref<Target = [F]>> Index<usize> for FieldBuffer<F, Data> {
 	type Output = F;
 
@@ -824,29 +810,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for FieldBufferSplitMut<
 			// The arrays may have been modified by the closure
 			(self.data[0], _) = lo_half.interleave(hi_half, self.log_len);
 		}
-	}
-}
-
-impl<P: PackedField, Data: DerefMut<Target = [P]>> AsSlicesMut<P, 2>
-	for FieldBufferSplitMut<P, Data>
-{
-	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; 2] {
-		let (first, second) = self.halves();
-		[first, second]
-	}
-}
-
-impl<P: PackedField, Data: DerefMut<Target = [P]>> AsSlicesMut<P, 4>
-	for [FieldBufferSplitMut<P, Data>; 2]
-{
-	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; 4] {
-		// Borrow the two splits independently so both stay mutable at once.
-		let [first, second] = self;
-		// Each split yields its own low and high half.
-		let (lo_0, hi_0) = first.halves();
-		let (lo_1, hi_1) = second.halves();
-		// Order the four slices as first-low, first-high, second-low, second-high.
-		[lo_0, hi_0, lo_1, hi_1]
 	}
 }
 
@@ -1648,41 +1611,6 @@ mod tests {
 	fn test_split_half_mut_size_one() {
 		let mut buffer = FieldBuffer::<P>::zeros(0); // 1 element
 		let _ = buffer.split_half_mut();
-	}
-
-	// Invariant: viewing two split buffers as four field slices yields exactly their four halves.
-	// The order is first-low, first-high, second-low, second-high.
-	// The reference halves come from a borrow-only split of each buffer.
-	#[test]
-	fn test_split_pair_as_slices_mut_matches_split_half_ref() {
-		// Cover log_len below, at, and above the packing width (P::LOG_WIDTH == 2).
-		for log_len in 1..=5 {
-			let n = 1 << log_len;
-			let mut buf_0 = FieldBuffer::<P>::zeros(log_len);
-			let mut buf_1 = FieldBuffer::<P>::zeros(log_len);
-			for i in 0..n {
-				buf_0.set(i, F::new(i as u128));
-				buf_1.set(i, F::new((i + 100) as u128));
-			}
-
-			// Reference halves: a borrow-only split of each buffer, read low then high.
-			let (ref_lo_0, ref_hi_0) = buf_0.split_half_ref();
-			let (ref_lo_1, ref_hi_1) = buf_1.split_half_ref();
-			let reference: [Vec<F>; 4] = [
-				ref_lo_0.iter_scalars().collect(),
-				ref_hi_0.iter_scalars().collect(),
-				ref_lo_1.iter_scalars().collect(),
-				ref_hi_1.iter_scalars().collect(),
-			];
-
-			// Consume the buffers into owning splits and view the pair as four slices.
-			let mut pair = [buf_0.split_half(), buf_1.split_half()];
-			let slices = pair.as_slices_mut();
-			let actual: [Vec<F>; 4] =
-				std::array::from_fn(|i| slices[i].iter_scalars().collect::<Vec<_>>());
-
-			assert_eq!(actual, reference, "half mismatch at log_len {log_len}");
-		}
 	}
 
 	#[test]
