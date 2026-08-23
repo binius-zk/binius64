@@ -21,7 +21,7 @@ use crate::{
 		circuit::Circuit,
 	},
 	eval_form,
-	gates::{self, Opcode},
+	gates::Opcode,
 	ir::{
 		GateGraph, Wire, WireKind,
 		hints::{Hint, HintRegistry},
@@ -646,7 +646,7 @@ impl CircuitBuilder {
 			{
 				continue;
 			}
-			gates::constrain(gate_id, &graph, &mut builder, &shared.hint_registry);
+			gate_id.constrain(&graph, &mut builder, &shared.hint_registry);
 		}
 
 		// Perform fusion if the corresponding feature flag is turned on.

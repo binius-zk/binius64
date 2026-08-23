@@ -216,7 +216,6 @@ mod tests {
 
 		use crate::{
 			eval_form::{BytecodeBuilder, exec::Executor, scalar::ExecutionContext},
-			gates,
 			ir::Wire,
 		};
 
@@ -238,7 +237,7 @@ mod tests {
 		let wire_to_reg =
 			|wire: Wire| -> u32 { data.wires.iter().position(|&w| w == wire).unwrap() as u32 };
 		let mut builder = BytecodeBuilder::new();
-		gates::emit_gate_bytecode(gate, graph, &mut builder, wire_to_reg, hints);
+		gate.emit_bytecode(graph, &mut builder, wire_to_reg, hints);
 		let (bytecode, _) = builder.finalize();
 		let mut ctx = ExecutionContext::new(&mut value_vec);
 		Executor::new(&bytecode, hints).run(&mut ctx);
