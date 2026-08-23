@@ -6,7 +6,7 @@ use std::{array, rc::Rc};
 
 use binius_circuits::{bytes::swap_bytes_32, multiplexer::multi_wire_multiplex};
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash as B128, Field, FieldOps};
+use binius_field::{Field, FieldOps, Ghash128b as B128};
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_hash::StdHashSuite;
 use binius_iop::{

@@ -3,13 +3,13 @@
 //! Binary field implementation of GF(2^256) as a degree-two extension of the GHASH field.
 //!
 //! Elements are pairs `(a, b)` representing `a + b·Y`, where `a` and `b` are elements of
-//! [`BinaryField128bGhash`]. The extension is defined by the irreducible polynomial
+//! [`Ghash128b`]. The extension is defined by the irreducible polynomial
 //! `Y² + X·Y + X` over GHASH, so that `Y² = X·Y + X`.
 //!
 //! The field is backed by [`M256`], with the low 128 bits holding the coefficient of `1` (`a`) and
 //! the high 128 bits holding the coefficient of `Y` (`b`). This is the same layout as
 //! [`PackedBinaryGhash2x128b`] (two GHASH lanes in an `M256`) and matches the `{1, Y}` basis used
-//! by the `ExtensionField<BinaryField128bGhash>` implementation.
+//! by the `ExtensionField<Ghash128b>` implementation.
 //!
 //! Reducing with `Y² = X·Y + X` multiplies by `X` (a left shift) rather than by `X⁻¹`, and the
 //! multiply-by-`X` folds into the reduction. Multiplication batches the two GHASH products that
@@ -33,7 +33,7 @@ use super::{
 	extension::ExtensionField,
 };
 use crate::{
-	BinaryField128bGhash, Divisible, Field, PackedBinaryGhash2x128b, PackedField,
+	Divisible, Field, Ghash128b, PackedBinaryGhash2x128b, PackedField,
 	arch::{M128, M256, m256_from_u128s},
 	mul_by_binary_field_1b,
 	underlier::U1,
@@ -55,7 +55,7 @@ unsafe impl Pod for GhashSq256b {}
 impl GhashSq256b {
 	/// Splits the element into its `(a, b)` coefficients over GHASH, where `self = a + b·Y`.
 	#[inline]
-	fn to_coeffs(self) -> [BinaryField128bGhash; 2] {
+	fn to_coeffs(self) -> [Ghash128b; 2] {
 		// `GhashSq256b` and `PackedBinaryGhash2x128b` share the `M256` underlier and lane layout
 		// (low lane = coefficient of `1`, high lane = coefficient of `Y`), so this reinterprets.
 		let packed = PackedBinaryGhash2x128b::from_underlier(self.0);
@@ -64,7 +64,7 @@ impl GhashSq256b {
 
 	/// Builds an element from its `(a, b)` coefficients over GHASH, so that `self = a + b·Y`.
 	#[inline]
-	fn from_coeffs(coeffs: [BinaryField128bGhash; 2]) -> Self {
+	fn from_coeffs(coeffs: [Ghash128b; 2]) -> Self {
 		Self(PackedBinaryGhash2x128b::from_scalars(coeffs).to_underlier())
 	}
 }
@@ -72,7 +72,7 @@ impl GhashSq256b {
 // Degree-two extension over GHASH: the low 128 bits are the coefficient of `1`, the high 128 bits
 // the coefficient of `Y`. `square_transpose` uses the packed fast path via
 // `PackedBinaryGhash2x128b`.
-impl_field_extension!(BinaryField128bGhash(M128) < @1 => GhashSq256b(M256));
+impl_field_extension!(Ghash128b(M128) < @1 => GhashSq256b(M256));
 
 // Extension over GF(2): the 256 underlier bits are the coordinates in the `BinaryField1b` basis.
 impl_field_extension!(BinaryField1b(U1) < @8 => GhashSq256b(M256));
@@ -80,11 +80,11 @@ impl_field_extension!(BinaryField1b(U1) < @8 => GhashSq256b(M256));
 mul_by_binary_field_1b!(GhashSq256b);
 
 // Scalar multiplication by a GHASH subfield element scales both extension coordinates.
-impl Mul<BinaryField128bGhash> for GhashSq256b {
+impl Mul<Ghash128b> for GhashSq256b {
 	type Output = Self;
 
 	#[inline]
-	fn mul(self, rhs: BinaryField128bGhash) -> Self::Output {
+	fn mul(self, rhs: Ghash128b) -> Self::Output {
 		let [a, b] = self.to_coeffs();
 		Self::from_coeffs([a * rhs, b * rhs])
 	}
@@ -136,7 +136,7 @@ mod tests {
 	];
 
 	fn ghash_sq(a: u128, b: u128) -> GhashSq256b {
-		GhashSq256b::from_coeffs([BinaryField128bGhash::new(a), BinaryField128bGhash::new(b)])
+		GhashSq256b::from_coeffs([Ghash128b::new(a), Ghash128b::new(b)])
 	}
 
 	fn arb_elem() -> impl Strategy<Value = GhashSq256b> {
@@ -204,8 +204,8 @@ mod tests {
 	#[test]
 	fn test_subfield_embedding() {
 		// Products of GHASH-subfield elements agree with GHASH multiplication.
-		let a = BinaryField128bGhash::new(0x0123456789abcdef0123456789abcdef);
-		let b = BinaryField128bGhash::new(0xfedcba9876543210fedcba9876543210);
+		let a = Ghash128b::new(0x0123456789abcdef0123456789abcdef);
+		let b = Ghash128b::new(0xfedcba9876543210fedcba9876543210);
 		assert_eq!(GhashSq256b::from(a) * GhashSq256b::from(b), GhashSq256b::from(a * b),);
 	}
 
@@ -301,11 +301,11 @@ mod tests {
 
 		#[test]
 		fn test_ghash_extension_bases_roundtrip(a in arb_elem()) {
-			let bases: Vec<BinaryField128bGhash> =
-				ExtensionField::<BinaryField128bGhash>::iter_bases(&a).collect();
+			let bases: Vec<Ghash128b> =
+				ExtensionField::<Ghash128b>::iter_bases(&a).collect();
 			prop_assert_eq!(bases.len(), 2);
 			prop_assert_eq!(
-				<GhashSq256b as ExtensionField<BinaryField128bGhash>>::from_bases(bases),
+				<GhashSq256b as ExtensionField<Ghash128b>>::from_bases(bases),
 				a,
 			);
 		}
@@ -324,8 +324,8 @@ mod tests {
 		#[test]
 		fn test_square_transpose_ghash(a in arb_elem(), b in arb_elem()) {
 			let mut values = [a, b];
-			let expected = naive_square_transpose::<BinaryField128bGhash>(&values);
-			<GhashSq256b as ExtensionField<BinaryField128bGhash>>::square_transpose(&mut values);
+			let expected = naive_square_transpose::<Ghash128b>(&values);
+			<GhashSq256b as ExtensionField<Ghash128b>>::square_transpose(&mut values);
 			prop_assert_eq!(values.as_slice(), expected.as_slice());
 		}
 

@@ -343,7 +343,7 @@ fn partial_eval_sigmas_transpose<E: FieldOps>(bit: &[E], amount: &[E]) -> Vec<E>
 mod tests {
 	use std::array;
 
-	use binius_field::{BinaryField128bGhash as B128, Field};
+	use binius_field::{Field, Ghash128b as B128};
 	use binius_math::{
 		BinarySubspace, multilinear::eq::eq_ind_partial_eval_scalars, test_utils::random_scalars,
 		univariate::subspace_lagrange_evals_scalars,

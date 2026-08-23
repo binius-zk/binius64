@@ -8,7 +8,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
 	word::Word,
 };
-use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
+use binius_field::{AESTowerField8b, Field, Ghash128b, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_math::{
 	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::subspace_lagrange_evals,
@@ -85,7 +85,7 @@ pub fn create_sha256_cs_with_witness(
 }
 
 fn bench_prove_and_verify(c: &mut Criterion) {
-	type F = BinaryField128bGhash;
+	type F = Ghash128b;
 	type P = OptimalPackedB128;
 	let mut rng = rand::rng();
 
@@ -229,7 +229,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 /// `intmul/phases` breakdown. Each of the five phase functions is timed on its own, sharing one
 /// expensive circuit / witness / key-collection setup.
 fn bench_shift_phases(c: &mut Criterion) {
-	type F = BinaryField128bGhash;
+	type F = Ghash128b;
 	type P = OptimalPackedB128;
 	let mut rng = rand::rng();
 

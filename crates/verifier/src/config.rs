@@ -2,14 +2,14 @@
 //! Specifies standard trait implementations and parameters.
 
 use binius_core::word::Word;
-use binius_field::{AESTowerField8b, BinaryField, BinaryField1b, BinaryField128bGhash};
+use binius_field::{AESTowerField8b, BinaryField, BinaryField1b, Ghash128b};
 use binius_hash::StdDigest;
 use binius_transcript::fiat_shamir::{Challenger, HasherChallenger};
 use binius_utils::checked_arithmetics::checked_log_2;
 
 // Exports the binary fields that this system uses
 pub type B1 = BinaryField1b;
-pub type B128 = BinaryField128bGhash;
+pub type B128 = Ghash128b;
 
 /// The intention of this trait is to capture the moment when a StandardChallenger type is changed.
 pub trait ChallengerWithName: Challenger {

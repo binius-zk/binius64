@@ -12,7 +12,7 @@ use bytemuck::TransparentWrapper;
 
 use super::super::univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64};
 use crate::{
-	BinaryField128bGhash as GhashB128, WideMul,
+	Ghash128b as GhashB128, WideMul,
 	arch::PackedPrimitiveType,
 	arithmetic_traits::{MulXWide, Square},
 };

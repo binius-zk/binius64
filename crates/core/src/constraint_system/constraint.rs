@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 use std::fmt;
 
-use binius_field::BinaryField128bGhash as B128;
+use binius_field::Ghash128b as B128;
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 

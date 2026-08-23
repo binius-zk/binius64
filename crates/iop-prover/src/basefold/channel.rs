@@ -690,9 +690,8 @@ mod tests {
 
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		BinaryField, BinaryField128bGhash, BinaryField128bGhash as B128, Field,
-		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-		Random,
+		BinaryField, Field, Ghash128b, Ghash128b as B128, PackedBinaryGhash1x128b,
+		PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField, Random,
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
@@ -723,14 +722,12 @@ mod tests {
 		security_bits.div_ceil(log_inv_rate)
 	}
 
-	fn make_ntt(
-		log_domain_size: usize,
-	) -> NeighborsLastSingleThread<GaoMateerOnTheFly<BinaryField128bGhash>> {
+	fn make_ntt(log_domain_size: usize) -> NeighborsLastSingleThread<GaoMateerOnTheFly<Ghash128b>> {
 		let domain_context = GaoMateerOnTheFly::generate(log_domain_size);
 		NeighborsLastSingleThread::new(domain_context)
 	}
 
-	fn make_merkle_scheme() -> BinaryMerkleTreeScheme<BinaryField128bGhash, StdHashSuite> {
+	fn make_merkle_scheme() -> BinaryMerkleTreeScheme<Ghash128b, StdHashSuite> {
 		BinaryMerkleTreeScheme::new()
 	}
 
@@ -751,7 +748,7 @@ mod tests {
 
 	#[test]
 	fn test_basefold_channel_single_oracle() {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 		type P = PackedBinaryGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
@@ -817,7 +814,7 @@ mod tests {
 
 	#[test]
 	fn test_basefold_channel_two_oracles() {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 		type P = PackedBinaryGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
@@ -903,11 +900,11 @@ mod tests {
 	/// Runs a full prove/verify cycle of the Batched ZK BaseFold channel over oracles of the given
 	/// sizes. If `tamper`, the verifier's claim on the first oracle is corrupted; verification must
 	/// then fail. Returns whether verification accepted.
-	fn run_zk_channel<P: PackedField<Scalar = BinaryField128bGhash>>(
+	fn run_zk_channel<P: PackedField<Scalar = Ghash128b>>(
 		n_vars_list: &[usize],
 		tamper: bool,
 	) -> bool {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let data: Vec<(FieldBuffer<P>, FieldBuffer<P>, F)> = n_vars_list
@@ -985,11 +982,11 @@ mod tests {
 
 	/// Like `run_zk_channel` but with per-oracle `(n_vars, is_zk)` flags, exercising the mixed
 	/// ZK/non-ZK opening. If `tamper`, the verifier's claim on the first oracle is corrupted.
-	fn run_mixed_channel<P: PackedField<Scalar = BinaryField128bGhash>>(
+	fn run_mixed_channel<P: PackedField<Scalar = Ghash128b>>(
 		specs: &[(usize, bool)],
 		tamper: bool,
 	) -> bool {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let data: Vec<(FieldBuffer<P>, FieldBuffer<P>, F)> = specs
@@ -1221,7 +1218,7 @@ mod tests {
 	/// arrival position is corrupted; verification must then fail. Returns whether verification
 	/// accepted.
 	fn run_multi_relation_channel(specs: &[(usize, bool, usize)], tamper: Option<usize>) -> bool {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 		type P = PackedBinaryGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);

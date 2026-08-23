@@ -30,29 +30,29 @@ use crate::{
 
 // `1 << 121` is the lowest single-bit element of trace 1; `1 << 127` is the only other one.
 binary_field!(
-	pub BinaryField128bGhash(M128),
+	pub Ghash128b(M128),
 	M128::from_u128(0x494ef99794d5244f9152df59d87a9186),
 	M128::from_u128(1 << 121)
 );
 
 // Convenience `u128` conversions. `binary_field!` already provides `From<M128>`/`From<.. for
-// M128>`; these let callers keep constructing/inspecting `BinaryField128bGhash` via `u128`. `M128`
+// M128>`; these let callers keep constructing/inspecting `Ghash128b` via `u128`. `M128`
 // is a distinct type from `u128` on every target, so these never collide with the macro's impls.
-impl From<u128> for BinaryField128bGhash {
+impl From<u128> for Ghash128b {
 	fn from(value: u128) -> Self {
 		Self(M128::from(value))
 	}
 }
 
-impl From<BinaryField128bGhash> for u128 {
-	fn from(value: BinaryField128bGhash) -> Self {
+impl From<Ghash128b> for u128 {
+	fn from(value: Ghash128b) -> Self {
 		value.0.into()
 	}
 }
 
-unsafe impl Pod for BinaryField128bGhash {}
+unsafe impl Pod for Ghash128b {}
 
-impl BinaryField128bGhash {
+impl Ghash128b {
 	/// Constructs an element from its `u128` value. The underlier is `M128`, but `u128` is the
 	/// ergonomic constructor type, so this converts.
 	pub const fn new(value: u128) -> Self {
@@ -92,11 +92,11 @@ impl BinaryField128bGhash {
 	}
 }
 
-impl_field_extension!(BinaryField1b(U1) < @7 => BinaryField128bGhash(M128));
+impl_field_extension!(BinaryField1b(U1) < @7 => Ghash128b(M128));
 
-mul_by_binary_field_1b!(BinaryField128bGhash);
+mul_by_binary_field_1b!(Ghash128b);
 
-impl SerializeBytes for BinaryField128bGhash {
+impl SerializeBytes for Ghash128b {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.0.serialize(write_buf)
 	}
@@ -115,7 +115,7 @@ impl SerializeBytes for BinaryField128bGhash {
 	}
 }
 
-impl DeserializeBytes for BinaryField128bGhash {
+impl DeserializeBytes for Ghash128b {
 	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>
 	where
 		Self: Sized,
@@ -124,11 +124,11 @@ impl DeserializeBytes for BinaryField128bGhash {
 	}
 }
 
-impl FixedSizeSerializeBytes for BinaryField128bGhash {
+impl FixedSizeSerializeBytes for Ghash128b {
 	const BYTE_SIZE: usize = 16;
 }
 
-impl From<AESTowerField8b> for BinaryField128bGhash {
+impl From<AESTowerField8b> for Ghash128b {
 	#[inline]
 	fn from(value: AESTowerField8b) -> Self {
 		// Raw GHASH values as `u128`, converted to the `M128` underlier at the lookup site so the
@@ -392,7 +392,7 @@ impl From<AESTowerField8b> for BinaryField128bGhash {
 			0x71af641f08dbd1a0990483806bffbe0d,
 		];
 
-		BinaryField128bGhash::new(LOOKUP_TABLE[value.0 as usize])
+		Ghash128b::new(LOOKUP_TABLE[value.0 as usize])
 	}
 }
 
@@ -408,76 +408,76 @@ mod tests {
 
 	#[test]
 	fn test_ghash_mul() {
-		let a = BinaryField128bGhash::new(1u128);
-		let b = BinaryField128bGhash::new(1u128);
+		let a = Ghash128b::new(1u128);
+		let b = Ghash128b::new(1u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::new(1u128));
+		assert_eq!(c, Ghash128b::new(1u128));
 
-		let a = BinaryField128bGhash::new(1u128);
-		let b = BinaryField128bGhash::new(2u128);
+		let a = Ghash128b::new(1u128);
+		let b = Ghash128b::new(2u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::new(2u128));
+		assert_eq!(c, Ghash128b::new(2u128));
 
-		let a = BinaryField128bGhash::new(1u128);
-		let b = BinaryField128bGhash::new(1297182698762987u128);
+		let a = Ghash128b::new(1u128);
+		let b = Ghash128b::new(1297182698762987u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::new(1297182698762987u128));
+		assert_eq!(c, Ghash128b::new(1297182698762987u128));
 
-		let a = BinaryField128bGhash::new(2u128);
-		let b = BinaryField128bGhash::new(2u128);
+		let a = Ghash128b::new(2u128);
+		let b = Ghash128b::new(2u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::new(4u128));
+		assert_eq!(c, Ghash128b::new(4u128));
 
-		let a = BinaryField128bGhash::new(2u128);
-		let b = BinaryField128bGhash::new(3u128);
+		let a = Ghash128b::new(2u128);
+		let b = Ghash128b::new(3u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::new(6u128));
+		assert_eq!(c, Ghash128b::new(6u128));
 
-		let a = BinaryField128bGhash::new(3u128);
-		let b = BinaryField128bGhash::new(3u128);
+		let a = Ghash128b::new(3u128);
+		let b = Ghash128b::new(3u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::new(5u128));
+		assert_eq!(c, Ghash128b::new(5u128));
 
-		let a = BinaryField128bGhash::from(1u128 << 127);
-		let b = BinaryField128bGhash::new(2u128);
+		let a = Ghash128b::from(1u128 << 127);
+		let b = Ghash128b::new(2u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::from(0b10000111));
+		assert_eq!(c, Ghash128b::from(0b10000111));
 
-		let a = BinaryField128bGhash::from((1u128 << 127) + 1);
-		let b = BinaryField128bGhash::new(2u128);
+		let a = Ghash128b::from((1u128 << 127) + 1);
+		let b = Ghash128b::new(2u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::from(0b10000101));
+		assert_eq!(c, Ghash128b::from(0b10000101));
 
-		let a = BinaryField128bGhash::from(3u128 << 126);
-		let b = BinaryField128bGhash::new(2u128);
+		let a = Ghash128b::from(3u128 << 126);
+		let b = Ghash128b::new(2u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::from(0b10000111 + (1u128 << 127)));
+		assert_eq!(c, Ghash128b::from(0b10000111 + (1u128 << 127)));
 
-		let a = BinaryField128bGhash::from(1u128 << 127);
-		let b = BinaryField128bGhash::new(4u128);
+		let a = Ghash128b::from(1u128 << 127);
+		let b = Ghash128b::new(4u128);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::from(0b10000111 << 1));
+		assert_eq!(c, Ghash128b::from(0b10000111 << 1));
 
-		let a = BinaryField128bGhash::from(1u128 << 127);
-		let b = BinaryField128bGhash::from(1u128 << 122);
+		let a = Ghash128b::from(1u128 << 127);
+		let b = Ghash128b::from(1u128 << 122);
 		let c = a * b;
 
-		assert_eq!(c, BinaryField128bGhash::from((0b00000111 << 121) + 0b10000111));
+		assert_eq!(c, Ghash128b::from((0b00000111 << 121) + 0b10000111));
 	}
 
 	#[test]
 	fn test_multiplicative_generator() {
-		assert!(is_binary_field_valid_generator::<BinaryField128bGhash>());
+		assert!(is_binary_field_valid_generator::<Ghash128b>());
 	}
 
 	#[test]
@@ -494,9 +494,9 @@ mod tests {
 		];
 
 		for &value in &test_cases {
-			let field_val = BinaryField128bGhash::from(value);
+			let field_val = Ghash128b::from(value);
 			let mul_x_result = field_val.mul_x();
-			let regular_mul_result = field_val * BinaryField128bGhash::new(2u128);
+			let regular_mul_result = field_val * Ghash128b::new(2u128);
 
 			assert_eq!(
 				mul_x_result, regular_mul_result,
@@ -520,11 +520,10 @@ mod tests {
 		];
 
 		for &value in &test_cases {
-			let field_val = BinaryField128bGhash::from(value);
+			let field_val = Ghash128b::from(value);
 			let mul_inv_x_result = field_val.mul_inv_x();
 			// Safety: 2 is a non-zero field element.
-			let regular_mul_result =
-				field_val * unsafe { BinaryField128bGhash::new(2u128).invert() };
+			let regular_mul_result = field_val * unsafe { Ghash128b::new(2u128).invert() };
 
 			assert_eq!(
 				mul_inv_x_result, regular_mul_result,
@@ -539,16 +538,16 @@ mod tests {
 		fn test_conversion_from_aes_consistency(a in any::<u8>(), b in any::<u8>()) {
 			let a_val = AESTowerField8b::new(a);
 			let b_val = AESTowerField8b::new(b);
-			let converted_a = BinaryField128bGhash::from(a_val);
-			let converted_b = BinaryField128bGhash::from(b_val);
-			assert_eq!(BinaryField128bGhash::from(a_val * b_val), converted_a * converted_b);
+			let converted_a = Ghash128b::from(a_val);
+			let converted_b = Ghash128b::from(b_val);
+			assert_eq!(Ghash128b::from(a_val * b_val), converted_a * converted_b);
 		}
 
 		#[test]
 		fn test_wide_mul_correctness(a in any::<u128>(), b in any::<u128>()) {
-			let a = BinaryField128bGhash::from(a);
-			let b = BinaryField128bGhash::from(b);
-			let reduced = BinaryField128bGhash::reduce(BinaryField128bGhash::wide_mul(a, b));
+			let a = Ghash128b::from(a);
+			let b = Ghash128b::from(b);
+			let reduced = Ghash128b::reduce(Ghash128b::wide_mul(a, b));
 			assert_eq!(reduced, a * b);
 		}
 
@@ -558,11 +557,11 @@ mod tests {
 			a1 in any::<u128>(), b1 in any::<u128>(),
 			a2 in any::<u128>(), b2 in any::<u128>(),
 		) {
-			let (a1, b1) = (BinaryField128bGhash::from(a1), BinaryField128bGhash::from(b1));
-			let (a2, b2) = (BinaryField128bGhash::from(a2), BinaryField128bGhash::from(b2));
+			let (a1, b1) = (Ghash128b::from(a1), Ghash128b::from(b1));
+			let (a2, b2) = (Ghash128b::from(a2), Ghash128b::from(b2));
 			let wide =
-				BinaryField128bGhash::wide_mul(a1, b1) + BinaryField128bGhash::wide_mul(a2, b2);
-			assert_eq!(BinaryField128bGhash::reduce(wide), a1 * b1 + a2 * b2);
+				Ghash128b::wide_mul(a1, b1) + Ghash128b::wide_mul(a2, b2);
+			assert_eq!(Ghash128b::reduce(wide), a1 * b1 + a2 * b2);
 		}
 
 		/// Pins the bulk `serialize_slice` override to the per-element loop it replaces.
@@ -572,8 +571,8 @@ mod tests {
 		/// A byte-order or off-by-one slip in the bulk path shows up here, not in a live proof.
 		#[test]
 		fn test_ghash_serialize_slice_matches_loop(values in vec(any::<u128>(), 0..300)) {
-			let values: Vec<BinaryField128bGhash> =
-				values.into_iter().map(BinaryField128bGhash::from).collect();
+			let values: Vec<Ghash128b> =
+				values.into_iter().map(Ghash128b::from).collect();
 
 			let mut expected = Vec::new();
 			for value in &values {
@@ -581,7 +580,7 @@ mod tests {
 			}
 
 			let mut actual = Vec::new();
-			BinaryField128bGhash::serialize_slice(&values, &mut actual).unwrap();
+			Ghash128b::serialize_slice(&values, &mut actual).unwrap();
 
 			assert_eq!(actual, expected);
 
@@ -589,8 +588,8 @@ mod tests {
 			// Read back exactly `values.len()` elements from a cursor over the same buffer.
 			// That matches how a transcript reader consumes `write_scalar_slice`'s output.
 			let mut cursor = actual.as_slice();
-			let deserialized: Vec<BinaryField128bGhash> = (0..values.len())
-				.map(|_| BinaryField128bGhash::deserialize(&mut cursor).unwrap())
+			let deserialized: Vec<Ghash128b> = (0..values.len())
+				.map(|_| Ghash128b::deserialize(&mut cursor).unwrap())
 				.collect();
 			assert_eq!(deserialized, values);
 			assert!(cursor.is_empty());

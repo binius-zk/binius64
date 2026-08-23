@@ -261,7 +261,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use crate::{
-		AESTowerField8b, BinaryField1b, BinaryField128bGhash, PackedAESBinaryField1x8b,
+		AESTowerField8b, BinaryField1b, Ghash128b, PackedAESBinaryField1x8b,
 		PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
 		PackedBinaryField1x1b, PackedBinaryField2x1b, PackedBinaryField4x1b, PackedBinaryField8x1b,
 		PackedBinaryField16x1b, PackedBinaryField32x1b, PackedBinaryField64x1b,
@@ -297,7 +297,7 @@ mod tests {
 		test.run::<PackedAESBinaryField64x8b>();
 
 		// GHASH
-		test.run::<BinaryField128bGhash>();
+		test.run::<Ghash128b>();
 		test.run::<PackedBinaryGhash1x128b>();
 		test.run::<PackedBinaryGhash2x128b>();
 		test.run::<PackedBinaryGhash4x128b>();

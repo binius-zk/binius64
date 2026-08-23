@@ -5,7 +5,7 @@
 use std::array;
 
 use binius_core::Word;
-use binius_field::BinaryField128bGhash as B128;
+use binius_field::Ghash128b as B128;
 use binius_frontend::{CircuitBuilder, CircuitStat, PopulateError, WitnessFiller};
 use binius_hash::{
 	CompressionFunction, hash_serialize,

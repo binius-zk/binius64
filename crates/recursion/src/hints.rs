@@ -10,7 +10,7 @@
 //! result. The inverse gadget does that where it calls this.
 
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash as B128, arithmetic_traits::InvertOrZero};
+use binius_field::{Ghash128b as B128, arithmetic_traits::InvertOrZero};
 use binius_frontend::Hint;
 
 /// Reads a `(lo, hi)` wire pair as a field element.

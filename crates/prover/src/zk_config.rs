@@ -10,7 +10,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use binius_compute::BufferPool;
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment, ValueVec};
-use binius_field::{BinaryField128bGhash as B128, PackedField};
+use binius_field::{Ghash128b as B128, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_ip::channel::WordIPVerifierChannel;

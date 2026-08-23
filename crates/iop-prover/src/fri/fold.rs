@@ -587,7 +587,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 
 #[cfg(test)]
 mod tests {
-	use binius_field::BinaryField128bGhash as B128;
+	use binius_field::Ghash128b as B128;
 	use binius_math::{
 		BinarySubspace,
 		ntt::{NeighborsLastReference, domain_context::GenericOnTheFly},

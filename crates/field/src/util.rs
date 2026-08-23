@@ -139,9 +139,9 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::{BinaryField128bGhash, Random};
+	use crate::{Ghash128b, Random};
 
-	type F = BinaryField128bGhash;
+	type F = Ghash128b;
 
 	/// Expands `N` random elements and asserts that entry `index` of the resulting `2^N`-sized
 	/// lookup table equals the subset sum selected by the set bits of `index`.

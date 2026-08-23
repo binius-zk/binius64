@@ -543,7 +543,7 @@ mod tests {
 	use binius_core::constraint_system::{
 		AndConstraint, ConstraintSystem, InoutSegment, Shift, ShiftedValueIndex, ValueIndex,
 	};
-	use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash2x128b};
+	use binius_field::{Field, Ghash128b, PackedBinaryGhash2x128b};
 	use binius_math::{inner_product::inner_product_buffers, test_utils::random_scalars};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::config::StdChallenger;
@@ -552,7 +552,7 @@ mod tests {
 	use super::*;
 	use crate::protocols::shift::KeyCollection;
 
-	type F = BinaryField128bGhash;
+	type F = Ghash128b;
 
 	impl<P: PackedField> SparseShiftRows<P> {
 		/// Spreads the rows over the space they still span, as a dense multilinear.

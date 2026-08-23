@@ -324,8 +324,8 @@ pub fn evaluate_witness<F: BinaryField>(words: &[Word], r_j: &[F], r_y: &[F]) ->
 
 #[test]
 fn test_shift_prove_and_verify() {
-	use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash2x128b, Random};
-	type F = BinaryField128bGhash;
+	use binius_field::{Field, Ghash128b, PackedBinaryGhash2x128b, Random};
+	type F = Ghash128b;
 	type P = PackedBinaryGhash2x128b;
 	let mut rng = StdRng::seed_from_u64(0);
 

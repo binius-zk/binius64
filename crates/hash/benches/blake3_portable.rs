@@ -6,7 +6,7 @@
 
 use std::hint::black_box;
 
-use binius_field::{BinaryField128bGhash as B128, Random};
+use binius_field::{Ghash128b as B128, Random};
 use binius_hash::{
 	ParallelDigest, ParallelDigestAdapter, blake3_portable::PortableBlake3ParallelDigest,
 };

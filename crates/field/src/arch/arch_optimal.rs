@@ -25,5 +25,5 @@ cfg_if! {
 	}
 }
 
-pub type OptimalB128 = crate::BinaryField128bGhash;
+pub type OptimalB128 = crate::Ghash128b;
 pub type OptimalPackedB1 = PackedSubfield<OptimalPackedB128, BinaryField1b>;

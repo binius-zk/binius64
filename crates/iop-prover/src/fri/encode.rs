@@ -175,7 +175,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash1x128b};
+	use binius_field::{Ghash128b as B128, PackedBinaryGhash1x128b};
 	use binius_hash::StdHashSuite;
 	use binius_iop::fri::FRIParams;
 	use binius_math::{

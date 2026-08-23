@@ -401,7 +401,7 @@ pub fn prove_public_eval<A, P, Channel>(
 mod test {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		BinaryField128bGhash, ExtensionField, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
+		ExtensionField, Ghash128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
 		PackedExtension, PackedField, PackedSubfield,
 	};
 	use binius_math::{
@@ -415,7 +415,7 @@ mod test {
 
 	use super::*;
 
-	type F = BinaryField128bGhash;
+	type F = Ghash128b;
 
 	// The row fold, written straight from its definition:
 	//

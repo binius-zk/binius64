@@ -6,11 +6,11 @@ use std::iter;
 use proptest::prelude::*;
 
 use crate::{
-	AESTowerField8b, BinaryField1b, BinaryField128bGhash, ExtensionField, Field,
-	PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
-	PackedBinaryField64x1b, PackedBinaryField128x1b, PackedBinaryField256x1b,
-	PackedBinaryField512x1b, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
-	PackedBinaryGhash4x128b, PackedField, SlicedGhashSq2x256b,
+	AESTowerField8b, BinaryField1b, ExtensionField, Field, Ghash128b, PackedAESBinaryField16x8b,
+	PackedAESBinaryField32x8b, PackedAESBinaryField64x8b, PackedBinaryField64x1b,
+	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
+	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
+	SlicedGhashSq2x256b,
 	field::FieldOps,
 	underlier::{SmallU, WithUnderlier},
 };
@@ -22,7 +22,7 @@ fn test_field_text_debug() {
 	assert_eq!(
 		format!(
 			"{:?}",
-			PackedBinaryGhash1x128b::broadcast(BinaryField128bGhash::from(
+			PackedBinaryGhash1x128b::broadcast(Ghash128b::from(
 				162259276829213363391578010288127u128
 			))
 		),
@@ -99,9 +99,9 @@ macro_rules! generate_spread_tests {
 
 generate_spread_tests! {
 	// 128-bit configurations
-	spread_equals_basic_spread_4x128, PackedBinaryGhash4x128b, BinaryField128bGhash, u128, 4;
-	spread_equals_basic_spread_2x128, PackedBinaryGhash2x128b, BinaryField128bGhash, u128, 2;
-	spread_equals_basic_spread_1x128, PackedBinaryGhash1x128b, BinaryField128bGhash, u128, 1;
+	spread_equals_basic_spread_4x128, PackedBinaryGhash4x128b, Ghash128b, u128, 4;
+	spread_equals_basic_spread_2x128, PackedBinaryGhash2x128b, Ghash128b, u128, 2;
+	spread_equals_basic_spread_1x128, PackedBinaryGhash1x128b, Ghash128b, u128, 1;
 
 	// 8-bit configurations
 	spread_equals_basic_spread_64x8, PackedAESBinaryField64x8b, AESTowerField8b, u8, 64;
@@ -120,7 +120,7 @@ generate_spread_tests_small! {
 #[test]
 fn test_field_ops_powers() {
 	// The iterator starts at the 0'th power, so entry i must equal the base raised to i.
-	let generator = BinaryField128bGhash::MULTIPLICATIVE_GENERATOR;
+	let generator = Ghash128b::MULTIPLICATIVE_GENERATOR;
 	let power_values: Vec<_> = generator.powers().take(10).collect();
 
 	for (i, power) in power_values.iter().enumerate() {
@@ -206,7 +206,7 @@ fn test_packed_field_ops_square_transpose_packed128x1b_over_1b() {
 
 #[test]
 fn test_packed_field_ops_square_transpose_ghashsq2x256b_over_ghash() {
-	check_packed_field_ops_square_transpose::<BinaryField128bGhash, SlicedGhashSq2x256b>();
+	check_packed_field_ops_square_transpose::<Ghash128b, SlicedGhashSq2x256b>();
 }
 
 #[test]

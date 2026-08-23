@@ -28,7 +28,7 @@ use crate::{
 /// On x86_64/aarch64 `M128` is a SIMD register and on wasm32 (with `simd128`) a `v128`; here it is
 /// a plain `u128` newtype. Wrapping rather than aliasing `u128` keeps `M128` a distinct type on
 /// every target, so the `M128 <-> u128` conversions never collide with `u128`'s own reflexive
-/// impls and the architecture-gated `BinaryField128bGhash` conversions need no cfg gate.
+/// impls and the architecture-gated `Ghash128b` conversions need no cfg gate.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, From, Into)]
 #[repr(transparent)]
 pub struct M128(u128);

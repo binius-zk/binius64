@@ -273,7 +273,7 @@ fn test_equivalence<F: BinaryField, NTT: AdditiveNTT<Field = F>>(ntt: &NTT) {
 #[test]
 fn test_eval() {
 	const LOG_D: usize = 6;
-	type F = binius_field::BinaryField128bGhash;
+	type F = binius_field::Ghash128b;
 
 	// GaoMateer domain context
 	let domain_context = domain_context::GaoMateerPreExpanded::<F>::generate(LOG_D);

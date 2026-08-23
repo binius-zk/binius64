@@ -247,7 +247,7 @@ pub fn build_mulcheck_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{BinaryField128bGhash as B128, Field, Random};
+	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_math::{
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 		test_utils::{Packed128b, random_scalars},

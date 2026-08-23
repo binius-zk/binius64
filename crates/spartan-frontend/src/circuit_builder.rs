@@ -731,7 +731,7 @@ impl<F: Field, LayoutRef: Deref<Target = WitnessLayout<F>>> CircuitBuilder
 mod tests {
 	use std::iter::successors;
 
-	use binius_field::{BinaryField128bGhash as B128, Field, PackedField};
+	use binius_field::{Field, Ghash128b as B128, PackedField};
 
 	use super::*;
 

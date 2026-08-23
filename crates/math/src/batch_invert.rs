@@ -254,7 +254,7 @@ fn unproduct_layer<P: PackedField>(input: &[P], output: &mut [P]) {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{BinaryField128bGhash as Ghash, Random, arithmetic_traits::InvertOrZero};
+	use binius_field::{Ghash128b as Ghash, Random, arithmetic_traits::InvertOrZero};
 	use proptest::prelude::*;
 	use rand::{Rng, SeedableRng, rngs::StdRng, seq::IteratorRandom};
 

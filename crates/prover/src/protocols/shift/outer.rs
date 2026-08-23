@@ -191,13 +191,13 @@ impl<F: BinaryField, A: Allocator> OuterShiftStage<F, A> {
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_core::constraint_system::Shift;
-	use binius_field::{BinaryField128bGhash, Random};
+	use binius_field::{Ghash128b, Random};
 	use binius_math::test_utils::random_scalars;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
 
-	type F = BinaryField128bGhash;
+	type F = Ghash128b;
 
 	/// Whether output bit `out` of `variant` at `amount` reads input bit `in_bit`.
 	///

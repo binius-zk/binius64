@@ -25,7 +25,7 @@ use crate::{
 	BinaryField1b, Divisible, ExtensionField,
 	arch::M128,
 	arithmetic_traits::{InvertOrZero, Square},
-	ghash::BinaryField128bGhash as GhashB128,
+	ghash::Ghash128b as GhashB128,
 	linear_transformation::{
 		BytewiseLookupTransformation, BytewiseLookupTransformationFactory,
 		InputWrappingTransformationFactory, LinearTransformationFactory,
@@ -107,7 +107,7 @@ fn compute_power_map_matrix(n: usize) -> [GhashB128; FIELD_BITS] {
 /// `InvertOrZero` in its where-clause, so requiring it here would form a trait-resolution cycle
 /// when this function backs the `InvertOrZero` impls. `Divisible<GhashB128>` carries no such
 /// obligation, keeps the function statically GHASH-typed, and is satisfied both by the GHASH packed
-/// fields and (reflexively) by the scalar `BinaryField128bGhash`, so the scalar inverts directly
+/// fields and (reflexively) by the scalar `Ghash128b`, so the scalar inverts directly
 /// without routing through a packed type.
 pub fn invert_b128<P>(x: P) -> P
 where

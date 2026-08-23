@@ -300,7 +300,7 @@ mod test {
 	use std::iter::repeat_with;
 
 	use binius_compute::GlobalAllocator;
-	use binius_field::{BinaryField128bGhash as B128, Field, Random};
+	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
 		univariate::{extrapolate_over_subspace, subspace_lagrange_evals_scalars},

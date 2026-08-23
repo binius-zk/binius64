@@ -116,10 +116,10 @@ mod tests {
 	// reduced result against a naive scalar-by-scalar reference.
 	#[test]
 	fn test_inner_product_matches_naive() {
-		use binius_field::BinaryField128bGhash;
+		use binius_field::Ghash128b;
 
 		type P = PackedBinaryGhash4x128b;
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 
 		let mut rng = StdRng::seed_from_u64(42);
 

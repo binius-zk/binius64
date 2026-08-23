@@ -3,7 +3,7 @@
 
 use binius_compute::GlobalAllocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
+use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random};
 use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
 use binius_iop_prover::channel::naive::NaiveProverChannel;
 use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
@@ -25,7 +25,7 @@ use super::{
 };
 use crate::fold_word::fold_words;
 
-type F = BinaryField128bGhash;
+type F = Ghash128b;
 type P = PackedBinaryGhash2x128b;
 
 pub fn evaluate_witness(words: &[Word], eval_point: &[F]) -> F {

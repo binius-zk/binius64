@@ -237,7 +237,7 @@ impl<F: BinaryField> Default for BinarySubspace<F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{AESTowerField8b as B8, BinaryField128bGhash as B128, Field};
+	use binius_field::{AESTowerField8b as B8, Field, Ghash128b as B128};
 
 	use super::*;
 

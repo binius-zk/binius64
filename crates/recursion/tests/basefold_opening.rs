@@ -44,7 +44,7 @@ use std::iter;
 
 use binius_compute::GlobalAllocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash1x128b};
+use binius_field::{Ghash128b as B128, PackedBinaryGhash1x128b};
 use binius_frontend::{CircuitStat, MAX_ASSERTION_FAILURES, PopulateError, Wire};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::{

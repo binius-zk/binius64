@@ -215,7 +215,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{AESTowerField8b, BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
+	use binius_field::{AESTowerField8b, Ghash128b, PackedBinaryGhash2x128b, Random};
 	use binius_math::{
 		BinarySubspace, inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
 		test_utils::random_scalars, univariate::subspace_lagrange_evals,
@@ -237,7 +237,7 @@ mod tests {
 	/// must give phase 3's claim.
 	#[test]
 	fn h_op_consistency() {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 		type P = PackedBinaryGhash2x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
@@ -314,7 +314,7 @@ mod tests {
 		// That is the only slice which is not a plain move of the weights.
 		#[test]
 		fn shift_operator_table_matches_the_indicator_definition(seed: u64) {
-			type F = BinaryField128bGhash;
+			type F = Ghash128b;
 
 			let mut rng = StdRng::seed_from_u64(seed);
 			let psi = random_scalars::<F>(&mut rng, Word::BITS);
@@ -332,7 +332,7 @@ mod tests {
 		// Linearity is what lets it fold first and contract after.
 		#[test]
 		fn shift_operator_table_is_linear_in_the_weights(seed: u64) {
-			type F = BinaryField128bGhash;
+			type F = Ghash128b;
 
 			let mut rng = StdRng::seed_from_u64(seed);
 			let psi_1 = random_scalars::<F>(&mut rng, Word::BITS);
@@ -365,7 +365,7 @@ mod tests {
 	// full-write contract: a builder that left cells alone would leak the previous pair's weights.
 	#[test]
 	fn shift_operator_row_matches_its_slice_of_the_table() {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let psi = random_scalars::<F>(&mut rng, Word::BITS);
@@ -393,7 +393,7 @@ mod tests {
 	// The half-word forms read the amount modulo 32, so they are the identity at zero as well.
 	#[test]
 	fn the_zero_amount_slice_returns_the_weights_unchanged() {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let psi = random_scalars::<F>(&mut rng, Word::BITS);
