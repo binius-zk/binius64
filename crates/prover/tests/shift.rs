@@ -305,7 +305,7 @@ fn evaluate_image<F: BinaryField>(
 		.map(|&word| {
 			(0..64)
 				.filter(|&i| (word >> i) & Word::ONE == Word::ONE)
-				.map(|i| l_tilde[i as usize])
+				.map(|i| l_tilde.get(i as usize))
 				.sum()
 		})
 		.collect::<Vec<_>>();

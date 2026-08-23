@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use std::{
-	ops::{Deref, DerefMut, Index, IndexMut},
+	ops::{Deref, DerefMut},
 	slice,
 };
 
@@ -695,20 +695,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> AsMut<[P]> for FieldBuffer<P,
 	#[inline]
 	fn as_mut(&mut self) -> &mut [P] {
 		&mut self.values[..1 << self.log_len.saturating_sub(P::LOG_WIDTH)]
-	}
-}
-
-impl<F: Field, Data: Deref<Target = [F]>> Index<usize> for FieldBuffer<F, Data> {
-	type Output = F;
-
-	fn index(&self, index: usize) -> &Self::Output {
-		&self.values[index]
-	}
-}
-
-impl<F: Field, Data: DerefMut<Target = [F]>> IndexMut<usize> for FieldBuffer<F, Data> {
-	fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-		&mut self.values[index]
 	}
 }
 
