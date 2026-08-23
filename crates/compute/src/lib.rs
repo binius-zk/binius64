@@ -11,11 +11,7 @@
 //! rather than a concrete pool. `&BufferPool` is the primary [`Allocator`], producing [`PoolVec`]
 //! buffers.
 
-use std::{
-	mem,
-	mem::MaybeUninit,
-	ops::{Deref, DerefMut},
-};
+use std::{mem, mem::MaybeUninit, ops::DerefMut};
 
 pub mod buffer_pool;
 
@@ -37,11 +33,13 @@ pub use buffer_pool::{BufferPool, PoolVec};
 pub trait Allocator: Sync + Copy {
 	/// The buffer type this allocator hands out for element type `T`.
 	///
-	/// It is both a [`VecLike`] (growable) and a [`BufferData`] (shrinkable-in-place) buffer, so an
-	/// allocated buffer can back a `binius_math::FieldBuffer` directly. It is also [`Send`] so the
-	/// prover can move pooled buffers across rayon tasks (e.g. the parallel fractional-addition GKR
-	/// reduction); every element type the prover pools is itself `Send`.
-	type Vec<T: Send>: VecLike<T> + BufferData<T> + Send;
+	/// It is a [`VecLike`] buffer, and [`VecLike`] implies [`BufferData`].
+	/// It grows and shrinks in place, so it can back a `binius_math::FieldBuffer` directly.
+	///
+	/// It is also [`Send`] so the prover can move pooled buffers across rayon tasks (e.g. the
+	/// parallel fractional-addition GKR reduction); every element type the prover pools is itself
+	/// `Send`.
+	type Vec<T: Send>: VecLike<T> + Send;
 
 	/// Allocates an empty buffer with room for at least `capacity` elements of type `T`.
 	fn alloc<T: Send>(&self, capacity: usize) -> Self::Vec<T>;
@@ -53,13 +51,13 @@ pub trait Allocator: Sync + Copy {
 /// [`Allocator::Vec`] — that bound is what lets generic allocation code back a `FieldBuffer` with
 /// an allocator's buffer `A::Vec<P>` without threading a `where A::Vec<P>: BufferData<P>` clause
 /// through every signature. `FieldBuffer::truncate` shrinks its backing store to match a smaller
-/// `log_len`, so it is available only for the mutable backings that support that in place: the
-/// growable [`VecLike`] buffers (`Vec<T>` and [`PoolVec`]) and `&mut [T]`.
+/// `log_len`, so it is available only for the mutable backings that support that in place.
 ///
-/// A single blanket `impl<V: VecLike<T>> BufferData<T> for V` would be nicer, but it collides with
-/// the `&mut [T]` impl (coherence cannot rule out a downstream `VecLike for &mut [T]`), and the
-/// `&mut [T]` backing is required — the sumcheck store folds and truncates slice-backed halves. So
-/// the two `VecLike` backings are enumerated explicitly instead.
+/// This trait is the shrinkable-store capability alone, and [`VecLike`] is that plus growth.
+/// Three backings implement it:
+///
+/// - `Vec<T>` and [`PoolVec`] both shrink and grow, so both are [`VecLike`] as well.
+/// - `&mut [T]` only shrinks, by re-slicing, which is what slice-backed sumcheck halves need.
 pub trait BufferData<T>: DerefMut<Target = [T]> {
 	/// Shrinks the store in place to its first `len` elements.
 	///
@@ -90,10 +88,10 @@ impl<T> BufferData<T> for &mut [T] {
 
 /// A growable, `Vec`-like buffer.
 ///
-/// Abstracts the buffer surface the prover relies on — a subset of [`Vec`]'s API, plus dereference
-/// to `[T]`. Implemented by [`PoolVec`]; add methods here (and to the implementors) as callers need
-/// them rather than mirroring all of [`Vec`].
-pub trait VecLike<T>: Deref<Target = [T]> + DerefMut + Extend<T> {
+/// Abstracts the buffer surface the prover uses: [`BufferData`] plus a subset of [`Vec`]'s API.
+/// Implemented by `Vec<T>` and [`PoolVec`], with methods added as callers need them.
+/// It is not meant to mirror all of [`Vec`].
+pub trait VecLike<T>: BufferData<T> + Extend<T> {
 	/// Returns the number of elements the buffer can hold without reallocating.
 	fn capacity(&self) -> usize;
 
