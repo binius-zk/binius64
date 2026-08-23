@@ -36,7 +36,7 @@ use binius_math::{
 		eq::{eq_ind, eq_ind_zero},
 		evaluate::evaluate_inplace_scalars,
 	},
-	univariate::{evaluate_univariate, lagrange_evals_scalars},
+	univariate::{evaluate_univariate, subspace_lagrange_evals_scalars},
 };
 
 use crate::{
@@ -246,7 +246,8 @@ where
 
 	// Collapse the multiplications' per-bit operand claims to the oblong form BitAnd already has.
 	// The Lagrange weights fold them at the univariate challenge BitAnd just drew.
-	let lagrange = lagrange_evals_scalars::<B128, Channel::Elem>(&shift_domain, &z_challenge);
+	let lagrange =
+		subspace_lagrange_evals_scalars::<B128, Channel::Elem>(&shift_domain, &z_challenge);
 	let bitand_claim = OperationClaim::new([a_eval, b_eval, c_eval], r_x_and, r_rho_and);
 	let intmul_claim =
 		intmul_output.map(|output| OperationClaim::from_intmul(output, &lagrange, log_instances));

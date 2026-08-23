@@ -11,7 +11,7 @@ use binius_core::{
 use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_math::{
-	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
+	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
 	fold_word::fold_words,
@@ -314,7 +314,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	};
 
 	let g = build_combined_g();
-	let oblong_weights = lagrange_evals(&subspace, prepared.bitand.r_zhat_prime);
+	let oblong_weights = subspace_lagrange_evals(&subspace, prepared.bitand.r_zhat_prime);
 	let Phase1Output {
 		r_j,
 		inner: inner_shift,

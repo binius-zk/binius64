@@ -24,7 +24,7 @@ use binius_math::{
 	inner_product::inner_product,
 	multilinear::eq::eq_ind_partial_eval_scalars,
 	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
-	univariate::lagrange_evals_scalars,
+	univariate::subspace_lagrange_evals_scalars,
 };
 use binius_prover::{
 	and_reduction,
@@ -245,7 +245,8 @@ impl IOPProver {
 			// oblong claims at their own instance point.
 			// BitAnd is already oblong.
 			// IntMul and BinMul are collapsed from their per-bit form.
-			let lagrange = lagrange_evals_scalars::<B128, B128>(&shift_domain, &z_challenge);
+			let lagrange =
+				subspace_lagrange_evals_scalars::<B128, B128>(&shift_domain, &z_challenge);
 			let and_columns = and_columns
 				.expect("AND columns are retained whenever there are IMUL or BMUL constraints");
 			let log_instances = table.log_instances();

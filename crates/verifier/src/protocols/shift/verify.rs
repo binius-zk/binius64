@@ -22,7 +22,7 @@ use binius_math::{
 		},
 		evaluate::evaluate_inplace_scalars,
 	},
-	univariate::{evaluate_univariate, lagrange_evals_scalars},
+	univariate::{evaluate_univariate, subspace_lagrange_evals_scalars},
 };
 use getset::Getters;
 
@@ -347,7 +347,7 @@ where
 	// intermediate word — the outer one carries the output bit down to `r_k`, the inner one carries
 	// `r_k` down to the witness bit — which is what makes a sequence of two shifts one index entry.
 	let l_tilde_eval =
-		evaluate_inplace_scalars(lagrange_evals_scalars(subspace, r_zhat_prime), r_i);
+		evaluate_inplace_scalars(subspace_lagrange_evals_scalars(subspace, r_zhat_prime), r_i);
 	let outer_ind_eval =
 		evaluate_inplace_scalars(&mut evaluate_shift_inds(r_i, r_k, r_s_outer)[..], r_v_outer);
 	let inner_ind_eval =

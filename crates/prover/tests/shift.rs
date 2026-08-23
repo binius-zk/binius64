@@ -18,7 +18,7 @@ use binius_math::{
 	BinarySubspace,
 	inner_product::{inner_product, inner_product_buffers},
 	multilinear::eq::eq_ind_partial_eval,
-	univariate::lagrange_evals,
+	univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
 	fold_word::fold_words,
@@ -299,7 +299,7 @@ fn evaluate_image<F: BinaryField>(
 	r_zhat_prime: F,
 	r_x_prime_tensor: &[F],
 ) -> F {
-	let l_tilde = lagrange_evals(subspace, r_zhat_prime);
+	let l_tilde = subspace_lagrange_evals(subspace, r_zhat_prime);
 	let univariate = image
 		.iter()
 		.map(|&word| {
