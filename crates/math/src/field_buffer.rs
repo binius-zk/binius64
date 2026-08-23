@@ -90,6 +90,7 @@ impl<P: PackedField> FieldBuffer<P> {
 	/// # Preconditions
 	///
 	/// * `values.len()` must be a power of two.
+	#[track_caller]
 	pub fn from_values(values: &[P::Scalar]) -> Self {
 		let log_len =
 			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
@@ -164,6 +165,7 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `values.len()` must be a power of two.
+	#[track_caller]
 	pub fn from_values_in<A>(alloc: &A, values: &[P::Scalar]) -> Self
 	where
 		A: Allocator<Vec<P> = Data>,
@@ -195,6 +197,7 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Panics if `log_len` is shorter than what the buffer already spans.
 	/// Shrinking is a separate operation.
 	/// Silently returning a narrower buffer than asked for would hide the mistake.
+	#[track_caller]
 	pub fn zero_extend_in<A>(self, alloc: &A, log_len: usize) -> Self
 	where
 		A: Allocator<Vec<P> = Data>,
@@ -229,6 +232,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `values.len()` must equal the expected packed length for `log_len`.
+	#[track_caller]
 	pub fn new(log_len: usize, values: Data) -> Self {
 		let expected_packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		assert!(
@@ -264,6 +268,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * the index is in the range `0..self.len()`
+	#[track_caller]
 	pub fn get(&self, index: usize) -> P::Scalar {
 		assert!(
 			index < self.len(),
@@ -292,6 +297,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// * `log_chunk_size` must be at most `log_len`.
 	/// * `chunk_index` must be less than the chunk count.
 	#[inline]
+	#[track_caller]
 	pub fn chunk(&self, log_chunk_size: usize, chunk_index: usize) -> FieldSlice<'_, P> {
 		assert!(
 			log_chunk_size <= self.log_len,
@@ -330,6 +336,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
+	#[track_caller]
 	pub fn chunks(&self, log_chunk_size: usize) -> impl Iterator<Item = FieldSlice<'_, P>> + Clone {
 		assert!(
 			log_chunk_size >= P::LOG_WIDTH && log_chunk_size <= self.log_len,
@@ -352,6 +359,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `log_chunk_size` must be at most `log_len`.
+	#[track_caller]
 	pub fn chunks_par(
 		&self,
 		log_chunk_size: usize,
@@ -413,6 +421,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `log_chunk_size` must be at most `log_len`.
+	#[track_caller]
 	pub fn par_chunk_scalars(
 		&self,
 		log_chunk_size: usize,
@@ -461,6 +470,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `self.log_len()` must be greater than 0.
+	#[track_caller]
 	pub fn split_half_ref(&self) -> (FieldSlice<'_, P>, FieldSlice<'_, P>) {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
@@ -514,6 +524,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * the index is in the range `0..self.len()`
+	#[track_caller]
 	pub fn set(&mut self, index: usize, value: P::Scalar) {
 		assert!(
 			index < self.len(),
@@ -531,6 +542,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
+	#[track_caller]
 	pub fn chunks_mut(
 		&mut self,
 		log_chunk_size: usize,
@@ -561,6 +573,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `log_chunk_size` must be at most `log_len`.
 	/// * `chunk_index` must be less than the chunk count.
+	#[track_caller]
 	pub fn chunk_mut(
 		&mut self,
 		log_chunk_size: usize,
@@ -618,6 +631,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `self.log_len()` must be greater than 0.
+	#[track_caller]
 	pub fn split_half(self) -> FieldBufferSplitMut<P, Data> {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
@@ -645,6 +659,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `self.log_len()` must be greater than 0.
+	#[track_caller]
 	pub fn split_half_mut(&mut self) -> FieldBufferSplitMut<P, &'_ mut [P]> {
 		self.to_mut().split_half()
 	}
@@ -729,6 +744,7 @@ impl<'a, P: PackedField> FieldSlice<'a, P> {
 	/// # Preconditions
 	///
 	/// * `slice.len()` must equal the expected packed length for `log_len`.
+	#[track_caller]
 	pub fn from_slice(log_len: usize, slice: &'a [P]) -> Self {
 		FieldBuffer::new(log_len, FieldSliceData::Slice(slice))
 	}
@@ -748,6 +764,7 @@ impl<'a, P: PackedField> FieldSliceMut<'a, P> {
 	/// # Preconditions
 	///
 	/// * `slice.len()` must equal the expected packed length for `log_len`.
+	#[track_caller]
 	pub fn from_slice(log_len: usize, slice: &'a mut [P]) -> Self {
 		FieldBuffer::new(log_len, slice)
 	}
