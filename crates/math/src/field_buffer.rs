@@ -6,17 +6,13 @@ use std::{
 	slice,
 };
 
-// The `BufferData` bound on `FieldBuffer`'s backing store lives in `binius-compute` so that it
-// can bound `Allocator::Vec` (letting an allocator's buffer back a `FieldBuffer` without a
-// `where`-clause on every signature) and so its `PoolVec` can implement it. Re-exported here
-// since it is part of this module's public API.
-pub use binius_compute::BufferData;
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{
 	Field, PackedField,
 	packed::{get_packed_slice_unchecked, set_packed_slice_unchecked},
 };
 use binius_utils::{
+	buffer::{BufferData, VecLike},
 	checked_arithmetics::strict_log_2,
 	rayon::{iter::Either, prelude::*, slice::ParallelSlice},
 };

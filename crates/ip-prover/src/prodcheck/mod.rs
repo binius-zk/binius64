@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
@@ -10,9 +10,12 @@ use binius_math::{
 	line::extrapolate_line,
 	multilinear::eq::{eq_ind_partial_eval, eq_one_var},
 };
-use binius_utils::rayon::{
-	prelude::*,
-	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+use binius_utils::{
+	buffer::VecLike,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
 };
 use itertools::izip;
 

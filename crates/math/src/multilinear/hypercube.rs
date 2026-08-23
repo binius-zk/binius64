@@ -8,14 +8,17 @@
 
 use std::{iter, slice};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField, field::FieldOps};
-use binius_utils::rayon::{
-	prelude::*,
-	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+use binius_utils::{
+	buffer::{BufferData, VecLike},
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
 };
 
-use crate::{FieldBuffer, FieldVec, field_buffer::BufferData};
+use crate::{FieldBuffer, FieldVec};
 
 /// A hypercube of coefficients for multilinear polynomials.
 ///

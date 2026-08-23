@@ -5,7 +5,7 @@
 
 use std::{iter, mem::MaybeUninit, ops::Deref, ptr};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_core::{
 	ValueSegment, ValueTable,
 	constraint_system::{Operand, Shift, ShiftVariant, ShiftedValueIndex},
@@ -14,7 +14,10 @@ use binius_core::{
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, FieldVec};
 use binius_prover::fold_word::fold_words;
-use binius_utils::rayon::{prelude::*, task_size::IndexedParallelIteratorExt};
+use binius_utils::{
+	buffer::VecLike,
+	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
+};
 use binius_verifier::config::B128;
 
 /// The operand columns of one batched fixed-arity operation.

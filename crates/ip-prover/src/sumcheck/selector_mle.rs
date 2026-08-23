@@ -3,10 +3,8 @@
 
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{
-	FieldBuffer, field_buffer::BufferData, multilinear::fold::fold_highest_var_inplace,
-};
-use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
+use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
+use binius_utils::{bitwise::Bitwise, buffer::BufferData, rayon::prelude::*};
 use itertools::izip;
 
 use super::{

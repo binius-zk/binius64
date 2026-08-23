@@ -3,7 +3,7 @@
 
 use std::{marker::PhantomData, mem::MaybeUninit};
 
-use binius_compute::{Allocator, BufferPool, VecLike};
+use binius_compute::{Allocator, BufferPool};
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment, Operand, ValueVec},
 	word::Word,
@@ -22,6 +22,7 @@ use binius_math::{
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{
 	SerializeBytes,
+	buffer::VecLike,
 	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
 };
 use binius_verifier::{

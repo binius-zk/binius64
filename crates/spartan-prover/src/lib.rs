@@ -37,7 +37,7 @@ use std::{
 	ops::Deref,
 };
 
-use binius_compute::{Allocator, BufferPool, VecLike};
+use binius_compute::{Allocator, BufferPool};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
@@ -60,7 +60,9 @@ use binius_spartan_verifier::{
 	wiring::evaluate_wiring_mle_public,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{
+	SerializeBytes, buffer::VecLike, checked_arithmetics::checked_log_2, rayon::prelude::*,
+};
 use digest::Output;
 pub use error::*;
 use itertools::chain;

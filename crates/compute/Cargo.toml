@@ -8,3 +8,4 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+binius-utils = { path = "../utils", default-features = false }

@@ -7,9 +7,12 @@
 
 use std::{marker::PhantomData, ptr};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
-use binius_utils::rayon::{prelude::*, task_size::task_chunk_len};
+use binius_utils::{
+	buffer::VecLike,
+	rayon::{prelude::*, task_size::task_chunk_len},
+};
 use getset::CopyGetters;
 
 use super::{

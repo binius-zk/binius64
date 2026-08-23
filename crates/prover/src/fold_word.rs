@@ -3,7 +3,7 @@
 
 use std::{array, hint::assert_unchecked, iter, ops::BitXor};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{
 	BinaryField, Divisible, PackedBinaryField64x1b, PackedField, UnderlierType, WideMul,
@@ -19,6 +19,7 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
 };
 use binius_utils::{
+	buffer::VecLike,
 	checked_arithmetics::{checked_log_2, log2_ceil_usize},
 	rayon::prelude::*,
 };

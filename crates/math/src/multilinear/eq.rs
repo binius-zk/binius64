@@ -1,11 +1,12 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{PackedField, field::FieldOps};
+use binius_utils::buffer::{BufferData, VecLike};
 
 use super::hypercube::{self, Hypercube, OneCube};
-use crate::{FieldBuffer, FieldVec, field_buffer::BufferData};
+use crate::{FieldBuffer, FieldVec};
 
 /// Tensor of values with the eq indicator evaluated at extra_query_coordinates.
 ///
