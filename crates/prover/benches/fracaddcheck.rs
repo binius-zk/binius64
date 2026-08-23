@@ -3,7 +3,7 @@
 use binius_compute::BufferPool;
 use binius_field::{FieldOps, arch::OptimalPackedB128};
 use binius_ip::prodcheck::MultilinearEvalClaim;
-use binius_ip_prover::fracaddcheck::FracAddCheckProver;
+use binius_ip_prover::fracaddcheck::{FracAddCheckProver, fraction::Fraction};
 use binius_math::{
 	FieldBuffer,
 	multilinear::evaluate::evaluate,
@@ -41,7 +41,11 @@ fn bench_fracaddcheck_new(c: &mut Criterion) {
 					)
 				},
 				|(witness_num, witness_den)| {
-					FracAddCheckProver::<_, P>::new(k, &alloc, (witness_num, witness_den))
+					FracAddCheckProver::<_, P>::new(
+						k,
+						&alloc,
+						Fraction::new(witness_num, witness_den),
+					)
 				},
 				BatchSize::SmallInput,
 			);
@@ -71,13 +75,13 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 			let (prover, sums) = FracAddCheckProver::new(
 				k,
 				&alloc,
-				(
+				Fraction::new(
 					FieldBuffer::<P, _>::from_values_in(&alloc, &num_scalars),
 					FieldBuffer::<P, _>::from_values_in(&alloc, &den_scalars),
 				),
 			);
-			let sum_num_eval = evaluate(&sums.0, &[]);
-			let sum_den_eval = evaluate(&sums.1, &[]);
+			let sum_num_eval = evaluate(&sums.num, &[]);
+			let sum_den_eval = evaluate(&sums.den, &[]);
 			let claim = (
 				MultilinearEvalClaim {
 					eval: sum_num_eval,

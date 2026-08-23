@@ -35,8 +35,10 @@ use crate::{
 	},
 };
 
+pub mod fraction;
 pub mod zero_pad_mle;
 
+use fraction::Fraction;
 use zero_pad_mle::{ConstantFraction, ZeroPadMleCheckProver};
 
 pub use crate::sumcheck::frac_add_mle::LayerProver;
@@ -46,16 +48,13 @@ pub use crate::sumcheck::frac_add_mle::LayerProver;
 /// Both claims share the same evaluation point, that of the layer they describe.
 pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 
-/// A numerator/denominator pair of pooled column buffers.
-type PooledFractionalBuffer<A, P> = (FieldVec<P, A>, FieldVec<P, A>);
-
 /// Prover for the fractional addition protocol.
 ///
 /// Each layer is a double of the numerator and denominator values of fractional terms. Each layer
 /// represents the addition of siblings with respect to the fractional addition rule:
 /// $$\frac{a_0}{b_0} + \frac{a_1}{b_1} = \frac{a_0b_1 + a_1b_0}{b_0b_1}$
 pub struct FracAddCheckProver<'a, A: Allocator, P: PackedField> {
-	layers: Vec<PooledFractionalBuffer<A, P>>,
+	layers: Vec<Fraction<FieldVec<P, A>>>,
 	/// Allocator the layer buffers are drawn from.
 	pub(crate) alloc: &'a A,
 }
@@ -89,13 +88,16 @@ where
 	/// * `witness` - The witness numerator/denominator layers
 	///
 	/// # Preconditions
-	/// * `witness.0.log_len() >= k`
+	/// * `witness.num.log_len() >= k`
 	pub fn new(
 		k: usize,
 		alloc: &'a A,
-		witness: PooledFractionalBuffer<A, P>,
-	) -> (Self, PooledFractionalBuffer<A, P>) {
-		let (witness_num, witness_den) = witness;
+		witness: Fraction<FieldVec<P, A>>,
+	) -> (Self, Fraction<FieldVec<P, A>>) {
+		let Fraction {
+			num: witness_num,
+			den: witness_den,
+		} = witness;
 		assert_eq!(
 			witness_num.log_len(),
 			witness_den.log_len(),
@@ -104,12 +106,12 @@ where
 		assert!(witness_num.log_len() >= k);
 
 		let mut layers = Vec::with_capacity(k + 1);
-		layers.push((witness_num, witness_den));
+		layers.push(Fraction::new(witness_num, witness_den));
 
 		for _ in 0..k {
 			let prev_layer = layers.last().expect("layers is non-empty");
 
-			let (num, den) = prev_layer;
+			let Fraction { num, den } = prev_layer;
 			let num_log_len = num.log_len() - 1;
 			let den_log_len = den.log_len() - 1;
 			let (num_0, num_1) = num.split_half_ref();
@@ -164,8 +166,10 @@ where
 				num_data.set_len(out_len);
 				den_data.set_len(out_len);
 			}
-			let next_layer =
-				(FieldBuffer::new(num_log_len, num_data), FieldBuffer::new(den_log_len, den_data));
+			let next_layer = Fraction::new(
+				FieldBuffer::new(num_log_len, num_data),
+				FieldBuffer::new(den_log_len, den_data),
+			);
 
 			layers.push(next_layer);
 		}
@@ -194,7 +198,7 @@ where
 		);
 
 		let alloc = self.alloc;
-		let (num, den) = self.layers.pop().expect("layers is non-empty");
+		let Fraction { num, den } = self.layers.pop().expect("layers is non-empty");
 
 		let remaining = if self.layers.is_empty() {
 			None
@@ -327,7 +331,7 @@ pub struct BatchProveOutput<F> {
 	/// The reduced evaluation point (`selector ++ content`) at which the fractions are claimed.
 	pub eval_point: Vec<F>,
 	/// Each input prover's reduced `(num, den)` fraction at `eval_point`, in input order.
-	pub fractions: Vec<(F, F)>,
+	pub fractions: Vec<Fraction<F>>,
 }
 
 /// Runs a batched fractional-addition check for multiple independent fracaddcheck provers,
@@ -369,7 +373,7 @@ pub struct BatchProveOutput<F> {
 /// * `content_point.len() == witness.log_len() - n_layers` for each prover.
 pub fn batch_prove<'a, A, F, P>(
 	provers: Vec<FracAddCheckProver<'a, A, P>>,
-	claimed_fractions: Vec<(F, F)>,
+	claimed_fractions: Vec<Fraction<F>>,
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
@@ -437,7 +441,7 @@ fn reduce_layer<'a, A, F, P, MP>(
 	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
-) -> (Vec<(F, F)>, Vec<F>)
+) -> (Vec<Fraction<F>>, Vec<F>)
 where
 	A: Allocator,
 	F: Field,
@@ -499,16 +503,18 @@ where
 		})
 		.collect();
 
-	// Split the reduced halves into per-multilinear vectors, padded to 2^k with zeros so they can
-	// be packed into selector-variable buffers.
+	// Split the reduced halves into per-multilinear vectors, padded to 2^k so they can be packed
+	// into selector-variable buffers. Both children of a padding slot are the zero fraction, which
+	// is what makes the numerators fill with 0 and the denominators with 1.
 	let mut num_0s: Vec<F> = finished.iter().map(|e| e[0]).collect();
 	let mut num_1s: Vec<F> = finished.iter().map(|e| e[1]).collect();
 	let mut den_0s: Vec<F> = finished.iter().map(|e| e[2]).collect();
 	let mut den_1s: Vec<F> = finished.iter().map(|e| e[3]).collect();
-	num_0s.resize(1 << k, F::ZERO);
-	num_1s.resize(1 << k, F::ZERO);
-	den_0s.resize(1 << k, F::ONE);
-	den_1s.resize(1 << k, F::ONE);
+	let pad = Fraction::<F>::ZERO;
+	num_0s.resize(1 << k, pad.num);
+	num_1s.resize(1 << k, pad.num);
+	den_0s.resize(1 << k, pad.den);
+	den_1s.resize(1 << k, pad.den);
 
 	// The selector claim is the eq(selector)-weighted sum of the fractional-addition composition of
 	// the reduced halves.
@@ -569,7 +575,7 @@ where
 	// aligned with the selector `eq` weights on subsequent layers; the padded entries are 0/1.
 	let next_fractions = izip!(&num_0s, &num_1s, &den_0s, &den_1s)
 		.map(|(&num_0, &num_1, &den_0, &den_1)| {
-			(extrapolate_line(num_0, num_1, r), extrapolate_line(den_0, den_1, r))
+			Fraction::new(extrapolate_line(num_0, num_1, r), extrapolate_line(den_0, den_1, r))
 		})
 		.collect();
 
@@ -581,11 +587,11 @@ where
 #[allow(clippy::type_complexity)]
 fn batch_prove_layer<'a, A, F, P>(
 	provers: Vec<FracAddCheckProver<'a, A, P>>,
-	claimed_fractions: &[(F, F)],
+	claimed_fractions: &[Fraction<F>],
 	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
-) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<(F, F)>, Vec<F>)
+) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<Fraction<F>>, Vec<F>)
 where
 	A: Allocator,
 	F: Field,
@@ -596,7 +602,7 @@ where
 	let alloc = provers[0].alloc;
 	let inner_coords = eval_point[k..].to_vec();
 	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_fractions)
-		.map(|(prover, &(num, den))| {
+		.map(|(prover, &Fraction { num, den })| {
 			let (remaining, layer_prover) = prover.layer_prover((
 				MultilinearEvalClaim {
 					eval: num,
@@ -659,7 +665,7 @@ where
 /// witness, given how much depth that tree was padded by.
 pub fn batch_prove_unequal_depths<'a, A, F, P>(
 	provers: Vec<FracAddCheckProver<'a, A, P>>,
-	claimed_fractions: Vec<(F, F)>,
+	claimed_fractions: Vec<Fraction<F>>,
 	selector_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchProveOutput<F>
@@ -733,7 +739,7 @@ type PaddedLayerProver<'a, A, F, P> =
 fn layer_provers<'a, A, F, P>(
 	provers: Vec<FracAddCheckProver<'a, A, P>>,
 	pad_lens: &[usize],
-	claims: &[(F, F)],
+	claims: &[Fraction<F>],
 	node_point: &[F],
 ) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<PaddedLayerProver<'a, A, F, P>>)
 where
@@ -766,7 +772,7 @@ where
 
 	let mut next_provers = Vec::with_capacity(provers.len());
 	let layer_provers = izip!(provers, pad_lens, claims, &pad_eq_invs)
-		.map(|(prover, &tree_pad_len, &(num, den), &pad_eq_inv)| {
+		.map(|(prover, &tree_pad_len, &Fraction { num, den }, &pad_eq_inv)| {
 			let pad_len = tree_pad_len.min(node_len);
 			let point = node_point[pad_len..].to_vec();
 			let [num_claim, den_claim] = zero_pad_mle::unpad_claims(pad_eq_inv, [num, den]);
@@ -835,7 +841,7 @@ where
 /// one. They are the verifier's own challenges, so no prover can induce this; it happens with
 /// probability at most $\nu / |K|$.
 pub fn unpad_leaf_claim<F: Field>(
-	fraction: (F, F),
+	fraction: Fraction<F>,
 	point: &[F],
 	n_pad_vars: usize,
 ) -> FracAddEvalClaim<F> {
@@ -848,7 +854,10 @@ pub fn unpad_leaf_claim<F: Field>(
 	assert!(pad_eq != F::ZERO, "a padding coordinate equals one");
 	let pad_eq_inv = pad_eq.invert_or_zero();
 
-	let (num_eval, den_eval) = fraction;
+	let Fraction {
+		num: num_eval,
+		den: den_eval,
+	} = fraction;
 	FracAddEvalClaim {
 		num_eval: num_eval * pad_eq_inv,
 		den_eval: F::ONE + (den_eval - F::ONE) * pad_eq_inv,
@@ -883,15 +892,18 @@ mod tests {
 		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
 
 		// 2. Create prover (computes fractional-add layers)
-		let (prover, sums) =
-			FracAddCheckProver::new(k, &alloc, (witness_num.clone(), witness_den.clone()));
+		let (prover, sums) = FracAddCheckProver::new(
+			k,
+			&alloc,
+			Fraction::new(witness_num.clone(), witness_den.clone()),
+		);
 
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
 		// 4. Evaluate sums at challenge point to createzz claims
-		let sum_num_eval = evaluate(&sums.0, &eval_point);
-		let sum_den_eval = evaluate(&sums.1, &eval_point);
+		let sum_num_eval = evaluate(&sums.num, &eval_point);
+		let sum_den_eval = evaluate(&sums.den, &eval_point);
 		let prover_claim = (
 			MultilinearEvalClaim {
 				eval: sum_num_eval,
@@ -949,8 +961,11 @@ mod tests {
 		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
 
 		// Create prover (computes fractional-add layers)
-		let (_prover, sums) =
-			FracAddCheckProver::new(k, &alloc, (witness_num.clone(), witness_den.clone()));
+		let (_prover, sums) = FracAddCheckProver::new(
+			k,
+			&alloc,
+			Fraction::new(witness_num.clone(), witness_den.clone()),
+		);
 
 		// For each index i in the sums layer, verify it equals the fractional sum of witness values
 		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)
@@ -966,8 +981,8 @@ mod tests {
 				expected_num = expected_num * den_z + num_z * expected_den;
 				expected_den *= den_z;
 			}
-			let actual_num = sums.0.get(i);
-			let actual_den = sums.1.get(i);
+			let actual_num = sums.num.get(i);
+			let actual_den = sums.den.get(i);
 			assert_eq!(actual_num, expected_num, "Numerator mismatch at index {i}");
 			assert_eq!(actual_den, expected_den, "Denominator mismatch at index {i}");
 		}
@@ -993,7 +1008,7 @@ mod tests {
 		} = output;
 		let selector_weights = eq_ind_partial_eval::<P>(&eval_point[..log_n_provers]);
 		let num_eval = inner_product(
-			fractions.iter().map(|&(n, _)| n),
+			fractions.iter().map(|f| f.num),
 			(0..fractions.len()).map(|i| selector_weights.get(i)),
 		);
 		// The padding slots hold the zero fraction 0/1, so they contribute their eq weight to
@@ -1001,7 +1016,7 @@ mod tests {
 		let den_eval = inner_product(
 			fractions
 				.iter()
-				.map(|&(_, d)| d)
+				.map(|f| f.den)
 				.chain(iter::repeat_n(F::ONE, (1 << log_n_provers) - fractions.len())),
 			(0..1 << log_n_provers).map(|i| selector_weights.get(i)),
 		);
@@ -1035,16 +1050,20 @@ mod tests {
 		let (provers, individual_sums): (Vec<_>, Vec<_>) = witnesses
 			.iter()
 			.map(|witness| {
-				FracAddCheckProver::new(n_layers, &alloc, (witness.0.clone(), witness.1.clone()))
+				FracAddCheckProver::new(
+					n_layers,
+					&alloc,
+					Fraction::new(witness.0.clone(), witness.1.clone()),
+				)
 			})
 			.unzip();
 
-		// Fractions are 0-variate (scalars): just get the single (num, den) value.
-		let claimed_fractions: Vec<(P::Scalar, P::Scalar)> = individual_sums
+		// Fractions are 0-variate (scalars): just get the single num/den value.
+		let claimed_fractions: Vec<Fraction<P::Scalar>> = individual_sums
 			.iter()
-			.map(|(num, den)| {
-				assert_eq!(num.log_len(), 0);
-				(num.get(0), den.get(0))
+			.map(|sums| {
+				assert_eq!(sums.num.log_len(), 0);
+				sums.as_ref().map(|buffer| buffer.get(0))
 			})
 			.collect();
 
@@ -1053,13 +1072,13 @@ mod tests {
 		let selector_challenge = random_scalars::<P::Scalar>(&mut rng, log_n_provers);
 		let eq_weights = eq_ind_partial_eval::<P>(&selector_challenge);
 		let combined_num = inner_product(
-			claimed_fractions.iter().map(|&(n, _)| n),
+			claimed_fractions.iter().map(|f| f.num),
 			(0..n_provers).map(|i| eq_weights.get(i)),
 		);
 		let combined_den = inner_product(
 			claimed_fractions
 				.iter()
-				.map(|&(_, d)| d)
+				.map(|f| f.den)
 				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
 			(0..1 << log_n_provers).map(|i| eq_weights.get(i)),
 		);
@@ -1164,30 +1183,34 @@ mod tests {
 		let (provers, individual_sums): (Vec<_>, Vec<_>) = witnesses
 			.iter()
 			.map(|witness| {
-				FracAddCheckProver::new(n_layers, &alloc, (witness.0.clone(), witness.1.clone()))
+				FracAddCheckProver::new(
+					n_layers,
+					&alloc,
+					Fraction::new(witness.0.clone(), witness.1.clone()),
+				)
 			})
 			.unzip();
 
 		// Shared content point; each claimed fraction is its multilinears evaluated there.
 		let content_point = random_scalars::<P::Scalar>(&mut rng, content_len);
-		let claimed_fractions: Vec<(P::Scalar, P::Scalar)> = individual_sums
+		let claimed_fractions: Vec<Fraction<P::Scalar>> = individual_sums
 			.iter()
-			.map(|(num, den)| {
-				assert_eq!(num.log_len(), content_len);
-				(evaluate(num, &content_point), evaluate(den, &content_point))
+			.map(|sums| {
+				assert_eq!(sums.num.log_len(), content_len);
+				sums.as_ref().map(|buffer| evaluate(buffer, &content_point))
 			})
 			.collect();
 
 		let selector_challenge = random_scalars::<P::Scalar>(&mut rng, log_n_provers);
 		let eq_weights = eq_ind_partial_eval::<P>(&selector_challenge);
 		let combined_num = inner_product(
-			claimed_fractions.iter().map(|&(n, _)| n),
+			claimed_fractions.iter().map(|f| f.num),
 			(0..n_provers).map(|i| eq_weights.get(i)),
 		);
 		let combined_den = inner_product(
 			claimed_fractions
 				.iter()
-				.map(|&(_, d)| d)
+				.map(|f| f.den)
 				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
 			(0..1 << log_n_provers).map(|i| eq_weights.get(i)),
 		);
@@ -1248,7 +1271,7 @@ mod tests {
 	// ==================== batch_prove_unequal_depths tests ====================
 
 	/// A numerator/denominator witness pair.
-	type Witness<P> = (FieldBuffer<P>, FieldBuffer<P>);
+	type Witness<P> = Fraction<FieldBuffer<P>>;
 
 	/// One prover per entry of `depths`, each reducing over all of its witness variables.
 	#[allow(clippy::type_complexity)]
@@ -1259,14 +1282,16 @@ mod tests {
 	) -> (
 		Vec<Witness<P>>,
 		Vec<FracAddCheckProver<'a, GlobalAllocator, P>>,
-		Vec<(P::Scalar, P::Scalar)>,
+		Vec<Fraction<P::Scalar>>,
 	) {
 		itertools::multiunzip(depths.iter().map(|&depth| {
-			let num = random_field_buffer::<P>(&mut *rng, depth);
-			let den = random_field_buffer::<P>(&mut *rng, depth);
-			let (prover, sums) = FracAddCheckProver::new(depth, alloc, (num.clone(), den.clone()));
-			assert_eq!(sums.0.log_len(), 0);
-			((num, den), prover, (sums.0.get(0), sums.1.get(0)))
+			let witness = Fraction::new(
+				random_field_buffer::<P>(&mut *rng, depth),
+				random_field_buffer::<P>(&mut *rng, depth),
+			);
+			let (prover, sums) = FracAddCheckProver::new(depth, alloc, witness.clone());
+			assert_eq!(sums.num.log_len(), 0);
+			(witness, prover, sums.as_ref().map(|buffer| buffer.get(0)))
 		}))
 	}
 
@@ -1274,19 +1299,19 @@ mod tests {
 	///
 	/// The selector slots beyond the trees hold the zero fraction 0/1.
 	fn combine_fractions<P: PackedField>(
-		fractions: &[(P::Scalar, P::Scalar)],
+		fractions: &[Fraction<P::Scalar>],
 		selector_point: &[P::Scalar],
 	) -> (P::Scalar, P::Scalar) {
 		let n_slots = 1 << selector_point.len();
 		let eq_weights = eq_ind_partial_eval::<P>(selector_point);
 		let num_eval = inner_product(
-			fractions.iter().map(|&(num, _)| num),
+			fractions.iter().map(|f| f.num),
 			(0..fractions.len()).map(|i| eq_weights.get(i)),
 		);
 		let den_eval = inner_product(
 			fractions
 				.iter()
-				.map(|&(_, den)| den)
+				.map(|f| f.den)
 				.chain(iter::repeat_n(P::Scalar::ONE, n_slots - fractions.len())),
 			(0..n_slots).map(|i| eq_weights.get(i)),
 		);
@@ -1337,11 +1362,11 @@ mod tests {
 
 		// Each tree's reduced claims are on its *padded* witness; unpadding them yields claims on
 		// the witness itself, at a suffix of the shared node point.
-		for (i, (&depth, (num, den))) in iter::zip(depths, &witnesses).enumerate() {
+		for (i, (&depth, witness)) in iter::zip(depths, &witnesses).enumerate() {
 			let leaf = unpad_leaf_claim(fractions[i], &eval_point[k..], n_layers - depth);
 			assert_eq!(leaf.point.len(), depth);
-			assert_eq!(leaf.num_eval, evaluate(num, &leaf.point), "tree {i} numerator");
-			assert_eq!(leaf.den_eval, evaluate(den, &leaf.point), "tree {i} denominator");
+			assert_eq!(leaf.num_eval, evaluate(&witness.num, &leaf.point), "tree {i} numerator");
+			assert_eq!(leaf.den_eval, evaluate(&witness.den, &leaf.point), "tree {i} denominator");
 		}
 	}
 
