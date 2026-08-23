@@ -44,7 +44,7 @@ use super::{
 	error::Error,
 	witness::{Witness, limb_index, two_valued_field_buffer},
 };
-use crate::fold_word::{fold_across_words, fold_words};
+use crate::fold_word::{WordFolder, fold_words};
 
 /// Proves the integer multiplication (IntMul) reduction over the four operand columns.
 ///
@@ -400,11 +400,13 @@ where
 		// verifier binds the stacked-index claim via the GF(2)-linearity of the embedding, the `b`
 		// evals via sum_i eq(r_I^b, i) * b(i, r_out) = B(r_out), and the parity bits directly.
 		let output_guard = tracing::debug_span!("Compute output bit evals").entered();
-		let per_bit_evals = |exponents: &[Word]| fold_across_words::<_, P>(exponents, r_out);
-		let a_evals = per_bit_evals(a_exponents);
-		let c_lo_evals = per_bit_evals(c_lo_exponents);
-		let c_hi_evals = per_bit_evals(c_hi_exponents);
-		let b_evals = per_bit_evals(b_exponents);
+		// All four columns fold against the same point, so the lookup tables and the per-chunk
+		// weights are built once and shared.
+		let folder = WordFolder::<F>::new(r_out);
+		let a_evals = folder.fold_par(a_exponents);
+		let c_lo_evals = folder.fold_par(c_lo_exponents);
+		let c_hi_evals = folder.fold_par(c_hi_exponents);
+		let b_evals = folder.fold_par(b_exponents);
 		drop(output_guard);
 
 		self.channel.send_many(&a_evals);
