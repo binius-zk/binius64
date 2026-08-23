@@ -52,5 +52,5 @@ pub use packed_ghash::*;
 pub use packed_ghash_sq::*;
 pub use random::Random;
 pub use sliced_packed_field::SlicedPackedField;
-pub use transpose::transpose_square_blocks;
+pub use transpose::{transpose_square_blocks, transpose_square_blocks_array};
 pub use underlier::{Divisible, Maskable, UnderlierType, WithUnderlier};
