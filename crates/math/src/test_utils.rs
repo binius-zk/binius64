@@ -2,13 +2,13 @@
 
 use std::iter::repeat_with;
 
-use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash4x128b, PackedField};
+use binius_field::{Field, Ghash128b, PackedBinaryGhash4x128b, PackedField};
 use rand::prelude::*;
 
 use crate::FieldBuffer;
 
 /// Type alias for 128b field element with fast arithmetic.
-pub type B128 = BinaryField128bGhash;
+pub type B128 = Ghash128b;
 
 /// Type alias for a packed 128b field element with non-trivial packing width.
 pub type Packed128b = PackedBinaryGhash4x128b;
@@ -65,7 +65,7 @@ pub fn random_field_buffer<P: PackedField>(mut rng: impl Rng, log_n: usize) -> F
 /// # Example
 ///
 /// ```
-/// # use binius_field::BinaryField128bGhash as B128;
+/// # use binius_field::Ghash128b as B128;
 /// # use binius_math::test_utils::index_to_hypercube_point;
 /// let point = index_to_hypercube_point::<B128>(3, 5);
 /// // 5 = 0b101, so point = [F::ONE, F::ZERO, F::ONE]
@@ -88,7 +88,7 @@ pub fn index_to_hypercube_point<F: Field>(n_vars: usize, index: usize) -> Vec<F>
 
 #[cfg(test)]
 mod tests {
-	use binius_field::BinaryField128bGhash as B128;
+	use binius_field::Ghash128b as B128;
 	use proptest::prelude::*;
 	use rand::prelude::*;
 

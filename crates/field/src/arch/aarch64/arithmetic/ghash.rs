@@ -18,7 +18,7 @@ use bytemuck::TransparentWrapper;
 
 use super::super::m128::M128;
 use crate::{
-	BinaryField128bGhash as GhashB128, WideMul,
+	Ghash128b as GhashB128, WideMul,
 	arch::PackedPrimitiveType,
 	arithmetic_traits::{MulXWide, Square},
 };

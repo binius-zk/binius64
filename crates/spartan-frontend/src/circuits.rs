@@ -117,7 +117,7 @@ pub fn assert_is_bit<Builder: CircuitBuilder>(builder: &mut Builder, val: Builde
 mod tests {
 	use std::{array, iter};
 
-	use binius_field::{BinaryField128bGhash as B128, Field, Random, arithmetic_traits::Square};
+	use binius_field::{Field, Ghash128b as B128, Random, arithmetic_traits::Square};
 	use binius_math::{
 		line::extrapolate_line as extrapolate_line_math,
 		multilinear,

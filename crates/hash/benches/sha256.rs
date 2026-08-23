@@ -2,7 +2,7 @@
 
 use std::hint::black_box;
 
-use binius_field::{BinaryField128bGhash as B128, Random};
+use binius_field::{Ghash128b as B128, Random};
 use binius_hash::{ParallelDigest, ParallelDigestAdapter, ParallelSha256Digest, StdDigest};
 use binius_utils::rayon::{prelude::*, slice::ParallelSlice};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};

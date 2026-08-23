@@ -157,7 +157,7 @@ where
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_core::word::Word;
-	use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
+	use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random};
 	use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
 	use binius_iop_prover::channel::naive::NaiveProverChannel;
 	use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
@@ -171,7 +171,7 @@ mod tests {
 
 	use super::{log2_ceil_usize, prove};
 
-	type F = BinaryField128bGhash;
+	type F = Ghash128b;
 	type P = PackedBinaryGhash2x128b;
 
 	/// The six word columns `(a_lo, a_hi, b_lo, b_hi, c_lo, c_hi)` of a BinMul witness.

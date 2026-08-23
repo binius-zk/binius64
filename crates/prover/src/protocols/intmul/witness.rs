@@ -592,10 +592,10 @@ mod tests {
 	/// parallel path (`n_vars >= P::LOG_WIDTH`) and the scalar fallback (`n_vars < P::LOG_WIDTH`).
 	#[test]
 	fn compute_b_leaves_matches_spec() {
-		use binius_field::{BinaryField128bGhash, Random, arithmetic_traits::Square};
+		use binius_field::{Ghash128b, Random, arithmetic_traits::Square};
 		use rand::prelude::*;
 
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 
 		let mut rng = StdRng::seed_from_u64(1);
 		// `Packed128b` has `LOG_WIDTH == 2`: `n_vars = 0` exercises the scalar fallback and
@@ -636,10 +636,10 @@ mod tests {
 	/// path.
 	#[test]
 	fn power_table_matches_sequential() {
-		use binius_field::{BinaryField128bGhash, Random};
+		use binius_field::{Ghash128b, Random};
 		use rand::prelude::*;
 
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 
 		let mut rng = StdRng::seed_from_u64(2);
 		let base = F::random(&mut rng);

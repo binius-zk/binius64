@@ -2,7 +2,7 @@
 
 //! A smoke test that the channel records arithmetic into a circuit that compiles.
 
-use binius_field::BinaryField128bGhash as B128;
+use binius_field::Ghash128b as B128;
 use binius_frontend::CircuitStat;
 use binius_ip::channel::IPVerifierChannel;
 use binius_recursion::Binius64BuilderChannel;

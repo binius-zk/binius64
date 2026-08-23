@@ -18,7 +18,7 @@ use binius_core::{
 	},
 	word::Word,
 };
-use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
+use binius_field::{Field, Ghash128b, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Options, Wire};
 use binius_hash::StdHashSuite;
 use binius_prover::{Prover, zk_config::ZKProver};
@@ -166,7 +166,7 @@ fn binmul_seventh_power_circuit() -> (ConstraintSystem, ValueVec) {
 
 	// A random input element and its 7th power, computed independently via GHASH-field arithmetic.
 	let mut rng = StdRng::seed_from_u64(0);
-	let x = BinaryField128bGhash::random(&mut rng);
+	let x = Ghash128b::random(&mut rng);
 	let x7 = x.pow([7u64]);
 
 	let x_val = u128::from(x);
@@ -260,8 +260,8 @@ fn non_power_of_two_constraint_circuit() -> (ConstraintSystem, ValueVec) {
 
 	let mut rng = StdRng::seed_from_u64(0);
 	for &[a_lo, a_hi, b_lo, b_hi] in &bmul_wires {
-		let a = u128::from(BinaryField128bGhash::random(&mut rng));
-		let b = u128::from(BinaryField128bGhash::random(&mut rng));
+		let a = u128::from(Ghash128b::random(&mut rng));
+		let b = u128::from(Ghash128b::random(&mut rng));
 		w[a_lo] = Word(a as u64);
 		w[a_hi] = Word((a >> 64) as u64);
 		w[b_lo] = Word(b as u64);

@@ -12,7 +12,7 @@
 //! The dispatch loop, the opcode handlers, and the bytecode readers live here once.
 
 use binius_core::{Word, constraint_system::ShiftVariant};
-use binius_field::BinaryField128bGhash;
+use binius_field::Ghash128b;
 use smallvec::{SmallVec, smallvec};
 
 use super::opcode::EvalOpcode;
@@ -22,9 +22,8 @@ use crate::ir::{hints::HintRegistry, path::PathSpec};
 /// of words — `lo` holds the coefficients of $1, X, \ldots, X^{63}$ and `hi` those of
 /// $X^{64}, \ldots, X^{127}$ — and returns the product in the same `(lo, hi)` form.
 pub(super) fn ghash_mul(a_lo: Word, a_hi: Word, b_lo: Word, b_hi: Word) -> (Word, Word) {
-	let to_field = |lo: Word, hi: Word| {
-		BinaryField128bGhash::from((lo.as_u64() as u128) | ((hi.as_u64() as u128) << 64))
-	};
+	let to_field =
+		|lo: Word, hi: Word| Ghash128b::from((lo.as_u64() as u128) | ((hi.as_u64() as u128) << 64));
 	let product = u128::from(to_field(a_lo, a_hi) * to_field(b_lo, b_hi));
 	(Word::from_u64(product as u64), Word::from_u64((product >> 64) as u64))
 }

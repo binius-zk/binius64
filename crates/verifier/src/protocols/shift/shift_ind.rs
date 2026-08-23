@@ -142,7 +142,7 @@ fn evaluate_overflow_ind<E: FieldOps>(r_i: &[E], r_s: &[E]) -> E {
 mod tests {
 	use std::array;
 
-	use binius_field::{BinaryField128bGhash as B128, Field};
+	use binius_field::{Field, Ghash128b as B128};
 	use binius_math::test_utils::random_scalars;
 	use rand::{RngExt, SeedableRng, rngs::StdRng};
 

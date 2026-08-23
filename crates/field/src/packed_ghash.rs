@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use crate::{
-	BinaryField128bGhash,
+	Ghash128b,
 	arch::{
 		GhashInvert1x, GhashInvert2x, GhashInvert4x, GhashSquare1x, GhashSquare2x, GhashSquare4x,
 		GhashWideMul1x, GhashWideMul2x, GhashWideMul4x, M128, M256, M512, MulFromWideMul,
@@ -12,7 +12,7 @@ use crate::{
 
 define_packed_binary_field!(
 	PackedBinaryGhash1x128b,
-	BinaryField128bGhash,
+	Ghash128b,
 	M128,
 	(MulFromWideMul),
 	(GhashSquare1x),
@@ -22,7 +22,7 @@ define_packed_binary_field!(
 
 define_packed_binary_field!(
 	PackedBinaryGhash2x128b,
-	BinaryField128bGhash,
+	Ghash128b,
 	M256,
 	(MulFromWideMul),
 	(GhashSquare2x),
@@ -32,7 +32,7 @@ define_packed_binary_field!(
 
 define_packed_binary_field!(
 	PackedBinaryGhash4x128b,
-	BinaryField128bGhash,
+	Ghash128b,
 	M512,
 	(MulFromWideMul),
 	(GhashSquare4x),
@@ -46,20 +46,19 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		BinaryField128bGhash, PackedField, packed_binary_field::test_utils::packed_field_tests,
+		Ghash128b, PackedField, packed_binary_field::test_utils::packed_field_tests,
 		underlier::WithUnderlier,
 	};
 
 	fn check_get_set<const WIDTH: usize, PT>(a: [u128; WIDTH], b: [u128; WIDTH])
 	where
-		PT: PackedField<Scalar = BinaryField128bGhash>
-			+ WithUnderlier<Underlier: From<[u128; WIDTH]>>,
+		PT: PackedField<Scalar = Ghash128b> + WithUnderlier<Underlier: From<[u128; WIDTH]>>,
 	{
 		let mut val = PT::from_underlier(a.into());
 		for i in 0..WIDTH {
-			assert_eq!(val.get(i), BinaryField128bGhash::from(a[i]));
-			val.set(i, BinaryField128bGhash::from(b[i]));
-			assert_eq!(val.get(i), BinaryField128bGhash::from(b[i]));
+			assert_eq!(val.get(i), Ghash128b::from(a[i]));
+			val.set(i, Ghash128b::from(b[i]));
+			assert_eq!(val.get(i), Ghash128b::from(b[i]));
 		}
 	}
 

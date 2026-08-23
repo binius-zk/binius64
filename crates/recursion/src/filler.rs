@@ -5,7 +5,7 @@
 use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_core::word::Word;
-use binius_field::BinaryField128bGhash as B128;
+use binius_field::Ghash128b as B128;
 use binius_frontend::WitnessFiller;
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{

@@ -262,7 +262,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_core::word::Word;
-	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash2x128b};
+	use binius_field::{Ghash128b as B128, PackedBinaryGhash2x128b};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel};
 	use binius_ip::channel::WordIPVerifierChannel;

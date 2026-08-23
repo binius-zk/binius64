@@ -63,7 +63,7 @@ macro_rules! binary_field {
 
 		// NOTE: `new` is intentionally NOT generated here. Each field defines its own `new` so it
 		// can take an ergonomic constructor type independent of the underlier (e.g.
-		// `BinaryField128bGhash::new` takes `u128` even though its underlier is `M128`).
+		// `Ghash128b::new` takes `u128` even though its underlier is `M128`).
 		impl $name {
 			pub const fn val(self) -> $typ {
 				self.0
@@ -642,8 +642,8 @@ pub(crate) mod tests {
 
 	use super::BinaryField1b as BF1;
 	use crate::{
-		AESTowerField8b, BinaryField, BinaryField1b, BinaryField128bGhash, ExtensionField, Field,
-		GhashSq256b, arithmetic_traits::InvertOrZero,
+		AESTowerField8b, BinaryField, BinaryField1b, ExtensionField, Field, Ghash128b, GhashSq256b,
+		arithmetic_traits::InvertOrZero,
 	};
 
 	#[test]
@@ -735,7 +735,7 @@ pub(crate) mod tests {
 	fn test_multiplicative_generators() {
 		assert!(is_binary_field_valid_generator::<BinaryField1b>());
 		assert!(is_binary_field_valid_generator::<AESTowerField8b>());
-		assert!(is_binary_field_valid_generator::<BinaryField128bGhash>());
+		assert!(is_binary_field_valid_generator::<Ghash128b>());
 	}
 
 	/// The absolute trace $\operatorname{Tr}(x) = \sum_{i=0}^{n-1} x^{2^i}$, computed by repeated
@@ -761,7 +761,7 @@ pub(crate) mod tests {
 		}
 		check::<BinaryField1b>();
 		check::<AESTowerField8b>();
-		check::<BinaryField128bGhash>();
+		check::<Ghash128b>();
 		check::<GhashSq256b>();
 	}
 
@@ -780,24 +780,21 @@ pub(crate) mod tests {
 	fn test_field_degrees() {
 		assert_eq!(BinaryField1b::N_BITS, 1);
 		assert_eq!(AESTowerField8b::N_BITS, 8);
-		assert_eq!(BinaryField128bGhash::N_BITS, 128);
+		assert_eq!(Ghash128b::N_BITS, 128);
 	}
 
 	#[test]
 	fn test_field_formatting() {
 		assert_eq!(format!("{}", BinaryField1b::from(1)), "0x1");
 		assert_eq!(format!("{}", AESTowerField8b::from(3)), "0x03");
-		assert_eq!(
-			format!("{}", BinaryField128bGhash::new(5)),
-			"0x00000000000000000000000000000005"
-		);
+		assert_eq!(format!("{}", Ghash128b::new(5)), "0x00000000000000000000000000000005");
 	}
 
 	#[test]
 	fn test_inverse_on_zero() {
 		assert!(BinaryField1b::ZERO.invert_or_zero().is_zero());
 		assert!(AESTowerField8b::ZERO.invert_or_zero().is_zero());
-		assert!(BinaryField128bGhash::ZERO.invert_or_zero().is_zero());
+		assert!(Ghash128b::ZERO.invert_or_zero().is_zero());
 	}
 
 	proptest! {
@@ -811,10 +808,10 @@ pub(crate) mod tests {
 
 		#[test]
 		fn test_inverse_128b(val in 1u128..) {
-			let x = BinaryField128bGhash::from(val);
+			let x = Ghash128b::from(val);
 			// Safety: `val` is in `1..`, so `x` is non-zero.
 			let x_inverse = unsafe { x.invert() };
-			assert_eq!(x * x_inverse, BinaryField128bGhash::ONE);
+			assert_eq!(x * x_inverse, Ghash128b::ONE);
 		}
 	}
 
@@ -826,7 +823,7 @@ pub(crate) mod tests {
 
 		// `BinaryField1b` has a trivial multiplicative group, so for the three pairs with that
 		// subfield this sweeps `ONE` alone, which together with `ZERO` is already the whole field.
-		// Only `BinaryField128bGhash` in `GhashSq256b` walks non-trivial subfield values.
+		// Only `Ghash128b` in `GhashSq256b` walks non-trivial subfield values.
 		let mut elem = FSub::ONE;
 		for _ in 0..4 {
 			assert_eq!(TryInto::<FSub>::try_into(F::from(elem)).ok(), Some(elem));
@@ -843,9 +840,9 @@ pub(crate) mod tests {
 
 	#[test]
 	fn test_subfield_extraction() {
-		assert_subfield_extraction::<BinaryField1b, BinaryField128bGhash>();
+		assert_subfield_extraction::<BinaryField1b, Ghash128b>();
 		assert_subfield_extraction::<BinaryField1b, AESTowerField8b>();
-		assert_subfield_extraction::<BinaryField128bGhash, GhashSq256b>();
+		assert_subfield_extraction::<Ghash128b, GhashSq256b>();
 		assert_subfield_extraction::<BinaryField1b, GhashSq256b>();
 	}
 
@@ -854,7 +851,7 @@ pub(crate) mod tests {
 		let mut buffer = BytesMut::new();
 		let b1 = BinaryField1b::from(0x1);
 		let b8 = AESTowerField8b::new(0x12);
-		let b128 = BinaryField128bGhash::new(0x147AD0369CF258BE8899AABBCCDDEEFF);
+		let b128 = Ghash128b::new(0x147AD0369CF258BE8899AABBCCDDEEFF);
 
 		b1.serialize(&mut buffer).unwrap();
 		b8.serialize(&mut buffer).unwrap();
@@ -864,6 +861,6 @@ pub(crate) mod tests {
 
 		assert_eq!(BinaryField1b::deserialize(&mut read_buffer).unwrap(), b1);
 		assert_eq!(AESTowerField8b::deserialize(&mut read_buffer).unwrap(), b8);
-		assert_eq!(BinaryField128bGhash::deserialize(&mut read_buffer).unwrap(), b128);
+		assert_eq!(Ghash128b::deserialize(&mut read_buffer).unwrap(), b128);
 	}
 }

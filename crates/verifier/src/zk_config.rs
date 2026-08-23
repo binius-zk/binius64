@@ -19,7 +19,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
 	word::Word,
 };
-use binius_field::BinaryField128bGhash as B128;
+use binius_field::Ghash128b as B128;
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,

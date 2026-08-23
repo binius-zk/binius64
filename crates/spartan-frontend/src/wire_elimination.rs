@@ -222,7 +222,7 @@ impl<F: Field> WireEliminationPass<F> {
 mod tests {
 	use std::{iter, iter::successors};
 
-	use binius_field::{BinaryField128bGhash as B128, Field, PackedField};
+	use binius_field::{Field, Ghash128b as B128, PackedField};
 
 	use super::*;
 	use crate::circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator};

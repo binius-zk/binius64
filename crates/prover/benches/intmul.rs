@@ -1,7 +1,7 @@
 // Copyright 2025-2026 The Binius Developers
 use binius_compute::BufferPool;
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash1x128b};
+use binius_field::{Field, Ghash128b, PackedBinaryGhash1x128b};
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::MinProofSizeStrategy,
@@ -35,7 +35,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use rand::prelude::*;
 
 type P = PackedBinaryGhash1x128b;
-type F = BinaryField128bGhash;
+type F = Ghash128b;
 
 /// Number of exponents is `2^LOG_NUM`.
 const LOG_NUM: usize = 14;

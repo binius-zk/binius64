@@ -29,7 +29,7 @@
 //! # Example
 //!
 //! ```rust
-//! use binius_field::{BinaryField128bGhash as B128, Field};
+//! use binius_field::{Ghash128b as B128, Field};
 //! use binius_spartan_frontend::{
 //!     circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
 //!     compiler::compile,

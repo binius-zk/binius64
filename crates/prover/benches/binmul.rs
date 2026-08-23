@@ -2,14 +2,14 @@
 
 use binius_compute::BufferPool;
 use binius_core::word::Word;
-use binius_field::{BinaryField128bGhash, Random, arch::OptimalPackedB128};
+use binius_field::{Ghash128b, Random, arch::OptimalPackedB128};
 use binius_prover::protocols::binmul::prove;
 use binius_transcript::ProverTranscript;
 use binius_verifier::config::StdChallenger;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{SeedableRng, prelude::StdRng};
 
-type F = BinaryField128bGhash;
+type F = Ghash128b;
 type P = OptimalPackedB128;
 
 /// The six word columns `(a_lo, a_hi, b_lo, b_hi, c_lo, c_hi)` of a BinMul witness.

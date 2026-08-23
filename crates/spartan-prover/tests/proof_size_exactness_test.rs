@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-use binius_field::{BinaryField128bGhash as B128, PackedField, Random, arch::OptimalPackedB128};
+use binius_field::{Ghash128b as B128, PackedField, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	channel::{IOPVerifierChannel, size_tracking::SizeTrackingChannel},

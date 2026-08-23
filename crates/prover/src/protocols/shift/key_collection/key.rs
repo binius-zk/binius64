@@ -177,13 +177,13 @@ impl DeserializeBytes for ConstraintIndex {
 mod tests {
 	use std::{iter, mem};
 
-	use binius_field::BinaryField128bGhash;
+	use binius_field::Ghash128b;
 	use binius_math::FieldBuffer;
 
 	use super::*;
 	use crate::protocols::shift::PreparedOperatorData;
 
-	type F = BinaryField128bGhash;
+	type F = Ghash128b;
 
 	fn f(value: u128) -> F {
 		F::new(value)

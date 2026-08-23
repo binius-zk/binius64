@@ -14,7 +14,7 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	BinaryField128bGhash as GhashB128, Divisible, WideMul,
+	Divisible, Ghash128b as GhashB128, WideMul,
 	arch::PackedPrimitiveType,
 	arithmetic_traits::{MulXWide, Square},
 	underlier::UnderlierType,

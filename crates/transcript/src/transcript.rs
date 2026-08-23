@@ -439,7 +439,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_field::BinaryField128bGhash as B128;
+	use binius_field::Ghash128b as B128;
 	use sha2::Sha256;
 
 	use super::*;

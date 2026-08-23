@@ -106,9 +106,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{
-		BinaryField128bGhash as B128, PackedBinaryGhash4x128b, arch::OptimalPackedB128,
-	};
+	use binius_field::{Ghash128b as B128, PackedBinaryGhash4x128b, arch::OptimalPackedB128};
 	use binius_hash::sha256::Sha256HashSuite;
 	use binius_math::{ntt::domain_context::GaoMateerOnTheFly, test_utils::random_field_buffer};
 	use rand::{SeedableRng, rngs::StdRng};

@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_compute::{BufferPool, GlobalAllocator};
-use binius_field::{BinaryField128bGhash as B128, PackedField, arch::OptimalPackedB128};
+use binius_field::{Ghash128b as B128, PackedField, arch::OptimalPackedB128};
 use binius_hash::{
 	binary_merkle_tree::HashSuite, blake3::Blake3HashSuite, sha256::Sha256HashSuite,
 };

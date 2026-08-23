@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_field::{BinaryField128bGhash as B128, Field, Random, arch::OptimalPackedB128};
+use binius_field::{Field, Ghash128b as B128, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder, InstanceGenerator, WitnessGenerator},

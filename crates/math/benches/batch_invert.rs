@@ -1,7 +1,7 @@
 // Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
-use binius_field::{BinaryField128bGhash as Ghash, Random, arch::OptimalPackedB128};
+use binius_field::{Ghash128b as Ghash, Random, arch::OptimalPackedB128};
 use binius_math::batch_invert::BatchInversion;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 

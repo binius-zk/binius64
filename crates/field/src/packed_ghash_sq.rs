@@ -32,7 +32,7 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	BinaryField128bGhash, Divisible, GhashSq256b, PackedBinaryGhash2x128b, PackedField, WideMul,
+	Divisible, Ghash128b, GhashSq256b, PackedBinaryGhash2x128b, PackedField, WideMul,
 	arch::{
 		Divide, GhashSqWideMul1x, M128, M256, M512, MulFromWideMul, PackedPrimitiveType,
 		portable::packed_macros::{portable_macros::*, *},
@@ -44,7 +44,7 @@ use crate::{
 };
 
 /// The packed GHASH coordinate register backing a `SlicedGhashSq256b<U>`.
-type Ghash<U> = PackedPrimitiveType<U, BinaryField128bGhash>;
+type Ghash<U> = PackedPrimitiveType<U, Ghash128b>;
 
 /// A GHASH² packing whose two GHASH coordinates pack into `PackedPrimitiveType<U, Ghash128b>`.
 pub type SlicedGhashSq256b<U> = SlicedPackedField<GhashSq256b, Ghash<U>, 2>;
@@ -62,15 +62,14 @@ type GhashWide<U> = <Ghash<U> as WideMul>::Output;
 ///
 /// `X` scaling is `GF(2)`-linear — a per-lane bit shift with a fixed compensation, not a field
 /// multiply — so this is far cheaper than a CLMUL. It reuses the scalar
-/// [`BinaryField128bGhash::mul_x`] on each 128-bit lane, which every supported underlier divides
+/// [`Ghash128b::mul_x`] on each 128-bit lane, which every supported underlier divides
 /// into.
 #[inline]
 fn ghash_mul_x<U: Divisible<M128>>(u: U) -> U {
-	U::from_iter(Divisible::<M128>::value_iter(u).map(|lane| {
-		BinaryField128bGhash::from_underlier(lane)
-			.mul_x()
-			.to_underlier()
-	}))
+	U::from_iter(
+		Divisible::<M128>::value_iter(u)
+			.map(|lane| Ghash128b::from_underlier(lane).mul_x().to_underlier()),
+	)
 }
 
 /// Multiplies every GHASH lane of a packed coordinate by `X`.
@@ -149,7 +148,7 @@ impl<W: Default + Add<Output = W>> Sum for SlicedGhashSqWide<W> {
 impl<U> WideMul for SlicedGhashSq256b<U>
 where
 	U: UnderlierType + Divisible<M128>,
-	Ghash<U>: PackedField<Scalar = BinaryField128bGhash> + WideMul,
+	Ghash<U>: PackedField<Scalar = Ghash128b> + WideMul,
 {
 	type Output = SlicedGhashSqWide<GhashWide<U>>;
 
@@ -182,7 +181,7 @@ where
 impl<U> Square for SlicedGhashSq256b<U>
 where
 	U: UnderlierType + Divisible<M128>,
-	Ghash<U>: PackedField<Scalar = BinaryField128bGhash>,
+	Ghash<U>: PackedField<Scalar = Ghash128b>,
 {
 	/// `(a + b·Y)² = (a² + X·b²) + (X·b²)·Y` — the cross term vanishes in characteristic two, and
 	/// `Y² = X·Y + X`.
@@ -201,7 +200,7 @@ where
 impl<U> InvertOrZero for SlicedGhashSq256b<U>
 where
 	U: UnderlierType + Divisible<M128>,
-	Ghash<U>: PackedField<Scalar = BinaryField128bGhash>,
+	Ghash<U>: PackedField<Scalar = Ghash128b>,
 {
 	/// Inverts through the norm of the degree-two extension. The conjugate of `u = a + b·Y` sends
 	/// `Y` to the other root of `Y² + X·Y + X` (the roots sum to `X` and multiply to `X`), giving
@@ -236,15 +235,15 @@ where
 /// The coordinates already sit in the two 128-bit lanes of the 256-bit value, so this is a free
 /// reinterpretation followed by two lane reads.
 #[inline]
-pub(crate) fn ghash_sq_coords(elem: PackedGhashSq1x256b) -> [BinaryField128bGhash; 2] {
-	let coords = PackedExtension::<BinaryField128bGhash>::cast_base(elem);
+pub(crate) fn ghash_sq_coords(elem: PackedGhashSq1x256b) -> [Ghash128b; 2] {
+	let coords = PackedExtension::<Ghash128b>::cast_base(elem);
 	[coords.get(0), coords.get(1)]
 }
 
 /// Assembles a width-one GHASH² element `a + b·Y` from its GHASH coordinates `[a, b]`.
 #[inline]
-pub(crate) fn ghash_sq_from_coords(coords: [BinaryField128bGhash; 2]) -> PackedGhashSq1x256b {
-	PackedExtension::<BinaryField128bGhash>::cast_ext(PackedBinaryGhash2x128b::from_scalars(coords))
+pub(crate) fn ghash_sq_from_coords(coords: [Ghash128b; 2]) -> PackedGhashSq1x256b {
+	PackedExtension::<Ghash128b>::cast_ext(PackedBinaryGhash2x128b::from_scalars(coords))
 }
 
 /// [`Square`] strategy for [`PackedGhashSq1x256b`].
@@ -256,8 +255,7 @@ impl Square for GhashSqSquare<PackedGhashSq1x256b> {
 	/// `(a + b·Y)² = (a² + X·b²) + (X·b²)·Y` — the cross term vanishes in characteristic two.
 	#[inline]
 	fn square(self) -> Self {
-		let sq =
-			Square::square(PackedExtension::<BinaryField128bGhash>::cast_base(Self::peel(self)));
+		let sq = Square::square(PackedExtension::<Ghash128b>::cast_base(Self::peel(self)));
 
 		let x_t2 = sq.get(1).mul_x();
 		Self::wrap(ghash_sq_from_coords([sq.get(0) + x_t2, x_t2]))

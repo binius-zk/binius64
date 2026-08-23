@@ -12,13 +12,13 @@
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	BinaryField128bGhash, PackedGhashSq1x256b, SlicedGhashSqWide, WideMul,
+	Ghash128b, PackedGhashSq1x256b, SlicedGhashSqWide, WideMul,
 	arithmetic_traits::MulXWide,
 	packed_ghash_sq::{ghash_sq_coords, ghash_sq_from_coords},
 };
 
 /// The unreduced product of a single GHASH coordinate multiply.
-type GhashWide = <BinaryField128bGhash as WideMul>::Output;
+type GhashWide = <Ghash128b as WideMul>::Output;
 
 /// [`WideMul`] strategy for [`PackedGhashSq1x256b`] keeping the three Karatsuba products of the
 /// coordinate multiply separate, so that the multiply-by-`X` can be deferred into a reduction.
@@ -36,9 +36,9 @@ impl WideMul for GhashSqSlicedWideMul<PackedGhashSq1x256b> {
 		let [b0, b1] = ghash_sq_coords(Self::peel(b));
 
 		SlicedGhashSqWide {
-			t0: BinaryField128bGhash::wide_mul(a0, b0),
-			t2: BinaryField128bGhash::wide_mul(a1, b1),
-			t1: BinaryField128bGhash::wide_mul(a0 + a1, b0 + b1),
+			t0: Ghash128b::wide_mul(a0, b0),
+			t2: Ghash128b::wide_mul(a1, b1),
+			t1: Ghash128b::wide_mul(a0 + a1, b0 + b1),
 		}
 	}
 
@@ -49,8 +49,8 @@ impl WideMul for GhashSqSlicedWideMul<PackedGhashSq1x256b> {
 	/// accumulated wide product, so the two coordinates cost two reductions in total.
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
-		let z0 = BinaryField128bGhash::reduce(wide.t0 + wide.t2.mul_x_wide());
-		let z1 = z0 + BinaryField128bGhash::reduce(wide.t1 + wide.t2);
+		let z0 = Ghash128b::reduce(wide.t0 + wide.t2.mul_x_wide());
+		let z1 = z0 + Ghash128b::reduce(wide.t1 + wide.t2);
 
 		Self::wrap(ghash_sq_from_coords([z0, z1]))
 	}

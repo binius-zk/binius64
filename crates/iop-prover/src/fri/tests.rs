@@ -4,9 +4,7 @@
 use std::{iter, vec};
 
 use binius_compute::GlobalAllocator;
-use binius_field::{
-	BinaryField, BinaryField128bGhash as B128, Field, PackedBinaryGhash1x128b, PackedField,
-};
+use binius_field::{BinaryField, Field, Ghash128b as B128, PackedBinaryGhash1x128b, PackedField};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::{
 	fri::{CodewordSpec, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},

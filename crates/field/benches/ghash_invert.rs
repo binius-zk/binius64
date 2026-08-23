@@ -1,7 +1,7 @@
 // Copyright 2026 The Binius Developers
 
 //! Benchmark GHASH field inversion (Itoh-Tsujii, which now backs `InvertOrZero`) across packing
-//! widths: the scalar `BinaryField128bGhash` and the 1x/2x/4x packed fields.
+//! widths: the scalar `Ghash128b` and the 1x/2x/4x packed fields.
 //!
 //! Throughput is reported in scalar elements (batch size times packing width), so the numbers are
 //! directly comparable across widths.
@@ -9,7 +9,7 @@
 use std::hint::black_box;
 
 use binius_field::{
-	BinaryField128bGhash as GhashB128, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
+	Ghash128b as GhashB128, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
 	PackedBinaryGhash4x128b, PackedField,
 };
 use criterion::{

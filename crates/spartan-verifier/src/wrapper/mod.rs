@@ -23,7 +23,7 @@ mod tests {
 
 	use binius_core::word::Word;
 	use binius_field::{
-		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, Field, Random,
+		BinaryField1b as B1, ExtensionField, Field, Ghash128b as B128, Random,
 		arithmetic_traits::InvertOrZero, field::FieldOps,
 	};
 	use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};

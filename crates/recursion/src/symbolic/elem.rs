@@ -10,7 +10,7 @@ use std::{
 };
 
 use binius_field::{
-	BinaryField128bGhash as B128, ExtensionField, Field, FieldOps,
+	ExtensionField, Field, FieldOps, Ghash128b as B128,
 	arithmetic_traits::{InvertOrZero, Square},
 };
 use binius_frontend::{CircuitBuilder, Wire};

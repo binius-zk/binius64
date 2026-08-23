@@ -492,7 +492,7 @@ impl<D: Clone + Send, A: Allocator> BinaryMerkleTree<D, A> {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::BinaryField128bGhash as B128;
+	use binius_field::Ghash128b as B128;
 
 	use super::*;
 	use crate::sha256::{Sha256Compression, Sha256HashSuite};

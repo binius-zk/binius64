@@ -210,9 +210,7 @@ impl<F: Field> IOPVerifierChannel<F> for ReplayChannel<F> {
 mod tests {
 	use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-	use binius_field::{
-		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, field::FieldOps,
-	};
+	use binius_field::{BinaryField1b as B1, ExtensionField, Ghash128b as B128, field::FieldOps};
 	use binius_spartan_frontend::circuit_builder::{ConstraintBuilder, WitnessGenerator};
 	use binius_spartan_verifier::wrapper::circuit_elem::CircuitElem;
 

@@ -286,7 +286,7 @@ mod tests {
 		constraint_system::{AndConstraint, Shift, ShiftedValueIndex, ValueIndex},
 		word::Word,
 	};
-	use binius_field::{BinaryField128bGhash, Field, Random};
+	use binius_field::{Field, Ghash128b, Random};
 	use binius_math::test_utils::random_scalars;
 	use rand::prelude::*;
 
@@ -350,7 +350,7 @@ mod tests {
 		// entries, so scaling the whole table scales the evaluation by the same factor. That holds
 		// however the fixture's terms are spread across the table, which is what lets the fixture
 		// carry doubly shifted terms rather than reading index 0 alone.
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 		let mut rng = StdRng::seed_from_u64(7);
 
 		let n_words = 40usize;
@@ -415,7 +415,7 @@ mod tests {
 	/// non-power-of-two one, whose `r_x'` tensor runs past the last constraint.
 	#[test]
 	fn evaluate_monster_native_matches_generic() {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 		let mut rng = StdRng::seed_from_u64(3);
 
 		let n_words = 40usize;
@@ -451,7 +451,7 @@ mod tests {
 	/// so both are checked.
 	#[test]
 	fn evaluate_monster_ignores_zero_padding_constraints() {
-		type F = BinaryField128bGhash;
+		type F = Ghash128b;
 		let mut rng = StdRng::seed_from_u64(5);
 
 		let n_words = 40usize;
