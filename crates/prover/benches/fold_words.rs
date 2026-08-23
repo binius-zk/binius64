@@ -11,7 +11,9 @@ use rand::prelude::*;
 fn bench_fold_words(c: &mut Criterion) {
 	let mut group = c.benchmark_group("fold_words");
 
-	for log_n_words in [12, 16, 20] {
+	// Sizes below the task floor show what bounding the split is worth.
+	// The floor is 2^12 words, so 2^10 folds as one task and 2^20 as many.
+	for log_n_words in [10, 12, 14, 16, 20] {
 		let n_words = 1 << log_n_words;
 
 		// Set throughput to measure elements per second
