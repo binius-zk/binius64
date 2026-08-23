@@ -9,7 +9,7 @@ use binius_field::{
 };
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::{
-	fri::{self, CodewordSpec, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
+	fri::{CodewordSpec, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
 	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
 };
 use binius_ip::channel::IPVerifierChannel;
@@ -701,17 +701,17 @@ where
 fn test_proof_size_higher_arity() {
 	let (proof_bytes, params, scheme) =
 		generate_fri_proof::<B128, PackedBinaryGhash1x128b>(8, 2, 0, &[3, 2, 1]);
-	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
+	assert_eq!(proof_bytes.len(), params.proof_size(&scheme));
 }
 
 #[test]
 fn test_proof_size_interleaved() {
 	let (proof_bytes, params, scheme) = generate_fri_proof::<B128, Packed128b>(6, 2, 2, &[3, 2, 1]);
-	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
+	assert_eq!(proof_bytes.len(), params.proof_size(&scheme));
 }
 
 #[test]
 fn test_proof_size_no_folding() {
 	let (proof_bytes, params, scheme) = generate_fri_proof::<B128, Packed128b>(4, 2, 2, &[]);
-	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
+	assert_eq!(proof_bytes.len(), params.proof_size(&scheme));
 }
