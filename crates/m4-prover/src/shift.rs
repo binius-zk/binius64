@@ -9,7 +9,7 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
+	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
 	fold_word::fold_words,
@@ -86,7 +86,7 @@ where
 	]);
 	// The oblong weights, which phase 1 pushes through both shift slots and phase 3 runs its rounds
 	// over directly.
-	let oblong_weights = lagrange_evals(domain_subspace, prepared.bitand.r_zhat_prime);
+	let oblong_weights = subspace_lagrange_evals(domain_subspace, prepared.bitand.r_zhat_prime);
 	let Phase1Output {
 		r_j,
 		inner: inner_shift,
@@ -236,7 +236,7 @@ mod tests {
 	use binius_math::{
 		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 		test_utils::random_scalars,
-		univariate::lagrange_evals_scalars,
+		univariate::subspace_lagrange_evals_scalars,
 	};
 	use binius_prover::protocols::shift::{
 		DenseShiftEncoding, OperatorData, build_key_collection, monster::shift_operator_row,
@@ -275,7 +275,7 @@ mod tests {
 	) -> [B128; 3] {
 		let columns = OperandColumns::build(table, constants, and_constraints, &GlobalAllocator);
 		let [a, b] = columns.as_slices();
-		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, &r_z);
+		let lagrange = subspace_lagrange_evals_scalars::<B128, B128>(domain_subspace, &r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
 			let folded_column = fold_words::<B128, P, _>(&GlobalAllocator, column, &lagrange);
@@ -538,7 +538,7 @@ mod tests {
 			.public
 			.build_g::<B128, B128>(public_words, &prepared);
 		let hidden = build_g_from_folded_words(&hidden_folded, &key_collection.hidden, &prepared);
-		let psi = lagrange_evals(&domain_subspace, r_z);
+		let psi = subspace_lagrange_evals(&domain_subspace, r_z);
 
 		// `g` is zero outside the rows the segments name, so the inner product is those rows
 		// alone. A term names a shift *pair*, and its `h` row is the operator applied twice: the

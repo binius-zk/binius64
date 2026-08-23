@@ -7,7 +7,7 @@ use binius_field::{Field, Random};
 use binius_ip_prover::sumcheck::{common::MleCheckProver, quadratic_mlecheck_prover};
 use binius_math::{
 	BinarySubspace,
-	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
+	univariate::{extrapolate_over_subspace, subspace_lagrange_evals_scalars},
 };
 use binius_prover::{
 	OptimalPackedB128,
@@ -96,7 +96,8 @@ fn bench(c: &mut Criterion) {
 
 	group.bench_function(format!("univariate fold 2^{log_words}"), |bench| {
 		bench.iter(|| {
-			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
+			let lagrange_evals =
+				subspace_lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
 			let folder = BitAxisFolder::new(&lagrange_evals);
 			folder.fold_bitand_operands::<OptimalPackedB128, _>(
 				&GlobalAllocator,
@@ -106,7 +107,7 @@ fn bench(c: &mut Criterion) {
 		});
 	});
 
-	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
+	let lagrange_evals = subspace_lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
 	let folder = BitAxisFolder::new(&lagrange_evals);
 
 	let mut univariate_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];

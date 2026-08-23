@@ -17,7 +17,7 @@ use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec,
 	inner_product::inner_product,
 	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
-	univariate::lagrange_evals,
+	univariate::subspace_lagrange_evals,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{
@@ -214,7 +214,7 @@ impl IOPProver {
 				c_hi_evals,
 			}) => {
 				let r_zhat_prime = bitand_claim.r_zhat_prime;
-				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+				let l_tilde = subspace_lagrange_evals(&subspace, r_zhat_prime);
 				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
 				OperatorData {
 					evals: [
@@ -246,7 +246,7 @@ impl IOPProver {
 				c_hi_evals,
 			}) => {
 				let r_zhat_prime = bitand_claim.r_zhat_prime;
-				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+				let l_tilde = subspace_lagrange_evals(&subspace, r_zhat_prime);
 				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
 				OperatorData {
 					evals: [

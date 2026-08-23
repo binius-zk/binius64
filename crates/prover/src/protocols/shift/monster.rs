@@ -218,7 +218,7 @@ mod tests {
 	use binius_field::{AESTowerField8b, BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 	use binius_math::{
 		BinarySubspace, inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
-		test_utils::random_scalars, univariate::lagrange_evals,
+		test_utils::random_scalars, univariate::subspace_lagrange_evals,
 	};
 	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 	use proptest::prelude::*;
@@ -254,7 +254,7 @@ mod tests {
 
 			// Method 1: the claim phase 3 starts from, with the carried constant set to one.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
-			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+			let l_tilde = subspace_lagrange_evals(&subspace, r_zhat_prime);
 			let claimed = ShiftIndSumcheck::<P, _>::new(
 				&GlobalAllocator,
 				l_tilde.as_ref(),

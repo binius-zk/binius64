@@ -47,8 +47,11 @@ pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: &F) -> F {
 ///
 /// # Returns
 /// A vector of Lagrange polynomial evaluations, one for each domain element
-pub fn lagrange_evals<F: BinaryField>(subspace: &BinarySubspace<F>, z: F) -> FieldBuffer<F> {
-	let result = lagrange_evals_scalars(subspace, &z);
+pub fn subspace_lagrange_evals<F: BinaryField>(
+	subspace: &BinarySubspace<F>,
+	z: F,
+) -> FieldBuffer<F> {
+	let result = subspace_lagrange_evals_scalars(subspace, &z);
 	FieldBuffer::new(subspace.dim(), result)
 }
 
@@ -72,7 +75,7 @@ fn subspace_barycentric_weight<F: BinaryField, E: FieldOps + From<F>>(
 	unsafe { product.invert() }
 }
 
-/// Scalar variant of [`lagrange_evals`] that returns a `Vec<E>` instead of a `FieldBuffer`.
+/// Scalar variant that returns a plain vector instead of a field buffer.
 ///
 /// Computes Lagrange polynomial evaluations for a binary subspace domain, converting domain
 /// points from `F` to `E` and performing all arithmetic in `E`.
@@ -83,7 +86,7 @@ fn subspace_barycentric_weight<F: BinaryField, E: FieldOps + From<F>>(
 ///
 /// # Returns
 /// A vector of Lagrange polynomial evaluations, one for each domain element
-pub fn lagrange_evals_scalars<F: BinaryField, E: FieldOps + From<F>>(
+pub fn subspace_lagrange_evals_scalars<F: BinaryField, E: FieldOps + From<F>>(
 	subspace: &BinarySubspace<F>,
 	z: &E,
 ) -> Vec<E> {
@@ -296,7 +299,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_lagrange_evals() {
+	fn test_subspace_lagrange_evals() {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Test mathematical properties across different domain sizes
@@ -307,7 +310,7 @@ mod tests {
 
 			// Test 1: Partition of Unity - Lagrange polynomials sum to 1
 			let eval_point = F::random(&mut rng);
-			let lagrange_coeffs = lagrange_evals(&subspace, eval_point);
+			let lagrange_coeffs = subspace_lagrange_evals(&subspace, eval_point);
 			let sum: F = lagrange_coeffs.as_ref().iter().copied().sum();
 			assert_eq!(
 				sum,
@@ -318,7 +321,7 @@ mod tests {
 
 			// Test 2: Interpolation Property - L_i(x_j) = δ_ij
 			for (j, &domain_point) in domain.iter().enumerate() {
-				let lagrange_at_domain = lagrange_evals(&subspace, domain_point);
+				let lagrange_at_domain = subspace_lagrange_evals(&subspace, domain_point);
 				for (i, &coeff) in lagrange_at_domain.as_ref().iter().enumerate() {
 					let expected = if i == j { F::ONE } else { F::ZERO };
 					assert_eq!(
@@ -343,7 +346,7 @@ mod tests {
 
 		// Test interpolation at random point
 		let test_point = F::random(&mut rng);
-		let lagrange_coeffs = lagrange_evals(&subspace, test_point);
+		let lagrange_coeffs = subspace_lagrange_evals(&subspace, test_point);
 		let interpolated =
 			inner_product(domain_evals.iter().copied(), lagrange_coeffs.iter_scalars());
 		let direct = evaluate_univariate(&coeffs, &test_point);
@@ -410,7 +413,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_extrapolate_over_subspace_against_lagrange_evals() {
+	fn test_extrapolate_over_subspace_against_subspace_lagrange_evals() {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		for log_domain_size in 0..=6 {
@@ -422,7 +425,7 @@ mod tests {
 
 			let z = F::random(&mut rng);
 			let extrapolated = extrapolate_over_subspace(&subspace, &values, &z);
-			let lagrange = lagrange_evals_scalars(&subspace, &z);
+			let lagrange = subspace_lagrange_evals_scalars(&subspace, &z);
 			let expected = inner_product(values.iter().copied(), lagrange);
 
 			assert_eq!(extrapolated, expected, "Mismatch for log_domain_size={log_domain_size}");

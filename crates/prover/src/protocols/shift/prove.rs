@@ -9,7 +9,7 @@ use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, inner_product::inner_product,
-	multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
+	multilinear::eq::eq_ind_partial_eval, univariate::subspace_lagrange_evals,
 };
 use tracing::instrument;
 
@@ -203,7 +203,7 @@ where
 		// The weights the reduction's first factor carries, one per bit position.
 		// Phase 1 and phase 3 both need them, so they are computed once here, drawn from the
 		// BitAnd claim.
-		let oblong_weights = lagrange_evals(domain_subspace, prepared.bitand.r_zhat_prime);
+		let oblong_weights = subspace_lagrange_evals(domain_subspace, prepared.bitand.r_zhat_prime);
 
 		// Phase 1: bind the shift variant, the shift amount, and the bit position.
 		let phase_1_output = self.phase1(key_collection, words, &prepared, oblong_weights.as_ref());
