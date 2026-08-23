@@ -12,9 +12,7 @@ mod segment_words;
 mod shift_ind;
 
 pub use claims::{OperatorClaims, PreparedOperatorClaims};
-pub use key_collection::{
-	DenseShiftEncoding, KeyCollection, KeySegment, Operation, build_key_collection,
-};
+pub use key_collection::{DenseShiftEncoding, KeyCollection, KeySegment, Operation};
 pub use phase_2::ShiftOutput;
 pub use prove::{OperatorData, PreparedOperatorData, ShiftProver};
 pub use segment_words::SegmentWords;

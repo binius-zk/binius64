@@ -24,10 +24,7 @@ use bytes::{Buf, BufMut};
 use digest::Output;
 use rand::CryptoRng;
 
-use crate::{
-	IOPProver,
-	protocols::shift::{KeyCollection, build_key_collection},
-};
+use crate::{IOPProver, protocols::shift::KeyCollection};
 
 type ProverNTT<F> = NeighborsLastMultiThread<GaoMateerPreExpanded<F>>;
 
@@ -66,7 +63,7 @@ where
 	pub fn setup(zk_verifier: &ZKVerifier<H>) -> Result<Self, Error> {
 		let key_collection = {
 			let _guard = tracing::debug_span!("Build key collection").entered();
-			build_key_collection(
+			KeyCollection::build(
 				zk_verifier.inner_iop_verifier().constraint_system(),
 				InoutSegment::Public,
 			)

@@ -550,7 +550,7 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::protocols::shift::key_collection::build_key_collection;
+	use crate::protocols::shift::KeyCollection;
 
 	type F = BinaryField128bGhash;
 
@@ -612,7 +612,7 @@ mod tests {
 	#[test]
 	fn from_segments_concatenates_the_two_encodings() {
 		let key_collection =
-			build_key_collection(&overlapping_shift_system(), InoutSegment::Public);
+			KeyCollection::build(&overlapping_shift_system(), InoutSegment::Public);
 
 		// Fill each segment's rows with a distinct constant per row, so a row's value says which
 		// segment it came from.
@@ -682,7 +682,7 @@ mod tests {
 			bmul_constraints: Vec::new(),
 		};
 
-		let key_collection = build_key_collection(&cs, InoutSegment::Public);
+		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 		let [inner, outer] = sequence;
 		assert_eq!(
 			key_collection
@@ -761,7 +761,7 @@ mod tests {
 		seed: u64,
 	) -> (SparseShiftRows<P>, FieldVec<P, GlobalAllocator>) {
 		let mut rng = StdRng::seed_from_u64(seed);
-		let key_collection = build_key_collection(cs, InoutSegment::Public);
+		let key_collection = KeyCollection::build(cs, InoutSegment::Public);
 
 		let mut indices = Vec::new();
 		let mut values = Vec::new();
@@ -834,7 +834,7 @@ mod tests {
 			bmul_constraints: Vec::new(),
 		};
 
-		let key_collection = build_key_collection(&cs, InoutSegment::Public);
+		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 		assert!(key_collection.public.dense_shift_enc.is_empty());
 		assert!(key_collection.hidden.dense_shift_enc.is_empty());
 

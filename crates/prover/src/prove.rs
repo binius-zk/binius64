@@ -36,10 +36,7 @@ use crate::{
 	and_reduction,
 	protocols::{
 		binmul, intmul,
-		shift::{
-			KeyCollection, OperatorClaims, OperatorData, ShiftOutput, ShiftProver,
-			build_key_collection,
-		},
+		shift::{KeyCollection, OperatorClaims, OperatorData, ShiftOutput, ShiftProver},
 	},
 	ring_switch,
 };
@@ -399,7 +396,7 @@ where
 	/// See [`Prover`] struct documentation for details.
 	pub fn setup(verifier: Verifier<H>) -> Result<Self, Error> {
 		let key_collection =
-			build_key_collection(verifier.constraint_system(), InoutSegment::Public);
+			KeyCollection::build(verifier.constraint_system(), InoutSegment::Public);
 		Self::setup_with_key_collection(verifier, key_collection)
 	}
 

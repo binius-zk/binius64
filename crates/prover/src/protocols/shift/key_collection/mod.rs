@@ -10,7 +10,6 @@ mod key;
 mod key_segment;
 mod operation;
 
-pub use builder::build_key_collection;
 pub use collection::KeyCollection;
 pub use dense_shift_encoding::DenseShiftEncoding;
 pub use key_segment::KeySegment;
