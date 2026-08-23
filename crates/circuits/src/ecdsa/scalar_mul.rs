@@ -201,7 +201,7 @@ fn strauss_accumulate(
 	// Flatten each table entry into its constituent wires for the multi-wire multiplexer.
 	let tables_flat: Vec<Vec<Vec<Wire>>> = tables
 		.iter()
-		.map(|table| table.iter().map(point_to_wires).collect())
+		.map(|table| table.iter().map(Secp256k1Affine::to_wires).collect())
 		.collect();
 	let table_refs: Vec<Vec<&[Wire]>> = tables_flat
 		.iter()
@@ -241,39 +241,13 @@ fn strauss_accumulate(
 				sel = b.bxor(sel, b.shl(bit_val, j as u32));
 			}
 
-			let selected = point_from_wires(&multi_wire_multiplex(b, &table_refs[point_idx], sel));
+			let selected =
+				Secp256k1Affine::from_wires(&multi_wire_multiplex(b, &table_refs[point_idx], sel));
 			acc = curve.add_incomplete(b, &acc, &selected);
 		}
 	}
 
 	acc
-}
-
-// Flatten an affine point into its constituent wires: x limbs, then y limbs, then the
-// point-at-infinity flag. Inverse of `point_from_wires`.
-fn point_to_wires(p: &Secp256k1Affine) -> Vec<Wire> {
-	assert_eq!(p.x.limbs.len(), N_LIMBS);
-	assert_eq!(p.y.limbs.len(), N_LIMBS);
-
-	let mut wires = Vec::with_capacity(2 * N_LIMBS + 1);
-	wires.extend_from_slice(&p.x.limbs);
-	wires.extend_from_slice(&p.y.limbs);
-	wires.push(p.is_point_at_infinity);
-	wires
-}
-
-// Reconstruct an affine point from the flat wire layout produced by `point_to_wires`.
-fn point_from_wires(wires: &[Wire]) -> Secp256k1Affine {
-	assert_eq!(wires.len(), 2 * N_LIMBS + 1);
-	Secp256k1Affine {
-		x: BigUint {
-			limbs: wires[..N_LIMBS].to_vec(),
-		},
-		y: BigUint {
-			limbs: wires[N_LIMBS..2 * N_LIMBS].to_vec(),
-		},
-		is_point_at_infinity: wires[2 * N_LIMBS],
-	}
 }
 
 #[cfg(test)]
