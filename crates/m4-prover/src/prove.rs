@@ -30,7 +30,7 @@ use binius_prover::{
 	and_reduction,
 	protocols::{
 		binmul, intmul,
-		shift::{KeyCollection, OperatorClaims, OperatorData, build_key_collection},
+		shift::{KeyCollection, OperatorClaims, OperatorData},
 	},
 	ring_switch::{self, RingSwitchOutput},
 };
@@ -407,7 +407,7 @@ where
 
 		// Build the shift keys once from the shared constraint system.
 		let key_collection =
-			build_key_collection(verifier.constraint_system(), InoutSegment::Hidden);
+			KeyCollection::build(verifier.constraint_system(), InoutSegment::Hidden);
 
 		let iop_prover = IOPProver::new(verifier.iop_verifier().clone(), key_collection);
 

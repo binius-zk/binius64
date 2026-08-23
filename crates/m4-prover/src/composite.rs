@@ -16,7 +16,7 @@ use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOP
 use binius_ip_prover::channel::WordIPProverChannel;
 use binius_m4_verifier::{IOPVerifierM4, VerifierM4};
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded};
-use binius_prover::{Error, protocols::shift::build_key_collection};
+use binius_prover::{Error, protocols::shift::KeyCollection};
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
 use binius_verifier::config::B128;
@@ -51,7 +51,7 @@ impl IOPProverM4 {
 		let main_cs = iop_verifier.main().constraint_system();
 		let main = binius_prover::IOPProver::new(
 			iop_verifier.main().clone(),
-			build_key_collection(main_cs, InoutSegment::Public),
+			KeyCollection::build(main_cs, InoutSegment::Public),
 		);
 
 		let chips = iop_verifier
@@ -59,7 +59,7 @@ impl IOPProverM4 {
 			.iter()
 			.map(|chip| {
 				let key_collection =
-					build_key_collection(chip.constraint_system(), InoutSegment::Hidden);
+					KeyCollection::build(chip.constraint_system(), InoutSegment::Hidden);
 				IOPProver::new(chip.clone(), key_collection)
 			})
 			.collect();

@@ -16,7 +16,7 @@ use binius_math::{
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		OperatorClaims, OperatorData, ShiftProver, build_key_collection,
+		KeyCollection, OperatorClaims, OperatorData, ShiftProver,
 		monster::shift_operator_table,
 		phase_1::{Phase1Output, SparseShiftRows},
 		phase_2::run_sumcheck,
@@ -121,7 +121,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let zero_evals = [F::random(&mut rng)];
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
-		let key_collection = build_key_collection(&cs, InoutSegment::Public);
+		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 		let mut group = c.benchmark_group(format!(
@@ -258,7 +258,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let bitand_evals = [F::random(&mut rng); 3];
 	let intmul_evals = [F::ZERO; 4];
 
-	let key_collection = build_key_collection(&cs, InoutSegment::Public);
+	let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 	// The phase functions take each segment as the circuit declares it: `build_g` zips the
 	// words with their key ranges and `fold_words` pads each fold to `log2_ceil(len)` variables.
 	let public_words = value_vec.public();

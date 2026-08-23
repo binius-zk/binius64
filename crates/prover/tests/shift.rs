@@ -22,7 +22,7 @@ use binius_math::{
 };
 use binius_prover::{
 	fold_word::fold_words,
-	protocols::shift::{OperatorClaims, OperatorData, ShiftProver, build_key_collection},
+	protocols::shift::{KeyCollection, OperatorClaims, OperatorData, ShiftProver},
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -422,7 +422,7 @@ fn test_shift_prove_and_verify() {
 		};
 
 		// Build prover's constraint system
-		let key_collection = build_key_collection(&cs, InoutSegment::Public);
+		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 
 		// Create prover transcript and call the prover
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();

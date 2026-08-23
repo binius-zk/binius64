@@ -239,7 +239,7 @@ mod tests {
 		univariate::lagrange_evals_scalars,
 	};
 	use binius_prover::protocols::shift::{
-		DenseShiftEncoding, OperatorData, build_key_collection, monster::shift_operator_row,
+		DenseShiftEncoding, KeyCollection, OperatorData, monster::shift_operator_row,
 		outer::decode_shift,
 	};
 	use binius_transcript::ProverTranscript;
@@ -334,7 +334,7 @@ mod tests {
 
 		let cs = c.circuit.constraint_system().clone();
 		cs.validate().unwrap();
-		let key_collection = build_key_collection(&cs, InoutSegment::Hidden);
+		let key_collection = KeyCollection::build(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
@@ -485,7 +485,7 @@ mod tests {
 
 		let cs = c.circuit.constraint_system().clone();
 		cs.validate().unwrap();
-		let key_collection = build_key_collection(&cs, InoutSegment::Hidden);
+		let key_collection = KeyCollection::build(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =

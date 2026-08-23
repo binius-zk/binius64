@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_compute::{Allocator, VecLike};
+use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_field::{BinaryField, PackedField, WideMul};
 use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::{
@@ -17,7 +18,8 @@ use bytes::{Buf, BufMut};
 use tracing::instrument;
 
 use super::{
-	dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment, operation::Operation,
+	builder::BuilderKeyLists, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment,
+	operation::Operation,
 };
 use crate::protocols::shift::{
 	claims::PreparedOperatorClaims,
@@ -40,6 +42,29 @@ pub struct KeyCollection {
 }
 
 impl KeyCollection {
+	/// Walks a constraint system once, collecting every shift key into its segment.
+	///
+	/// # Arguments
+	///
+	/// - `cs`: the constraint system to walk.
+	/// - `inout`: the split point between the public and hidden segments.
+	pub fn build(cs: &ConstraintSystem, inout: InoutSegment) -> Self {
+		let mut builder_key_lists = BuilderKeyLists::new(cs.value_vec_len());
+
+		// Update the builder keys lists with respect to each operand of each operation.
+		builder_key_lists.update_with_constraints(Operation::Zero, &cs.zero_constraints, cs);
+		builder_key_lists.update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, cs);
+		builder_key_lists.update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, cs);
+		builder_key_lists.update_with_constraints(Operation::BinMul, &cs.bmul_constraints, cs);
+
+		// Split the builder key lists at the public segment boundary, one half per segment.
+		let hidden_lists = builder_key_lists.split_off(cs.n_public_words(inout));
+		Self {
+			public: KeySegment::build(builder_key_lists.into_inner()),
+			hidden: KeySegment::build(hidden_lists.into_inner()),
+		}
+	}
+
 	/// The base-2 logarithm of the hidden segment length in words, rounded up to a power of two.
 	///
 	/// Matches the corresponding quantity for the constraint system the collection was built from.
@@ -219,5 +244,189 @@ impl DeserializeBytes for KeyCollection {
 		let hidden = KeySegment::deserialize(read_buf)?;
 
 		Ok(KeyCollection { public, hidden })
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_core::{
+		constraint_system::{AndConstraint, Shift, ShiftedValueIndex, ValueIndex},
+		word::Word,
+	};
+	use binius_verifier::protocols::shift::SHIFT_COUNT;
+
+	use super::*;
+
+	/// A shift sequence carrying one shift, which the canonical form places in the inner slot.
+	fn single(shift: Shift) -> [Shift; 2] {
+		[shift, Shift::IDENTITY]
+	}
+
+	/// A constraint system with a handful of distinct shifts, differing between the two segments.
+	///
+	/// The public segment references `Sll(0)` and `Slr(3)`.
+	/// The hidden one references `Sll(0)`, `Sar(7)` and `Rotr(1)`.
+	/// Every outer slot is the identity, so the sequences sort by their inner shift alone.
+	fn shifted_constraint_system() -> ConstraintSystem {
+		// The system has four constants and no inout values, so the public segment is the
+		// constants and the hidden one is the private values.
+		let public = ValueIndex::constant(1);
+		let hidden = ValueIndex::private(1);
+		ConstraintSystem {
+			constants: vec![Word::ZERO; 4],
+			n_inout: 0,
+			n_private: 4,
+			zero_constraints: Vec::new(),
+			and_constraints: vec![AndConstraint([
+				vec![
+					ShiftedValueIndex::plain(public),
+					ShiftedValueIndex::srl(public, 3),
+				],
+				vec![ShiftedValueIndex::sar(hidden, 7)],
+				vec![
+					ShiftedValueIndex::rotr(hidden, 1),
+					ShiftedValueIndex::plain(hidden),
+				],
+			])],
+			imul_constraints: Vec::new(),
+			bmul_constraints: Vec::new(),
+		}
+	}
+
+	#[test]
+	fn dense_shift_encoding_covers_the_sequences_its_segment_uses() {
+		let key_collection =
+			KeyCollection::build(&shifted_constraint_system(), InoutSegment::Public);
+
+		let public_sequences = key_collection
+			.public
+			.dense_shift_enc
+			.iter()
+			.collect::<Vec<_>>();
+		assert_eq!(public_sequences, [single(Shift::IDENTITY), single(Shift::srl(3))]);
+
+		let hidden_sequences = key_collection
+			.hidden
+			.dense_shift_enc
+			.iter()
+			.collect::<Vec<_>>();
+		assert_eq!(
+			hidden_sequences,
+			[
+				single(Shift::IDENTITY),
+				single(Shift::sar(7)),
+				single(Shift::rotr(1)),
+			]
+		);
+
+		// The point of the encoding: a segment names far fewer sequences than the space holds, and
+		// the space is now the square of one slot's alphabet.
+		assert!(key_collection.hidden.dense_shift_enc.len() < SHIFT_COUNT * SHIFT_COUNT);
+	}
+
+	#[test]
+	fn dense_shift_encoding_distinguishes_sequences_sharing_an_inner_shift() {
+		// Two terms sharing an inner shift but differing outside must land on distinct indices.
+		// Keyed on the inner shift alone they would collide and accumulate into one row.
+		let hidden = ValueIndex::private(1);
+		let cs = ConstraintSystem {
+			constants: vec![Word::ZERO; 4],
+			n_inout: 0,
+			n_private: 4,
+			zero_constraints: Vec::new(),
+			and_constraints: vec![AndConstraint([
+				vec![
+					ShiftedValueIndex::new(hidden, [Shift::srl(3), Shift::sll(3)]),
+					ShiftedValueIndex::new(hidden, [Shift::srl(3), Shift::sll(5)]),
+					ShiftedValueIndex::srl(hidden, 3),
+				],
+				Vec::new(),
+				Vec::new(),
+			])],
+			imul_constraints: Vec::new(),
+			bmul_constraints: Vec::new(),
+		};
+
+		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
+		let sequences = key_collection
+			.hidden
+			.dense_shift_enc
+			.iter()
+			.collect::<Vec<_>>();
+		assert_eq!(
+			sequences,
+			[
+				single(Shift::srl(3)),
+				[Shift::srl(3), Shift::sll(3)],
+				[Shift::srl(3), Shift::sll(5)],
+			]
+		);
+
+		// The word's three keys therefore hold three distinct dense indices.
+		let mut indices = key_collection
+			.hidden
+			.word_keys(1)
+			.iter()
+			.map(|key| key.dense_shift_idx)
+			.collect::<Vec<_>>();
+		indices.sort_unstable();
+		assert_eq!(indices, [0, 1, 2]);
+	}
+
+	#[test]
+	fn keys_index_their_segments_dense_encoding() {
+		let key_collection =
+			KeyCollection::build(&shifted_constraint_system(), InoutSegment::Public);
+
+		// The shift sequences a word's keys name, as its own segment's encoding recovers them.
+		let word_sequences = |segment: &KeySegment, word: usize| {
+			let mut sequences = segment
+				.word_keys(word)
+				.iter()
+				.map(|key| {
+					segment
+						.dense_shift_enc
+						.iter()
+						.nth(key.dense_shift_idx as usize)
+						.unwrap()
+				})
+				.collect::<Vec<_>>();
+			sequences.sort();
+			sequences
+		};
+
+		// Value index 1 is the second public word; value index 5 the second hidden one.
+		assert_eq!(
+			word_sequences(&key_collection.public, 1),
+			[single(Shift::IDENTITY), single(Shift::srl(3))]
+		);
+		assert_eq!(
+			word_sequences(&key_collection.hidden, 1),
+			[
+				single(Shift::IDENTITY),
+				single(Shift::sar(7)),
+				single(Shift::rotr(1)),
+			]
+		);
+	}
+
+	#[test]
+	fn dense_shift_encoding_survives_serialization() {
+		let key_collection =
+			KeyCollection::build(&shifted_constraint_system(), InoutSegment::Public);
+
+		let mut buf = Vec::new();
+		key_collection.serialize(&mut buf).unwrap();
+		let deserialized = KeyCollection::deserialize(buf.as_slice()).unwrap();
+
+		for (segment, deserialized) in [
+			(&key_collection.public, &deserialized.public),
+			(&key_collection.hidden, &deserialized.hidden),
+		] {
+			assert_eq!(
+				segment.dense_shift_enc.iter().collect::<Vec<_>>(),
+				deserialized.dense_shift_enc.iter().collect::<Vec<_>>()
+			);
+		}
 	}
 }
