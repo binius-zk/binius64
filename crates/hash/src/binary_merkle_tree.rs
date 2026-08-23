@@ -3,9 +3,10 @@
 
 use std::{fmt, marker::PhantomData, mem::MaybeUninit, slice};
 
-use binius_compute::{Allocator, GlobalAllocator, VecLike};
+use binius_compute::{Allocator, GlobalAllocator};
 use binius_field::Field;
 use binius_utils::{
+	buffer::VecLike,
 	checked_arithmetics::checked_log_2,
 	rayon::{self, prelude::*, slice::ParallelSlice},
 };

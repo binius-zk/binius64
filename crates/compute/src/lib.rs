@@ -6,12 +6,13 @@
 //! instead of returning them to the global allocator, handing out [`PoolVec`] buffers that return
 //! their block to the pool on drop. See the [`buffer_pool`] module for the concrete implementation.
 //!
-//! [`Allocator`] and [`VecLike`] abstract over that machinery: an [`Allocator`] hands out
-//! [`VecLike`] buffers, letting the prover's allocation code be written against `&impl Allocator`
-//! rather than a concrete pool. `&BufferPool` is the primary [`Allocator`], producing [`PoolVec`]
-//! buffers.
+//! [`Allocator`] abstracts over that machinery: an allocator hands out [`VecLike`] buffers, letting
+//! the prover's allocation code be written against `&impl Allocator` rather than a concrete pool.
+//! `&BufferPool` is the primary [`Allocator`], producing [`PoolVec`] buffers.
 
-use std::{mem, mem::MaybeUninit, ops::DerefMut};
+use std::mem::MaybeUninit;
+
+use binius_utils::buffer::{BufferData, VecLike};
 
 pub mod buffer_pool;
 
@@ -45,82 +46,10 @@ pub trait Allocator: Sync + Copy {
 	fn alloc<T: Send>(&self, capacity: usize) -> Self::Vec<T>;
 }
 
-/// Backing store of a `binius_math::FieldBuffer` that can be shrunk in place.
-///
-/// This lives here, rather than in `binius-math`, so that it can be a bound on
-/// [`Allocator::Vec`] — that bound is what lets generic allocation code back a `FieldBuffer` with
-/// an allocator's buffer `A::Vec<P>` without threading a `where A::Vec<P>: BufferData<P>` clause
-/// through every signature. `FieldBuffer::truncate` shrinks its backing store to match a smaller
-/// `log_len`, so it is available only for the mutable backings that support that in place.
-///
-/// This trait is the shrinkable-store capability alone, and [`VecLike`] is that plus growth.
-/// Three backings implement it:
-///
-/// - `Vec<T>` and [`PoolVec`] both shrink and grow, so both are [`VecLike`] as well.
-/// - `&mut [T]` only shrinks, by re-slicing, which is what slice-backed sumcheck halves need.
-pub trait BufferData<T>: DerefMut<Target = [T]> {
-	/// Shrinks the store in place to its first `len` elements.
-	///
-	/// `len` must be at most the current length.
-	fn truncate(&mut self, len: usize);
-}
-
-impl<T> BufferData<T> for Vec<T> {
-	fn truncate(&mut self, len: usize) {
-		Vec::truncate(self, len);
-	}
-}
-
 impl<T> BufferData<T> for PoolVec<'_, T> {
 	fn truncate(&mut self, len: usize) {
 		PoolVec::truncate(self, len);
 	}
-}
-
-impl<T> BufferData<T> for &mut [T] {
-	fn truncate(&mut self, len: usize) {
-		// A `&'a mut [T]` cannot be re-sliced in place through `&mut self`, so move it out and
-		// slice the owned value back in.
-		let full = mem::take(self);
-		*self = &mut full[..len];
-	}
-}
-
-/// A growable, `Vec`-like buffer.
-///
-/// Abstracts the buffer surface the prover uses: [`BufferData`] plus a subset of [`Vec`]'s API.
-/// Implemented by `Vec<T>` and [`PoolVec`], with methods added as callers need them.
-/// It is not meant to mirror all of [`Vec`].
-pub trait VecLike<T>: BufferData<T> + Extend<T> {
-	/// Returns the number of elements the buffer can hold without reallocating.
-	fn capacity(&self) -> usize;
-
-	/// Appends an element to the back of the buffer.
-	fn push(&mut self, value: T);
-
-	/// Clears the buffer, removing all elements while retaining its capacity.
-	fn clear(&mut self);
-
-	/// Resizes the buffer to `new_len`, filling any new slots with `value`.
-	fn resize(&mut self, new_len: usize, value: T)
-	where
-		T: Clone;
-
-	/// Appends all elements of `other` to the back of the buffer.
-	fn extend_from_slice(&mut self, other: &[T])
-	where
-		T: Clone;
-
-	/// Returns the spare capacity of the buffer as a slice of `MaybeUninit<T>`.
-	fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>];
-
-	/// Forces the length of the buffer to `new_len`.
-	///
-	/// # Safety
-	///
-	/// Same contract as [`Vec::set_len`]: `new_len` must be at most [`capacity`](Self::capacity)
-	/// and the elements in `0..new_len` must be initialized.
-	unsafe fn set_len(&mut self, new_len: usize);
 }
 
 impl<T> VecLike<T> for PoolVec<'_, T> {
@@ -167,42 +96,6 @@ impl<'alloc> Allocator for &'alloc BufferPool {
 		// for `'alloc`, not merely for this call's `&self` borrow.
 		let pool: &'alloc BufferPool = self;
 		pool.alloc_vec(capacity)
-	}
-}
-
-impl<T> VecLike<T> for Vec<T> {
-	fn capacity(&self) -> usize {
-		Vec::capacity(self)
-	}
-
-	fn push(&mut self, value: T) {
-		Vec::push(self, value);
-	}
-
-	fn clear(&mut self) {
-		Vec::clear(self);
-	}
-
-	fn resize(&mut self, new_len: usize, value: T)
-	where
-		T: Clone,
-	{
-		Vec::resize(self, new_len, value);
-	}
-
-	fn extend_from_slice(&mut self, other: &[T])
-	where
-		T: Clone,
-	{
-		Vec::extend_from_slice(self, other);
-	}
-
-	fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>] {
-		Vec::spare_capacity_mut(self)
-	}
-
-	unsafe fn set_len(&mut self, new_len: usize) {
-		unsafe { Vec::set_len(self, new_len) }
 	}
 }
 

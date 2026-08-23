@@ -2,9 +2,10 @@
 
 use std::ops::{Deref, DerefMut};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_utils::{
+	buffer::{BufferData, VecLike},
 	random_access_sequence::RandomAccessSequence,
 	rayon::{
 		prelude::*,
@@ -12,7 +13,7 @@ use binius_utils::{
 	},
 };
 
-use crate::{FieldBuffer, FieldVec, field_buffer::BufferData, line::extrapolate_line};
+use crate::{FieldBuffer, FieldVec, line::extrapolate_line};
 
 /// Computes the partial evaluation of a multilinear on its highest variable, inplace.
 ///

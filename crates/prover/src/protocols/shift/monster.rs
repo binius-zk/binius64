@@ -3,10 +3,11 @@
 
 use std::iter;
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_core::{ShiftVariant, constraint_system::Shift, word::Word};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
+use binius_utils::buffer::VecLike;
 use tracing::instrument;
 
 use super::{phase_1::SHIFT_OPERATOR_LOG_LEN, shift_ind::ShiftChallenge};

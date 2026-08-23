@@ -5,6 +5,7 @@
 //! Utility modules used in Binius.
 
 pub mod bitwise;
+pub mod buffer;
 pub mod checked_arithmetics;
 pub mod iter;
 #[cfg(feature = "platform-diagnostics")]

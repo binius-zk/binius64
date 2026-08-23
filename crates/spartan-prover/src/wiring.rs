@@ -1,13 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, FieldSlice, FieldVec};
 use binius_spartan_frontend::constraint_system::{
 	MulConstraint, Operand, WitnessIndex, WitnessSegment,
 };
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{buffer::VecLike, checked_arithmetics::checked_log_2, rayon::prelude::*};
 
 /// Transpose of a wiring sparse matrix for a specific witness segment.
 ///

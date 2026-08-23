@@ -4,12 +4,13 @@
 
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{
-	FieldBuffer, field_buffer::BufferData, multilinear::fold::fold_highest_var_inplace,
-};
-use binius_utils::rayon::{
-	prelude::*,
-	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
+use binius_utils::{
+	buffer::BufferData,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
 };
 
 use super::{common::SumcheckProver, round_evals::RoundEvals, round_state::RoundState};

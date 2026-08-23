@@ -3,11 +3,10 @@
 use std::ops::{Deref, DerefMut};
 
 use binius_field::{Field, PackedField, field::FieldOps};
-use binius_utils::rayon::prelude::*;
+use binius_utils::{buffer::BufferData, rayon::prelude::*};
 
 use crate::{
 	FieldBuffer,
-	field_buffer::BufferData,
 	inner_product::inner_product_buffers,
 	multilinear::{eq::eq_ind_partial_eval, fold::fold_highest_var_inplace},
 };
