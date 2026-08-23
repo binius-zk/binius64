@@ -76,9 +76,9 @@
 //!
 //! | item | AND constraints |
 //! |---|---|
-//! | one compression core, covering two chained blocks | 720 |
-//! | one observed 64-byte block, amortized | 400 |
-//! | one observed word, for the byte reversal | 5 |
+//! | one compression core, covering two chained blocks | 728 |
+//! | one observed 64-byte block, amortized | 396 |
+//! | one observed word, for the byte reversal | 4 |
 //! | one 128-bit challenge, refills excluded | 12 |
 //! | one bit sample, refills excluded | 4 |
 //! | a refill's digest masking, on top of its epoch's compressions | 8 |
@@ -87,10 +87,12 @@
 //!
 //! Consecutive blocks of an epoch chain, so they compress in pairs.
 //! One two-lane core runs both, one per 32-bit lane of a 64-bit datapath.
-//! A one-lane compression costs about 690, so pairing nearly halves the dominant term.
+//!
+//! A lone compression already splits itself across those two lanes, at 368 constraints.
+//! So pairing saves only that split's own overhead, 8 constraints per pair.
 //!
 //! An epoch that observes nothing is a single block.
-//! So 32 bytes of sampler output cost about 700 constraints, however they are cut into values.
+//! So 32 bytes of sampler output cost about 380 constraints, however they are cut into values.
 
 use std::{array, mem};
 
@@ -721,6 +723,9 @@ mod tests {
 		assert_eq!(gadget.n_cores, 1);
 	}
 
+	/// AND constraints one observed 64-byte block adds, hashing and byte reversal together.
+	const OBSERVED_BLOCK_AND: usize = 396;
+
 	/// Builds a circuit that observes some words then samples one challenge, and reports its cost.
 	///
 	/// Varying only the word count isolates the marginal cost of observed data.
@@ -743,23 +748,23 @@ mod tests {
 	}
 
 	#[test]
-	fn consecutive_blocks_share_a_compression_core() {
-		// Invariant: two consecutive blocks of one epoch share a single two-lane core, so their
-		// combined cost stays well under two separate one-lane compressions.
+	fn an_observed_block_costs_about_one_core() {
+		// Invariant: 64 more observed bytes add one compression's worth of constraints, not two.
 		//
 		//     8 words  =  64 bytes  =  1 block
-		//     24 words = 192 bytes  =  3 blocks
-		//     difference            =  2 blocks, which must pair
-		let marginal = cost(24).n_and_constraints - cost(8).n_and_constraints;
+		//     32 words = 256 bytes  =  4 blocks
+		//     difference            =  3 blocks
+		let marginal = (cost(32).n_and_constraints - cost(8).n_and_constraints) / 3;
+		assert_eq!(marginal, OBSERVED_BLOCK_AND, "AND per observed block");
 
-		// A one-block epoch: a single-lane core plus the fixed sampling overhead.
+		// A one-block epoch: one core plus the fixed sampling overhead.
 		let single = cost(0).n_and_constraints;
 
-		// Comparing against 1.5 cores distinguishes paired from unpaired without hardcoding a
-		// constraint count that the compiler is free to improve.
+		// A core already fills both 32-bit lanes with the two halves of its own compression.
+		// So pairing consecutive blocks saves that split's overhead, not half the work.
 		assert!(
-			marginal < single + single / 2,
-			"two observed blocks cost {marginal} AND constraints against {single} for one core"
+			marginal < single + single / 8,
+			"one observed block costs {marginal} AND constraints against {single} for one core"
 		);
 	}
 

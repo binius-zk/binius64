@@ -40,10 +40,13 @@
 //! Counts below are AND and BMUL constraints as the frontend compiles them.
 //! Every one is pinned by this module's tests.
 //!
-//! One single-lane block compression is 726 AND constraints.
-//! A gate costs one constraint whatever its width, so two compressions can share one core.
-//! Running them as the two 32-bit lanes of that core brings each to about 380.
-//! Every place that hashes independent values takes this route:
+//! One block compression is 368 AND constraints.
+//!
+//! A gate costs one constraint whatever its width.
+//! A compression already spends both 32-bit lanes of every gate, on its own two halves.
+//! So a second compression sharing that core saves only what the split costs, a few percent.
+//!
+//! Every place that hashes independent values still takes this route:
 //!
 //! - folding a layer of digests up to the root above it
 //! - hashing the leaves of a whole committed vector
@@ -55,13 +58,13 @@
 //!
 //! | what is measured                        | AND           | BMUL          |
 //! | --------------------------------------- | ------------- | ------------- |
-//! | a one-element leaf digest               | 697           | 0             |
-//! | a sixteen-element leaf digest           | 2279          | 0             |
+//! | a one-element leaf digest               | 376           | 0             |
+//! | a sixteen-element leaf digest           | 2263          | 0             |
 //! | two one-element leaves sharing a core   | 707 per pair  | 0             |
-//! | one inner node on its own core          | 742           | 0             |
+//! | one inner node on its own core          | 384           | 0             |
 //! | one inner node sharing a core           | 380 per node  | 0             |
 //! | one node of a verified layer's fold     | 380 per node  | 0             |
-//! | one climbed level of a lone opening     | 738           | 8             |
+//! | one climbed level of a lone opening     | 384           | 8             |
 //! | one climbed level of a paired opening   | 377 per query | 8 per query   |
 //! | picking the layer entry of an opening   | 0             | 4 * (2^L - 1) |
 //!
@@ -104,7 +107,7 @@
 //!
 //! - On AND alone the cheapest choice is `L = 7`.
 //! - Charging BMUL at the same rate moves it to `L = 6`.
-//! - Both sit a level below where lone climbs would put them, since a level now costs half.
+//! - Lone climbs land in the same place, since a level costs them barely 2% more.
 //! - Neither is a constant, since both track `log2(n_q)`.
 //! - A different query count means re-running the arithmetic above.
 //! - Which column is scarce depends on what the rest of the circuit put in each one.
@@ -464,8 +467,10 @@ pub fn compress_node(builder: &CircuitBuilder, left: Digest, right: Digest) -> D
 
 /// Two inner Merkle nodes at once, as the two 32-bit lanes of a single compression.
 ///
-/// Nodes at the same level are independent, and a gate costs one constraint whatever its width.
-/// So a pair of nodes costs about what one node costs.
+/// Nodes at the same level are independent, so one core can carry both.
+///
+/// A lone node already fills both lanes with its own split halves.
+/// So the pair saves only that split's overhead, about one percent.
 fn compress_node_2x(builder: &CircuitBuilder, nodes: [(Digest, Digest); 2]) -> [Digest; 2] {
 	// One message block per node, each still a single-lane value in its low 32 bits.
 	let block_0 = node_block(builder, nodes[0].0, nodes[0].1);

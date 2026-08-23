@@ -851,13 +851,13 @@ proptest! {
 ///
 /// The module docs derive the layer-depth trade-off from this number, so a change here means the
 /// trade-off needs re-deriving.
-const LEVEL_AND: usize = 738;
+const LEVEL_AND: usize = 384;
 
 /// AND constraints one climbed level costs each query, when two openings share cores.
 const PAIRED_LEVEL_AND: usize = 377;
 
 /// AND constraints one inner node costs on its own core.
-const NODE_AND: usize = 742;
+const NODE_AND: usize = 384;
 
 /// AND constraints one inner node costs when it shares a core with a second node.
 const PAIRED_NODE_AND: usize = 380;
@@ -989,12 +989,12 @@ fn verify_opening_2x_follows_the_documented_cost_model() {
 }
 
 #[test]
-fn two_lane_packing_nearly_halves_a_node() {
-	// Invariant: two inner nodes sharing one compression core cost about what one node costs on
-	// its own, since a gate costs one constraint whatever its operand width.
+fn a_shared_core_barely_beats_two_lone_nodes() {
+	// Invariant: a lone node already spends both 32-bit lanes on its own split halves.
+	// So a second node sharing the core saves the split's overhead, not half the work.
 	//
-	//     one node  on its own core :  the low 32-bit lane works, the high one idles
-	//     two nodes on a shared core:  both lanes work, one node each
+	//     one node  on its own core :  both lanes work, one half of one node each
+	//     two nodes on a shared core:  both lanes work, one whole node each
 	let (single, _) = cost(|builder| {
 		// Two children in, one node digest out, pinned to a public claim.
 		let inputs = digest_wires(builder, 2);
@@ -1018,11 +1018,11 @@ fn two_lane_packing_nearly_halves_a_node() {
 }
 
 #[test]
-fn two_lane_packing_nearly_halves_a_single_block_leaf() {
-	// Invariant: two narrow leaves hashed in separate lanes cost about what one costs alone.
+fn a_shared_core_barely_beats_two_lone_leaves() {
+	// Invariant: two narrow leaves in separate lanes cost a little under two lone leaves.
 	//
 	// Fixture state: one element is 16 bytes, so a padded one-element leaf is a single block.
-	// Equal block counts let the two lanes run end to end with no leftover single-lane core.
+	// Equal block counts let the two lanes run end to end with no leftover core.
 	let leaf_cost = |n_leaves: usize| {
 		cost(|builder| {
 			// One element per leaf, so the leaf count is also the element count.
@@ -1046,8 +1046,8 @@ fn two_lane_packing_nearly_halves_a_single_block_leaf() {
 	let (paired, _) = leaf_cost(2);
 	println!("leaf_digest: AND={single}, leaf_digest_2x: AND={paired}");
 
-	// The one-eighth margin covers merging the two lanes and splitting them apart again.
-	assert!(paired < single + single / 8, "two paired leaves must cost about one lone leaf");
+	// A pair must beat two lone leaves, and by more than rounding.
+	assert!(paired < 2 * single - single / 16, "a paired leaf must beat a lone one");
 }
 
 #[test]

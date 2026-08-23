@@ -62,29 +62,207 @@ impl State {
 	}
 }
 
+/// Rounds [`sha256_compress`] runs in its high lane, the first half of the 64.
+///
+/// The low lane runs the other half, so both lanes carry 32 rounds and neither idles.
+const HIGH_LANE_ROUNDS: usize = 32;
+
+/// Gap in schedule index between the two lanes of [`sha256_compress`]'s message schedule.
+///
+/// The 48 derived words split evenly in two, so 24 packed passes derive all of them:
+///
+/// ```text
+///     low  lane derives w[16..40]
+///     high lane derives w[40..64]
+/// ```
+const SCHEDULE_LANE_GAP: usize = 24;
+
+/// Packed schedule words a compression builds, pairing `w[0..40]` with `w[24..64]`.
+const PACKED_SCHEDULE_WORDS: usize = 64 - SCHEDULE_LANE_GAP;
+
+/// Distance from a round index to the packed schedule word holding that round's low-lane word.
+///
+/// The rounds want `w[j]` beside `w[j + 32]`, while the schedule pairs `w[i]` with `w[i + 24]`.
+/// So the second of the pair sits 32 - 24 = 8 packed words further along.
+const ROUND_WORD_LAG: usize = HIGH_LANE_ROUNDS - SCHEDULE_LANE_GAP;
+
 /// SHA-256 compression function.
 ///
-/// Runs the message schedule and 64 rounds over `state_in` for a single 512-bit block, then adds
-/// the round output back into `state_in`, returning the updated state.
+/// Runs the message schedule and 64 rounds over `state_in` for one 512-bit block.
+/// The round output is then added back into `state_in`, giving the updated state.
+///
+/// A gate costs one constraint whatever its operand width.
+/// So one compression is evaluated as the two 32-bit lanes of a single 64-bit core.
+///
+/// Each phase is cut in half, and the halves run side by side instead of one after the other:
+///
+/// ```text
+///     schedule, high lane [32:64]:  w[24] .. w[39]  ->  w[40] .. w[63]
+///     schedule, low  lane [0:32] :  w[0]  .. w[15]  ->  w[16] .. w[39]
+///
+///     rounds,   high lane [32:64]:  round 0  -> ... -> round 31
+///     rounds,   low  lane [0:32] :  round 32 -> ... -> round 63
+/// ```
+///
+/// Each half now needs what the other half produces, which no ordering of gates can supply.
+///
+/// - The schedule's high lane opens at `w[24]`, which the low lane only reaches at the end.
+/// - The rounds' low lane opens at the state after round 31, which the high lane ends on.
+///
+/// A hint breaks both dependencies at once by computing those two seeds off-circuit.
+///
+/// Every hinted word is then constrained against what the circuit itself computed.
+/// So the hint can be wrong, but a wrong one has no satisfying witness.
+///
+/// 24 packed passes and 32 packed rounds replace 48 and 64 single-lane ones.
+/// That halves the AND constraints a compression spends.
 ///
 /// # Arguments
 ///
-/// - `state_in`: the 8-word input state (each word in the low 32 bits of a wire).
-/// - `m`: 16 message words for this block, each a 32-bit big-endian word in the low 32 bits of a
-///   wire.
+/// - `state_in`: the 8-word input state, value in the low 32 bits of each wire.
+/// - `m`: 16 big-endian message words for this block, value in the low 32 bits of each wire.
 ///
-/// It is a PRECONDITION that the high halves of the `m` wires be empty, i.e. `m[i] & 0xffffffff ==
-/// m[i]` must hold for each wire. It is the caller's responsibility to ensure this; otherwise the
-/// gadget's behavior is undefined / insecure.
+/// # Preconditions
+///
+/// - Every input wire holds a valid 32-bit value in its low 32 bits.
+/// - High halves need not be empty.
+///   - A message word's high half is masked off.
+///   - A state word's is discarded by the shift that lifts it into the high lane.
 ///
 /// # Returns
 ///
-/// The updated 8-word state.
+/// The updated 8-word state, value in the low 32 bits of each wire and the high 32 bits zero.
 pub fn sha256_compress(builder: &CircuitBuilder, state_in: State, m: [Wire; 16]) -> State {
-	// Round constants live in the low 32 bits; the high 32 bits stay zero, matching the
-	// single-lane convention that every wire's high half is empty.
-	let k: [Wire; 64] = std::array::from_fn(|t| builder.add_constant(Word(K[t] as u64)));
-	compress_inner(builder, state_in, m, &k)
+	// One hint seeds both splits.
+	//
+	//     seeds  0..16 :  the schedule's two opening lanes
+	//     seeds 16..24 :  the rounds' two opening states
+	//
+	// Every one is re-derived and constrained below, so the hint is untrusted.
+	let mut hint_inputs = Vec::with_capacity(24);
+	hint_inputs.extend_from_slice(&state_in.0);
+	hint_inputs.extend_from_slice(&m);
+	let seeds = builder.call_hint(Sha256SplitHint, &[], &hint_inputs);
+
+	// Packed word `t` carries w_t in the low lane and w_{t+24} in the high lane.
+	//
+	//     the recurrence reads:  t-16, t-15, t-7, t-2
+	//     shift all four by 24:  the result shifts by 24 too
+	//
+	// So one pass advances both lanes at once.
+	let mut w: Vec<Wire> = seeds[..16].to_vec();
+	for t in 16..PACKED_SCHEDULE_WORDS {
+		let s0 = small_sigma_0(builder, w[t - 15]);
+		let s1 = small_sigma_1(builder, w[t - 2]);
+		let p = builder.iadd_32(w[t - 16], s0);
+		let q = builder.iadd_32(p, w[t - 7]);
+		w.push(builder.iadd_32(q, s1));
+	}
+
+	// Bind the 16 hinted schedule seeds, one 64-bit equality each.
+	// A single equality pins both lanes, since the two halves never overlap.
+	//
+	//     hinted word:  [ high lane = w[i + 24] | low lane = w[i] ]
+	//                          must equal              must equal
+	//                     w[i + 24] << 32       ^      m[i] masked
+	//
+	// The low lane is pinned to the caller's own message word.
+	//
+	// The high lane is pinned to the word the low lane provably derived from it.
+	// Low lanes depend on the message alone, so that derivation is not circular.
+	for (i, seed) in seeds[..16].iter().enumerate() {
+		let low = clear_high_bits(builder, m[i], 32);
+		let high = builder.shl(w[i + SCHEDULE_LANE_GAP], 32);
+		builder.assert_eq("sha256_compress.schedule_seed", *seed, builder.bxor(low, high));
+	}
+
+	// One constant per packed round: the high lane's K[j] over the low lane's K[32 + j].
+	let k: [Wire; HIGH_LANE_ROUNDS] = array::from_fn(|j| {
+		let packed = K[HIGH_LANE_ROUNDS + j] as u64 | ((K[j] as u64) << 32);
+		builder.add_constant(Word(packed))
+	});
+
+	let merged: [Wire; 8] = array::from_fn(|i| seeds[16 + i]);
+	let mut state = State(merged);
+	for j in 0..HIGH_LANE_ROUNDS {
+		// Repack the round's schedule word from the schedule's pairing into the rounds':
+		//
+		//     high lane <- w[j]      = the low  lane of packed word j
+		//     low  lane <- w[j + 32] = the high lane of packed word j + 8
+		//
+		// Each side is one shift of a committed word, so neither needs masking.
+		let w_t = builder.bxor(builder.shl(w[j], 32), builder.shr(w[j + ROUND_WORD_LAG], 32));
+		state = round(builder, k[j], w_t, state);
+	}
+
+	// The high lane has now produced the state the low lane started from.
+	// Bind the hint to it, one 64-bit equality per state word.
+	//
+	//     hinted word:  [ high lane = input state | low lane = state after round 31 ]
+	//                            must equal                    must equal
+	//                     input state << 32          ^        high lane >> 32
+	//
+	// The high lane is pinned to the caller's own state.
+	//
+	// The low lane is pinned to the state the high lane provably reached from it.
+	// Together those leave the hint no freedom.
+	for (hinted, (input, split)) in iter::zip(merged, iter::zip(state_in.0, state.0)) {
+		let expected = builder.bxor(builder.shl(input, 32), builder.shr(split, 32));
+		builder.assert_eq("sha256_compress.round_state", hinted, expected);
+	}
+
+	// Feed-forward, then drop the high lane.
+	//
+	// It carries the round-31 state the split already consumed.
+	// A caller reads one compression's output, in the low 32 bits.
+	State(array::from_fn(|i| {
+		let sum = builder.iadd_32(state_in.0[i], state.0[i]);
+		clear_high_bits(builder, sum, 32)
+	}))
+}
+
+/// Seeds both of [`sha256_compress`]'s lane splits in one call.
+///
+/// Runs the message schedule and the first half of the rounds off-circuit.
+/// Each result is packed so it can be fed straight in as a two-lane opening value.
+///
+/// Every output is re-derived in-circuit and constrained, so the hint only needs to be honest.
+///
+/// Input layout, 24 words with the value in the low 32 bits of each:
+///
+/// - words `0..8`: the input state.
+/// - words `8..24`: the message block.
+///
+/// Output layout, 24 packed words:
+///
+/// - words `0..16`: `w[i]` low, `w[i + 24]` high.
+/// - words `16..24`: the state after round 31 low, the input state high.
+struct Sha256SplitHint;
+
+impl Hint for Sha256SplitHint {
+	const NAME: &'static str = "binius.sha256_compress_split";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(24, 24)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		// The gadget masks every input down to 32 bits, so the hint reads the same low halves.
+		let state_in: [u32; 8] = array::from_fn(|i| inputs[i].as_u64() as u32);
+		let m: [u32; 16] = array::from_fn(|i| inputs[8 + i].as_u64() as u32);
+
+		// Schedule seed `i` pairs the word the caller supplied with the one 24 places later.
+		let w = ref_schedule(m);
+		for (i, slot) in outputs[..16].iter_mut().enumerate() {
+			*slot = Word(w[i] as u64 | ((w[i + SCHEDULE_LANE_GAP] as u64) << 32));
+		}
+
+		// Round seed `i` pairs the two lanes' starting states: round 32's below, round 0's above.
+		let split = ref_rounds(state_in, &w, HIGH_LANE_ROUNDS);
+		for (i, slot) in outputs[16..].iter_mut().enumerate() {
+			*slot = Word(split[i] as u64 | ((state_in[i] as u64) << 32));
+		}
+	}
 }
 
 /// SHA-256 compression function running two independent compressions in parallel.
@@ -307,6 +485,13 @@ impl Hint for Sha256CompressHint {
 ///
 /// The updated 8-word state.
 pub fn ref_compress(state_in: [u32; 8], m: [u32; 16]) -> [u32; 8] {
+	let w = ref_schedule(m);
+	let out = ref_rounds(state_in, &w, 64);
+	array::from_fn(|i| state_in[i].wrapping_add(out[i]))
+}
+
+/// Expands a block's 16 message words into the full 64-word SHA-256 message schedule.
+fn ref_schedule(m: [u32; 16]) -> [u32; 64] {
 	let mut w = [0u32; 64];
 	w[..16].copy_from_slice(&m);
 	for t in 16..64 {
@@ -317,9 +502,17 @@ pub fn ref_compress(state_in: [u32; 8], m: [u32; 16]) -> [u32; 8] {
 			.wrapping_add(w[t - 7])
 			.wrapping_add(s1);
 	}
+	w
+}
 
+/// Runs the first `rounds` SHA-256 rounds over `state_in`, without the feed-forward add.
+///
+/// # Returns
+///
+/// The working variables a–h once round `rounds - 1` has run.
+fn ref_rounds(state_in: [u32; 8], w: &[u32; 64], rounds: usize) -> [u32; 8] {
 	let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state_in;
-	for t in 0..64 {
+	for t in 0..rounds {
 		let big_s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
 		let ch = (e & f) ^ ((!e) & g);
 		let t1 = h
@@ -340,24 +533,14 @@ pub fn ref_compress(state_in: [u32; 8], m: [u32; 16]) -> [u32; 8] {
 		a = t1.wrapping_add(t2);
 	}
 
-	[
-		state_in[0].wrapping_add(a),
-		state_in[1].wrapping_add(b),
-		state_in[2].wrapping_add(c),
-		state_in[3].wrapping_add(d),
-		state_in[4].wrapping_add(e),
-		state_in[5].wrapping_add(f),
-		state_in[6].wrapping_add(g),
-		state_in[7].wrapping_add(h),
-	]
+	[a, b, c, d, e, f, g, h]
 }
 
-/// Shared core of [`sha256_compress`] and [`sha256_compress_2x`]: runs the message schedule and 64
-/// rounds over `state_in`, then adds the round output back into `state_in`.
+/// Core of [`sha256_compress_2x`]: runs the message schedule and 64 rounds over `state_in`, then
+/// adds the round output back into `state_in`.
 ///
-/// `k` supplies the 64 round constants as wires, letting the caller decide whether they occupy the
-/// low 32 bits only (single-lane) or both halves (two-lane). Every other operation is a
-/// parallel-halves or lane-agnostic gate, so the same code serves one or two compressions.
+/// Every operation is a parallel-halves or lane-agnostic gate, and `k` replicates each round
+/// constant into both halves, so one pass advances two independent compressions.
 fn compress_inner(
 	builder: &CircuitBuilder,
 	state_in: State,
@@ -623,6 +806,90 @@ mod tests {
 		cs.verify(&w.into_value_vec()).unwrap();
 	}
 
+	/// Runs a single compression over one block and returns its raw 64-bit output words.
+	///
+	/// `dirt` is OR'd into the high 32 bits of every input wire.
+	/// Nothing range-constrains a wire holding a 32-bit value, so a witness may fill its high half.
+	fn run_compress_with_dirt(state_in: [u32; 8], m: [u32; 16], dirt: u32) -> [u64; 8] {
+		let dirt = (dirt as u64) << 32;
+
+		let circuit = CircuitBuilder::new();
+
+		// Witness wires, so the dirt written below is what a prover could really supply.
+		let state_wires: [Wire; 8] = std::array::from_fn(|_| circuit.add_witness());
+		let m_wires: [Wire; 16] = std::array::from_fn(|_| circuit.add_witness());
+		let out = sha256_compress(&circuit, State::new(state_wires), m_wires);
+
+		// Pin the output, or dead-code elimination prunes the compression away.
+		for wire in out.0 {
+			circuit.mark_inout(wire);
+		}
+
+		let circuit = circuit.build();
+		let cs = circuit.constraint_system();
+		let mut w = circuit.new_witness_filler();
+		for i in 0..8 {
+			w[state_wires[i]] = Word(state_in[i] as u64 | dirt);
+		}
+		for i in 0..16 {
+			w[m_wires[i]] = Word(m[i] as u64 | dirt);
+		}
+
+		// Population runs the hint and fills every wire from it.
+		circuit.populate_wire_witness(&mut w).unwrap();
+		let words: [u64; 8] = std::array::from_fn(|i| w[out.0[i]].as_u64());
+
+		// Checking afterwards is what proves the hint was bound, not merely used.
+		cs.verify(&w.into_value_vec()).unwrap();
+		words
+	}
+
+	/// A state that shares no structure with the IV, so a lane mix-up cannot pass unnoticed.
+	const NONTRIVIAL_STATE: [u32; 8] = [
+		0xdead_beef,
+		0xcafe_babe,
+		0x1234_5678,
+		0x9abc_def0,
+		0x0bad_f00d,
+		0xfeed_face,
+		0x0123_4567,
+		0x89ab_cdef,
+	];
+
+	#[test]
+	fn compress_ignores_dirty_input_high_halves() {
+		// Invariant: the result is the compression of the low halves alone.
+		//
+		// Both phases run in both halves of every word.
+		// So the half a 32-bit input leaves unused is where half of the mixing happens.
+		//
+		//     dirty high half  ->  must not steer the result
+		//     output           ->  must come back with an empty high half
+		let m: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0xdead_beef));
+		let expected = ref_compress(NONTRIVIAL_STATE, m);
+
+		for dirt in [0, 1, 0x8000_0000, 0xffff_ffff] {
+			let actual = run_compress_with_dirt(NONTRIVIAL_STATE, m, dirt);
+			assert_eq!(actual, expected.map(u64::from), "dirt {dirt:#x} changed the result");
+		}
+	}
+
+	proptest! {
+		// The two lanes carry different halves of one compression, joined by a hint.
+		// Random states and blocks cover the carry and rotate patterns the split must survive.
+		#[test]
+		fn compress_matches_reference(
+			state_words in prop::collection::vec(any::<u32>(), 8),
+			block_words in prop::collection::vec(any::<u32>(), 16),
+		) {
+			let state_in: [u32; 8] = std::array::from_fn(|i| state_words[i]);
+			let m: [u32; 16] = std::array::from_fn(|i| block_words[i]);
+
+			let actual = run_compress_with_dirt(state_in, m, 0);
+			prop_assert_eq!(actual, ref_compress(state_in, m).map(u64::from));
+		}
+	}
+
 	fn pack2x(lo: u32, hi: u32) -> u64 {
 		(lo as u64) | ((hi as u64) << 32)
 	}
@@ -688,16 +955,7 @@ mod tests {
 
 		// Lane 1 runs a completely different (state, message) pair to confirm the lanes are
 		// independent — no bits cross the 32-bit boundary.
-		let state1: [u32; 8] = [
-			0xdead_beef,
-			0xcafe_babe,
-			0x1234_5678,
-			0x9abc_def0,
-			0x0bad_f00d,
-			0xfeed_face,
-			0x0123_4567,
-			0x89ab_cdef,
-		];
+		let state1 = NONTRIVIAL_STATE;
 		let m1: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0x0101_0101));
 
 		run_2x(IV, abc_block(), state1, m1);
@@ -832,16 +1090,7 @@ mod tests {
 		//     once against the first compression's in-circuit output.
 		//
 		// Fixture: a non-IV starting state and two unrelated blocks exercise the full lane packing.
-		let state_in: [u32; 8] = [
-			0xdead_beef,
-			0xcafe_babe,
-			0x1234_5678,
-			0x9abc_def0,
-			0x0bad_f00d,
-			0xfeed_face,
-			0x0123_4567,
-			0x89ab_cdef,
-		];
+		let state_in = NONTRIVIAL_STATE;
 		let block1: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0xdead_beef));
 		let block2: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0x0101_0101));
 		run_2x_seq(state_in, block1, block2);
