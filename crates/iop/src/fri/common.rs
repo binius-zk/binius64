@@ -313,6 +313,71 @@ where
 	pub const fn log_msg_len(&self) -> usize {
 		self.max_log_msg_len + self.log_n_oracles
 	}
+
+	/// Exact byte-size of a FRI proof, including the initial commitment.
+	///
+	/// The size follows from the parameters alone, so the prover need not run.
+	///
+	/// Counted on the message channel:
+	/// - the initial codeword commitment;
+	/// - one commitment per fold round.
+	///
+	/// Counted on the decommitment channel:
+	/// - the terminal codeword, sent in the clear;
+	/// - the Merkle layer digests and the per-query branch digests;
+	/// - the field elements of every opened coset.
+	pub fn proof_size<VCS: MerkleTreeScheme<F>>(&self, vcs: &VCS) -> usize {
+		let digest_size = std::mem::size_of::<VCS::Digest>();
+
+		// Serialized byte-size of a single field element.
+		let value_size = {
+			let mut buf = Vec::new();
+			F::default()
+				.serialize(&mut buf)
+				.expect("default element can be serialized to a resizable buffer");
+			buf.len()
+		};
+
+		let n_test_queries = self.n_test_queries();
+
+		// One digest per input oracle, one per fold round, one for the terminal codeword.
+		let commitment_msg_size = (self.input_oracles().len() + self.n_oracles()) * digest_size;
+
+		// Terminal codeword sent in the clear: 2^(log_terminal_dim + log_inv_rate) field elements.
+		let log_terminal_dim = self.n_final_challenges();
+		let log_inv_rate = self.rs_code().log_inv_rate();
+		let terminate_codeword_size = (1 << (log_terminal_dim + log_inv_rate)) * value_size;
+
+		let mut merkle_sizes = 0;
+		let mut coset_values_size = 0;
+
+		// Per query, an oracle sends one coset of `2^arity` elements and a Merkle branch.
+		// The layer depth must be chosen for the tree it indexes.
+		let mut open = |log_n_cosets: usize, arity: usize| {
+			let layer_depth = vcs.optimal_verify_layer(n_test_queries, log_n_cosets);
+			merkle_sizes += vcs.proof_size(1 << log_n_cosets, n_test_queries, layer_depth);
+			coset_values_size += n_test_queries * (1 << arity) * value_size;
+		};
+
+		// Input oracles are opened one after another, each against its own commitment.
+		// So a batch of N sends N multi-proofs, not one.
+		//
+		// An oracle's codeword sits `log_lift` below the reduced dimension.
+		let log_dim = self.rs_code().log_dim();
+		for spec in self.input_oracles() {
+			open(log_dim - spec.log_lift + log_inv_rate, spec.log_batch_size());
+		}
+
+		// Then one per fold round.
+		// The outer oracle-combine challenges cost nothing: they recombine values already opened.
+		let mut log_n_cosets = self.index_bits();
+		for &arity in self.fold_arities() {
+			log_n_cosets -= arity;
+			open(log_n_cosets, arity);
+		}
+
+		commitment_msg_size + terminate_codeword_size + merkle_sizes + coset_values_size
+	}
 }
 
 struct ChooseBatchSizeAndAritiesOutput {
@@ -797,7 +862,7 @@ mod tests {
 	use binius_hash::StdHashSuite;
 
 	use super::*;
-	use crate::{fri::proof_size, merkle_tree::BinaryMerkleTreeScheme};
+	use crate::merkle_tree::BinaryMerkleTreeScheme;
 
 	type TestMerkleScheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 
@@ -857,7 +922,7 @@ mod tests {
 					let digests = (oracles.len() + 1 + params.fold_arities().len()) * digest_size;
 					assert_eq!(
 						estimate + digests,
-						proof_size(&params, &merkle_scheme),
+						params.proof_size(&merkle_scheme),
 						"oracles={oracles:?} log_inv_rate={log_inv_rate} \
 						 n_test_queries={n_test_queries} arities={:?}",
 						params.fold_arities(),
