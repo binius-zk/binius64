@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
 	channel::IPProverChannel,
-	fracaddcheck::{self, FracAddCheckProver, unpad_leaf_claim},
+	fracaddcheck::{self, FracAddCheckProver, fraction::Fraction, unpad_leaf_claim},
 };
 
 /// One looker's column and claim: `(I^* T)(eval_point) = eval_claim` against the table it reads.
@@ -201,9 +201,12 @@ where
 		.map(|(&(looker, c), numerator)| {
 			let den = witness::looker_denominator::<A, F, P>(alloc, c, looker.index);
 			// Lookers may differ in length, so each circuit is built at its own depth.
-			let (prover, root) =
-				FracAddCheckProver::new(looker.eval_point.len(), alloc, (numerator, den));
-			(prover, (root.0.get(0), root.1.get(0)))
+			let (prover, root) = FracAddCheckProver::new(
+				looker.eval_point.len(),
+				alloc,
+				Fraction::new(numerator, den),
+			);
+			(prover, root.as_ref().map(|buffer| buffer.get(0)))
 		})
 		.unzip();
 	// A table's fraction enters the sum of every instance negated, which is what makes that sum's
@@ -216,10 +219,10 @@ where
 		let (table_prover, table_root) = FracAddCheckProver::new(
 			table.log_len(),
 			alloc,
-			(FieldBuffer::clone_from_slice(alloc, pushforward.to_ref()), table_den),
+			Fraction::new(FieldBuffer::clone_from_slice(alloc, pushforward.to_ref()), table_den),
 		);
 		provers.push(table_prover);
-		roots.push((table_root.0.get(0), table_root.1.get(0)));
+		roots.push(table_root.as_ref().map(|buffer| buffer.get(0)));
 	}
 
 	// Top circuit: interpolate every instance's root fraction into a multilinear pair over the k
@@ -229,23 +232,25 @@ where
 	//     sum_j num_j / den_j  -  sum_t num_t / den_t
 	//
 	// which is zero exactly when the logUp identities hold.
-	let (top_prover, (top_root_num, top_root_den)) = FracAddCheckProver::new(k, alloc, {
-		let (mut root_nums, mut root_dens): (Vec<_>, Vec<_>) = roots.iter().copied().unzip();
-		root_nums.resize(1 << k, F::ZERO);
-		root_dens.resize(1 << k, F::ONE);
-		(
+	let (top_prover, top_root) = FracAddCheckProver::new(k, alloc, {
+		let (mut root_nums, mut root_dens): (Vec<_>, Vec<_>) =
+			roots.iter().map(|&root| (root.num, root.den)).unzip();
+		// The slots past the last instance hold the zero fraction, which the sum ignores.
+		root_nums.resize(1 << k, Fraction::ZERO.num);
+		root_dens.resize(1 << k, Fraction::ZERO.den);
+		Fraction::new(
 			FieldBuffer::<P, _>::from_values_in(alloc, &root_nums),
 			FieldBuffer::<P, _>::from_values_in(alloc, &root_dens),
 		)
 	});
-	let root_den = top_root_den.get(0);
+	let root_den = top_root.den.get(0);
 	drop(circuits_guard);
 
 	// A witness satisfying the lookup identity zeroes the root numerator, so it is not sent: the
 	// verifier supplies the zero itself, and a prover whose lookups do not match cannot make the
 	// rest of the GKR agree with it.
 	debug_assert_eq!(
-		top_root_num.get(0),
+		top_root.num.get(0),
 		F::ZERO,
 		"the lookup identities must hold: each table's looker fractions must sum to its own"
 	);
