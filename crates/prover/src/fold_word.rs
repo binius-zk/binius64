@@ -12,17 +12,14 @@ use binius_field::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformation, OutputWrappingTransformationFactory, Transformation,
 	},
+	transpose::transpose_square_blocks_array,
 	util::{expand_subset_sums_array, expand_subset_xors},
 };
 use binius_math::{
 	FieldBuffer, FieldSlice,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
 };
-use binius_utils::{
-	buffer::VecLike,
-	checked_arithmetics::{checked_log_2, log2_ceil_usize},
-	rayon::prelude::*,
-};
+use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::config::B1;
 
 /// Base-2 logarithm of the number of words folded together within a single chunk.
@@ -703,7 +700,7 @@ pub(crate) fn fold_row_group<F, PB, const N_TABLES: usize>(
 
 	// The transpose consumes its input, so work on a copy and leave the caller's rows intact.
 	let mut group = *rows;
-	square_transpose_const_size::<PB, LOG_BITS_PER_BYTE, BITS_PER_BYTE>(&mut group);
+	transpose_square_blocks_array::<PB, LOG_BITS_PER_BYTE, BITS_PER_BYTE>(&mut group);
 
 	for (j, row) in group.iter().enumerate() {
 		// Byte `i` holds this group's bits at column `8i + j`, so it indexes that column's sum.
@@ -713,60 +710,10 @@ pub(crate) fn fold_row_group<F, PB, const N_TABLES: usize>(
 	}
 }
 
-/// Transposes square blocks of scalars across an array of packed elements, in place.
-///
-/// # Overview
-///
-/// View the array as a matrix of elements by scalar positions.
-/// This exchanges the element axis with the low `LOG_N` bits of the scalar position.
-///
-/// Const generic sizes let the compiler unroll the butterfly and keep the whole array in registers.
-///
-/// # Algorithm
-///
-/// A butterfly network over `LOG_N` rounds, as in Hacker's Delight, Section 7-3.
-/// Round `i` interleaves element pairs `2^(log_w + i)` apart at block granularity `2^i`.
-///
-/// # Preconditions
-///
-/// All three are checked at compile time, so a violating instantiation fails to build:
-///
-/// * The array length must be a power of two.
-/// * `LOG_N` must not exceed the base-2 log of the array length.
-/// * `LOG_N` must not exceed the base-2 log of the packed width.
-pub(crate) fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usize>(
-	elems: &mut [P; S],
-) {
-	const {
-		assert!(LOG_N <= P::LOG_WIDTH, "LOG_N must not exceed the packed width");
-		assert!(LOG_N <= checked_log_2(S), "LOG_N must not exceed the array length");
-	}
-
-	let log_size = checked_log_2(S);
-
-	// Elements per block that stays contiguous through the butterfly.
-	let log_w = log_size - LOG_N;
-
-	for i in 0..LOG_N {
-		for j in 0..1 << (LOG_N - i - 1) {
-			for k in 0..1 << (log_w + i) {
-				// Partner elements for this round, one stride apart.
-				let idx0 = (j << (log_w + i + 1)) | k;
-				let idx1 = idx0 | (1 << (log_w + i));
-
-				// Interleaving at block granularity 2^i swaps the axes one bit at a time.
-				let (v0, v1) = elems[idx0].interleave(elems[idx1], i);
-				elems[idx0] = v0;
-				elems[idx1] = v1;
-			}
-		}
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Field, PackedBinaryField128x1b, arch::OptimalPackedB128};
+	use binius_field::{Field, arch::OptimalPackedB128};
 	use binius_math::test_utils::{random_field_buffer, random_scalars};
 	use binius_utils::checked_arithmetics::checked_log_2;
 	use binius_verifier::config::B128;
@@ -961,46 +908,6 @@ mod tests {
 			}
 		}
 		out
-	}
-
-	// Both row folds read a transposed group of eight rows the same way: byte `i` of element `j`
-	// carries those rows' bits at column `8i + j`. That reading is what makes one byte a whole
-	// lookup index, so pin the permutation directly.
-	//
-	//     input :  element r, bit 8i + j  =  row r, column 8i + j
-	//     output:  element j, bit 8i + t  =  row t, column 8i + j
-	fn check_group_transpose<PB>(seed: u64)
-	where
-		PB: PackedField<Scalar = B1> + WithUnderlier,
-	{
-		let mut rng = StdRng::seed_from_u64(seed);
-
-		// Random bits over many trials cover every one of the 8 * WIDTH positions.
-		for _ in 0..100 {
-			let input: [PB; BITS_PER_BYTE] = array::from_fn(|_| PB::random(&mut rng));
-			let mut output = input;
-			square_transpose_const_size::<PB, LOG_BITS_PER_BYTE, BITS_PER_BYTE>(&mut output);
-
-			// Bytes of a row, so the outer index walks the high bits of the column index.
-			for i in 0..PB::WIDTH / BITS_PER_BYTE {
-				// Element of the transposed group, which is the low three bits of the column.
-				for j in 0..BITS_PER_BYTE {
-					// Row within the group, which becomes the bit position inside the byte.
-					for t in 0..BITS_PER_BYTE {
-						let got = output[j].get(i * BITS_PER_BYTE + t);
-						let want = input[t].get(i * BITS_PER_BYTE + j);
-						assert_eq!(got, want, "i={i}, j={j}, t={t}");
-					}
-				}
-			}
-		}
-	}
-
-	#[test]
-	fn transpose_exchanges_row_axis_with_low_column_bits() {
-		// The two row widths the folds run at: 64-bit words and 128-bit field elements.
-		check_group_transpose::<PackedBinaryField64x1b>(0);
-		check_group_transpose::<PackedBinaryField128x1b>(1);
 	}
 
 	#[test]
