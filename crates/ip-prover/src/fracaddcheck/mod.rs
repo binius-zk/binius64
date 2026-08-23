@@ -175,35 +175,30 @@ where
 		self.layers.len()
 	}
 
-	/// Pops the last layer and returns a sumcheck prover for it.
+	/// Pops the widest remaining layer as the MLE-check prover that reduces it.
 	///
-	/// Returns `(remaining, layer_prover)` where `remaining` is `Some(self)` if there are more
-	/// layers and `None` otherwise.
-	pub fn layer_prover(
-		mut self,
-		claim: FracAddEvalClaim<F>,
-	) -> (Option<Self>, LayerProver<'a, A, F, P>) {
-		let alloc = self.alloc;
-		let Fraction { num, den } = self.layers.pop().expect("layers is non-empty");
-
-		let remaining = if self.layers.is_empty() {
-			None
-		} else {
-			Some(self)
-		};
+	/// The returned prover owns the popped buffers and borrows only the allocator, so it outlives
+	/// this borrow: a caller drives one layer at a time and keeps the circuit in place.
+	///
+	/// # Preconditions
+	/// * `self.n_layers() >= 1`
+	pub fn pop_layer(&mut self, claim: FracAddEvalClaim<F>) -> LayerProver<'a, A, F, P> {
+		let Fraction { num, den } = self
+			.layers
+			.pop()
+			.expect("precondition: self.n_layers() >= 1");
 
 		// The MLE-check reduces four multilinears: the low and high halves of the numerator buffer
 		// and of the denominator buffer. The store takes ownership of the two popped buffers and
 		// shares each between its halves, so the prover is self-contained with no up-front copy of
 		// the popped layer.
-		let layer_prover = frac_add_mle::new_split_half(
-			alloc,
+		frac_add_mle::new_split_half(
+			self.alloc,
 			num,
 			den,
 			claim.point,
 			[claim.num_eval, claim.den_eval],
-		);
-		(remaining, layer_prover)
+		)
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
@@ -225,10 +220,7 @@ where
 		// Proving the full circuit runs every layer, so delegate and drop the leftover prover.
 		let n_layers = self.n_layers();
 		let (remaining, claim) = self.prove_layers(n_layers, claim, channel);
-		debug_assert!(
-			remaining.is_none_or(|prover| prover.n_layers() == 0),
-			"proving every layer leaves none unproved"
-		);
+		debug_assert_eq!(remaining.n_layers(), 0, "proving every layer leaves none unproved");
 		claim
 	}
 
@@ -247,27 +239,21 @@ where
 	/// * `channel` - The channel for sending prover messages and sampling challenges.
 	///
 	/// # Returns
-	/// * `Some(self)` holding the untouched layers, or `None` if all were proved,
+	/// * the circuit, holding whatever layers were not proved,
 	/// * the reduced numerator/denominator claims after `n_layers` layers.
 	///
 	/// # Preconditions
 	/// * `n_layers <= self.n_layers()`.
 	pub fn prove_layers(
-		self,
+		mut self,
 		n_layers: usize,
 		claim: FracAddEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> (Option<Self>, FracAddEvalClaim<F>) {
-		// Each layer consumes the prover and returns the remainder, so thread it through an Option.
-		let mut prover_opt = Some(self);
+	) -> (Self, FracAddEvalClaim<F>) {
 		let mut claim = claim;
 
 		for _ in 0..n_layers {
-			let prover = prover_opt
-				.take()
-				.expect("precondition: n_layers <= self.n_layers()");
-			let (remaining, sumcheck_prover) = prover.layer_prover(claim);
-			prover_opt = remaining;
+			let sumcheck_prover = self.pop_layer(claim);
 
 			// The driver draws the batching coefficient and Horner-folds the layer's two claims,
 			// which is the polynomial the verifier's `batch_verify_mle` reconstructs.
@@ -299,7 +285,7 @@ where
 			};
 		}
 
-		(prover_opt, claim)
+		(self, claim)
 	}
 }
 
@@ -353,7 +339,7 @@ pub struct BatchProveOutput<F> {
 /// * `claimed_fractions.len() == provers.len()`.
 /// * `content_point.len() == witness.log_len() - n_layers` for each prover.
 pub fn batch_prove<'a, A, F, P>(
-	provers: Vec<FracAddCheckProver<'a, A, P>>,
+	mut provers: Vec<FracAddCheckProver<'a, A, P>>,
 	claimed_fractions: Vec<Fraction<F>>,
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
@@ -378,15 +364,19 @@ where
 	// Thread the content point as the initial inner (content) coordinates of the evaluation point.
 	// `batch_prove_layer` splits `eval_point.split_at(k)` into (selector, content); on the first
 	// layer this seeds each layer prover with a claim at `content_point`.
-	let eval_point = [selector_point, content_point].concat();
+	let mut eval_point = [selector_point, content_point].concat();
 
-	let (provers, mut fractions, eval_point) = (0..n_layers).fold(
-		(provers, claimed_fractions, eval_point),
-		|(provers, claimed_fractions, eval_point), _| {
-			batch_prove_layer(provers, &claimed_fractions, &eval_point, k, channel)
-		},
+	let mut fractions = claimed_fractions;
+	for _ in 0..n_layers {
+		let (next_fractions, next_point) =
+			batch_prove_layer(&mut provers, &fractions, &eval_point, k, channel);
+		fractions = next_fractions;
+		eval_point = next_point;
+	}
+	debug_assert!(
+		provers.iter().all(|prover| prover.n_layers() == 0),
+		"the final layer leaves every circuit exhausted"
 	);
-	debug_assert!(provers.is_empty(), "the final layer leaves no provers");
 
 	// Drop the padded (2^k) selector slots, keeping one reduced fraction per input prover.
 	fractions.truncate(n);
@@ -566,13 +556,13 @@ where
 /// Runs one interior batched fracaddcheck layer, returning the remaining provers, the reduced
 /// per-instance fractions (padded to `2^k`), and the next evaluation point.
 #[allow(clippy::type_complexity)]
-fn batch_prove_layer<'a, A, F, P>(
-	provers: Vec<FracAddCheckProver<'a, A, P>>,
+fn batch_prove_layer<A, F, P>(
+	provers: &mut [FracAddCheckProver<'_, A, P>],
 	claimed_fractions: &[Fraction<F>],
 	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
-) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<Fraction<F>>, Vec<F>)
+) -> (Vec<Fraction<F>>, Vec<F>)
 where
 	A: Allocator,
 	F: Field,
@@ -582,23 +572,17 @@ where
 	// coordinates.
 	let alloc = provers[0].alloc;
 	let inner_coords = eval_point[k..].to_vec();
-	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_fractions)
+	let layer_provers = iter::zip(provers, claimed_fractions)
 		.map(|(prover, &Fraction { num, den })| {
-			let (remaining, layer_prover) = prover.layer_prover(FracAddEvalClaim {
+			prover.pop_layer(FracAddEvalClaim {
 				num_eval: num,
 				den_eval: den,
 				point: inner_coords.clone(),
-			});
-			(layer_prover, remaining)
+			})
 		})
-		.unzip();
+		.collect::<Vec<_>>();
 
-	let (next_fractions, next_point) =
-		reduce_layer::<A, F, P, _>(alloc, layer_provers, eval_point, k, channel);
-
-	let next_provers = next_provers.into_iter().flatten().collect();
-
-	(next_provers, next_fractions, next_point)
+	reduce_layer::<A, F, P, _>(alloc, layer_provers, eval_point, k, channel)
 }
 
 /// Runs a batched fractional-addition check for trees of *unequal* depths.
@@ -677,9 +661,7 @@ where
 	// Each iteration reduces the layer whose node variables are the point's suffix past the
 	// selector coordinates. A tree the batch has not yet reached contributes a padding layer.
 	for _ in 0..n_layers {
-		let (next_provers, layer_provers) =
-			layer_provers(provers, &pad_lens, &claims, &eval_point[k..]);
-		provers = next_provers;
+		let layer_provers = layer_provers(&mut provers, &pad_lens, &claims, &eval_point[k..]);
 		let (next_claims, next_point) =
 			reduce_layer::<A, F, P, _>(alloc, layer_provers, &eval_point, k, channel);
 		claims = next_claims;
@@ -709,15 +691,14 @@ type PaddedLayerProver<'a, A, F, P> =
 
 /// Builds one padded layer prover per tree, for the layer claimed at `node_point`.
 ///
-/// Returns the provers for the trees that still have layers below this one, in input order, beside
-/// the layer provers themselves.
-#[allow(clippy::type_complexity)]
+/// The provers come back in input order, one per tree, so they stay aligned with `pad_lens` and
+/// `claims`. A tree the batch has not reached yet keeps every layer it has.
 fn layer_provers<'a, A, F, P>(
-	provers: Vec<FracAddCheckProver<'a, A, P>>,
+	provers: &mut [FracAddCheckProver<'a, A, P>],
 	pad_lens: &[usize],
 	claims: &[Fraction<F>],
 	node_point: &[F],
-) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<PaddedLayerProver<'a, A, F, P>>)
+) -> Vec<PaddedLayerProver<'a, A, F, P>>
 where
 	A: Allocator,
 	F: Field,
@@ -746,8 +727,7 @@ where
 	);
 	BatchInversion::<F>::new(pad_eq_invs.len()).invert_nonzero(&mut pad_eq_invs);
 
-	let mut next_provers = Vec::with_capacity(provers.len());
-	let layer_provers = izip!(provers, pad_lens, claims, &pad_eq_invs)
+	izip!(provers, pad_lens, claims, &pad_eq_invs)
 		.map(|(prover, &tree_pad_len, &Fraction { num, den }, &pad_eq_inv)| {
 			let pad_len = tree_pad_len.min(node_len);
 			let point = node_point[pad_len..].to_vec();
@@ -757,25 +737,18 @@ where
 				// The batch is still above this tree, so every variable of its layer is a padding
 				// variable and the de-padded claim is the tree's own fractional sum. The layer is
 				// that fraction beside the zero fraction 0/1, and the tree keeps all of its layers.
-				next_provers.push(prover);
 				Either::Right(ConstantFraction::new(num_claim, den_claim))
 			} else {
-				let (rest, layer_prover) = prover.layer_prover(FracAddEvalClaim {
+				Either::Left(prover.pop_layer(FracAddEvalClaim {
 					num_eval: num_claim,
 					den_eval: den_claim,
 					point,
-				});
-				// Every tree is padded to the same depth, so one that pops here still holds a layer
-				// for each round below — until the final layer, whose remainders the caller drops.
-				next_provers.extend(rest);
-				Either::Left(layer_prover)
+				}))
 			};
 
 			zero_pad_mle::new(pad_eq_prefixes[..=pad_len].to_vec(), node_point.to_vec(), inner)
 		})
-		.collect();
-
-	(next_provers, layer_provers)
+		.collect()
 }
 
 /// Reduces a leaf claim on a zero-fraction-padded witness to the claim on the witness itself.
