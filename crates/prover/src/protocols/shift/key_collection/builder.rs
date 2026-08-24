@@ -262,7 +262,7 @@ fn for_each_reference(cs: &ConstraintSystem, mut visit: impl FnMut(usize, [Shift
 }
 
 /// Words per parallel work item in the grouping pass.
-const WORDS_PER_CHUNK: usize = 1 << 12;
+pub(super) const WORDS_PER_CHUNK: usize = 1 << 12;
 
 /// The keys of one contiguous word range, before their ranges are rebased onto the segment.
 struct ChunkKeys {
@@ -426,9 +426,11 @@ fn build_segment(offsets: &[usize], refs: &[PackedRef], seqs: &SeqTable) -> KeyS
 		keys.extend(k);
 		key_ranges.extend(r);
 	}
+	// Consuming the chunks frees each one's buffers as its references are appended, rather than
+	// holding every chunk alive until the whole segment copy is built.
 	let mut constraint_indices = Vec::with_capacity(n_refs);
-	for chunk in &chunks {
-		constraint_indices.extend_from_slice(&chunk.constraint_indices);
+	for mut chunk in chunks {
+		constraint_indices.append(&mut chunk.constraint_indices);
 	}
 
 	KeySegment {
