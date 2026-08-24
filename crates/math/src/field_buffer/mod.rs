@@ -281,7 +281,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	}
 
 	/// Consumes the buffer and returns its backing data store.
-	pub fn take_data(self) -> Data {
+	pub fn into_inner(self) -> Data {
 		self.values
 	}
 
@@ -1060,7 +1060,7 @@ mod tests {
 		assert_eq!(buffer.get(0), F::new(9));
 
 		// The one word packed keeps zeros in the 3 lanes past the element.
-		let data = buffer.take_data();
+		let data = buffer.into_inner();
 		assert_eq!(data.len(), 1);
 		assert!((1..P::WIDTH).all(|lane| get_packed_slice(&data[..], lane) == F::ZERO));
 	}
@@ -1133,7 +1133,7 @@ mod tests {
 		for i in 0..8 {
 			assert_eq!(buffer.get(i), F::new(i as u128));
 		}
-		assert_eq!(buffer.take_data().len(), 2);
+		assert_eq!(buffer.into_inner().len(), 2);
 
 		// Sub-packing-width result: one word retained, live prefix kept, dead lanes zeroed.
 		let mut buffer = make();
@@ -1141,7 +1141,7 @@ mod tests {
 		assert_eq!(buffer.len(), 2);
 		assert_eq!(buffer.get(0), F::new(0));
 		assert_eq!(buffer.get(1), F::new(1));
-		let data = buffer.take_data();
+		let data = buffer.into_inner();
 		assert_eq!(data.len(), 1);
 		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
 		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
@@ -1150,7 +1150,7 @@ mod tests {
 		let mut buffer = FieldBuffer::<P>::from_values(&(0..4).map(F::new).collect::<Vec<_>>());
 		buffer.truncate(5);
 		assert_eq!(buffer.log_len(), 2);
-		assert_eq!(buffer.take_data().len(), 1);
+		assert_eq!(buffer.into_inner().len(), 1);
 	}
 
 	#[test]
@@ -1167,7 +1167,7 @@ mod tests {
 		assert_eq!(buffer.get(0), F::new(0));
 		assert_eq!(buffer.get(1), F::new(1));
 
-		let data = buffer.take_data();
+		let data = buffer.into_inner();
 		assert_eq!(data.len(), 1);
 		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
 		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
