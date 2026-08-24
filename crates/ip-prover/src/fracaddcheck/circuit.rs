@@ -271,11 +271,74 @@ mod tests {
 	use std::iter;
 
 	use binius_compute::GlobalAllocator;
-	use binius_math::test_utils::{Packed128b, random_field_buffer};
+	use binius_ip::fracaddcheck;
+	use binius_math::{
+		multilinear::Multilinear,
+		test_utils::{Packed128b, random_field_buffer, random_scalars},
+	};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
+
+	fn test_frac_add_check_prove_verify_helper<P: PackedField>(n: usize, k: usize) {
+		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
+
+		// 1. Create random witness with log_len = n + k
+		let witness_num = random_field_buffer::<P>(&mut rng, n + k);
+		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
+
+		// 2. Create prover (computes fractional-add layers)
+		let (prover, sums) = FracAddCircuit::build(
+			k,
+			&alloc,
+			Fraction::new(witness_num.clone(), witness_den.clone()),
+		);
+
+		// 3. Generate random n-dimensional challenge point
+		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
+
+		// 4. Evaluate sums at challenge point to create claims
+		let sum_num_eval = sums.num.evaluate(&eval_point);
+		let sum_den_eval = sums.den.evaluate(&eval_point);
+		// The prover and the verifier take the same claim type, so one claim serves both.
+		let claim = FracAddEvalClaim {
+			num_eval: sum_num_eval,
+			den_eval: sum_den_eval,
+			point: eval_point,
+		};
+
+		// 5. Run prover
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_output = prover.prove(claim.clone(), &mut prover_transcript);
+
+		// 6. Run verifier
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output = fracaddcheck::verify(k, claim, &mut verifier_transcript).unwrap();
+
+		// 7. Check outputs match
+		assert_eq!(prover_output, verifier_output);
+
+		// 8. Verify multilinear evaluation of original witness
+		let expected_num = witness_num.evaluate(&verifier_output.point);
+		let expected_den = witness_den.evaluate(&verifier_output.point);
+		assert_eq!(verifier_output.num_eval, expected_num);
+		assert_eq!(verifier_output.den_eval, expected_den);
+	}
+
+	#[test]
+	fn test_frac_add_check_prove_verify() {
+		test_frac_add_check_prove_verify_helper::<Packed128b>(4, 3);
+	}
+
+	#[test]
+	fn test_frac_add_check_full_prove_verify() {
+		test_frac_add_check_prove_verify_helper::<Packed128b>(0, 4);
+	}
 
 	fn check_all_layers<P: PackedField>(n: usize, k: usize, seed: u64) {
 		let mut rng = StdRng::seed_from_u64(seed);
