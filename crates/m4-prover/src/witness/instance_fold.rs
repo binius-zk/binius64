@@ -9,7 +9,7 @@ use binius_core::{ValueTable, word::Word};
 use binius_field::{BinaryField, PackedField};
 use binius_math::{FieldVec, inner_product::inner_product};
 pub use binius_prover::fold_word::FoldedWord;
-use binius_prover::fold_word::WordFolder;
+use binius_prover::fold_word::WordAxisFolder;
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 /// The committed witness of a batch, with its instance axis collapsed at a point.
@@ -72,7 +72,7 @@ impl<F: BinaryField, A: Allocator> FoldedWitness<F, A> {
 
 		// The bit lookup tables and per-chunk weights depend only on the point.
 		// Build them once here, then share them across every word position.
-		let folder = WordFolder::<F>::new(r_rho);
+		let folder = WordAxisFolder::<F>::new(r_rho);
 		let n_words = table.n_hidden_words();
 
 		// Invariant: the stored words split evenly into one chunk per committed word.

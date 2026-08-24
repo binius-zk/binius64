@@ -40,7 +40,7 @@ use super::{
 	error::Error,
 	witness::{Witness, limb_index, two_valued_field_buffer},
 };
-use crate::fold_word::{BitAxisFolder, WordFolder};
+use crate::fold_word::{BitAxisFolder, WordAxisFolder};
 
 /// Proves the integer multiplication (IntMul) reduction over the four operand columns.
 ///
@@ -397,7 +397,7 @@ where
 		let output_guard = tracing::debug_span!("Compute output bit evals").entered();
 		// All four columns fold against the same point, so the lookup tables and the per-chunk
 		// weights are built once and shared.
-		let folder = WordFolder::<F>::new(r_out);
+		let folder = WordAxisFolder::<F>::new(r_out);
 		let a_evals = folder.fold_par(a_exponents);
 		let c_lo_evals = folder.fold_par(c_lo_exponents);
 		let c_hi_evals = folder.fold_par(c_hi_exponents);

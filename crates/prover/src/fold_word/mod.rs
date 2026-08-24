@@ -39,7 +39,7 @@ mod word_axis;
 
 use binius_core::word::Word;
 pub use bit_axis::BitAxisFolder;
-pub use word_axis::WordFolder;
+pub use word_axis::WordAxisFolder;
 
 use crate::bit_matrix::WEIGHTS_PER_TABLE;
 

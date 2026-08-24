@@ -25,7 +25,8 @@ use crate::bit_matrix::{ColumnSums, RowFoldTables, WEIGHTS_PER_TABLE};
 ///
 /// Sixteen chunks is 1024 words, which is the setting that loses at neither end.
 const MIN_CHUNKS_PER_TASK: usize = 16;
-/// A reusable [Method of Four Russians] folder over a fixed evaluation point.
+/// A reusable [Method of Four Russians] folder over a fixed evaluation point, contracting the
+/// word axis.
 ///
 /// Many word-lists often share one point, so the tables are built once here and reused.
 /// The batched instance fold is that case: every committed word folds against the same point.
@@ -36,7 +37,7 @@ const MIN_CHUNKS_PER_TASK: usize = 16;
 ///
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
 #[derive(Debug)]
-pub struct WordFolder<F: BinaryField> {
+pub struct WordAxisFolder<F: BinaryField> {
 	/// One 256-entry subset-sum table per byte of a word, from the prefix expansion.
 	///
 	/// Table `s` folds the words at positions `s * WEIGHTS_PER_TABLE + t` within a chunk.
@@ -51,7 +52,7 @@ pub struct WordFolder<F: BinaryField> {
 	log_n_words: usize,
 }
 
-impl<F: BinaryField> WordFolder<F> {
+impl<F: BinaryField> WordAxisFolder<F> {
 	/// Builds the folding tables for `point`.
 	///
 	/// Each later fold takes a list of at most `2^point.len()` words, folded against
@@ -260,7 +261,7 @@ mod tests {
 			let point = random_scalars::<B128>(&mut rng, log2_ceil_usize(words.len()));
 
 			prop_assert_eq!(
-				WordFolder::new(&point).fold_par(&words),
+				WordAxisFolder::new(&point).fold_par(&words),
 				reference_fold_word_axis(&words, &point),
 			);
 		}
@@ -273,7 +274,7 @@ mod tests {
 			let mut rng = StdRng::seed_from_u64(seed ^ 3);
 			let point = random_scalars::<B128>(&mut rng, log2_ceil_usize(words.len()));
 
-			let folder = WordFolder::new(&point);
+			let folder = WordAxisFolder::new(&point);
 			prop_assert_eq!(folder.fold_par(&words), folder.fold(&words));
 		}
 
@@ -293,8 +294,8 @@ mod tests {
 			padded.resize(1 << log_rows, Word::ZERO);
 			let expected = reference_fold_word_axis(&padded, &point);
 
-			prop_assert_eq!(WordFolder::new(&point).fold(&words), expected);
-			prop_assert_eq!(WordFolder::new(&point).fold_par(&words), expected);
+			prop_assert_eq!(WordAxisFolder::new(&point).fold(&words), expected);
+			prop_assert_eq!(WordAxisFolder::new(&point).fold_par(&words), expected);
 		}
 	}
 }
