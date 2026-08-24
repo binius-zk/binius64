@@ -1,12 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, ops::Deref};
+use std::{array, iter, ops::Deref};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{
-	ExtensionField, Field, PackedBinaryField128x1b, PackedExtension, PackedField,
+	ExtensionField, PackedExtension, PackedField,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, InputWrappingTransformationFactory,
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
@@ -30,7 +30,7 @@ use binius_verifier::{
 use itertools::izip;
 
 use crate::{
-	bit_matrix::{LOG_WEIGHTS_PER_TABLE, WEIGHTS_PER_TABLE, fold_row_group, row_fold_tables},
+	bit_matrix::{ColumnSums, LOG_WEIGHTS_PER_TABLE, RowFoldTables},
 	prove::pack_witness,
 };
 
@@ -112,7 +112,7 @@ where
 	// So every row past its end is weighted zero, whatever bits that row holds:
 	// rows past the end of a block read as zero, and a matrix narrower than one packed
 	// element leaves lanes that are not rows at all.
-	let lo_tables = row_fold_tables::<B128, N_ROW_TABLES>(eq_lo.as_ref());
+	let lo_tables = RowFoldTables::<B128, N_ROW_TABLES>::new(eq_lo.as_ref());
 
 	// A sub-width low factor still occupies its one packed element, so the block is that element.
 	let block_packed_len = 1 << eq_lo.log_len().saturating_sub(P::LOG_WIDTH);
@@ -128,32 +128,29 @@ where
 				//
 				// A matrix row is 128 single-bit columns, which is one full-width packed row.
 				let mut rows = P::iter_slice(mat_block);
-				let mut columns = [[B128::ZERO; WEIGHTS_PER_TABLE]; N_ROW_TABLES];
+				let mut sums = ColumnSums::zero();
 
-				for table in &lo_tables {
-					// Gather this group's rows out of the packed elements they sit in.
-					// Rows past the end of the block stay zero, and lanes past the last row
-					// carry weight zero, so neither contributes.
-					// A field element and a 128-bit row of single-bit scalars share one underlier,
-					// so each view is free.
-					let mut group = [PackedBinaryField128x1b::default(); WEIGHTS_PER_TABLE];
-					iter::zip(&mut group, &mut rows)
-						.for_each(|(dst, src)| *dst = PackedExtension::<B1>::cast_base(src));
+				// Gather each group's rows out of the packed elements they sit in, lazily, so a
+				// group is folded as soon as it is complete.
+				// Rows past the end of the block stay zero, and lanes past the last row carry
+				// weight zero, so neither contributes.
+				// A field element and a 128-bit row of single-bit scalars share one underlier, so
+				// each view is free.
+				lo_tables.fold_into(
+					iter::repeat_with(|| {
+						array::from_fn(|_| {
+							rows.next()
+								.map(PackedExtension::<B1>::cast_base)
+								.unwrap_or_default()
+						})
+					})
+					.take(N_ROW_TABLES),
+					&mut sums,
+				);
 
-					fold_row_group(&group, table, &mut columns);
-				}
-
-				// Scale by this block's high-factor entry and merge, unpacking the nesting into
-				// bit-position order.
+				// Scale by this block's high-factor entry and merge.
 				// That is 128 multiplies per block, one per row.
-				{
-					let acc = acc.as_mut();
-					for (i, group) in columns.iter().enumerate() {
-						for (j, &column) in group.iter().enumerate() {
-							acc[(i << LOG_WEIGHTS_PER_TABLE) | j] += eq_hi_val * column;
-						}
-					}
-				}
+				sums.add_scaled_to(eq_hi_val, acc.as_mut());
 				acc
 			},
 		)
@@ -398,7 +395,7 @@ pub fn prove_public_eval<A, P, Channel>(
 mod test {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		ExtensionField, Ghash128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
+		ExtensionField, Field, Ghash128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
 		PackedExtension, PackedField, PackedSubfield,
 	};
 	use binius_math::{
