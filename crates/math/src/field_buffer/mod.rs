@@ -54,7 +54,7 @@ use chunks::SubWordChunk;
 pub use chunks::{Chunks, ChunksMut};
 pub use scalars::Scalars;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
-pub use write_back::FieldBufferSplitMut;
+pub use write_back::SplitMut;
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
@@ -616,7 +616,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
-	pub fn split_half(self) -> FieldBufferSplitMut<P, Data> {
+	pub fn split_half(self) -> SplitMut<P, Data> {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
@@ -629,7 +629,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 			None
 		};
 
-		FieldBufferSplitMut {
+		SplitMut {
 			log_len: new_log_len,
 			singles,
 			data: self.values,
@@ -644,7 +644,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
-	pub fn split_half_mut(&mut self) -> FieldBufferSplitMut<P, &'_ mut [P]> {
+	pub fn split_half_mut(&mut self) -> SplitMut<P, &'_ mut [P]> {
 		self.as_mut_view().split_half()
 	}
 }
