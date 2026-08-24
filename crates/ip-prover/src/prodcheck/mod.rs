@@ -6,9 +6,7 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
-	FieldBuffer, FieldVec,
-	line::extrapolate_line,
-	multilinear::hypercube::{Hypercube, OneCube},
+	FieldBuffer, FieldVec, line::extrapolate_line, multilinear::hypercube::Hypercube,
 };
 use binius_utils::{
 	buffer::VecLike,
@@ -346,7 +344,7 @@ fn prove_layer_rounds<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	let (outer_coords, inner_coords) = eval_point.split_at(k);
 
 	// Compute eq weights for batching: eq(i, outer_coords) for all i in B_k.
-	let eq_weights = OneCube::eq_ind_partial_eval::<F>(outer_coords);
+	let eq_weights = Hypercube::One.expand(outer_coords).build::<F>();
 
 	// Content rounds: individual provers operate independently.
 	let mut challenges = Vec::with_capacity(eval_point.len());
@@ -620,7 +618,7 @@ pub fn unpad_leaf_claim<F: Field>(
 
 	let pad_eq = point[..n_pad_vars]
 		.iter()
-		.map(|&coord| OneCube::eq_one_var(F::ZERO, coord))
+		.map(|&coord| Hypercube::One.eq_one_var(F::ZERO, coord))
 		.product::<F>();
 	assert!(pad_eq != F::ZERO, "a padding coordinate equals one");
 
@@ -636,10 +634,7 @@ mod tests {
 	use binius_ip::prodcheck;
 	use binius_math::{
 		inner_product::inner_product,
-		multilinear::{
-			Multilinear,
-			hypercube::{Hypercube, OneCube},
-		},
+		multilinear::{Multilinear, hypercube::Hypercube},
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -659,7 +654,7 @@ mod tests {
 		k: usize,
 	) -> MultilinearEvalClaim<F> {
 		let BatchProveOutput { eval_point, evals } = output;
-		let eq_weights = OneCube::eq_ind_partial_eval::<P>(&eval_point[..k]);
+		let eq_weights = Hypercube::One.expand(&eval_point[..k]).build::<P>();
 		let final_eval =
 			inner_product(evals.iter().copied(), (0..evals.len()).map(|i| eq_weights.get(i)));
 
@@ -783,7 +778,7 @@ mod tests {
 		let selector_challenge = random_scalars::<P::Scalar>(&mut rng, log_n_provers);
 
 		// Compute combined claim using eq weights
-		let eq_weights = OneCube::eq_ind_partial_eval::<P>(&selector_challenge);
+		let eq_weights = Hypercube::One.expand(&selector_challenge).build::<P>();
 		let combined_eval = inner_product(
 			claimed_products.iter().copied(),
 			(0..n_provers).map(|i| eq_weights.get(i)),
@@ -822,7 +817,7 @@ mod tests {
 		let selector_challenges = &final_point[..log_n_provers];
 		let content_challenges = &final_point[log_n_provers..];
 
-		let selector_weights = OneCube::eq_ind_partial_eval::<P>(selector_challenges);
+		let selector_weights = Hypercube::One.expand(selector_challenges).build::<P>();
 
 		let expected_eval: P::Scalar = inner_product(
 			(0..n_provers).map(|i| witnesses[i].evaluate(content_challenges)),
@@ -901,7 +896,7 @@ mod tests {
 		// Combined verifier claim: eq(selector)-weighted sum of the claimed products, at point
 		// selector ++ content.
 		let selector_challenge = random_scalars::<P::Scalar>(&mut rng, log_n_provers);
-		let eq_weights = OneCube::eq_ind_partial_eval::<P>(&selector_challenge);
+		let eq_weights = Hypercube::One.expand(&selector_challenge).build::<P>();
 		let combined_eval = inner_product(
 			claimed_products.iter().copied(),
 			(0..n_provers).map(|i| eq_weights.get(i)),
@@ -940,7 +935,7 @@ mod tests {
 		let selector_challenges = &final_point[..log_n_provers];
 		let witness_challenges = &final_point[log_n_provers..];
 
-		let selector_weights = OneCube::eq_ind_partial_eval::<P>(selector_challenges);
+		let selector_weights = Hypercube::One.expand(selector_challenges).build::<P>();
 
 		let expected_eval: P::Scalar = inner_product(
 			(0..n_provers).map(|i| witnesses[i].evaluate(witness_challenges)),
@@ -981,7 +976,7 @@ mod tests {
 		claims: &[P::Scalar],
 		selector_point: &[P::Scalar],
 	) -> P::Scalar {
-		let eq_weights = OneCube::eq_ind_partial_eval::<P>(selector_point);
+		let eq_weights = Hypercube::One.expand(selector_point).build::<P>();
 		inner_product(claims.iter().copied(), (0..claims.len()).map(|i| eq_weights.get(i)))
 	}
 

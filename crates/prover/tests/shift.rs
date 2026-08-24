@@ -17,10 +17,7 @@ use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product,
-	multilinear::{
-		Multilinear,
-		hypercube::{Hypercube, OneCube},
-	},
+	multilinear::{Multilinear, hypercube::Hypercube},
 	univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
@@ -317,8 +314,8 @@ fn evaluate_image<F: BinaryField>(
 
 /// Compute inner product of tensor with all bits from words
 pub fn evaluate_witness<F: BinaryField>(words: &[Word], r_j: &[F], r_y: &[F]) -> F {
-	let r_j_tensor = OneCube::eq_ind_partial_eval::<F>(r_j);
-	let r_y_tensor = OneCube::eq_ind_partial_eval::<F>(r_y);
+	let r_j_tensor = Hypercube::One.expand(r_j).build::<F>();
+	let r_y_tensor = Hypercube::One.expand(r_y).build::<F>();
 
 	let r_j_witness = BitAxisFolder::new(r_j_tensor.as_ref()).fold::<F, _>(&GlobalAllocator, words);
 
@@ -394,7 +391,7 @@ fn test_shift_prove_and_verify() {
 				&subspace,
 				&image,
 				r_zhat_prime,
-				OneCube::eq_ind_partial_eval(&r_x_prime_bitand).as_ref(),
+				Hypercube::One.expand(&r_x_prime_bitand).build().as_ref(),
 			)
 		});
 
@@ -406,7 +403,7 @@ fn test_shift_prove_and_verify() {
 					&subspace,
 					&image,
 					r_zhat_prime,
-					OneCube::eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
+					Hypercube::One.expand(&r_x_prime_intmul).build().as_ref(),
 				)
 			})
 		};
@@ -419,7 +416,7 @@ fn test_shift_prove_and_verify() {
 					&subspace,
 					&image,
 					r_zhat_prime,
-					OneCube::eq_ind_partial_eval(&r_x_prime_binmul).as_ref(),
+					Hypercube::One.expand(&r_x_prime_binmul).build().as_ref(),
 				)
 			})
 		};

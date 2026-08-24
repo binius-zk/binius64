@@ -6,10 +6,7 @@ use std::{mem, ops::Deref};
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice,
-	multilinear::{
-		MultilinearMut,
-		hypercube::{Hypercube, OneCube},
-	},
+	multilinear::{MultilinearMut, hypercube::Hypercube},
 };
 use binius_utils::{
 	bitwise::{BitSelector, Bitwise},
@@ -124,7 +121,7 @@ where
 			// to be fast: it runs once per pre-switchover round on a small tensor (see
 			// BINIUS-327).
 			tensor.to_mut().bit_reverse();
-			let mut tensor = OneCube::tensor_prod_eq_ind(tensor, &[challenge]);
+			let mut tensor = Hypercube::One.expand(&[challenge]).append_to(tensor);
 			tensor.to_mut().bit_reverse();
 			self.tensor = tensor;
 

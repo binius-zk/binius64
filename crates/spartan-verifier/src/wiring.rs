@@ -3,10 +3,7 @@
 use std::{iter, rc::Rc};
 
 use binius_field::field::FieldOps;
-use binius_math::{
-	multilinear::hypercube::{Hypercube, OneCube},
-	univariate::evaluate_univariate,
-};
+use binius_math::{multilinear::hypercube::Hypercube, univariate::evaluate_univariate};
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex, WitnessSegment};
 
 /// Returns a closure that evaluates the wiring transparent polynomial for a specific segment.
@@ -29,9 +26,8 @@ pub fn eval_transparent<F: FieldOps + 'static>(
 
 /// Evaluates the wiring MLE for a specific segment at a point (r_x, r_y).
 ///
-/// `r_x_tensor` is the eq-indicator partial evaluation at r_x, i.e.
-/// `eq_ind_partial_eval_scalars(r_x)`. Accepting it as a parameter avoids redundant
-/// computation when evaluating multiple segments with the same r_x.
+/// `r_x_tensor` is the equality indicator expanded at r_x, one scalar per vertex.
+/// Accepting it as a parameter avoids recomputing it for every segment sharing that r_x.
 pub fn evaluate_segment_wiring_mle<F: FieldOps>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	segment: WitnessSegment,
@@ -41,7 +37,7 @@ pub fn evaluate_segment_wiring_mle<F: FieldOps>(
 ) -> F {
 	let mut acc = [F::zero(), F::zero(), F::zero()];
 
-	let r_y_tensor = OneCube::eq_ind_partial_eval_scalars(r_y);
+	let r_y_tensor = Hypercube::One.expand(r_y).build_scalars();
 	for (r_x_tensor_i, MulConstraint { a, b, c }) in iter::zip(r_x_tensor, mul_constraints) {
 		for (dst, operand) in iter::zip(&mut acc, [a, b, c]) {
 			let r_y_tensor_sum = operand

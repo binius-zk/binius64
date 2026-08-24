@@ -40,10 +40,8 @@ use binius_utils::{
 };
 
 use crate::{
-	FieldBuffer, FieldSlice, FieldVec,
-	inner_product::inner_product_packed,
-	line::extrapolate_line,
-	multilinear::hypercube::{Hypercube, OneCube},
+	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_packed, line::extrapolate_line,
+	multilinear::hypercube::Hypercube,
 };
 
 /// A buffer of coefficients read as a multilinear polynomial.
@@ -139,7 +137,7 @@ pub trait MultilinearMut<P: PackedField>: Multilinear<P> {
 	/// ## Preconditions
 	///
 	/// * `truncated_n_vars` must be at most `self.n_vars()`
-	fn eq_ind_truncate_low<H: Hypercube>(&mut self, truncated_n_vars: usize);
+	fn eq_ind_truncate_low(&mut self, cube: Hypercube, truncated_n_vars: usize);
 
 	/// Overwrites the coefficients with the high fold of a bit sequence by a tensor.
 	///
@@ -182,7 +180,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> Multilinear<P> for FieldBuffer<P
 		// Expanding only that half costs memory on the order of the square root of the whole.
 		let first_half_len = (point.len() / 2).max(P::LOG_WIDTH).min(point.len());
 		let (first_coords, remaining_coords) = point.split_at(first_half_len);
-		let eq_tensor = OneCube::eq_ind_partial_eval::<P>(first_coords);
+		let eq_tensor = Hypercube::One.expand(first_coords).build::<P>();
 
 		// With nothing left over the expansion covers every variable, so one pairing finishes.
 		if remaining_coords.is_empty() {
@@ -270,7 +268,7 @@ impl<P: PackedField, Data: BufferData<P>> MultilinearMut<P> for FieldBuffer<P, D
 		self.truncate(self.log_len() - 1);
 	}
 
-	fn eq_ind_truncate_low<H: Hypercube>(&mut self, truncated_n_vars: usize) {
+	fn eq_ind_truncate_low(&mut self, cube: Hypercube, truncated_n_vars: usize) {
 		assert!(
 			truncated_n_vars <= self.log_len(),
 			"precondition: truncated_n_vars must be at most n_vars"
@@ -286,7 +284,7 @@ impl<P: PackedField, Data: BufferData<P>> MultilinearMut<P> for FieldBuffer<P, D
 					.into_par_iter()
 					.with_min_task_bytes::<[P; 2]>()
 					.for_each(|(zero, one)| {
-						H::contract_var(zero, one);
+						cube.contract_var(zero, one);
 					});
 			}
 
@@ -487,7 +485,7 @@ mod tests {
 			let point = random_scalars::<F>(&mut rng, n_vars);
 
 			// Pairing with the full expansion is the definition, and the cheapest reference.
-			let reference = buffer.par_inner_product(&OneCube::eq_ind_partial_eval::<P>(&point));
+			let reference = buffer.par_inner_product(&Hypercube::One.expand(&point).build::<P>());
 
 			prop_assert_eq!(buffer.evaluate(&point), reference);
 
@@ -541,7 +539,7 @@ mod tests {
 		) {
 			let mut rng = StdRng::seed_from_u64(seed);
 			let point = random_scalars::<F>(&mut rng, tensor_vars);
-			let tensor = OneCube::eq_ind_partial_eval::<P>(&point);
+			let tensor = Hypercube::One.expand(&point).build::<P>();
 
 			// The bit count is the product of the two lengths, as the precondition demands.
 			let bits = repeat_with(|| rng.random())

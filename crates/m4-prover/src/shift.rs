@@ -9,9 +9,7 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace,
-	multilinear::hypercube::{Hypercube, OneCube},
-	univariate::subspace_lagrange_evals,
+	BinarySubspace, multilinear::hypercube::Hypercube, univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
 	fold_word::BitAxisFolder,
@@ -127,7 +125,7 @@ where
 
 	// Phase 4: the witness folded at the bit position challenge `r_j`, per segment.
 
-	let r_j_tensor = OneCube::eq_ind_partial_eval::<F>(&r_j);
+	let r_j_tensor = Hypercube::One.expand(&r_j).build::<F>();
 	// The public fold is a raw-word fold; the hidden fold contracts the already-oblong bits.
 	let public_folded = BitAxisFolder::new(r_j_tensor.as_ref()).fold::<P, _>(alloc, public_words);
 	let hidden_folded = folded_witness.fold_bits::<P>(r_j_tensor.as_ref(), alloc);
@@ -236,10 +234,7 @@ mod tests {
 	};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
-		multilinear::{
-			Multilinear,
-			hypercube::{Hypercube, OneCube},
-		},
+		multilinear::{Multilinear, hypercube::Hypercube},
 		test_utils::random_scalars,
 		univariate::subspace_lagrange_evals_scalars,
 	};
@@ -303,7 +298,7 @@ mod tests {
 		r_rho: &[B128],
 		words: std::ops::Range<usize>,
 	) -> Vec<FoldedWord<B128>> {
-		let eq = OneCube::eq_ind_partial_eval_scalars::<B128>(r_rho);
+		let eq = Hypercube::One.expand(r_rho).build_scalars();
 		let mut folded = vec![[B128::ZERO; Word::BITS]; words.len()];
 		for (rho, &weight) in eq.iter().enumerate() {
 			// Reconstruct this instance independently of the fold, then fold its chosen word range.

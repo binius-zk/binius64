@@ -2,10 +2,7 @@
 
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_math::{
-	multilinear::{
-		Multilinear, MultilinearMut,
-		hypercube::{Hypercube, OneCube},
-	},
+	multilinear::{Multilinear, MultilinearMut, hypercube::Hypercube},
 	test_utils::{random_field_buffer, random_scalars},
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -49,7 +46,7 @@ fn bench_multilinear_evaluate(c: &mut Criterion) {
 	group.bench_function(
 		BenchmarkId::new("evaluate with tensor", format!("n_vars={n_vars}")),
 		|b| {
-			let eq_tensor = OneCube::eq_ind_partial_eval::<P>(&point);
+			let eq_tensor = Hypercube::One.expand(&point).build::<P>();
 			b.iter(|| buffer.par_inner_product(&eq_tensor));
 		},
 	);

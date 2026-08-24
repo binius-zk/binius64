@@ -7,10 +7,7 @@ use std::iter;
 
 use binius_core::word::Word;
 use binius_field::FieldOps;
-use binius_math::{
-	line::extrapolate_line,
-	multilinear::hypercube::{Hypercube, OneCube},
-};
+use binius_math::{line::extrapolate_line, multilinear::hypercube::Hypercube};
 
 use super::SHIFT_VARIANT_COUNT;
 
@@ -55,7 +52,7 @@ pub fn evaluate_shift_inds<E: FieldOps>(
 		&r_s[..HALF_WORD_LOG_BITS],
 	);
 	let same_half =
-		OneCube::eq_one_var(r_i[HALF_WORD_LOG_BITS].clone(), r_j[HALF_WORD_LOG_BITS].clone());
+		Hypercube::One.eq_one_var(r_i[HALF_WORD_LOG_BITS].clone(), r_j[HALF_WORD_LOG_BITS].clone());
 
 	[
 		sll,
@@ -106,7 +103,7 @@ fn evaluate_sum_inds<E: FieldOps>(r_i: &[E], r_j: &[E], r_s: &[E]) -> (E, E) {
 			let both = j.clone() * s;
 			let j_only = j.clone() - &both;
 			let s_only = s.clone() - &both;
-			let agree = OneCube::eq_one_var(j.clone(), s.clone());
+			let agree = Hypercube::One.eq_one_var(j.clone(), s.clone());
 
 			// The transitions at `i = 0` and at `i = 1`, interpolated at the coordinate. With
 			// `i = 0` the position sums correctly either when `j` agrees with `s` and nothing

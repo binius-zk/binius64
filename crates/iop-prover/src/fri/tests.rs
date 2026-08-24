@@ -14,10 +14,7 @@ use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	ReedSolomonCode,
-	multilinear::{
-		Multilinear,
-		hypercube::{Hypercube, OneCube},
-	},
+	multilinear::{Multilinear, hypercube::Hypercube},
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{Packed128b, random_field_buffer},
 };
@@ -325,7 +322,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	let outer = &verifier_challenges[..log_n_oracles];
 	let later = &verifier_challenges[log_n_oracles..log_n_oracles + max_later];
 	let tail = &verifier_challenges[first_fold_arity..];
-	let outer_tensor = OneCube::eq_ind_partial_eval_scalars::<F>(outer);
+	let outer_tensor = Hypercube::One.expand(outer).build_scalars();
 
 	let mut expected = F::ZERO;
 	for (i, (msg, &log_batch_size)) in iter::zip(&messages, &log_batch_sizes).enumerate() {
@@ -472,7 +469,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 	let outer = &verifier_challenges[max_early..max_early + log_n_oracles];
 	let later = &verifier_challenges[max_early + log_n_oracles..first_fold_arity];
 	let tail = &verifier_challenges[first_fold_arity..];
-	let outer_tensor = OneCube::eq_ind_partial_eval_scalars::<F>(outer);
+	let outer_tensor = Hypercube::One.expand(outer).build_scalars();
 
 	let mut expected = F::ZERO;
 	for (i, (msg, &(_log_batch_size, _is_zk))) in
@@ -623,7 +620,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	let outer = &verifier_challenges[..log_n_oracles];
 	let later = &verifier_challenges[log_n_oracles..log_n_oracles + max_later];
 	let tail = &verifier_challenges[first_fold_arity..];
-	let outer_tensor = OneCube::eq_ind_partial_eval_scalars::<F>(outer);
+	let outer_tensor = Hypercube::One.expand(outer).build_scalars();
 
 	let mut expected = F::ZERO;
 	for (i, ((msg, &log_batch_size), &log_dim)) in
