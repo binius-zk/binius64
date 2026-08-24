@@ -1,10 +1,34 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{
-	ops::{Deref, DerefMut},
-	slice,
-};
+//! A power-of-two-sized buffer of packed field elements.
+//!
+//! The buffer type and all of its methods live in this file.
+//! Two sibling modules hold the other types this one hands out:
+//!
+//! ```text
+//! view        the borrowed aliases, and the store that backs a shared one
+//! write_back  the guards that lend out a region narrower than one packed word
+//! ```
+//!
+//! # Why the backing store is a type parameter
+//!
+//! A store's length fixes the element count only once the buffer fills a whole packed word.
+//! Below one word, the same single word backs any length:
+//!
+//! ```text
+//! WIDTH = 4 lanes per word
+//!
+//! 1 element   ->  [ x . . . ]   one word
+//! 2 elements  ->  [ x x . . ]   one word
+//! 4 elements  ->  [ x x x x ]   one word
+//! ```
+//!
+//! So the logical length is irreducible extra state, carried alongside the store.
+//! That rules out a transparent wrapper around a packed slice.
+//! With it goes the deref-coercion design a vector and its two slice types enjoy.
+
+use std::ops::{Deref, DerefMut};
 
 use binius_compute::Allocator;
 use binius_field::{
@@ -18,6 +42,16 @@ use binius_utils::{
 };
 use bytemuck::zeroed_vec;
 
+mod chunks;
+mod view;
+mod write_back;
+
+use chunks::SubWordChunk;
+pub use chunks::{Chunks, ChunksMut};
+pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
+use write_back::FieldBufferChunkMutInner;
+pub use write_back::{FieldBufferChunkMut, FieldBufferSplitMut};
+
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
 /// The backing store length is fully determined by `log_len`:
@@ -26,11 +60,21 @@ use bytemuck::zeroed_vec;
 /// values.len() == 1 << log_len.saturating_sub(P::LOG_WIDTH)
 /// ```
 ///
-/// For a sub-packing-width buffer (`log_len < P::LOG_WIDTH`) the single backing word still spans
-/// `P::WIDTH` lanes, so the lanes at and past index `1 << log_len` are not logical elements. They
-/// are never read as such — equality and the split routines only touch the live prefix. Values
-/// produced by [`truncate`](Self::truncate) additionally hold those dead lanes at zero, which the
-/// sumcheck provers rely on; other constructors may leave unrelated data there.
+/// A buffer shorter than one packed word still occupies a whole word.
+/// The lanes at and past the logical length are then not elements of the buffer:
+///
+/// ```text
+/// WIDTH = 4, log_len = 1
+///
+/// word:  [ s_0, s_1, dead, dead ]
+///          ^^^^^^^^  live prefix
+/// ```
+///
+/// Nothing reads a dead lane as an element.
+/// Equality and the halving routines touch the live prefix only.
+///
+/// Truncation additionally zeros the dead lanes it creates.
+/// Other constructors may leave whatever the caller's store held there.
 #[derive(Debug, Clone, Eq)]
 pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	/// log2 the number over elements in the buffer.
@@ -99,18 +143,17 @@ impl<P: PackedField> FieldBuffer<P> {
 		}
 	}
 
-	/// Create a new [`FieldBuffer`] of zeros with the given log_len.
+	/// Builds a buffer of `2^log_len` zeros.
 	pub fn zeros(log_len: usize) -> Self {
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		let values = zeroed_vec(packed_len);
 		Self { log_len, values }
 	}
 
-	/// A single-scalar buffer (`log_len` 0) holding `value` in lane 0, with backing-`Vec` capacity
-	/// reserved for `log_capacity` variables.
+	/// Builds a one-element buffer holding `value`, with room reserved to grow.
 	///
-	/// The backing `Vec` reserves `1 << log_capacity.saturating_sub(P::LOG_WIDTH)` packed words, so
-	/// growing the buffer up to `log_capacity` variables never reallocates.
+	/// The store is sized for `2^log_capacity` elements up front.
+	/// Growing the buffer to that many therefore never reallocates.
 	pub fn scalar_with_capacity(value: P::Scalar, log_capacity: usize) -> Self {
 		let mut values = Vec::with_capacity(1 << log_capacity.saturating_sub(P::LOG_WIDTH));
 		values.push(P::from_scalars([value]));
@@ -121,8 +164,8 @@ impl<P: PackedField> FieldBuffer<P> {
 impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Builds a zeroed buffer of `2^log_len` elements, backed by memory drawn from `alloc`.
 	///
-	/// The allocator-aware counterpart to [`zeros`](Self::zeros).
-	/// Under a pool the result is a recyclable pooled buffer.
+	/// The allocator-aware counterpart to the plain zeroed constructor.
+	/// Under a pool the result is a recyclable buffer rather than a fresh allocation.
 	pub fn zeros_in<A>(alloc: &A, log_len: usize) -> Self
 	where
 		A: Allocator<Vec<P> = Data>,
@@ -146,11 +189,11 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 		FieldBuffer::new(src.log_len(), values)
 	}
 
-	/// Builds a [`FieldBuffer`] from scalar values directly into a buffer drawn from `alloc`.
+	/// Builds a buffer from scalar values, directly into memory drawn from `alloc`.
 	///
-	/// The allocator-aware counterpart to [`from_values`](Self::from_values): the packed values are
-	/// written straight into the allocator's buffer, avoiding an intermediate `Vec` and copy. Under
-	/// a `BufferPool` the result is a recyclable pooled buffer.
+	/// The allocator-aware counterpart to building from a scalar slice.
+	/// Packing happens straight into the allocator's buffer, so no intermediate vector is copied.
+	/// Under a pool the result is a recyclable buffer.
 	///
 	/// # Preconditions
 	///
@@ -248,7 +291,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 		1 << self.log_len
 	}
 
-	/// Borrows the buffer as a [`FieldSlice`].
+	/// Borrows the whole buffer as a shared view.
 	pub fn to_ref(&self) -> FieldSlice<'_, P> {
 		FieldSlice::from_slice(self.log_len, self.as_ref())
 	}
@@ -278,9 +321,10 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 
 	/// Get an aligned chunk of size `2^log_chunk_size`.
 	///
-	/// Chunk start offset divides chunk size; the result is essentially
-	/// `chunks(log_chunk_size).nth(chunk_index)` but unlike `chunks` it does
-	/// support sizes smaller than packing width.
+	/// A chunk's start offset is a multiple of its size.
+	/// So this yields the same chunk that stepping the shared iterator to that index would.
+	///
+	/// Unlike that iterator, this accepts a size below the packing width.
 	///
 	/// # Preconditions
 	///
@@ -301,18 +345,14 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 		);
 
 		let values = if log_chunk_size >= P::LOG_WIDTH {
-			let packed_log_chunk_size = log_chunk_size - P::LOG_WIDTH;
-			let chunk =
-				&self.values[chunk_index << packed_log_chunk_size..][..1 << packed_log_chunk_size];
-			FieldSliceData::Slice(chunk)
+			// A whole run of words, borrowed straight from the store.
+			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
+			FieldSliceData::Slice(&self.values[chunk_index * words_per_chunk..][..words_per_chunk])
 		} else {
-			let packed_log_chunks = P::LOG_WIDTH - log_chunk_size;
-			let packed = self.values[chunk_index >> packed_log_chunks];
-			let chunk_subindex = chunk_index & ((1 << packed_log_chunks) - 1);
-			let chunk = P::from_scalars(
-				(0..1 << log_chunk_size).map(|i| packed.get(chunk_subindex << log_chunk_size | i)),
-			);
-			FieldSliceData::Single(chunk)
+			// Lanes inside one word, copied out so the chunk starts at lane 0.
+			FieldSliceData::Single(
+				SubWordChunk::new(log_chunk_size, chunk_index).repack(&self.values),
+			)
 		};
 
 		FieldBuffer {
@@ -327,21 +367,14 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
 	#[track_caller]
-	pub fn chunks(&self, log_chunk_size: usize) -> impl Iterator<Item = FieldSlice<'_, P>> + Clone {
+	pub fn chunks(&self, log_chunk_size: usize) -> Chunks<'_, P> {
 		assert!(
 			log_chunk_size >= P::LOG_WIDTH && log_chunk_size <= self.log_len,
 			"precondition: log_chunk_size must be in range [P::LOG_WIDTH, log_len]"
 		);
 
 		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		let packed_chunk_size = 1 << (log_chunk_size - P::LOG_WIDTH);
-		self.values
-			.chunks(packed_chunk_size)
-			.take(chunk_count)
-			.map(move |chunk| FieldBuffer {
-				log_len: log_chunk_size,
-				values: FieldSliceData::Slice(chunk),
-			})
+		Chunks::new(self.as_ref(), log_chunk_size, chunk_count)
 	}
 
 	/// Creates an iterator over chunks of size `2^log_chunk_size` in parallel.
@@ -373,26 +406,23 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 		} else {
 			// Multiple chunks fit within a single packed element
 			let chunk_count = 1 << (self.log_len - log_chunk_size);
-			let packed_log_chunks = P::LOG_WIDTH - log_chunk_size;
-			let values = self.as_ref();
-			Either::Right((0..chunk_count).into_par_iter().map(move |chunk_index| {
-				let packed = values[chunk_index >> packed_log_chunks];
-				let chunk_subindex = chunk_index & ((1 << packed_log_chunks) - 1);
-				let chunk = P::from_scalars(
-					(0..1 << log_chunk_size)
-						.map(|i| packed.get(chunk_subindex << log_chunk_size | i)),
-				);
-				FieldBuffer {
-					log_len: log_chunk_size,
-					values: FieldSliceData::Single(chunk),
-				}
-			}))
+			let words = self.as_ref();
+			Either::Right(
+				(0..chunk_count)
+					.into_par_iter()
+					.map(move |chunk_index| FieldBuffer {
+						log_len: log_chunk_size,
+						values: FieldSliceData::Single(
+							SubWordChunk::new(log_chunk_size, chunk_index).repack(words),
+						),
+					}),
+			)
 		}
 	}
 
 	/// Creates a parallel iterator over the scalars of each chunk of `2^log_chunk_size` elements.
 	///
-	/// The scalar-yielding counterpart to [`chunks_par`](Self::chunks_par):
+	/// The scalar-yielding counterpart to the parallel chunk iterator:
 	///
 	/// ```text
 	/// chunk i  ->  scalars [i * 2^log_chunk_size, (i+1) * 2^log_chunk_size)
@@ -405,8 +435,8 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// chunk <  one packed word  ->  a lane range inside a single word
 	/// ```
 	///
-	/// [`chunks_par`](Self::chunks_par) instead repacks a sub-word chunk into an owned word.
-	/// Prefer this method when the consumer only reads scalars.
+	/// The buffer-yielding iterator instead repacks a sub-word chunk into an owned word.
+	/// Prefer this method when the consumer only reads scalars, since it copies nothing.
 	///
 	/// # Preconditions
 	///
@@ -444,13 +474,9 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 			// A buffer narrower than one word never turns its dead lanes into a chunk.
 			let chunk_count = 1 << (self.log_len - log_chunk_size);
 
-			// The chunk index splits in two: high bits pick the word, low bits pick the lanes.
-			let log_chunks_per_word = P::LOG_WIDTH - log_chunk_size;
 			Either::Right((0..chunk_count).into_par_iter().map(move |chunk_index| {
-				let word = words[chunk_index >> log_chunks_per_word];
-				let chunk_subindex = chunk_index & ((1 << log_chunks_per_word) - 1);
-				let lane_offset = chunk_subindex << log_chunk_size;
-				Either::Right((0..1 << log_chunk_size).map(move |i| word.get(lane_offset | i)))
+				let chunk = SubWordChunk::new(log_chunk_size, chunk_index);
+				Either::Right(chunk.scalars(words[chunk.word_index()]))
 			}))
 		}
 	}
@@ -504,7 +530,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 }
 
 impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
-	/// Borrows the buffer mutably as a [`FieldSliceMut`].
+	/// Borrows the whole buffer as a mutable view.
 	pub fn to_mut(&mut self) -> FieldSliceMut<'_, P> {
 		FieldSliceMut::from_slice(self.log_len, self.as_mut())
 	}
@@ -533,31 +559,22 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
 	#[track_caller]
-	pub fn chunks_mut(
-		&mut self,
-		log_chunk_size: usize,
-	) -> impl Iterator<Item = FieldSliceMut<'_, P>> {
+	pub fn chunks_mut(&mut self, log_chunk_size: usize) -> ChunksMut<'_, P> {
 		assert!(
 			log_chunk_size >= P::LOG_WIDTH && log_chunk_size <= self.log_len,
 			"precondition: log_chunk_size must be in range [P::LOG_WIDTH, log_len]"
 		);
 
 		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		let packed_chunk_size = 1 << log_chunk_size.saturating_sub(P::LOG_WIDTH);
-		self.values
-			.chunks_mut(packed_chunk_size)
-			.take(chunk_count)
-			.map(move |chunk| FieldBuffer {
-				log_len: log_chunk_size,
-				values: chunk,
-			})
+		ChunksMut::new(self.as_mut(), log_chunk_size, chunk_count)
 	}
 
 	/// Get a mutable aligned chunk of size `2^log_chunk_size`.
 	///
-	/// This method behaves like [`FieldBuffer::chunk`] but returns a mutable reference.
-	/// For small chunks (log_chunk_size < P::LOG_WIDTH), this returns a wrapper that
-	/// implements deferred writes - modifications are written back when the wrapper is dropped.
+	/// Addresses the same chunk as the shared accessor, and lends it mutably.
+	///
+	/// A chunk smaller than one packed word comes back behind a write-back guard.
+	/// Edits reach the parent word when that guard drops.
 	///
 	/// # Preconditions
 	///
@@ -590,33 +607,26 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 				chunk,
 			}
 		} else {
-			// Small chunk: extract from a single packed element and defer writes
-			let packed_log_chunks = P::LOG_WIDTH - log_chunk_size;
-			let packed_index = chunk_index >> packed_log_chunks;
-			let chunk_subindex = chunk_index & ((1 << packed_log_chunks) - 1);
-			let chunk_offset = chunk_subindex << log_chunk_size;
-
-			let packed = self.values[packed_index];
-			let chunk =
-				P::from_scalars((0..1 << log_chunk_size).map(|i| packed.get(chunk_offset | i)));
+			// Small chunk: copy the lanes out, and write them back when the guard drops.
+			let location = SubWordChunk::new(log_chunk_size, chunk_index);
+			let chunk = location.repack(&self.values);
 
 			FieldBufferChunkMutInner::Single {
-				log_len: log_chunk_size,
+				location,
 				chunk,
-				parent: &mut self.values[packed_index],
-				chunk_offset,
+				parent: &mut self.values[location.word_index()],
 			}
 		};
 
 		FieldBufferChunkMut(inner)
 	}
 
-	/// Consumes the buffer and splits it in half, returning a [`FieldBufferSplitMut`].
+	/// Consumes the buffer and halves it, returning a guard that owns the store.
 	///
-	/// This returns an object that owns the buffer data and can be used to access mutable
-	/// references to the two halves. If the buffer contains a single packed element that needs
-	/// to be split, the returned struct will create temporary copies and write the results back
-	/// to the original buffer when dropped.
+	/// The guard lends out the two halves mutably.
+	///
+	/// When both halves live inside one packed word, the guard holds detached copies of them.
+	/// Those are merged back into the original word when it drops.
 	///
 	/// # Preconditions
 	///
@@ -642,9 +652,9 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		}
 	}
 
-	/// Splits the buffer in half and returns a [`FieldBufferSplitMut`] for accessing the halves.
+	/// Halves the buffer through a mutable borrow, rather than consuming it.
 	///
-	/// This is a convenience method equivalent to `self.to_mut().split_half()`.
+	/// Equivalent to borrowing the buffer as a mutable view and halving that.
 	///
 	/// # Preconditions
 	///
@@ -658,9 +668,10 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 impl<P: PackedField, Data: BufferData<P>> FieldBuffer<P, Data> {
 	/// Truncates the buffer to a shorter length, shrinking the backing store to match.
 	///
-	/// If `new_log_len` is greater than or equal to the current [`log_len`](Self::log_len), this is
-	/// a no-op. When the result is sub-packing-width the dead lanes of the final word are zeroed,
-	/// upholding the invariant that lanes past the logical length are zero.
+	/// Asking for a length at or above the current one does nothing.
+	///
+	/// A result shorter than one packed word has the dead lanes of its final word zeroed.
+	/// That upholds the invariant that lanes past the logical length are zero.
 	pub fn truncate(&mut self, new_log_len: usize) {
 		if new_log_len >= self.log_len {
 			return;
@@ -694,181 +705,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> AsMut<[P]> for FieldBuffer<P,
 	}
 }
 
-/// Alias for a field buffer whose backing store is drawn from an [`Allocator`] `A`.
-///
-/// For `A = &BufferPool` this is a pooled buffer; for `A = GlobalAllocator` it is an ordinary
-/// `Vec`-backed buffer.
-pub type FieldVec<P, A> = FieldBuffer<P, <A as Allocator>::Vec<P>>;
-
-/// Alias for a field buffer over a borrowed slice.
-pub type FieldSlice<'a, P> = FieldBuffer<P, FieldSliceData<'a, P>>;
-
-/// Alias for a field buffer over a mutably borrowed slice.
-pub type FieldSliceMut<'a, P> = FieldBuffer<P, &'a mut [P]>;
-
-impl<'a, P: PackedField> FieldSlice<'a, P> {
-	/// Create a new FieldSlice from a slice of packed values.
-	///
-	/// # Preconditions
-	///
-	/// * `slice.len()` must equal the expected packed length for `log_len`.
-	#[track_caller]
-	pub fn from_slice(log_len: usize, slice: &'a [P]) -> Self {
-		FieldBuffer::new(log_len, FieldSliceData::Slice(slice))
-	}
-}
-
-impl<'a, P: PackedField, Data: Deref<Target = [P]>> From<&'a FieldBuffer<P, Data>>
-	for FieldSlice<'a, P>
-{
-	fn from(buffer: &'a FieldBuffer<P, Data>) -> Self {
-		buffer.to_ref()
-	}
-}
-
-impl<'a, P: PackedField> FieldSliceMut<'a, P> {
-	/// Create a new FieldSliceMut from a mutable slice of packed values.
-	///
-	/// # Preconditions
-	///
-	/// * `slice.len()` must equal the expected packed length for `log_len`.
-	#[track_caller]
-	pub fn from_slice(log_len: usize, slice: &'a mut [P]) -> Self {
-		FieldBuffer::new(log_len, slice)
-	}
-}
-
-impl<'a, P: PackedField, Data: DerefMut<Target = [P]>> From<&'a mut FieldBuffer<P, Data>>
-	for FieldSliceMut<'a, P>
-{
-	fn from(buffer: &'a mut FieldBuffer<P, Data>) -> Self {
-		buffer.to_mut()
-	}
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum FieldSliceData<'a, P> {
-	Single(P),
-	Slice(&'a [P]),
-}
-
-impl<'a, P> Deref for FieldSliceData<'a, P> {
-	type Target = [P];
-
-	fn deref(&self) -> &Self::Target {
-		match self {
-			FieldSliceData::Single(val) => slice::from_ref(val),
-			FieldSliceData::Slice(slice) => slice,
-		}
-	}
-}
-
-/// Return type of [`FieldBuffer::split_half_mut`].
-#[derive(Debug)]
-pub struct FieldBufferSplitMut<P: PackedField, Data: DerefMut<Target = [P]>> {
-	log_len: usize,
-	singles: Option<[P; 2]>,
-	data: Data,
-}
-
-impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBufferSplitMut<P, Data> {
-	pub fn halves(&mut self) -> (FieldSliceMut<'_, P>, FieldSliceMut<'_, P>) {
-		match &mut self.singles {
-			Some([lo_half, hi_half]) => (
-				FieldBuffer {
-					log_len: self.log_len,
-					values: slice::from_mut(lo_half),
-				},
-				FieldBuffer {
-					log_len: self.log_len,
-					values: slice::from_mut(hi_half),
-				},
-			),
-			None => {
-				let half_len = 1 << (self.log_len - P::LOG_WIDTH);
-				let (lo_half, hi_half) = self.data.split_at_mut(half_len);
-				(
-					FieldBuffer {
-						log_len: self.log_len,
-						values: lo_half,
-					},
-					FieldBuffer {
-						log_len: self.log_len,
-						values: hi_half,
-					},
-				)
-			}
-		}
-	}
-}
-
-impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for FieldBufferSplitMut<P, Data> {
-	fn drop(&mut self) {
-		if let Some([lo_half, hi_half]) = self.singles {
-			// Write back the results by interleaving them back together
-			// The arrays may have been modified by the closure
-			(self.data[0], _) = lo_half.interleave(hi_half, self.log_len);
-		}
-	}
-}
-
-/// Return type of [`FieldBuffer::chunk_mut`] for small chunks.
-#[derive(Debug)]
-pub struct FieldBufferChunkMut<'a, P: PackedField>(FieldBufferChunkMutInner<'a, P>);
-
-impl<'a, P: PackedField> FieldBufferChunkMut<'a, P> {
-	pub const fn get(&mut self) -> FieldSliceMut<'_, P> {
-		match &mut self.0 {
-			FieldBufferChunkMutInner::Single {
-				log_len,
-				chunk,
-				parent: _,
-				chunk_offset: _,
-			} => FieldBuffer {
-				log_len: *log_len,
-				values: slice::from_mut(chunk),
-			},
-			FieldBufferChunkMutInner::Slice { log_len, chunk } => FieldBuffer {
-				log_len: *log_len,
-				values: chunk,
-			},
-		}
-	}
-}
-
-#[derive(Debug)]
-enum FieldBufferChunkMutInner<'a, P: PackedField> {
-	Single {
-		log_len: usize,
-		chunk: P,
-		parent: &'a mut P,
-		chunk_offset: usize,
-	},
-	Slice {
-		log_len: usize,
-		chunk: &'a mut [P],
-	},
-}
-
-impl<'a, P: PackedField> Drop for FieldBufferChunkMutInner<'a, P> {
-	fn drop(&mut self) {
-		match self {
-			Self::Single {
-				log_len,
-				chunk,
-				parent,
-				chunk_offset,
-			} => {
-				// Write back the modified chunk values to the parent packed element
-				for i in 0..1 << *log_len {
-					parent.set(*chunk_offset | i, chunk.get(i));
-				}
-			}
-			Self::Slice { .. } => {}
-		}
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use binius_compute::{BufferPool, GlobalAllocator};
@@ -880,30 +716,6 @@ mod tests {
 
 	type P = Packed128b;
 	type F = B128;
-
-	#[test]
-	fn test_zeros() {
-		// Make a buffer with `zeros()` and check that all elements are zero.
-		// Test with log_len >= LOG_WIDTH
-		let buffer = FieldBuffer::<P>::zeros(6); // 64 elements
-		assert_eq!(buffer.log_len(), 6);
-		assert_eq!(buffer.len(), 64);
-
-		// Check all elements are zero
-		for i in 0..64 {
-			assert_eq!(buffer.get(i), F::ZERO);
-		}
-
-		// Test with log_len < LOG_WIDTH
-		let buffer = FieldBuffer::<P>::zeros(1); // 2 elements
-		assert_eq!(buffer.log_len(), 1);
-		assert_eq!(buffer.len(), 2);
-
-		// Check all elements are zero
-		for i in 0..2 {
-			assert_eq!(buffer.get(i), F::ZERO);
-		}
-	}
 
 	/// Runs every allocator-backed constructor and the zero-padding grow against one allocator.
 	///
@@ -977,20 +789,44 @@ mod tests {
 	}
 
 	#[test]
-	fn test_alloc_constructors_global() {
+	fn zeros() {
+		// Make a buffer with `zeros()` and check that all elements are zero.
+		// Test with log_len >= LOG_WIDTH
+		let buffer = FieldBuffer::<P>::zeros(6); // 64 elements
+		assert_eq!(buffer.log_len(), 6);
+		assert_eq!(buffer.len(), 64);
+
+		// Check all elements are zero
+		for i in 0..64 {
+			assert_eq!(buffer.get(i), F::ZERO);
+		}
+
+		// Test with log_len < LOG_WIDTH
+		let buffer = FieldBuffer::<P>::zeros(1); // 2 elements
+		assert_eq!(buffer.log_len(), 1);
+		assert_eq!(buffer.len(), 2);
+
+		// Check all elements are zero
+		for i in 0..2 {
+			assert_eq!(buffer.get(i), F::ZERO);
+		}
+	}
+
+	#[test]
+	fn alloc_constructors_global() {
 		// Every allocation is an independent heap buffer, freed on drop.
 		check_alloc_constructors(&GlobalAllocator);
 	}
 
 	#[test]
-	fn test_alloc_constructors_pooled() {
+	fn alloc_constructors_pooled() {
 		// A pool reuses freed blocks, so a buffer may start life on memory a prior buffer dirtied.
 		let pool = BufferPool::new();
 		check_alloc_constructors(&&pool);
 	}
 
 	#[test]
-	fn test_from_values_below_packing_width() {
+	fn from_values_below_packing_width() {
 		// Make a buffer using `from_values()`, where the number of scalars is below the packing
 		// width
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
@@ -1006,7 +842,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_from_values_above_packing_width() {
+	fn from_values_above_packing_width() {
 		// Make a buffer using `from_values()`, where the number of scalars is above the packing
 		// width
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
@@ -1024,20 +860,20 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "power of two")]
-	fn test_from_values_non_power_of_two() {
+	fn from_values_non_power_of_two() {
 		let values: Vec<F> = (0..7).map(F::new).collect(); // 7 is not a power of two
 		let _ = FieldBuffer::<P>::from_values(&values);
 	}
 
 	#[test]
 	#[should_panic(expected = "power of two")]
-	fn test_from_values_empty() {
+	fn from_values_empty() {
 		let values: Vec<F> = vec![];
 		let _ = FieldBuffer::<P>::from_values(&values);
 	}
 
 	#[test]
-	fn test_new_below_packing_width() {
+	fn new_below_packing_width() {
 		// Make a buffer using `new()`, where the number of scalars is below the packing
 		// width
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
@@ -1056,7 +892,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_new_above_packing_width() {
+	fn new_above_packing_width() {
 		// Make a buffer using `new()`, where the number of scalars is above the packing
 		// width
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
@@ -1078,13 +914,13 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_new_wrong_packed_length() {
+	fn new_wrong_packed_length() {
 		let packed_values = vec![P::default(); 3]; // Wrong: should be 4 for log_len=4
 		let _ = FieldBuffer::new(4, packed_values.as_slice());
 	}
 
 	#[test]
-	fn test_get_set() {
+	fn get_set() {
 		let mut buffer = FieldBuffer::<P>::zeros(3); // 8 elements
 
 		// Set some values
@@ -1100,20 +936,151 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_get_out_of_bounds() {
+	fn get_out_of_bounds() {
 		let buffer = FieldBuffer::<P>::zeros(3); // 8 elements
 		let _ = buffer.get(8);
 	}
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_set_out_of_bounds() {
+	fn set_out_of_bounds() {
 		let mut buffer = FieldBuffer::<P>::zeros(3); // 8 elements
 		buffer.set(8, F::new(0));
 	}
 
 	#[test]
-	fn test_chunk() {
+	fn to_ref_to_mut() {
+		let mut buffer = FieldBuffer::<P>::zeros(3);
+
+		// Test to_ref
+		let slice_ref = buffer.to_ref();
+		assert_eq!(slice_ref.len(), buffer.len());
+		assert_eq!(slice_ref.log_len(), buffer.log_len());
+		assert_eq!(slice_ref.as_ref().len(), 1 << slice_ref.log_len().saturating_sub(P::LOG_WIDTH));
+
+		// Test to_mut
+		let mut slice_mut = buffer.to_mut();
+		slice_mut.set(0, F::new(123));
+		assert_eq!(slice_mut.as_mut().len(), 1 << slice_mut.log_len().saturating_sub(P::LOG_WIDTH));
+		assert_eq!(buffer.get(0), F::new(123));
+	}
+
+	#[test]
+	fn iter_scalars() {
+		// Test with buffer size below packing width
+		// P::LOG_WIDTH = 2, so P::WIDTH = 4
+		let values = vec![F::new(10), F::new(20)]; // 2 elements < 4
+		let buffer = FieldBuffer::<P>::from_values(&values);
+
+		let collected: Vec<F> = buffer.iter_scalars().collect();
+		assert_eq!(collected, values);
+
+		// Verify it matches individual get calls
+		for (i, &val) in collected.iter().enumerate() {
+			assert_eq!(val, buffer.get(i));
+		}
+
+		// Test with buffer size equal to packing width
+		let values = vec![F::new(1), F::new(2), F::new(3), F::new(4)]; // 4 elements = P::WIDTH
+		let buffer = FieldBuffer::<P>::from_values(&values);
+
+		let collected: Vec<F> = buffer.iter_scalars().collect();
+		assert_eq!(collected, values);
+
+		// Test with buffer size above packing width
+		let values: Vec<F> = (0..16).map(F::new).collect(); // 16 elements > 4
+		let buffer = FieldBuffer::<P>::from_values(&values);
+
+		let collected: Vec<F> = buffer.iter_scalars().collect();
+		assert_eq!(collected, values);
+
+		// Verify it matches individual get calls
+		for (i, &val) in collected.iter().enumerate() {
+			assert_eq!(val, buffer.get(i));
+		}
+
+		// Test with single element buffer
+		let values = vec![F::new(42)];
+		let buffer = FieldBuffer::<P>::from_values(&values);
+
+		let collected: Vec<F> = buffer.iter_scalars().collect();
+		assert_eq!(collected, values);
+
+		// Test with large buffer
+		let values: Vec<F> = (0..256).map(F::new).collect();
+		let buffer = FieldBuffer::<P>::from_values(&values);
+
+		let collected: Vec<F> = buffer.iter_scalars().collect();
+		assert_eq!(collected, values);
+
+		// Test that iterator is cloneable and can be used multiple times
+		let values: Vec<F> = (0..8).map(F::new).collect();
+		let buffer = FieldBuffer::<P>::from_values(&values);
+
+		let iter1 = buffer.iter_scalars();
+		let iter2 = iter1.clone();
+
+		let collected1: Vec<F> = iter1.collect();
+		let collected2: Vec<F> = iter2.collect();
+		assert_eq!(collected1, collected2);
+		assert_eq!(collected1, values);
+	}
+
+	#[test]
+	fn truncate_vec_backing() {
+		// P::LOG_WIDTH = 2, P::WIDTH = 4.
+		let make = || FieldBuffer::<P>::from_values(&(0..16).map(F::new).collect::<Vec<_>>());
+
+		// Above-width result: the backing Vec shrinks to the new packed length.
+		let mut buffer = make();
+		buffer.truncate(3); // 8 elements -> 2 packed words
+		assert_eq!(buffer.log_len(), 3);
+		assert_eq!(buffer.len(), 8);
+		for i in 0..8 {
+			assert_eq!(buffer.get(i), F::new(i as u128));
+		}
+		assert_eq!(buffer.take_data().len(), 2);
+
+		// Sub-packing-width result: one word retained, live prefix kept, dead lanes zeroed.
+		let mut buffer = make();
+		buffer.truncate(1); // 2 elements
+		assert_eq!(buffer.len(), 2);
+		assert_eq!(buffer.get(0), F::new(0));
+		assert_eq!(buffer.get(1), F::new(1));
+		let data = buffer.take_data();
+		assert_eq!(data.len(), 1);
+		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
+		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
+
+		// No-op when the requested length is not smaller.
+		let mut buffer = FieldBuffer::<P>::from_values(&(0..4).map(F::new).collect::<Vec<_>>());
+		buffer.truncate(5);
+		assert_eq!(buffer.log_len(), 2);
+		assert_eq!(buffer.take_data().len(), 1);
+	}
+
+	#[test]
+	fn truncate_slice_backing() {
+		// Truncating a `&mut [P]` backing reslices it and zeros the sub-width dead lanes.
+		let mut storage = vec![P::default(); 4]; // 16 elements at log_len 4
+		let mut buffer = FieldSliceMut::from_slice(4, storage.as_mut_slice());
+		for i in 0..16 {
+			buffer.set(i, F::new(i as u128));
+		}
+
+		buffer.truncate(1); // 2 elements, sub-width
+		assert_eq!(buffer.len(), 2);
+		assert_eq!(buffer.get(0), F::new(0));
+		assert_eq!(buffer.get(1), F::new(1));
+
+		let data = buffer.take_data();
+		assert_eq!(data.len(), 1);
+		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
+		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
+	}
+
+	#[test]
+	fn chunk() {
 		let log_len = 8;
 		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
@@ -1132,7 +1099,7 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_chunk_invalid_size() {
+	fn chunk_invalid_size() {
 		let log_len = 8;
 		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
@@ -1141,7 +1108,7 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_chunk_invalid_index() {
+	fn chunk_invalid_index() {
 		let log_len = 8;
 		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
@@ -1149,7 +1116,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_chunk_mut() {
+	fn chunk_mut() {
 		let log_len = 8;
 		let mut buffer = FieldBuffer::<P>::zeros(log_len);
 
@@ -1243,7 +1210,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_chunks() {
+	fn chunks() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
@@ -1262,7 +1229,7 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_chunks_invalid_size_too_large() {
+	fn chunks_invalid_size_too_large() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 		let _ = buffer.chunks(5).collect::<Vec<_>>();
@@ -1270,7 +1237,7 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_chunks_invalid_size_too_small() {
+	fn chunks_invalid_size_too_small() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 		// P::LOG_WIDTH = 2, so chunks(0) should fail
@@ -1278,7 +1245,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_chunks_par() {
+	fn chunks_par() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
@@ -1318,7 +1285,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_par_chunk_scalars_ignores_dead_lanes() {
+	fn par_chunk_scalars_ignores_dead_lanes() {
 		// Fixture state: 2 scalars occupy one 4-lane word, leaving two lanes dead.
 		//
 		//     word = [s_0, s_1, dead, dead]
@@ -1335,14 +1302,14 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_chunks_par_invalid_size() {
+	fn chunks_par_invalid_size() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 		let _ = buffer.chunks_par(5).collect::<Vec<_>>();
 	}
 
 	#[test]
-	fn test_chunks_mut() {
+	fn chunks_mut() {
 		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
 
 		// Modify via chunks
@@ -1366,30 +1333,13 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_chunks_mut_invalid_size() {
+	fn chunks_mut_invalid_size() {
 		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
 		let _ = buffer.chunks_mut(0).collect::<Vec<_>>();
 	}
 
 	#[test]
-	fn test_to_ref_to_mut() {
-		let mut buffer = FieldBuffer::<P>::zeros(3);
-
-		// Test to_ref
-		let slice_ref = buffer.to_ref();
-		assert_eq!(slice_ref.len(), buffer.len());
-		assert_eq!(slice_ref.log_len(), buffer.log_len());
-		assert_eq!(slice_ref.as_ref().len(), 1 << slice_ref.log_len().saturating_sub(P::LOG_WIDTH));
-
-		// Test to_mut
-		let mut slice_mut = buffer.to_mut();
-		slice_mut.set(0, F::new(123));
-		assert_eq!(slice_mut.as_mut().len(), 1 << slice_mut.log_len().saturating_sub(P::LOG_WIDTH));
-		assert_eq!(buffer.get(0), F::new(123));
-	}
-
-	#[test]
-	fn test_split_half() {
+	fn split_half() {
 		// Test with buffer size > P::WIDTH (multiple packed elements)
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
@@ -1453,75 +1403,14 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_split_half_ref_size_one() {
+	fn split_half_ref_size_one() {
 		let values = vec![F::new(42)];
 		let buffer = FieldBuffer::<P>::from_values(&values);
 		let _ = buffer.split_half_ref();
 	}
 
 	#[test]
-	fn test_iter_scalars() {
-		// Test with buffer size below packing width
-		// P::LOG_WIDTH = 2, so P::WIDTH = 4
-		let values = vec![F::new(10), F::new(20)]; // 2 elements < 4
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		let collected: Vec<F> = buffer.iter_scalars().collect();
-		assert_eq!(collected, values);
-
-		// Verify it matches individual get calls
-		for (i, &val) in collected.iter().enumerate() {
-			assert_eq!(val, buffer.get(i));
-		}
-
-		// Test with buffer size equal to packing width
-		let values = vec![F::new(1), F::new(2), F::new(3), F::new(4)]; // 4 elements = P::WIDTH
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		let collected: Vec<F> = buffer.iter_scalars().collect();
-		assert_eq!(collected, values);
-
-		// Test with buffer size above packing width
-		let values: Vec<F> = (0..16).map(F::new).collect(); // 16 elements > 4
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		let collected: Vec<F> = buffer.iter_scalars().collect();
-		assert_eq!(collected, values);
-
-		// Verify it matches individual get calls
-		for (i, &val) in collected.iter().enumerate() {
-			assert_eq!(val, buffer.get(i));
-		}
-
-		// Test with single element buffer
-		let values = vec![F::new(42)];
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		let collected: Vec<F> = buffer.iter_scalars().collect();
-		assert_eq!(collected, values);
-
-		// Test with large buffer
-		let values: Vec<F> = (0..256).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		let collected: Vec<F> = buffer.iter_scalars().collect();
-		assert_eq!(collected, values);
-
-		// Test that iterator is cloneable and can be used multiple times
-		let values: Vec<F> = (0..8).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		let iter1 = buffer.iter_scalars();
-		let iter2 = iter1.clone();
-
-		let collected1: Vec<F> = iter1.collect();
-		let collected2: Vec<F> = iter2.collect();
-		assert_eq!(collected1, collected2);
-		assert_eq!(collected1, values);
-	}
-
-	#[test]
-	fn test_split_half_mut_no_closure() {
+	fn split_half_mut_no_closure() {
 		// Test with buffer size > P::WIDTH (multiple packed elements)
 		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
 
@@ -1607,62 +1496,9 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn test_split_half_mut_size_one() {
+	fn split_half_mut_size_one() {
 		let mut buffer = FieldBuffer::<P>::zeros(0); // 1 element
 		let _ = buffer.split_half_mut();
-	}
-
-	#[test]
-	fn test_truncate_vec_backing() {
-		// P::LOG_WIDTH = 2, P::WIDTH = 4.
-		let make = || FieldBuffer::<P>::from_values(&(0..16).map(F::new).collect::<Vec<_>>());
-
-		// Above-width result: the backing Vec shrinks to the new packed length.
-		let mut buffer = make();
-		buffer.truncate(3); // 8 elements -> 2 packed words
-		assert_eq!(buffer.log_len(), 3);
-		assert_eq!(buffer.len(), 8);
-		for i in 0..8 {
-			assert_eq!(buffer.get(i), F::new(i as u128));
-		}
-		assert_eq!(buffer.take_data().len(), 2);
-
-		// Sub-packing-width result: one word retained, live prefix kept, dead lanes zeroed.
-		let mut buffer = make();
-		buffer.truncate(1); // 2 elements
-		assert_eq!(buffer.len(), 2);
-		assert_eq!(buffer.get(0), F::new(0));
-		assert_eq!(buffer.get(1), F::new(1));
-		let data = buffer.take_data();
-		assert_eq!(data.len(), 1);
-		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
-		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
-
-		// No-op when the requested length is not smaller.
-		let mut buffer = FieldBuffer::<P>::from_values(&(0..4).map(F::new).collect::<Vec<_>>());
-		buffer.truncate(5);
-		assert_eq!(buffer.log_len(), 2);
-		assert_eq!(buffer.take_data().len(), 1);
-	}
-
-	#[test]
-	fn test_truncate_slice_backing() {
-		// Truncating a `&mut [P]` backing reslices it and zeros the sub-width dead lanes.
-		let mut storage = vec![P::default(); 4]; // 16 elements at log_len 4
-		let mut buffer = FieldSliceMut::from_slice(4, storage.as_mut_slice());
-		for i in 0..16 {
-			buffer.set(i, F::new(i as u128));
-		}
-
-		buffer.truncate(1); // 2 elements, sub-width
-		assert_eq!(buffer.len(), 2);
-		assert_eq!(buffer.get(0), F::new(0));
-		assert_eq!(buffer.get(1), F::new(1));
-
-		let data = buffer.take_data();
-		assert_eq!(data.len(), 1);
-		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
-		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
 	}
 
 	proptest! {
