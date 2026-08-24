@@ -15,7 +15,7 @@ use binius_ip_prover::{
 		round_evaluator::SharedSumcheckProver,
 	},
 };
-use binius_math::{FieldBuffer, FieldVec, multilinear::fold::fold_highest_var_inplace};
+use binius_math::{FieldBuffer, FieldVec, multilinear::MultilinearMut};
 use binius_verifier::protocols::shift::LOG_SHIFT_COUNT;
 use tracing::instrument;
 
@@ -499,7 +499,7 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 				// The sparse rows move into their half's slot of the shrunken row space.
 				// The dense weight table folds its highest variable the ordinary way.
 				g.fold(challenge);
-				fold_highest_var_inplace(&mut h, challenge);
+				h.fold_highest_var(challenge);
 
 				if g.log_rows() > 0 {
 					// The row index still has unbound variables: stay in the row stage.
@@ -544,7 +544,7 @@ mod tests {
 		AndConstraint, ConstraintSystem, InoutSegment, Shift, ShiftedValueIndex, ValueIndex,
 	};
 	use binius_field::{Field, Ghash128b, PackedBinaryGhash2x128b};
-	use binius_math::{inner_product::inner_product_buffers, test_utils::random_scalars};
+	use binius_math::{multilinear::Multilinear, test_utils::random_scalars};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::config::StdChallenger;
 	use rand::{SeedableRng, rngs::StdRng};
@@ -787,7 +787,7 @@ mod tests {
 	fn assert_sparse_matches_dense<P: PackedField<Scalar = F>>(cs: &ConstraintSystem, seed: u64) {
 		let (g, h) = phase_1_multilinears::<P>(cs, seed);
 		// The true sum, so the test exercises a sumcheck a verifier would accept.
-		let sum = inner_product_buffers(&g.scatter(&GlobalAllocator), &h);
+		let sum = g.scatter(&GlobalAllocator).inner_product(&h);
 
 		let mut sparse_transcript = ProverTranscript::<StdChallenger>::default();
 		let ProveSingleOutput {

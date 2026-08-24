@@ -16,8 +16,11 @@ use binius_frontend::{CircuitBuilder, Wire};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace,
-	inner_product::{inner_product, inner_product_buffers},
-	multilinear::hypercube::{Hypercube, OneCube},
+	inner_product::inner_product,
+	multilinear::{
+		Multilinear,
+		hypercube::{Hypercube, OneCube},
+	},
 	univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
@@ -319,7 +322,7 @@ pub fn evaluate_witness<F: BinaryField>(words: &[Word], r_j: &[F], r_y: &[F]) ->
 
 	let r_j_witness = fold_words::<_, F, _>(&GlobalAllocator, words, r_j_tensor.as_ref());
 
-	inner_product_buffers(&r_j_witness, &r_y_tensor)
+	r_j_witness.inner_product(&r_y_tensor)
 }
 
 #[test]
