@@ -73,12 +73,6 @@ impl<P: PackedField> SubWordChunk<P> {
 		self.word_index
 	}
 
-	/// Element count of the chunk, as a base-2 logarithm.
-	#[inline]
-	pub(super) const fn log_len(self) -> usize {
-		self.log_len
-	}
-
 	/// Reads the chunk's elements out of the word holding it.
 	#[inline]
 	pub(super) fn scalars(self, word: P) -> impl Iterator<Item = P::Scalar> + Send + Clone {
@@ -91,14 +85,6 @@ impl<P: PackedField> SubWordChunk<P> {
 	#[inline]
 	pub(super) fn repack(self, words: &[P]) -> P {
 		P::from_scalars(self.scalars(words[self.word_index]))
-	}
-
-	/// Copies an edited chunk back into the lanes it came from.
-	#[inline]
-	pub(super) fn merge_into(self, word: &mut P, chunk: &P) {
-		for i in 0..1 << self.log_len {
-			word.set(self.lane_offset | i, chunk.get(i));
-		}
 	}
 }
 

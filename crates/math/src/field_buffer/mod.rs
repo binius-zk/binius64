@@ -54,7 +54,7 @@ use chunks::SubWordChunk;
 pub use chunks::{Chunks, ChunksMut};
 pub use scalars::Scalars;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
-pub use write_back::{FieldBufferChunkMut, FieldBufferSplitMut};
+pub use write_back::FieldBufferSplitMut;
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
@@ -591,49 +591,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 
 		let chunk_count = 1 << (self.log_len - log_chunk_size);
 		ChunksMut::new(self.as_mut(), log_chunk_size, chunk_count)
-	}
-
-	/// Get a mutable aligned chunk of size `2^log_chunk_size`.
-	///
-	/// Addresses the same chunk as the shared accessor, and lends it mutably.
-	///
-	/// A chunk smaller than one packed word comes back behind a write-back guard.
-	/// Edits reach the parent word when that guard drops.
-	///
-	/// # Preconditions
-	///
-	/// * `log_chunk_size` must be at most `log_len`.
-	/// * `chunk_index` must be less than the chunk count.
-	#[track_caller]
-	pub fn chunk_mut(
-		&mut self,
-		log_chunk_size: usize,
-		chunk_index: usize,
-	) -> FieldBufferChunkMut<'_, P> {
-		assert!(
-			log_chunk_size <= self.log_len,
-			"precondition: log_chunk_size must be at most log_len"
-		);
-
-		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		assert!(
-			chunk_index < chunk_count,
-			"precondition: chunk_index must be less than chunk_count"
-		);
-
-		if log_chunk_size >= P::LOG_WIDTH {
-			// Large chunk: return a mutable slice directly
-			let packed_log_chunk_size = log_chunk_size - P::LOG_WIDTH;
-			let chunk = &mut self.values[chunk_index << packed_log_chunk_size..]
-				[..1 << packed_log_chunk_size];
-			FieldBufferChunkMut::borrowed(log_chunk_size, chunk)
-		} else {
-			// Small chunk: copy the lanes out, and write them back when the guard drops.
-			let location = SubWordChunk::new(log_chunk_size, chunk_index);
-			let chunk = location.repack(&self.values);
-			let parent = &mut self.values[location.word_index()];
-			FieldBufferChunkMut::detached(location, chunk, parent)
-		}
 	}
 
 	/// Consumes the buffer and halves it, returning a guard that owns the store.
@@ -1238,100 +1195,6 @@ mod tests {
 		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 		let _ = buffer.chunk(4, 1 << (log_len - 4)); // out of range
-	}
-
-	#[test]
-	fn chunk_mut() {
-		let log_len = 8;
-		let mut buffer = FieldBuffer::<P>::zeros(log_len);
-
-		// Initialize with test data
-		for i in 0..1 << log_len {
-			buffer.set(i, F::new(i as u128));
-		}
-
-		// Test mutations for different chunk sizes
-		for log_chunk_size in 0..=log_len {
-			let chunk_count = 1 << (log_len - log_chunk_size);
-
-			// Modify each chunk by multiplying by 10
-			for chunk_index in 0..chunk_count {
-				let mut chunk_wrapper = buffer.chunk_mut(log_chunk_size, chunk_index);
-				let mut chunk = chunk_wrapper.get();
-				for i in 0..1 << log_chunk_size {
-					let old_val = chunk.get(i);
-					chunk.set(i, F::new(u128::from(old_val.val()) * 10));
-				}
-				// chunk_wrapper drops here and writes back changes
-			}
-
-			// Verify modifications
-			for chunk_index in 0..chunk_count {
-				for i in 0..1 << log_chunk_size {
-					let index = chunk_index << log_chunk_size | i;
-					let expected = F::new((index as u128) * 10);
-					assert_eq!(
-						buffer.get(index),
-						expected,
-						"Failed at log_chunk_size={}, chunk_index={}, i={}",
-						log_chunk_size,
-						chunk_index,
-						i
-					);
-				}
-			}
-
-			// Reset buffer for next iteration
-			for i in 0..1 << log_len {
-				buffer.set(i, F::new(i as u128));
-			}
-		}
-
-		// Test large chunks (log_chunk_size >= P::LOG_WIDTH)
-		let mut buffer = FieldBuffer::<P>::zeros(6);
-		for i in 0..64 {
-			buffer.set(i, F::new(i as u128));
-		}
-
-		// Modify first chunk of size 16 (log_chunk_size = 4 >= P::LOG_WIDTH = 2)
-		{
-			let mut chunk_wrapper = buffer.chunk_mut(4, 0);
-			let mut chunk = chunk_wrapper.get();
-			for i in 0..16 {
-				chunk.set(i, F::new(100 + i as u128));
-			}
-		}
-
-		// Verify large chunk modifications
-		for i in 0..16 {
-			assert_eq!(buffer.get(i), F::new(100 + i as u128));
-		}
-		for i in 16..64 {
-			assert_eq!(buffer.get(i), F::new(i as u128));
-		}
-
-		// Test small chunks (log_chunk_size < P::LOG_WIDTH)
-		let mut buffer = FieldBuffer::<P>::zeros(3);
-		for i in 0..8 {
-			buffer.set(i, F::new(i as u128));
-		}
-
-		// Modify third chunk of size 1 (log_chunk_size = 0 < P::LOG_WIDTH = 2)
-		{
-			let mut chunk_wrapper = buffer.chunk_mut(0, 3);
-			let mut chunk = chunk_wrapper.get();
-			chunk.set(0, F::new(42));
-		}
-
-		// Verify small chunk modifications
-		for i in 0..8 {
-			let expected = if i == 3 {
-				F::new(42)
-			} else {
-				F::new(i as u128)
-			};
-			assert_eq!(buffer.get(i), expected);
-		}
 	}
 
 	#[test]
