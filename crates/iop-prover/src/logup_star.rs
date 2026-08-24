@@ -149,7 +149,7 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{
-			evaluate::evaluate,
+			Multilinear,
 			hypercube::{Hypercube, OneCube},
 		},
 		test_utils::{random_field_buffer, random_scalars},
@@ -266,7 +266,7 @@ mod tests {
 			let m = table.values.log_len();
 			assert_eq!(
 				prover_proof.tables[table_index].eval_claim,
-				evaluate(&table.values, &table_point[..m]),
+				table.values.evaluate(&table_point[..m]),
 				"table claim wrong for table {table_index} ({shape})"
 			);
 
@@ -282,7 +282,7 @@ mod tests {
 				let own_point = &index_point[index_point.len() - looker.eval_point.len()..];
 				assert_eq!(
 					*claim,
-					evaluate(&embedded, own_point),
+					embedded.evaluate(own_point),
 					"index claim wrong for table {table_index}, n={} ({shape})",
 					looker.eval_point.len()
 				);

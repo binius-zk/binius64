@@ -7,8 +7,10 @@ use binius_field::{BinaryField, Field, PackedField};
 use binius_iop::fri::{FRIParams, fold::fold_chunk};
 use binius_math::{
 	FieldBuffer, FieldSlice,
-	inner_product::inner_product_buffers,
-	multilinear::hypercube::{Hypercube, OneCube},
+	multilinear::{
+		Multilinear,
+		hypercube::{Hypercube, OneCube},
+	},
 	ntt::AdditiveNTT,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -559,7 +561,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 					.par_chunks_mut(1 << log_lift)
 					.zip(codeword.chunks_par(log_batch_size))
 					.for_each(|(copies, chunk)| {
-						let value = inner_product_buffers(&chunk, &tensor);
+						let value = chunk.inner_product(&tensor);
 						for acc in copies {
 							acc.write(value);
 						}
@@ -572,7 +574,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 					.par_chunks_mut(1 << log_lift)
 					.zip(codeword.chunks_par(log_batch_size))
 					.for_each(|(copies, chunk)| {
-						let value = inner_product_buffers(&chunk, &tensor);
+						let value = chunk.inner_product(&tensor);
 						for acc in copies {
 							*acc += value;
 						}
@@ -622,7 +624,7 @@ mod tests {
 		// with the eq tensor of the challenges (a partial evaluation of each row at the point).
 		let folded_vals: Vec<B128> = msg
 			.chunks(arity)
-			.map(|row| inner_product_buffers(&row, &query))
+			.map(|row| row.inner_product(&query))
 			.collect();
 		let mut folded_msg = FieldBuffer::new(log_dim, folded_vals);
 		assert_eq!(folded_msg.log_len(), log_dim);

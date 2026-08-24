@@ -1,21 +1,19 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{
-	mem,
-	ops::{Deref, DerefMut},
-};
+use std::{mem, ops::Deref};
 
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice,
 	multilinear::{
-		fold::{binary_fold_high, fold_highest_var_inplace},
+		MultilinearMut,
 		hypercube::{Hypercube, OneCube},
 	},
 };
 use binius_utils::{
 	bitwise::{BitSelector, Bitwise},
+	buffer::BufferData,
 	checked_arithmetics::checked_log_2,
 	random_access_sequence::{MatrixVertSliceSubrange, RandomAccessSequence},
 	rayon::prelude::*,
@@ -85,7 +83,7 @@ where
 	/// Get a power-of-two sized aligned chunk of the multilinear at `bit_offset` in the current
 	/// round. This method abstracts transparent/folded state handling. Pre-switchover logic
 	/// requires a chunk sized scratchpad to hold the result.
-	pub fn get_chunk<'switchover, 'scratchpad, Data: DerefMut<Target = [P]>>(
+	pub fn get_chunk<'switchover, 'scratchpad, Data: BufferData<P>>(
 		&'switchover self,
 		scratchpad: &'scratchpad mut FieldBuffer<P, Data>,
 		bit_offset: usize,
@@ -117,7 +115,7 @@ where
 			// Post-switchover: fold high as usual
 			folded
 				.par_iter_mut()
-				.for_each(|multilinear| fold_highest_var_inplace(multilinear, challenge));
+				.for_each(|multilinear| multilinear.fold_highest_var(challenge));
 		} else {
 			// Pre-switchover: update the folding tensor
 			assert!(self.tensor.log_len() < self.switchover);
@@ -183,7 +181,7 @@ fn get_binary_chunk<P, DataOut, DataIn>(
 	chunk_index: usize,
 ) where
 	P: PackedField,
-	DataOut: DerefMut<Target = [P]>,
+	DataOut: BufferData<P>,
 	DataIn: Deref<Target = [P]> + Sync,
 {
 	assert!(binary_sequence.len().is_power_of_two());
@@ -200,5 +198,5 @@ fn get_binary_chunk<P, DataOut, DataIn>(
 		chunk_vars,
 		chunk_index,
 	);
-	binary_fold_high(dest, tensor, &matrix_vert_slice);
+	dest.binary_fold_high(tensor, &matrix_vert_slice);
 }

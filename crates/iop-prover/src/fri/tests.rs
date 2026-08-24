@@ -15,7 +15,7 @@ use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	ReedSolomonCode,
 	multilinear::{
-		evaluate::evaluate,
+		Multilinear,
 		hypercube::{Hypercube, OneCube},
 	},
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
@@ -126,7 +126,7 @@ fn test_commit_prove_verify_success<F, P>(
 	// note that the prover is claiming that the final_message is [c]
 	let mut eval_point = verifier_challenges.clone();
 	eval_point.reverse();
-	let computed_eval = evaluate(&msg, &eval_point);
+	let computed_eval = msg.evaluate(&eval_point);
 
 	let final_fri_value = verifier.verify(&mut channel).unwrap();
 	assert_eq!(computed_eval, final_fri_value);
@@ -318,7 +318,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	// so `max_early = 0` and the slice is `[outer ++ later]`. Oracle `i` folds with the
 	// `log_batch_size_i`-length suffix of the later group; the remaining (tail) challenges fold the
 	// shared reduced codeword. So the final value is
-	//   sum_i outer_tensor[i] * evaluate(msg_i, reversed(later_i ++ tail)).
+	//   sum_i outer_tensor[i] * msg_i.evaluate(reversed(later_i ++ tail)).
 	let max_later = log_batch_sizes.iter().copied().max().unwrap();
 	let log_n_oracles = log2_ceil_usize(log_batch_sizes.len());
 	let first_fold_arity = params.log_batch_size();
@@ -332,7 +332,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 		let later_i = &later[max_later - log_batch_size..];
 		let mut eval_point = later_i.iter().chain(tail).copied().collect::<Vec<_>>();
 		eval_point.reverse();
-		expected += outer_tensor[i] * evaluate(msg, &eval_point);
+		expected += outer_tensor[i] * msg.evaluate(&eval_point);
 	}
 	assert_eq!(final_value, expected);
 }
@@ -453,7 +453,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 	// `early_window ++ later_window`, the suffixes of the early and later groups of lengths
 	// `log_early_batch_size_i` and `log_later_batch_size_i`. The remaining (tail) challenges fold
 	// the shared reduced codeword. So the final value is
-	//   sum_i outer_tensor[i] * evaluate(msg_i, reversed(early_i ++ later_i ++ tail)).
+	//   sum_i outer_tensor[i] * msg_i.evaluate(reversed(early_i ++ later_i ++ tail)).
 	let max_early = params
 		.input_oracles()
 		.iter()
@@ -488,7 +488,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 			.copied()
 			.collect::<Vec<_>>();
 		eval_point.reverse();
-		expected += outer_tensor[i] * evaluate(msg, &eval_point);
+		expected += outer_tensor[i] * msg.evaluate(&eval_point);
 	}
 	assert_eq!(final_value, expected);
 }
@@ -616,7 +616,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	// (contributing the factor `prod (1 - tail_k)`), and the surviving `log_dim_i` tail challenges
 	// bind the real message. Hence the final value is
 	//   sum_i outer_tensor[i] * prod_{k<eta_i}(1 - tail_k)
-	//                          * evaluate(msg_i, reversed(later_i ++ tail[eta_i..])).
+	//                          * msg_i.evaluate(reversed(later_i ++ tail[eta_i..])).
 	let max_later = log_batch_sizes.iter().copied().max().unwrap();
 	let log_n_oracles = log2_ceil_usize(log_batch_sizes.len());
 	let first_fold_arity = params.log_batch_size();
@@ -639,7 +639,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 			.copied()
 			.collect::<Vec<_>>();
 		eval_point.reverse();
-		expected += outer_tensor[i] * pad_factor * evaluate(msg, &eval_point);
+		expected += outer_tensor[i] * pad_factor * msg.evaluate(&eval_point);
 	}
 	assert_eq!(final_value, expected);
 }

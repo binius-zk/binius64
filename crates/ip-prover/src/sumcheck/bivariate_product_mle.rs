@@ -116,7 +116,7 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{
-			evaluate::evaluate,
+			Multilinear,
 			hypercube::{Hypercube, OneCube},
 		},
 		test_utils::{random_field_buffer, random_scalars},
@@ -176,8 +176,8 @@ mod tests {
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point The prover binds variables from high to low, but evaluate expects them from low
 		// to high
-		let eval_a = evaluate(multilinear_a, &reduced_eval_point);
-		let eval_b = evaluate(multilinear_b, &reduced_eval_point);
+		let eval_a = multilinear_a.evaluate(&reduced_eval_point);
+		let eval_b = multilinear_b.evaluate(&reduced_eval_point);
 
 		assert_eq!(
 			eval_a, multilinear_evals[0],
@@ -247,8 +247,8 @@ mod tests {
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
-		let eval_a = evaluate(multilinear_a, &reduced_eval_point);
-		let eval_b = evaluate(multilinear_b, &reduced_eval_point);
+		let eval_a = multilinear_a.evaluate(&reduced_eval_point);
+		let eval_b = multilinear_b.evaluate(&reduced_eval_point);
 
 		assert_eq!(
 			eval_a, multilinear_evals[0],
@@ -286,7 +286,7 @@ mod tests {
 		let product_buffer = FieldBuffer::new(n_vars, product);
 
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate(&product_buffer, &eval_point);
+		let eval_claim = product_buffer.evaluate(&eval_point);
 
 		// Create the prover
 		let mlecheck_prover = new(

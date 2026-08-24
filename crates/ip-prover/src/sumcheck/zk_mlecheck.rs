@@ -613,7 +613,7 @@ mod tests {
 	#[test]
 	fn test_libra_eval_inner_product_equals_mask_eval() {
 		use binius_compute::GlobalAllocator;
-		use binius_math::inner_product::inner_product_buffers;
+		use binius_math::multilinear::Multilinear;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_vars = 6;
@@ -626,7 +626,7 @@ mod tests {
 		// Create random challenge point
 		let challenge_point: Vec<B128> = random_scalars(&mut rng, n_vars);
 
-		// Compute g(r) using Mask::evaluate (direct computation)
+		// Compute g(r) using direct computation.evaluate()
 		let mask = Mask::new(n_vars, degree, mask_buffer.to_ref());
 		let direct_eval: B128 = (0..n_vars)
 			.map(|i| mask.evaluate_univariate(i, challenge_point[i]))
@@ -641,7 +641,7 @@ mod tests {
 			m_n,
 			m_d,
 		);
-		let inner_product_eval = inner_product_buffers(&mask_buffer, &libra_eval_tensor);
+		let inner_product_eval = mask_buffer.inner_product(&libra_eval_tensor);
 
 		assert_eq!(
 			direct_eval, inner_product_eval,
@@ -653,7 +653,7 @@ mod tests {
 	fn test_libra_eval_sumcheck() {
 		use binius_compute::GlobalAllocator;
 		use binius_ip::{mlecheck::libra_eval, sumcheck::verify};
-		use binius_math::{inner_product::inner_product_par, multilinear::evaluate::evaluate};
+		use binius_math::multilinear::Multilinear;
 
 		use crate::sumcheck::{bivariate_product_prover, prove_single};
 
@@ -681,7 +681,7 @@ mod tests {
 		);
 
 		// Compute the claimed sum: <g', libra_eval_r> = g(r)
-		let claimed_sum = inner_product_par(&mask_buffer, &libra_eval_tensor);
+		let claimed_sum = mask_buffer.par_inner_product(&libra_eval_tensor);
 
 		// Create the bivariate product sumcheck prover
 		let prover =
@@ -729,7 +729,7 @@ mod tests {
 		);
 
 		// Also verify g' evaluation directly
-		let expected_g_prime_eval = evaluate(&mask_buffer, &query_point);
+		let expected_g_prime_eval = mask_buffer.evaluate(&query_point);
 		assert_eq!(g_prime_eval, expected_g_prime_eval);
 	}
 }
