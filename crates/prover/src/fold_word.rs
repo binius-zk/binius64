@@ -584,25 +584,34 @@ impl<F: BinaryField> WordFolder<F> {
 		// Each chunk contributes to every bit position, scaled by that chunk's suffix weight.
 		// Summing the per-chunk accumulators contracts the word axis.
 		// Weights past the list's end pair with absent rows, so the zip drops them.
+		//
+		// One accumulator per worker, not one per chunk:
+		//
+		//     per chunk : 512 bytes of words in, a 1 KiB accumulator zeroed and merged back out
+		//     per worker: 512 bytes of words in, straight into an accumulator already live
+		//
+		// A merge seeded with a partial that already exists never touches a buffer of zeros.
+		// An identity would zero one accumulator per chunk, then add all 64 elements of it.
 		let mut folded = chunks
 			.par_iter()
 			.zip(self.suffix_weights.as_ref().par_iter())
 			// One item is one chunk of 64 words, so the floor needs no conversion.
 			.with_min_len(MIN_CHUNKS_PER_TASK)
-			.map(|(chunk, &suffix_weight)| {
-				let mut acc = [F::ZERO; Word::BITS];
-				accumulate_word_chunk(chunk, &self.lookups, suffix_weight, &mut acc);
-				acc
-			})
-			.reduce(
+			.fold(
 				|| [F::ZERO; Word::BITS],
-				|mut lhs, rhs| {
-					for (lhs_i, rhs_i) in iter::zip(&mut lhs, rhs) {
-						*lhs_i += rhs_i;
-					}
-					lhs
+				|mut acc, (chunk, &suffix_weight)| {
+					accumulate_word_chunk(chunk, &self.lookups, suffix_weight, &mut acc);
+					acc
 				},
-			);
+			)
+			.reduce_with(|mut lhs, rhs| {
+				for (lhs_i, rhs_i) in iter::zip(&mut lhs, rhs) {
+					*lhs_i += rhs_i;
+				}
+				lhs
+			})
+			// A list with no whole chunks yields no partials at all, and folds to zero.
+			.unwrap_or([F::ZERO; Word::BITS]);
 
 		self.accumulate_tail(tail, chunks.len(), &mut folded);
 		folded
