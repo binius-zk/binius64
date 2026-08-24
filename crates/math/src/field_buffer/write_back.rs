@@ -31,6 +31,10 @@ pub struct FieldBufferSplitMut<P: PackedField, Data: DerefMut<Target = [P]>> {
 }
 
 impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBufferSplitMut<P, Data> {
+	/// Lends the two halves out as mutable views, the low half first.
+	///
+	/// A half of whole words is a view straight onto the store, so edits land at once.
+	/// A narrower half is a view onto a detached word, so edits land when this guard drops.
 	pub fn halves(&mut self) -> (FieldSliceMut<'_, P>, FieldSliceMut<'_, P>) {
 		match &mut self.singles {
 			Some([lo_half, hi_half]) => (
@@ -63,9 +67,8 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBufferSplitMut<P, Data> 
 
 impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for FieldBufferSplitMut<P, Data> {
 	fn drop(&mut self) {
+		// Detached halves are the only shape with anything to write back.
 		if let Some([lo_half, hi_half]) = self.singles {
-			// Write back the results by interleaving them back together
-			// The arrays may have been modified by the closure
 			(self.data[0], _) = lo_half.interleave(hi_half, self.log_len);
 		}
 	}
@@ -76,9 +79,27 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for FieldBufferSplitMut<
 /// A chunk of at least one packed word is lent straight from the store.
 /// A smaller one is detached into an owned word and merged back on drop.
 #[derive(Debug)]
-pub struct FieldBufferChunkMut<'a, P: PackedField>(pub(super) FieldBufferChunkMutInner<'a, P>);
+pub struct FieldBufferChunkMut<'a, P: PackedField>(FieldBufferChunkMutInner<'a, P>);
 
 impl<'a, P: PackedField> FieldBufferChunkMut<'a, P> {
+	/// Guards a chunk narrower than a packed word, already detached out of `parent`.
+	pub(super) const fn detached(location: SubWordChunk<P>, chunk: P, parent: &'a mut P) -> Self {
+		Self(FieldBufferChunkMutInner::Single {
+			location,
+			chunk,
+			parent,
+		})
+	}
+
+	/// Guards a chunk of whole words, lent straight from the store.
+	pub(super) const fn borrowed(log_len: usize, chunk: &'a mut [P]) -> Self {
+		Self(FieldBufferChunkMutInner::Slice { log_len, chunk })
+	}
+
+	/// Lends the chunk out as a mutable view.
+	///
+	/// A chunk of whole words is a view straight onto the store, so edits land at once.
+	/// A narrower chunk is a view onto a detached word, so edits land when this guard drops.
 	pub const fn get(&mut self) -> FieldSliceMut<'_, P> {
 		match &mut self.0 {
 			FieldBufferChunkMutInner::Single {
@@ -97,8 +118,23 @@ impl<'a, P: PackedField> FieldBufferChunkMut<'a, P> {
 	}
 }
 
+impl<P: PackedField> Drop for FieldBufferChunkMut<'_, P> {
+	fn drop(&mut self) {
+		match &mut self.0 {
+			FieldBufferChunkMutInner::Single {
+				location,
+				chunk,
+				parent,
+			} => location.merge_into(parent, chunk),
+			// A chunk lent from the store was edited in place, so there is nothing to merge.
+			FieldBufferChunkMutInner::Slice { .. } => {}
+		}
+	}
+}
+
+/// The two shapes a mutably borrowed chunk takes, decided by its size against the packing width.
 #[derive(Debug)]
-pub(super) enum FieldBufferChunkMutInner<'a, P: PackedField> {
+enum FieldBufferChunkMutInner<'a, P: PackedField> {
 	Single {
 		/// Which lanes of the parent word the chunk occupies.
 		location: SubWordChunk<P>,
@@ -111,17 +147,4 @@ pub(super) enum FieldBufferChunkMutInner<'a, P: PackedField> {
 		log_len: usize,
 		chunk: &'a mut [P],
 	},
-}
-
-impl<'a, P: PackedField> Drop for FieldBufferChunkMutInner<'a, P> {
-	fn drop(&mut self) {
-		match self {
-			Self::Single {
-				location,
-				chunk,
-				parent,
-			} => location.merge_into(parent, chunk),
-			Self::Slice { .. } => {}
-		}
-	}
 }
