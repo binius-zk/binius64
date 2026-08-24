@@ -13,7 +13,7 @@ use binius_math::{FieldVec, field_buffer::FieldBuffer};
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize};
 pub use binius_verifier::protocols::binmul::BinMulOutput;
 
-use crate::fold_word::WordFolder;
+use crate::fold_word::WordAxisFolder;
 
 /// Build a packed GHASH-field multilinear table from a `(lo, hi)` pair of word columns.
 ///
@@ -130,7 +130,7 @@ where
 	//
 	// Six columns cannot fill a machine on their own, so each column divides its own chunk axis
 	// rather than the six being run against each other.
-	let folder = WordFolder::<F>::new(&eval_point);
+	let folder = WordAxisFolder::<F>::new(&eval_point);
 	let a_lo_evals = folder.fold_par(a_lo);
 	let a_hi_evals = folder.fold_par(a_hi);
 	let b_lo_evals = folder.fold_par(b_lo);

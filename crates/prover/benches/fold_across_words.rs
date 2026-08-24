@@ -1,7 +1,7 @@
 // Copyright 2026 The Binius Developers
 use binius_core::word::Word;
 use binius_math::test_utils::random_scalars;
-use binius_prover::fold_word::WordFolder;
+use binius_prover::fold_word::WordAxisFolder;
 use binius_verifier::config::B128;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::prelude::*;
@@ -26,7 +26,7 @@ fn bench_single_column(c: &mut Criterion) {
 			.map(|_| Word::from_u64(rng.random()))
 			.collect::<Vec<_>>();
 		let point = random_scalars::<B128>(&mut rng, log_n_words);
-		let folder = WordFolder::<B128>::new(&point);
+		let folder = WordAxisFolder::<B128>::new(&point);
 
 		// Words per second, so the two drivers compare directly across sizes.
 		group.throughput(Throughput::Elements(n_words as u64));
@@ -61,7 +61,7 @@ fn bench_shared_point_columns(c: &mut Criterion) {
 			})
 			.collect::<Vec<_>>();
 		let point = random_scalars::<B128>(&mut rng, log_n_words);
-		let folder = WordFolder::<B128>::new(&point);
+		let folder = WordAxisFolder::<B128>::new(&point);
 
 		// All six columns' words, so throughput counts the whole phase.
 		group.throughput(Throughput::Elements((N_COLUMNS * n_words) as u64));
