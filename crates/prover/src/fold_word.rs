@@ -41,6 +41,19 @@ const BITS_PER_BYTE: usize = Word::BITS / Word::BYTES;
 ///
 /// Sixteen chunks is 1024 words, which is the setting that loses at neither end.
 const MIN_CHUNKS_PER_TASK: usize = 16;
+/// Minimum words one parallel task folds along the bit axis.
+///
+/// A packed element is the unit of work here, and it holds as few as one word.
+/// Left unbounded, the split reaches one task per word, and the handoff costs more than the fold.
+///
+/// A floor also caps how far a loop can divide.
+/// A list of `n` words splits into at most `n / floor` tasks.
+/// So the floor must stay below the shortest list this fold runs at, divided by the core count.
+/// Otherwise the split stops before the cores are full.
+///
+/// The shared task-size budgets in the utilities crate are calibrated for wider items.
+/// They land high enough here to breach that cap on a mid-sized list.
+const MIN_WORDS_PER_TASK: usize = 1 << 12;
 
 /// Base-2 log of the row group a single subset-sum table covers.
 ///
@@ -182,6 +195,8 @@ impl<F: BinaryField> BitAxisFolder<F> {
 
 		(values_aligned, word_chunks)
 			.into_par_iter()
+			// One item is one packed element, so the floor converts from words to items.
+			.with_min_len(MIN_WORDS_PER_TASK.div_ceil(P::WIDTH))
 			.for_each(|(out, word_chunk)| {
 				// Safety:
 				// - words_aligned has length that is a multiple of P::WIDTH
@@ -286,6 +301,8 @@ impl<F: BinaryField> BitAxisFolder<F> {
 			b_aligned.par_chunks_exact(P::WIDTH),
 		)
 			.into_par_iter()
+			// One item is one packed element of each output, so the floor converts from words.
+			.with_min_len(MIN_WORDS_PER_TASK.div_ceil(P::WIDTH))
 			.for_each(|(a_i, b_i, c_i, a_chunk, b_chunk)| {
 				// Safety:
 				// - both aligned slices have length n_chunks * P::WIDTH
