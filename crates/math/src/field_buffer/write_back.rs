@@ -38,11 +38,11 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> SplitMut<P, Data> {
 			Some([lo_half, hi_half]) => (
 				FieldBuffer {
 					log_len: self.log_len,
-					values: slice::from_mut(lo_half),
+					words: slice::from_mut(lo_half),
 				},
 				FieldBuffer {
 					log_len: self.log_len,
-					values: slice::from_mut(hi_half),
+					words: slice::from_mut(hi_half),
 				},
 			),
 			None => {
@@ -51,11 +51,11 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> SplitMut<P, Data> {
 				(
 					FieldBuffer {
 						log_len: self.log_len,
-						values: lo_half,
+						words: lo_half,
 					},
 					FieldBuffer {
 						log_len: self.log_len,
-						values: hi_half,
+						words: hi_half,
 					},
 				)
 			}

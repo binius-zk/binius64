@@ -143,7 +143,7 @@ impl<'a, P: PackedField> Iterator for Chunks<'a, P> {
 
 	#[inline]
 	fn next(&mut self) -> Option<Self::Item> {
-		let values = match &mut self.source {
+		let words = match &mut self.source {
 			ChunkSource::Words(runs) => FieldSliceData::Slice(runs.next()?),
 			ChunkSource::Lanes { words, indices } => FieldSliceData::Single(
 				SubWordChunk::<P>::new(self.log_chunk_size, indices.next()?).repack(words),
@@ -151,7 +151,7 @@ impl<'a, P: PackedField> Iterator for Chunks<'a, P> {
 		};
 		Some(FieldBuffer {
 			log_len: self.log_chunk_size,
-			values,
+			words,
 		})
 	}
 
@@ -205,7 +205,7 @@ impl<'a, P: PackedField> Iterator for ChunksMut<'a, P> {
 	fn next(&mut self) -> Option<Self::Item> {
 		self.runs.next().map(|run| FieldBuffer {
 			log_len: self.log_chunk_size,
-			values: run,
+			words: run,
 		})
 	}
 

@@ -302,10 +302,10 @@ mod tests {
 		let m = random_field_buffer::<P>(&mut rng, log_n);
 
 		let mut transposed = a.clone();
-		ntt.transpose_transform(transposed.to_mut(), skip_early, skip_late);
+		ntt.transpose_transform(transposed.as_mut_view(), skip_early, skip_late);
 
 		let mut forward = m.clone();
-		ntt.forward_transform(forward.to_mut(), skip_early, skip_late);
+		ntt.forward_transform(forward.as_mut_view(), skip_early, skip_late);
 
 		assert_eq!(
 			inner_product_scalars(transposed.iter_scalars(), m.iter_scalars()),
