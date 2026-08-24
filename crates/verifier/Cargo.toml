@@ -29,4 +29,3 @@ tracing.workspace = true
 binius-math = { path = "../math", features = ["test-utils"] }
 rand.workspace = true
 itertools.workspace = true
-sha2.workspace = true

@@ -18,7 +18,6 @@ tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
-itertools.workspace = true
 paste.workspace = true
 proptest.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
@@ -26,6 +25,11 @@ rand = { workspace = true, features = ["thread_rng"] }
 # See https://github.com/rust-random/rand#webassembly-support
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
+
+# getrandom is declared for its feature alone and never imported, so the unused-dependency scan
+# has to be told to leave it be.
+[package.metadata.cargo-machete]
+ignored = ["getrandom"]
 
 [features]
 default = []

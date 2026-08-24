@@ -33,7 +33,6 @@ tracing.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 binius-circuits = { path = "../circuits" }
 binius-frontend = { path = "../frontend" }
 binius-math = { path = "../math", features = ["test-utils"] }
