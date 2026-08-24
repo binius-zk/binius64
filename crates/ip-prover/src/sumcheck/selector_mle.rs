@@ -128,7 +128,7 @@ where
 
 		// The fold below reads both halves concurrently from many rayon tasks.
 		// Borrowed halves cross that boundary for any backing store the buffer is built on.
-		let (selected_0, selected_1) = self.selected.split_half_ref();
+		let (selected_0, selected_1) = self.selected.split_half();
 
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()

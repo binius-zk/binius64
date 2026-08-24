@@ -22,13 +22,13 @@ use super::{FieldBuffer, FieldSliceMut};
 ///
 /// Holds the parent store, and lends each half out as a mutable view.
 #[derive(Debug)]
-pub struct FieldBufferSplitMut<P: PackedField, Data: DerefMut<Target = [P]>> {
+pub struct SplitMut<P: PackedField, Data: DerefMut<Target = [P]>> {
 	pub(super) log_len: usize,
 	pub(super) singles: Option<[P; 2]>,
 	pub(super) data: Data,
 }
 
-impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBufferSplitMut<P, Data> {
+impl<P: PackedField, Data: DerefMut<Target = [P]>> SplitMut<P, Data> {
 	/// Lends the two halves out as mutable views, the low half first.
 	///
 	/// A half of whole words is a view straight onto the store, so edits land at once.
@@ -38,11 +38,11 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBufferSplitMut<P, Data> 
 			Some([lo_half, hi_half]) => (
 				FieldBuffer {
 					log_len: self.log_len,
-					values: slice::from_mut(lo_half),
+					words: slice::from_mut(lo_half),
 				},
 				FieldBuffer {
 					log_len: self.log_len,
-					values: slice::from_mut(hi_half),
+					words: slice::from_mut(hi_half),
 				},
 			),
 			None => {
@@ -51,11 +51,11 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBufferSplitMut<P, Data> 
 				(
 					FieldBuffer {
 						log_len: self.log_len,
-						values: lo_half,
+						words: lo_half,
 					},
 					FieldBuffer {
 						log_len: self.log_len,
-						values: hi_half,
+						words: hi_half,
 					},
 				)
 			}
@@ -63,7 +63,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBufferSplitMut<P, Data> 
 	}
 }
 
-impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for FieldBufferSplitMut<P, Data> {
+impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for SplitMut<P, Data> {
 	fn drop(&mut self) {
 		// Detached halves are the only shape with anything to write back.
 		if let Some([lo_half, hi_half]) = self.singles {

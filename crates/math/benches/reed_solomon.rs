@@ -46,7 +46,7 @@ fn bench_encode_by_rate(c: &mut Criterion) {
 					format!("log_dim={log_dim}"),
 					format!("log_inv_rate={log_inv_rate}"),
 				),
-				|b| b.iter(|| rs_code.encode_batch(&ntt, message.to_ref(), 0, &GlobalAllocator)),
+				|b| b.iter(|| rs_code.encode_batch(&ntt, message.as_view(), 0, &GlobalAllocator)),
 			);
 		}
 	}

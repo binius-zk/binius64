@@ -92,7 +92,7 @@ where
 	let oracles = tracing::debug_span!("Commit pushforwards").in_scope(|| {
 		pushforwards
 			.iter()
-			.map(|pushforward| channel.send_oracle(pushforward.to_ref()))
+			.map(|pushforward| channel.send_oracle(pushforward.as_view()))
 			.collect::<Vec<_>>()
 	});
 
@@ -100,7 +100,7 @@ where
 	// IP.
 	let pushforward_slices = pushforwards
 		.iter()
-		.map(FieldBuffer::to_ref)
+		.map(FieldBuffer::as_view)
 		.collect::<Vec<_>>();
 	let output =
 		reduction::prove_reduction(alloc, gamma, &tables, numerators, &pushforward_slices, channel);
@@ -293,7 +293,7 @@ mod tests {
 		tables
 			.iter()
 			.map(|table| TableLookup {
-				table: table.values.to_ref(),
+				table: table.values.as_view(),
 				lookers: table
 					.lookers
 					.iter()

@@ -33,7 +33,7 @@ fn bench_prodcheck_new(c: &mut Criterion) {
 			let alloc = &pool;
 
 			b.iter_batched(
-				|| FieldBuffer::clone_from_slice(&alloc, witness_buffer.to_ref()),
+				|| FieldBuffer::from_view_in(&alloc, witness_buffer.as_view()),
 				|witness| ProdcheckProver::<_, P>::new(k, &alloc, witness),
 				BatchSize::SmallInput,
 			);

@@ -576,7 +576,7 @@ impl<DC: DomainContext + Sync> NeighborsLastMultiThread<DC> {
 			let fallback_ntt = NeighborsLastReference {
 				domain_context: &self.domain_context,
 			};
-			fallback_ntt.forward_transform(data.to_mut(), skip_early, skip_late);
+			fallback_ntt.forward_transform(data.as_mut_view(), skip_early, skip_late);
 			on_chunk_ready(0, data.as_ref());
 			return;
 		}

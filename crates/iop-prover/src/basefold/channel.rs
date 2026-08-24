@@ -306,7 +306,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 			};
 
 			let mut store = MleStore::new(n_i, alloc);
-			let message_col = store.push(message.to_ref());
+			let message_col = store.push(message.as_view());
 			let transparent_col = store.push_owned(transparent);
 			let inner = SharedSumcheckProver::new(
 				store,
@@ -364,7 +364,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 			// 2^{log_repeat} chunks of size 2^{n_i + log_lift}.
 			// Borrow as a slice before the closure: the allocator's buffer type is only `Send`, so
 			// a closure capturing the owned buffer would not be `Sync` as `for_each` requires.
-			place_repeated(combined.to_mut(), witness_prime.to_ref(), eq_i, n_i + log_lift);
+			place_repeated(combined.as_mut_view(), witness_prime.as_view(), eq_i, n_i + log_lift);
 
 			// Repeat dims contribute 1; only the lift dims contribute an eq-to-zero factor.
 			s_prime += eq_i * alpha_i * Hypercube::One.eq_ind_zero(&point[n_i..][..log_lift]);
@@ -437,8 +437,8 @@ where
 				assert_eq!(relation.transparent.log_len(), batched.transparent.log_len());
 
 				accumulate_scaled_buffer(
-					batched.transparent.to_mut(),
-					relation.transparent.to_ref(),
+					batched.transparent.as_mut_view(),
+					relation.transparent.as_view(),
 					P::broadcast(coeff),
 				);
 				batched.claim += coeff * relation.claim;
@@ -478,7 +478,7 @@ fn place_repeated<P: PackedField>(
 		let chunk_packed = 1usize << (log_block - P::LOG_WIDTH);
 		dst.as_mut().par_chunks_mut(chunk_packed).for_each(|chunk| {
 			let chunk_buf = FieldSliceMut::from_slice(log_block, chunk);
-			accumulate_scaled_buffer(chunk_buf, src.to_ref(), scalar_broadcast);
+			accumulate_scaled_buffer(chunk_buf, src.as_view(), scalar_broadcast);
 		});
 	} else {
 		// Lane `k` of every element sits at position `k % 2^log_block` of its block, and carries
@@ -616,7 +616,7 @@ where
 				&self.fri_params,
 				index,
 				self.ntt,
-				buffer.to_ref(),
+				buffer.as_view(),
 				&mut self.rng,
 				&self.alloc,
 			);
@@ -627,7 +627,7 @@ where
 					&self.fri_params,
 					index,
 					self.ntt,
-					buffer.to_ref(),
+					buffer.as_view(),
 					&self.alloc,
 				),
 				None,
@@ -639,7 +639,7 @@ where
 		let leaf_size = 1 << self.fri_params.input_oracles()[index].log_batch_size();
 		let commitment = self
 			.channel
-			.send_merkle_commitment(codeword.to_ref(), leaf_size);
+			.send_merkle_commitment(codeword.as_view(), leaf_size);
 		drop(merkle_scope);
 
 		self.committed_oracles.push(CommittedOracleData {
@@ -781,7 +781,7 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		let oracle = prover_channel.send_oracle(buffer.to_ref());
+		let oracle = prover_channel.send_oracle(buffer.as_view());
 		assert_eq!(oracle.index, 0);
 
 		prover_channel.prove_oracle_relation(oracle, transparent_poly.clone(), eval_claim);
@@ -850,8 +850,8 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		let oracle_1 = prover_channel.send_oracle(buffer_1.to_ref());
-		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());
+		let oracle_1 = prover_channel.send_oracle(buffer_1.as_view());
+		let oracle_2 = prover_channel.send_oracle(buffer_2.as_view());
 
 		prover_channel.prove_oracle_relation(oracle_1, transparent_poly_1.clone(), eval_claim_1);
 		prover_channel.prove_oracle_relation(oracle_2, transparent_poly_2.clone(), eval_claim_2);
@@ -938,7 +938,7 @@ mod tests {
 
 		let oracles: Vec<_> = data
 			.iter()
-			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.to_ref()))
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect();
 		for (oracle, (buffer, transparent, claim)) in iter::zip(oracles, &data) {
 			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
@@ -1027,7 +1027,7 @@ mod tests {
 
 		let oracles: Vec<_> = data
 			.iter()
-			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.to_ref()))
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect();
 		for (oracle, (buffer, transparent, claim)) in iter::zip(oracles, &data) {
 			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
@@ -1114,7 +1114,7 @@ mod tests {
 			}
 
 			let mut actual = initial;
-			place_repeated(actual.to_mut(), src.to_ref(), scalar, log_block);
+			place_repeated(actual.as_mut_view(), src.as_view(), scalar, log_block);
 
 			for index in 0..1usize << log_dst {
 				assert_eq!(
@@ -1279,7 +1279,7 @@ mod tests {
 
 		let oracles = data
 			.iter()
-			.map(|(buffer, _)| prover_channel.send_oracle(buffer.to_ref()))
+			.map(|(buffer, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect::<Vec<_>>();
 		for &(index, round) in &arrivals {
 			let (transparent, claim) = &data[index].1[round];

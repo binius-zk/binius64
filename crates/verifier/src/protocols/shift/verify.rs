@@ -730,7 +730,7 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 				.expand(point)
 				.scaled_by(scale)
 				.build::<F>()
-				.take_data()
+				.into_inner()
 		});
 		let cs = &self.constraint_system;
 

@@ -450,7 +450,7 @@ mod tests {
 		let eval_point: Vec<B128> = random_scalars(&mut rng, n_vars);
 
 		// Compute the MLE of the mask polynomial at eval_point
-		let mask = Mask::new(n_vars, degree, buffer.to_ref());
+		let mask = Mask::new(n_vars, degree, buffer.as_view());
 		let eval_claim = mask.evaluate_mle(&eval_point);
 
 		// Create the prover (takes ownership of a borrowed mask view)
@@ -487,7 +487,7 @@ mod tests {
 		challenge_point.reverse();
 
 		// Check that the final evaluation matches direct computation
-		let mask = Mask::new(n_vars, degree, buffer.to_ref());
+		let mask = Mask::new(n_vars, degree, buffer.as_view());
 		let expected_eval = evaluate_mask_polynomial(&mask, &challenge_point);
 		assert_eq!(output.multilinear_evals[0], expected_eval);
 	}
@@ -516,7 +516,7 @@ mod tests {
 		let buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
 
 		let eval_point: Vec<B128> = random_scalars(&mut rng, 1);
-		let mask = Mask::new(1, 2, buffer.to_ref());
+		let mask = Mask::new(1, 2, buffer.as_view());
 		let eval_claim = mask.evaluate_mle(&eval_point);
 
 		let prover = MleCheckMaskProver::new(mask, eval_point.clone(), eval_claim);
@@ -535,7 +535,7 @@ mod tests {
 		let mut challenge_point = sumcheck_output.challenges;
 		challenge_point.reverse();
 
-		let mask = Mask::new(1, 2, buffer.to_ref());
+		let mask = Mask::new(1, 2, buffer.as_view());
 		let expected_eval = evaluate_mask_polynomial(&mask, &challenge_point);
 		assert_eq!(output.multilinear_evals[0], expected_eval);
 	}
@@ -559,14 +559,14 @@ mod tests {
 		let eval_point: Vec<B128> = random_scalars(&mut rng, n_vars);
 
 		// Compute the MLE of the main polynomial at eval_point
-		let main_mask = Mask::new(n_vars, main_degree, main_buffer.to_ref());
+		let main_mask = Mask::new(n_vars, main_degree, main_buffer.as_view());
 		let main_eval_claim = main_mask.evaluate_mle(&eval_point);
 
 		// Create the main prover (using MleCheckMaskProver as a simple MleCheckProver)
 		let main_prover = MleCheckMaskProver::new(main_mask, eval_point.clone(), main_eval_claim);
 
 		// Run the ZK proving protocol
-		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.to_ref());
+		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.as_view());
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove(main_prover, zk_mask, &mut prover_transcript);
 
@@ -600,12 +600,12 @@ mod tests {
 		challenge_point.reverse();
 
 		// Check that the final main evaluation matches direct computation
-		let main_mask = Mask::new(n_vars, main_degree, main_buffer.to_ref());
+		let main_mask = Mask::new(n_vars, main_degree, main_buffer.as_view());
 		let expected_main_eval = evaluate_mask_polynomial(&main_mask, &challenge_point);
 		assert_eq!(output.multilinear_evals[0], expected_main_eval);
 
 		// Check that the mask evaluation matches the zk_mask evaluation at the challenge point
-		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.to_ref());
+		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.as_view());
 		let expected_mask_eval = evaluate_mask_polynomial(&zk_mask, &challenge_point);
 		assert_eq!(mask_eval, expected_mask_eval);
 	}
@@ -627,7 +627,7 @@ mod tests {
 		let challenge_point: Vec<B128> = random_scalars(&mut rng, n_vars);
 
 		// Compute g(r) using direct computation.evaluate()
-		let mask = Mask::new(n_vars, degree, mask_buffer.to_ref());
+		let mask = Mask::new(n_vars, degree, mask_buffer.as_view());
 		let direct_eval: B128 = (0..n_vars)
 			.map(|i| mask.evaluate_univariate(i, challenge_point[i]))
 			.sum();

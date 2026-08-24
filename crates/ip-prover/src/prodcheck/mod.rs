@@ -83,7 +83,7 @@ where
 		for _ in 0..k {
 			let prev_layer = layers.last().expect("layers is non-empty");
 			let next_log_len = prev_layer.log_len() - 1;
-			let (half_0, half_1) = prev_layer.split_half_ref();
+			let (half_0, half_1) = prev_layer.split_half();
 
 			// Each layer is half the width of the one below it, down to a single word.
 			// The last layers are too small to be worth splitting.

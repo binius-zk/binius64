@@ -242,7 +242,7 @@ where
 				// reduced dimension and rate.
 				let challenges = mem::take(&mut self.unprocessed_challenges);
 				let fri_fold_span = tracing::debug_span!("FRI Fold").entered();
-				let folded_codeword = fold_codeword(self.ntt, last_codeword.to_ref(), &challenges);
+				let folded_codeword = fold_codeword(self.ntt, last_codeword.as_view(), &challenges);
 				drop(fri_fold_span);
 				// The fold consuming `last_codeword` has arity `challenges.len()`, which is the
 				// coset size its commitment was built with.
@@ -288,7 +288,7 @@ where
 
 		let _merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
 		let commitment =
-			channel.send_merkle_commitment(folded_codeword.to_ref(), 1 << log_coset_size);
+			channel.send_merkle_commitment(folded_codeword.as_view(), 1 << log_coset_size);
 
 		// The next commitment lands `next_arity` rounds after the current one. Once there is no
 		// next arity, this is the terminal codeword and no further commitments are made.
@@ -370,7 +370,7 @@ where
 
 		// Send the per-oracle batched query openings, then the terminal codeword in full.
 		query_prover.prove_queries(&indices, channel);
-		channel.send_committed_vector(&terminal_commitment, terminate_codeword.to_ref());
+		channel.send_committed_vector(&terminal_commitment, terminate_codeword.as_view());
 	}
 }
 
@@ -400,7 +400,7 @@ where
 	// For each coset of size `2^chunk_size` in the codeword, fold it with the folding challenges.
 	let chunk_size = 1 << challenges.len();
 	let values: Vec<F> = codeword
-		.chunks_par(challenges.len())
+		.par_chunks(challenges.len())
 		.enumerate()
 		.map_init(
 			|| vec![F::default(); chunk_size],
@@ -556,7 +556,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 			if index == 0 {
 				values.spare_capacity_mut()[..code_len]
 					.par_chunks_mut(1 << log_lift)
-					.zip(codeword.chunks_par(log_batch_size))
+					.zip(codeword.par_chunks(log_batch_size))
 					.for_each(|(copies, chunk)| {
 						let value = chunk.inner_product(&tensor);
 						for acc in copies {
@@ -569,7 +569,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 			} else {
 				values
 					.par_chunks_mut(1 << log_lift)
-					.zip(codeword.chunks_par(log_batch_size))
+					.zip(codeword.par_chunks(log_batch_size))
 					.for_each(|(copies, chunk)| {
 						let value = chunk.inner_product(&tensor);
 						for acc in copies {
@@ -628,13 +628,13 @@ mod tests {
 
 		// Encode the message over the large domain.
 		let mut codeword = msg;
-		ntt.forward_transform(codeword.to_mut(), 0, 0);
+		ntt.forward_transform(codeword.as_mut_view(), 0, 0);
 
 		// Fold the encoded message using FRI folding.
-		let folded_codeword = fold_codeword(&ntt, codeword.to_ref(), &challenges);
+		let folded_codeword = fold_codeword(&ntt, codeword.as_view(), &challenges);
 
 		// Encode the folded message.
-		ntt.forward_transform(folded_msg.to_mut(), 0, 0);
+		ntt.forward_transform(folded_msg.as_mut_view(), 0, 0);
 
 		// Check that folding and encoding commute.
 		assert_eq!(folded_codeword, folded_msg);

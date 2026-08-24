@@ -128,7 +128,7 @@ mod tests {
 		);
 
 		// A borrowed store iterates the same way an owned one does.
-		let slice = buffer.to_ref();
+		let slice = buffer.as_view();
 		assert_eq!(IntoIterator::into_iter(&slice).collect::<Vec<_>>(), values);
 	}
 }

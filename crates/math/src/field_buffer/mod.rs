@@ -54,14 +54,14 @@ use chunks::SubWordChunk;
 pub use chunks::{Chunks, ChunksMut};
 pub use scalars::Scalars;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
-pub use write_back::FieldBufferSplitMut;
+pub use write_back::SplitMut;
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
 /// The backing store length is fully determined by `log_len`:
 ///
 /// ```text
-/// values.len() == 1 << log_len.saturating_sub(P::LOG_WIDTH)
+/// words.len() == 1 << log_len.saturating_sub(P::LOG_WIDTH)
 /// ```
 ///
 /// A buffer shorter than one packed word still occupies a whole word.
@@ -83,8 +83,8 @@ pub use write_back::FieldBufferSplitMut;
 pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	/// log2 the number over elements in the buffer.
 	log_len: usize,
-	/// The packed values.
-	values: Data,
+	/// The packed words.
+	words: Data,
 }
 
 impl<P: PackedField, Data: Deref<Target = [P]> + Copy> Copy for FieldBuffer<P, Data> {}
@@ -103,13 +103,13 @@ impl<P: PackedField, Data: Deref<Target = [P]>> PartialEq for FieldBuffer<P, Dat
 		}
 		if self.log_len < P::LOG_WIDTH {
 			let iter_1 = self
-				.values
+				.words
 				.first()
 				.expect("len >= 1")
 				.iter()
 				.take(1 << self.log_len);
 			let iter_2 = other
-				.values
+				.words
 				.first()
 				.expect("len >= 1")
 				.iter()
@@ -117,7 +117,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> PartialEq for FieldBuffer<P, Dat
 			iter_1.eq(iter_2)
 		} else {
 			let prefix = 1 << (self.log_len - P::LOG_WIDTH);
-			self.values[..prefix] == other.values[..prefix]
+			self.words[..prefix] == other.words[..prefix]
 		}
 	}
 }
@@ -134,24 +134,21 @@ impl<P: PackedField> FieldBuffer<P> {
 			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
 
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-		let mut packed_values = Vec::with_capacity(packed_len);
-		packed_values.extend(
+		let mut words = Vec::with_capacity(packed_len);
+		words.extend(
 			values
 				.chunks(P::WIDTH)
 				.map(|chunk| P::from_scalars(chunk.iter().copied())),
 		);
 
-		Self {
-			log_len,
-			values: packed_values,
-		}
+		Self { log_len, words }
 	}
 
 	/// Builds a buffer of `2^log_len` zeros.
 	pub fn zeros(log_len: usize) -> Self {
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-		let values = zeroed_vec(packed_len);
-		Self { log_len, values }
+		let words = zeroed_vec(packed_len);
+		Self { log_len, words }
 	}
 
 	/// Builds a one-element buffer holding `value`, with room reserved to grow.
@@ -159,9 +156,9 @@ impl<P: PackedField> FieldBuffer<P> {
 	/// The store is sized for `2^log_capacity` elements up front.
 	/// Growing the buffer to that many therefore never reallocates.
 	pub fn scalar_with_capacity(value: P::Scalar, log_capacity: usize) -> Self {
-		let mut values = Vec::with_capacity(1 << log_capacity.saturating_sub(P::LOG_WIDTH));
-		values.push(P::from_scalars([value]));
-		Self { log_len: 0, values }
+		let mut words = Vec::with_capacity(1 << log_capacity.saturating_sub(P::LOG_WIDTH));
+		words.push(P::from_scalars([value]));
+		Self { log_len: 0, words }
 	}
 }
 
@@ -176,21 +173,21 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	{
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		// An allocator hands out an empty buffer, so the words are both created and zeroed here.
-		let mut values = alloc.alloc::<P>(packed_len);
-		values.resize(packed_len, P::default());
-		FieldBuffer::new(log_len, values)
+		let mut words = alloc.alloc::<P>(packed_len);
+		words.resize(packed_len, P::default());
+		FieldBuffer::new(log_len, words)
 	}
 
 	/// Copies a borrowed buffer into memory drawn from `alloc`.
 	///
 	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
-	pub fn clone_from_slice<A>(alloc: &A, src: FieldSlice<P>) -> Self
+	pub fn from_view_in<A>(alloc: &A, src: FieldSlice<P>) -> Self
 	where
 		A: Allocator<Vec<P> = Data>,
 	{
-		let mut values = alloc.alloc::<P>(src.as_ref().len());
-		values.extend_from_slice(src.as_ref());
-		FieldBuffer::new(src.log_len(), values)
+		let mut words = alloc.alloc::<P>(src.as_ref().len());
+		words.extend_from_slice(src.as_ref());
+		FieldBuffer::new(src.log_len(), words)
 	}
 
 	/// Builds a buffer from scalar values, directly into memory drawn from `alloc`.
@@ -211,14 +208,14 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
 
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-		let mut packed_values = alloc.alloc::<P>(packed_len);
-		packed_values.extend(
+		let mut words = alloc.alloc::<P>(packed_len);
+		words.extend(
 			values
 				.chunks(P::WIDTH)
 				.map(|chunk| P::from_scalars(chunk.iter().copied())),
 		);
 
-		FieldBuffer::new(log_len, packed_values)
+		FieldBuffer::new(log_len, words)
 	}
 
 	/// Grows the buffer to span `log_len` variables, padding the new positions with zeros.
@@ -264,25 +261,25 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 
 #[allow(clippy::len_without_is_empty)]
 impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
-	/// Create a new FieldBuffer from a slice of packed values.
+	/// Create a new FieldBuffer from a slice of packed words.
 	///
 	/// # Preconditions
 	///
-	/// * `values.len()` must equal the expected packed length for `log_len`.
+	/// * `words.len()` must equal the expected packed length for `log_len`.
 	#[track_caller]
-	pub fn new(log_len: usize, values: Data) -> Self {
+	pub fn new(log_len: usize, words: Data) -> Self {
 		let expected_packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		assert!(
-			values.len() == expected_packed_len,
-			"precondition: values.len() must equal expected packed length"
+			words.len() == expected_packed_len,
+			"precondition: words.len() must equal expected packed length"
 		);
 
-		Self { log_len, values }
+		Self { log_len, words }
 	}
 
 	/// Consumes the buffer and returns its backing data store.
-	pub fn take_data(self) -> Data {
-		self.values
+	pub fn into_inner(self) -> Data {
+		self.words
 	}
 
 	/// Returns log2 the number of field elements.
@@ -296,7 +293,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	}
 
 	/// Borrows the whole buffer as a shared view.
-	pub fn to_ref(&self) -> FieldSlice<'_, P> {
+	pub fn as_view(&self) -> FieldSlice<'_, P> {
 		FieldSlice::from_slice(self.log_len, self.as_ref())
 	}
 
@@ -315,7 +312,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 
 		// Safety: bound check on index performed above. The buffer length is at least
 		// `self.len() >> P::LOG_WIDTH` by struct invariant.
-		unsafe { get_packed_slice_unchecked(&self.values, index) }
+		unsafe { get_packed_slice_unchecked(&self.words, index) }
 	}
 
 	/// Returns an iterator over the scalar elements in the buffer.
@@ -355,20 +352,20 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 			"precondition: chunk_index must be less than chunk_count"
 		);
 
-		let values = if log_chunk_size >= P::LOG_WIDTH {
+		let words = if log_chunk_size >= P::LOG_WIDTH {
 			// A whole run of words, borrowed straight from the store.
 			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
-			FieldSliceData::Slice(&self.values[chunk_index * words_per_chunk..][..words_per_chunk])
+			FieldSliceData::Slice(&self.words[chunk_index * words_per_chunk..][..words_per_chunk])
 		} else {
 			// Lanes inside one word, copied out so the chunk starts at lane 0.
 			FieldSliceData::Single(
-				SubWordChunk::new(log_chunk_size, chunk_index).repack(&self.values),
+				SubWordChunk::new(log_chunk_size, chunk_index).repack(&self.words),
 			)
 		};
 
 		FieldBuffer {
 			log_len: log_chunk_size,
-			values,
+			words,
 		}
 	}
 
@@ -398,7 +395,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `log_chunk_size` must be at most `log_len`.
 	#[track_caller]
-	pub fn chunks_par(
+	pub fn par_chunks(
 		&self,
 		log_chunk_size: usize,
 	) -> impl IndexedParallelIterator<Item = FieldSlice<'_, P>> {
@@ -415,7 +412,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 					.par_chunks(packed_chunk_size)
 					.map(move |chunk| FieldBuffer {
 						log_len: log_chunk_size,
-						values: FieldSliceData::Slice(chunk),
+						words: FieldSliceData::Slice(chunk),
 					}),
 			)
 		} else {
@@ -427,7 +424,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 					.into_par_iter()
 					.map(move |chunk_index| FieldBuffer {
 						log_len: log_chunk_size,
-						values: FieldSliceData::Single(
+						words: FieldSliceData::Single(
 							SubWordChunk::new(log_chunk_size, chunk_index).repack(words),
 						),
 					}),
@@ -502,41 +499,41 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
-	pub fn split_half_ref(&self) -> (FieldSlice<'_, P>, FieldSlice<'_, P>) {
+	pub fn split_half(&self) -> (FieldSlice<'_, P>, FieldSlice<'_, P>) {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
 		if new_log_len < P::LOG_WIDTH {
 			// The result will be two Single variants
 			// We have exactly one packed element that needs to be split
-			let packed = self.values[0];
+			let packed = self.words[0];
 			let zeros = P::default();
 
 			let (first_half, second_half) = packed.interleave(zeros, new_log_len);
 
 			let first = FieldBuffer {
 				log_len: new_log_len,
-				values: FieldSliceData::Single(first_half),
+				words: FieldSliceData::Single(first_half),
 			};
 			let second = FieldBuffer {
 				log_len: new_log_len,
-				values: FieldSliceData::Single(second_half),
+				words: FieldSliceData::Single(second_half),
 			};
 
 			(first, second)
 		} else {
-			// Split the packed values slice in half
+			// Split the packed word slice in half
 			let half_len = 1 << (new_log_len - P::LOG_WIDTH);
-			let (first_half, second_half) = self.values.split_at(half_len);
+			let (first_half, second_half) = self.words.split_at(half_len);
 			let second_half = &second_half[..half_len];
 
 			let first = FieldBuffer {
 				log_len: new_log_len,
-				values: FieldSliceData::Slice(first_half),
+				words: FieldSliceData::Slice(first_half),
 			};
 			let second = FieldBuffer {
 				log_len: new_log_len,
-				values: FieldSliceData::Slice(second_half),
+				words: FieldSliceData::Slice(second_half),
 			};
 
 			(first, second)
@@ -546,7 +543,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 
 impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// Borrows the whole buffer as a mutable view.
-	pub fn to_mut(&mut self) -> FieldSliceMut<'_, P> {
+	pub fn as_mut_view(&mut self) -> FieldSliceMut<'_, P> {
 		FieldSliceMut::from_slice(self.log_len, self.as_mut())
 	}
 
@@ -565,7 +562,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 
 		// Safety: bound check on index performed above. The buffer length is at least
 		// `self.len() >> P::LOG_WIDTH` by struct invariant.
-		unsafe { set_packed_slice_unchecked(&mut self.values, index, value) };
+		unsafe { set_packed_slice_unchecked(&mut self.words, index, value) };
 	}
 
 	/// Returns a mutable iterator over the packed words the elements occupy.
@@ -616,12 +613,12 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
-	pub fn split_half(self) -> FieldBufferSplitMut<P, Data> {
+	pub fn into_split_half(self) -> SplitMut<P, Data> {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
 		let singles = if new_log_len < P::LOG_WIDTH {
-			let packed = self.values[0];
+			let packed = self.words[0];
 			let zeros = P::default();
 			let (lo_half, hi_half) = packed.interleave(zeros, new_log_len);
 			Some([lo_half, hi_half])
@@ -629,10 +626,10 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 			None
 		};
 
-		FieldBufferSplitMut {
+		SplitMut {
 			log_len: new_log_len,
 			singles,
-			data: self.values,
+			data: self.words,
 		}
 	}
 
@@ -644,8 +641,8 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
-	pub fn split_half_mut(&mut self) -> FieldBufferSplitMut<P, &'_ mut [P]> {
-		self.to_mut().split_half()
+	pub fn split_half_mut(&mut self) -> SplitMut<P, &'_ mut [P]> {
+		self.as_mut_view().into_split_half()
 	}
 }
 
@@ -666,11 +663,11 @@ impl<P: PackedField, Data: BufferData<P>> FieldBuffer<P, Data> {
 		// result carries no stale scalars. Wider results drop whole words and need no masking.
 		if new_log_len < P::LOG_WIDTH {
 			for i in 1 << new_log_len..P::WIDTH {
-				self.values[0].set(i, <P::Scalar as Field>::ZERO);
+				self.words[0].set(i, <P::Scalar as Field>::ZERO);
 			}
 		}
 
-		self.values
+		self.words
 			.truncate(1 << new_log_len.saturating_sub(P::LOG_WIDTH));
 	}
 }
@@ -678,14 +675,14 @@ impl<P: PackedField, Data: BufferData<P>> FieldBuffer<P, Data> {
 impl<P: PackedField, Data: Deref<Target = [P]>> AsRef<[P]> for FieldBuffer<P, Data> {
 	#[inline]
 	fn as_ref(&self) -> &[P] {
-		&self.values[..1 << self.log_len.saturating_sub(P::LOG_WIDTH)]
+		&self.words[..1 << self.log_len.saturating_sub(P::LOG_WIDTH)]
 	}
 }
 
 impl<P: PackedField, Data: DerefMut<Target = [P]>> AsMut<[P]> for FieldBuffer<P, Data> {
 	#[inline]
 	fn as_mut(&mut self) -> &mut [P] {
-		&mut self.values[..1 << self.log_len.saturating_sub(P::LOG_WIDTH)]
+		&mut self.words[..1 << self.log_len.saturating_sub(P::LOG_WIDTH)]
 	}
 }
 
@@ -701,7 +698,7 @@ impl<P: PackedField> FromIterator<P::Scalar> for FieldBuffer<P> {
 	fn from_iter<I: IntoIterator<Item = P::Scalar>>(iter: I) -> Self {
 		let iter = iter.into_iter();
 		// The lower bound is the whole count whenever the iterator knows its own length.
-		let mut values = Vec::with_capacity(iter.size_hint().0 >> P::LOG_WIDTH);
+		let mut words = Vec::with_capacity(iter.size_hint().0 >> P::LOG_WIDTH);
 
 		let mut word = P::default();
 		let mut len = 0usize;
@@ -712,7 +709,7 @@ impl<P: PackedField> FromIterator<P::Scalar> for FieldBuffer<P> {
 
 			// A word fills up at its last lane, and a zeroed one takes over from there.
 			if lane == P::WIDTH - 1 {
-				values.push(word);
+				words.push(word);
 				word = P::default();
 			}
 		}
@@ -723,10 +720,10 @@ impl<P: PackedField> FromIterator<P::Scalar> for FieldBuffer<P> {
 		// A count below the packing width never reaches a last lane.
 		// So the one word it filled is still in hand, its lanes past the count still zero.
 		if log_len < P::LOG_WIDTH {
-			values.push(word);
+			words.push(word);
 		}
 
-		Self { log_len, values }
+		Self { log_len, words }
 	}
 }
 
@@ -754,15 +751,15 @@ mod tests {
 		let src = FieldBuffer::<P>::from_values(&scalars);
 
 		// A copy drawn from the allocator carries over both the length and the scalars.
-		let cloned: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		let cloned: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, src.as_view());
 		assert_eq!(cloned.log_len(), 4);
-		assert_eq!(cloned.to_ref(), src.to_ref());
+		assert_eq!(cloned.as_view(), src.as_view());
 
 		// Copying a source shorter than one packed word keeps the two live lanes, not four.
 		let small = FieldBuffer::<P>::from_values(&scalars[..2]);
-		let cloned_small: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.to_ref());
+		let cloned_small: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, small.as_view());
 		assert_eq!(cloned_small.log_len(), 1);
-		assert_eq!(cloned_small.to_ref(), small.to_ref());
+		assert_eq!(cloned_small.as_view(), small.as_view());
 
 		// 32 elements requested, 32 zeros readable: the buffer arrives at full length, not empty.
 		let mut zeros: FieldVec<P, A> = FieldBuffer::zeros_in(alloc, 5);
@@ -785,7 +782,7 @@ mod tests {
 		//
 		// Under a pool the target may sit on memory a prior buffer dirtied.
 		// So the zeros above the copied words have to be written, never assumed.
-		let src_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		let src_vec: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, src.as_view());
 		let extended = src_vec.zero_extend_in(alloc, 5);
 		assert_eq!(extended.log_len(), 5);
 		for i in 0..16 {
@@ -794,10 +791,10 @@ mod tests {
 		assert!((16..32).all(|i| extended.get(i) == F::ZERO));
 
 		// An already-wide-enough buffer comes back unchanged, with no copy taken.
-		let same: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		let same: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, src.as_view());
 		let same = same.zero_extend_in(alloc, 4);
 		assert_eq!(same.log_len(), 4);
-		assert_eq!(same.to_ref(), src.to_ref());
+		assert_eq!(same.as_view(), src.as_view());
 
 		// A source narrower than one packed word pads out of that word's dead lanes.
 		//
@@ -805,7 +802,7 @@ mod tests {
 		//     result (log_len 3)    [0, 1 | 0, 0] [0, 0 | 0, 0]
 		//
 		// The two dead lanes become live, so they read back as zeros, not stale scalars.
-		let small_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.to_ref());
+		let small_vec: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, small.as_view());
 		let widened = small_vec.zero_extend_in(alloc, 3);
 		assert_eq!(widened.log_len(), 3);
 		assert_eq!(widened.get(0), F::new(0));
@@ -974,17 +971,17 @@ mod tests {
 	}
 
 	#[test]
-	fn to_ref_to_mut() {
+	fn borrowed_views() {
 		let mut buffer = FieldBuffer::<P>::zeros(3);
 
-		// Test to_ref
-		let slice_ref = buffer.to_ref();
+		// Test the shared view
+		let slice_ref = buffer.as_view();
 		assert_eq!(slice_ref.len(), buffer.len());
 		assert_eq!(slice_ref.log_len(), buffer.log_len());
 		assert_eq!(slice_ref.as_ref().len(), 1 << slice_ref.log_len().saturating_sub(P::LOG_WIDTH));
 
-		// Test to_mut
-		let mut slice_mut = buffer.to_mut();
+		// Test the mutable view
+		let mut slice_mut = buffer.as_mut_view();
 		slice_mut.set(0, F::new(123));
 		assert_eq!(slice_mut.as_mut().len(), 1 << slice_mut.log_len().saturating_sub(P::LOG_WIDTH));
 		assert_eq!(buffer.get(0), F::new(123));
@@ -1060,7 +1057,7 @@ mod tests {
 		assert_eq!(buffer.get(0), F::new(9));
 
 		// The one word packed keeps zeros in the 3 lanes past the element.
-		let data = buffer.take_data();
+		let data = buffer.into_inner();
 		assert_eq!(data.len(), 1);
 		assert!((1..P::WIDTH).all(|lane| get_packed_slice(&data[..], lane) == F::ZERO));
 	}
@@ -1133,7 +1130,7 @@ mod tests {
 		for i in 0..8 {
 			assert_eq!(buffer.get(i), F::new(i as u128));
 		}
-		assert_eq!(buffer.take_data().len(), 2);
+		assert_eq!(buffer.into_inner().len(), 2);
 
 		// Sub-packing-width result: one word retained, live prefix kept, dead lanes zeroed.
 		let mut buffer = make();
@@ -1141,7 +1138,7 @@ mod tests {
 		assert_eq!(buffer.len(), 2);
 		assert_eq!(buffer.get(0), F::new(0));
 		assert_eq!(buffer.get(1), F::new(1));
-		let data = buffer.take_data();
+		let data = buffer.into_inner();
 		assert_eq!(data.len(), 1);
 		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
 		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
@@ -1150,7 +1147,7 @@ mod tests {
 		let mut buffer = FieldBuffer::<P>::from_values(&(0..4).map(F::new).collect::<Vec<_>>());
 		buffer.truncate(5);
 		assert_eq!(buffer.log_len(), 2);
-		assert_eq!(buffer.take_data().len(), 1);
+		assert_eq!(buffer.into_inner().len(), 1);
 	}
 
 	#[test]
@@ -1167,7 +1164,7 @@ mod tests {
 		assert_eq!(buffer.get(0), F::new(0));
 		assert_eq!(buffer.get(1), F::new(1));
 
-		let data = buffer.take_data();
+		let data = buffer.into_inner();
 		assert_eq!(data.len(), 1);
 		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
 		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
@@ -1263,12 +1260,12 @@ mod tests {
 	}
 
 	#[test]
-	fn chunks_par() {
+	fn par_chunks() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		// Split into 4 chunks of size 4
-		let chunks: Vec<_> = buffer.chunks_par(2).collect();
+		let chunks: Vec<_> = buffer.par_chunks(2).collect();
 		assert_eq!(chunks.len(), 4);
 
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
@@ -1280,9 +1277,9 @@ mod tests {
 		}
 
 		// Test small chunk sizes (below P::LOG_WIDTH)
-		// P::LOG_WIDTH = 2, so chunks_par(0) and chunks_par(1) should work
+		// P::LOG_WIDTH = 2, so par_chunks(0) and par_chunks(1) should work
 		// Split into 8 chunks of size 2 (log_chunk_size = 1)
-		let chunks: Vec<_> = buffer.chunks_par(1).collect();
+		let chunks: Vec<_> = buffer.par_chunks(1).collect();
 		assert_eq!(chunks.len(), 8);
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
 			assert_eq!(chunk.len(), 2);
@@ -1293,7 +1290,7 @@ mod tests {
 		}
 
 		// Split into 16 chunks of size 1 (log_chunk_size = 0)
-		let chunks: Vec<_> = buffer.chunks_par(0).collect();
+		let chunks: Vec<_> = buffer.par_chunks(0).collect();
 		assert_eq!(chunks.len(), 16);
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
 			assert_eq!(chunk.len(), 1);
@@ -1320,10 +1317,10 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn chunks_par_invalid_size() {
+	fn par_chunks_invalid_size() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
-		let _ = buffer.chunks_par(5).collect::<Vec<_>>();
+		let _ = buffer.par_chunks(5).collect::<Vec<_>>();
 	}
 
 	#[test]
@@ -1362,7 +1359,7 @@ mod tests {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
-		let (first, second) = buffer.split_half_ref();
+		let (first, second) = buffer.split_half();
 		assert_eq!(first.len(), 8);
 		assert_eq!(second.len(), 8);
 
@@ -1377,16 +1374,16 @@ mod tests {
 		let values: Vec<F> = (0..4).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
-		let (first, second) = buffer.split_half_ref();
+		let (first, second) = buffer.split_half();
 		assert_eq!(first.len(), 2);
 		assert_eq!(second.len(), 2);
 
 		// Verify we got Single variants
-		match &first.values {
+		match &first.words {
 			FieldSliceData::Single(_) => {}
 			_ => panic!("Expected Single variant for first half"),
 		}
-		match &second.values {
+		match &second.words {
 			FieldSliceData::Single(_) => {}
 			_ => panic!("Expected Single variant for second half"),
 		}
@@ -1401,16 +1398,16 @@ mod tests {
 		let values: Vec<F> = vec![F::new(10), F::new(20)];
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
-		let (first, second) = buffer.split_half_ref();
+		let (first, second) = buffer.split_half();
 		assert_eq!(first.len(), 1);
 		assert_eq!(second.len(), 1);
 
 		// Verify we got Single variants
-		match &first.values {
+		match &first.words {
 			FieldSliceData::Single(_) => {}
 			_ => panic!("Expected Single variant for first half"),
 		}
-		match &second.values {
+		match &second.words {
 			FieldSliceData::Single(_) => {}
 			_ => panic!("Expected Single variant for second half"),
 		}
@@ -1421,10 +1418,10 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn split_half_ref_size_one() {
+	fn split_half_size_one() {
 		let values = vec![F::new(42)];
 		let buffer = FieldBuffer::<P>::from_values(&values);
-		let _ = buffer.split_half_ref();
+		let _ = buffer.split_half();
 	}
 
 	#[test]
@@ -1596,7 +1593,7 @@ mod tests {
 				.map(|chunk| chunk.iter_scalars().collect())
 				.collect();
 			let parallel: Vec<Vec<F>> = buffer
-				.chunks_par(log_chunk_size)
+				.par_chunks(log_chunk_size)
 				.map(|chunk| chunk.iter_scalars().collect())
 				.collect();
 

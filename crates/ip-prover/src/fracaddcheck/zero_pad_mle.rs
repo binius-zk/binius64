@@ -357,8 +357,8 @@ mod tests {
 
 	/// The fractional-addition MLE-check claims on the two buffers' halves at `eval_point`.
 	fn split_half_claims(num: &FieldBuffer<P>, den: &FieldBuffer<P>, eval_point: &[F]) -> [F; 2] {
-		let (num_0, num_1) = num.split_half_ref();
-		let (den_0, den_1) = den.split_half_ref();
+		let (num_0, num_1) = num.split_half();
+		let (den_0, den_1) = den.split_half();
 		let composite = |compose: fn(F, F, F, F) -> F| {
 			let values = (0..num_0.len())
 				.map(|i| compose(num_0.get(i), num_1.get(i), den_0.get(i), den_1.get(i)))

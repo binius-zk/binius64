@@ -207,7 +207,8 @@ where
 		}
 
 		// Forward NTT the zero-padded coefficients.
-		self.extrapolation.forward_transform(values.to_mut(), 0, 0);
+		self.extrapolation
+			.forward_transform(values.as_mut_view(), 0, 0);
 
 		values
 	}

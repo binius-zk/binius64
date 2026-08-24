@@ -117,9 +117,9 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 			b.iter_batched(
 				|| {
 					(
-						multilinears.each_ref().map(|multilin| {
-							FieldBuffer::clone_from_slice(&alloc, multilin.to_ref())
-						}),
+						multilinears
+							.each_ref()
+							.map(|multilin| FieldBuffer::from_view_in(&alloc, multilin.as_view())),
 						eval_point.clone(),
 					)
 				},

@@ -380,7 +380,7 @@ pub fn prove_public_eval<A, P, Channel>(
 	let RingSwitchOutput {
 		rs_eq_ind,
 		sumcheck_claim,
-	} = prove(alloc, packed.to_ref(), &[r_j, r_y_public].concat(), channel);
+	} = prove(alloc, packed.as_view(), &[r_j, r_y_public].concat(), channel);
 
 	// The reduced claim is the sum of the two multilinears' product over the hypercube, which is
 	// what the trace's opening hands to BaseFold. Here it is discharged by the sumcheck alone: the

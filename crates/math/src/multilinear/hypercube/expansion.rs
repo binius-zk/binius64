@@ -170,7 +170,7 @@ impl<'a, F: Field> Expansion<'a, F> {
 	) -> FieldBuffer<P, Vec<P>> {
 		let start_log_len = values.log_len();
 		let final_log_len = start_log_len + self.point.len();
-		let mut data = values.take_data();
+		let mut data = values.into_inner();
 
 		// Reserve the whole final capacity once, so no round reallocates.
 		// Each round then writes its new coefficients straight into the reserved spare capacity,
@@ -199,7 +199,7 @@ impl<'a, F: Field> Expansion<'a, F> {
 	) -> FieldBuffer<P, Data> {
 		let start_log_len = values.log_len();
 		let final_log_len = start_log_len + self.point.len();
-		let mut data = values.take_data();
+		let mut data = values.into_inner();
 
 		// precondition
 		debug_assert!(data.capacity() >= Self::packed_words::<P>(final_log_len));
@@ -467,9 +467,9 @@ mod tests {
 
 		let mut tensor = FieldBuffer::<P>::from_values(&[F::ONE]);
 		for &r in point.iter().rev() {
-			tensor.to_mut().bit_reverse();
+			tensor.as_mut_view().bit_reverse();
 			tensor = Hypercube::One.expand(&[r]).append_to::<P>(tensor);
-			tensor.to_mut().bit_reverse();
+			tensor.as_mut_view().bit_reverse();
 		}
 
 		assert_eq!(tensor, Hypercube::One.expand(&point).build::<P>());
@@ -529,11 +529,11 @@ mod tests {
 				//
 				// The one-lane store is exactly the scalars, so the two must agree there too.
 				prop_assert_eq!(
-					cube.expand(&point).build::<F>().take_data(),
+					cube.expand(&point).build::<F>().into_inner(),
 					cube.expand(&point).build_scalars()
 				);
 				prop_assert_eq!(
-					cube.expand(&point).scaled_by(scale).build::<F>().take_data(),
+					cube.expand(&point).scaled_by(scale).build::<F>().into_inner(),
 					cube.expand(&point).scaled_by(scale).build_scalars()
 				);
 			}

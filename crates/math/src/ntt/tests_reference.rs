@@ -35,8 +35,8 @@ fn test_transform_equivalence<P: PackedField>(
 			let mut data_a = random_field_buffer::<P>(&mut rng, log_n);
 			let mut data_b = data_a.clone();
 
-			reference(data_a.to_mut(), skip_early, skip_late);
-			transform(data_b.to_mut(), skip_early, skip_late);
+			reference(data_a.as_mut_view(), skip_early, skip_late);
+			transform(data_b.as_mut_view(), skip_early, skip_late);
 			assert_eq!(data_a, data_b);
 		}
 	}
@@ -197,7 +197,7 @@ fn test_forward_transform_is_identity(#[case] ntt_factory: impl NTTFactory<B128>
 		let data = random_field_buffer::<P>(&mut rng, 0);
 		let mut data_clone = data.clone();
 
-		ntt.forward_transform(data_clone.to_mut(), 0, 0);
+		ntt.forward_transform(data_clone.as_mut_view(), 0, 0);
 
 		assert_eq!(data, data_clone);
 	}
@@ -242,8 +242,8 @@ where
 				continue;
 			}
 
-			ntt.forward_transform(data.to_mut(), skip_early, skip_late);
-			ntt.inverse_transform(data.to_mut(), skip_early, skip_late);
+			ntt.forward_transform(data.as_mut_view(), skip_early, skip_late);
+			ntt.inverse_transform(data.as_mut_view(), skip_early, skip_late);
 			assert_eq!(data, data_orig);
 		}
 	}

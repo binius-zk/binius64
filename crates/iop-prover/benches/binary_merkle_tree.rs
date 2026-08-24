@@ -58,7 +58,7 @@ where
 		packing_name.as_ref()
 	);
 	group.bench_function(&case, |b| {
-		b.iter(|| merkle_prover.commit_field_buffer(buffer.to_ref(), LOG_ELEMS_IN_LEAF));
+		b.iter(|| merkle_prover.commit_field_buffer(buffer.as_view(), LOG_ELEMS_IN_LEAF));
 	});
 
 	// The same commitment out of a pool the prover holds across iterations, which is how a real
@@ -67,7 +67,7 @@ where
 	let pool = BufferPool::new();
 	let pooled_prover = BinaryMerkleTreeProver::<B128, H, _>::with_allocator(&pool);
 	group.bench_function(format!("{case} pooled"), |b| {
-		b.iter(|| pooled_prover.commit_field_buffer(buffer.to_ref(), LOG_ELEMS_IN_LEAF));
+		b.iter(|| pooled_prover.commit_field_buffer(buffer.as_view(), LOG_ELEMS_IN_LEAF));
 	});
 	group.finish()
 }
@@ -126,9 +126,9 @@ fn bench_commit_pipeline(c: &mut Criterion) {
 
 	group.bench_function("sequential", |b| {
 		b.iter(|| {
-			let codeword = rs_code.encode_batch(&ntt, message.to_ref(), 0, &GlobalAllocator);
+			let codeword = rs_code.encode_batch(&ntt, message.as_view(), 0, &GlobalAllocator);
 			BinaryMerkleTreeProver::<B128, Sha256HashSuite>::new()
-				.commit_field_buffer(codeword.to_ref(), LOG_ELEMS_IN_LEAF)
+				.commit_field_buffer(codeword.as_view(), LOG_ELEMS_IN_LEAF)
 		});
 	});
 
@@ -137,7 +137,7 @@ fn bench_commit_pipeline(c: &mut Criterion) {
 			encode_and_commit_pipelined::<B128, OptimalPackedB128, _, Sha256HashSuite, _, _>(
 				&rs_code,
 				&ntt,
-				message.to_ref(),
+				message.as_view(),
 				0,
 				LOG_ELEMS_IN_LEAF,
 				&GlobalAllocator,

@@ -29,7 +29,7 @@ pub type FieldSlice<'a, P> = FieldBuffer<P, FieldSliceData<'a, P>>;
 pub type FieldSliceMut<'a, P> = FieldBuffer<P, &'a mut [P]>;
 
 impl<'a, P: PackedField> FieldSlice<'a, P> {
-	/// Create a new FieldSlice from a slice of packed values.
+	/// Create a new FieldSlice from a slice of packed words.
 	///
 	/// # Preconditions
 	///
@@ -44,12 +44,12 @@ impl<'a, P: PackedField, Data: Deref<Target = [P]>> From<&'a FieldBuffer<P, Data
 	for FieldSlice<'a, P>
 {
 	fn from(buffer: &'a FieldBuffer<P, Data>) -> Self {
-		buffer.to_ref()
+		buffer.as_view()
 	}
 }
 
 impl<'a, P: PackedField> FieldSliceMut<'a, P> {
-	/// Create a new FieldSliceMut from a mutable slice of packed values.
+	/// Create a new FieldSliceMut from a mutable slice of packed words.
 	///
 	/// # Preconditions
 	///
@@ -64,7 +64,7 @@ impl<'a, P: PackedField, Data: DerefMut<Target = [P]>> From<&'a mut FieldBuffer<
 	for FieldSliceMut<'a, P>
 {
 	fn from(buffer: &'a mut FieldBuffer<P, Data>) -> Self {
-		buffer.to_mut()
+		buffer.as_mut_view()
 	}
 }
 

@@ -144,7 +144,7 @@ where
 	for table in tables {
 		let (mine, rest) = remaining.split_at(table.lookers.len());
 		remaining = rest;
-		grouped_slices.push(mine.iter().map(FieldBuffer::to_ref).collect::<Vec<_>>());
+		grouped_slices.push(mine.iter().map(FieldBuffer::as_view).collect::<Vec<_>>());
 	}
 	let pushforwards = iter::zip(tables, &grouped_slices)
 		.map(|(table, numerators)| {
@@ -371,7 +371,7 @@ where
 	// One accumulator slot per table position, all starting empty.
 	let mut buckets = vec![F::ZERO; 1usize << table_n_vars];
 	// Add each row's numerator value into the position it indexes into.
-	scatter_add(&mut buckets, &eq_r.to_ref(), index);
+	scatter_add(&mut buckets, &eq_r.as_view(), index);
 	// Repack the scalar accumulator into the packed table buffer.
 	FieldBuffer::from_values(&buckets)
 }
@@ -464,7 +464,7 @@ mod tests {
 		let index_slices = indices.iter().map(Vec::as_slice).collect::<Vec<_>>();
 		let numerator_slices = numerators
 			.iter()
-			.map(FieldBuffer::to_ref)
+			.map(FieldBuffer::as_view)
 			.collect::<Vec<_>>();
 		let got =
 			combined_pushforward::<_, F, P>(&GlobalAllocator, &numerator_slices, &index_slices, m)

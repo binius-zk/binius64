@@ -190,7 +190,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> Multilinear<P> for FieldBuffer<P
 		// Otherwise each chunk pairs with the expansion, and the resulting scalars are the
 		// residual multilinear over the coordinates not yet used.
 		let scalars = self
-			.chunks_par(first_half_len)
+			.par_chunks(first_half_len)
 			.map(|chunk| chunk.inner_product(&eq_tensor))
 			.collect::<Vec<_>>();
 
@@ -231,7 +231,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> Multilinear<P> for FieldBuffer<P
 
 		// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
 		let broadcast_scalar = P::broadcast(scalar);
-		let (lo, hi) = self.split_half_ref();
+		let (lo, hi) = self.split_half();
 
 		// Interpolate the line through each pair at the challenge directly into a fresh buffer
 		// drawn from the allocator, writing the uninitialized spare capacity in parallel rather
@@ -380,7 +380,7 @@ mod tests {
 		// A shared view carries no store of its own, so this pins the read impl's bound.
 		let buffer = random_field_buffer::<P>(&mut rng, 5);
 		let point = random_scalars::<F>(&mut rng, 5);
-		let view: FieldSlice<'_, P> = buffer.to_ref();
+		let view: FieldSlice<'_, P> = buffer.as_view();
 
 		assert_eq!(view.n_vars(), 5);
 		assert_eq!(view.evaluate(&point), buffer.evaluate(&point));
@@ -398,11 +398,11 @@ mod tests {
 		expected.fold_highest_var(scalar);
 
 		let mut owned = original;
-		let mut slice = owned.to_mut();
+		let mut slice = owned.as_mut_view();
 		slice.fold_highest_var(scalar);
 
 		assert_eq!(slice.n_vars(), 4);
-		assert_eq!(slice, expected.to_mut());
+		assert_eq!(slice, expected.as_mut_view());
 	}
 
 	#[test]
@@ -509,7 +509,7 @@ mod tests {
 			prop_assert_eq!(a.par_inner_product(&b), reference);
 
 			// A view passed straight through must reach the same computation.
-			prop_assert_eq!(a.inner_product(b.to_ref()), reference);
+			prop_assert_eq!(a.inner_product(b.as_view()), reference);
 		}
 
 		#[test]

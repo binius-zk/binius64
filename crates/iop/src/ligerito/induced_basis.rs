@@ -306,7 +306,7 @@ mod tests {
 					NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(code.log_len()));
 				let mut rng = StdRng::seed_from_u64(0);
 				let message = random_field_buffer::<B128>(&mut rng, log_dim);
-				let codeword = code.encode_batch(&ntt, message.to_ref(), 0, &GlobalAllocator);
+				let codeword = code.encode_batch(&ntt, message.as_view(), 0, &GlobalAllocator);
 
 				// Open every position, which is the strongest version of the check.
 				let indices = (0..1 << code.log_len()).collect::<Vec<_>>();
@@ -336,7 +336,7 @@ mod tests {
 		let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(code.log_len()));
 		let mut rng = StdRng::seed_from_u64(1);
 		let message = random_field_buffer::<B128>(&mut rng, log_dim);
-		let codeword = code.encode_batch(&ntt, message.to_ref(), 0, &GlobalAllocator);
+		let codeword = code.encode_batch(&ntt, message.as_view(), 0, &GlobalAllocator);
 
 		// A single row batched by alpha^0 = 1 is that row untouched, so pairing it with the
 		// message must reproduce exactly that codeword position.

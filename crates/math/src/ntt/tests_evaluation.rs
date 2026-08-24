@@ -264,7 +264,7 @@ fn test_equivalence<F: BinaryField, NTT: AdditiveNTT<Field = F>>(ntt: &NTT) {
 
 	// way 2 to compute evaluations: use NTT
 	let mut ntt_data = novel_coeffs;
-	ntt.forward_transform(ntt_data.to_mut(), 0, 0);
+	ntt.forward_transform(ntt_data.as_mut_view(), 0, 0);
 
 	// check equivalence
 	assert_eq!(ntt_data.as_ref(), &evals);
