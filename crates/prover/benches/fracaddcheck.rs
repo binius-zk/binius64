@@ -3,7 +3,7 @@
 use binius_compute::BufferPool;
 use binius_field::{FieldOps, arch::OptimalPackedB128};
 use binius_ip::fracaddcheck::FracAddEvalClaim;
-use binius_ip_prover::fracaddcheck::{FracAddCheckProver, fraction::Fraction};
+use binius_ip_prover::fracaddcheck::{FracAddCircuit, fraction::Fraction};
 use binius_math::{
 	FieldBuffer,
 	multilinear::evaluate::evaluate,
@@ -16,8 +16,8 @@ use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_mai
 type P = OptimalPackedB128;
 type F = <P as FieldOps>::Scalar;
 
-fn bench_fracaddcheck_new(c: &mut Criterion) {
-	let mut group = c.benchmark_group("fracaddcheck/new");
+fn bench_fracaddcheck_build(c: &mut Criterion) {
+	let mut group = c.benchmark_group("fracaddcheck/build");
 
 	for n_vars in [12, 16, 20] {
 		// Full reduction: k = n_vars, so sums layer has log_len = 0.
@@ -41,7 +41,7 @@ fn bench_fracaddcheck_new(c: &mut Criterion) {
 					)
 				},
 				|(witness_num, witness_den)| {
-					FracAddCheckProver::<_, P>::new(
+					FracAddCircuit::<_, P>::build(
 						k,
 						&alloc,
 						Fraction::new(witness_num, witness_den),
@@ -72,7 +72,7 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 			let alloc = &pool;
 
 			// Build the prover once, then clone it per iteration (untimed setup).
-			let (prover, sums) = FracAddCheckProver::new(
+			let (prover, sums) = FracAddCircuit::build(
 				k,
 				&alloc,
 				Fraction::new(
@@ -101,5 +101,5 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 	group.finish();
 }
 
-criterion_group!(fracaddcheck, bench_fracaddcheck_new, bench_fracaddcheck_prove);
+criterion_group!(fracaddcheck, bench_fracaddcheck_build, bench_fracaddcheck_prove);
 criterion_main!(fracaddcheck);
