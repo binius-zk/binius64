@@ -21,7 +21,7 @@ use binius_math::{
 	univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
-	fold_word::fold_words,
+	fold_word::BitAxisFolder,
 	protocols::shift::{KeyCollection, OperatorClaims, OperatorData, ShiftProver},
 };
 use binius_transcript::ProverTranscript;
@@ -317,7 +317,7 @@ pub fn evaluate_witness<F: BinaryField>(words: &[Word], r_j: &[F], r_y: &[F]) ->
 	let r_j_tensor = Hypercube::One.expand(r_j).build::<F>();
 	let r_y_tensor = Hypercube::One.expand(r_y).build::<F>();
 
-	let r_j_witness = fold_words::<_, F, _>(&GlobalAllocator, words, r_j_tensor.as_ref());
+	let r_j_witness = BitAxisFolder::new(r_j_tensor.as_ref()).fold::<F, _>(&GlobalAllocator, words);
 
 	r_j_witness.inner_product(&r_y_tensor)
 }

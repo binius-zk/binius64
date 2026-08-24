@@ -12,7 +12,7 @@ use binius_math::{
 	BinarySubspace, multilinear::hypercube::Hypercube, univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
-	fold_word::fold_words,
+	fold_word::BitAxisFolder,
 	protocols::shift::{
 		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftChallengePoint,
 		ShiftIndOutput, ShiftIndSumcheck, ShiftOutput,
@@ -127,7 +127,7 @@ where
 
 	let r_j_tensor = Hypercube::One.expand(&r_j).build::<F>();
 	// The public fold is a raw-word fold; the hidden fold contracts the already-oblong bits.
-	let public_folded = fold_words::<F, P, _>(alloc, public_words, r_j_tensor.as_ref());
+	let public_folded = BitAxisFolder::new(r_j_tensor.as_ref()).fold::<P, _>(alloc, public_words);
 	let hidden_folded = folded_witness.fold_bits::<P>(r_j_tensor.as_ref(), alloc);
 
 	let (public_monster, hidden_monster) = key_collection.build_monster_segments::<F, P, _>(
@@ -278,7 +278,8 @@ mod tests {
 		let lagrange = subspace_lagrange_evals_scalars::<B128, B128>(domain_subspace, &r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
-			let folded_column = fold_words::<B128, P, _>(&GlobalAllocator, column, &lagrange);
+			let folded_column =
+				BitAxisFolder::new(&lagrange).fold::<P, _>(&GlobalAllocator, column);
 			folded_column.evaluate(&row_point)
 		};
 		// The batch witness stores only the `A` and `B` columns.

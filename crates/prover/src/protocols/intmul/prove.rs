@@ -40,7 +40,7 @@ use super::{
 	error::Error,
 	witness::{Witness, limb_index, two_valued_field_buffer},
 };
-use crate::fold_word::{WordFolder, fold_words};
+use crate::fold_word::{BitAxisFolder, WordFolder};
 
 /// Proves the integer multiplication (IntMul) reduction over the four operand columns.
 ///
@@ -364,7 +364,7 @@ where
 		// `b_eval_point` (r_2) to the shared point via a single-claim MLE-eval check.
 		assert!(b_exponents.len() <= 1 << n_vars);
 		let b_tensor = Hypercube::One.expand(r_ib).build_scalars();
-		let b_folded = fold_words::<_, P, _>(alloc, b_exponents, &b_tensor);
+		let b_folded = BitAxisFolder::new(&b_tensor).fold::<P, _>(alloc, b_exponents);
 		let b_sumcheck_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
 			alloc,
 			b_folded,

@@ -14,7 +14,7 @@ use binius_math::{
 	BinarySubspace, multilinear::hypercube::Hypercube, univariate::subspace_lagrange_evals,
 };
 use binius_prover::{
-	fold_word::fold_words,
+	fold_word::BitAxisFolder,
 	protocols::shift::{
 		KeyCollection, OperatorClaims, OperatorData, ShiftProver,
 		monster::shift_operator_table,
@@ -260,7 +260,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 	// The phase functions take each segment as the circuit declares it: `build_g` zips the
-	// words with their key ranges and `fold_words` pads each fold to `log2_ceil(len)` variables.
+	// words with their key ranges, and each fold pads to `log2_ceil(len)` variables.
 	let public_words = value_vec.public();
 	let hidden_words = value_vec.non_public();
 	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
@@ -335,8 +335,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// reduce their factors to, so a stand-in value serves.
 	let shift_ind_eval = F::random(&mut rng);
 	let r_j_tensor = Hypercube::One.expand(&r_j).build::<F>();
-	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
-	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());
+	let folder = BitAxisFolder::new(r_j_tensor.as_ref());
+	let public_folded = folder.fold::<P, _>(&GlobalAllocator, public_words);
+	let hidden_folded = folder.fold::<P, _>(&GlobalAllocator, hidden_words);
 	let (public_monster, hidden_monster) = key_collection.build_monster_segments::<F, P, _>(
 		&GlobalAllocator,
 		&prepared,

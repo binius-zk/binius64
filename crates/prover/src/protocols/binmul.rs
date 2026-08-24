@@ -188,11 +188,8 @@ mod tests {
 		let prefix_tensor = Hypercube::One.expand(prefix).build::<F>();
 		let suffix_tensor = Hypercube::One.expand(suffix).build::<F>();
 
-		let partially_folded_witness = crate::fold_word::fold_words::<_, F, _>(
-			&GlobalAllocator,
-			words,
-			prefix_tensor.as_ref(),
-		);
+		let partially_folded_witness = crate::fold_word::BitAxisFolder::new(prefix_tensor.as_ref())
+			.fold::<F, _>(&GlobalAllocator, words);
 
 		partially_folded_witness.inner_product(&suffix_tensor)
 	}

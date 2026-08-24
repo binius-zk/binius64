@@ -23,7 +23,7 @@ use super::{
 	prove::{IntMulProver, prove},
 	witness::Witness,
 };
-use crate::fold_word::fold_words;
+use crate::fold_word::BitAxisFolder;
 
 type F = Ghash128b;
 type P = PackedBinaryGhash2x128b;
@@ -34,7 +34,7 @@ pub fn evaluate_witness(words: &[Word], eval_point: &[F]) -> F {
 	let suffix_tensor = Hypercube::One.expand(suffix).build::<F>();
 
 	let partially_folded_witness =
-		fold_words::<_, F, _>(&GlobalAllocator, words, prefix_tensor.as_ref());
+		BitAxisFolder::new(prefix_tensor.as_ref()).fold::<F, _>(&GlobalAllocator, words);
 
 	partially_folded_witness.inner_product(&suffix_tensor)
 }
