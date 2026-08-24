@@ -48,6 +48,8 @@
 //!
 //! [`InducedBasis::to_dense`] materializes `w` anyway, as the reference the closed form is tested
 //! against, and for a prover that genuinely needs every entry.
+//! It needs a packed field, so a verifier written against a channel cannot reach it at all.
+//! [`InducedBasis::pair`] is how a terminal level pairs `w` with a message it holds in the clear.
 
 use binius_field::{BinaryField, PackedField, field::FieldOps, util::expand_subset_products};
 use binius_ip::channel::WordIPVerifierChannel;
@@ -231,6 +233,52 @@ impl<F: FieldOps> InducedBasis<F> {
 		inner_product_scalars(self.batching.iter().cloned(), terms)
 	}
 
+	/// Pairs the basis with a message held in the clear, giving `<w, message>`.
+	///
+	/// This is the other side of the equation [`Self::enforced_sum`] gives, so a terminal level
+	/// checks the two against each other.
+	///
+	/// Expanding the definition of `w`,
+	///
+	/// ```text
+	///     <w, message> = sum_i alpha^i * <G_{q_i}, message>
+	/// ```
+	///
+	/// and each row pairing folds `message` against that row's factors, one variable per step.
+	/// Entry `j` of a row selects `f[k]` exactly when bit `k` of `j` is set, so folding the pair
+	/// `(even, odd)` into `even + f[k] * odd` strips variable `k`.
+	///
+	/// Costs `O(n_rows * 2^n_vars)` and never materializes a row, so unlike [`Self::to_dense`] it
+	/// is available wherever the basis itself is.
+	/// A recursive level has no message in the clear to pair against and uses [`Self::evaluate`]
+	/// inside a sumcheck instead.
+	///
+	/// ## Preconditions
+	///
+	/// * `message` has `2^n_vars` entries.
+	pub fn pair(&self, message: &[F]) -> F {
+		assert_eq!(
+			message.len(),
+			1 << self.n_vars,
+			"precondition: message must have 2^n_vars entries"
+		);
+
+		let rows = self.factors.iter().map(|factors| {
+			let mut folded = message.to_vec();
+			for factor in factors {
+				let half = folded.len() / 2;
+				for j in 0..half {
+					folded[j] = folded[2 * j].clone() + factor.clone() * folded[2 * j + 1].clone();
+				}
+				folded.truncate(half);
+			}
+			folded
+				.pop()
+				.expect("folding n_vars times leaves exactly one element")
+		});
+		inner_product_scalars(self.batching.iter().cloned(), rows)
+	}
+
 	/// The dense weight vector, `2^n_vars` entries.
 	///
 	/// This is the reference [`Self::evaluate`] is tested against, and the vector a prover folds.
@@ -323,6 +371,14 @@ mod tests {
 				assert_eq!(
 					paired,
 					basis.enforced_sum(&opened),
+					"log_dim={log_dim} log_inv_rate={log_inv_rate}"
+				);
+
+				// `pair` is the route a verifier takes when it cannot build the dense vector, so it
+				// has to reach the same claim.
+				assert_eq!(
+					basis.pair(message.as_ref()),
+					paired,
 					"log_dim={log_dim} log_inv_rate={log_inv_rate}"
 				);
 			}
