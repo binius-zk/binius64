@@ -19,9 +19,7 @@ use binius_math::{
 };
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
-use crate::bit_matrix::{
-	LOG_WEIGHTS_PER_TABLE, WEIGHTS_PER_TABLE, fold_row_group, row_fold_tables,
-};
+use crate::bit_matrix::{ColumnSums, RowFoldTables, WEIGHTS_PER_TABLE};
 
 /// Number of words folded together within a single chunk.
 ///
@@ -390,7 +388,7 @@ where
 /// A word and a 64-bit row of single-bit scalars share one underlier, so the view below is free.
 fn accumulate_word_chunk<F: BinaryField>(
 	chunk: &[Word; CHUNK_SIZE],
-	tables: &[[F; 1 << WEIGHTS_PER_TABLE]; Word::BYTES],
+	tables: &RowFoldTables<F, { Word::BYTES }>,
 	weight: F,
 	acc: &mut [F; Word::BITS],
 ) {
@@ -400,18 +398,10 @@ fn accumulate_word_chunk<F: BinaryField>(
 		[[PackedBinaryField64x1b; WEIGHTS_PER_TABLE]; Word::BYTES],
 	>(chunk);
 
-	// Accumulate every group into one column accumulator before scaling it.
-	let mut columns = [[F::ZERO; WEIGHTS_PER_TABLE]; Word::BYTES];
-	for (group, table) in iter::zip(groups, tables) {
-		fold_row_group(group, table, &mut columns);
-	}
-
-	// Scale once per column and merge, unpacking the nesting into bit-position order.
-	for (i, group) in columns.iter().enumerate() {
-		for (j, &column) in group.iter().enumerate() {
-			acc[(i << LOG_WEIGHTS_PER_TABLE) | j] += column * weight;
-		}
-	}
+	// Sum every group's contribution before scaling, so the chunk costs one multiply per column.
+	let mut sums = ColumnSums::zero();
+	tables.fold_into(groups.iter().copied(), &mut sums);
+	sums.add_scaled_to(weight, acc);
 }
 
 /// Computes the bitwise fold of the word vector with a tensor product, by bit position.
@@ -453,7 +443,7 @@ pub struct WordFolder<F: BinaryField> {
 	///
 	/// Table `s` folds the words at positions `s * WEIGHTS_PER_TABLE + t` within a chunk.
 	/// Each such word is weighted by prefix-expansion entry `t` of that group.
-	lookups: [[F; 1 << WEIGHTS_PER_TABLE]; Word::BYTES],
+	lookups: RowFoldTables<F, { Word::BYTES }>,
 	/// One weight per chunk of `CHUNK_SIZE` words, from the suffix expansion.
 	suffix_weights: FieldBuffer<F>,
 	/// The word axis's length, which each [`fold`](Self::fold) call's list fits in:
@@ -478,7 +468,7 @@ impl<F: BinaryField> WordFolder<F> {
 		// Those zeros pair with the repeated words a short list is filled with, so they add
 		// nothing.
 		let prefix_expansion = OneCube::eq_ind_partial_eval_scalars::<F>(prefix);
-		let lookups = row_fold_tables::<F, { Word::BYTES }>(&prefix_expansion);
+		let lookups = RowFoldTables::new(&prefix_expansion);
 
 		// One weight per chunk of CHUNK_SIZE words, from the suffix.
 		let suffix_weights = OneCube::eq_ind_partial_eval::<F>(suffix);
