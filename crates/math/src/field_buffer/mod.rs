@@ -49,7 +49,6 @@ mod write_back;
 use chunks::SubWordChunk;
 pub use chunks::{Chunks, ChunksMut};
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
-use write_back::FieldBufferChunkMutInner;
 pub use write_back::{FieldBufferChunkMut, FieldBufferSplitMut};
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
@@ -597,28 +596,19 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 			"precondition: chunk_index must be less than chunk_count"
 		);
 
-		let inner = if log_chunk_size >= P::LOG_WIDTH {
+		if log_chunk_size >= P::LOG_WIDTH {
 			// Large chunk: return a mutable slice directly
 			let packed_log_chunk_size = log_chunk_size - P::LOG_WIDTH;
 			let chunk = &mut self.values[chunk_index << packed_log_chunk_size..]
 				[..1 << packed_log_chunk_size];
-			FieldBufferChunkMutInner::Slice {
-				log_len: log_chunk_size,
-				chunk,
-			}
+			FieldBufferChunkMut::borrowed(log_chunk_size, chunk)
 		} else {
 			// Small chunk: copy the lanes out, and write them back when the guard drops.
 			let location = SubWordChunk::new(log_chunk_size, chunk_index);
 			let chunk = location.repack(&self.values);
-
-			FieldBufferChunkMutInner::Single {
-				location,
-				chunk,
-				parent: &mut self.values[location.word_index()],
-			}
-		};
-
-		FieldBufferChunkMut(inner)
+			let parent = &mut self.values[location.word_index()];
+			FieldBufferChunkMut::detached(location, chunk, parent)
+		}
 	}
 
 	/// Consumes the buffer and halves it, returning a guard that owns the store.
