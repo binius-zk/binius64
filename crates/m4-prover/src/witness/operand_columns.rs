@@ -13,7 +13,7 @@ use binius_core::{
 };
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, FieldVec};
-use binius_prover::fold_word::fold_words;
+use binius_prover::fold_word::BitAxisFolder;
 use binius_utils::{
 	buffer::VecLike,
 	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
@@ -158,10 +158,10 @@ impl<A: Allocator, const ARITY: usize> OperandColumns<A, ARITY> {
 		// Fold each word's bits at the univariate challenge, giving one scalar per row.
 		// Scalars keep the row indexing flat for the constraint fold below.
 		//
-		// `fold_words` rounds the row count up to a power of two and zero-extends to it, so the
+		// The fold rounds the row count up to a power of two and zero-extends to it, so the
 		// result spans the padded constraint axis even though the column itself stops at the last
 		// real constraint. Only the real rows are folded; the padding is never touched.
-		let folded_rows = fold_words::<B128, B128, _>(alloc, column, lagrange);
+		let folded_rows = BitAxisFolder::new(lagrange).fold::<B128, _>(alloc, column);
 		let folded_rows = folded_rows.as_ref();
 
 		// Invariant: the tensor carries one weight per padded constraint row.

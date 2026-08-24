@@ -170,7 +170,7 @@ mod tests {
 		},
 		test_utils::random_scalars,
 	};
-	use binius_prover::fold_word::fold_words;
+	use binius_prover::fold_word::BitAxisFolder;
 	use binius_utils::checked_arithmetics::log2_ceil_usize;
 	use binius_verifier::config::B128;
 	use rand::prelude::*;
@@ -325,7 +325,8 @@ mod tests {
 				committed.extend_from_slice(&vv.combined_witness()[offset..]);
 				committed.resize(committed.len() + padded_words - n_committed, Word::ZERO);
 			}
-			let folded_words = fold_words::<B128, P, _>(&GlobalAllocator, &committed, &bit_tensor);
+			let folded_words =
+				BitAxisFolder::new(&bit_tensor).fold::<P, _>(&GlobalAllocator, &committed);
 
 			// Route B evaluates over (word, instance), so the point is reordered to match.
 			let mut point = r_wire.to_vec();
