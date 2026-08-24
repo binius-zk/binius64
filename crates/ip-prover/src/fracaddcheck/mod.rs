@@ -207,11 +207,11 @@ where
 	/// the largest.
 	///
 	/// # Arguments
-	/// * `claim` - The initial multilinear evaluation claims (numerator, denominator)
-	/// * `channel` - The channel for sending prover messages and sampling challenges
+	/// * `claim` - The numerator and denominator claims at their shared evaluation point.
+	/// * `channel` - The channel for sending prover messages and sampling challenges.
 	///
 	/// # Preconditions
-	/// * `claim.0.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
+	/// * `claim.point.len() == witness.log_len() - k`, for `k` the number of reduction layers.
 	pub fn prove(
 		self,
 		claim: FracAddEvalClaim<F>,
@@ -229,13 +229,12 @@ where
 	/// Each layer adds one variable via a sumcheck and a line-fold.
 	/// So starting from a claim over `d` variables, the returned claim is over `d + n_layers`.
 	///
-	/// This is the building block of [`Self::prove`], which runs every layer.
-	/// Stopping early leaves the remaining prover on its untouched layers.
-	/// A caller can splice the leaf layer into another reduction, as the logUp* final layer does.
+	/// This is the layer loop of [`Self::prove`], which runs every layer.
+	/// The returned prover still holds the layers that were not proved.
 	///
 	/// # Arguments
 	/// * `n_layers` - The number of layers to prove, at most [`Self::n_layers`].
-	/// * `claim` - The initial numerator/denominator claims, sharing an evaluation point.
+	/// * `claim` - The numerator and denominator claims at their shared evaluation point.
 	/// * `channel` - The channel for sending prover messages and sampling challenges.
 	///
 	/// # Returns
@@ -244,7 +243,7 @@ where
 	///
 	/// # Preconditions
 	/// * `n_layers <= self.n_layers()`.
-	pub fn prove_layers(
+	fn prove_layers(
 		mut self,
 		n_layers: usize,
 		claim: FracAddEvalClaim<F>,
