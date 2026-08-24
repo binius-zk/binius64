@@ -6,12 +6,11 @@ use std::{array, hint::assert_unchecked, iter};
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, Divisible, PackedBinaryField64x1b, PackedField, WideMul, WithUnderlier,
+	BinaryField, Divisible, PackedBinaryField64x1b, PackedField, WideMul,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformationFactory, Transformation,
 	},
-	transpose::transpose_square_blocks_array,
 	util::expand_subset_sums_array,
 };
 use binius_math::{
@@ -19,15 +18,19 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
 };
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-use binius_verifier::config::B1;
 
-/// Base-2 logarithm of the number of words folded together within a single chunk.
-const LOG_CHUNK_SIZE: usize = Word::LOG_BITS;
+use crate::bit_matrix::{
+	LOG_WEIGHTS_PER_TABLE, WEIGHTS_PER_TABLE, fold_row_group, row_fold_tables,
+};
+
 /// Number of words folded together within a single chunk.
-const CHUNK_SIZE: usize = 1 << LOG_CHUNK_SIZE;
-/// Number of bits in a byte; [`fold_across_words`] processes each chunk in groups of this many
-/// words, one per byte of the words.
-const BITS_PER_BYTE: usize = Word::BITS / Word::BYTES;
+///
+/// One row-fold table covers one byte of a word, so a chunk spans every row those tables reach:
+/// eight tables of eight rows each. That this equals the bit width of a word is arithmetic, not
+/// definition.
+const CHUNK_SIZE: usize = Word::BYTES * WEIGHTS_PER_TABLE;
+/// Base-2 logarithm of the number of words folded together within a single chunk.
+const LOG_CHUNK_SIZE: usize = CHUNK_SIZE.ilog2() as usize;
 /// Minimum chunks one parallel task folds along the word axis.
 ///
 /// A chunk is 64 words and folds in well under a microsecond, which is about what a handoff costs.
@@ -53,12 +56,6 @@ const MIN_CHUNKS_PER_TASK: usize = 16;
 /// The shared task-size budgets in the utilities crate are calibrated for wider items.
 /// They land high enough here to breach that cap on a mid-sized list.
 const MIN_WORDS_PER_TASK: usize = 1 << 12;
-
-/// Base-2 log of the row group a single subset-sum table covers.
-///
-/// Eight rows is the widest group whose lookup index still fits one byte.
-/// One table load then replaces eight conditional additions.
-const LOG_BITS_PER_BYTE: usize = BITS_PER_BYTE.ilog2() as usize;
 
 /// Computes a [`FieldBuffer`] where each element is the inner product of the bits of a word and a
 /// vector of field elements.
@@ -104,7 +101,7 @@ where
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
 #[derive(Debug)]
 struct BitWeightTables<F> {
-	tables: [[F; 1 << BITS_PER_BYTE]; Word::BYTES],
+	tables: [[F; 1 << WEIGHTS_PER_TABLE]; Word::BYTES],
 }
 
 impl<F: BinaryField> BitWeightTables<F> {
@@ -119,10 +116,10 @@ impl<F: BinaryField> BitWeightTables<F> {
 		// Byte `i` of a word carries bit positions `8i` through `8i + 7`, so its table covers
 		// exactly those eight weights.
 		let tables = array::from_fn(|byte| {
-			let group: [F; BITS_PER_BYTE] = weights
-				[byte * BITS_PER_BYTE..(byte + 1) * BITS_PER_BYTE]
+			let group: [F; WEIGHTS_PER_TABLE] = weights
+				[byte * WEIGHTS_PER_TABLE..(byte + 1) * WEIGHTS_PER_TABLE]
 				.try_into()
-				.expect("a word has Word::BYTES groups of BITS_PER_BYTE weights");
+				.expect("a word has Word::BYTES groups of WEIGHTS_PER_TABLE weights");
 			expand_subset_sums_array(group)
 		});
 
@@ -393,18 +390,18 @@ where
 /// A word and a 64-bit row of single-bit scalars share one underlier, so the view below is free.
 fn accumulate_word_chunk<F: BinaryField>(
 	chunk: &[Word; CHUNK_SIZE],
-	tables: &[[F; 1 << BITS_PER_BYTE]; Word::BYTES],
+	tables: &[[F; 1 << WEIGHTS_PER_TABLE]; Word::BYTES],
 	weight: F,
 	acc: &mut [F; Word::BITS],
 ) {
 	// Reshape the chunk into one contiguous group of eight rows per table.
 	let groups = bytemuck::must_cast_ref::<
 		[Word; CHUNK_SIZE],
-		[[PackedBinaryField64x1b; BITS_PER_BYTE]; Word::BYTES],
+		[[PackedBinaryField64x1b; WEIGHTS_PER_TABLE]; Word::BYTES],
 	>(chunk);
 
 	// Accumulate every group into one column accumulator before scaling it.
-	let mut columns = [[F::ZERO; BITS_PER_BYTE]; Word::BYTES];
+	let mut columns = [[F::ZERO; WEIGHTS_PER_TABLE]; Word::BYTES];
 	for (group, table) in iter::zip(groups, tables) {
 		fold_row_group(group, table, &mut columns);
 	}
@@ -412,7 +409,7 @@ fn accumulate_word_chunk<F: BinaryField>(
 	// Scale once per column and merge, unpacking the nesting into bit-position order.
 	for (i, group) in columns.iter().enumerate() {
 		for (j, &column) in group.iter().enumerate() {
-			acc[(i << LOG_BITS_PER_BYTE) | j] += column * weight;
+			acc[(i << LOG_WEIGHTS_PER_TABLE) | j] += column * weight;
 		}
 	}
 }
@@ -454,9 +451,9 @@ where
 pub struct WordFolder<F: BinaryField> {
 	/// One 256-entry subset-sum table per byte of a word, from the prefix expansion.
 	///
-	/// Table `s` folds the words at positions `s * BITS_PER_BYTE + t` within a chunk.
+	/// Table `s` folds the words at positions `s * WEIGHTS_PER_TABLE + t` within a chunk.
 	/// Each such word is weighted by prefix-expansion entry `t` of that group.
-	lookups: [[F; 1 << BITS_PER_BYTE]; Word::BYTES],
+	lookups: [[F; 1 << WEIGHTS_PER_TABLE]; Word::BYTES],
 	/// One weight per chunk of `CHUNK_SIZE` words, from the suffix expansion.
 	suffix_weights: FieldBuffer<F>,
 	/// The word axis's length, which each [`fold`](Self::fold) call's list fits in:
@@ -606,99 +603,6 @@ impl<F: BinaryField> WordFolder<F> {
 			self.suffix_weights.get(n_whole_chunks),
 			folded,
 		);
-	}
-}
-
-/// Builds the subset-sum tables of a bitwise row fold.
-///
-/// # Overview
-///
-/// A row fold contracts a matrix over GF(2) against one weight per row:
-///
-/// ```text
-///     out[b] = sum_r weight[r] * bit_b(row[r])
-/// ```
-///
-/// Taking eight rows at a time turns that inner sum into a single table lookup.
-/// Table `g` covers rows `8g .. 8g+8` and holds every subset sum of their eight weights.
-/// A byte carrying those eight rows' bits at one column then indexes their contribution directly.
-///
-/// # Arguments
-///
-/// * `weights` - one weight per row, from the first row onwards
-///
-/// # Why short input is allowed
-///
-/// Weights past the end of the slice are read as zero.
-/// They would weight rows past the end of a chunk, which are themselves read as zero.
-/// So a zero weight and its absent row contribute nothing either way.
-/// This is what lets one table layout serve a chunk that the row list does not fill.
-pub(crate) fn row_fold_tables<F: BinaryField, const N_TABLES: usize>(
-	weights: &[F],
-) -> [[F; 1 << BITS_PER_BYTE]; N_TABLES] {
-	array::from_fn(|group| {
-		// Weights of the eight rows this table covers, zero where the slice has run out.
-		// A group beyond the end of the slice starts at its end, so it copies nothing.
-		let mut group_weights = [F::ZERO; BITS_PER_BYTE];
-		let start = (group * BITS_PER_BYTE).min(weights.len());
-		let available = (weights.len() - start).min(BITS_PER_BYTE);
-		group_weights[..available].copy_from_slice(&weights[start..start + available]);
-
-		// Enumerate all 256 subset sums, so any byte of set bits indexes its sum in one load.
-		expand_subset_sums_array(group_weights)
-	})
-}
-
-/// Folds one group of eight rows into a column accumulator.
-///
-/// # Overview
-///
-/// Rows arrive one bit per scalar, so a row is one packed element and a column is a scalar index.
-/// One table covers one group, holding every subset sum of that group's eight row weights.
-///
-/// # Algorithm
-///
-/// Transposing the group exchanges its row axis with the low three bits of the column index:
-///
-/// ```text
-///     before:  element r, bit 8i + j  =  row r, column 8i + j
-///     after:   element j, bit 8i + t  =  row t, column 8i + j
-/// ```
-///
-/// So byte `i` of element `j` then carries the eight rows' bits at column `8i + j`.
-/// One lookup of that byte yields those rows' whole contribution to that column.
-///
-/// The accumulator is nested to match, as `[byte of column index][low three bits]`.
-/// Reading that nesting in order walks the columns in order.
-///
-/// # Preconditions
-///
-/// * The row width in bits must equal eight times the accumulator's outer length.
-/// * Rows past the end of the matrix must be passed as zero, which contributes nothing.
-#[inline]
-pub(crate) fn fold_row_group<F, PB, const N_TABLES: usize>(
-	rows: &[PB; BITS_PER_BYTE],
-	table: &[F; 1 << BITS_PER_BYTE],
-	acc: &mut [[F; BITS_PER_BYTE]; N_TABLES],
-) where
-	F: BinaryField,
-	PB: PackedField<Scalar = B1> + WithUnderlier,
-	PB::Underlier: Divisible<u8>,
-{
-	// One byte of a row per table is what makes the nesting below line up with the columns.
-	const {
-		assert!(PB::WIDTH == BITS_PER_BYTE * N_TABLES, "the row width must be one byte per table");
-	}
-
-	// The transpose consumes its input, so work on a copy and leave the caller's rows intact.
-	let mut group = *rows;
-	transpose_square_blocks_array::<PB, LOG_BITS_PER_BYTE, BITS_PER_BYTE>(&mut group);
-
-	for (j, row) in group.iter().enumerate() {
-		// Byte `i` holds this group's bits at column `8i + j`, so it indexes that column's sum.
-		for (i, byte) in Divisible::<u8>::value_iter(row.to_underlier()).enumerate() {
-			acc[i][j] += table[byte as usize];
-		}
 	}
 }
 
