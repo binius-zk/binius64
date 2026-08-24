@@ -729,8 +729,6 @@ mod tests {
 		// `BinarySwitchover` prepends one variable per round as bit-reverse + append + bit-reverse.
 		// Check that this composition, iterated over all coordinates (including the
 		// sub-packing-width early rounds), matches a full eq expansion.
-		use crate::bit_reverse::bit_reverse_packed;
-
 		let mut rng = StdRng::seed_from_u64(0);
 
 		let n_vars = 10;
@@ -738,9 +736,9 @@ mod tests {
 
 		let mut tensor = FieldBuffer::<P>::from_values(&[F::ONE]);
 		for &r in point.iter().rev() {
-			bit_reverse_packed(tensor.to_mut());
+			tensor.to_mut().bit_reverse();
 			tensor = OneCube::tensor_prod_eq_ind::<P>(tensor, &[r]);
-			bit_reverse_packed(tensor.to_mut());
+			tensor.to_mut().bit_reverse();
 		}
 
 		assert_eq!(tensor, OneCube::eq_ind_partial_eval(&point));

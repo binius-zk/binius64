@@ -39,51 +39,52 @@ const CACHE_LINE_BYTES: usize = 64;
 /// - A narrower scalar keeps the capped tile rather than paying for further instances.
 const MAX_LOG_TILE_PACKED: usize = 3;
 
-/// Applies a bit-reversal permutation to packed field elements in a buffer using parallelization.
-///
-/// This function permutes the field elements such that element at index `i` is moved to
-/// index `reverse_bits(i, log_len)`. The permutation is performed in-place and correctly
-/// handles packed field representations.
-///
-/// # Arguments
-///
-/// * `buffer` - Mutable slice of packed field elements to permute
-pub fn bit_reverse_packed<P: PackedField>(buffer: FieldSliceMut<P>) {
-	// A buffer shorter than a square of packed elements leaves the two passes below no room.
-	let log_len = buffer.log_len();
-	if log_len < 2 * P::LOG_WIDTH {
-		return bit_reverse_packed_naive(buffer);
-	}
+impl<P: PackedField> FieldSliceMut<'_, P> {
+	/// Permutes the elements of this buffer by reversing the bits of every index, in place.
+	///
+	/// An index is reversed over the bit width that the length of the buffer takes.
+	/// Packed representations are handled, so one exchange may move lanes within a single element.
+	///
+	/// ```text
+	///     8 elements:   index 001 -> index 100
+	/// ```
+	pub fn bit_reverse(&mut self) {
+		// A buffer shorter than a square of packed elements leaves the two passes below no room.
+		let log_len = self.log_len();
+		if log_len < 2 * P::LOG_WIDTH {
+			return bit_reverse_packed_naive(self.to_mut());
+		}
 
-	// Scalars covering one cache line, which is the granularity a permutation is charged at.
-	let log_scalar_bytes = size_of::<P::Scalar>().next_power_of_two().ilog2() as usize;
-	let log_line = checked_log_2(CACHE_LINE_BYTES).saturating_sub(log_scalar_bytes);
+		// Scalars covering one cache line, which is the granularity a permutation is charged at.
+		let log_scalar_bytes = size_of::<P::Scalar>().next_power_of_two().ilog2() as usize;
+		let log_line = checked_log_2(CACHE_LINE_BYTES).saturating_sub(log_scalar_bytes);
 
-	// Why: a tile under a line wastes bandwidth, and widening one costs sub-block work.
-	// Measured, that trade only wins for a packing under half a line.
-	// From half a line up the added work costs more than the bandwidth it recovers.
-	let log_tile = if P::LOG_WIDTH + 1 < log_line {
-		log_line
-	} else {
-		P::LOG_WIDTH
-	};
+		// Why: a tile under a line wastes bandwidth, and widening one costs sub-block work.
+		// Measured, that trade only wins for a packing under half a line.
+		// From half a line up the added work costs more than the bandwidth it recovers.
+		let log_tile = if P::LOG_WIDTH + 1 < log_line {
+			log_line
+		} else {
+			P::LOG_WIDTH
+		};
 
-	// A short buffer takes the widest tile its own length allows.
-	// The length check above leaves half the length at or above the packing width.
-	// So neither clamp can cut a tile below one packed element.
-	let log_tile = log_tile
-		.min(P::LOG_WIDTH + MAX_LOG_TILE_PACKED)
-		.min(log_len / 2);
+		// A short buffer takes the widest tile its own length allows.
+		// The length check above leaves half the length at or above the packing width.
+		// So neither clamp can cut a tile below one packed element.
+		let log_tile = log_tile
+			.min(P::LOG_WIDTH + MAX_LOG_TILE_PACKED)
+			.min(log_len / 2);
 
-	// Why: a constant tile bound is what keeps each pass's gather and scatter unrolled.
-	// A run-time bound lowers the moves of a one-element tile to a call.
-	// That call is most of the work at that width.
-	match log_tile - P::LOG_WIDTH {
-		0 => bit_reverse_tiled::<P, 0>(buffer),
-		1 => bit_reverse_tiled::<P, 1>(buffer),
-		2 => bit_reverse_tiled::<P, 2>(buffer),
-		// The clamp above caps the tile at the widest instance, which answers every larger value.
-		_ => bit_reverse_tiled::<P, MAX_LOG_TILE_PACKED>(buffer),
+		// Why: a constant tile bound is what keeps each pass's gather and scatter unrolled.
+		// A run-time bound lowers the moves of a one-element tile to a call.
+		// That call is most of the work at that width.
+		match log_tile - P::LOG_WIDTH {
+			0 => bit_reverse_tiled::<P, 0>(self.to_mut()),
+			1 => bit_reverse_tiled::<P, 1>(self.to_mut()),
+			2 => bit_reverse_tiled::<P, 2>(self.to_mut()),
+			// The clamp caps the tile at the widest instance, which answers every larger value.
+			_ => bit_reverse_tiled::<P, MAX_LOG_TILE_PACKED>(self.to_mut()),
+		}
 	}
 }
 
@@ -383,7 +384,7 @@ mod tests {
 		let mut naive = data_orig;
 
 		// Invariant: moving whole tiles lands every element where the definition puts it.
-		bit_reverse_packed(blocked.to_mut());
+		blocked.to_mut().bit_reverse();
 		bit_reverse_packed_naive(naive.to_mut());
 
 		assert_eq!(blocked, naive, "mismatch at log_d={log_d}");
@@ -431,8 +432,8 @@ mod tests {
 			// Invariant: reversing the bits of an index twice is the identity.
 			// So a buffer permuted twice has to come back exactly as it went in.
 			let mut twice = orig.clone();
-			bit_reverse_packed(twice.to_mut());
-			bit_reverse_packed(twice.to_mut());
+			twice.to_mut().bit_reverse();
+			twice.to_mut().bit_reverse();
 
 			prop_assert_eq!(twice, orig);
 		}
