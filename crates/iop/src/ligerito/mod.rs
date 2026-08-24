@@ -18,6 +18,7 @@
 //! It holds only:
 //!
 //! - [`LigeritoParams`] and its invariants;
+//! - [`InducedBasis`], the weight vector a level's opened rows put on its message;
 //! - [`LigeritoParams::proof_size`], the byte-exact estimate;
 //! - [`LigeritoParams::optimal_ladder`], the search that minimizes it subject to a security target.
 //!
@@ -28,7 +29,9 @@
 //! [NA25]: <https://eprint.iacr.org/2025/1187>
 
 mod common;
+mod induced_basis;
 mod size_estimation;
 
 pub use common::*;
+pub use induced_basis::InducedBasis;
 pub use size_estimation::{MAX_LOG_INV_RATE, MAX_LOG_LANES};
