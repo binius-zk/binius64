@@ -94,6 +94,67 @@ pub trait AdditiveNTT {
 		skip_late: usize,
 	);
 
+	/// Transpose of the linear map [`Self::forward_transform`] computes.
+	///
+	/// Write `M` for the matrix of the forward transform at the same skips.
+	/// This applies `M^T`.
+	/// The defining property is the adjoint identity
+	///
+	/// ```text
+	///     <transpose_transform(a), m> = <a, forward_transform(m)>
+	/// ```
+	///
+	/// which holds for every `a` and `m` and is what the tests pin.
+	///
+	/// This is not [`Self::inverse_transform`].
+	/// The forward butterfly `[[1, t], [1, 1 + t]]` has determinant 1.
+	/// Its inverse is therefore `[[1 + t, t], [1, 1]]`.
+	/// Its transpose is `[[1, 1], [t, 1 + t]]`.
+	/// The two agree only when `t` is zero.
+	///
+	/// A caller reaches for this when it needs `G^T a` for a generator matrix `G`.
+	/// Building that column by column costs one generator row per nonzero of `a`.
+	/// One transposed pass costs `O(2^log_len * log_len)` however many nonzeros there are.
+	///
+	/// The default body mirrors the reference forward transform and is correspondingly slow.
+	/// An implementation with a fast forward transform should override it.
+	///
+	/// ## Preconditions
+	///
+	/// - same as [`Self::forward_transform`]
+	fn transpose_transform<P: PackedField<Scalar = Self::Field>>(
+		&self,
+		mut data: FieldSliceMut<P>,
+		skip_early: usize,
+		skip_late: usize,
+	) {
+		let log_d = data.log_len();
+		let domain_context = self.domain_context();
+		reference::input_check(domain_context, log_d, skip_early, skip_late);
+
+		// Transposing a composition reverses it, so the layers run backwards and each keeps the
+		// twiddle it used going forward.
+		for layer in (skip_early..(log_d - skip_late)).rev() {
+			let num_blocks = 1 << layer;
+			let block_size_half = 1 << (log_d - layer - 1);
+			for block in 0..num_blocks {
+				let twiddle = domain_context.twiddle(layer, block);
+				let block_start = block << (log_d - layer);
+				for idx0 in block_start..(block_start + block_size_half) {
+					let idx1 = block_size_half | idx0;
+					// The transposed butterfly, which is the forward one with its two steps
+					// swapped: `u'' = u + v` and then `v'' = v + t * u''`.
+					let mut u = data.get(idx0);
+					let mut v = data.get(idx1);
+					u += v;
+					v += u * twiddle;
+					data.set(idx0, u);
+					data.set(idx1, v);
+				}
+			}
+		}
+	}
+
 	/// The associated [`DomainContext`].
 	fn domain_context(&self) -> &impl DomainContext<Field = Self::Field>;
 
@@ -200,5 +261,70 @@ impl<T: DomainContext> DomainContext for &T {
 
 	fn iter_twiddles(&self, layer: usize, log_step_by: usize) -> impl Iterator<Item = Self::Field> {
 		(*self).iter_twiddles(layer, log_step_by)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	//! The adjoint identity is the whole specification of the transpose, and it is basis free:
+	//!
+	//! ```text
+	//!     <transpose_transform(a), m> = <a, forward_transform(m)>
+	//! ```
+	//!
+	//! An error anywhere in the layer order, the butterfly, or the twiddle indexing breaks it.
+	//! Checking against `forward_transform` is what makes a separate reference unnecessary.
+
+	use binius_field::PackedField;
+	use proptest::prelude::*;
+	use rand::{SeedableRng, rngs::StdRng};
+
+	use super::{AdditiveNTT, NeighborsLastReference, domain_context::GaoMateerPreExpanded};
+	use crate::{
+		inner_product::inner_product_scalars,
+		test_utils::{B128, Packed128b, random_field_buffer},
+	};
+
+	/// Asserts the adjoint identity at one shape, over the field `P`.
+	fn assert_adjoint<P: PackedField<Scalar = B128>>(
+		log_n: usize,
+		skip_early: usize,
+		skip_late: usize,
+		seed: u64,
+	) {
+		let domain_context = GaoMateerPreExpanded::generate(log_n);
+		let ntt = NeighborsLastReference {
+			domain_context: &domain_context,
+		};
+		let mut rng = StdRng::seed_from_u64(seed);
+
+		let a = random_field_buffer::<P>(&mut rng, log_n);
+		let m = random_field_buffer::<P>(&mut rng, log_n);
+
+		let mut transposed = a.clone();
+		ntt.transpose_transform(transposed.to_mut(), skip_early, skip_late);
+
+		let mut forward = m.clone();
+		ntt.forward_transform(forward.to_mut(), skip_early, skip_late);
+
+		assert_eq!(
+			inner_product_scalars(transposed.iter_scalars(), m.iter_scalars()),
+			inner_product_scalars(a.iter_scalars(), forward.iter_scalars()),
+			"log_n={log_n} skip_early={skip_early} skip_late={skip_late}"
+		);
+	}
+
+	proptest! {
+		#[test]
+		fn transpose_is_the_adjoint_of_the_forward_transform(seed: u64, log_n in 1usize..8) {
+			// Every split of the layer range, including the two that apply no layer at all.
+			// A scalar and a packed field take different `get` and `set` paths, so both run.
+			for skip_early in 0..=log_n {
+				for skip_late in 0..=(log_n - skip_early) {
+					assert_adjoint::<B128>(log_n, skip_early, skip_late, seed);
+					assert_adjoint::<Packed128b>(log_n, skip_early, skip_late, seed);
+				}
+			}
+		}
 	}
 }
