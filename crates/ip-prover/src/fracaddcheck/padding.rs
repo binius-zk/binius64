@@ -161,3 +161,52 @@ pub fn unpad_leaf_claim<F: Field>(
 		point: point[n_pad_vars..].to_vec(),
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use binius_field::FieldOps;
+	use binius_ip::fracaddcheck;
+	use binius_math::test_utils::{Packed128b, random_scalars};
+	use proptest::prelude::*;
+	use rand::prelude::*;
+
+	use super::*;
+
+	type F = <Packed128b as FieldOps>::Scalar;
+
+	proptest! {
+		// Invariant: `unpad_leaf_claim` is the exact inverse of `pad_leaf_fraction`.
+		//
+		// The verifier pads a transparent leaf fraction, the prover unpads the claim it gets back.
+		// Only an end-to-end proof failure notices if either map drifts from the other.
+		#[test]
+		fn unpad_leaf_claim_inverts_pad_leaf_fraction(
+			seed in any::<u64>(),
+			n_pad_vars in 0usize..=5,
+			n_real_vars in 0usize..=5,
+		) {
+			let mut rng = StdRng::seed_from_u64(seed);
+
+			// Splitting the point's length in two keeps `n_pad_vars <= point.len()` by construction.
+			let point = random_scalars::<F>(&mut rng, n_pad_vars + n_real_vars);
+			let halves = random_scalars::<F>(&mut rng, 2);
+			let fraction = Fraction::new(halves[0], halves[1]);
+
+			let pad_eq = point[..n_pad_vars]
+				.iter()
+				.map(|&coord| OneCube::eq_one_var(F::ZERO, coord))
+				.product::<F>();
+			// Unpadding asserts on a zero weight, which needs a padding coordinate equal to one.
+			// Random 128-bit coordinates never are, so this rejects nothing.
+			prop_assume!(pad_eq != F::ZERO);
+
+			let padded = fracaddcheck::pad_leaf_fraction(fraction.into(), pad_eq);
+			let claim = unpad_leaf_claim(padded.into(), &point, n_pad_vars);
+
+			prop_assert_eq!(claim.num_eval, fraction.num);
+			prop_assert_eq!(claim.den_eval, fraction.den);
+			// The padding variables are the lowest ones, so unpadding strips them off the point.
+			prop_assert_eq!(claim.point, point[n_pad_vars..].to_vec());
+		}
+	}
+}
