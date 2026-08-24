@@ -57,6 +57,10 @@ name = "and_reduction"
 harness = false
 
 [[bench]]
+name = "fold_bitand_operands"
+harness = false
+
+[[bench]]
 name = "shift_reduction"
 harness = false
 
