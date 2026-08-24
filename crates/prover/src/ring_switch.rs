@@ -28,15 +28,9 @@ use binius_verifier::{
 use itertools::izip;
 
 use crate::{
-	fold_word::{fold_row_group, row_fold_tables},
+	bit_matrix::{LOG_WEIGHTS_PER_TABLE, WEIGHTS_PER_TABLE, fold_row_group, row_fold_tables},
 	prove::pack_witness,
 };
-
-/// Base-2 log of the row group one subset-sum table covers.
-///
-/// Eight rows is the widest group whose lookup index still fits one byte.
-/// One table load then replaces eight conditional additions.
-const LOG_SPLIT_CHUNK_BITS: usize = 3;
 
 /// Base-2 log of the low-factor length the tensor split targets.
 ///
@@ -48,9 +42,7 @@ const LOG_SPLIT_CHUNK_BITS: usize = 3;
 pub const LOG_SPLIT_BLOCK: usize = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 
 /// Number of subset-sum tables one chunk of the split fold uses.
-const N_ROW_TABLES: usize = 1 << (LOG_SPLIT_BLOCK - LOG_SPLIT_CHUNK_BITS);
-/// Rows one subset-sum table covers.
-const ROW_GROUP: usize = 1 << LOG_SPLIT_CHUNK_BITS;
+const N_ROW_TABLES: usize = 1 << (LOG_SPLIT_BLOCK - LOG_WEIGHTS_PER_TABLE);
 
 /// Folds the 1-bit rows of a matrix against an equality tensor supplied as two factors.
 ///
@@ -134,7 +126,7 @@ where
 				//
 				// A matrix row is 128 single-bit columns, which is one full-width packed row.
 				let mut rows = P::iter_slice(mat_block);
-				let mut columns = [[B128::ZERO; ROW_GROUP]; N_ROW_TABLES];
+				let mut columns = [[B128::ZERO; WEIGHTS_PER_TABLE]; N_ROW_TABLES];
 
 				for table in &lo_tables {
 					// Gather this group's rows out of the packed elements they sit in.
@@ -142,7 +134,7 @@ where
 					// carry weight zero, so neither contributes.
 					// A field element and a 128-bit row of single-bit scalars share one underlier,
 					// so each view is free.
-					let mut group = [PackedBinaryField128x1b::default(); ROW_GROUP];
+					let mut group = [PackedBinaryField128x1b::default(); WEIGHTS_PER_TABLE];
 					iter::zip(&mut group, &mut rows)
 						.for_each(|(dst, src)| *dst = PackedExtension::<B1>::cast_base(src));
 
@@ -156,7 +148,7 @@ where
 					let acc = acc.as_mut();
 					for (i, group) in columns.iter().enumerate() {
 						for (j, &column) in group.iter().enumerate() {
-							acc[(i << LOG_SPLIT_CHUNK_BITS) | j] += eq_hi_val * column;
+							acc[(i << LOG_WEIGHTS_PER_TABLE) | j] += eq_hi_val * column;
 						}
 					}
 				}
