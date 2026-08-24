@@ -21,5 +21,7 @@ itertools.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+binius-compute = { path = "../compute" }
 binius-math = { path = "../math", features = ["test-utils"] }
 proptest.workspace = true
+rand.workspace = true
