@@ -14,7 +14,8 @@ use std::iter;
 use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldVec, multilinear::eq::scaled_eq_ind_partial_eval_into,
+	FieldBuffer, FieldSlice, FieldVec,
+	multilinear::hypercube::{Hypercube, OneCube},
 };
 use binius_utils::{
 	buffer::VecLike,
@@ -127,7 +128,7 @@ where
 			);
 			// Seeding the expansion with the scale folds it into the tensor product.
 			// That keeps it to one pass over one 2^n buffer.
-			scaled_eq_ind_partial_eval_into(looker.eval_point, scale, buffer)
+			OneCube::scaled_eq_ind_partial_eval_into(looker.eval_point, scale, buffer)
 		})
 		.collect::<Vec<_>>();
 

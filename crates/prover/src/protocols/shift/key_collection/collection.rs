@@ -4,7 +4,10 @@
 use binius_compute::Allocator;
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_field::{BinaryField, PackedField, WideMul};
-use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{
+	FieldBuffer, FieldVec,
+	multilinear::hypercube::{Hypercube, OneCube},
+};
 use binius_utils::{
 	buffer::VecLike,
 	checked_arithmetics::log2_ceil_usize,
@@ -103,8 +106,8 @@ impl KeyCollection {
 	where
 		F: BinaryField,
 	{
-		let r_v_tensor = eq_ind_partial_eval::<F>(&inner.variant);
-		let r_s_tensor = eq_ind_partial_eval::<F>(&inner.amount);
+		let r_v_tensor = OneCube::eq_ind_partial_eval::<F>(&inner.variant);
+		let r_s_tensor = OneCube::eq_ind_partial_eval::<F>(&inner.amount);
 
 		// Invariant: a key's sequence weight factorizes across its two slots.
 		//

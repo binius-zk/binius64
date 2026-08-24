@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::{Field, field::FieldOps};
-use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
+use binius_math::multilinear::hypercube::{Hypercube, OneCube};
 
 use crate::{
 	channel::IPVerifierChannel,
@@ -234,8 +234,8 @@ pub fn libra_eval<F: FieldOps>(
 	n_vars: usize,
 	degree: usize,
 ) -> F {
-	let eq_j = eq_ind_partial_eval_scalars(query_j);
-	let eq_k = eq_ind_partial_eval_scalars(query_k);
+	let eq_j = OneCube::eq_ind_partial_eval_scalars(query_j);
+	let eq_k = OneCube::eq_ind_partial_eval_scalars(query_k);
 
 	eq_j.iter()
 		.take(n_vars)

@@ -16,7 +16,7 @@
 
 use binius_field::{BinaryField1b, ExtensionField, Field};
 use binius_ip::logup_star as reduction;
-use binius_math::multilinear::eq::eq_ind;
+use binius_math::multilinear::hypercube::{Hypercube, OneCube};
 use itertools::izip;
 
 use crate::channel::{Error as ChannelError, IOPVerifierChannel};
@@ -112,7 +112,7 @@ where
 		let point = output.table_eval_point[..n_vars].to_vec();
 		channel.verify_oracle_relation(
 			oracle,
-			Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
+			Box::new(move |challenge: &[C::Elem]| OneCube::eq_ind(&point, challenge)),
 			table_output.pushforward_claim.clone(),
 		)?;
 	}

@@ -20,7 +20,7 @@ use std::mem;
 
 use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::multilinear::eq::eq_one_var;
+use binius_math::multilinear::hypercube::{Hypercube, OneCube};
 
 use crate::sumcheck::common::MleCheckProver;
 
@@ -286,7 +286,7 @@ impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for ZeroPadMleCheckPr
 	fn fold(&mut self, challenge: F) {
 		match &mut self.phase {
 			Phase::Real(inner) => inner.fold(challenge),
-			Phase::Padding { bound_eq, .. } => *bound_eq *= eq_one_var(F::ZERO, challenge),
+			Phase::Padding { bound_eq, .. } => *bound_eq *= OneCube::eq_one_var(F::ZERO, challenge),
 		}
 		self.round += 1;
 		self.advance();
@@ -401,7 +401,7 @@ mod tests {
 	fn pad_eq_prefixes(eval_point: &[F], pad_len: usize) -> Vec<F> {
 		iter::once(F::ONE)
 			.chain(eval_point[..pad_len].iter().scan(F::ONE, |acc, &coord| {
-				*acc *= eq_one_var(F::ZERO, coord);
+				*acc *= OneCube::eq_one_var(F::ZERO, coord);
 				Some(*acc)
 			}))
 			.collect()

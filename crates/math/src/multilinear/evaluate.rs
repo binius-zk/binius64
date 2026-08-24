@@ -8,7 +8,10 @@ use binius_utils::{buffer::BufferData, rayon::prelude::*};
 use crate::{
 	FieldBuffer,
 	inner_product::inner_product_buffers,
-	multilinear::{eq::eq_ind_partial_eval, fold::fold_highest_var_inplace},
+	multilinear::{
+		fold::fold_highest_var_inplace,
+		hypercube::{Hypercube, OneCube},
+	},
 };
 
 /// Evaluates a multilinear polynomial at a given point using sqrt(n) memory.
@@ -47,7 +50,7 @@ where
 	let (first_coords, remaining_coords) = point.split_at(first_half_len);
 
 	// Generate eq tensor for first half of coordinates
-	let eq_tensor = eq_ind_partial_eval::<P>(first_coords);
+	let eq_tensor = OneCube::eq_ind_partial_eval::<P>(first_coords);
 
 	// If there is no second half, just return the inner product with the whole evals.
 	if remaining_coords.is_empty() {
@@ -166,7 +169,7 @@ mod tests {
 			assert_eq!(point.len(), evals.log_len());
 
 			// Compute the equality indicator tensor expansion
-			let eq_tensor = eq_ind_partial_eval::<P>(point);
+			let eq_tensor = OneCube::eq_ind_partial_eval::<P>(point);
 			inner_product_par(evals, &eq_tensor)
 		}
 

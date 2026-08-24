@@ -16,7 +16,7 @@ use binius_field::{
 };
 use binius_math::{
 	FieldBuffer, FieldSlice,
-	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
+	multilinear::hypercube::{Hypercube, OneCube},
 };
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::config::B1;
@@ -480,11 +480,11 @@ impl<F: BinaryField> WordFolder<F> {
 		// build reads the rest as zero.
 		// Those zeros pair with the repeated words a short list is filled with, so they add
 		// nothing.
-		let prefix_expansion = eq_ind_partial_eval_scalars::<F>(prefix);
+		let prefix_expansion = OneCube::eq_ind_partial_eval_scalars::<F>(prefix);
 		let lookups = row_fold_tables::<F, { Word::BYTES }>(&prefix_expansion);
 
 		// One weight per chunk of CHUNK_SIZE words, from the suffix.
-		let suffix_weights = eq_ind_partial_eval::<F>(suffix);
+		let suffix_weights = OneCube::eq_ind_partial_eval::<F>(suffix);
 
 		Self {
 			lookups,
@@ -890,7 +890,7 @@ mod tests {
 	fn naive_fold_across_words<F: BinaryField>(words: &[Word], point: &[F]) -> [F; Word::BITS] {
 		assert_eq!(words.len(), 1 << point.len());
 
-		let eq = eq_ind_partial_eval_scalars(point);
+		let eq = OneCube::eq_ind_partial_eval_scalars(point);
 		let mut out = [F::ZERO; Word::BITS];
 		for (word, &weight) in iter::zip(words, &eq) {
 			for (bit_idx, out_i) in out.iter_mut().enumerate() {

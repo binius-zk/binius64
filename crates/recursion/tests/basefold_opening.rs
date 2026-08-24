@@ -62,7 +62,7 @@ use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::{
 	inner_product::inner_product_buffers,
 	line::extrapolate_line,
-	multilinear::eq::eq_ind_partial_eval,
+	multilinear::hypercube::{Hypercube, OneCube},
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{random_field_buffer, random_scalars},
 };
@@ -228,7 +228,8 @@ fn prove(shape: &Shape, setup: &Setup, seed: u64) -> Opening {
 
 	// The claim is the folded polynomial against the equality indicator, which is pi'(r).
 	// It exists only once gamma does, so it is bound here rather than up front.
-	let eval_claim = inner_product_buffers(&witness_prime, &eq_ind_partial_eval::<P>(&eval_point));
+	let eval_claim =
+		inner_product_buffers(&witness_prime, &OneCube::eq_ind_partial_eval::<P>(&eval_point));
 	WordIPProverChannel::<B128>::observe_words(&mut channel, &element_words(eval_claim));
 
 	// The sum-check rounds and the codeword folding advance together, so the transcript carries

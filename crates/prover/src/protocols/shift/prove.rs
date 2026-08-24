@@ -8,8 +8,10 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, FieldBuffer, inner_product::inner_product,
-	multilinear::eq::eq_ind_partial_eval, univariate::subspace_lagrange_evals,
+	BinarySubspace, FieldBuffer,
+	inner_product::inner_product,
+	multilinear::hypercube::{Hypercube, OneCube},
+	univariate::subspace_lagrange_evals,
 };
 use tracing::instrument;
 
@@ -108,7 +110,7 @@ impl<F: Field> PreparedOperatorData<F> {
 			r_zhat_prime,
 			r_x_prime,
 		} = operator_data;
-		let r_x_prime_tensor = eq_ind_partial_eval::<F>(&r_x_prime);
+		let r_x_prime_tensor = OneCube::eq_ind_partial_eval::<F>(&r_x_prime);
 		let lambda_powers: Vec<F> = lambda.powers().skip(1).take(ARITY).collect();
 		Self {
 			batched_eval: inner_product(evals, lambda_powers.iter().copied()),
@@ -323,7 +325,7 @@ where
 			g_eval: _,
 		} = phase_1_output;
 
-		let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
+		let r_j_tensor = OneCube::eq_ind_partial_eval::<F>(&r_j);
 
 		// Fold each segment separately.
 		// The combined witness is never materialized: each fold is zero-padded to enough

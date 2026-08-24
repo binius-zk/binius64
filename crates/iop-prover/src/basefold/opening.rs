@@ -123,7 +123,7 @@ mod test {
 		FieldBuffer,
 		inner_product::inner_product_buffers,
 		line::extrapolate_line,
-		multilinear::eq::eq_ind_partial_eval,
+		multilinear::hypercube::{Hypercube, OneCube},
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -205,7 +205,7 @@ mod test {
 				*w = extrapolate_line(*w, m, gamma_broadcast);
 			});
 
-		let eval_point_eq = eq_ind_partial_eval::<P>(evaluation_point);
+		let eval_point_eq = OneCube::eq_ind_partial_eval::<P>(evaluation_point);
 		let mut eval_claim = inner_product_buffers(&witness_prime, &eval_point_eq);
 		if tamper {
 			eval_claim += F::ONE;

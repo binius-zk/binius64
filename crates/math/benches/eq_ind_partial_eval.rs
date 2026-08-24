@@ -2,7 +2,7 @@
 
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_math::{
-	multilinear::hypercube::{Hypercube, InfCube, OneCube, eq_ind_partial_eval},
+	multilinear::hypercube::{Hypercube, InfCube, OneCube},
 	test_utils::random_scalars,
 };
 use criterion::{
@@ -17,7 +17,7 @@ type P = OptimalPackedB128;
 fn bench_cube<Cube: Hypercube>(group: &mut BenchmarkGroup<'_, WallTime>, cube: &str, point: &[F]) {
 	let id = BenchmarkId::new(cube, format!("n_vars={}", point.len()));
 	group.bench_function(id, |b| {
-		b.iter(|| eq_ind_partial_eval::<Cube, P>(point));
+		b.iter(|| Cube::eq_ind_partial_eval::<P>(point));
 	});
 }
 

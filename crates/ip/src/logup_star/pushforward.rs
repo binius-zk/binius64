@@ -12,7 +12,7 @@ use std::iter;
 
 use binius_field::{BinaryField1b, ExtensionField, Field, field::FieldOps};
 use binius_math::{
-	multilinear::eq::{eq_ind, eq_ind_zero},
+	multilinear::hypercube::{Hypercube, OneCube},
 	univariate::evaluate_univariate,
 };
 
@@ -139,9 +139,10 @@ where
 	let contributions = iter::zip(&tables, iter::zip(&pushforward_eval_claims, &table_eval_claims))
 		.flat_map(|(table, (y_eval, t_eval))| {
 			let (own_point, padding_point) = rho.split_at(table.pushforward_eval_point.len());
-			let weighted_y = y_eval.clone() * eq_ind_zero::<C::Elem>(padding_point);
+			let weighted_y = y_eval.clone() * OneCube::eq_ind_zero::<C::Elem>(padding_point);
 			[
-				weighted_y.clone() * eq_ind::<C::Elem>(own_point, table.pushforward_eval_point),
+				weighted_y.clone()
+					* OneCube::eq_ind::<C::Elem>(own_point, table.pushforward_eval_point),
 				weighted_y * t_eval.clone(),
 			]
 		})
@@ -191,7 +192,10 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_field::{BinaryField1b, ExtensionField, Random, arch::OptimalB128 as B128};
-	use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, test_utils::random_scalars};
+	use binius_math::{
+		multilinear::hypercube::{Hypercube, OneCube},
+		test_utils::random_scalars,
+	};
 	use rand::prelude::*;
 
 	use super::*;
@@ -208,7 +212,7 @@ mod tests {
 
 	// Evaluate the multilinear `values` at `point` as the inner product with the eq tensor.
 	fn evaluate_scalars(values: &[B128], point: &[B128]) -> B128 {
-		let eq = eq_ind_partial_eval_scalars(point);
+		let eq = OneCube::eq_ind_partial_eval_scalars(point);
 		values
 			.iter()
 			.zip(&eq)

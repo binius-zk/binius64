@@ -380,7 +380,10 @@ mod tests {
 	use binius_ip::{channel::IPVerifierChannel, logup_star};
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
+		multilinear::{
+			evaluate::evaluate,
+			hypercube::{Hypercube, OneCube},
+		},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -425,7 +428,7 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut *rng, n);
 
 		// The looked-up evaluation: e = (I^* T)(r) = sum_i eq_r(i) * T[index[i]].
-		let eq_r = eq_ind_partial_eval_scalars::<F>(&eval_point);
+		let eq_r = OneCube::eq_ind_partial_eval_scalars::<F>(&eval_point);
 		let eval_claim = index
 			.iter()
 			.zip(&eq_r)

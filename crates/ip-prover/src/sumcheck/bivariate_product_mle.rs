@@ -115,7 +115,10 @@ mod tests {
 	use binius_ip::{mlecheck, sumcheck::verify};
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{eq::eq_ind, evaluate::evaluate},
+		multilinear::{
+			evaluate::evaluate,
+			hypercube::{Hypercube, OneCube},
+		},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -233,7 +236,7 @@ mod tests {
 		let multilinear_evals: Vec<F> = verifier_transcript.message().read_vec(2).unwrap();
 
 		// Evaluate the equality indicator
-		let eq_ind_eval = eq_ind(eval_point, &reduced_eval_point);
+		let eq_ind_eval = OneCube::eq_ind(eval_point, &reduced_eval_point);
 
 		// Check that the product of the evaluations equals the reduced evaluation
 		assert_eq!(

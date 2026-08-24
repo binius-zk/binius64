@@ -18,7 +18,10 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, PackedField};
 use binius_ip_prover::logup_star::{self as reduction, LogupTableOutput, witness};
 pub use binius_ip_prover::logup_star::{Looker, TableLookup};
-use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval_in};
+use binius_math::{
+	FieldBuffer,
+	multilinear::hypercube::{Hypercube, OneCube},
+};
 use itertools::izip;
 
 use crate::channel::IOPProverChannel;
@@ -116,7 +119,8 @@ where
 		izip!(oracles, pushforwards, &tables, &output.tables)
 	{
 		let m = table.table.log_len();
-		let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point[..m]);
+		let transparent =
+			OneCube::eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point[..m]);
 		channel.prove_oracle_relation(oracle.clone(), transparent, table_output.pushforward_claim);
 		channel.finalize_oracle(oracle, pushforward);
 	}
@@ -144,7 +148,10 @@ mod tests {
 	use binius_ip::logup_star::LookerClaim;
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
+		multilinear::{
+			evaluate::evaluate,
+			hypercube::{Hypercube, OneCube},
+		},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -197,7 +204,7 @@ mod tests {
 		let eval_point = random_scalars::<E>(&mut *rng, n);
 
 		// The looked-up evaluation: e = (I^* T)(r) = sum_i eq_r(i) * T[index[i]].
-		let eq_r = eq_ind_partial_eval_scalars::<E>(&eval_point);
+		let eq_r = OneCube::eq_ind_partial_eval_scalars::<E>(&eval_point);
 		let eval_claim = index
 			.iter()
 			.zip(&eq_r)
