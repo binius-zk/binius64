@@ -197,7 +197,7 @@ where
 		let (b_prodcheck, b_root) = ProdcheckProver::new(
 			Word::LOG_BITS,
 			alloc,
-			FieldBuffer::clone_from_slice(alloc, b_leaves.as_view()),
+			FieldBuffer::from_view_in(alloc, b_leaves.as_view()),
 		);
 		drop(variable_base_tree_scope);
 

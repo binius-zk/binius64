@@ -354,7 +354,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 	// Computing a product tree over the leaves.
 	group.bench_function("product_tree", |bencher| {
 		bencher.iter_batched(
-			|| FieldBuffer::clone_from_slice(&alloc, witness.b_leaves.as_view()),
+			|| FieldBuffer::from_view_in(&alloc, witness.b_leaves.as_view()),
 			|b_leaves| ProdcheckProver::<_, P>::new(Word::LOG_BITS, &alloc, b_leaves),
 			BatchSize::SmallInput,
 		);

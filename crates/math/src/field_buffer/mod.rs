@@ -184,7 +184,7 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Copies a borrowed buffer into memory drawn from `alloc`.
 	///
 	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
-	pub fn clone_from_slice<A>(alloc: &A, src: FieldSlice<P>) -> Self
+	pub fn from_view_in<A>(alloc: &A, src: FieldSlice<P>) -> Self
 	where
 		A: Allocator<Vec<P> = Data>,
 	{
@@ -754,13 +754,13 @@ mod tests {
 		let src = FieldBuffer::<P>::from_values(&scalars);
 
 		// A copy drawn from the allocator carries over both the length and the scalars.
-		let cloned: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.as_view());
+		let cloned: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, src.as_view());
 		assert_eq!(cloned.log_len(), 4);
 		assert_eq!(cloned.as_view(), src.as_view());
 
 		// Copying a source shorter than one packed word keeps the two live lanes, not four.
 		let small = FieldBuffer::<P>::from_values(&scalars[..2]);
-		let cloned_small: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.as_view());
+		let cloned_small: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, small.as_view());
 		assert_eq!(cloned_small.log_len(), 1);
 		assert_eq!(cloned_small.as_view(), small.as_view());
 
@@ -785,7 +785,7 @@ mod tests {
 		//
 		// Under a pool the target may sit on memory a prior buffer dirtied.
 		// So the zeros above the copied words have to be written, never assumed.
-		let src_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.as_view());
+		let src_vec: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, src.as_view());
 		let extended = src_vec.zero_extend_in(alloc, 5);
 		assert_eq!(extended.log_len(), 5);
 		for i in 0..16 {
@@ -794,7 +794,7 @@ mod tests {
 		assert!((16..32).all(|i| extended.get(i) == F::ZERO));
 
 		// An already-wide-enough buffer comes back unchanged, with no copy taken.
-		let same: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.as_view());
+		let same: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, src.as_view());
 		let same = same.zero_extend_in(alloc, 4);
 		assert_eq!(same.log_len(), 4);
 		assert_eq!(same.as_view(), src.as_view());
@@ -805,7 +805,7 @@ mod tests {
 		//     result (log_len 3)    [0, 1 | 0, 0] [0, 0 | 0, 0]
 		//
 		// The two dead lanes become live, so they read back as zeros, not stale scalars.
-		let small_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.as_view());
+		let small_vec: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, small.as_view());
 		let widened = small_vec.zero_extend_in(alloc, 3);
 		assert_eq!(widened.log_len(), 3);
 		assert_eq!(widened.get(0), F::new(0));

@@ -219,7 +219,7 @@ where
 		let (table_prover, table_root) = FracAddCircuit::build(
 			table.log_len(),
 			alloc,
-			Fraction::new(FieldBuffer::clone_from_slice(alloc, pushforward.as_view()), table_den),
+			Fraction::new(FieldBuffer::from_view_in(alloc, pushforward.as_view()), table_den),
 		);
 		provers.push(table_prover);
 		roots.push(table_root.as_ref().map(|buffer| buffer.get(0)));

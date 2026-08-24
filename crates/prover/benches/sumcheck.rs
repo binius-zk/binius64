@@ -41,7 +41,7 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 			b.iter_batched(
 				|| {
 					[multilinear_a.as_view(), multilinear_b.as_view()]
-						.map(|multilin| FieldBuffer::clone_from_slice(&alloc, multilin))
+						.map(|multilin| FieldBuffer::from_view_in(&alloc, multilin))
 				},
 				|multilinears| {
 					let prover = quadratic_mlecheck_prover(
@@ -88,7 +88,7 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 						multilinear_b.as_view(),
 						multilinear_c.as_view(),
 					]
-					.map(|multilin| FieldBuffer::clone_from_slice(&alloc, multilin))
+					.map(|multilin| FieldBuffer::from_view_in(&alloc, multilin))
 				},
 				|multilinears| {
 					let prover = quadratic_mlecheck_prover(

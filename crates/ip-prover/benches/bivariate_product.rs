@@ -75,8 +75,8 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 				|| {
 					(
 						transcript.clone(),
-						FieldBuffer::clone_from_slice(&alloc, a_buffer.as_view()),
-						FieldBuffer::clone_from_slice(&alloc, b_buffer.as_view()),
+						FieldBuffer::from_view_in(&alloc, a_buffer.as_view()),
+						FieldBuffer::from_view_in(&alloc, b_buffer.as_view()),
 					)
 				},
 				|(mut transcript, a, b)| {
@@ -119,8 +119,8 @@ fn bench_shared_mlecheck_bivariate_product(c: &mut Criterion) {
 				|| {
 					(
 						transcript.clone(),
-						FieldBuffer::clone_from_slice(&alloc, a_buffer.as_view()),
-						FieldBuffer::clone_from_slice(&alloc, b_buffer.as_view()),
+						FieldBuffer::from_view_in(&alloc, a_buffer.as_view()),
+						FieldBuffer::from_view_in(&alloc, b_buffer.as_view()),
 						eval_point.clone(),
 					)
 				},
