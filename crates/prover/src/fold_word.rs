@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, hint::assert_unchecked, iter};
+use std::{array, hint::assert_unchecked, iter, marker::PhantomData, mem::MaybeUninit};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -137,6 +137,62 @@ impl<F: BinaryField> BitWeightTables<F> {
 	}
 }
 
+/// A field buffer under construction, filled in two stages.
+///
+/// Stage one writes one packed element per whole chunk of words, in parallel, through spare
+/// capacity. Stage two pushes the short tail and zero-fills up to the power-of-two length.
+///
+/// Owning both stages is what keeps the length claim in one place, so the unchecked write is
+/// argued once rather than at every fold.
+struct PackedOutput<P, V> {
+	values: V,
+	capacity: usize,
+	log_n: usize,
+	_marker: PhantomData<P>,
+}
+
+impl<P: PackedField, V: VecLike<P>> PackedOutput<P, V> {
+	/// Claims room for a buffer covering `n_words` words, rounded up to a power of two.
+	///
+	/// A word count that is not a power of two leaves the high words reading as zero.
+	fn for_words<A: Allocator<Vec<P> = V>>(alloc: &A, n_words: usize) -> Self {
+		let log_n = log2_ceil_usize(n_words);
+		let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
+
+		Self {
+			values: alloc.alloc::<P>(capacity),
+			capacity,
+			log_n,
+			_marker: PhantomData,
+		}
+	}
+
+	/// The uninitialized slots for the whole chunks, to be written before closing them.
+	fn chunk_slots(&mut self, n_chunks: usize) -> &mut [MaybeUninit<P>] {
+		&mut self.values.spare_capacity_mut()[..n_chunks]
+	}
+
+	/// Closes the slots handed out by the matching call above.
+	///
+	/// # Safety
+	///
+	/// Every slot of the matching `n_chunks` must have been written.
+	unsafe fn commit_chunks(&mut self, n_chunks: usize) {
+		unsafe { self.values.set_len(n_chunks) }
+	}
+
+	/// Appends the element the short tail folds to.
+	fn push(&mut self, elem: P) {
+		self.values.push(elem);
+	}
+
+	/// Zero-fills up to the power-of-two length and closes the buffer.
+	fn finish(mut self) -> FieldBuffer<P, V> {
+		self.values.resize(self.capacity, P::default());
+		FieldBuffer::new(self.log_n, self.values)
+	}
+}
+
 /// A reusable folder over a fixed vector of bit-index scalars, the [`fold_words`] analogue of
 /// [`WordFolder`].
 ///
@@ -166,43 +222,38 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		P: PackedField<Scalar = F>,
 		A: Allocator,
 	{
-		// `words` need not have a power-of-two length; the high words up to the next power of two
-		// are treated as zero, so the slots after the last real word are zero-filled by resize.
-		let log_n = log2_ceil_usize(words.len());
-		let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
+		let mut out = PackedOutput::for_words(alloc, words.len());
 
-		let mut values = alloc.alloc::<P>(capacity);
-
+		// Partition the words into whole packed-width chunks and a short tail.
+		//
+		//     words:  [ chunk 0 | chunk 1 | ... | chunk n-1 | tail (< P::WIDTH) ]
 		let n_chunks = words.len() / P::WIDTH;
 		let (words_aligned, words_remaining) = words.split_at(n_chunks * P::WIDTH);
 
-		let values_aligned = &mut values.spare_capacity_mut()[..n_chunks];
+		let slots = out.chunk_slots(n_chunks);
 		let word_chunks = words_aligned.par_chunks_exact(P::WIDTH);
-		assert_eq!(values_aligned.len(), word_chunks.len());
+		assert_eq!(slots.len(), word_chunks.len());
 
-		(values_aligned, word_chunks)
+		(slots, word_chunks)
 			.into_par_iter()
 			// One item is one packed element, so the floor converts from words to items.
 			.with_min_len(MIN_WORDS_PER_TASK.div_ceil(P::WIDTH))
-			.for_each(|(out, word_chunk)| {
+			.for_each(|(slot, word_chunk)| {
 				// Safety:
 				// - words_aligned has length that is a multiple of P::WIDTH
 				// - words_aligned is split into P::WIDTH chunks
 				unsafe { assert_unchecked(word_chunk.len() == P::WIDTH) };
-				out.write(P::from_scalars(word_chunk.iter().map(|&word| self.tables.fold(word))));
+				slot.write(P::from_scalars(word_chunk.iter().map(|&word| self.tables.fold(word))));
 			});
 
-		// Safety: every one of the n_chunks slots is initialized above.
-		unsafe { values.set_len(n_chunks) };
+		// Safety: the loop above writes every one of the n_chunks slots exactly once.
+		unsafe { out.commit_chunks(n_chunks) };
 
 		if !words_remaining.is_empty() {
-			values
-				.push(P::from_scalars(words_remaining.iter().map(|&word| self.tables.fold(word))));
+			out.push(P::from_scalars(words_remaining.iter().map(|&word| self.tables.fold(word))));
 		}
 
-		values.resize(capacity, P::default());
-
-		FieldBuffer::new(log_n, values)
+		out.finish()
 	}
 
 	/// Folds the two stored BitAnd operand columns and their derived AND column in one pass.
@@ -252,13 +303,10 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		// Padding contract, mirrored from the single-column fold:
 		// the high words up to the next power of two read as zero.
 		// `0 & 0 = 0`, so the derived column stays consistent over that padding.
-		let log_n = log2_ceil_usize(a_words.len());
-		let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
-
+		//
 		// One output buffer per folded column, filled through spare capacity.
-		let mut a_values = alloc.alloc::<P>(capacity);
-		let mut b_values = alloc.alloc::<P>(capacity);
-		let mut c_values = alloc.alloc::<P>(capacity);
+		let [mut a_out, mut b_out, mut c_out] =
+			array::from_fn(|_| PackedOutput::for_words(alloc, a_words.len()));
 
 		// Phase 1: partition the inputs into full packed-width chunks and a short tail.
 		//
@@ -267,16 +315,16 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		let (a_aligned, a_remaining) = a_words.split_at(n_chunks * P::WIDTH);
 		let (b_aligned, b_remaining) = b_words.split_at(n_chunks * P::WIDTH);
 
-		let a_out = &mut a_values.spare_capacity_mut()[..n_chunks];
-		let b_out = &mut b_values.spare_capacity_mut()[..n_chunks];
-		let c_out = &mut c_values.spare_capacity_mut()[..n_chunks];
+		let a_slots = a_out.chunk_slots(n_chunks);
+		let b_slots = b_out.chunk_slots(n_chunks);
+		let c_slots = c_out.chunk_slots(n_chunks);
 
 		// Phase 2: fold the aligned chunks in parallel.
 		// Each task owns one chunk of both inputs and writes one packed element per output.
 		(
-			a_out,
-			b_out,
-			c_out,
+			a_slots,
+			b_slots,
+			c_slots,
 			a_aligned.par_chunks_exact(P::WIDTH),
 			b_aligned.par_chunks_exact(P::WIDTH),
 		)
@@ -300,27 +348,25 @@ impl<F: BinaryField> BitAxisFolder<F> {
 				));
 			});
 
-		// Safety: every one of the n_chunks slots of each vector is initialized above.
+		// Safety: the loop above writes every one of the n_chunks slots of each output exactly
+		// once.
 		unsafe {
-			a_values.set_len(n_chunks);
-			b_values.set_len(n_chunks);
-			c_values.set_len(n_chunks);
+			a_out.commit_chunks(n_chunks);
+			b_out.commit_chunks(n_chunks);
+			c_out.commit_chunks(n_chunks);
 		}
 
 		// Phase 3: fold the short tail into one final packed element per output.
 		if !a_remaining.is_empty() {
-			a_values.push(P::from_scalars(a_remaining.iter().map(|&word| self.tables.fold(word))));
-			b_values.push(P::from_scalars(b_remaining.iter().map(|&word| self.tables.fold(word))));
-			c_values.push(P::from_scalars(
+			a_out.push(P::from_scalars(a_remaining.iter().map(|&word| self.tables.fold(word))));
+			b_out.push(P::from_scalars(b_remaining.iter().map(|&word| self.tables.fold(word))));
+			c_out.push(P::from_scalars(
 				iter::zip(a_remaining, b_remaining).map(|(&a, &b)| self.tables.fold(a & b)),
 			));
 		}
 
-		// Phase 4: zero-pad each output up to the power-of-two capacity.
-		[a_values, b_values, c_values].map(|mut values| {
-			values.resize(capacity, P::default());
-			FieldBuffer::new(log_n, values)
-		})
+		// Phase 4: each output zero-pads itself up to the power-of-two capacity.
+		[a_out, b_out, c_out].map(PackedOutput::finish)
 	}
 }
 
