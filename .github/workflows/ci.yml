@@ -103,7 +103,7 @@ jobs:
           components: clippy
       - name: Install cargo-nextest
         if: github.event_name != 'push'
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.5
         with:
           tool: cargo-nextest
       - name: Install lld
