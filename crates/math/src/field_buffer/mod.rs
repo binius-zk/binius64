@@ -398,7 +398,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `log_chunk_size` must be at most `log_len`.
 	#[track_caller]
-	pub fn chunks_par(
+	pub fn par_chunks(
 		&self,
 		log_chunk_size: usize,
 	) -> impl IndexedParallelIterator<Item = FieldSlice<'_, P>> {
@@ -1263,12 +1263,12 @@ mod tests {
 	}
 
 	#[test]
-	fn chunks_par() {
+	fn par_chunks() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		// Split into 4 chunks of size 4
-		let chunks: Vec<_> = buffer.chunks_par(2).collect();
+		let chunks: Vec<_> = buffer.par_chunks(2).collect();
 		assert_eq!(chunks.len(), 4);
 
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
@@ -1280,9 +1280,9 @@ mod tests {
 		}
 
 		// Test small chunk sizes (below P::LOG_WIDTH)
-		// P::LOG_WIDTH = 2, so chunks_par(0) and chunks_par(1) should work
+		// P::LOG_WIDTH = 2, so par_chunks(0) and par_chunks(1) should work
 		// Split into 8 chunks of size 2 (log_chunk_size = 1)
-		let chunks: Vec<_> = buffer.chunks_par(1).collect();
+		let chunks: Vec<_> = buffer.par_chunks(1).collect();
 		assert_eq!(chunks.len(), 8);
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
 			assert_eq!(chunk.len(), 2);
@@ -1293,7 +1293,7 @@ mod tests {
 		}
 
 		// Split into 16 chunks of size 1 (log_chunk_size = 0)
-		let chunks: Vec<_> = buffer.chunks_par(0).collect();
+		let chunks: Vec<_> = buffer.par_chunks(0).collect();
 		assert_eq!(chunks.len(), 16);
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
 			assert_eq!(chunk.len(), 1);
@@ -1320,10 +1320,10 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn chunks_par_invalid_size() {
+	fn par_chunks_invalid_size() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
-		let _ = buffer.chunks_par(5).collect::<Vec<_>>();
+		let _ = buffer.par_chunks(5).collect::<Vec<_>>();
 	}
 
 	#[test]
@@ -1596,7 +1596,7 @@ mod tests {
 				.map(|chunk| chunk.iter_scalars().collect())
 				.collect();
 			let parallel: Vec<Vec<F>> = buffer
-				.chunks_par(log_chunk_size)
+				.par_chunks(log_chunk_size)
 				.map(|chunk| chunk.iter_scalars().collect())
 				.collect();
 

@@ -190,7 +190,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> Multilinear<P> for FieldBuffer<P
 		// Otherwise each chunk pairs with the expansion, and the resulting scalars are the
 		// residual multilinear over the coordinates not yet used.
 		let scalars = self
-			.chunks_par(first_half_len)
+			.par_chunks(first_half_len)
 			.map(|chunk| chunk.inner_product(&eq_tensor))
 			.collect::<Vec<_>>();
 

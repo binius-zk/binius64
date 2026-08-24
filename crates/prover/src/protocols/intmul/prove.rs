@@ -456,7 +456,7 @@ where
 		let leaf_guard = tracing::debug_span!("Compute base layer partial evals").entered();
 		let x_tensor = Hypercube::One.expand(x_point).build();
 		let b_leaves_evals = b_leaves
-			.chunks_par(n_vars)
+			.par_chunks(n_vars)
 			.map(|b_leaf| b_leaf.inner_product(&x_tensor))
 			.collect::<Vec<_>>();
 		drop(leaf_guard);

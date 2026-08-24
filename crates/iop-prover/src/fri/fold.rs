@@ -400,7 +400,7 @@ where
 	// For each coset of size `2^chunk_size` in the codeword, fold it with the folding challenges.
 	let chunk_size = 1 << challenges.len();
 	let values: Vec<F> = codeword
-		.chunks_par(challenges.len())
+		.par_chunks(challenges.len())
 		.enumerate()
 		.map_init(
 			|| vec![F::default(); chunk_size],
@@ -556,7 +556,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 			if index == 0 {
 				values.spare_capacity_mut()[..code_len]
 					.par_chunks_mut(1 << log_lift)
-					.zip(codeword.chunks_par(log_batch_size))
+					.zip(codeword.par_chunks(log_batch_size))
 					.for_each(|(copies, chunk)| {
 						let value = chunk.inner_product(&tensor);
 						for acc in copies {
@@ -569,7 +569,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 			} else {
 				values
 					.par_chunks_mut(1 << log_lift)
-					.zip(codeword.chunks_par(log_batch_size))
+					.zip(codeword.par_chunks(log_batch_size))
 					.for_each(|(copies, chunk)| {
 						let value = chunk.inner_product(&tensor);
 						for acc in copies {
