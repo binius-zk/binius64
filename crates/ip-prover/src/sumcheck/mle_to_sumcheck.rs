@@ -3,7 +3,7 @@
 
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::multilinear::hypercube::{Hypercube, OneCube};
+use binius_math::multilinear::hypercube::Hypercube;
 
 use crate::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
@@ -64,7 +64,7 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 		assert_ne!(self.n_vars(), 0, "fold called out of order; expected finish");
 
 		let alpha = self.mlecheck_prover.eval_point()[self.n_vars() - 1];
-		self.eq_prefix_eval *= OneCube::eq_one_var(challenge, alpha);
+		self.eq_prefix_eval *= Hypercube::One.eq_one_var(challenge, alpha);
 
 		self.mlecheck_prover.fold(challenge)
 	}

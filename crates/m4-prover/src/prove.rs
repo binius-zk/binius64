@@ -22,7 +22,7 @@ use binius_m4_verifier::{IOPVerifier, Verifier};
 use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product,
-	multilinear::hypercube::{Hypercube, OneCube},
+	multilinear::hypercube::Hypercube,
 	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::subspace_lagrange_evals_scalars,
 };
@@ -504,7 +504,7 @@ impl<'a, A: Allocator, const ARITY: usize> Operation<'a, A, ARITY> {
 		// tracker; register it once.
 		let eq_tracker = store.register_eq_tracker(&self.r_rho);
 		// The constraint tensor is the same for every operand of this operation, so expand it once.
-		let r_x_tensor = OneCube::eq_ind_partial_eval_scalars::<B128>(&self.r_x);
+		let r_x_tensor = Hypercube::One.expand(&self.r_x).build_scalars();
 		for (operand, &claim) in self.operand_claims.iter().enumerate() {
 			let col = store.push_owned(self.columns.rho_multilinear::<P>(
 				operand,
@@ -1263,7 +1263,6 @@ mod tests {
 	fn protocol_round_trips_with_and_intmul_binmul_and_wide_packing() {
 		use binius_field::PackedBinaryGhash2x128b;
 		use binius_frontend::Wire;
-
 		type WideP = PackedBinaryGhash2x128b;
 
 		let builder = CircuitBuilder::new();
@@ -1334,7 +1333,6 @@ mod tests {
 	#[test]
 	fn protocol_round_trips_with_non_power_of_two_constraint_counts() {
 		use binius_frontend::Wire;
-
 		let builder = CircuitBuilder::new();
 		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		// Three standalone AND gates, three integer products, and three GHASH-field products.

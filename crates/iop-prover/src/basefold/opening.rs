@@ -23,10 +23,10 @@ use crate::{fri::FRIFoldProver, merkle_channel::MerkleIPProverChannel};
 /// A prior batched sumcheck reduced the `k` masked opening claims to per-oracle point-evaluation
 /// claims `π_i'(ρ_i) = α_i` at a shared point `r ∈ K^𝐧` (`𝐧 = max_i n_i`). The caller has collapsed
 /// the oracle-index variables up front at sampled batching challenges `r'` into a single combined
-/// multilinear `𝛑(X) = Σ_i e[i]·π_i^↑(X)`, `e = eq_ind_partial_eval(r')` (passed as `witness`),
-/// with target `s' = 𝛑(r)`. Here we run the degree-1 MLE-check on `𝛑` against `r`, interleaved with
-/// the FRI codeword built (via [`FRIFoldProver::new_batch`]) from the `k` committed interleaved
-/// `[π_i ‖ ω_i]` codewords.
+/// multilinear `𝛑(X) = Σ_i e[i]·π_i^↑(X)`, `e` the indicator expanded at `r'` (passed as
+/// `witness`), with target `s' = 𝛑(r)`. Here we run the degree-1 MLE-check on `𝛑` against `r`,
+/// interleaved with the FRI codeword built (via [`FRIFoldProver::new_batch`]) from the `k`
+/// committed interleaved `[π_i ‖ ω_i]` codewords.
 ///
 /// ## Arguments
 ///
@@ -123,7 +123,7 @@ mod test {
 		FieldBuffer,
 		inner_product::inner_product_buffers,
 		line::extrapolate_line,
-		multilinear::hypercube::{Hypercube, OneCube},
+		multilinear::hypercube::Hypercube,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -205,7 +205,7 @@ mod test {
 				*w = extrapolate_line(*w, m, gamma_broadcast);
 			});
 
-		let eval_point_eq = OneCube::eq_ind_partial_eval::<P>(evaluation_point);
+		let eval_point_eq = Hypercube::One.expand(evaluation_point).build::<P>();
 		let mut eval_claim = inner_product_buffers(&witness_prime, &eval_point_eq);
 		if tamper {
 			eval_claim += F::ONE;

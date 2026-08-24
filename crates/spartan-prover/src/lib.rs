@@ -47,7 +47,7 @@ use binius_ip_prover::{
 };
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
-	multilinear::hypercube::{Hypercube, OneCube},
+	multilinear::hypercube::Hypercube,
 	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::evaluate_univariate,
 };
@@ -288,7 +288,7 @@ impl<F: Field> IOPProver<F> {
 		let batched_sum = evaluate_univariate(&mulcheck_evals, &lambda);
 
 		// Compute eq indicator tensor for r_x (shared across all segment evaluations)
-		let r_x_tensor = OneCube::eq_ind_partial_eval::<F>(&r_x);
+		let r_x_tensor = Hypercube::One.expand(&r_x).build::<F>();
 
 		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x
 		let public_eval = evaluate_wiring_mle_public(

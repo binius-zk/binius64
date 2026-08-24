@@ -22,7 +22,7 @@ use crate::{
 /// reduced the `k` masked opening claims to per-oracle point-evaluation claims `π_i'(ρ_i) = α_i` at
 /// a shared point `r ∈ K^𝐧` (`𝐧 = max_i n_i`). The oracle-index variables are then collapsed up
 /// front at sampled batching challenges `r'` into a single combined multilinear
-/// `𝛑(X) = Σ_i e[i] · π_i^↑(X)`, `e = eq_ind_partial_eval(r')`, with target `s' = 𝛑(r)`; this
+/// `𝛑(X) = Σ_i e[i] · π_i^↑(X)`, `e` the indicator expanded at `r'`, with target `s' = 𝛑(r)`; this
 /// routine checks `𝛑(r) = s'` against the `k` committed codewords via one combined FRI.
 ///
 /// ## Arguments

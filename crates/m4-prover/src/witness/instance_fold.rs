@@ -168,10 +168,7 @@ mod tests {
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use binius_math::{
-		multilinear::{
-			evaluate::evaluate,
-			hypercube::{Hypercube, OneCube},
-		},
+		multilinear::{evaluate::evaluate, hypercube::Hypercube},
 		test_utils::random_scalars,
 	};
 	use binius_prover::fold_word::fold_words;
@@ -203,8 +200,8 @@ mod tests {
 		/// Panics if the word half is too narrow to index every committed word.
 		pub fn evaluate(&self, r_j: &[F], r_y: &[F]) -> F {
 			// Expand both halves of the point into equality weights.
-			let r_j_tensor = OneCube::eq_ind_partial_eval::<F>(r_j);
-			let r_y_tensor = OneCube::eq_ind_partial_eval::<F>(r_y);
+			let r_j_tensor = Hypercube::One.expand(r_j).build::<F>();
+			let r_y_tensor = Hypercube::One.expand(r_y).build::<F>();
 			let n_padded = r_y_tensor.as_ref().len();
 
 			// Invariant: the word half addresses at least every real word.
@@ -311,7 +308,7 @@ mod tests {
 			let lhs = folded.evaluate(r_bit, r_wire);
 
 			// Route B: collapse each word's bits against the bit coordinates first.
-			let bit_tensor = OneCube::eq_ind_partial_eval_scalars::<B128>(r_bit);
+			let bit_tensor = Hypercube::One.expand(r_bit).build_scalars();
 
 			// Gather every instance's committed words, instance-major, each run zero-padded to the
 			// width of the word axis:
@@ -367,7 +364,7 @@ mod tests {
 			// The bit point, and a word point as wide as the padded word axis.
 			let r_j = random_scalars::<B128>(&mut rng, Word::LOG_BITS);
 			let r_y = random_scalars::<B128>(&mut rng, folded.log_padded_words());
-			let r_j_tensor = OneCube::eq_ind_partial_eval::<B128>(&r_j);
+			let r_j_tensor = Hypercube::One.expand(&r_j).build::<B128>();
 
 			// The packed contraction, evaluated at the word point, against the scalar reference.
 			let packed =
@@ -396,7 +393,9 @@ mod tests {
 		//     bits per word:    2^6 = 64
 		//
 		// The contraction pairs the two sides, so the width check must reject this up front.
-		let short = OneCube::eq_ind_partial_eval::<B128>(&[B128::new(3); Word::LOG_BITS - 1]);
+		let short = Hypercube::One
+			.expand(&[B128::new(3); Word::LOG_BITS - 1])
+			.build::<B128>();
 		let _ = folded.fold_bits::<PackedBinaryGhash1x128b>(short.as_ref(), &GlobalAllocator);
 	}
 }

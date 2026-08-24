@@ -93,9 +93,8 @@ impl WiringTranspose {
 /// Also batches the three operands (a, b, c) using powers of lambda.
 /// Returns a multilinear polynomial over witness indices where each coefficient is the
 /// weighted sum of constraint contributions.
-/// `r_x_tensor` is the eq-indicator partial evaluation at r_x, i.e.
-/// `eq_ind_partial_eval(r_x)`. Accepting it as a parameter avoids redundant
-/// computation when folding multiple segments with the same r_x.
+/// `r_x_tensor` is the equality indicator expanded at r_x.
+/// Accepting it as a parameter avoids recomputing it for every segment sharing that r_x.
 ///
 /// The folded polynomial is drawn from `alloc`: it is the transparent multilinear of an oracle
 /// relation, which the channel owns until the opening runs.
@@ -249,10 +248,7 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_math::{
-		multilinear::{
-			evaluate::evaluate,
-			hypercube::{Hypercube, OneCube},
-		},
+		multilinear::{evaluate::evaluate, hypercube::Hypercube},
 		test_utils::{Packed128b, random_scalars},
 		univariate::evaluate_univariate,
 	};
@@ -344,8 +340,8 @@ mod tests {
 		let lambda = B128::random(&mut rng);
 
 		// Compute the eq indicator tensors
-		let r_x_tensor = OneCube::eq_ind_partial_eval::<B128>(&r_x);
-		let r_y_tensor = OneCube::eq_ind_partial_eval::<B128>(&r_y);
+		let r_x_tensor = Hypercube::One.expand(&r_x).build::<B128>();
+		let r_y_tensor = Hypercube::One.expand(&r_y).build::<B128>();
 
 		// Compute expected result using the verifier's reference implementation
 		let expected = evaluate_segment_wiring_mle(
@@ -389,7 +385,7 @@ mod tests {
 		let r_y = random_scalars::<B128>(&mut rng, log_private);
 		let lambda = B128::random(&mut rng);
 
-		let r_x_tensor = OneCube::eq_ind_partial_eval::<B128>(&r_x);
+		let r_x_tensor = Hypercube::One.expand(&r_x).build::<B128>();
 
 		// Method 1: Compute expected result using evaluate_segment_wiring_mle
 		let expected = evaluate_segment_wiring_mle(
@@ -463,7 +459,7 @@ mod tests {
 		let r_x = random_scalars::<B128>(&mut rng, log_n_constraints);
 
 		// Compute mulcheck evaluations at r_x
-		let r_x_tensor = OneCube::eq_ind_partial_eval::<Packed128b>(&r_x);
+		let r_x_tensor = Hypercube::One.expand(&r_x).build::<Packed128b>();
 		let mulcheck_evals = [
 			inner_product_buffers(&mulcheck_witness.a, &r_x_tensor),
 			inner_product_buffers(&mulcheck_witness.b, &r_x_tensor),
@@ -488,7 +484,7 @@ mod tests {
 		let lambda: B128 = prover_channel.sample();
 
 		// Compute r_x_tensor once
-		let r_x_tensor = OneCube::eq_ind_partial_eval::<B128>(&r_x);
+		let r_x_tensor = Hypercube::One.expand(&r_x).build::<B128>();
 
 		// Compute the batched sum and public contribution
 		let batched_sum = evaluate_univariate(&mulcheck_evals, &lambda);
@@ -523,7 +519,7 @@ mod tests {
 
 		// Compute the same claim on the verifier side
 		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, &verifier_lambda);
-		let verifier_r_x_tensor = OneCube::eq_ind_partial_eval::<B128>(&r_x);
+		let verifier_r_x_tensor = Hypercube::One.expand(&r_x).build::<B128>();
 		let verifier_public_eval = evaluate_wiring_mle_public(
 			&constraints,
 			&public,

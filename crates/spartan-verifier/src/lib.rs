@@ -48,10 +48,7 @@ use binius_iop::{
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
-use binius_math::{
-	multilinear::hypercube::{Hypercube, OneCube},
-	univariate::evaluate_univariate,
-};
+use binius_math::{multilinear::hypercube::Hypercube, univariate::evaluate_univariate};
 use binius_spartan_frontend::constraint_system::{ConstraintSystem, WitnessSegment};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
@@ -206,7 +203,7 @@ impl<F: Field> IOPVerifier<F> {
 		// own it and outlive this call (the opening is deferred to the channel's `finish()`). `Rc`
 		// suffices over `Arc` because the closures (`TransparentEvalFn`, no `Send` bound) and the
 		// channel never cross a thread boundary.
-		let r_x_tensor: Rc<[Channel::Elem]> = OneCube::eq_ind_partial_eval_scalars(&r_x).into();
+		let r_x_tensor: Rc<[Channel::Elem]> = Hypercube::One.expand(&r_x).build_scalars().into();
 
 		// The public segment's contribution to the operand evaluations.
 		let public_eval =

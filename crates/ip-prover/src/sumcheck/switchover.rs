@@ -12,7 +12,7 @@ use binius_math::{
 	bit_reverse::bit_reverse_packed,
 	multilinear::{
 		fold::{binary_fold_high, fold_highest_var_inplace},
-		hypercube::{Hypercube, OneCube},
+		hypercube::Hypercube,
 	},
 };
 use binius_utils::{
@@ -127,7 +127,7 @@ where
 			// to be fast: it runs once per pre-switchover round on a small tensor (see
 			// BINIUS-327).
 			bit_reverse_packed(tensor.to_mut());
-			let mut tensor = OneCube::tensor_prod_eq_ind(tensor, &[challenge]);
+			let mut tensor = Hypercube::One.expand(&[challenge]).append_to(tensor);
 			bit_reverse_packed(tensor.to_mut());
 			self.tensor = tensor;
 
