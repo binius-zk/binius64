@@ -296,7 +296,7 @@ mod tests {
 
 	/// The bivariate-product MLE-check claim on a buffer's two halves at `eval_point`.
 	fn split_half_claim(buffer: &FieldBuffer<P>, eval_point: &[F]) -> F {
-		let (low, high) = buffer.split_half_ref();
+		let (low, high) = buffer.split_half();
 		let products = (0..low.len())
 			.map(|i| low.get(i) * high.get(i))
 			.collect::<Vec<_>>();

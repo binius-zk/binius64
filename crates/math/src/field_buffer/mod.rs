@@ -502,7 +502,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
-	pub fn split_half_ref(&self) -> (FieldSlice<'_, P>, FieldSlice<'_, P>) {
+	pub fn split_half(&self) -> (FieldSlice<'_, P>, FieldSlice<'_, P>) {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
@@ -616,7 +616,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
-	pub fn split_half(self) -> SplitMut<P, Data> {
+	pub fn into_split_half(self) -> SplitMut<P, Data> {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
@@ -645,7 +645,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
 	pub fn split_half_mut(&mut self) -> SplitMut<P, &'_ mut [P]> {
-		self.as_mut_view().split_half()
+		self.as_mut_view().into_split_half()
 	}
 }
 
@@ -1362,7 +1362,7 @@ mod tests {
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
-		let (first, second) = buffer.split_half_ref();
+		let (first, second) = buffer.split_half();
 		assert_eq!(first.len(), 8);
 		assert_eq!(second.len(), 8);
 
@@ -1377,7 +1377,7 @@ mod tests {
 		let values: Vec<F> = (0..4).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
-		let (first, second) = buffer.split_half_ref();
+		let (first, second) = buffer.split_half();
 		assert_eq!(first.len(), 2);
 		assert_eq!(second.len(), 2);
 
@@ -1401,7 +1401,7 @@ mod tests {
 		let values: Vec<F> = vec![F::new(10), F::new(20)];
 		let buffer = FieldBuffer::<P>::from_values(&values);
 
-		let (first, second) = buffer.split_half_ref();
+		let (first, second) = buffer.split_half();
 		assert_eq!(first.len(), 1);
 		assert_eq!(second.len(), 1);
 
@@ -1421,10 +1421,10 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "precondition")]
-	fn split_half_ref_size_one() {
+	fn split_half_size_one() {
 		let values = vec![F::new(42)];
 		let buffer = FieldBuffer::<P>::from_values(&values);
-		let _ = buffer.split_half_ref();
+		let _ = buffer.split_half();
 	}
 
 	#[test]

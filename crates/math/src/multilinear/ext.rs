@@ -231,7 +231,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> Multilinear<P> for FieldBuffer<P
 
 		// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
 		let broadcast_scalar = P::broadcast(scalar);
-		let (lo, hi) = self.split_half_ref();
+		let (lo, hi) = self.split_half();
 
 		// Interpolate the line through each pair at the challenge directly into a fresh buffer
 		// drawn from the allocator, writing the uninitialized spare capacity in parallel rather

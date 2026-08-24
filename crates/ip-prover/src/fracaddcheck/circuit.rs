@@ -85,8 +85,8 @@ where
 			let Fraction { num, den } = prev_layer;
 			let num_log_len = num.log_len() - 1;
 			let den_log_len = den.log_len() - 1;
-			let (num_0, num_1) = num.split_half_ref();
-			let (den_0, den_1) = den.split_half_ref();
+			let (num_0, num_1) = num.split_half();
+			let (den_0, den_1) = den.split_half();
 
 			// One packed word of the next layer from the sibling halves, written straight into
 			// the pooled buffers:

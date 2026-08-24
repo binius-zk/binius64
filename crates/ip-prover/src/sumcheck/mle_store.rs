@@ -341,7 +341,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 		let cols = col_slices
 			.iter()
 			.map(|col| {
-				let (lo, hi) = col.split_half_ref();
+				let (lo, hi) = col.split_half();
 				ColumnChunk { lo, hi }
 			})
 			.collect();
@@ -744,12 +744,12 @@ impl<'c, P: PackedField> EvaluationChunk<'c, P> {
 		let (cols_0, cols_1) = cols
 			.iter()
 			.map(|ColumnChunk { lo, hi }| {
-				let (lo_0, lo_1) = lo.split_half_ref();
-				let (hi_0, hi_1) = hi.split_half_ref();
+				let (lo_0, lo_1) = lo.split_half();
+				let (hi_0, hi_1) = hi.split_half();
 				(ColumnChunk { lo: lo_0, hi: hi_0 }, ColumnChunk { lo: lo_1, hi: hi_1 })
 			})
 			.unzip();
-		let (eqs_0, eqs_1) = eqs.iter().map(|col| col.split_half_ref()).unzip();
+		let (eqs_0, eqs_1) = eqs.iter().map(|col| col.split_half()).unzip();
 		[
 			EvaluationChunk {
 				n_vars: n_vars - 1,

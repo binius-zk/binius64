@@ -622,7 +622,7 @@ mod tests {
 
 	// Split a multilinear on its highest variable into owned low and high halves.
 	fn owned_halves(buffer: &FieldBuffer<P>) -> [FieldBuffer<P>; 2] {
-		let (lo, hi) = buffer.split_half_ref();
+		let (lo, hi) = buffer.split_half();
 		[
 			FieldBuffer::new(lo.log_len(), lo.as_ref().into()),
 			FieldBuffer::new(hi.log_len(), hi.as_ref().into()),
