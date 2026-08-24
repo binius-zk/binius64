@@ -49,7 +49,8 @@
 //! [`InducedBasis::to_dense`] materializes `w` anyway, as the reference the closed form is tested
 //! against, and for a prover that genuinely needs every entry.
 
-use binius_field::{BinaryField, util::expand_subset_products};
+use binius_field::{BinaryField, PackedField, field::FieldOps, util::expand_subset_products};
+use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::{
 	inner_product::inner_product_scalars,
 	ntt::{DomainContext, subspace_polys::evals_at_domain_index},
@@ -76,7 +77,7 @@ pub struct InducedBasis<F> {
 	n_vars: usize,
 }
 
-impl<F: BinaryField> InducedBasis<F> {
+impl<F: FieldOps> InducedBasis<F> {
 	/// Builds the basis induced by opening `indices` of a code of dimension `log_dim`.
 	///
 	/// `domain_context` must be the one the codeword was encoded over.
@@ -100,7 +101,10 @@ impl<F: BinaryField> InducedBasis<F> {
 		log_dim: usize,
 		indices: &[usize],
 		alpha: F,
-	) -> Self {
+	) -> Self
+	where
+		F: BinaryField,
+	{
 		let log_domain_size = domain_context.log_domain_size();
 		assert!(
 			log_dim <= log_domain_size,
@@ -122,13 +126,75 @@ impl<F: BinaryField> InducedBasis<F> {
 			.collect::<Vec<_>>();
 
 		// Powers of the batching challenge, one per opened row.
-		let batching = std::iter::successors(Some(F::ONE), |power| Some(*power * alpha))
-			.take(indices.len())
-			.collect();
+		let batching = alpha.powers().take(indices.len()).collect();
 
 		Self {
 			factors,
 			batching,
+			n_vars: log_dim,
+		}
+	}
+
+	/// Builds the basis from query indices the channel holds as opaque words.
+	///
+	/// This is the route a recursion circuit takes, where an index is a wire rather than a number.
+	///
+	/// [`Self::new`] reads factor `k` as `subspace(l - k).get(index >> k)`.
+	/// A circuit cannot shift a word cheaply, so this shifts the *table* instead.
+	/// Padding row `k` with `k` leading zeros lines bit `k + j` of the index up with entry `j`.
+	/// The padding contributes nothing to the sum, so the two routes agree by construction.
+	///
+	/// Every factor is then one [`WordIPVerifierChannel::subset_sum`] over fixed constants.
+	/// That is the gate shape the FRI fold already pays for its twiddles.
+	///
+	/// ## Preconditions
+	///
+	/// * `log_dim` is at most `domain_context.log_domain_size()`.
+	pub fn from_query_words<FSub, DC, Channel>(
+		domain_context: &DC,
+		log_dim: usize,
+		indices: &[Channel::Word],
+		alpha: &F,
+		channel: &mut Channel,
+	) -> Self
+	where
+		FSub: BinaryField,
+		F: From<FSub>,
+		DC: DomainContext<Field = FSub>,
+		Channel: WordIPVerifierChannel<FSub, Elem = F>,
+	{
+		let log_domain_size = domain_context.log_domain_size();
+		assert!(
+			log_dim <= log_domain_size,
+			"precondition: log_dim must be at most the domain's own dimension"
+		);
+
+		// Row `k` of the table starts at `beta_k`, so bit `k + j` of an index selects entry `j`.
+		let padded = (0..log_dim)
+			.map(|k| {
+				let subspace = domain_context.subspace(log_domain_size - k);
+				std::iter::repeat_n(F::zero(), k)
+					.chain(subspace.basis().iter().copied().map(F::from))
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+
+		let factors = indices
+			.iter()
+			.map(|index| {
+				let mut row = padded
+					.iter()
+					.map(|elems| channel.subset_sum(elems, index))
+					.collect::<Vec<_>>();
+				// Same reversal `Self::new` applies, for the same reason.
+				row.reverse();
+				row
+			})
+			.collect();
+
+		Self {
+			factors,
+			batching: alpha.powers().take(indices.len()).collect(),
 			n_vars: log_dim,
 		}
 	}
@@ -157,10 +223,12 @@ impl<F: BinaryField> InducedBasis<F> {
 		let terms = self.factors.iter().map(|row| {
 			// One factor per variable: `1 + p_k * (1 + f[k])`, a multiplication and two additions.
 			std::iter::zip(row, point)
-				.map(|(&factor, &coordinate)| F::ONE + coordinate * (F::ONE + factor))
+				.map(|(factor, coordinate)| {
+					F::one() + coordinate.clone() * (F::one() + factor.clone())
+				})
 				.product::<F>()
 		});
-		inner_product_scalars(self.batching.iter().copied(), terms)
+		inner_product_scalars(self.batching.iter().cloned(), terms)
 	}
 
 	/// The dense weight vector, `2^n_vars` entries.
@@ -169,8 +237,11 @@ impl<F: BinaryField> InducedBasis<F> {
 	/// A verifier must not call it.
 	/// The allocation alone defeats the point of the closed form.
 	/// In a recursion circuit it is not expressible at all.
-	pub fn to_dense(&self) -> Vec<F> {
-		let mut dense = vec![F::ZERO; 1 << self.n_vars];
+	pub fn to_dense(&self) -> Vec<F>
+	where
+		F: PackedField,
+	{
+		let mut dense = vec![F::zero(); 1 << self.n_vars];
 		for (row, &coefficient) in std::iter::zip(&self.factors, &self.batching) {
 			for (entry, weight) in std::iter::zip(&mut dense, expand_subset_products(row)) {
 				*entry += coefficient * weight;
@@ -194,7 +265,7 @@ impl<F: BinaryField> InducedBasis<F> {
 			self.n_rows(),
 			"precondition: row_values must have one entry per opened row"
 		);
-		inner_product_scalars(self.batching.iter().copied(), row_values.iter().copied())
+		inner_product_scalars(self.batching.iter().cloned(), row_values.iter().cloned())
 	}
 }
 
@@ -333,6 +404,57 @@ mod tests {
 			let point = (0..log_dim).map(|_| B128::random(&mut rng)).collect::<Vec<_>>();
 			let reference = evaluate_inplace_scalars(basis.to_dense(), &point);
 			prop_assert_eq!(basis.evaluate(&point), reference);
+		}
+	}
+	/// The recursion-safe route must agree with the native one at every index.
+	///
+	/// A circuit cannot shift a word, so the channel route shifts the table instead.
+	/// Were the two to disagree, a native verifier and an in-circuit one would accept different
+	/// proofs.
+	/// That is the failure mode the channel discipline exists to prevent.
+	#[test]
+	fn the_channel_route_agrees_with_the_native_one() {
+		use binius_hash::{StdDigest, StdHashSuite};
+		use binius_ip::channel::WordIPVerifierChannel;
+		use binius_transcript::{VerifierTranscript, fiat_shamir::HasherChallenger};
+
+		use crate::merkle_channel::VerifierMerkleTranscriptChannel;
+
+		type StdChallenger = HasherChallenger<StdDigest>;
+
+		for log_dim in 1..6 {
+			for log_inv_rate in 1..4 {
+				let log_len = log_dim + log_inv_rate;
+				let dc = domain(log_dim, log_inv_rate);
+
+				let mut transcript = VerifierTranscript::new(StdChallenger::default(), vec![]);
+				let mut channel =
+					VerifierMerkleTranscriptChannel::<_, StdChallenger, B128, StdHashSuite>::new(
+						&mut transcript,
+					);
+
+				// Sample real query words, the way a verifier would.
+				let words = (0..8)
+					.map(|_| WordIPVerifierChannel::sample_bits(&mut channel, log_len))
+					.collect::<Vec<_>>();
+				let indices = words
+					.iter()
+					.map(|word| word.as_u64() as usize)
+					.collect::<Vec<_>>();
+
+				let alpha = B128::new(0x9e3779b97f4a7c15);
+				let native = InducedBasis::new(&dc, log_dim, &indices, alpha);
+				let via_channel =
+					InducedBasis::from_query_words(&dc, log_dim, &words, &alpha, &mut channel);
+
+				// Agreeing on the dense vector is the strongest form of the check: it pins every
+				// factor, not just their product at one point.
+				assert_eq!(
+					native.to_dense(),
+					via_channel.to_dense(),
+					"log_dim={log_dim} log_inv_rate={log_inv_rate}"
+				);
+			}
 		}
 	}
 }
