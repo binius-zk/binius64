@@ -14,11 +14,11 @@
 //! That is what makes the deep levels cheap, because a lower rate needs fewer queries.
 //! After the last level the residual matrix is sent in the clear.
 //!
-//! This module contains **no protocol code**.
-//! It holds only:
+//! This module holds:
 //!
 //! - [`LigeritoParams`] and its invariants;
 //! - [`InducedBasis`], the weight vector a level's opened rows put on its message;
+//! - [`LevelVerifier`], one committed level whose residual is sent in the clear;
 //! - [`LigeritoParams::proof_size`], the byte-exact estimate;
 //! - [`LigeritoParams::optimal_ladder`], the search that minimizes it subject to a security target.
 //!
@@ -29,9 +29,13 @@
 //! [NA25]: <https://eprint.iacr.org/2025/1187>
 
 mod common;
+mod error;
 mod induced_basis;
+mod opening;
 mod size_estimation;
 
 pub use common::*;
+pub use error::{Error, VerificationError};
 pub use induced_basis::InducedBasis;
+pub use opening::LevelVerifier;
 pub use size_estimation::{MAX_LOG_INV_RATE, MAX_LOG_LANES};

@@ -1,5 +1,10 @@
 // Copyright 2026 The Binius Developers
 
+//! Proximity-test oracles, which recover a folded value by opening the cosets it folds.
+//!
+//! FRI drives them round by round.
+//! A Ligerito level drives one of them once, since its whole fold is a single round.
+
 use std::iter;
 
 use binius_field::{BinaryField, FieldOps, util::expand_subset_sums};
