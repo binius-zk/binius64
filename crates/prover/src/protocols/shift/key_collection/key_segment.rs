@@ -19,7 +19,6 @@ use tracing::instrument;
 
 use super::{
 	super::{claims::PreparedOperatorClaims, phase_1::row_len},
-	builder::BuilderKey,
 	dense_shift_encoding::DenseShiftEncoding,
 	key::{ConstraintIndex, Key},
 };
@@ -174,60 +173,6 @@ impl KeySegment {
 			// An empty word list produces no partial accumulator at all.
 			// So its rows are zero.
 			.unwrap_or_else(|| zeroed_vec::<P>(acc_size).into_boxed_slice())
-	}
-
-	/// Builds the segment's keys from the builder keys lists of its words.
-	pub(super) fn build(builder_key_lists: Vec<Vec<BuilderKey>>) -> Self {
-		// Every distinct shift sequence across every word, before any per-key index is assigned.
-		let dense_shift_enc = DenseShiftEncoding::new(
-			builder_key_lists
-				.iter()
-				.flatten()
-				.map(|builder_key| builder_key.shift_seq),
-		);
-
-		// Word w's keys occupy a contiguous run in the flattened keys vector.
-		// A running offset gives each word's run its start and end.
-		let key_ranges = builder_key_lists
-			.iter()
-			.scan(0u32, |offset, builder_keys| {
-				let start = *offset;
-				*offset += builder_keys.len() as u32;
-				Some(start..*offset)
-			})
-			.collect();
-
-		let mut keys = Vec::new();
-		let mut constraint_indices = Vec::new();
-
-		for builder_key in builder_key_lists.into_iter().flatten() {
-			let BuilderKey {
-				shift_seq,
-				operation,
-				constraint_indices: mut builder_constraint_indices,
-			} = builder_key;
-
-			// Sort constraint indices by operand index, so a later linear scan can detect each
-			// operand's boundary with no extra bookkeeping.
-			builder_constraint_indices
-				.sort_by_key(|constraint_index| constraint_index.operand_index);
-
-			let start = constraint_indices.len() as u32;
-			constraint_indices.extend(builder_constraint_indices);
-			let end = constraint_indices.len() as u32;
-			keys.push(Key {
-				dense_shift_idx: dense_shift_enc.dense_idx(shift_seq),
-				operation,
-				range: start..end,
-			});
-		}
-
-		Self {
-			keys,
-			key_ranges,
-			constraint_indices,
-			dense_shift_enc,
-		}
 	}
 }
 

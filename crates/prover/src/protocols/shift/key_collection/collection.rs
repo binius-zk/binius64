@@ -22,7 +22,7 @@ use bytes::{Buf, BufMut};
 use tracing::instrument;
 
 use super::{
-	builder::BuilderKeyLists, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment,
+	builder, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment,
 	operation::Operation,
 };
 use crate::protocols::shift::{
@@ -46,27 +46,18 @@ pub struct KeyCollection {
 }
 
 impl KeyCollection {
-	/// Walks a constraint system once, collecting every shift key into its segment.
+	/// Walks a constraint system, collecting every shift key into its segment.
+	///
+	/// Runs as a stable counting sort by word: one pass counts the references each word
+	/// receives, one pass scatters them into a flat array in walk order, and the per-word
+	/// grouping into keys runs over disjoint word ranges in parallel.
 	///
 	/// # Arguments
 	///
 	/// - `cs`: the constraint system to walk.
 	/// - `inout`: the split point between the public and hidden segments.
 	pub fn build(cs: &ConstraintSystem, inout: InoutSegment) -> Self {
-		let mut builder_key_lists = BuilderKeyLists::new(cs.value_vec_len());
-
-		// Update the builder keys lists with respect to each operand of each operation.
-		builder_key_lists.update_with_constraints(Operation::Zero, &cs.zero_constraints, cs);
-		builder_key_lists.update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, cs);
-		builder_key_lists.update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, cs);
-		builder_key_lists.update_with_constraints(Operation::BinMul, &cs.bmul_constraints, cs);
-
-		// Split the builder key lists at the public segment boundary, one half per segment.
-		let hidden_lists = builder_key_lists.split_off(cs.n_public_words(inout));
-		Self {
-			public: KeySegment::build(builder_key_lists.into_inner()),
-			hidden: KeySegment::build(hidden_lists.into_inner()),
-		}
+		builder::build_key_collection(cs, inout)
 	}
 
 	/// The base-2 logarithm of the hidden segment length in words, rounded up to a power of two.
