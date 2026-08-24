@@ -250,7 +250,7 @@ mod tests {
 	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_math::{
 		multilinear::{
-			evaluate::evaluate,
+			Multilinear,
 			hypercube::{Hypercube, OneCube},
 		},
 		test_utils::{Packed128b, random_scalars},
@@ -409,7 +409,7 @@ mod tests {
 			lambda,
 			r_x_tensor.as_ref(),
 		);
-		let actual = evaluate(&folded, &r_y);
+		let actual = folded.evaluate(&r_y);
 
 		assert_eq!(
 			actual, expected,
@@ -424,7 +424,7 @@ mod tests {
 		use binius_iop_prover::channel::{IOPProverChannel, naive::NaiveProverChannel};
 		use binius_ip::channel::IPVerifierChannel;
 		use binius_ip_prover::channel::IPProverChannel;
-		use binius_math::{inner_product::inner_product_buffers, test_utils::random_field_buffer};
+		use binius_math::{multilinear::Multilinear, test_utils::random_field_buffer};
 		use binius_spartan_verifier::wiring::evaluate_wiring_mle_public;
 		use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
@@ -465,9 +465,9 @@ mod tests {
 		// Compute mulcheck evaluations at r_x
 		let r_x_tensor = OneCube::eq_ind_partial_eval::<Packed128b>(&r_x);
 		let mulcheck_evals = [
-			inner_product_buffers(&mulcheck_witness.a, &r_x_tensor),
-			inner_product_buffers(&mulcheck_witness.b, &r_x_tensor),
-			inner_product_buffers(&mulcheck_witness.c, &r_x_tensor),
+			mulcheck_witness.a.inner_product(&r_x_tensor),
+			mulcheck_witness.b.inner_product(&r_x_tensor),
+			mulcheck_witness.c.inner_product(&r_x_tensor),
 		];
 
 		// Create transposed wiring
@@ -536,7 +536,7 @@ mod tests {
 		assert_eq!(trace_claim, verifier_trace_claim, "Prover and verifier trace_claim mismatch");
 
 		// Build the transparent closure using the prover's wiring_poly for evaluation.
-		let transparent = Box::new(move |point: &[_]| evaluate(&wiring_poly, point));
+		let transparent = Box::new(move |point: &[_]| wiring_poly.evaluate(point));
 
 		// Finish verification.
 		verifier_channel
