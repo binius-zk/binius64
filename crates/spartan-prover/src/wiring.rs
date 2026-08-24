@@ -154,8 +154,8 @@ pub struct MulCheckWitness<A: Allocator, P: PackedField> {
 /// Evaluates an operand by XORing witness values at the specified indices.
 fn eval_operand<F: Field, P: PackedField<Scalar = F>>(
 	public: &[F],
-	precommit_packed: &FieldSlice<P>,
-	private_packed: &FieldSlice<P>,
+	precommit_packed: &FieldSlice<'_, P>,
+	private_packed: &FieldSlice<'_, P>,
 	operand: &Operand<WitnessIndex>,
 ) -> F {
 	operand
@@ -179,8 +179,8 @@ pub fn build_mulcheck_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>
 	alloc: &A,
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
-	precommit_packed: FieldSlice<P>,
-	private_packed: FieldSlice<P>,
+	precommit_packed: FieldSlice<'_, P>,
+	private_packed: FieldSlice<'_, P>,
 ) -> MulCheckWitness<A, P> {
 	const fn get_a(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
 		&c.a

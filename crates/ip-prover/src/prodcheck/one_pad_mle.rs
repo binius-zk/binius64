@@ -236,7 +236,7 @@ impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for OnePadMleCheckPro
 		match &mut self.phase {
 			Phase::Real(inner) => inner.fold(challenge),
 			Phase::Padding { bound_eq, .. } => {
-				*bound_eq *= Hypercube::One.eq_one_var(F::ZERO, challenge)
+				*bound_eq *= Hypercube::One.eq_one_var(F::ZERO, challenge);
 			}
 		}
 		self.round += 1;

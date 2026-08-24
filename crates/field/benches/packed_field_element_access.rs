@@ -38,7 +38,7 @@ fn benchmark_set_impl<P: PackedField>(group: &mut BenchmarkGroup<'_, WallTime>, 
 			}
 
 			value
-		})
+		});
 	});
 }
 

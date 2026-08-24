@@ -310,7 +310,7 @@ where
 		&remaining[..n_inner_remaining]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"send_oracle called but no inner oracle specs remaining"
@@ -331,10 +331,10 @@ where
 		self.interaction.push(claim);
 
 		self.inner_channel
-			.prove_oracle_relation(oracle, transparent, claim)
+			.prove_oracle_relation(oracle, transparent, claim);
 	}
 
 	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		self.inner_channel.finalize_oracle(oracle, buffer)
+		self.inner_channel.finalize_oracle(oracle, buffer);
 	}
 }

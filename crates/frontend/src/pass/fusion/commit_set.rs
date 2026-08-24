@@ -562,9 +562,8 @@ mod tests {
 				// Identity links are legal anywhere and must not sway the answer.
 				amounts
 					.into_iter()
-					.map(|amount| match amount {
-						Some(amount) => KINDS[kind](amount as usize),
-						None => Shift::IDENTITY,
+					.map(|amount| {
+						amount.map_or(Shift::IDENTITY, |amount| KINDS[kind](amount as usize))
 					})
 					.collect()
 			},

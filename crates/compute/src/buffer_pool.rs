@@ -229,7 +229,7 @@ impl<T> Drop for PoolVec<'_, T> {
 		// to the pool holds no live values.
 		data.clear();
 		let n_chunks = byte_len / BUFFER_ALIGN;
-		let ptr = data.as_ptr() as *mut AlignedChunk;
+		let ptr = data.as_mut_ptr().cast::<AlignedChunk>();
 		// Take the allocation away from the `Vec` so it is not freed, then rebuild the owning
 		// block.
 		mem::forget(data);

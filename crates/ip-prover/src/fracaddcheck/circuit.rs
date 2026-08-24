@@ -119,8 +119,8 @@ where
 			//     spare capacity:  >= out_len   allocated for at least that many
 			//     sibling halves:  == out_len   halves of two equal-length buffers
 			debug_assert!(
-				num_data.spare_capacity_mut().len() >= out_len
-					&& den_data.spare_capacity_mut().len() >= out_len,
+				num_data.capacity() - num_data.len() >= out_len
+					&& den_data.capacity() - den_data.len() >= out_len,
 				"allocated buffers must hold every claimed slot"
 			);
 			debug_assert!(

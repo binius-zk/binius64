@@ -145,7 +145,7 @@ impl<Challenger> Drop for VerifierTranscript<Challenger> {
 			tracing::warn!(
 				"Transcript reader is not fully read out: {:?} bytes left",
 				self.combined.buffer.remaining()
-			)
+			);
 		}
 	}
 }
@@ -280,11 +280,8 @@ impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 				let test_name = current_thread.name().unwrap_or("unknown");
 				// Adjust "./" to "../../" to ensure files are saved in the project root rather than
 				// the package root.
-				let path = if let Some(stripped) = path.strip_prefix("./") {
-					format!("../../{stripped}",)
-				} else {
-					path
-				};
+				let rebased = path.strip_prefix("./").map(|s| format!("../../{s}"));
+				let path = rebased.unwrap_or(path);
 				std::fs::create_dir_all(&path)
 					.unwrap_or_else(|_| panic!("Failed to create directories for path: {path}",));
 				format!("{path}/{test_name}.bin")
@@ -481,7 +478,7 @@ impl<B: BufMut> TranscriptWriter<'_, B> {
 
 	pub fn write_debug(&mut self, msg: &str) {
 		if self.options.debug_assertions {
-			self.write_bytes(msg.as_bytes())
+			self.write_bytes(msg.as_bytes());
 		}
 	}
 

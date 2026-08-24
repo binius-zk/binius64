@@ -29,7 +29,7 @@ fn bench_width<P: PackedField>(group: &mut BenchmarkGroup<'_, WallTime>, label: 
 				acc += black_box(x).invert_or_zero();
 			}
 			black_box(acc)
-		})
+		});
 	});
 }
 

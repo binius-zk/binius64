@@ -272,7 +272,7 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 	type Field = F;
 
 	fn assert_zero(&mut self, wire: Self::Wire) {
-		self.ir.zero_constraints.push(wire.into())
+		self.ir.zero_constraints.push(wire.into());
 	}
 
 	fn assert_eq(&mut self, lhs: Self::Wire, rhs: Self::Wire) {

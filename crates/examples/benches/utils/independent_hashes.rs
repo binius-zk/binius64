@@ -162,7 +162,7 @@ fn bench_witness_generation_and_proving<B>(
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 			ctx.prover.prove(&witness, &mut prover_transcript).unwrap();
 			prover_transcript
-		})
+		});
 	});
 
 	group.finish();

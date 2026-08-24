@@ -173,7 +173,7 @@ impl Circuit {
 	/// [`CircuitBuilder::add_inout`]: crate::CircuitBuilder::add_inout
 	/// [`CircuitBuilder::add_witness`]: crate::CircuitBuilder::add_witness
 	/// [`CircuitBuilder::mark_inout`]: crate::CircuitBuilder::mark_inout
-	pub fn populate_wire_witness(&self, w: &mut WitnessFiller) -> Result<(), PopulateError> {
+	pub fn populate_wire_witness(&self, w: &mut WitnessFiller<'_>) -> Result<(), PopulateError> {
 		// Fill the constant part from the witness.
 		for (index, constant) in self.constraint_system.constants.iter().enumerate() {
 			w.value_vec[ValueIndex::constant(index as u32)] = *constant;

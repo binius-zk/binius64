@@ -74,7 +74,7 @@ pub fn evaluate_wiring_mle_public<F: FieldOps>(
 				.wires()
 				.iter()
 				.flat_map(|index| {
-					if let WitnessSegment::Public = index.segment {
+					if index.segment == WitnessSegment::Public {
 						Some(public[index.index as usize].clone())
 					} else {
 						None

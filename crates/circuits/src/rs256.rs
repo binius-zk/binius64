@@ -14,7 +14,7 @@ use crate::{
 ///
 /// This function converts a FixedByteVec with little-endian packed wires
 /// to a BigUint representing a big-endian number.
-fn fixedbytevec_le_to_biguint(builder: &mut CircuitBuilder, byte_vec: &ByteVec) -> BigUint {
+fn fixedbytevec_le_to_biguint(builder: &CircuitBuilder, byte_vec: &ByteVec) -> BigUint {
 	// With LE packing, each wire contains 8 bytes as: byte0 | byte1<<8 | ... | byte7<<56
 	// For a BE number, we need to both reverse wire order AND byte-swap within each wire
 	let limbs = byte_vec
@@ -192,19 +192,24 @@ impl Rs256Verify {
 	}
 
 	/// Populate the message length
-	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
+	pub fn populate_len_bytes(&self, w: &mut WitnessFiller<'_>, len_bytes: usize) {
 		self.message.populate_len_bytes(w, len_bytes);
 	}
 
 	/// Populate the RSA signature, modulus and intermediate computations
-	pub fn populate_rsa(&self, w: &mut WitnessFiller, signature: &[u8], modulus: &[u8]) {
+	pub fn populate_rsa(&self, w: &mut WitnessFiller<'_>, signature: &[u8], modulus: &[u8]) {
 		self.populate_signature(w, signature);
 		self.populate_modulus(w, modulus);
 		self.rsa_intermediates
 			.populate_witness(w, signature, modulus);
 	}
 
-	pub fn populate_intermediates(&self, w: &mut WitnessFiller, signature: &[u8], modulus: &[u8]) {
+	pub fn populate_intermediates(
+		&self,
+		w: &mut WitnessFiller<'_>,
+		signature: &[u8],
+		modulus: &[u8],
+	) {
 		self.rsa_intermediates
 			.populate_witness(w, signature, modulus);
 	}
@@ -213,7 +218,7 @@ impl Rs256Verify {
 	///
 	/// # Panics
 	/// Panics if message.len() > self.message.len() * 8
-	pub fn populate_message(&self, w: &mut WitnessFiller, message: &[u8]) {
+	pub fn populate_message(&self, w: &mut WitnessFiller<'_>, message: &[u8]) {
 		self.message.populate_data(w, message);
 	}
 
@@ -221,7 +226,7 @@ impl Rs256Verify {
 	///
 	/// # Panics
 	/// Panics if modulus_bytes.len() != 256
-	pub fn populate_modulus(&self, w: &mut WitnessFiller, modulus_bytes: &[u8]) {
+	pub fn populate_modulus(&self, w: &mut WitnessFiller<'_>, modulus_bytes: &[u8]) {
 		assert_eq!(modulus_bytes.len(), 256, "modulus must be exactly 256 bytes");
 		self.modulus.populate_bytes_le(w, modulus_bytes);
 	}
@@ -234,7 +239,7 @@ impl Rs256Verify {
 	///
 	/// # Panics
 	/// Panics if signature_bytes.len() != 256
-	pub fn populate_signature(&self, w: &mut WitnessFiller, signature_bytes: &[u8]) {
+	pub fn populate_signature(&self, w: &mut WitnessFiller<'_>, signature_bytes: &[u8]) {
 		assert_eq!(signature_bytes.len(), 256, "signature must be exactly 256 bytes");
 		self.signature.populate_bytes_le(w, signature_bytes);
 	}
@@ -315,7 +320,7 @@ impl RsaIntermediates {
 	/// # Arguments
 	/// * `signature` - The bytes of a RSA signature
 	/// * `modulus_limbs` - The bytes of a RSA modulus
-	pub fn populate_witness(&self, w: &mut WitnessFiller, signature: &[u8], modulus: &[u8]) {
+	pub fn populate_witness(&self, w: &mut WitnessFiller<'_>, signature: &[u8], modulus: &[u8]) {
 		assert_eq!(signature.len(), 256, "signature must be exactly 256 bytes");
 		assert_eq!(modulus.len(), 256, "modulus must be exactly 256 bytes");
 
@@ -361,7 +366,11 @@ impl RsaIntermediates {
 	///
 	/// # Panics
 	/// Panics if square_quotient_limbs.len() != 16 or if any quotient doesn't have 32 limbs.
-	fn populate_square_quotients(&self, w: &mut WitnessFiller, square_quotient_limbs: &[Vec<u64>]) {
+	fn populate_square_quotients(
+		&self,
+		w: &mut WitnessFiller<'_>,
+		square_quotient_limbs: &[Vec<u64>],
+	) {
 		assert_eq!(square_quotient_limbs.len(), 16, "must provide 16 square quotients");
 		for (i, q_limbs) in square_quotient_limbs.iter().enumerate() {
 			assert_eq!(
@@ -380,7 +389,7 @@ impl RsaIntermediates {
 	/// Panics if square_remainder_limbs.len() != 16 or if any remainder doesn't have 32 limbs
 	fn populate_square_remainders(
 		&self,
-		w: &mut WitnessFiller,
+		w: &mut WitnessFiller<'_>,
 		square_remainder_limbs: &[Vec<u64>],
 	) {
 		assert_eq!(square_remainder_limbs.len(), 16, "must provide 16 square remainders");
@@ -394,7 +403,7 @@ impl RsaIntermediates {
 	///
 	/// # Panics
 	/// Panics if mul_quotient_limbs.len() != 32
-	fn populate_mul_quotient(&self, w: &mut WitnessFiller, mul_quotient_limbs: &[u64]) {
+	fn populate_mul_quotient(&self, w: &mut WitnessFiller<'_>, mul_quotient_limbs: &[u64]) {
 		assert_eq!(
 			mul_quotient_limbs.len(),
 			self.mul_quotient.limbs.len(),
@@ -408,7 +417,7 @@ impl RsaIntermediates {
 	///
 	/// # Panics
 	/// Panics if mul_remainder_limbs.len() != 32
-	fn populate_mul_remainder(&self, w: &mut WitnessFiller, mul_remainder_limbs: &[u64]) {
+	fn populate_mul_remainder(&self, w: &mut WitnessFiller<'_>, mul_remainder_limbs: &[u64]) {
 		assert_eq!(mul_remainder_limbs.len(), 32, "mul_remainder must have 32 limbs");
 		self.mul_remainder.populate_limbs(w, mul_remainder_limbs);
 	}
@@ -448,7 +457,7 @@ mod tests {
 
 	fn populate_circuit(
 		circuit: &Rs256Verify,
-		w: &mut WitnessFiller,
+		w: &mut WitnessFiller<'_>,
 		signature_bytes: &[u8],
 		message_bytes: &[u8],
 		modulus_bytes: &[u8],

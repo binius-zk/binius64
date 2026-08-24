@@ -358,15 +358,14 @@ impl ConstraintSystem {
 		constraint_index: usize,
 		operand_name: &'static str,
 	) -> Result<(), ConstraintSystemError> {
-		match self.operand_fault(operand) {
-			None => Ok(()),
-			Some(source) => Err(ConstraintSystemError::ConstraintOperand {
+		self.operand_fault(operand).map_or(Ok(()), |source| {
+			Err(ConstraintSystemError::ConstraintOperand {
 				constraint_kind,
 				constraint_index,
 				operand_name,
 				source,
-			}),
-		}
+			})
+		})
 	}
 
 	/// Returns the first way a term of an operand is malformed, or `None` when every term is

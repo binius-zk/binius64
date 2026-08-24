@@ -96,6 +96,6 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 		layer_depth: usize,
 		tree_depth: usize,
 		layer_digests: &[Self::Digest],
-		proof: &mut TranscriptReader<B>,
+		proof: &mut TranscriptReader<'_, B>,
 	) -> Result<(), Error>;
 }

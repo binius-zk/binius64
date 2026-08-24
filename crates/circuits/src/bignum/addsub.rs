@@ -50,7 +50,7 @@ pub fn add_with_carry_out(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) ->
 		carry_out
 			.first()
 			.copied()
-			.unwrap_or(builder.add_constant(Word::ZERO)),
+			.unwrap_or_else(|| builder.add_constant(Word::ZERO)),
 	)
 }
 

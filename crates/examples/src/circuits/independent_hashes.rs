@@ -84,7 +84,7 @@ impl ExampleCircuit for IndependentSha256Compressions {
 		Ok(Self { compressions })
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(instance.seed.unwrap_or(DEFAULT_RANDOM_SEED));
 		for compression in &self.compressions {
 			let block_bytes = next_block(&mut rng);
@@ -155,7 +155,7 @@ impl ExampleCircuit for IndependentBlake3Compressions {
 		Ok(Self { compressions })
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(instance.seed.unwrap_or(DEFAULT_RANDOM_SEED));
 		for compression in &self.compressions {
 			let cv: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
@@ -224,7 +224,7 @@ impl ExampleCircuit for IndependentKeccakPermutations {
 		Ok(Self { permutations })
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(instance.seed.unwrap_or(DEFAULT_RANDOM_SEED));
 		for permutation in &self.permutations {
 			let state: [u64; 25] = std::array::from_fn(|_| rng.next_u64());

@@ -70,7 +70,7 @@ impl ExampleCircuit for Sha512Example {
 		Ok(Self { circuit, mode })
 	}
 
-	fn populate_witness(&self, instance: HasherInstance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: HasherInstance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let message = utils::resolve_hasher_message(&self.mode, &instance)?;
 		let digest = sha2::Sha512::digest(&message);
 

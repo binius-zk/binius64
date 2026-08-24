@@ -117,7 +117,9 @@ impl<P: PackedField> FieldSliceMut<'_, P> {
 /// # Preconditions
 ///
 /// * `buffer.log_len() >= 2 * (P::LOG_WIDTH + LOG_TILE_PACKED)`
-fn bit_reverse_tiled<P: PackedField, const LOG_TILE_PACKED: usize>(mut buffer: FieldSliceMut<P>) {
+fn bit_reverse_tiled<P: PackedField, const LOG_TILE_PACKED: usize>(
+	mut buffer: FieldSliceMut<'_, P>,
+) {
 	// Tile width in scalars, and the middle index field the two ends leave over.
 	let log_tile = P::LOG_WIDTH + LOG_TILE_PACKED;
 	let log_len = buffer.log_len();
@@ -272,7 +274,7 @@ fn transpose_tile<P: PackedField, const LOG_TILE_PACKED: usize>(tile: &mut [P], 
 /// # Arguments
 ///
 /// * `buffer` - Mutable slice of packed field elements to permute
-fn bit_reverse_packed_naive<P: PackedField>(mut buffer: FieldSliceMut<P>) {
+fn bit_reverse_packed_naive<P: PackedField>(mut buffer: FieldSliceMut<'_, P>) {
 	let bits = buffer.log_len() as u32;
 	for i in 0..buffer.len() {
 		let i_rev = reverse_bits(i, bits);

@@ -109,7 +109,7 @@ pub trait PackedField:
 		for i in (0..64).rev() {
 			res = Square::square(res);
 			if ((exp >> i) & 1) == 1 {
-				res.mul_assign(self)
+				res.mul_assign(self);
 			}
 		}
 		res
@@ -247,7 +247,7 @@ pub unsafe fn set_packed_slice_unchecked<P: PackedField>(
 	unsafe {
 		packed
 			.get_unchecked_mut(i >> P::LOG_WIDTH)
-			.set_unchecked(i % P::WIDTH, scalar)
+			.set_unchecked(i % P::WIDTH, scalar);
 	}
 }
 

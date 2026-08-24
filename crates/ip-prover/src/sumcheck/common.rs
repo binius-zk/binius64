@@ -70,7 +70,7 @@ where
 	}
 
 	fn fold(&mut self, challenge: F) {
-		either::for_both!(self, inner => inner.fold(challenge))
+		either::for_both!(self, inner => inner.fold(challenge));
 	}
 
 	fn finish(self) -> Vec<F> {
@@ -167,7 +167,7 @@ where
 	}
 
 	fn fold(&mut self, challenge: F) {
-		either::for_both!(self, inner => inner.fold(challenge))
+		either::for_both!(self, inner => inner.fold(challenge));
 	}
 
 	fn finish(self) -> Vec<F> {

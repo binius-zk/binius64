@@ -12,7 +12,7 @@ use crate::{
 ///
 /// The [`verify`] function reduces a claim about the sum of a multivariate polynomial over the
 /// boolean hypercube to its evaluation at a challenge point.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SumcheckOutput<F> {
 	/// The evaluation of the sumcheck multivariate at the challenge point.
 	pub eval: F,

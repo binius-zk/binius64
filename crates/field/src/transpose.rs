@@ -113,7 +113,7 @@ where
 	F: BinaryField,
 	FE: PackedExtension<F>,
 {
-	transpose_square_blocks(FE::Scalar::LOG_DEGREE, FE::cast_bases_mut(values))
+	transpose_square_blocks(FE::Scalar::LOG_DEGREE, FE::cast_bases_mut(values));
 }
 
 #[cfg(test)]

@@ -21,8 +21,8 @@ use crate::{
 
 fn test_transform_equivalence<P: PackedField>(
 	mut rng: impl Rng,
-	reference: impl Fn(FieldSliceMut<P>, usize, usize),
-	transform: impl Fn(FieldSliceMut<P>, usize, usize),
+	reference: impl Fn(FieldSliceMut<'_, P>, usize, usize),
+	transform: impl Fn(FieldSliceMut<'_, P>, usize, usize),
 	log_n: usize,
 ) {
 	let half_rounds = log_n / 2;

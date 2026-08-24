@@ -154,6 +154,6 @@ impl<F: Field> FieldOps for F {
 	where
 		F: ExtensionField<FSub>,
 	{
-		<F as ExtensionField<FSub>>::square_transpose(elems)
+		<F as ExtensionField<FSub>>::square_transpose(elems);
 	}
 }

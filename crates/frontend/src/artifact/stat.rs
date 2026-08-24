@@ -139,7 +139,7 @@ impl CircuitStat {
 }
 
 impl fmt::Display for CircuitStat {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		// Helper to format numbers with commas
 		fn fmt_num(n: usize) -> String {
 			let s = n.to_string();
@@ -189,7 +189,7 @@ impl fmt::Display for CircuitStat {
 		// allocation of `0` rather than a power of two — unlike AND, which is always padded to at
 		// least one row.
 		fn constraint_line(
-			f: &mut fmt::Formatter,
+			f: &mut fmt::Formatter<'_>,
 			name: &str,
 			used: usize,
 			allocated: usize,

@@ -428,8 +428,8 @@ where
 fn prove_mulcheck<F, P, Channel, A>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
-	precommit_packed: FieldSlice<P>,
-	private_packed: FieldSlice<P>,
+	precommit_packed: FieldSlice<'_, P>,
+	private_packed: FieldSlice<'_, P>,
 	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
 	alloc: &A,

@@ -176,7 +176,7 @@ fn record(proved: &Proved) -> Recording {
 }
 
 /// Replays the verifier over the real transcript, filling every wire the build recorded.
-fn replay(proved: &Proved, recorded: &Recorded, filler: &mut WitnessFiller) {
+fn replay(proved: &Proved, recorded: &Recorded, filler: &mut WitnessFiller<'_>) {
 	let mut transcript = VerifierTranscript::new(StdChallenger::default(), proved.proof.clone());
 	let filler_channel = WitnessFillerChannel::<_, StdChallenger, StdHashSuite>::new(
 		&mut transcript,

@@ -244,10 +244,10 @@ fn blake3_parent_pair(
 ) -> ([Wire; 8], [Wire; 8]) {
 	// Both lanes start from the same chaining value, so each word is that word in both halves.
 	// The key's words carry zero high bits, so they pack by the same shift-and-XOR as a child.
-	let cv: [Wire; 8] = match key {
-		Some(key) => std::array::from_fn(|i| pack_lanes(builder, key[i], key[i])),
-		None => std::array::from_fn(|i| dup32(builder, IV[i])),
-	};
+	let cv: [Wire; 8] = key.map_or_else(
+		|| std::array::from_fn(|i| dup32(builder, IV[i])),
+		|key| std::array::from_fn(|i| pack_lanes(builder, key[i], key[i])),
+	);
 	let block: [Wire; 16] = std::array::from_fn(|i| {
 		if i < 8 {
 			pack_lanes(builder, a.0[i], b.0[i])

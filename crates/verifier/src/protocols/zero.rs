@@ -50,10 +50,7 @@ pub fn reduction_point<F: Clone>(
 	// The ZERO and AND sets are padded to power-of-two row counts independently, so a ZERO set
 	// with more rows than the AND set runs past the BitAnd point and samples the rest.
 	(0..log_zero_constraints)
-		.map(|i| match bitand_eval_point.get(i) {
-			Some(coord) => coord.clone(),
-			None => sample(),
-		})
+		.map(|i| bitand_eval_point.get(i).map_or_else(&mut sample, F::clone))
 		.collect()
 }
 

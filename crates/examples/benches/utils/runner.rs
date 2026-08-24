@@ -168,7 +168,7 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 					.unwrap();
 				circuit.populate_wire_witness(&mut filler).unwrap();
 				filler.into_value_vec()
-			})
+			});
 		});
 
 		group.finish();
@@ -186,7 +186,7 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 				let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 				prover.prove(&witness, &mut prover_transcript).unwrap();
 				prover_transcript
-			})
+			});
 		});
 
 		group.finish();
@@ -221,8 +221,8 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 				verifier
 					.verify(witness.inout(), &mut verifier_transcript)
 					.unwrap();
-				verifier_transcript.finalize().unwrap()
-			})
+				verifier_transcript.finalize().unwrap();
+			});
 		});
 
 		group.finish();

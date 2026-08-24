@@ -74,7 +74,7 @@ where
 	pub fn commit<NTT, Channel>(
 		level: LigeritoLevel,
 		ntt: &NTT,
-		message: FieldSlice<P>,
+		message: FieldSlice<'_, P>,
 		channel: &mut Channel,
 	) -> Self
 	where
@@ -108,7 +108,7 @@ where
 	/// * `eval_point` has `level.log_msg_len()` coordinates, in low-to-high variable order.
 	pub fn prove<A, Channel>(
 		&self,
-		message: FieldSlice<P>,
+		message: FieldSlice<'_, P>,
 		eval_point: &[F],
 		eval_claim: F,
 		alloc: &A,

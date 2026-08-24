@@ -56,12 +56,10 @@ const LOG_INV_RATE: usize = 1;
 ///
 /// Panics if `var` is set but does not parse as a `usize`.
 fn log_size_from_env(var: &str, default: usize) -> usize {
-	match std::env::var(var) {
-		Ok(val) => val
-			.parse()
-			.unwrap_or_else(|_| panic!("{var} must be a non-negative integer, got {val:?}")),
-		Err(_) => default,
-	}
+	std::env::var(var).map_or(default, |val| {
+		val.parse()
+			.unwrap_or_else(|_| panic!("{var} must be a non-negative integer, got {val:?}"))
+	})
 }
 
 /// Installs a timing-tree tracing subscriber, once per test binary.

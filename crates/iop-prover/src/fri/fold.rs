@@ -387,7 +387,7 @@ where
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>
 #[instrument(skip_all, level = "debug")]
-fn fold_codeword<F, NTT>(ntt: &NTT, codeword: FieldSlice<F>, challenges: &[F]) -> FieldBuffer<F>
+fn fold_codeword<F, NTT>(ntt: &NTT, codeword: FieldSlice<'_, F>, challenges: &[F]) -> FieldBuffer<F>
 where
 	F: BinaryField,
 	NTT: AdditiveNTT<Field = F> + Sync,

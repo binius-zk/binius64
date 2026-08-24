@@ -1,4 +1,7 @@
 // Copyright 2025 Irreducible Inc.
+
+//! Verifies a proof read from disk against the constraint system it was produced for.
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};

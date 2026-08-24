@@ -175,7 +175,7 @@ impl<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator> ShiftIndSumcheck<
 	/// # Panics
 	///
 	/// Panics unless the weights hold one entry per bit position of a word.
-	pub fn new(alloc: &A, weights: &[F], point: &ShiftChallengePoint<F>, g_eval: F) -> Self {
+	pub fn new(alloc: &A, weights: &[F], point: &ShiftChallengePoint<'_, F>, g_eval: F) -> Self {
 		assert_eq!(weights.len(), Word::BITS, "the weights are indexed by bit position");
 
 		let shift_ind = point.indicator();

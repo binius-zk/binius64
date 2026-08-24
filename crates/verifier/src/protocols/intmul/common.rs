@@ -7,7 +7,7 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, field::FieldOps};
 use itertools::iterate;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntMulOutput<F> {
 	pub eval_point: Vec<F>,
 	pub a_evals: [F; Word::BITS],

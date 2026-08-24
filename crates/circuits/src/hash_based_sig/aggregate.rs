@@ -62,7 +62,7 @@ impl MultiSigWires {
 	/// If the number of pairs is not the number of signers the wires were allocated for.
 	pub fn populate(
 		&self,
-		w: &mut WitnessFiller,
+		w: &mut WitnessFiller<'_>,
 		message: &Message,
 		epoch: u32,
 		signatures: &[(XmssPublicKey, XmssSignature)],

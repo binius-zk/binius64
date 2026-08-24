@@ -31,7 +31,7 @@ fn test_field_text_debug() {
 	assert_eq!(
 		format!("{:?}", PackedAESBinaryField16x8b::broadcast(AESTowerField8b::new(123))),
 		"Packed16x8([0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b])"
-	)
+	);
 }
 
 fn basic_spread<P>(packed: P, log_block_len: usize, block_idx: usize) -> P

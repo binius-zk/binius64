@@ -70,7 +70,7 @@ fn bench_portable(c: &mut Criterion) {
 			&batch_size,
 			|b, &bs| {
 				b.iter(|| {
-					run(&portable4, &elements, bs, &mut digests.spare_capacity_mut()[..n_leaves])
+					run(&portable4, &elements, bs, &mut digests.spare_capacity_mut()[..n_leaves]);
 				});
 			},
 		);
@@ -79,7 +79,7 @@ fn bench_portable(c: &mut Criterion) {
 			&batch_size,
 			|b, &bs| {
 				b.iter(|| {
-					run(&portable8, &elements, bs, &mut digests.spare_capacity_mut()[..n_leaves])
+					run(&portable8, &elements, bs, &mut digests.spare_capacity_mut()[..n_leaves]);
 				});
 			},
 		);
@@ -88,7 +88,7 @@ fn bench_portable(c: &mut Criterion) {
 			&batch_size,
 			|b, &bs| {
 				b.iter(|| {
-					run(&portable16, &elements, bs, &mut digests.spare_capacity_mut()[..n_leaves])
+					run(&portable16, &elements, bs, &mut digests.spare_capacity_mut()[..n_leaves]);
 				});
 			},
 		);

@@ -111,7 +111,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	pub fn encode_batch<P, NTT, A>(
 		&self,
 		ntt: &NTT,
-		data: FieldSlice<P>,
+		data: FieldSlice<'_, P>,
 		log_batch_size: usize,
 		alloc: &A,
 	) -> FieldBuffer<P, A::Vec<P>>
@@ -188,7 +188,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	pub fn encode_batch_with_callback<P, DC, A>(
 		&self,
 		ntt: &NeighborsLastMultiThread<DC>,
-		data: FieldSlice<P>,
+		data: FieldSlice<'_, P>,
 		log_batch_size: usize,
 		alloc: &A,
 		on_chunk_ready: impl Fn(usize, &[P]) + Sync,
@@ -270,7 +270,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 /// * `msg` holds at least one whole word, and `total` is a multiple of its word count
 /// * `run` is a power of two, and at most the message's word count
 fn repeated_message_buffer<P: PackedField, A: Allocator>(
-	msg: FieldSlice<P>,
+	msg: FieldSlice<'_, P>,
 	total: usize,
 	run: usize,
 	alloc: &A,
@@ -478,7 +478,7 @@ mod tests {
 	// One serial copy of the message, one permutation, then a chain of doublings.
 	// That is the plain form of the same construction, so it pins the run-split form.
 	fn repeated_message_buffer_reference<P: PackedField>(
-		msg: FieldSlice<P>,
+		msg: FieldSlice<'_, P>,
 		total: usize,
 	) -> Vec<P> {
 		let mut output = Vec::with_capacity(total);

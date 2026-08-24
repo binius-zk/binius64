@@ -124,7 +124,7 @@ where
 		&self.oracle_specs[self.next_oracle_index..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		let index = self.next_oracle_index;
 		assert!(
 			index < self.oracle_specs.len(),

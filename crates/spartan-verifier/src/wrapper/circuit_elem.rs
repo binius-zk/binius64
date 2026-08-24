@@ -105,6 +105,9 @@ where
 	/// Combine `elems` under an operation. If every input is a `Constant`, fold at the `F` level
 	/// via `f_op` (no builder is touched). Otherwise convert constants to wires on the shared
 	/// builder and run `builder_op` over the wires.
+	// The two arms are long and the wire arm is the one the doc comment leads with, so
+	// `map_or_else` would put them in the wrong order.
+	#[allow(clippy::option_if_let_else)]
 	pub fn combine<const IN: usize, const OUT: usize>(
 		elems: [&Self; IN],
 		f_op: impl Fn([F; IN]) -> [F; OUT],
@@ -154,6 +157,7 @@ where
 	///
 	/// `f_op` and `builder_op` must return a `Vec` of length `n_out`; checked via
 	/// `debug_assert_eq!`.
+	#[allow(clippy::option_if_let_else)]
 	pub fn combine_varlen(
 		elems: &[&Self],
 		n_out: usize,

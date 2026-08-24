@@ -126,7 +126,7 @@ impl<F: BinaryField> GenericPreExpanded<F> {
 				}
 			}
 			assert_eq!(expanded_i.len(), 1 << (basis.len() - 1));
-			expanded.push(expanded_i)
+			expanded.push(expanded_i);
 		}
 		assert_eq!(expanded.len(), evals.len());
 
@@ -351,7 +351,7 @@ mod tests {
 				assert_eq!(dc_1.twiddle(i, block), dc_2.twiddle(i, block));
 			}
 		}
-		assert_eq!(dc_1.subspace(log_domain_size), dc_2.subspace(log_domain_size))
+		assert_eq!(dc_1.subspace(log_domain_size), dc_2.subspace(log_domain_size));
 	}
 
 	#[test]

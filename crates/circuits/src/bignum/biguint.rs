@@ -98,7 +98,7 @@ impl BigUint {
 	/// Populate the BigUint with the expected limb_values
 	///
 	/// Panics if limb_values.len() != self.limbs.len()
-	pub fn populate_limbs(&self, w: &mut WitnessFiller, limb_values: &[u64]) {
+	pub fn populate_limbs(&self, w: &mut WitnessFiller<'_>, limb_values: &[u64]) {
 		assert!(limb_values.len() == self.limbs.len());
 		for (&wire, &v) in iter::zip(&self.limbs, limb_values) {
 			w[wire] = Word::from_u64(v);

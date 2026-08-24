@@ -151,7 +151,7 @@ pub fn prove_reduction<A, F, P>(
 	gamma: F,
 	tables: &[TableLookup<'_, P>],
 	numerators: Vec<Vec<FieldVec<P, A>>>,
-	pushforwards: &[FieldSlice<P>],
+	pushforwards: &[FieldSlice<'_, P>],
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
 where

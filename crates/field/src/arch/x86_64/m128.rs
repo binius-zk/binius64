@@ -99,7 +99,7 @@ impl From<M128> for u128 {
 		let mut result = 0u128;
 		unsafe {
 			// Safety: u128 is 16-byte aligned, as the const assertion above checks.
-			_mm_store_si128(&raw mut result as *mut __m128i, value.0)
+			_mm_store_si128(&raw mut result as *mut __m128i, value.0);
 		};
 		result
 	}
@@ -157,7 +157,7 @@ impl BitAnd for M128 {
 impl BitAndAssign for M128 {
 	#[inline(always)]
 	fn bitand_assign(&mut self, rhs: Self) {
-		*self = *self & rhs
+		*self = *self & rhs;
 	}
 }
 
@@ -173,7 +173,7 @@ impl BitOr for M128 {
 impl BitOrAssign for M128 {
 	#[inline(always)]
 	fn bitor_assign(&mut self, rhs: Self) {
-		*self = *self | rhs
+		*self = *self | rhs;
 	}
 }
 
@@ -779,7 +779,7 @@ mod tests {
 
 		#[test]
 		fn test_negate(a in any::<u128>()) {
-			assert_eq!(M128::from(!a), !M128::from(a))
+			assert_eq!(M128::from(!a), !M128::from(a));
 		}
 
 		#[test]

@@ -465,8 +465,8 @@ where
 ///
 /// * `src.log_len() <= log_block <= dst.log_len()`
 fn place_repeated<P: PackedField>(
-	mut dst: FieldSliceMut<P>,
-	src: FieldSlice<P>,
+	mut dst: FieldSliceMut<'_, P>,
+	src: FieldSlice<'_, P>,
 	scalar: P::Scalar,
 	log_block: usize,
 ) {
@@ -503,8 +503,8 @@ fn place_repeated<P: PackedField>(
 }
 
 fn accumulate_scaled_buffer<P: PackedField>(
-	mut dst: FieldSliceMut<P>,
-	src: FieldSlice<P>,
+	mut dst: FieldSliceMut<'_, P>,
+	src: FieldSlice<'_, P>,
 	scalar_broadcast: P,
 ) {
 	if src.log_len() >= P::LOG_WIDTH {
@@ -593,7 +593,7 @@ where
 		&self.oracle_specs[self.queue.len()..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		let remaining = self.remaining_oracle_specs();
 		assert!(!remaining.is_empty(), "send_oracle called but no remaining oracle specs");
 
@@ -1148,7 +1148,7 @@ mod tests {
 			assert!(
 				PackedBinaryGhash4x128b::LOG_WIDTH > 1,
 				"the fixture needs a packed element wider than the `[0, 1]` batch's lift block"
-			)
+			);
 		};
 		for sizes in [[0, 1], [1, 2]] {
 			assert!(

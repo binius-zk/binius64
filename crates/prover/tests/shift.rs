@@ -359,26 +359,20 @@ fn test_shift_prove_and_verify() {
 		// — mirroring the prover/verifier skip of the IntMul reduction in `binius_prover` /
 		// `binius_verifier`.
 		let intmul_is_empty = cs.imul_constraints.is_empty();
-		let r_x_prime_intmul = if let Some(log_intmul_constraint_count) = cs.log_imul_constraints()
-		{
-			(0..log_intmul_constraint_count as u128)
-				.map(F::new)
-				.collect::<Vec<_>>()
-		} else {
-			Vec::new()
-		};
+		let r_x_prime_intmul = cs
+			.log_imul_constraints()
+			.map_or_else(Vec::new, |log_count| {
+				(0..log_count as u128).map(F::new).collect::<Vec<_>>()
+			});
 
 		// A constraint system may equally have zero BMUL constraints, and the BinMul operator is
 		// then empty for the same reason.
 		let binmul_is_empty = cs.bmul_constraints.is_empty();
-		let r_x_prime_binmul = if let Some(log_binmul_constraint_count) = cs.log_bmul_constraints()
-		{
-			(0..log_binmul_constraint_count as u128)
-				.map(F::new)
-				.collect::<Vec<_>>()
-		} else {
-			Vec::new()
-		};
+		let r_x_prime_binmul = cs
+			.log_bmul_constraints()
+			.map_or_else(Vec::new, |log_count| {
+				(0..log_count as u128).map(F::new).collect::<Vec<_>>()
+			});
 
 		// Sample univariate eval point — the bitand and intmul operators share
 		// `r_zhat_prime` so the verifier can compute `h_op_evals` once for both.

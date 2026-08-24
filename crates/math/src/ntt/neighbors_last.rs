@@ -403,7 +403,7 @@ where
 
 	fn forward_transform<P: PackedField<Scalar = F>>(
 		&self,
-		mut data: FieldSliceMut<P>,
+		mut data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	) {
@@ -429,7 +429,7 @@ where
 
 	fn inverse_transform<P: PackedField<Scalar = F>>(
 		&self,
-		_data: FieldSliceMut<P>,
+		_data: FieldSliceMut<'_, P>,
 		_skip_early: usize,
 		_skip_late: usize,
 	) {
@@ -474,7 +474,7 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastSingleThread<DC> {
 
 	fn forward_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		mut data: FieldSliceMut<P>,
+		mut data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	) {
@@ -502,7 +502,7 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastSingleThread<DC> {
 
 	fn inverse_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		_data_orig: FieldSliceMut<P>,
+		_data_orig: FieldSliceMut<'_, P>,
 		_skip_early: usize,
 		_skip_late: usize,
 	) {
@@ -566,7 +566,7 @@ impl<DC: DomainContext + Sync> NeighborsLastMultiThread<DC> {
 	/// There, `on_chunk_ready` runs once for block 0, after the fallback transform completes.
 	pub fn forward_transform_with_callback<P: PackedField<Scalar = DC::Field>>(
 		&self,
-		mut data: FieldSliceMut<P>,
+		mut data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 		on_chunk_ready: impl Fn(usize, &[P]) + Sync,
@@ -638,7 +638,7 @@ impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
 
 	fn forward_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		data: FieldSliceMut<P>,
+		data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	) {
@@ -647,7 +647,7 @@ impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
 
 	fn inverse_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		_data_orig: FieldSliceMut<P>,
+		_data_orig: FieldSliceMut<'_, P>,
 		_skip_early: usize,
 		_skip_late: usize,
 	) {

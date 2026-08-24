@@ -253,7 +253,7 @@ impl ShiftVariant {
 	/// - `amount`: the shift amount in bits, below this variant's upper bound.
 	#[inline]
 	pub fn write_shifted(self, out: &mut [MaybeUninit<Word>], src: &[Word], amount: u32) {
-		self.dispatch(amount, WriteShiftedWords { out, src })
+		self.dispatch(amount, WriteShiftedWords { out, src });
 	}
 
 	/// Applies this shift to each source word and XORs the result into the matching output cell.
@@ -267,7 +267,7 @@ impl ShiftVariant {
 	/// - `amount`: the shift amount in bits, below this variant's upper bound.
 	#[inline]
 	pub fn xor_shifted(self, out: &mut [Word], src: &[Word], amount: u32) {
-		self.dispatch(amount, XorShiftedWords { out, src })
+		self.dispatch(amount, XorShiftedWords { out, src });
 	}
 }
 

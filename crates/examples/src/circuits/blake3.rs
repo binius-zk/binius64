@@ -50,7 +50,7 @@ impl ExampleCircuit for Blake3Example {
 		})
 	}
 
-	fn populate_witness(&self, instance: HasherInstance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: HasherInstance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let message_bytes = utils::resolve_hasher_message(&self.mode, &instance)?;
 
 		// Message: 32-bit little-endian words, 4 bytes per wire, high 32 bits zero.

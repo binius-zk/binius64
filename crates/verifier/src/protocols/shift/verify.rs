@@ -697,20 +697,14 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 		let bitand =
 			OperationEvalFn::new(&cs.and_constraints, cs.n_const(), cs.n_inout, cs.n_private)
 				.call::<E>(&bitand_input);
-		let intmul = match intmul_input {
-			Some(input) => {
-				OperationEvalFn::new(&cs.imul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-					.call::<E>(&input)
-			}
-			None => E::zero(),
-		};
-		let binmul = match binmul_input {
-			Some(input) => {
-				OperationEvalFn::new(&cs.bmul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-					.call::<E>(&input)
-			}
-			None => E::zero(),
-		};
+		let intmul = intmul_input.map_or_else(E::zero, |input| {
+			OperationEvalFn::new(&cs.imul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+				.call::<E>(&input)
+		});
+		let binmul = binmul_input.map_or_else(E::zero, |input| {
+			OperationEvalFn::new(&cs.bmul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+				.call::<E>(&input)
+		});
 
 		zero + bitand + intmul + binmul
 	}
@@ -740,20 +734,14 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 		let bitand =
 			OperationEvalFn::new(&cs.and_constraints, cs.n_const(), cs.n_inout, cs.n_private)
 				.call_native(&bitand_input);
-		let intmul = match intmul_input {
-			Some(input) => {
-				OperationEvalFn::new(&cs.imul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-					.call_native(&input)
-			}
-			None => F::ZERO,
-		};
-		let binmul = match binmul_input {
-			Some(input) => {
-				OperationEvalFn::new(&cs.bmul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-					.call_native(&input)
-			}
-			None => F::ZERO,
-		};
+		let intmul = intmul_input.map_or(F::ZERO, |input| {
+			OperationEvalFn::new(&cs.imul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+				.call_native(&input)
+		});
+		let binmul = binmul_input.map_or(F::ZERO, |input| {
+			OperationEvalFn::new(&cs.bmul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
+				.call_native(&input)
+		});
 
 		zero + bitand + intmul + binmul
 	}

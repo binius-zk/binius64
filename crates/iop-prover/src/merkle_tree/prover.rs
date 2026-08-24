@@ -72,7 +72,7 @@ where
 		committed: &Self::Committed,
 		layer_depth: usize,
 		index: usize,
-		proof: &mut TranscriptWriter<B>,
+		proof: &mut TranscriptWriter<'_, B>,
 	) {
 		let branch = committed
 			.branch(index, layer_depth)

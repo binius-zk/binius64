@@ -126,7 +126,7 @@ impl Blake2s {
 
 	/// Builds the constraints that verify the message hashes to the expected digest.
 	fn build_circuit(
-		builder: &mut CircuitBuilder,
+		builder: &CircuitBuilder,
 		length: usize,
 		message: &[Wire],
 		expected_digest: [Wire; 8],
@@ -306,7 +306,7 @@ impl Blake2s {
 	///
 	/// # Panics
 	/// * If `message.len()` does not equal the circuit's fixed message length.
-	pub fn populate_message(&self, witness: &mut WitnessFiller, message: &[u8]) {
+	pub fn populate_message(&self, witness: &mut WitnessFiller<'_>, message: &[u8]) {
 		assert!(
 			message.len() == self.length,
 			"Only messages of length {} supported while given {} bytes",
@@ -317,7 +317,7 @@ impl Blake2s {
 		for (i, bytes) in message.chunks(8).enumerate() {
 			let mut le_bytes = [0; 8];
 			le_bytes[..bytes.len()].copy_from_slice(bytes);
-			witness[self.message[i]] = Word(u64::from_le_bytes(le_bytes))
+			witness[self.message[i]] = Word(u64::from_le_bytes(le_bytes));
 		}
 	}
 
@@ -326,7 +326,7 @@ impl Blake2s {
 	/// # Arguments
 	/// * `witness` - Witness filler to populate.
 	/// * `digest` - The expected 32-byte BLAKE2s digest.
-	pub fn populate_digest(&self, witness: &mut WitnessFiller, digest: &[u8; 32]) {
+	pub fn populate_digest(&self, witness: &mut WitnessFiller<'_>, digest: &[u8; 32]) {
 		for i in 0..8 {
 			let word_bytes = &digest[i * 4..(i + 1) * 4];
 			let word = u32::from_le_bytes(word_bytes.try_into().unwrap());
