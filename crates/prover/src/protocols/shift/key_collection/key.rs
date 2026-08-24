@@ -147,7 +147,7 @@ impl DeserializeBytes for Key {
 }
 
 /// One constraint referencing a shifted word, as one operand of one operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ConstraintIndex {
 	/// Which operand position of the constraint the word fills.
 	pub(super) operand_index: u8,

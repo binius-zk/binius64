@@ -475,6 +475,39 @@ impl Shift {
 		self.variant as usize * Word::BITS + self.amount as usize
 	}
 
+	/// The shift one index of the spelling enumeration names.
+	///
+	/// The inverse of [`Self::index`].
+	/// The high bits of an index pick the variant's run, the low bits the amount inside it:
+	///
+	/// ```text
+	///     variant = index / Word::BITS
+	///     amount  = index % Word::BITS
+	/// ```
+	///
+	/// A caller holding an index rather than a shift recovers the spelling with no side table.
+	///
+	/// # Panics
+	///
+	/// Panics if the index is not below `ShiftVariant::ALL.len() * Word::BITS`.
+	/// Above that it names no run, so [`Self::index`] could not have produced it.
+	#[inline]
+	pub const fn from_index(index: usize) -> Self {
+		assert!(
+			index < ShiftVariant::ALL.len() * Word::BITS,
+			"shift index is not below the enumeration length"
+		);
+		let Some(variant) = ShiftVariant::from_u8((index / Word::BITS) as u8) else {
+			// The assertion above bounds the quotient by the number of variants.
+			unreachable!()
+		};
+		Self {
+			variant,
+			// The remainder is below `Word::BITS`, so it fits the byte-sized field.
+			amount: (index % Word::BITS) as u8,
+		}
+	}
+
 	/// Applies this shift to a word and returns the result.
 	///
 	/// # Performance
@@ -1341,6 +1374,28 @@ mod tests {
 				seen[index] = true;
 			}
 		}
+	}
+
+	proptest! {
+		// Invariant: `from_index` inverts `index` over the whole enumeration.
+		//
+		//     from_index(index(s)) == s   for every spelling s
+		//     index(from_index(i)) == i   for every index i in range
+		//
+		// A caller that decodes an index instead of carrying a side table relies on both.
+		#[test]
+		fn from_index_inverts_index(index in 0usize..ShiftVariant::ALL.len() * Word::BITS) {
+			let shift = Shift::from_index(index);
+			prop_assert_eq!(shift.index(), index);
+			prop_assert_eq!(Shift::from_index(shift.index()), shift);
+		}
+	}
+
+	// The last run ends at `ALL.len() * Word::BITS`, so that index names no variant.
+	#[test]
+	#[should_panic(expected = "shift index is not below the enumeration length")]
+	fn from_index_rejects_an_index_past_the_last_run() {
+		let _ = Shift::from_index(ShiftVariant::ALL.len() * Word::BITS);
 	}
 
 	// An amount at the word width would index into the next variant's run, aliasing another shift.

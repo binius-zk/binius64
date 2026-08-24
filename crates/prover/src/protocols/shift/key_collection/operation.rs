@@ -35,8 +35,12 @@ pub enum Operation {
 }
 
 impl Operation {
-	/// The operation's code in the builder's packed references: two bits, in the walk order the
-	/// key collection is built in (`Zero, BitwiseAnd, IntegerMul, BinMul`).
+	/// The bits [`Self::packed_code`] occupies inside the builder's packed key code.
+	pub(super) const PACKED_CODE_BITS: usize = 2;
+
+	/// The operation's code in the builder's packed references.
+	///
+	/// The numbering follows the order the key collection walks the operations in.
 	///
 	/// Not the serialized wire value below, which is pinned to a different numbering.
 	pub(super) const fn packed_code(self) -> u8 {
@@ -50,17 +54,25 @@ impl Operation {
 
 	/// Decodes [`Self::packed_code`].
 	///
-	/// Total because the caller masks its input to the two bits the packing wrote, so every
-	/// reachable value names the operation that produced it.
+	/// # Panics
+	///
+	/// Panics if the code is not one [`Self::packed_code`] produces.
 	pub(super) const fn from_packed_code(code: u8) -> Self {
 		match code {
 			0 => Self::Zero,
 			1 => Self::BitwiseAnd,
 			2 => Self::IntegerMul,
-			_ => Self::BinMul,
+			3 => Self::BinMul,
+			_ => panic!("not an operation code"),
 		}
 	}
 }
+
+/// Every code fits the width the builder reserves for it.
+const _: () = assert!(
+	Operation::BinMul.packed_code() < 1 << Operation::PACKED_CODE_BITS,
+	"an operation code does not fit its packed width"
+);
 
 impl SerializeBytes for Operation {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
