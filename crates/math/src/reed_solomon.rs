@@ -169,7 +169,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		};
 		let mut output = FieldBuffer::new(log_output_len, output_data);
 
-		ntt.forward_transform(output.to_mut(), self.log_inv_rate, log_batch_size);
+		ntt.forward_transform(output.as_mut_view(), self.log_inv_rate, log_batch_size);
 		output
 	}
 
@@ -238,7 +238,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		let mut output = FieldBuffer::new(log_output_len, output_data);
 
 		ntt.forward_transform_with_callback(
-			output.to_mut(),
+			output.as_mut_view(),
 			self.log_inv_rate,
 			log_batch_size,
 			on_chunk_ready,
@@ -364,7 +364,7 @@ mod tests {
 
 		// Test the new encode_batch interface
 		let encoded_buffer =
-			rs_code.encode_batch(&ntt, message.to_ref(), log_batch_size, &GlobalAllocator);
+			rs_code.encode_batch(&ntt, message.as_view(), log_batch_size, &GlobalAllocator);
 
 		// Method 2: Reference implementation - apply NTT with zero-padded coefficients to the
 		// bit-reversal permuted message.
@@ -375,7 +375,7 @@ mod tests {
 		}
 
 		// Perform large NTT with zero-padded coefficients.
-		ntt.forward_transform(reference_buffer.to_mut(), 0, log_batch_size);
+		ntt.forward_transform(reference_buffer.as_mut_view(), 0, log_batch_size);
 
 		// Compare results
 		assert_eq!(
@@ -446,8 +446,8 @@ mod tests {
 			msg_large.set(i, val);
 		}
 
-		let enc_small = rs_small.encode_batch(&ntt, msg_small.to_ref(), 0, &GlobalAllocator);
-		let enc_large = rs_large.encode_batch(&ntt, msg_large.to_ref(), 0, &GlobalAllocator);
+		let enc_small = rs_small.encode_batch(&ntt, msg_small.as_view(), 0, &GlobalAllocator);
+		let enc_large = rs_large.encode_batch(&ntt, msg_large.as_view(), 0, &GlobalAllocator);
 
 		let small_scalars = enc_small.iter_scalars().collect::<Vec<_>>();
 		let large_scalars = enc_large.iter_scalars().collect::<Vec<_>>();
@@ -501,14 +501,14 @@ mod tests {
 			for log_copies in 0..4 {
 				let msg = random_field_buffer::<PackedBinaryGhash1x128b>(&mut rng, log_msg);
 				let total = (1 << log_msg) << log_copies;
-				let expected = repeated_message_buffer_reference(msg.to_ref(), total);
+				let expected = repeated_message_buffer_reference(msg.as_view(), total);
 
 				// Every run width a caller can pass, from one word up to the whole message.
 				// A run under the message length is what splits a fill across workers.
 				// The encoder only reaches that on a message above one mebibyte.
 				for log_run in 0..=log_msg {
 					let built = repeated_message_buffer(
-						msg.to_ref(),
+						msg.as_view(),
 						total,
 						1 << log_run,
 						&GlobalAllocator,

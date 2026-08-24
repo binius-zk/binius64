@@ -52,7 +52,7 @@ impl<P: PackedField> FieldSliceMut<'_, P> {
 		// A buffer shorter than a square of packed elements leaves the two passes below no room.
 		let log_len = self.log_len();
 		if log_len < 2 * P::LOG_WIDTH {
-			return bit_reverse_packed_naive(self.to_mut());
+			return bit_reverse_packed_naive(self.as_mut_view());
 		}
 
 		// Scalars covering one cache line, which is the granularity a permutation is charged at.
@@ -79,11 +79,11 @@ impl<P: PackedField> FieldSliceMut<'_, P> {
 		// A run-time bound lowers the moves of a one-element tile to a call.
 		// That call is most of the work at that width.
 		match log_tile - P::LOG_WIDTH {
-			0 => bit_reverse_tiled::<P, 0>(self.to_mut()),
-			1 => bit_reverse_tiled::<P, 1>(self.to_mut()),
-			2 => bit_reverse_tiled::<P, 2>(self.to_mut()),
+			0 => bit_reverse_tiled::<P, 0>(self.as_mut_view()),
+			1 => bit_reverse_tiled::<P, 1>(self.as_mut_view()),
+			2 => bit_reverse_tiled::<P, 2>(self.as_mut_view()),
 			// The clamp caps the tile at the widest instance, which answers every larger value.
-			_ => bit_reverse_tiled::<P, MAX_LOG_TILE_PACKED>(self.to_mut()),
+			_ => bit_reverse_tiled::<P, MAX_LOG_TILE_PACKED>(self.as_mut_view()),
 		}
 	}
 }
@@ -384,8 +384,8 @@ mod tests {
 		let mut naive = data_orig;
 
 		// Invariant: moving whole tiles lands every element where the definition puts it.
-		blocked.to_mut().bit_reverse();
-		bit_reverse_packed_naive(naive.to_mut());
+		blocked.as_mut_view().bit_reverse();
+		bit_reverse_packed_naive(naive.as_mut_view());
 
 		assert_eq!(blocked, naive, "mismatch at log_d={log_d}");
 	}
@@ -432,8 +432,8 @@ mod tests {
 			// Invariant: reversing the bits of an index twice is the identity.
 			// So a buffer permuted twice has to come back exactly as it went in.
 			let mut twice = orig.clone();
-			twice.to_mut().bit_reverse();
-			twice.to_mut().bit_reverse();
+			twice.as_mut_view().bit_reverse();
+			twice.as_mut_view().bit_reverse();
 
 			prop_assert_eq!(twice, orig);
 		}

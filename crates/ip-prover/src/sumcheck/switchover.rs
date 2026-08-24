@@ -103,7 +103,7 @@ where
 				chunk_vars,
 				chunk_index,
 			);
-			scratchpad.to_ref()
+			scratchpad.as_view()
 		}
 	}
 
@@ -120,9 +120,9 @@ where
 			// Prepend the new variable via bit-reverse + append + bit-reverse. This does not need
 			// to be fast: it runs once per pre-switchover round on a small tensor (see
 			// BINIUS-327).
-			tensor.to_mut().bit_reverse();
+			tensor.as_mut_view().bit_reverse();
 			let mut tensor = Hypercube::One.expand(&[challenge]).append_to(tensor);
-			tensor.to_mut().bit_reverse();
+			tensor.as_mut_view().bit_reverse();
 			self.tensor = tensor;
 
 			if self.tensor.log_len() == self.switchover {

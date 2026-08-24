@@ -172,7 +172,7 @@ where
 			&precommit_blinding,
 			&mut rng,
 		);
-		let precommit_oracle = inner_channel.send_oracle(precommit_packed.to_ref());
+		let precommit_oracle = inner_channel.send_oracle(precommit_packed.as_view());
 		(keys, precommit_oracle, precommit_packed)
 	}
 

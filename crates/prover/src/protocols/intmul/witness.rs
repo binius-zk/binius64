@@ -191,13 +191,13 @@ where
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
 		let variable_base_tree_scope =
 			tracing::debug_span!("Compute variable-base prodcheck layers").entered();
-		let b_leaves = compute_b_leaves(alloc, a_root.to_ref(), b);
+		let b_leaves = compute_b_leaves(alloc, a_root.as_view(), b);
 		// The prodcheck prover folds its leaf layer in place, and phase 1 reads the leaves again
 		// afterwards, so the prover gets a clone.
 		let (b_prodcheck, b_root) = ProdcheckProver::new(
 			Word::LOG_BITS,
 			alloc,
-			FieldBuffer::clone_from_slice(alloc, b_leaves.to_ref()),
+			FieldBuffer::clone_from_slice(alloc, b_leaves.as_view()),
 		);
 		drop(variable_base_tree_scope);
 
@@ -531,7 +531,7 @@ mod tests {
 		// (`c_lo_root * c_hi_root`); this equality is what lets the prover reuse `b_root` in place
 		// of a separately stored `c_root`.
 		let c_root = buffer_bivariate_product(witness.c_lo_root(), witness.c_hi_root());
-		assert_eq!(witness.b_root().to_ref(), c_root.to_ref());
+		assert_eq!(witness.b_root().as_view(), c_root.as_view());
 	}
 
 	#[test]
@@ -611,7 +611,7 @@ mod tests {
 				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 
-			let leaves = compute_b_leaves::<_, F, P>(&GlobalAllocator, bases.to_ref(), &exponents);
+			let leaves = compute_b_leaves::<_, F, P>(&GlobalAllocator, bases.as_view(), &exponents);
 
 			for (i, &base0) in base_scalars.iter().enumerate() {
 				let mut base = base0;

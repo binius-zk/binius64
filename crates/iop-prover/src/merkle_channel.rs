@@ -299,10 +299,10 @@ mod tests {
 		// Prover side: commit, sample query indices, open them, then send the vector in full.
 		let mut prover_channel =
 			ProverChannel::new(ProverTranscript::new(StdChallenger::default()));
-		let commitment = prover_channel.send_merkle_commitment(data.to_ref(), LEAF_SIZE);
+		let commitment = prover_channel.send_merkle_commitment(data.as_view(), LEAF_SIZE);
 		let indices = sample_indices(&mut prover_channel);
-		prover_channel.send_openings(&commitment, data.to_ref(), &indices);
-		prover_channel.send_committed_vector(&commitment, data.to_ref());
+		prover_channel.send_openings(&commitment, data.as_view(), &indices);
+		prover_channel.send_committed_vector(&commitment, data.as_view());
 
 		// Verifier side: mirror the interaction and check the opened values against the data.
 		let transcript = prover_channel.into_transcript().into_verifier();
@@ -340,9 +340,9 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		{
 			let mut prover_channel = ProverChannel::new(&mut prover_transcript);
-			let commitment = prover_channel.send_merkle_commitment(data.to_ref(), LEAF_SIZE);
+			let commitment = prover_channel.send_merkle_commitment(data.as_view(), LEAF_SIZE);
 			let indices = sample_indices(&mut prover_channel);
-			prover_channel.send_openings(&commitment, data.to_ref(), &indices);
+			prover_channel.send_openings(&commitment, data.as_view(), &indices);
 		}
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -374,9 +374,9 @@ mod tests {
 
 		let mut prover_channel =
 			ProverChannel::new(ProverTranscript::new(StdChallenger::default()));
-		let commitment = prover_channel.send_merkle_commitment(data.to_ref(), LEAF_SIZE);
+		let commitment = prover_channel.send_merkle_commitment(data.as_view(), LEAF_SIZE);
 		let indices = sample_indices(&mut prover_channel);
-		prover_channel.send_openings(&commitment, data.to_ref(), &indices);
+		prover_channel.send_openings(&commitment, data.as_view(), &indices);
 
 		let transcript = prover_channel.into_transcript().into_verifier();
 		let mut verifier_channel = VerifierChannel::new(transcript);
@@ -414,11 +414,11 @@ mod tests {
 		// Commit one buffer but open the other, so the openings do not match the commitment.
 		let mut prover_channel =
 			ProverChannel::new(ProverTranscript::new(StdChallenger::default()));
-		let commitment = prover_channel.send_merkle_commitment(data.to_ref(), LEAF_SIZE);
+		let commitment = prover_channel.send_merkle_commitment(data.as_view(), LEAF_SIZE);
 		let other_commitment =
-			prover_channel.send_merkle_commitment(other_data.to_ref(), LEAF_SIZE);
+			prover_channel.send_merkle_commitment(other_data.as_view(), LEAF_SIZE);
 		let indices = sample_indices(&mut prover_channel);
-		prover_channel.send_openings(&other_commitment, other_data.to_ref(), &indices);
+		prover_channel.send_openings(&other_commitment, other_data.as_view(), &indices);
 		let _ = commitment;
 
 		let transcript = prover_channel.into_transcript().into_verifier();

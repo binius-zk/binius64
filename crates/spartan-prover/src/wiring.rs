@@ -451,8 +451,8 @@ mod tests {
 			&GlobalAllocator,
 			&constraints,
 			&public,
-			precommit_buf.to_ref(),
-			private_buf.to_ref(),
+			precommit_buf.as_view(),
+			private_buf.as_view(),
 		);
 
 		// Sample r_x (sumcheck evaluation point for constraint axis)
@@ -478,7 +478,7 @@ mod tests {
 			NaiveProverChannel::<B128, _>::new(&mut prover_transcript, oracle_specs.clone());
 
 		// Send private witness oracle
-		let witness_oracle = prover_channel.send_oracle(private_buf.to_ref());
+		let witness_oracle = prover_channel.send_oracle(private_buf.as_view());
 
 		// Sample lambda
 		let lambda: B128 = prover_channel.sample();

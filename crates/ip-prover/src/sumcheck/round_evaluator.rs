@@ -539,7 +539,7 @@ where
 			for evaluator in evaluators {
 				let (slots, tail) = rest.split_at_mut(evaluator.degree());
 				rest = tail;
-				evaluator.accumulate(&chunk, eq_chunk.to_ref(), slots);
+				evaluator.accumulate(&chunk, eq_chunk.as_view(), slots);
 			}
 			debug_assert!(rest.is_empty(), "the runs must tile the accumulator exactly");
 			// Reduce the wide accumulators so the eq-weighted `reduce` can linearly extrapolate on
@@ -666,7 +666,7 @@ mod tests {
 		claims: [F; 2],
 	) -> SharedMleCheckProver<'a, GlobalAllocator, F, P, Box<dyn MleCheckRoundEvaluator<F, P>>> {
 		let mut store = MleStore::new(eval_point.len(), alloc);
-		let col_ids = cols.each_ref().map(|col| store.push(col.to_ref()));
+		let col_ids = cols.each_ref().map(|col| store.push(col.as_view()));
 		let (num_ev, den_ev) = frac_add_mle::evaluators(col_ids);
 		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] =
 			[(claims[0], Box::new(num_ev)), (claims[1], Box::new(den_ev))];
@@ -764,7 +764,7 @@ mod tests {
 			let alloc = GlobalAllocator;
 			let mut store = MleStore::new(m - 1, &alloc);
 			let [y_0_col, y_1_col, d_0_col, d_1_col, t_0_col, t_1_col] =
-				[&y_0, &y_1, &d_0, &d_1, &t_0, &t_1].map(|col| store.push(col.to_ref()));
+				[&y_0, &y_1, &d_0, &d_1, &t_0, &t_1].map(|col| store.push(col.as_view()));
 
 			// The eq-weighted fractional evaluators, wrapped so they emit sumcheck round
 			// polynomials. The wrappers, driven by a plain sumcheck prover, hold the shared eq

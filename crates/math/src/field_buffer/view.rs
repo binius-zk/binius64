@@ -44,7 +44,7 @@ impl<'a, P: PackedField, Data: Deref<Target = [P]>> From<&'a FieldBuffer<P, Data
 	for FieldSlice<'a, P>
 {
 	fn from(buffer: &'a FieldBuffer<P, Data>) -> Self {
-		buffer.to_ref()
+		buffer.as_view()
 	}
 }
 
@@ -64,7 +64,7 @@ impl<'a, P: PackedField, Data: DerefMut<Target = [P]>> From<&'a mut FieldBuffer<
 	for FieldSliceMut<'a, P>
 {
 	fn from(buffer: &'a mut FieldBuffer<P, Data>) -> Self {
-		buffer.to_mut()
+		buffer.as_mut_view()
 	}
 }
 

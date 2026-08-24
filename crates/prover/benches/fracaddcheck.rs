@@ -36,8 +36,8 @@ fn bench_fracaddcheck_build(c: &mut Criterion) {
 			b.iter_batched(
 				|| {
 					(
-						FieldBuffer::clone_from_slice(&alloc, num_buffer.to_ref()),
-						FieldBuffer::clone_from_slice(&alloc, den_buffer.to_ref()),
+						FieldBuffer::clone_from_slice(&alloc, num_buffer.as_view()),
+						FieldBuffer::clone_from_slice(&alloc, den_buffer.as_view()),
 					)
 				},
 				|(witness_num, witness_den)| {

@@ -467,9 +467,9 @@ mod tests {
 
 		let mut tensor = FieldBuffer::<P>::from_values(&[F::ONE]);
 		for &r in point.iter().rev() {
-			tensor.to_mut().bit_reverse();
+			tensor.as_mut_view().bit_reverse();
 			tensor = Hypercube::One.expand(&[r]).append_to::<P>(tensor);
-			tensor.to_mut().bit_reverse();
+			tensor.as_mut_view().bit_reverse();
 		}
 
 		assert_eq!(tensor, Hypercube::One.expand(&point).build::<P>());

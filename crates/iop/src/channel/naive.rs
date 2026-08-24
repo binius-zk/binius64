@@ -198,7 +198,7 @@ where
 
 		// Verify the inner product claim directly
 		let stored_poly = &self.stored_polynomials[index];
-		let witness_poly = stored_poly.to_ref();
+		let witness_poly = stored_poly.as_view();
 		let actual_inner_product: F = witness_poly.inner_product(&transparent_poly);
 
 		assert_eq!(

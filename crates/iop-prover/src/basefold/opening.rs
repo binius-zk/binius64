@@ -181,7 +181,7 @@ mod test {
 			&fri_params,
 			0,
 			&ntt,
-			witness.to_ref(),
+			witness.as_view(),
 			&mut commit_rng,
 			&GlobalAllocator,
 		);
@@ -192,7 +192,7 @@ mod test {
 				&mut prover_transcript,
 				merkle_prover,
 			);
-		let codeword_commitment = prover_channel.send_merkle_commitment(codeword.to_ref(), 2);
+		let codeword_commitment = prover_channel.send_merkle_commitment(codeword.as_view(), 2);
 
 		// Sample the masking challenge γ and form π' = (1-γ)·witness + γ·mask.
 		let batch_challenge: F = IPProverChannel::sample(&mut prover_channel);

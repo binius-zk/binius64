@@ -121,7 +121,7 @@ where
 
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {
 		self.inner
-			.accumulate(chunk, chunk.eq(self.eq_tracker).to_ref(), accum)
+			.accumulate(chunk, chunk.eq(self.eq_tracker).as_view(), accum)
 	}
 
 	fn interpolate(&self, ctx: &RoundContext<'_, P>, accum: &[P], claim: F) -> RoundCoeffs<F> {

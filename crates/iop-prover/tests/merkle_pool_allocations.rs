@@ -154,8 +154,8 @@ fn a_pooled_encode_stops_allocating_the_codeword_globally() {
 
 	// Warm both paths, so neither count includes one-off setup unrelated to the allocator.
 	let pool = BufferPool::new();
-	drop(fri::encode_masked(&params, 0, &ntt, message.to_ref(), &mut rng, &GlobalAllocator));
-	drop(fri::encode_masked(&params, 0, &ntt, message.to_ref(), &mut rng, &&pool));
+	drop(fri::encode_masked(&params, 0, &ntt, message.as_view(), &mut rng, &GlobalAllocator));
+	drop(fri::encode_masked(&params, 0, &ntt, message.as_view(), &mut rng, &&pool));
 
 	let global_allocs = count_large_allocs(|| {
 		for _ in 0..COMMITS {
@@ -163,7 +163,7 @@ fn a_pooled_encode_stops_allocating_the_codeword_globally() {
 				&params,
 				0,
 				&ntt,
-				message.to_ref(),
+				message.as_view(),
 				&mut rng,
 				&GlobalAllocator,
 			));
@@ -171,7 +171,7 @@ fn a_pooled_encode_stops_allocating_the_codeword_globally() {
 	});
 	let pooled_allocs = count_large_allocs(|| {
 		for _ in 0..COMMITS {
-			drop(fri::encode_masked(&params, 0, &ntt, message.to_ref(), &mut rng, &&pool));
+			drop(fri::encode_masked(&params, 0, &ntt, message.as_view(), &mut rng, &&pool));
 		}
 	});
 

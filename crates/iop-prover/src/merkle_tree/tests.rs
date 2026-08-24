@@ -141,7 +141,7 @@ fn check_commit_field_buffer_matches_commit<P: PackedField<Scalar = B128>>() {
 
 		for log_leaf_len in 0..=log_len {
 			let (reference, _) = prover.commit(&scalars, 1 << log_leaf_len);
-			let (packed, _) = prover.commit_field_buffer(buffer.to_ref(), log_leaf_len);
+			let (packed, _) = prover.commit_field_buffer(buffer.as_view(), log_leaf_len);
 
 			assert_eq!(packed.root, reference.root, "log_len {log_len}, leaf {log_leaf_len}");
 			assert_eq!(packed.depth, reference.depth, "log_len {log_len}, leaf {log_leaf_len}");
@@ -169,7 +169,7 @@ fn test_commit_field_buffer_rejects_oversized_leaf() {
 	let buffer = FieldBuffer::<PackedBinaryGhash4x128b, _>::from_values(&random_scalars::<B128>(
 		&mut rng, 4,
 	));
-	let _ = prover.commit_field_buffer(buffer.to_ref(), 3);
+	let _ = prover.commit_field_buffer(buffer.as_view(), 3);
 }
 
 #[test]

@@ -40,7 +40,7 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 			// Benchmark only the proving phase
 			b.iter_batched(
 				|| {
-					[multilinear_a.to_ref(), multilinear_b.to_ref()]
+					[multilinear_a.as_view(), multilinear_b.as_view()]
 						.map(|multilin| FieldBuffer::clone_from_slice(&alloc, multilin))
 				},
 				|multilinears| {
@@ -84,9 +84,9 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 			b.iter_batched(
 				|| {
 					[
-						multilinear_a.to_ref(),
-						multilinear_b.to_ref(),
-						multilinear_c.to_ref(),
+						multilinear_a.as_view(),
+						multilinear_b.as_view(),
+						multilinear_c.as_view(),
 					]
 					.map(|multilin| FieldBuffer::clone_from_slice(&alloc, multilin))
 				},

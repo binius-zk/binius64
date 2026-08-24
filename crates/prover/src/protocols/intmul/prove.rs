@@ -169,7 +169,7 @@ where
 		let Phase1Output {
 			eval_point: phase1_eval_point,
 			b_leaves_evals,
-		} = self.phase1(&initial_eval_point, b_prodcheck, b_leaves.to_ref(), exp_eval);
+		} = self.phase1(&initial_eval_point, b_prodcheck, b_leaves.as_view(), exp_eval);
 
 		// Phase 2
 		let Phase2Output {
@@ -216,7 +216,7 @@ where
 			a_exponents,
 			c_lo_exponents,
 			c_hi_exponents,
-			tables[0].to_ref(),
+			tables[0].as_view(),
 		)
 	}
 

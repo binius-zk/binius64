@@ -76,7 +76,7 @@ where
 			.iter()
 			.map(|index| index.clone() >> self.log_lift as u32)
 			.collect::<Vec<_>>();
-		channel.send_openings(&self.commitment, self.codeword.to_ref(), &lifted_indices);
+		channel.send_openings(&self.commitment, self.codeword.as_view(), &lifted_indices);
 	}
 }
 
@@ -167,7 +167,7 @@ where
 	where
 		Channel: MerkleIPProverChannel<F, Commitment = Self::Commitment>,
 	{
-		channel.send_openings(&self.commitment, self.codeword.to_ref(), indices);
+		channel.send_openings(&self.commitment, self.codeword.as_view(), indices);
 	}
 }
 

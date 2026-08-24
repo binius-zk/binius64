@@ -160,7 +160,7 @@ impl<F: Field> IOPProver<F> {
 			&precommit_blinding,
 			rng,
 		);
-		let precommit_oracle = channel.send_oracle(precommit_packed.to_ref());
+		let precommit_oracle = channel.send_oracle(precommit_packed.as_view());
 		(precommit_oracle, precommit_packed)
 	}
 
@@ -252,7 +252,7 @@ impl<F: Field> IOPProver<F> {
 		};
 
 		let mulcheck_mask =
-			zk_mlecheck::Mask::new(log_mul_constraints, mask_degree, masks_buffer.to_ref());
+			zk_mlecheck::Mask::new(log_mul_constraints, mask_degree, masks_buffer.as_view());
 
 		// Pack private witness into field elements and add blinding
 		let blinding_info = cs.blinding_info();
@@ -267,15 +267,15 @@ impl<F: Field> IOPProver<F> {
 
 		// Send the private and mask oracles to the channel. The precommit oracle was committed
 		// by the caller via `commit_precommit` and passed in as `precommit_oracle`.
-		let private_oracle = channel.send_oracle(private_packed.to_ref());
-		let mask_oracle = channel.send_oracle(masks_buffer.to_ref());
+		let private_oracle = channel.send_oracle(private_packed.as_view());
+		let mask_oracle = channel.send_oracle(masks_buffer.as_view());
 
 		// Prove the multiplication constraints
 		let (mulcheck_evals, mask_eval, r_x) = prove_mulcheck::<F, P, _, _>(
 			cs.mul_constraints(),
 			witness.public(),
-			precommit_packed.to_ref(),
-			private_packed.to_ref(),
+			precommit_packed.as_view(),
+			private_packed.as_view(),
 			mulcheck_mask,
 			&mut *channel,
 			alloc,

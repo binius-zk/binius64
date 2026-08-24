@@ -133,13 +133,14 @@ mod tests {
 			encode_and_commit_pipelined::<B128, P, _, Sha256HashSuite, _, _>(
 				&rs_code,
 				&ntt,
-				message.to_ref(),
+				message.as_view(),
 				0,
 				log_leaf_len,
 				&GlobalAllocator,
 			);
 
-		let sequential_codeword = rs_code.encode_batch(&ntt, message.to_ref(), 0, &GlobalAllocator);
+		let sequential_codeword =
+			rs_code.encode_batch(&ntt, message.as_view(), 0, &GlobalAllocator);
 		let sequential_tree = BinaryMerkleTree::<_, GlobalAllocator>::new::<B128, Sha256HashSuite>(
 			&sequential_codeword.iter_scalars().collect::<Vec<_>>(),
 			1 << log_leaf_len,

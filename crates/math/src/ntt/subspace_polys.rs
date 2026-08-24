@@ -318,7 +318,7 @@ mod tests {
 
 		let mut transformed = coeffs.clone();
 		let ntt = NeighborsLastSingleThread::new(dc);
-		ntt.forward_transform(transformed.to_mut(), 0, 0);
+		ntt.forward_transform(transformed.as_mut_view(), 0, 0);
 
 		for index in 0..1 << log_d {
 			// Row `index` of the transform matrix is the tensor of W_hat_k at that domain point.
@@ -373,7 +373,7 @@ mod tests {
 				));
 				let mut rng = StdRng::seed_from_u64(7);
 				let msg = random_field_buffer::<F>(&mut rng, log_dim);
-				let codeword = code.encode_batch(&ntt, msg.to_ref(), 0, &GlobalAllocator);
+				let codeword = code.encode_batch(&ntt, msg.as_view(), 0, &GlobalAllocator);
 
 				for (index, row) in generator_rows(&code).into_iter().enumerate() {
 					let dot = inner_product_scalars(msg.as_ref().iter().copied(), row);
@@ -399,7 +399,7 @@ mod tests {
 					let mut rng = StdRng::seed_from_u64(11);
 					let msg = random_field_buffer::<F>(&mut rng, log_dim + log_batch);
 					let codeword =
-						code.encode_batch(&ntt, msg.to_ref(), log_batch, &GlobalAllocator);
+						code.encode_batch(&ntt, msg.as_view(), log_batch, &GlobalAllocator);
 					let rows = generator_rows(&code);
 
 					for lane in 0..1 << log_batch {

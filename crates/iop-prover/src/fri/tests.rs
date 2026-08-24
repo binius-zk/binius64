@@ -53,7 +53,7 @@ fn test_commit_prove_verify_success<F, P>(
 	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());
 
 	// Prover encodes the message and commits the codeword over a Merkle channel.
-	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
+	let codeword = encode_interleaved(&params, 0, &ntt, msg.as_view(), &GlobalAllocator);
 
 	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
 	let mut prover_channel =
@@ -61,7 +61,7 @@ fn test_commit_prove_verify_success<F, P>(
 			&mut prover_challenger,
 		);
 	let codeword_commitment =
-		prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
+		prover_channel.send_merkle_commitment(codeword.as_view(), 1 << log_batch_size);
 
 	// Run the prover to generate the proximity proof
 	let mut round_prover = FRIFoldProver::new(&params, &ntt, codeword, codeword_commitment);
@@ -256,9 +256,9 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 		let oracle_params =
 			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.as_view(), &GlobalAllocator);
 		let commitment =
-			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
+			prover_channel.send_merkle_commitment(codeword.as_view(), 1 << log_batch_size);
 		messages.push(msg);
 		committed_codewords.push((codeword, commitment));
 	}
@@ -391,9 +391,9 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 		let oracle_params =
 			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.as_view(), &GlobalAllocator);
 		let commitment =
-			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
+			prover_channel.send_merkle_commitment(codeword.as_view(), 1 << log_batch_size);
 		messages.push(msg);
 		committed_codewords.push((codeword, commitment));
 	}
@@ -546,9 +546,9 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		let rs_code = ReedSolomonCode::new(log_dim, log_inv_rate);
 		let oracle_params = FRIParams::new(rs_code, log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.as_view(), &GlobalAllocator);
 		let commitment =
-			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
+			prover_channel.send_merkle_commitment(codeword.as_view(), 1 << log_batch_size);
 		messages.push(msg);
 		committed_codewords.push((codeword, commitment));
 	}
@@ -666,7 +666,7 @@ where
 
 	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());
 
-	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref(), &GlobalAllocator);
+	let codeword = encode_interleaved(&params, 0, &ntt, msg.as_view(), &GlobalAllocator);
 
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	let mut prover_channel =
@@ -674,7 +674,7 @@ where
 			&mut prover_transcript,
 		);
 	let codeword_commitment =
-		prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
+		prover_channel.send_merkle_commitment(codeword.as_view(), 1 << log_batch_size);
 
 	let mut round_prover = FRIFoldProver::new(&params, &ntt, codeword, codeword_commitment);
 

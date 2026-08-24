@@ -73,7 +73,7 @@ where
 	)
 	.entered();
 
-	rs_code.encode_batch(ntt, message.to_ref(), log_batch_size, alloc)
+	rs_code.encode_batch(ntt, message.as_view(), log_batch_size, alloc)
 }
 
 /// Output of [`encode_masked`]: the interleaved (message ‖ mask) codeword and the generated mask.
@@ -167,7 +167,7 @@ where
 	};
 	let combined = FieldBuffer::new(log_len + 1, combined_values);
 
-	let codeword = encode_interleaved(params, oracle_index, ntt, combined.to_ref(), alloc);
+	let codeword = encode_interleaved(params, oracle_index, ntt, combined.as_view(), alloc);
 
 	MaskedCodeword { codeword, mask }
 }
@@ -219,7 +219,7 @@ mod tests {
 		let message = random_field_buffer::<P>(&mut rng, log_dim);
 
 		let output: MaskedCodeword<P> =
-			encode_masked(&params, 0, &ntt, message.to_ref(), &mut rng, &GlobalAllocator);
+			encode_masked(&params, 0, &ntt, message.as_view(), &mut rng, &GlobalAllocator);
 
 		// Verify mask has correct dimensions.
 		assert_eq!(output.mask.log_len(), log_dim);

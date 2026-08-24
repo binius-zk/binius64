@@ -257,8 +257,8 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 		let mut index = id.index();
 		for column in &self.columns {
 			match column {
-				Column::Borrowed(slice) if index == 0 => return slice.to_ref(),
-				Column::Owned(buffer) if index == 0 => return buffer.to_ref(),
+				Column::Borrowed(slice) if index == 0 => return slice.as_view(),
+				Column::Owned(buffer) if index == 0 => return buffer.as_view(),
 				Column::SplitHalf(buffer) if index < 2 => {
 					// The buffer holds the two columns as its low and high halves; each column is
 					// the front `2^n_vars` scalars of one half, so read it as that half's chunk 0.
@@ -281,8 +281,8 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 		let mut slices = Vec::with_capacity(self.n_cols);
 		for column in &self.columns {
 			match column {
-				Column::Borrowed(slice) => slices.push(slice.to_ref()),
-				Column::Owned(buffer) => slices.push(buffer.to_ref()),
+				Column::Borrowed(slice) => slices.push(slice.as_view()),
+				Column::Owned(buffer) => slices.push(buffer.as_view()),
 				Column::SplitHalf(buffer) => {
 					// The buffer holds the two columns as its low and high halves; each column is
 					// the front `2^n_vars` scalars of one half, so read it as that half's
@@ -345,7 +345,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 				ColumnChunk { lo, hi }
 			})
 			.collect();
-		let eqs = self.eq_expansions().iter().map(|eq| eq.to_ref()).collect();
+		let eqs = self.eq_expansions().iter().map(|eq| eq.as_view()).collect();
 		let chunk = EvaluationChunk {
 			n_vars: self.n_vars - 1,
 			cols,
@@ -853,7 +853,7 @@ mod tests {
 		// logical columns in one step to reach the last id.
 		let borrowed = random_field_buffer::<P>(&mut rng, n_vars);
 		let mut store = MleStore::<GlobalAllocator, P>::new(n_vars, &alloc);
-		let mut col_ids = vec![store.push(borrowed.to_ref())];
+		let mut col_ids = vec![store.push(borrowed.as_view())];
 		col_ids.push(store.push_owned(random_field_buffer::<P>(&mut rng, n_vars)));
 		col_ids.extend(store.push_split_half(random_field_buffer::<P>(&mut rng, n_vars + 1)));
 		col_ids.push(store.push_owned(random_field_buffer::<P>(&mut rng, n_vars)));
@@ -888,7 +888,7 @@ mod tests {
 		let mut store = MleStore::<GlobalAllocator, P>::new(n_vars, &alloc);
 		let mut col_ids = borrowed
 			.iter()
-			.map(|col| store.push(col.to_ref()))
+			.map(|col| store.push(col.as_view()))
 			.collect::<Vec<_>>();
 		col_ids.push(store.push_owned(random_field_buffer::<P>(&mut rng, n_vars)));
 		col_ids.extend(store.push_split_half(random_field_buffer::<P>(&mut rng, n_vars + 1)));
@@ -949,7 +949,7 @@ mod tests {
 			let mut store = MleStore::<GlobalAllocator, P>::new(n_vars, &alloc);
 			let mut col_ids = borrowed
 				.iter()
-				.map(|col| store.push(col.to_ref()))
+				.map(|col| store.push(col.as_view()))
 				.collect::<Vec<_>>();
 			col_ids.push(store.push_owned(owned.clone()));
 			col_ids.extend(store.push_split_half(split.clone()));
@@ -968,7 +968,7 @@ mod tests {
 			let eqs = store
 				.eq_expansions()
 				.iter()
-				.flat_map(|eq| scalars(&eq.to_ref()))
+				.flat_map(|eq| scalars(&eq.as_view()))
 				.collect_vec();
 			(store.n_vars(), cols, eqs)
 		};

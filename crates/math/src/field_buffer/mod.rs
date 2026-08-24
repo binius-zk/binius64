@@ -296,7 +296,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	}
 
 	/// Borrows the whole buffer as a shared view.
-	pub fn to_ref(&self) -> FieldSlice<'_, P> {
+	pub fn as_view(&self) -> FieldSlice<'_, P> {
 		FieldSlice::from_slice(self.log_len, self.as_ref())
 	}
 
@@ -546,7 +546,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 
 impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// Borrows the whole buffer as a mutable view.
-	pub fn to_mut(&mut self) -> FieldSliceMut<'_, P> {
+	pub fn as_mut_view(&mut self) -> FieldSliceMut<'_, P> {
 		FieldSliceMut::from_slice(self.log_len, self.as_mut())
 	}
 
@@ -645,7 +645,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// * `self.log_len()` must be greater than 0.
 	#[track_caller]
 	pub fn split_half_mut(&mut self) -> FieldBufferSplitMut<P, &'_ mut [P]> {
-		self.to_mut().split_half()
+		self.as_mut_view().split_half()
 	}
 }
 
@@ -754,15 +754,15 @@ mod tests {
 		let src = FieldBuffer::<P>::from_values(&scalars);
 
 		// A copy drawn from the allocator carries over both the length and the scalars.
-		let cloned: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		let cloned: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.as_view());
 		assert_eq!(cloned.log_len(), 4);
-		assert_eq!(cloned.to_ref(), src.to_ref());
+		assert_eq!(cloned.as_view(), src.as_view());
 
 		// Copying a source shorter than one packed word keeps the two live lanes, not four.
 		let small = FieldBuffer::<P>::from_values(&scalars[..2]);
-		let cloned_small: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.to_ref());
+		let cloned_small: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.as_view());
 		assert_eq!(cloned_small.log_len(), 1);
-		assert_eq!(cloned_small.to_ref(), small.to_ref());
+		assert_eq!(cloned_small.as_view(), small.as_view());
 
 		// 32 elements requested, 32 zeros readable: the buffer arrives at full length, not empty.
 		let mut zeros: FieldVec<P, A> = FieldBuffer::zeros_in(alloc, 5);
@@ -785,7 +785,7 @@ mod tests {
 		//
 		// Under a pool the target may sit on memory a prior buffer dirtied.
 		// So the zeros above the copied words have to be written, never assumed.
-		let src_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		let src_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.as_view());
 		let extended = src_vec.zero_extend_in(alloc, 5);
 		assert_eq!(extended.log_len(), 5);
 		for i in 0..16 {
@@ -794,10 +794,10 @@ mod tests {
 		assert!((16..32).all(|i| extended.get(i) == F::ZERO));
 
 		// An already-wide-enough buffer comes back unchanged, with no copy taken.
-		let same: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		let same: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.as_view());
 		let same = same.zero_extend_in(alloc, 4);
 		assert_eq!(same.log_len(), 4);
-		assert_eq!(same.to_ref(), src.to_ref());
+		assert_eq!(same.as_view(), src.as_view());
 
 		// A source narrower than one packed word pads out of that word's dead lanes.
 		//
@@ -805,7 +805,7 @@ mod tests {
 		//     result (log_len 3)    [0, 1 | 0, 0] [0, 0 | 0, 0]
 		//
 		// The two dead lanes become live, so they read back as zeros, not stale scalars.
-		let small_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.to_ref());
+		let small_vec: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.as_view());
 		let widened = small_vec.zero_extend_in(alloc, 3);
 		assert_eq!(widened.log_len(), 3);
 		assert_eq!(widened.get(0), F::new(0));
@@ -974,17 +974,17 @@ mod tests {
 	}
 
 	#[test]
-	fn to_ref_to_mut() {
+	fn borrowed_views() {
 		let mut buffer = FieldBuffer::<P>::zeros(3);
 
-		// Test to_ref
-		let slice_ref = buffer.to_ref();
+		// Test the shared view
+		let slice_ref = buffer.as_view();
 		assert_eq!(slice_ref.len(), buffer.len());
 		assert_eq!(slice_ref.log_len(), buffer.log_len());
 		assert_eq!(slice_ref.as_ref().len(), 1 << slice_ref.log_len().saturating_sub(P::LOG_WIDTH));
 
-		// Test to_mut
-		let mut slice_mut = buffer.to_mut();
+		// Test the mutable view
+		let mut slice_mut = buffer.as_mut_view();
 		slice_mut.set(0, F::new(123));
 		assert_eq!(slice_mut.as_mut().len(), 1 << slice_mut.log_len().saturating_sub(P::LOG_WIDTH));
 		assert_eq!(buffer.get(0), F::new(123));

@@ -112,7 +112,7 @@ where
 	// It runs the reduction over the witnesses directly.
 	let pushforward_slices = pushforwards
 		.iter()
-		.map(FieldBuffer::to_ref)
+		.map(FieldBuffer::as_view)
 		.collect::<Vec<_>>();
 	prove_reduction(alloc, gamma, &tables, numerators, &pushforward_slices, channel)
 }
@@ -219,7 +219,7 @@ where
 		let (table_prover, table_root) = FracAddCircuit::build(
 			table.log_len(),
 			alloc,
-			Fraction::new(FieldBuffer::clone_from_slice(alloc, pushforward.to_ref()), table_den),
+			Fraction::new(FieldBuffer::clone_from_slice(alloc, pushforward.as_view()), table_den),
 		);
 		provers.push(table_prover);
 		roots.push(table_root.as_ref().map(|buffer| buffer.get(0)));
@@ -472,7 +472,7 @@ mod tests {
 		let prover_tables = tables
 			.iter()
 			.map(|table| TableLookup {
-				table: table.values.to_ref(),
+				table: table.values.as_view(),
 				lookers: table
 					.lookers
 					.iter()
@@ -650,7 +650,7 @@ mod tests {
 			&alloc,
 			gamma,
 			[TableLookup {
-				table: table.values.to_ref(),
+				table: table.values.as_view(),
 				lookers: vec![Looker {
 					index: &looker.index,
 					eval_point: &looker.eval_point,
@@ -693,7 +693,7 @@ mod tests {
 			gamma,
 			[
 				TableLookup {
-					table: tables[0].values.to_ref(),
+					table: tables[0].values.as_view(),
 					lookers: vec![Looker {
 						index: &tables[0].lookers[0].index,
 						eval_point: &tables[0].lookers[0].eval_point,
@@ -701,7 +701,7 @@ mod tests {
 					}],
 				},
 				TableLookup {
-					table: tables[1].values.to_ref(),
+					table: tables[1].values.as_view(),
 					lookers: vec![Looker {
 						index: &looker.index,
 						eval_point: &looker.eval_point,
@@ -751,7 +751,7 @@ mod tests {
 			&alloc,
 			gamma,
 			[TableLookup {
-				table: table.to_ref(),
+				table: table.as_view(),
 				lookers: vec![Looker {
 					index: &[0],
 					eval_point: &[],
@@ -776,7 +776,7 @@ mod tests {
 			&alloc,
 			gamma,
 			[TableLookup {
-				table: table.to_ref(),
+				table: table.as_view(),
 				lookers: Vec::new(),
 			}],
 			&mut transcript,
@@ -798,7 +798,7 @@ mod tests {
 			&alloc,
 			gamma,
 			[TableLookup {
-				table: table.to_ref(),
+				table: table.as_view(),
 				lookers: vec![Looker {
 					index: &[0, 1, 2],
 					eval_point: &eval_point,
@@ -825,7 +825,7 @@ mod tests {
 			&alloc,
 			gamma,
 			[TableLookup {
-				table: table.to_ref(),
+				table: table.as_view(),
 				lookers: vec![Looker {
 					index: &[0, 4],
 					eval_point: &eval_point,

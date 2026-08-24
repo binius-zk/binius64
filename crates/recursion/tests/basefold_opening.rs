@@ -196,7 +196,7 @@ fn prove(shape: &Shape, setup: &Setup, seed: u64) -> Opening {
 		&setup.fri_params,
 		0,
 		&setup.ntt,
-		witness.to_ref(),
+		witness.as_view(),
 		&mut rng,
 		&GlobalAllocator,
 	);
@@ -215,7 +215,7 @@ fn prove(shape: &Shape, setup: &Setup, seed: u64) -> Opening {
 		.collect::<Vec<_>>();
 	WordIPProverChannel::<B128>::observe_words(&mut channel, &point_words);
 
-	let commitment = channel.send_merkle_commitment(codeword.to_ref(), LEAF_ELEMENTS);
+	let commitment = channel.send_merkle_commitment(codeword.as_view(), LEAF_ELEMENTS);
 
 	// Fold the interleaved (pi || omega) codeword to pi' = (1 - gamma) pi + gamma omega.
 	let gamma: B128 = IPProverChannel::sample(&mut channel);
