@@ -337,8 +337,6 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// A chunk's start offset is a multiple of its size.
 	/// So this yields the same chunk that stepping the shared iterator to that index would.
 	///
-	/// Unlike that iterator, this accepts a size below the packing width.
-	///
 	/// # Preconditions
 	///
 	/// * `log_chunk_size` must be at most `log_len`.
@@ -376,14 +374,18 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 
 	/// Split the buffer into chunks of size `2^log_chunk_size`.
 	///
+	/// Any size up to the buffer's length works, matching what the parallel iterator accepts.
+	/// A chunk of at least one packed word borrows a run of the store.
+	/// A smaller one arrives as a copy of its lanes, repacked to start at lane 0.
+	///
 	/// # Preconditions
 	///
-	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
+	/// * `log_chunk_size` must be at most `log_len`.
 	#[track_caller]
 	pub fn chunks(&self, log_chunk_size: usize) -> Chunks<'_, P> {
 		assert!(
-			log_chunk_size >= P::LOG_WIDTH && log_chunk_size <= self.log_len,
-			"precondition: log_chunk_size must be in range [P::LOG_WIDTH, log_len]"
+			log_chunk_size <= self.log_len,
+			"precondition: log_chunk_size must be at most log_len"
 		);
 
 		let chunk_count = 1 << (self.log_len - log_chunk_size);
@@ -578,6 +580,16 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	}
 
 	/// Split the buffer into mutable chunks of size `2^log_chunk_size`.
+	///
+	/// A chunk must span whole words, unlike the shared iterator, which takes any size.
+	/// Chunks below the packing width share a word, so lending them out means lending copies.
+	/// Each copy live at once would need its own write-back into that word.
+	///
+	/// ```text
+	/// WIDTH = 4, log_chunk_size = 1  ->  word 0 = [chunk 0 | chunk 1]
+	/// ```
+	///
+	/// Reach for the single-chunk mutable accessor at such a size, which guards one copy.
 	///
 	/// # Preconditions
 	///
@@ -1224,12 +1236,30 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "precondition")]
-	fn chunks_invalid_size_too_small() {
+	fn chunks_below_packing_width() {
+		// A word holds 4 lanes, so pairs of elements share one:
+		//
+		//     word 0 = [s_0, s_1, s_2, s_3]  ->  chunks [s_0, s_1], [s_2, s_3]
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values(&values);
-		// P::LOG_WIDTH = 2, so chunks(0) should fail
-		let _ = buffer.chunks(0).collect::<Vec<_>>();
+
+		let chunks: Vec<_> = buffer.chunks(1).collect();
+		assert_eq!(chunks.len(), 8);
+
+		// Each chunk owns a repacked word, so its two elements sit at lanes 0 and 1.
+		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
+			assert_eq!(chunk.len(), 2);
+			assert_eq!(chunk.get(0), F::new((chunk_idx * 2) as u128));
+			assert_eq!(chunk.get(1), F::new((chunk_idx * 2 + 1) as u128));
+		}
+
+		// A single-element chunk is the narrowest shape, one lane copied out on its own.
+		let singles: Vec<_> = buffer.chunks(0).collect();
+		assert_eq!(singles.len(), 16);
+		for (index, chunk) in singles.into_iter().enumerate() {
+			assert_eq!(chunk.len(), 1);
+			assert_eq!(chunk.get(0), F::new(index as u128));
+		}
 	}
 
 	#[test]
@@ -1550,6 +1580,32 @@ mod tests {
 
 			// Concatenating the chunks reproduces the buffer, in order and without gaps.
 			prop_assert_eq!(chunks.concat(), values);
+		}
+
+		#[test]
+		fn serial_and_parallel_chunks_agree(
+			(log_len, log_chunk_size) in (0usize..=8).prop_flat_map(|n| (Just(n), 0usize..=n)),
+		) {
+			// Invariant: both chunk iterators yield the same chunks, scalar for scalar.
+			// A packed word holds 4 lanes, so the sweep reaches sizes on both sides of it.
+			let values: Vec<F> = (0..1u128 << log_len).map(F::new).collect();
+			let buffer = FieldBuffer::<P>::from_values(&values);
+
+			let serial: Vec<Vec<F>> = buffer
+				.chunks(log_chunk_size)
+				.map(|chunk| chunk.iter_scalars().collect())
+				.collect();
+			let parallel: Vec<Vec<F>> = buffer
+				.chunks_par(log_chunk_size)
+				.map(|chunk| chunk.iter_scalars().collect())
+				.collect();
+
+			// The count follows the logical length, not the backing word count.
+			prop_assert_eq!(serial.len(), 1 << (log_len - log_chunk_size));
+			prop_assert_eq!(&serial, &parallel);
+
+			// Concatenating the chunks reproduces the buffer, in order and without gaps.
+			prop_assert_eq!(serial.concat(), values);
 		}
 	}
 }
