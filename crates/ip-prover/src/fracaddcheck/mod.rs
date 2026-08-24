@@ -311,16 +311,20 @@ fn combine_claims<F: Field>(coeffs: Vec<RoundCoeffs<F>>, batch_coeff: F) -> Roun
 
 /// Runs one batched fracaddcheck layer given its per-instance final-layer MLE-check provers.
 ///
-/// Folds the content variables of every instance in lockstep (eq(selector)-weighted, `[num, den]`-
-/// batched), then the `k` selector variables via a single fractional-addition MLE-check over the
-/// packed reduced halves, then the doubling line-fold. Returns the reduced per-instance fractions
-/// (padded to `2^k` with zeros) and the next evaluation point.
+/// The layer runs in four steps, one function each:
+/// - [`prove_content_rounds`] folds the content variables of every instance in lockstep.
+/// - [`finish_and_transpose`] turns the reduced halves into the four selector columns.
+/// - [`prove_selector_rounds`] folds the `k` selector variables in one MLE-check.
+/// - [`finalize_layer`] line-folds the merged evaluations into the next layer's claims.
 ///
-/// The two (numerator, denominator) claims of every layer are batched via a single `batch_coeff`
-/// that the verifier's `batch_verify_mle` samples once per layer, before the round polynomials; the
-/// same coefficient is reused for the content and selector rounds.
-fn reduce_layer<'a, A, F, P, MP>(
-	alloc: &'a A,
+/// Returns the per-instance fractions and the next evaluation point.
+/// The fractions are padded to the `2^k` selector slots with the zero fraction.
+///
+/// One `batch_coeff` batches the layer's numerator and denominator claims.
+/// The verifier's `batch_verify_mle` samples it once per layer, before the round polynomials.
+/// The content rounds and the selector rounds reuse the same coefficient.
+fn reduce_layer<A, F, P, MP>(
+	alloc: &A,
 	mut layer_provers: Vec<MP>,
 	eval_point: &[F],
 	k: usize,
@@ -338,20 +342,61 @@ where
 	// eq weights for batching over instances: eq(i, outer_coords) for all i in B_k.
 	let eq_weights = OneCube::eq_ind_partial_eval::<F>(outer_coords);
 
-	// The padding slots beyond the real instances hold the constant fraction 0/1: the numerator
-	// is the constant 0 function and the denominator the constant 1 function. A constant
-	// composition has the constant prime round polynomial (0 for the numerator, 1 for the
-	// denominator) and its claims stay (0, 1) through every fold, so the padding contributes
-	// eq_i * batch_coeff to each batched round polynomial's constant coefficient.
-	let pad_eq_sum: F = eq_weights.iter_scalars().skip(layer_provers.len()).sum();
-
 	let batch_coeff = channel.sample();
 
 	let mut challenges = Vec::with_capacity(eval_point.len());
 
-	// Content rounds: fold the content variables of every instance in lockstep, sending the
-	// eq(selector)-weighted sum of the per-instance (num, den)-batched round polynomials.
-	for _round in 0..inner_coords.len() {
+	prove_content_rounds(
+		&mut layer_provers,
+		eq_weights.as_ref(),
+		inner_coords.len(),
+		batch_coeff,
+		&mut challenges,
+		channel,
+	);
+
+	let (reduced_halves, selector_columns) =
+		finish_and_transpose::<A, F, P, MP>(alloc, layer_provers, k);
+
+	let merged_evals = prove_selector_rounds(
+		alloc,
+		selector_columns,
+		eq_weights.as_ref(),
+		outer_coords,
+		batch_coeff,
+		&mut challenges,
+		channel,
+	);
+
+	finalize_layer(merged_evals, &reduced_halves, k, challenges, channel)
+}
+
+/// Folds the content variables of every instance in lockstep, one round polynomial per round.
+///
+/// Each round sends the eq(selector)-weighted sum of the per-instance round polynomials.
+/// One instance's polynomial is its `[num, den]` pair batched with `batch_coeff`.
+/// Every instance then folds on the challenge the round draws.
+/// The challenges are appended to `challenges` in round order.
+///
+/// `eq_weights` holds one weight per selector slot, the instances taking the leading ones.
+/// A slot past the last instance holds the constant fraction 0/1: numerator 0, denominator 1.
+/// A constant composition has that same constant as its round polynomial.
+/// So a padding slot's claims stay (0, 1) through every fold.
+/// It contributes `eq_i * batch_coeff` to each round polynomial's constant coefficient.
+fn prove_content_rounds<F, MP>(
+	layer_provers: &mut [MP],
+	eq_weights: &[F],
+	n_rounds: usize,
+	batch_coeff: F,
+	challenges: &mut Vec<F>,
+	channel: &mut impl IPProverChannel<F>,
+) where
+	F: Field,
+	MP: MleCheckProver<F> + Send,
+{
+	let pad_eq_sum: F = eq_weights[layer_provers.len()..].iter().copied().sum();
+
+	for _round in 0..n_rounds {
 		// The instances are independent within a round, so their polynomials compute in parallel.
 		//
 		// One instance's round is too small a parallel region to fill the pool alone.
@@ -361,8 +406,8 @@ where
 			.collect();
 
 		// Weight instance j's polynomial by eq_j and sum, in instance order.
-		let real_coeffs: RoundCoeffs<F> = iter::zip(per_instance, eq_weights.iter_scalars())
-			.map(|(coeffs, eq_i)| coeffs * eq_i)
+		let real_coeffs: RoundCoeffs<F> = iter::zip(per_instance, eq_weights)
+			.map(|(coeffs, &eq_i)| coeffs * eq_i)
 			.sum();
 		let round_coeffs = real_coeffs + &RoundCoeffs(vec![pad_eq_sum * batch_coeff]);
 
@@ -375,9 +420,32 @@ where
 			prover.fold(challenge);
 		}
 	}
+}
 
-	// Finish inner provers to get [num_0, num_1, den_0, den_1] evals per instance.
-	let finished: Vec<[F; 4]> = layer_provers
+/// Finishes the content provers and transposes their reduced halves into the selector columns.
+///
+/// Each instance finishes with the four evaluations `[num_0, num_1, den_0, den_1]` it reduced.
+/// Instance `i` occupies slot `i` of each of the four returned columns.
+/// The columns span the `k` selector variables, so they hold `2^k` slots.
+///
+/// Returns the per-instance evaluations and those columns.
+/// The line-fold that closes the layer reduces the evaluations.
+/// The selector MLE-check folds the columns.
+///
+/// Both children of a padding slot are the zero fraction 0/1.
+/// So a slot past the last instance holds 0 in the numerator columns and 1 in the denominators.
+fn finish_and_transpose<A, F, P, MP>(
+	alloc: &A,
+	layer_provers: Vec<MP>,
+	k: usize,
+) -> (Vec<[F; 4]>, [FieldVec<P, A>; 4])
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+	MP: MleCheckProver<F>,
+{
+	let reduced: Vec<[F; 4]> = layer_provers
 		.into_iter()
 		.map(|prover| {
 			prover
@@ -387,49 +455,72 @@ where
 		})
 		.collect();
 
-	// Split the reduced halves into per-multilinear vectors, padded to 2^k so they can be packed
-	// into selector-variable buffers. Both children of a padding slot are the zero fraction, which
-	// is what makes the numerators fill with 0 and the denominators with 1.
-	let mut num_0s: Vec<F> = finished.iter().map(|e| e[0]).collect();
-	let mut num_1s: Vec<F> = finished.iter().map(|e| e[1]).collect();
-	let mut den_0s: Vec<F> = finished.iter().map(|e| e[2]).collect();
-	let mut den_1s: Vec<F> = finished.iter().map(|e| e[3]).collect();
+	// Each column starts as all padding, then one pass over the reduced halves writes the
+	// instances into its leading slots.
 	let pad = Fraction::<F>::ZERO;
-	num_0s.resize(1 << k, pad.num);
-	num_1s.resize(1 << k, pad.num);
-	den_0s.resize(1 << k, pad.den);
-	den_1s.resize(1 << k, pad.den);
+	let mut columns = [pad.num, pad.num, pad.den, pad.den].map(|pad_half| {
+		let mut column = FieldBuffer::zeros_in(alloc, k);
+		for slot in reduced.len()..1 << k {
+			column.set(slot, pad_half);
+		}
+		column
+	});
+	for (slot, evals) in reduced.iter().enumerate() {
+		for (column, &eval) in iter::zip(&mut columns, evals) {
+			column.set(slot, eval);
+		}
+	}
 
-	// The selector claim is the eq(selector)-weighted sum of the fractional-addition composition of
-	// the reduced halves.
-	let num_eval: F = izip!(&num_0s, &num_1s, &den_0s, &den_1s, eq_weights.as_ref())
-		.map(|(&n0, &n1, &d0, &d1, &eq_i)| eq_i * (n0 * d1 + n1 * d0))
-		.sum();
-	let den_eval: F = izip!(&den_0s, &den_1s, eq_weights.as_ref())
-		.map(|(&d0, &d1, &eq_i)| eq_i * (d0 * d1))
+	(reduced, columns)
+}
+
+/// Folds the `k` selector variables of one layer in a single fractional-addition MLE-check.
+///
+/// The claim is what the content rounds reduced the layer to.
+/// It is the eq(selector)-weighted sum of the fractional-addition composition of the four columns.
+/// The rounds reuse `batch_coeff`, and their challenges are appended to `challenges`.
+///
+/// Returns the merged `[num_0, num_1, den_0, den_1]` evaluations at those challenges.
+fn prove_selector_rounds<'a, A, F, P>(
+	alloc: &'a A,
+	columns: [FieldVec<P, A>; 4],
+	eq_weights: &[F],
+	outer_coords: &[F],
+	batch_coeff: F,
+	challenges: &mut Vec<F>,
+	channel: &mut impl IPProverChannel<F>,
+) -> [F; 4]
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	let k = outer_coords.len();
+
+	let [num_0s, num_1s, den_0s, den_1s] = &columns;
+	let num_eval: F = izip!(
+		num_0s.iter_scalars(),
+		num_1s.iter_scalars(),
+		den_0s.iter_scalars(),
+		den_1s.iter_scalars(),
+		eq_weights
+	)
+	.map(|(n0, n1, d0, d1, &eq_i)| eq_i * (n0 * d1 + n1 * d0))
+	.sum();
+	let den_eval: F = izip!(den_0s.iter_scalars(), den_1s.iter_scalars(), eq_weights)
+		.map(|(d0, d1, &eq_i)| eq_i * (d0 * d1))
 		.sum();
 
-	// Selector rounds: fold the selector variables with a single fractional-addition MLE-check over
-	// the packed reduced halves, reusing the same `batch_coeff`. The reduced halves are freshly
-	// packed, so the store owns them directly.
+	// The columns are freshly packed for this check, so the store owns them directly.
 	let mut selector_store = MleStore::new(k, alloc);
-	let selector_cols = [
-		FieldBuffer::from_values_in(alloc, &num_0s),
-		FieldBuffer::from_values_in(alloc, &num_1s),
-		FieldBuffer::from_values_in(alloc, &den_0s),
-		FieldBuffer::from_values_in(alloc, &den_1s),
-	]
-	.map(|buffer| selector_store.push_owned(buffer));
+	let selector_cols = columns.map(|column| selector_store.push_owned(column));
 	let (selector_num, selector_den) = frac_add_mle::evaluators::<F, P>(selector_cols);
-	let selector_claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>); 2] = [
+	let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P> + 'a>); 2] = [
 		(num_eval, Box::new(selector_num)),
 		(den_eval, Box::new(selector_den)),
 	];
-	let mut selector_prover = SharedMleCheckProver::new(
-		selector_store,
-		selector_claims_with_evaluators,
-		outer_coords.to_vec(),
-	);
+	let mut selector_prover =
+		SharedMleCheckProver::new(selector_store, claims_with_evaluators, outer_coords.to_vec());
 
 	for _round in 0..k {
 		let round_coeffs = combine_claims(selector_prover.execute(), batch_coeff);
@@ -440,27 +531,43 @@ where
 		selector_prover.fold(challenge);
 	}
 
-	let [merged_num_0, merged_num_1, merged_den_0, merged_den_1]: [F; 4] = selector_prover
+	selector_prover
 		.finish()
 		.try_into()
-		.expect("fractional-addition prover has four multilinears");
+		.expect("fractional-addition prover has four multilinears")
+}
 
-	// Finalize layer: send merged evals, sample r, compute next claims.
-	channel.send_many(&[merged_num_0, merged_num_1, merged_den_0, merged_den_1]);
+/// Sends the merged child evaluations and line-folds them into the next layer's claims.
+///
+/// The verifier reads the four evaluations before it samples the doubling coordinate `r`.
+/// So the fold happens only once the transcript holds them.
+///
+/// `reduced` holds the four child evaluations of each real instance, one entry per instance.
+/// The `2^k - reduced.len()` padding slots hold the zero fraction.
+/// A line-fold between two zero fractions leaves it unchanged.
+/// Returning them keeps the output aligned with the next layer's `2^k` selector eq weights.
+fn finalize_layer<F: Field>(
+	merged_evals: [F; 4],
+	reduced: &[[F; 4]],
+	k: usize,
+	challenges: Vec<F>,
+	channel: &mut impl IPProverChannel<F>,
+) -> (Vec<Fraction<F>>, Vec<F>) {
+	channel.send_many(&merged_evals);
 
 	let r = channel.sample();
 
+	// Sumcheck binds variables high-to-low; reverse to low-to-high for the claim point.
 	let mut next_point = challenges;
 	next_point.reverse();
 	next_point.push(r);
 
-	// Reduce the (padded) selector halves to the next layer's fraction claims. Padding with the
-	// selector buffers (not just the `n` real provers) keeps `fractions.len() == 2^k`, so it stays
-	// aligned with the selector `eq` weights on subsequent layers; the padded entries are 0/1.
-	let next_fractions = izip!(&num_0s, &num_1s, &den_0s, &den_1s)
-		.map(|(&num_0, &num_1, &den_0, &den_1)| {
+	let next_fractions = reduced
+		.iter()
+		.map(|&[num_0, num_1, den_0, den_1]| {
 			Fraction::new(extrapolate_line(num_0, num_1, r), extrapolate_line(den_0, den_1, r))
 		})
+		.chain(iter::repeat_n(Fraction::ZERO, (1 << k) - reduced.len()))
 		.collect();
 
 	(next_fractions, next_point)
