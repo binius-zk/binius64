@@ -28,13 +28,11 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 binius-hash = { path = "../hash" }
 binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }
 binius-math = { path = "../math", features = ["test-utils"] }
 binius-spartan-verifier = { path = "../spartan-verifier" }
-binius-verifier = { path = "../verifier" }
 rand = { workspace = true, features = ["thread_rng"] }
 smallvec.workspace = true
 
