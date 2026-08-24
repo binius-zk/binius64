@@ -441,10 +441,7 @@ mod tests {
 
 		// ZeroPadMSB lift: the small message occupies the low `2^log_dim_small` hypercube values,
 		// the high coordinates are zero.
-		let mut msg_large = FieldBuffer::<P>::zeros(log_dim_large);
-		for (i, val) in msg_small.iter_scalars().enumerate() {
-			msg_large.set(i, val);
-		}
+		let msg_large = msg_small.clone().zero_extend(log_dim_large);
 
 		let enc_small = rs_small.encode_batch(&ntt, msg_small.to_ref(), 0, &GlobalAllocator);
 		let enc_large = rs_large.encode_batch(&ntt, msg_large.to_ref(), 0, &GlobalAllocator);

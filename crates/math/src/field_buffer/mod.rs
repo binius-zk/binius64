@@ -163,6 +163,45 @@ impl<P: PackedField> FieldBuffer<P> {
 		values.push(P::from_scalars([value]));
 		Self { log_len: 0, values }
 	}
+
+	/// Grows the buffer to span `log_len` variables, padding the new positions with zeros.
+	///
+	/// Returns the buffer untouched when it already spans that many.
+	/// Padding the shorter of two buffers to match the longer hits that case when both are equal.
+	///
+	/// The new words come from the heap.
+	/// An allocator-aware counterpart keeps a pooled buffer inside its pool instead.
+	///
+	/// Growing a buffer narrower than one packed word turns that word's dead lanes live.
+	/// Whatever those lanes hold carries over, so zeros there are the source's to keep.
+	///
+	/// # Panics
+	///
+	/// Panics if `log_len` is shorter than what the buffer already spans.
+	/// Shrinking is a separate operation.
+	/// Silently returning a narrower buffer than asked for would hide the mistake.
+	#[track_caller]
+	pub fn zero_extend(self, log_len: usize) -> Self {
+		assert!(
+			log_len >= self.log_len,
+			"precondition: log_len must be at least the buffer's own log_len"
+		);
+		// Nothing to pad, so the caller's buffer is handed straight back with no copy.
+		if log_len == self.log_len {
+			return self;
+		}
+
+		// The target starts fully zeroed, so only the occupied words need writing.
+		let mut extended = Self::zeros(log_len);
+
+		// Whole packed words move across untouched.
+		//
+		// A trailing partial word brings its lanes past the logical length along as they stand.
+		// Zeros there are the zeros the padding would otherwise have to write.
+		extended.as_mut()[..self.as_ref().len()].copy_from_slice(self.as_ref());
+
+		extended
+	}
 }
 
 impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
@@ -564,6 +603,67 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		// Safety: bound check on index performed above. The buffer length is at least
 		// `self.len() >> P::LOG_WIDTH` by struct invariant.
 		unsafe { set_packed_slice_unchecked(&mut self.values, index, value) };
+	}
+
+	/// Sets every element to `value`.
+	///
+	/// A buffer narrower than one packed word writes only the live lanes of its single word.
+	/// The dead lanes past them are not elements, so they are left as they are.
+	pub fn fill(&mut self, value: P::Scalar) {
+		if self.log_len < P::LOG_WIDTH {
+			for lane in 0..1 << self.log_len {
+				self.values[0].set(lane, value);
+			}
+		} else {
+			self.as_mut().fill(P::broadcast(value));
+		}
+	}
+
+	/// Sets every element to the value `f` returns, calling it once per element.
+	///
+	/// The calls run in index order, from the first element to the last.
+	/// So a closure stepping a counter or drawing from a generator sees the elements in order.
+	///
+	/// A buffer narrower than one packed word writes only the live lanes of its single word.
+	/// The dead lanes past them are left as they are, and `f` is not called for them.
+	pub fn fill_with(&mut self, mut f: impl FnMut() -> P::Scalar) {
+		let live = self.len();
+		for (index, word) in self.as_mut().iter_mut().enumerate() {
+			// The one word of a sub-packing-width buffer holds fewer elements than it has lanes.
+			let lanes = P::WIDTH.min(live - (index << P::LOG_WIDTH));
+			for lane in 0..lanes {
+				word.set(lane, f());
+			}
+		}
+	}
+
+	/// Copies the elements of `src` into this buffer.
+	///
+	/// The two buffers must span the same number of elements.
+	/// Copying a prefix of a longer source instead would let a length mismatch pass unnoticed.
+	///
+	/// A buffer narrower than one packed word copies only the live lanes.
+	/// The destination keeps its own dead lanes, so the source's never travel with the elements.
+	///
+	/// # Panics
+	///
+	/// Panics unless `src` spans the same number of elements as this buffer.
+	#[track_caller]
+	pub fn copy_from(&mut self, src: FieldSlice<P>) {
+		assert_eq!(
+			self.log_len,
+			src.log_len(),
+			"precondition: src must span the same number of elements"
+		);
+
+		if self.log_len < P::LOG_WIDTH {
+			for lane in 0..1 << self.log_len {
+				let value = src.get(lane);
+				self.values[0].set(lane, value);
+			}
+		} else {
+			self.as_mut().copy_from_slice(src.as_ref());
+		}
 	}
 
 	/// Returns a mutable iterator over the packed words the elements occupy.
@@ -1109,6 +1209,92 @@ mod tests {
 	}
 
 	#[test]
+	fn fill_writes_the_live_elements_only() {
+		// P::WIDTH = 4. Above one word: 8 elements over 2 words, every lane an element.
+		let mut buffer = FieldBuffer::<P>::zeros(3);
+		buffer.fill(F::new(5));
+		assert_eq!(buffer.iter_scalars().collect::<Vec<_>>(), vec![F::new(5); 8]);
+
+		// Below one word: 2 of the 4 lanes are elements, and only those are written.
+		//
+		//     word = [5, 5, dead, dead]
+		let mut small = FieldBuffer::<P>::zeros(1);
+		small.fill(F::new(5));
+		assert_eq!(small.iter_scalars().collect::<Vec<_>>(), vec![F::new(5); 2]);
+		let data = small.take_data();
+		assert_eq!(data.len(), 1);
+		assert!((2..P::WIDTH).all(|lane| get_packed_slice(&data[..], lane) == F::ZERO));
+	}
+
+	#[test]
+	fn fill_with_runs_once_per_element_in_order() {
+		// The closure steps a counter, so element i must read back as i + 1.
+		let mut counter = 0u128;
+		let mut buffer = FieldBuffer::<P>::zeros(4);
+		buffer.fill_with(|| {
+			counter += 1;
+			F::new(counter)
+		});
+		assert_eq!(counter, 16);
+		for i in 0..16 {
+			assert_eq!(buffer.get(i), F::new(i as u128 + 1));
+		}
+
+		// Below one word: two calls for two elements, none for the two dead lanes.
+		let mut counter = 0u128;
+		let mut small = FieldBuffer::<P>::zeros(1);
+		small.fill_with(|| {
+			counter += 1;
+			F::new(counter)
+		});
+		assert_eq!(counter, 2);
+		assert_eq!(small.iter_scalars().collect::<Vec<_>>(), vec![F::new(1), F::new(2)]);
+		let data = small.take_data();
+		assert!((2..P::WIDTH).all(|lane| get_packed_slice(&data[..], lane) == F::ZERO));
+	}
+
+	#[test]
+	fn copy_from_reproduces_the_source() {
+		// Above one word: 16 elements cross as whole words.
+		let values: Vec<F> = (0..16).map(F::new).collect();
+		let src = FieldBuffer::<P>::from_values(&values);
+		let mut dst = FieldBuffer::<P>::zeros(4);
+		dst.copy_from(src.to_ref());
+		assert_eq!(dst, src);
+
+		// Below one word, with the source's dead lanes dirtied:
+		//
+		//     src [1, 2 | 9, 9]  ->  dst [1, 2 | 0, 0]
+		//
+		// Only the two live lanes are elements, so the 9s stay behind.
+		let src_word = P::from_fn(|lane| match lane {
+			0 => F::new(1),
+			1 => F::new(2),
+			_ => F::new(9),
+		});
+		let dirty = FieldBuffer::<P>::new(1, vec![src_word]);
+		let mut small = FieldBuffer::<P>::zeros(1);
+		small.copy_from(dirty.to_ref());
+		assert_eq!(small.iter_scalars().collect::<Vec<_>>(), vec![F::new(1), F::new(2)]);
+		let data = small.take_data();
+		assert!((2..P::WIDTH).all(|lane| get_packed_slice(&data[..], lane) == F::ZERO));
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn copy_from_length_mismatch() {
+		let src = FieldBuffer::<P>::zeros(3);
+		let mut dst = FieldBuffer::<P>::zeros(4);
+		dst.copy_from(src.to_ref());
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn zero_extend_rejects_shrinking() {
+		let _ = FieldBuffer::<P>::zeros(4).zero_extend(3);
+	}
+
+	#[test]
 	fn truncate_vec_backing() {
 		// P::LOG_WIDTH = 2, P::WIDTH = 4.
 		let make = || FieldBuffer::<P>::from_values(&(0..16).map(F::new).collect::<Vec<_>>());
@@ -1498,8 +1684,10 @@ mod tests {
 		) {
 			// Invariant: buffers are equal iff same length and same scalars.
 			let value = F::new(fill);
-			let buf_a = FieldBuffer::<P>::from_values(&vec![value; 1 << log_len_a]);
-			let buf_b = FieldBuffer::<P>::from_values(&vec![value; 1 << log_len_b]);
+			let mut buf_a = FieldBuffer::<P>::zeros(log_len_a);
+			buf_a.fill(value);
+			let mut buf_b = FieldBuffer::<P>::zeros(log_len_b);
+			buf_b.fill(value);
 
 			// - Same length -> equal;
 			// - Different length -> unequal despite matching scalars.
@@ -1508,6 +1696,29 @@ mod tests {
 			} else {
 				prop_assert_ne!(buf_a, buf_b);
 			}
+		}
+
+		#[test]
+		fn zero_extend_matches_the_allocator_form(
+			(log_len, target) in (0usize..=6).prop_flat_map(|n| (Just(n), n..=7usize)),
+		) {
+			// The sweep straddles the packing width at both ends: sub-word sources and targets too.
+			let values: Vec<F> = (0..1u128 << log_len).map(F::new).collect();
+			let src = FieldBuffer::<P>::from_values(&values);
+
+			let extended = src.clone().zero_extend(target);
+			prop_assert_eq!(extended.log_len(), target);
+
+			// Cross-check: the allocator-aware form must hand back the same buffer.
+			let drawn: FieldVec<P, GlobalAllocator> =
+				FieldBuffer::clone_from_slice(&GlobalAllocator, src.to_ref());
+			let drawn = drawn.zero_extend_in(&GlobalAllocator, target);
+			prop_assert_eq!(extended.to_ref(), drawn.to_ref());
+
+			// The elements survive, and every position above them reads zero.
+			let scalars = extended.iter_scalars().collect::<Vec<_>>();
+			prop_assert_eq!(&scalars[..1 << log_len], &values[..]);
+			prop_assert!(scalars[1 << log_len..].iter().all(|&s| s == F::ZERO));
 		}
 
 		#[test]
