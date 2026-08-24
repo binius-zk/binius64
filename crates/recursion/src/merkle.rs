@@ -40,6 +40,21 @@
 //! Counts below are AND and BMUL constraints as the frontend compiles them.
 //! Every one is pinned by this module's tests.
 //!
+//! The Zero column is left out of them, and it is not empty.
+//! Assertions and linear definitions compile into it rather than into AND.
+//! The wiring evaluation walks Zero constraints in the same sum as the BitAnd ones.
+//! So they are not free to the outer proof this gadget compiles into.
+//!
+//! The two columns are not priced alike.
+//! A Zero constraint carries one operand array to that walk where an AND carries three.
+//! So they combine at `AND + ZERO / 3`, and adding them at par overcharges Zero threefold.
+//!
+//! An AND count is a budget for the AND reduction, not a proxy for the shift reduction.
+//! The layer-depth arithmetic below is still safe, though not because it compares AND to AND.
+//! Zero tracks AND at roughly 28% on both sides of that trade, a climbed level and a fold node.
+//! Its break-even therefore lands within rounding of the AND column's, and picks the same depth.
+//! These ratios are measured rather than pinned, unlike every figure in the table.
+//!
 //! One block compression is 368 AND constraints.
 //!
 //! A gate costs one constraint whatever its width.
