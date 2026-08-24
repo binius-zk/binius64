@@ -39,7 +39,7 @@ use either::Either;
 use itertools::izip;
 
 use super::{
-	FracAddCheckProver, LayerProver,
+	FracAddCircuit, LayerProver,
 	fraction::Fraction,
 	zero_pad_mle::{self, ConstantFraction, ZeroPadMleCheckProver},
 };
@@ -54,7 +54,7 @@ pub(super) type PaddedLayerProver<'a, A, F, P> =
 /// The provers come back in input order, one per tree, so they stay aligned with `pad_lens` and
 /// `claims`. A tree the batch has not reached yet keeps every layer it has.
 pub(super) fn layer_provers<'a, A, F, P>(
-	provers: &mut [FracAddCheckProver<'a, A, P>],
+	provers: &mut [FracAddCircuit<'a, A, P>],
 	pad_lens: &[usize],
 	claims: &[Fraction<F>],
 	node_point: &[F],
