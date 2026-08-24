@@ -29,12 +29,21 @@
 use std::ops::Deref;
 
 use binius_compute::Allocator;
-use binius_field::PackedField;
-use binius_utils::{buffer::BufferData, random_access_sequence::RandomAccessSequence};
+use binius_field::{Field, PackedField, WideMul};
+use binius_utils::{
+	buffer::{BufferData, VecLike},
+	random_access_sequence::RandomAccessSequence,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
+};
 
 use crate::{
-	FieldBuffer, FieldSlice, FieldVec, inner_product,
-	multilinear::{evaluate, fold, hypercube::Hypercube},
+	FieldBuffer, FieldSlice, FieldVec,
+	inner_product::inner_product_packed,
+	line::extrapolate_line,
+	multilinear::hypercube::{Hypercube, OneCube},
 };
 
 /// A buffer of coefficients read as a multilinear polynomial.
@@ -167,29 +176,122 @@ impl<P: PackedField, Data: Deref<Target = [P]>> Multilinear<P> for FieldBuffer<P
 	}
 
 	fn evaluate(&self, point: &[P::Scalar]) -> P::Scalar {
-		evaluate::evaluate(self, point)
+		assert_eq!(point.len(), self.log_len(), "precondition: point length must equal n_vars");
+
+		// The point splits in half, and the first half gets at least one packed word's worth.
+		// Expanding only that half costs memory on the order of the square root of the whole.
+		let first_half_len = (point.len() / 2).max(P::LOG_WIDTH).min(point.len());
+		let (first_coords, remaining_coords) = point.split_at(first_half_len);
+		let eq_tensor = OneCube::eq_ind_partial_eval::<P>(first_coords);
+
+		// With nothing left over the expansion covers every variable, so one pairing finishes.
+		if remaining_coords.is_empty() {
+			return self.inner_product(&eq_tensor);
+		}
+
+		// Otherwise each chunk pairs with the expansion, and the resulting scalars are the
+		// residual multilinear over the coordinates not yet used.
+		let scalars = self
+			.chunks_par(first_half_len)
+			.map(|chunk| chunk.inner_product(&eq_tensor))
+			.collect::<Vec<_>>();
+
+		FieldBuffer::<P>::from_values(&scalars).evaluate_inplace(remaining_coords)
 	}
 
+	#[inline]
 	fn inner_product<'b>(&self, other: impl Into<FieldSlice<'b, P>>) -> P::Scalar {
-		inner_product::inner_product_buffers(self, &other.into())
+		let other = other.into();
+		inner_product_packed(
+			self.log_len(),
+			self.iter_packed().copied(),
+			other.iter_packed().copied(),
+		)
 	}
 
+	#[inline]
 	fn par_inner_product<'b>(&self, other: impl Into<FieldSlice<'b, P>>) -> P::Scalar {
-		inner_product::inner_product_par(self, &other.into())
+		let other = other.into();
+		let n = self.len();
+
+		// Accumulate the products in unreduced (wide) form and reduce a single time at the end.
+		// For packed `GF(2^128)` fields this amortizes the reduction cost across all products.
+		// For every other field the widening multiply is the trivial one, so this is a plain
+		// product-then-sum.
+		let wide_sum = self
+			.as_ref()
+			.par_iter()
+			.zip_eq(other.as_ref().par_iter())
+			.with_min_task(WorkPerItem::FieldMuls)
+			.map(|(&a_i, &b_i)| P::wide_mul(a_i, b_i))
+			.sum::<<P as WideMul>::Output>();
+		P::reduce(wide_sum).into_iter().take(n).sum()
 	}
 
 	fn fold_highest_var_in<A: Allocator>(&self, alloc: &A, scalar: P::Scalar) -> FieldVec<P, A> {
-		fold::fold_highest_var(alloc, self, scalar)
+		assert!(self.log_len() > 0, "precondition: buffer must have at least one variable");
+
+		// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
+		let broadcast_scalar = P::broadcast(scalar);
+		let (lo, hi) = self.split_half_ref();
+
+		// Interpolate the line through each pair at the challenge directly into a fresh buffer
+		// drawn from the allocator, writing the uninitialized spare capacity in parallel rather
+		// than zero-filling first.
+		let len = lo.as_ref().len();
+		let mut data = alloc.alloc::<P>(len);
+		let spare = &mut data.spare_capacity_mut()[..len];
+		(spare, lo.as_ref(), hi.as_ref())
+			.into_par_iter()
+			.with_min_task(WorkPerItem::FieldMuls)
+			.for_each(|(out, &lo_i, &hi_i)| {
+				out.write(extrapolate_line(lo_i, hi_i, broadcast_scalar));
+			});
+		// SAFETY: the parallel loop initialized all `len` slots.
+		unsafe { data.set_len(len) };
+		FieldBuffer::new(self.log_len() - 1, data)
 	}
 }
 
 impl<P: PackedField, Data: BufferData<P>> MultilinearMut<P> for FieldBuffer<P, Data> {
 	fn fold_highest_var(&mut self, scalar: P::Scalar) {
-		fold::fold_highest_var_inplace(self, scalar);
+		// Each scalar of the result costs one multiplication.
+		// The result occupies a prefix, so the truncation drops the scalars past it.
+		let broadcast_scalar = P::broadcast(scalar);
+		{
+			let mut split = self.split_half_mut();
+			let (mut lo, mut hi) = split.halves();
+			(lo.as_mut(), hi.as_mut())
+				.into_par_iter()
+				.with_min_task(WorkPerItem::FieldMuls)
+				.for_each(|(lo_i, hi_i)| *lo_i = extrapolate_line(*lo_i, *hi_i, broadcast_scalar));
+		}
+
+		self.truncate(self.log_len() - 1);
 	}
 
 	fn eq_ind_truncate_low<H: Hypercube>(&mut self, truncated_n_vars: usize) {
-		H::eq_ind_truncate_low_inplace(self, truncated_n_vars);
+		assert!(
+			truncated_n_vars <= self.log_len(),
+			"precondition: truncated_n_vars must be at most n_vars"
+		);
+
+		for log_len in (truncated_n_vars..self.log_len()).rev() {
+			{
+				let mut split = self.split_half_mut();
+				let (mut lo, hi) = split.halves();
+				// Contracting a variable costs additions only.
+				// So the cost of one step is the two words it reads, not its arithmetic.
+				(lo.as_mut(), hi.as_ref())
+					.into_par_iter()
+					.with_min_task_bytes::<[P; 2]>()
+					.for_each(|(zero, one)| {
+						H::contract_var(zero, one);
+					});
+			}
+
+			self.truncate(log_len);
+		}
 	}
 
 	fn binary_fold_high<'b>(
@@ -197,24 +299,63 @@ impl<P: PackedField, Data: BufferData<P>> MultilinearMut<P> for FieldBuffer<P, D
 		tensor: impl Into<FieldSlice<'b, P>>,
 		bits: &(impl RandomAccessSequence<bool> + Sync),
 	) {
-		fold::binary_fold_high(self, &tensor.into(), bits);
+		let tensor = tensor.into();
+		assert!(bits.len().is_power_of_two(), "precondition: bits length must be a power of two");
+
+		let values_log_len = self.log_len();
+		let width = P::WIDTH.min(self.len());
+
+		assert_eq!(
+			1 << (values_log_len + tensor.log_len()),
+			bits.len(),
+			"precondition: bits length must equal values length times tensor length"
+		);
+
+		self.iter_packed_mut().enumerate().for_each(|(i, packed)| {
+			*packed = P::from_scalars((0..width).map(|j| {
+				let scalar_index = i << P::LOG_WIDTH | j;
+				let mut acc = P::Scalar::ZERO;
+
+				for (k, tensor_packed) in tensor.iter_packed().enumerate() {
+					for (l, tensor_scalar) in tensor_packed.iter().take(tensor.len()).enumerate() {
+						let tensor_scalar_index = k << P::LOG_WIDTH | l;
+						if bits.get(tensor_scalar_index << values_log_len | scalar_index) {
+							acc += tensor_scalar;
+						}
+					}
+				}
+
+				acc
+			}));
+		});
 	}
 
-	fn evaluate_inplace(self, coords: &[P::Scalar]) -> P::Scalar {
-		evaluate::evaluate_inplace(self, coords)
+	fn evaluate_inplace(mut self, coords: &[P::Scalar]) -> P::Scalar {
+		assert_eq!(coords.len(), self.log_len(), "precondition: coords length must equal n_vars");
+
+		// Fixing the highest variable first keeps the survivors in a prefix, so an $n$-variate
+		// polynomial costs $2^n - 1$ multiplications and no memory beyond the buffer.
+		for &coord in coords.iter().rev() {
+			self.fold_highest_var(coord);
+		}
+
+		assert_eq!(self.len(), 1);
+		self.get(0)
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::iter::repeat_with;
+
 	use binius_compute::GlobalAllocator;
+	use binius_utils::rayon::task_size::min_len_for_work;
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::{
-		multilinear::hypercube::OneCube,
-		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
+	use crate::test_utils::{
+		B128, Packed128b, index_to_hypercube_point, random_field_buffer, random_scalars,
 	};
 
 	type P = Packed128b;
@@ -244,7 +385,7 @@ mod tests {
 		let view: FieldSlice<'_, P> = buffer.to_ref();
 
 		assert_eq!(view.n_vars(), 5);
-		assert_eq!(view.evaluate(&point), evaluate::evaluate(&buffer, &point));
+		assert_eq!(view.evaluate(&point), buffer.evaluate(&point));
 	}
 
 	#[test]
@@ -256,7 +397,7 @@ mod tests {
 		let scalar = random_scalars::<F>(&mut rng, 1)[0];
 
 		let mut expected = original.clone();
-		fold::fold_highest_var_inplace(&mut expected, scalar);
+		expected.fold_highest_var(scalar);
 
 		let mut owned = original;
 		let mut slice = owned.to_mut();
@@ -266,9 +407,78 @@ mod tests {
 		assert_eq!(slice, expected.to_mut());
 	}
 
+	#[test]
+	fn fold_splits_above_the_task_threshold() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Invariant: a fold splits only once each half holds two minimum tasks.
+		// Below that it runs inline, leaving the parallel path unexercised.
+		//
+		//     words in one half = 2^(n_vars - 1) / scalars per word
+		//     smallest n_vars with words in one half >= 2 * minimum
+		//
+		// Every other fold test is smaller, so this one covers the split.
+		let min_len = min_len_for_work(WorkPerItem::FieldMuls);
+		let n_vars = (2 * min_len * P::WIDTH).next_power_of_two().ilog2() as usize + 1;
+		let half = 1 << (n_vars - 1);
+		let original = random_field_buffer::<P>(&mut rng, n_vars);
+		let challenge = random_scalars::<F>(&mut rng, 1)[0];
+
+		let mut folded = original.clone();
+		folded.fold_highest_var(challenge);
+		assert_eq!(folded.n_vars(), n_vars - 1);
+
+		// Scalar reference: each output interpolates one (lo, hi) pair at the challenge.
+		for i in 0..half {
+			let expected = extrapolate_line(original.get(i), original.get(i | half), challenge);
+			assert_eq!(folded.get(i), expected, "mismatch at index {i}");
+		}
+	}
+
+	#[test]
+	fn evaluate_at_a_hypercube_vertex_reads_that_coefficient() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Every vertex of a small cube is cheap enough to check exhaustively.
+		let n_vars = 8;
+		let buffer = random_field_buffer::<F>(&mut rng, n_vars);
+
+		for index in 0..1 << n_vars {
+			let point = index_to_hypercube_point::<F>(n_vars, index);
+
+			assert_eq!(buffer.evaluate(&point), buffer.get(index), "mismatch at vertex {index}");
+		}
+	}
+
+	#[test]
+	fn evaluate_is_linear_in_every_coordinate() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		let n_vars = 8;
+		let buffer = random_field_buffer::<F>(&mut rng, n_vars);
+		let mut point = random_scalars::<F>(&mut rng, n_vars);
+
+		for coord_idx in 0..n_vars {
+			// Three points differing only in this coordinate must have collinear evaluations.
+			let coord_vals = random_scalars::<F>(&mut rng, 3);
+			let evals = coord_vals
+				.iter()
+				.map(|&coord_val| {
+					point[coord_idx] = coord_val;
+					buffer.evaluate(&point)
+				})
+				.collect::<Vec<_>>();
+
+			// Collinearity of the three points, cross-multiplied so nothing is divided.
+			let [x0, x1, x2] = [coord_vals[0], coord_vals[1], coord_vals[2]];
+			let [y0, y1, y2] = [evals[0], evals[1], evals[2]];
+			assert_eq!((y2 - y0) * (x1 - x0), (y1 - y0) * (x2 - x0));
+		}
+	}
+
 	proptest! {
 		#[test]
-		fn evaluate_matches_free_function(
+		fn the_two_evaluations_agree_with_the_definition(
 			n_vars in 0..=MAX_VARS,
 			seed: u64,
 		) {
@@ -276,11 +486,17 @@ mod tests {
 			let buffer = random_field_buffer::<P>(&mut rng, n_vars);
 			let point = random_scalars::<F>(&mut rng, n_vars);
 
-			prop_assert_eq!(buffer.evaluate(&point), evaluate::evaluate(&buffer, &point));
+			// Pairing with the full expansion is the definition, and the cheapest reference.
+			let reference = buffer.par_inner_product(&OneCube::eq_ind_partial_eval::<P>(&point));
+
+			prop_assert_eq!(buffer.evaluate(&point), reference);
+
+			// The in-place form consumes the coefficients, so it goes last.
+			prop_assert_eq!(buffer.evaluate_inplace(&point), reference);
 		}
 
 		#[test]
-		fn inner_products_match_free_functions(
+		fn the_two_inner_products_agree_with_the_scalar_reference(
 			n_vars in 0..=MAX_VARS,
 			seed: u64,
 		) {
@@ -288,39 +504,18 @@ mod tests {
 			let a = random_field_buffer::<P>(&mut rng, n_vars);
 			let b = random_field_buffer::<P>(&mut rng, n_vars);
 
-			// The second operand crosses into a borrowed view, so this also pins the conversion.
-			prop_assert_eq!(
-				a.inner_product(&b),
-				inner_product::inner_product_buffers(&a, &b)
-			);
-			prop_assert_eq!(
-				a.par_inner_product(&b),
-				inner_product::inner_product_par(&a, &b)
-			);
+			// Both forms defer the field reduction, so a scalar sum is the reference.
+			let reference = (0..a.len()).map(|i| a.get(i) * b.get(i)).sum::<F>();
 
-			// A view passed straight through must reach the same free function.
-			prop_assert_eq!(a.inner_product(b.to_ref()), a.inner_product(&b));
+			prop_assert_eq!(a.inner_product(&b), reference);
+			prop_assert_eq!(a.par_inner_product(&b), reference);
+
+			// A view passed straight through must reach the same computation.
+			prop_assert_eq!(a.inner_product(b.to_ref()), reference);
 		}
 
 		#[test]
-		fn fold_highest_var_in_matches_free_function(
-			n_vars in 1..=MAX_VARS,
-			seed: u64,
-		) {
-			let mut rng = StdRng::seed_from_u64(seed);
-			let buffer = random_field_buffer::<P>(&mut rng, n_vars);
-			let scalar = random_scalars::<F>(&mut rng, 1)[0];
-
-			// The allocator comes first in both spellings; a transposition would show up here.
-			let by_method = buffer.fold_highest_var_in(&GlobalAllocator, scalar);
-			let by_function = fold::fold_highest_var(&GlobalAllocator, &buffer, scalar);
-
-			prop_assert_eq!(by_method.n_vars(), n_vars - 1);
-			prop_assert_eq!(by_method, by_function);
-		}
-
-		#[test]
-		fn fold_highest_var_matches_free_function(
+		fn the_two_folds_agree(
 			n_vars in 1..=MAX_VARS,
 			seed: u64,
 		) {
@@ -328,56 +523,18 @@ mod tests {
 			let original = random_field_buffer::<P>(&mut rng, n_vars);
 			let scalar = random_scalars::<F>(&mut rng, 1)[0];
 
-			let mut by_method = original.clone();
-			by_method.fold_highest_var(scalar);
+			// Out of place leaves the input alone and returns a fresh half-size buffer.
+			let out_of_place = original.fold_highest_var_in(&GlobalAllocator, scalar);
 
-			let mut by_function = original;
-			fold::fold_highest_var_inplace(&mut by_function, scalar);
+			let mut in_place = original;
+			in_place.fold_highest_var(scalar);
 
-			prop_assert_eq!(by_method.n_vars(), n_vars - 1);
-			prop_assert_eq!(by_method, by_function);
+			prop_assert_eq!(out_of_place.n_vars(), n_vars - 1);
+			prop_assert_eq!(out_of_place, in_place);
 		}
 
 		#[test]
-		fn evaluate_inplace_matches_free_function(
-			n_vars in 0..=MAX_VARS,
-			seed: u64,
-		) {
-			let mut rng = StdRng::seed_from_u64(seed);
-			let buffer = random_field_buffer::<P>(&mut rng, n_vars);
-			let coords = random_scalars::<F>(&mut rng, n_vars);
-
-			prop_assert_eq!(
-				buffer.clone().evaluate_inplace(&coords),
-				evaluate::evaluate_inplace(buffer, &coords)
-			);
-		}
-
-		#[test]
-		fn eq_ind_truncate_low_matches_free_function(
-			n_vars in 0..=MAX_VARS,
-			shrink_by in 0..=MAX_VARS,
-			seed: u64,
-		) {
-			let mut rng = StdRng::seed_from_u64(seed);
-			let point = random_scalars::<F>(&mut rng, n_vars);
-			let expansion = OneCube::eq_ind_partial_eval::<P>(&point);
-
-			// Truncating by more variables than there are is clamped to the empty truncation.
-			let truncated_n_vars = n_vars.saturating_sub(shrink_by);
-
-			let mut by_method = expansion.clone();
-			by_method.eq_ind_truncate_low::<OneCube>(truncated_n_vars);
-
-			let mut by_function = expansion;
-			OneCube::eq_ind_truncate_low_inplace(&mut by_function, truncated_n_vars);
-
-			prop_assert_eq!(by_method.n_vars(), truncated_n_vars);
-			prop_assert_eq!(by_method, by_function);
-		}
-
-		#[test]
-		fn binary_fold_high_matches_free_function(
+		fn the_binary_fold_matches_folding_the_widened_bits(
 			dest_vars in 0..=6usize,
 			tensor_vars in 0..=4usize,
 			seed: u64,
@@ -386,18 +543,25 @@ mod tests {
 			let point = random_scalars::<F>(&mut rng, tensor_vars);
 			let tensor = OneCube::eq_ind_partial_eval::<P>(&point);
 
-			// The bit count is the product of the two lengths, as the free function demands.
-			let bits = (0..1 << (dest_vars + tensor_vars))
-				.map(|_| rng.random())
+			// The bit count is the product of the two lengths, as the precondition demands.
+			let bits = repeat_with(|| rng.random())
+				.take(1 << (dest_vars + tensor_vars))
 				.collect::<Vec<bool>>();
 
-			let mut by_method = FieldBuffer::<P>::zeros(dest_vars);
-			by_method.binary_fold_high(&tensor, &bits.as_slice());
+			let mut folded = FieldBuffer::<P>::zeros(dest_vars);
+			folded.binary_fold_high(&tensor, &bits.as_slice());
 
-			let mut by_function = FieldBuffer::<P>::zeros(dest_vars);
-			fold::binary_fold_high(&mut by_function, &tensor, &bits.as_slice());
+			// Reference: widen the bits to field elements and fold the tensor's variables off.
+			let scalars = bits
+				.iter()
+				.map(|&bit| if bit { F::ONE } else { F::ZERO })
+				.collect::<Vec<F>>();
+			let mut reference = FieldBuffer::<P>::from_values(&scalars);
+			for &coord in point.iter().rev() {
+				reference.fold_highest_var(coord);
+			}
 
-			prop_assert_eq!(by_method, by_function);
+			prop_assert_eq!(folded, reference);
 		}
 	}
 }
