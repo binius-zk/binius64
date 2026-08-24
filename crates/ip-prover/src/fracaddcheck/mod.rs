@@ -602,7 +602,7 @@ mod tests {
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
-		// 4. Evaluate sums at challenge point to createzz claims
+		// 4. Evaluate sums at challenge point to create claims
 		let sum_num_eval = evaluate(&sums.num, &eval_point);
 		let sum_den_eval = evaluate(&sums.den, &eval_point);
 		// The prover and the verifier take the same claim type, so one claim serves both.
@@ -640,8 +640,8 @@ mod tests {
 		test_frac_add_check_prove_verify_helper::<Packed128b>(0, 4);
 	}
 
-	fn test_frac_add_check_layer_computation_helper<P: PackedField>(n: usize, k: usize) {
-		let mut rng = StdRng::seed_from_u64(0);
+	fn check_all_layers<P: PackedField>(n: usize, k: usize, seed: u64) {
+		let mut rng = StdRng::seed_from_u64(seed);
 		let alloc = GlobalAllocator;
 
 		// Create random witness with log_len = n + k
@@ -649,36 +649,49 @@ mod tests {
 		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
 
 		// Create prover (computes fractional-add layers)
-		let (_prover, sums) = FracAddCheckProver::new(
+		let (prover, sums) = FracAddCheckProver::new(
 			k,
 			&alloc,
 			Fraction::new(witness_num.clone(), witness_den.clone()),
 		);
 
-		// For each index i in the sums layer, verify it equals the fractional sum of witness values
-		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)
-		let stride = 1 << n;
-		let num_terms = 1 << k;
-		for i in 0..(1 << n) {
-			let mut expected_num = witness_num.get(i);
-			let mut expected_den = witness_den.get(i);
-			for z in 1..num_terms {
-				let idx = i + z * stride;
-				let num_z = witness_num.get(idx);
-				let den_z = witness_den.get(idx);
-				expected_num = expected_num * den_z + num_z * expected_den;
-				expected_den *= den_z;
+		// `new` pops the root off as `sums`, so the circuit is `layers` followed by it.
+		for (j, layer) in prover.layers.iter().chain(iter::once(&sums)).enumerate() {
+			// Entry i of layer j is the fractional sum of the 2^j witness values strided by that
+			// layer's own width (strided access, not contiguous).
+			let width = 1 << (n + k - j);
+			let num_terms = 1 << j;
+			for i in 0..width {
+				let mut expected_num = witness_num.get(i);
+				let mut expected_den = witness_den.get(i);
+				for z in 1..num_terms {
+					let idx = i + z * width;
+					let num_z = witness_num.get(idx);
+					let den_z = witness_den.get(idx);
+					expected_num = expected_num * den_z + num_z * expected_den;
+					expected_den *= den_z;
+				}
+				let actual_num = layer.num.get(i);
+				let actual_den = layer.den.get(i);
+				assert_eq!(actual_num, expected_num, "layer {j} numerator mismatch at index {i}");
+				assert_eq!(actual_den, expected_den, "layer {j} denominator mismatch at index {i}");
 			}
-			let actual_num = sums.num.get(i);
-			let actual_den = sums.den.get(i);
-			assert_eq!(actual_num, expected_num, "Numerator mismatch at index {i}");
-			assert_eq!(actual_den, expected_den, "Denominator mismatch at index {i}");
 		}
 	}
 
-	#[test]
-	fn test_frac_add_check_layer_computation() {
-		test_frac_add_check_layer_computation_helper::<Packed128b>(4, 3);
+	proptest! {
+		// Invariant: every layer of the circuit is the fractional-addition fold of the witness.
+		//
+		// Pinning each layer to that fold pins the sibling recurrence the layers are built from.
+		// Only an end-to-end proof failure notices if `new` folds the wrong pairs.
+		#[test]
+		fn frac_add_check_layers_fold_the_witness(
+			seed in any::<u64>(),
+			n in 0usize..=4,
+			k in 0usize..=4,
+		) {
+			check_all_layers::<Packed128b>(n, k, seed);
+		}
 	}
 
 	// ==================== batch_prove_unequal_depths tests ====================
@@ -733,8 +746,8 @@ mod tests {
 
 	/// Proves a batch of unequal-depth trees against the depth-oblivious verifier, then unpads each
 	/// tree's leaf claims and checks them against that tree's own witness.
-	fn test_unequal_depths_helper<P: PackedField>(depths: &[usize]) {
-		let mut rng = StdRng::seed_from_u64(11);
+	fn test_unequal_depths_helper<P: PackedField>(depths: &[usize], seed: u64) {
+		let mut rng = StdRng::seed_from_u64(seed);
 		let alloc = GlobalAllocator;
 
 		let k = log2_ceil_usize(depths.len());
@@ -785,42 +798,62 @@ mod tests {
 
 	#[test]
 	fn test_unequal_depths_mixed() {
-		test_unequal_depths_helper::<Packed128b>(&[2, 4, 5]);
+		test_unequal_depths_helper::<Packed128b>(&[2, 4, 5], 11);
 	}
 
 	#[test]
 	fn test_unequal_depths_single_prover() {
-		test_unequal_depths_helper::<Packed128b>(&[3]);
+		test_unequal_depths_helper::<Packed128b>(&[3], 11);
 	}
 
 	#[test]
 	fn test_unequal_depths_power_of_two_provers() {
 		// The shallowest tree is padded by more than one layer, the deepest not at all.
-		test_unequal_depths_helper::<Packed128b>(&[1, 2, 5, 5]);
+		test_unequal_depths_helper::<Packed128b>(&[1, 2, 5, 5], 11);
 	}
 
 	#[test]
 	fn test_unequal_depths_all_minimal() {
 		// Depth 1 throughout: every tree retains its final layer immediately.
-		test_unequal_depths_helper::<Packed128b>(&[1, 1, 1]);
+		test_unequal_depths_helper::<Packed128b>(&[1, 1, 1], 11);
 	}
 
 	#[test]
 	fn test_unequal_depths_zero_depth_tree() {
 		// A depth-0 tree never pops a layer: it is all padding, so its leaf claim is its root.
-		test_unequal_depths_helper::<Packed128b>(&[0, 3]);
+		test_unequal_depths_helper::<Packed128b>(&[0, 3], 11);
 	}
 
 	#[test]
 	fn test_unequal_depths_maximal_padding() {
 		// A single-layer tree beside a deep one: all but its last reduction is padding.
-		test_unequal_depths_helper::<Packed128b>(&[1, 6]);
+		test_unequal_depths_helper::<Packed128b>(&[1, 6], 11);
 	}
 
 	#[test]
 	fn test_unequal_depths_equal_depths() {
 		// Equal depths pad nothing, so every wrapper is a pass-through.
-		test_unequal_depths_helper::<Packed128b>(&[4, 4, 4]);
+		test_unequal_depths_helper::<Packed128b>(&[4, 4, 4], 11);
+	}
+
+	proptest! {
+		// A full batched prove-verify per case, so trade the default case count down for runtime.
+		#![proptest_config(ProptestConfig::with_cases(64))]
+
+		// Invariant: the batched round trip holds for any mix of tree depths.
+		//
+		// The cases above pin named edge shapes; this covers the space between them.
+		// Padding is bookkept per tree, so it is the mix of depths that stresses it.
+		#[test]
+		fn unequal_depths_round_trip(
+			seed in any::<u64>(),
+			depths in prop::collection::vec(0usize..=6, 1..=5),
+		) {
+			// Batching needs at least one layer to reduce, so an all-depth-0 batch is not a case.
+			prop_assume!(depths.iter().any(|&depth| depth > 0));
+
+			test_unequal_depths_helper::<Packed128b>(&depths, seed);
+		}
 	}
 
 	proptest! {
