@@ -42,8 +42,8 @@ impl<T> Fraction<T> {
 
 	/// Applies `f` to each half.
 	///
-	/// This is how a fraction changes representation, such as a pair of layer buffers reduced to
-	/// the pair of scalars at their root.
+	/// This is how a fraction changes representation.
+	/// One example is a pair of layer buffers reduced to the pair of scalars at their root.
 	pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Fraction<U> {
 		Fraction {
 			num: f(self.num),
@@ -56,8 +56,8 @@ impl<F: Field> Fraction<F> {
 	/// The zero fraction $0/1$.
 	///
 	/// This is the additive identity of fractional addition: adding it changes nothing.
-	/// So it is what a padding leaf holds when a batch lifts a shallow tree to its depth, and what
-	/// fills the selector slots past the last real instance.
+	/// So it is what a padding leaf holds when a batch lifts a shallow tree to its depth.
+	/// It is also what fills the selector slots past the last real instance.
 	pub const ZERO: Self = Self {
 		num: F::ZERO,
 		den: F::ONE,

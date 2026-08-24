@@ -2,19 +2,22 @@
 
 //! MLE-check prover for one layer of a zero-fraction-padded fractional-addition check.
 //!
-//! Zero-fraction padding lifts a fractional-addition tree of depth $k$ to depth $n \ge k$ by
-//! filling the extra leaves with the zero fraction $0/1$, which leaves the tree's fractional sum
-//! unchanged. The numerators are therefore zero-padded and the denominators one-padded. Batching
-//! fracadd checks of unequal depths pads each shallow tree up to the deepest one, so the batch's
-//! layer loop runs a single uniform schedule and the verifier never learns the individual depths.
+//! Zero-fraction padding lifts a fractional-addition tree of depth $k$ to depth $n \ge k$.
+//! The extra leaves hold the zero fraction $0/1$, which leaves the tree's fractional sum unchanged.
+//! The numerators are therefore zero-padded and the denominators one-padded.
 //!
-//! This is the fractional-addition analog of [`crate::prodcheck::one_pad_mle`]; the *Batched
-//! Product Checks of Unequal Depths* appendix of the Binius64 whitepaper derives the multiplicative
-//! case, whose one-padding is exactly the padding these denominators carry.
+//! Batching fracadd checks of unequal depths pads each shallow tree up to the deepest one.
+//! So the batch's layer loop runs a single uniform schedule.
+//! The verifier never learns the individual depths.
 //!
-//! The point of this module is that the prover never materializes a padded layer:
-//! [`ZeroPadMleCheckProver`] wraps the unpadded layer's own MLE-check and corrects its messages at
-//! a cost of $O(1)$ per round.
+//! This is the fractional-addition analog of [`crate::prodcheck::one_pad_mle`].
+//! The Binius64 whitepaper derives the multiplicative case.
+//! See its *Batched Product Checks of Unequal Depths* appendix.
+//! The one-padding there is exactly the padding these denominators carry.
+//!
+//! The prover never materializes a padded layer.
+//! [`ZeroPadMleCheckProver`] wraps the unpadded layer's own MLE-check instead.
+//! It corrects that check's messages at a cost of $O(1)$ per round.
 
 use std::mem;
 
@@ -26,8 +29,9 @@ use crate::sumcheck::common::MleCheckProver;
 
 /// The one-padding selector $\textsf{sel}(s, v) = 1 + (v - 1) s$.
 ///
-/// It interpolates between the constant one at $s = 0$ and $v$ at $s = 1$, which is how a padded
-/// leaf position holds the zero fraction's denominator while a real one holds the witness value.
+/// It interpolates between the constant one at $s = 0$ and $v$ at $s = 1$.
+/// A padding leaf position therefore holds the zero fraction's denominator $1$.
+/// A real position holds the witness value $v$.
 fn select<F: Field>(s: F, v: F) -> F {
 	F::ONE + (v - F::ONE) * s
 }
@@ -37,35 +41,42 @@ fn mul_linear<F: Field>([p_0, p_1]: [F; 2], [q_0, q_1]: [F; 2]) -> RoundCoeffs<F
 	RoundCoeffs(vec![p_0 * q_0, p_0 * q_1 + p_1 * q_0, p_1 * q_1])
 }
 
-/// MLE-check prover for one layer of a fractional-addition check over a zero-fraction-padded
-/// witness.
+/// MLE-check prover for one layer of a zero-fraction-padded fractional-addition check.
 ///
-/// The tree's fractional sum is a scalar, so the layer's claim point is node coordinates only,
-/// split into two segments with the padding ones lowest:
+/// The tree's fractional sum is a scalar, so the layer's claim point is node coordinates only.
+/// Those coordinates split into two segments, with the padding ones lowest:
 ///
 /// ```text
 ///     [ padding (nu) | real (m) ]
 /// ```
 ///
-/// The padded layer is the unpadded one with its numerators scaled by
-/// $\textsf{eq}(0^\nu, Z')$ and its denominators wrapped in the one-padding
-/// $\textsf{sel}(\textsf{eq}(0^\nu, Z'), \cdot)$ over the padding variables. MLE-check binds
-/// variables from the highest index down, so the real rounds come first and the padding rounds
-/// last:
+/// Let $\textsf{eq}(0^\nu, Z')$ be the equality weight of the padding variables $Z'$.
+/// The padded layer is then the unpadded one under two corrections:
 ///
-/// - **Real rounds.** Delegate to `inner`, the ordinary MLE-check over the unpadded layer, and
-///   correct its two round polynomials, where $q$ is the equality weight $\textsf{eq}(0^\nu,
-///   \rho_\text{pa})$ of the claim point's padding segment. Off the all-zeros padding slab every
-///   leaf is the zero fraction, whose numerator composition vanishes and whose denominator
-///   composition is one, so the numerator's polynomial is scaled to $q \cdot R(X)$ and the
-///   denominator's shifted to $1 + q \cdot (R(X) - 1)$.
-/// - **Padding rounds.** No multilinear is touched. Every real variable is bound by now, so
-///   `inner`'s four child evaluations are scalars and both round polynomials are closed forms in
-///   them, quadratic through $E(X)$, the equality weight of the padding coordinates already bound
-///   together with this round's.
+/// - The numerators are scaled by that weight.
+/// - The denominators are wrapped in the one-padding $\textsf{sel}$ at that weight.
 ///
-/// [`MleCheckProver::finish`] returns the *padded* layer's child evaluations, which is what the
-/// batch's selector rounds consume.
+/// MLE-check binds variables from the highest index down.
+/// So the real rounds come first and the padding rounds last.
+///
+/// Write $\rho_\text{pa}$ for the claim point's padding segment.
+/// Write $q = \textsf{eq}(0^\nu, \rho_\text{pa})$ for its equality weight.
+///
+/// A real round delegates to `inner`, the ordinary MLE-check over the unpadded layer.
+/// It then corrects each of `inner`'s two round polynomials $R(X)$ by $q$.
+/// Off the all-zeros padding slab every leaf is the zero fraction.
+/// That fraction's numerator composition vanishes and its denominator composition is one.
+/// So the numerator's polynomial is scaled to $q \cdot R(X)$.
+/// The denominator's polynomial is shifted to $1 + q \cdot (R(X) - 1)$.
+///
+/// A padding round touches no multilinear.
+/// Every real variable is bound by then, so `inner`'s four child evaluations are scalars.
+/// Both round polynomials are closed forms in those four scalars.
+/// They are quadratic through $E(X)$, the equality weight of the padding coordinates.
+/// $E(X)$ combines the weights of the coordinates already bound with this round's.
+///
+/// [`MleCheckProver::finish`] returns the *padded* layer's child evaluations.
+/// Those are what the batch's selector rounds consume.
 pub struct ZeroPadMleCheckProver<F: Field, Inner> {
 	/// The padded claim point `[padding | real]`, low variables first.
 	eval_point: Vec<F>,
@@ -73,8 +84,9 @@ pub struct ZeroPadMleCheckProver<F: Field, Inner> {
 	pad_len: usize,
 	/// Number of folds performed so far.
 	round: usize,
-	/// Equality weights of the claim point's padding segment: entry `i` is
-	/// $\prod_{c < i} \textsf{eq}(0, \rho_{\text{pa}, c})$, so the last entry is $q$.
+	/// Equality weights of the claim point's padding segment.
+	/// Entry `i` is $\prod_{c < i} \textsf{eq}(0, \rho_{\text{pa}, c})$.
+	/// The last entry is therefore $q$.
 	pad_eq_prefixes: Vec<F>,
 	phase: Phase<F, Inner>,
 }
@@ -87,18 +99,20 @@ enum Phase<F, Inner> {
 	Padding {
 		/// The unpadded layer's child evaluations `[num_0, num_1, den_0, den_1]`.
 		children: [F; 4],
-		/// $\prod \textsf{eq}(0, r)$ over the padding challenges bound so far, which is the
-		/// constant factor of $E$.
+		/// $\prod \textsf{eq}(0, r)$ over the padding challenges bound so far.
+		/// This is the constant factor of $E$.
 		bound_eq: F,
 	},
 }
 
 /// Divides the padding back out of a padded layer's claims.
 ///
-/// The padded layer's numerator is the unpadded one scaled by $q$ and its denominator the unpadded
-/// one pushed through the padding selector at $q$, so recovering the unpadded pair is a scale and a
-/// selector at $q^{-1}$. Callers seed the inner prover with the result; for a layer that is *all*
-/// padding it is the tree's own fractional sum.
+/// The padded layer's numerator is the unpadded one scaled by $q$.
+/// Its denominator is the unpadded one pushed through the padding selector at $q$.
+/// So recovering the unpadded pair is a scale and a selector at $q^{-1}$.
+///
+/// Callers seed the inner prover with the result.
+/// For a layer that is *all* padding, that result is the tree's own fractional sum.
 ///
 /// # Arguments
 ///
@@ -111,20 +125,24 @@ pub fn unpad_claims<F: Field>(pad_eq_inv: F, claims: [F; 2]) -> [F; 2] {
 
 /// Creates the prover for one padded fractional-addition layer.
 ///
+/// Entry `i` of `pad_eq_prefixes` is $\prod_{c < i} \textsf{eq}(0, \rho_{\text{pa}, c})$.
+/// Its length fixes the padding segment at one less.
+/// A single-entry table therefore leaves the inner reduction uncorrected.
+/// Every layer of a batch shares one claim point, so one such table serves them all.
+///
+/// `inner` runs over the unpadded layer, seeded at the claim point's real segment.
+/// Its two claims are what [`unpad_claims`] returns.
+///
 /// # Arguments
 ///
-/// * `pad_eq_prefixes` - Equality weights of the claim point's padding segment: entry `i` is
-///   $\prod_{c < i} \textsf{eq}(0, \rho_{\text{pa}, c})$. Its length fixes the padding segment at
-///   one less, so a single-entry table leaves the inner reduction uncorrected. Every layer of a
-///   batch shares one point, so one table of prefix products serves them all.
+/// * `pad_eq_prefixes` - Equality-weight prefix products over the claim point's padding segment.
 /// * `eval_point` - The padded layer's claim point, `[padding | real]`.
-/// * `inner` - The unpadded layer's MLE-check, seeded at the real segment of the claim point with
-///   the claims [`unpad_claims`] returns.
+/// * `inner` - The unpadded layer's MLE-check.
 ///
 /// # Preconditions
 ///
-/// * `pad_eq_prefixes` is non-empty and its last entry — the padding segment's equality weight — is
-///   non-zero
+/// * `pad_eq_prefixes` is non-empty
+/// * its last entry — the padding segment's equality weight — is non-zero
 /// * `eval_point.len() + 1 >= pad_eq_prefixes.len()`
 /// * `inner.n_vars() == eval_point.len() + 1 - pad_eq_prefixes.len()`
 pub fn new<F, Inner>(
@@ -156,13 +174,14 @@ where
 	prover
 }
 
-/// The layer a tree contributes while the batch is still above it: one fraction beside the zero
-/// fraction $0/1$.
+/// The layer a tree contributes while the batch is still above it.
+/// It is one fraction beside the zero fraction $0/1$.
 ///
-/// Such a layer is a padding of the tree's own fractional sum, so its low child is that sum and its
-/// high child is identically $0/1$. Every one of its variables is a padding variable, so there is
-/// nothing to reduce — [`ZeroPadMleCheckProver`] goes straight to its padding rounds and only ever
-/// asks for these four child evaluations.
+/// Such a layer is a padding of the tree's own fractional sum.
+/// So its low child is that sum and its high child is identically $0/1$.
+/// Every one of its variables is a padding variable, so there is nothing to reduce.
+/// [`ZeroPadMleCheckProver`] goes straight to its padding rounds.
+/// It only ever asks for these four child evaluations.
 pub struct ConstantFraction<F> {
 	/// The child evaluations `[num_0, num_1, den_0, den_1]`.
 	children: [F; 4],
@@ -205,8 +224,8 @@ impl<F: Field, Inner: MleCheckProver<F>> ZeroPadMleCheckProver<F, Inner> {
 		self.eval_point.len() - self.pad_len
 	}
 
-	/// Finishes the inner prover once its last real variable is bound, fixing the child evaluations
-	/// the padding rounds close over.
+	/// Finishes the inner prover once its last real variable is bound.
+	/// That fixes the child evaluations the padding rounds close over.
 	fn advance(&mut self) {
 		if self.round != self.n_real_rounds() || !matches!(self.phase, Phase::Real(_)) {
 			return;
@@ -334,11 +353,11 @@ mod tests {
 	type P = Packed128b;
 	type F = <P as FieldOps>::Scalar;
 
-	/// Materializes the `pad_len`-fold padding of a layer buffer, whose variables are
-	/// `[real | split]`, filling the extra positions with `fill`.
+	/// Materializes the `pad_len`-fold padding of a layer buffer.
+	/// The buffer's variables are `[real | split]`, and the extra positions hold `fill`.
 	///
-	/// The padding variables land below the real ones, matching the claim-point layout [`new`]
-	/// expects.
+	/// The padding variables land below the real ones.
+	/// That matches the claim-point layout [`new`] expects.
 	fn pad_layer(layer: &FieldBuffer<P>, pad_len: usize, fill: F) -> FieldBuffer<P> {
 		let values = (0..1 << (layer.log_len() + pad_len))
 			.map(|index| {
@@ -369,8 +388,9 @@ mod tests {
 		]
 	}
 
-	/// Runs `prover` and an ordinary fracadd MLE-check over the materialized padded layer in
-	/// lockstep, requiring the same round polynomials and the same child evaluations.
+	/// Runs `prover` in lockstep with an ordinary fracadd MLE-check.
+	/// That reference check runs over the explicitly materialized padded layer.
+	/// Both must produce the same round polynomials and the same child evaluations.
 	fn assert_matches_padded_reference(
 		rng: &mut impl Rng,
 		padded_num: FieldBuffer<P>,

@@ -44,15 +44,17 @@ use super::{
 	zero_pad_mle::{self, ConstantFraction, ZeroPadMleCheckProver},
 };
 
-/// The per-tree layer prover: either a real layer of the tree, or the padding layer it contributes
-/// while the batch is still above it.
+/// The per-tree layer prover.
+/// A tree the batch has reached contributes a real layer of its own.
+/// A tree the batch is still above contributes a padding layer.
 pub(super) type PaddedLayerProver<'a, A, F, P> =
 	ZeroPadMleCheckProver<F, Either<LayerProver<'a, A, F, P>, ConstantFraction<F>>>;
 
 /// Builds one padded layer prover per tree, for the layer claimed at `node_point`.
 ///
-/// The provers come back in input order, one per tree, so they stay aligned with `pad_lens` and
-/// `claims`. A tree the batch has not reached yet keeps every layer it has.
+/// The provers come back in input order, one per tree.
+/// So they stay aligned with `pad_lens` and `claims`.
+/// A tree the batch has not reached yet keeps every layer it has.
 pub(super) fn layer_provers<'a, A, F, P>(
 	provers: &mut [FracAddCircuit<'a, A, P>],
 	pad_lens: &[usize],
@@ -124,19 +126,18 @@ where
 /// # Arguments
 ///
 /// * `fraction` - The claimed numerator and denominator evaluations of the padded witness.
-/// * `point` - The reduced evaluation point, with the batch's selector coordinates already
-///   stripped.
-/// * `n_pad_vars` - How much depth this tree was padded by: the batch's layer count less the tree's
-///   own.
+/// * `point` - The reduced evaluation point, the batch's selector coordinates already stripped.
+/// * `n_pad_vars` - The padding depth: the batch's layer count less this tree's own.
 ///
 /// # Preconditions
 /// * `point.len() >= n_pad_vars`
 ///
 /// # Panics
 ///
-/// Panics if the padding coordinates' equality weight is zero, which requires one of them to equal
-/// one. They are the verifier's own challenges, so no prover can induce this; it happens with
-/// probability at most $\nu / |K|$.
+/// Panics if the padding coordinates' equality weight is zero.
+/// That requires one of those coordinates to equal one.
+/// They are the verifier's own challenges, so no prover can induce this.
+/// It happens with probability at most $\nu / |K|$.
 pub fn unpad_leaf_claim<F: Field>(
 	fraction: Fraction<F>,
 	point: &[F],
