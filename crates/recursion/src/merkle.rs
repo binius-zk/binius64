@@ -40,6 +40,14 @@
 //! Counts below are AND and BMUL constraints as the frontend compiles them.
 //! Every one is pinned by this module's tests.
 //!
+//! The Zero column is left out of them, and it is not empty.
+//! Assertions and linear definitions compile into it rather than into AND.
+//! The wiring evaluation then walks the Zero constraints in the same sum as the BitAnd ones,
+//! so they are not free to a recursive verifier reading this gadget's output.
+//! An AND count is therefore a budget for the AND reduction, not a proxy for what a gadget costs
+//! the shift reduction, and the figures below understate the latter by whatever Zero they carry.
+//! The layer-depth arithmetic that follows compares AND against AND, so it is unaffected.
+//!
 //! One block compression is 368 AND constraints.
 //!
 //! A gate costs one constraint whatever its width.
