@@ -23,7 +23,7 @@ use super::{
 	phase_2::{ShiftOutput, run_sumcheck},
 	shift_ind::{ShiftChallengePoint, ShiftIndSumcheck},
 };
-use crate::fold_word::fold_words;
+use crate::fold_word::BitAxisFolder;
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
 ///
@@ -330,8 +330,10 @@ where
 		// Fold each segment separately.
 		// The combined witness is never materialized: each fold is zero-padded to enough
 		// variables to cover its own segment's length.
-		let public_folded = fold_words::<_, P, _>(self.alloc, words.public, r_j_tensor.as_ref());
-		let hidden_folded = fold_words::<_, P, _>(self.alloc, words.hidden, r_j_tensor.as_ref());
+		// Both columns fold against the same round tensor, so the tables are built once.
+		let folder = BitAxisFolder::new(r_j_tensor.as_ref());
+		let public_folded = folder.fold::<P, _>(self.alloc, words.public);
+		let hidden_folded = folder.fold::<P, _>(self.alloc, words.hidden);
 
 		let (public_monster, hidden_monster) = key_collection.build_monster_segments(
 			self.alloc,

@@ -191,11 +191,8 @@ mod tests {
 		let prefix_tensor = OneCube::eq_ind_partial_eval::<F>(prefix);
 		let suffix_tensor = OneCube::eq_ind_partial_eval::<F>(suffix);
 
-		let partially_folded_witness = crate::fold_word::fold_words::<_, F, _>(
-			&GlobalAllocator,
-			words,
-			prefix_tensor.as_ref(),
-		);
+		let partially_folded_witness = crate::fold_word::BitAxisFolder::new(prefix_tensor.as_ref())
+			.fold::<F, _>(&GlobalAllocator, words);
 
 		partially_folded_witness.inner_product(&suffix_tensor)
 	}
