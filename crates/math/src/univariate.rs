@@ -311,7 +311,7 @@ mod tests {
 			// Test 1: Partition of Unity - Lagrange polynomials sum to 1
 			let eval_point = F::random(&mut rng);
 			let lagrange_coeffs = subspace_lagrange_evals(&subspace, eval_point);
-			let sum: F = lagrange_coeffs.as_ref().iter().copied().sum();
+			let sum: F = lagrange_coeffs.iter_packed().copied().sum();
 			assert_eq!(
 				sum,
 				F::ONE,
@@ -322,7 +322,7 @@ mod tests {
 			// Test 2: Interpolation Property - L_i(x_j) = δ_ij
 			for (j, &domain_point) in domain.iter().enumerate() {
 				let lagrange_at_domain = subspace_lagrange_evals(&subspace, domain_point);
-				for (i, &coeff) in lagrange_at_domain.as_ref().iter().enumerate() {
+				for (i, &coeff) in lagrange_at_domain.iter_packed().enumerate() {
 					let expected = if i == j { F::ONE } else { F::ZERO };
 					assert_eq!(
 						coeff, expected,

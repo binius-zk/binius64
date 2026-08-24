@@ -112,15 +112,14 @@ pub fn binary_fold_high<P, DataOut, DataIn>(
 	);
 
 	values
-		.as_mut()
-		.iter_mut()
+		.iter_packed_mut()
 		.enumerate()
 		.for_each(|(i, packed)| {
 			*packed = P::from_scalars((0..width).map(|j| {
 				let scalar_index = i << P::LOG_WIDTH | j;
 				let mut acc = P::Scalar::ZERO;
 
-				for (k, tensor_packed) in tensor.as_ref().iter().enumerate() {
+				for (k, tensor_packed) in tensor.iter_packed().enumerate() {
 					for (l, tensor_scalar) in tensor_packed.iter().take(tensor.len()).enumerate() {
 						let tensor_scalar_index = k << P::LOG_WIDTH | l;
 						if bits.get(tensor_scalar_index << values_log_len | scalar_index) {

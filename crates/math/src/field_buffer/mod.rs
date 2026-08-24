@@ -28,7 +28,10 @@
 //! That rules out a transparent wrapper around a packed slice.
 //! With it goes the deref-coercion design a vector and its two slice types enjoy.
 
-use std::ops::{Deref, DerefMut};
+use std::{
+	ops::{Deref, DerefMut},
+	slice,
+};
 
 use binius_compute::Allocator;
 use binius_field::{
@@ -43,11 +46,13 @@ use binius_utils::{
 use bytemuck::zeroed_vec;
 
 mod chunks;
+mod scalars;
 mod view;
 mod write_back;
 
 use chunks::SubWordChunk;
 pub use chunks::{Chunks, ChunksMut};
+pub use scalars::Scalars;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
 use write_back::FieldBufferChunkMutInner;
 pub use write_back::{FieldBufferChunkMut, FieldBufferSplitMut};
@@ -319,6 +324,15 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 		P::iter_slice(self.as_ref()).take(self.len())
 	}
 
+	/// Returns an iterator over the packed words the elements occupy.
+	///
+	/// The run covers the live words only, never a store's spare room past them.
+	/// A buffer shorter than one packed word yields that one word whole, dead lanes and all.
+	#[inline]
+	pub fn iter_packed(&self) -> slice::Iter<'_, P> {
+		self.as_ref().iter()
+	}
+
 	/// Get an aligned chunk of size `2^log_chunk_size`.
 	///
 	/// A chunk's start offset is a multiple of its size.
@@ -553,6 +567,17 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		unsafe { set_packed_slice_unchecked(&mut self.values, index, value) };
 	}
 
+	/// Returns a mutable iterator over the packed words the elements occupy.
+	///
+	/// The mutable counterpart of the shared word iterator, covering the same run of words.
+	/// A final word below the packing width is lent out whole, dead lanes included.
+	/// Padding the buffer out to a wider length turns those lanes live.
+	/// Zeros there are what make that padding zero.
+	#[inline]
+	pub fn iter_packed_mut(&mut self) -> slice::IterMut<'_, P> {
+		self.as_mut().iter_mut()
+	}
+
 	/// Split the buffer into mutable chunks of size `2^log_chunk_size`.
 	///
 	/// # Preconditions
@@ -702,6 +727,47 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> AsMut<[P]> for FieldBuffer<P,
 	#[inline]
 	fn as_mut(&mut self) -> &mut [P] {
 		&mut self.values[..1 << self.log_len.saturating_sub(P::LOG_WIDTH)]
+	}
+}
+
+impl<P: PackedField> FromIterator<P::Scalar> for FieldBuffer<P> {
+	/// Builds a buffer over a fresh vector, packing the elements as they arrive.
+	///
+	/// # Panics
+	///
+	/// Panics unless the number of elements is a power of two.
+	/// An empty iterator panics too, matching what building from an empty scalar slice does.
+	/// The count is known only once the iterator runs dry, so a bad one can only panic.
+	#[track_caller]
+	fn from_iter<I: IntoIterator<Item = P::Scalar>>(iter: I) -> Self {
+		let iter = iter.into_iter();
+		// The lower bound is the whole count whenever the iterator knows its own length.
+		let mut values = Vec::with_capacity(iter.size_hint().0 >> P::LOG_WIDTH);
+
+		let mut word = P::default();
+		let mut len = 0usize;
+		for scalar in iter {
+			let lane = len % P::WIDTH;
+			word.set(lane, scalar);
+			len += 1;
+
+			// A word fills up at its last lane, and a zeroed one takes over from there.
+			if lane == P::WIDTH - 1 {
+				values.push(word);
+				word = P::default();
+			}
+		}
+
+		let log_len =
+			strict_log_2(len).expect("precondition: element count must be a power of two");
+
+		// A count below the packing width never reaches a last lane.
+		// So the one word it filled is still in hand, its lanes past the count still zero.
+		if log_len < P::LOG_WIDTH {
+			values.push(word);
+		}
+
+		Self { log_len, values }
 	}
 }
 
@@ -1024,6 +1090,75 @@ mod tests {
 		let collected2: Vec<F> = iter2.collect();
 		assert_eq!(collected1, collected2);
 		assert_eq!(collected1, values);
+	}
+
+	#[test]
+	fn from_iter_below_packing_width() {
+		// One element in a 4-lane word: the buffer spans 1 element, not the word's 4.
+		let buffer: FieldBuffer<P> = std::iter::once(F::new(9)).collect();
+		assert_eq!(buffer.log_len(), 0);
+		assert_eq!(buffer.len(), 1);
+		assert_eq!(buffer.get(0), F::new(9));
+
+		// The one word packed keeps zeros in the 3 lanes past the element.
+		let data = buffer.take_data();
+		assert_eq!(data.len(), 1);
+		assert!((1..P::WIDTH).all(|lane| get_packed_slice(&data[..], lane) == F::ZERO));
+	}
+
+	#[test]
+	#[should_panic(expected = "power of two")]
+	fn from_iter_non_power_of_two() {
+		// 7 elements: the count is only known once the iterator runs dry, and then it panics.
+		let _: FieldBuffer<P> = (0..7).map(F::new).collect();
+	}
+
+	#[test]
+	#[should_panic(expected = "power of two")]
+	fn from_iter_empty() {
+		// Zero elements is not a power of two, so this panics rather than making a 0-length buffer.
+		let _: FieldBuffer<P> = std::iter::empty::<F>().collect();
+	}
+
+	#[test]
+	fn iter_packed_covers_the_live_words() {
+		// Room for 32 elements but 1 live: iteration follows the live count, not the room.
+		let buffer = FieldBuffer::<P>::scalar_with_capacity(F::new(5), 5);
+		let live: Vec<P> = buffer.iter_packed().copied().collect();
+		assert_eq!(live.len(), 1);
+		assert_eq!(get_packed_slice(&live[..], 0), F::new(5));
+
+		// 16 elements over 4-lane words: 4 words, holding the elements in order.
+		let values: Vec<F> = (0..16).map(F::new).collect();
+		let buffer = FieldBuffer::<P>::from_values(&values);
+		let words: Vec<P> = buffer.iter_packed().copied().collect();
+		assert_eq!(words.len(), 4);
+		assert_eq!(P::iter_slice(&words).collect::<Vec<_>>(), values);
+
+		// A buffer truncated to 2 elements iterates the 1 word they sit in, not the original 4.
+		let mut truncated = FieldBuffer::<P>::from_values(&values);
+		truncated.truncate(1);
+		assert_eq!(truncated.iter_packed().count(), 1);
+	}
+
+	#[test]
+	fn iter_packed_mut_writes_the_live_words() {
+		// 8 elements over 2 words: writing both words writes every element.
+		let mut buffer = FieldBuffer::<P>::zeros(3);
+		assert_eq!(buffer.iter_packed_mut().count(), 2);
+		for word in buffer.iter_packed_mut() {
+			*word = P::broadcast(F::new(3));
+		}
+		assert!(buffer.iter_scalars().all(|scalar| scalar == F::new(3)));
+
+		// Sub-packing-width: 2 elements share one word, which is lent out whole.
+		let mut small = FieldBuffer::<P>::zeros(1);
+		assert_eq!(small.iter_packed_mut().count(), 1);
+		for word in small.iter_packed_mut() {
+			*word = P::broadcast(F::new(7));
+		}
+		// Only the 2 live lanes are elements, however many lanes the write touched.
+		assert_eq!(small.iter_scalars().collect::<Vec<_>>(), vec![F::new(7); 2]);
 	}
 
 	#[test]
@@ -1520,6 +1655,21 @@ mod tests {
 			} else {
 				prop_assert_ne!(buf_a, buf_b);
 			}
+		}
+
+		#[test]
+		fn from_iter_matches_from_values(log_len in 0usize..=6) {
+			// The sweep straddles the packing width: a sub-word store, then multi-word ones.
+			let values: Vec<F> = (0..1u128 << log_len).map(F::new).collect();
+
+			// Collecting the scalars must rebuild what packing the slice builds, length included.
+			let collected: FieldBuffer<P> = values.iter().copied().collect();
+			prop_assert_eq!(collected.log_len(), log_len);
+			prop_assert_eq!(&collected, &FieldBuffer::<P>::from_values(&values));
+
+			// Round trip: iterating the collected buffer hands the scalars back, in order.
+			prop_assert_eq!(&collected.iter_scalars().collect::<Vec<_>>(), &values);
+			prop_assert_eq!(&IntoIterator::into_iter(&collected).collect::<Vec<_>>(), &values);
 		}
 
 		#[test]
