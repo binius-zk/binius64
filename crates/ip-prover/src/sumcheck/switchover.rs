@@ -9,7 +9,6 @@ use std::{
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice,
-	bit_reverse::bit_reverse_packed,
 	multilinear::{
 		fold::{binary_fold_high, fold_highest_var_inplace},
 		hypercube::{Hypercube, OneCube},
@@ -126,9 +125,9 @@ where
 			// Prepend the new variable via bit-reverse + append + bit-reverse. This does not need
 			// to be fast: it runs once per pre-switchover round on a small tensor (see
 			// BINIUS-327).
-			bit_reverse_packed(tensor.to_mut());
+			tensor.to_mut().bit_reverse();
 			let mut tensor = OneCube::tensor_prod_eq_ind(tensor, &[challenge]);
-			bit_reverse_packed(tensor.to_mut());
+			tensor.to_mut().bit_reverse();
 			self.tensor = tensor;
 
 			if self.tensor.log_len() == self.switchover {
