@@ -34,6 +34,34 @@ pub enum Operation {
 	BinMul,
 }
 
+impl Operation {
+	/// The operation's code in the builder's packed references: two bits, in the walk order the
+	/// key collection is built in (`Zero, BitwiseAnd, IntegerMul, BinMul`).
+	///
+	/// Not the serialized wire value below, which is pinned to a different numbering.
+	pub(super) const fn packed_code(self) -> u8 {
+		match self {
+			Self::Zero => 0,
+			Self::BitwiseAnd => 1,
+			Self::IntegerMul => 2,
+			Self::BinMul => 3,
+		}
+	}
+
+	/// Decodes [`Self::packed_code`].
+	///
+	/// Total because the caller masks its input to the two bits the packing wrote, so every
+	/// reachable value names the operation that produced it.
+	pub(super) const fn from_packed_code(code: u8) -> Self {
+		match code {
+			0 => Self::Zero,
+			1 => Self::BitwiseAnd,
+			2 => Self::IntegerMul,
+			_ => Self::BinMul,
+		}
+	}
+}
+
 impl SerializeBytes for Operation {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		// Wire values do not follow declaration order.

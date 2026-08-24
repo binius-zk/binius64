@@ -242,12 +242,15 @@ impl DeserializeBytes for KeyCollection {
 #[cfg(test)]
 mod tests {
 	use binius_core::{
-		constraint_system::{AndConstraint, Shift, ShiftedValueIndex, ValueIndex},
+		constraint_system::{AndConstraint, Operand, Shift, ShiftedValueIndex, ValueIndex},
 		word::Word,
 	};
 	use binius_verifier::protocols::shift::SHIFT_COUNT;
 
-	use super::*;
+	use super::{
+		super::key::{ConstraintIndex, Key},
+		*,
+	};
 
 	/// A shift sequence carrying one shift, which the canonical form places in the inner slot.
 	fn single(shift: Shift) -> [Shift; 2] {
@@ -422,6 +425,155 @@ mod tests {
 		}
 	}
 
+	/// One key still being assembled while its segment is built, collecting constraint indices
+	/// into its own vector rather than as a range into the segment's flattened one.
+	struct BuilderKey {
+		shift_seq: [Shift; 2],
+		operation: Operation,
+		constraint_indices: Vec<ConstraintIndex>,
+	}
+
+	/// One builder key list per word of the constraint system, indexed by word position.
+	///
+	/// This is the one-pass builder `KeyCollection::build` ran before the counting sort, kept
+	/// verbatim as the byte-identity oracle the equivalence tests below compare against.
+	struct BuilderKeyLists(Vec<Vec<BuilderKey>>);
+
+	impl BuilderKeyLists {
+		fn new(word_count: usize) -> Self {
+			Self((0..word_count).map(|_| Vec::new()).collect())
+		}
+
+		fn split_off(&mut self, public_word_count: usize) -> Self {
+			Self(self.0.split_off(public_word_count))
+		}
+
+		fn into_inner(self) -> Vec<Vec<BuilderKey>> {
+			self.0
+		}
+
+		fn update_with_operand(
+			&mut self,
+			operation: Operation,
+			operand_index: usize,
+			operand_values: impl Iterator<Item = impl AsRef<Operand>>,
+			cs: &ConstraintSystem,
+		) {
+			for (constraint_idx, operand_value) in operand_values.enumerate() {
+				for term in operand_value.as_ref() {
+					let builder_keys = &mut self.0[cs.word_offset(term.value_index)];
+					let shift_seq = term.shift_seq;
+					let constraint_index = ConstraintIndex {
+						operand_index: operand_index as u8,
+						constraint_index: constraint_idx as u32,
+					};
+					if let Some(builder_key) = builder_keys
+						.iter_mut()
+						.find(|key| key.shift_seq == shift_seq && key.operation == operation)
+					{
+						builder_key.constraint_indices.push(constraint_index);
+					} else {
+						builder_keys.push(BuilderKey {
+							shift_seq,
+							operation,
+							constraint_indices: vec![constraint_index],
+						});
+					}
+				}
+			}
+		}
+
+		fn update_with_constraints<C, const ARITY: usize>(
+			&mut self,
+			operation: Operation,
+			constraints: &[C],
+			cs: &ConstraintSystem,
+		) where
+			C: AsRef<[Operand; ARITY]>,
+		{
+			for operand_index in 0..ARITY {
+				self.update_with_operand(
+					operation,
+					operand_index,
+					constraints
+						.iter()
+						.map(|constraint| &constraint.as_ref()[operand_index]),
+					cs,
+				);
+			}
+		}
+	}
+
+	/// The former `KeySegment::build`: one segment from the builder keys lists of its words.
+	fn build_key_segment_reference(builder_key_lists: Vec<Vec<BuilderKey>>) -> KeySegment {
+		// Every distinct shift sequence across every word, before any per-key index is assigned.
+		let dense_shift_enc = DenseShiftEncoding::new(
+			builder_key_lists
+				.iter()
+				.flatten()
+				.map(|builder_key| builder_key.shift_seq),
+		);
+
+		// Word w's keys occupy a contiguous run in the flattened keys vector.
+		// A running offset gives each word's run its start and end.
+		let key_ranges = builder_key_lists
+			.iter()
+			.scan(0u32, |offset, builder_keys| {
+				let start = *offset;
+				*offset += builder_keys.len() as u32;
+				Some(start..*offset)
+			})
+			.collect();
+
+		let mut keys = Vec::new();
+		let mut constraint_indices = Vec::new();
+
+		for builder_key in builder_key_lists.into_iter().flatten() {
+			let BuilderKey {
+				shift_seq,
+				operation,
+				constraint_indices: mut builder_constraint_indices,
+			} = builder_key;
+
+			// Sort constraint indices by operand index, so a later linear scan can detect each
+			// operand's boundary with no extra bookkeeping.
+			builder_constraint_indices
+				.sort_by_key(|constraint_index| constraint_index.operand_index);
+
+			let start = constraint_indices.len() as u32;
+			constraint_indices.extend(builder_constraint_indices);
+			let end = constraint_indices.len() as u32;
+			keys.push(Key {
+				dense_shift_idx: dense_shift_enc.dense_idx(shift_seq),
+				operation,
+				range: start..end,
+			});
+		}
+
+		KeySegment {
+			keys,
+			key_ranges,
+			constraint_indices,
+			dense_shift_enc,
+		}
+	}
+
+	/// The original one-pass builder, the equivalence oracle for the counting-sort one.
+	fn build_key_collection_reference(cs: &ConstraintSystem, inout: InoutSegment) -> KeyCollection {
+		let mut builder_key_lists = BuilderKeyLists::new(cs.value_vec_len());
+
+		builder_key_lists.update_with_constraints(Operation::Zero, &cs.zero_constraints, cs);
+		builder_key_lists.update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, cs);
+		builder_key_lists.update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, cs);
+		builder_key_lists.update_with_constraints(Operation::BinMul, &cs.bmul_constraints, cs);
+
+		let hidden_lists = builder_key_lists.split_off(cs.n_public_words(inout));
+		KeyCollection {
+			public: build_key_segment_reference(builder_key_lists.into_inner()),
+			hidden: build_key_segment_reference(hidden_lists.into_inner()),
+		}
+	}
+
 	fn serialized(kc: &KeyCollection) -> Vec<u8> {
 		let mut bytes = Vec::new();
 		kc.serialize(&mut bytes).unwrap();
@@ -434,7 +586,7 @@ mod tests {
 		for inout in [InoutSegment::Public, InoutSegment::Hidden] {
 			assert_eq!(
 				serialized(&KeyCollection::build(&cs, inout)),
-				serialized(&builder::build_key_collection_reference(&cs, inout)),
+				serialized(&build_key_collection_reference(&cs, inout)),
 			);
 		}
 	}
@@ -530,7 +682,7 @@ mod tests {
 			let cs = random_constraint_system(seed, n_and);
 			for inout in [InoutSegment::Public, InoutSegment::Hidden] {
 				let fast = KeyCollection::build(&cs, inout);
-				let slow = builder::build_key_collection_reference(&cs, inout);
+				let slow = build_key_collection_reference(&cs, inout);
 				assert_eq!(fast.public.keys.len(), slow.public.keys.len(), "seed {seed}");
 				assert_eq!(fast.hidden.keys.len(), slow.hidden.keys.len(), "seed {seed}");
 				assert_eq!(serialized(&fast), serialized(&slow), "seed {seed} inout {inout:?}");
@@ -548,7 +700,7 @@ mod tests {
 			let cs = random_constraint_system_over(4, 2_000, n_private);
 			for inout in [InoutSegment::Public, InoutSegment::Hidden] {
 				let fast = KeyCollection::build(&cs, inout);
-				let slow = builder::build_key_collection_reference(&cs, inout);
+				let slow = build_key_collection_reference(&cs, inout);
 				assert_eq!(
 					serialized(&fast),
 					serialized(&slow),
@@ -576,7 +728,7 @@ mod tests {
 		assert_eq!(kc.hidden.key_ranges.len(), 4);
 		assert_eq!(
 			serialized(&kc),
-			serialized(&builder::build_key_collection_reference(&cs, InoutSegment::Public))
+			serialized(&build_key_collection_reference(&cs, InoutSegment::Public))
 		);
 	}
 }

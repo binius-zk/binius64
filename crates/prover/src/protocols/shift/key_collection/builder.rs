@@ -26,121 +26,6 @@ use super::{
 	operation::Operation,
 };
 
-/// One key still being assembled while its segment is built.
-///
-/// Constraint indices are collected directly into a vector here, rather than as a range into a
-/// shared flattened vector like the final form uses.
-/// That flattened layout is not known until every word's keys have been collected.
-///
-/// Only the reference builder below (kept as the oracle for the equivalence tests) still
-/// produces these.
-#[cfg(test)]
-pub(super) struct BuilderKey {
-	/// The shift sequence this key's word is referenced under, inner shift first.
-	pub shift_seq: [Shift; 2],
-	/// The constraint kind this key's constraints belong to.
-	pub operation: Operation,
-	/// The constraint indices collected so far for this key.
-	pub constraint_indices: Vec<ConstraintIndex>,
-}
-
-/// One builder key list per word of the constraint system, indexed by word position.
-///
-/// Kept under `cfg(test)`: [`KeyCollection::build`] runs the counting sort below, and this
-/// one-pass path remains as the byte-identity oracle its tests compare against.
-#[cfg(test)]
-pub(super) struct BuilderKeyLists(Vec<Vec<BuilderKey>>);
-
-#[cfg(test)]
-impl BuilderKeyLists {
-	/// An empty list for every one of `word_count` words.
-	pub(super) fn new(word_count: usize) -> Self {
-		Self((0..word_count).map(|_| Vec::new()).collect())
-	}
-
-	/// Splits the words from `public_word_count` onward into a second set of lists.
-	///
-	/// This is what separates the public segment, kept here, from the hidden one, returned.
-	pub(super) fn split_off(&mut self, public_word_count: usize) -> Self {
-		Self(self.0.split_off(public_word_count))
-	}
-
-	/// The underlying per-word lists, ready for a segment to be built from them.
-	pub(super) fn into_inner(self) -> Vec<Vec<BuilderKey>> {
-		self.0
-	}
-
-	/// Records one operand's shifted-word references into the builder keys of the words they
-	/// touch.
-	///
-	/// # Arguments
-	///
-	/// - `operation`: the constraint kind these constraints belong to.
-	/// - `operand_index`: this operand's position in the constraint.
-	/// - `operand_values`: this operand's shifted-word references, one list per constraint.
-	/// - `cs`: resolves a value index to its segment-relative word position.
-	fn update_with_operand(
-		&mut self,
-		operation: Operation,
-		operand_index: usize,
-		operand_values: impl Iterator<Item = impl AsRef<Operand>>,
-		cs: &ConstraintSystem,
-	) {
-		for (constraint_idx, operand_value) in operand_values.enumerate() {
-			// Each operand value is a Vec<ShiftedValueIndex> - multiple shifted word references
-			for term in operand_value.as_ref() {
-				// The lists are indexed by word position, so resolve the term's segment-relative
-				// index against the segment starts.
-				let builder_keys = &mut self.0[cs.word_offset(term.value_index)];
-				let shift_seq = term.shift_seq;
-
-				// Find existing builder key or create a new one for this (operation, sequence) pair
-				let constraint_index = ConstraintIndex {
-					operand_index: operand_index as u8,
-					constraint_index: constraint_idx as u32,
-				};
-				if let Some(builder_key) = builder_keys
-					.iter_mut()
-					.find(|key| key.shift_seq == shift_seq && key.operation == operation)
-				{
-					builder_key.constraint_indices.push(constraint_index);
-				} else {
-					builder_keys.push(BuilderKey {
-						shift_seq,
-						operation,
-						constraint_indices: vec![constraint_index],
-					});
-				}
-			}
-		}
-	}
-
-	/// Records every operand of every constraint of one operation into the builder keys of the
-	/// words they touch.
-	///
-	/// Operands are indexed by their position in the constraint's operand array.
-	/// That is also the order the shift reduction batches them in.
-	pub(super) fn update_with_constraints<C, const ARITY: usize>(
-		&mut self,
-		operation: Operation,
-		constraints: &[C],
-		cs: &ConstraintSystem,
-	) where
-		C: AsRef<[Operand; ARITY]>,
-	{
-		for operand_index in 0..ARITY {
-			self.update_with_operand(
-				operation,
-				operand_index,
-				constraints
-					.iter()
-					.map(|constraint| &constraint.as_ref()[operand_index]),
-				cs,
-			);
-		}
-	}
-}
-
 /// One shifted reference, packed most-significant first: operation (2 bits) ‖ shift sequence
 /// (`2 * LOG_SHIFT_COUNT`) ‖ operand position (8) ‖ constraint index (32).
 ///
@@ -167,7 +52,7 @@ impl PackedRef {
 		constraint_index: u32,
 	) -> Self {
 		let seq = (shift_seq[1].index() << LOG_SHIFT_COUNT | shift_seq[0].index()) as u64;
-		let op = operation_code(operation) as u64;
+		let op = operation.packed_code() as u64;
 		Self(op << 58 | seq << 40 | (operand_index as u64) << 32 | constraint_index as u64)
 	}
 	/// `(operation, shift sequence)` — the identity of the key this reference belongs to.
@@ -181,26 +66,6 @@ impl PackedRef {
 			operand_index: (self.0 >> 32) as u8,
 			constraint_index: self.0 as u32,
 		}
-	}
-}
-
-#[inline]
-const fn operation_code(operation: Operation) -> u8 {
-	match operation {
-		Operation::Zero => 0,
-		Operation::BitwiseAnd => 1,
-		Operation::IntegerMul => 2,
-		Operation::BinMul => 3,
-	}
-}
-
-#[inline]
-const fn operation_from_code(code: u8) -> Operation {
-	match code {
-		0 => Operation::Zero,
-		1 => Operation::BitwiseAnd,
-		2 => Operation::IntegerMul,
-		_ => Operation::BinMul,
 	}
 }
 
@@ -407,7 +272,9 @@ fn build_segment(offsets: &[usize], refs: &[PackedRef], seqs: &SeqTable) -> KeyS
 				for _ in 0..n {
 					let &(code, count) = key_iter.next().expect("keys_per_word sums to keys.len()");
 					keys.push(Key {
-						operation: operation_from_code((code >> (2 * LOG_SHIFT_COUNT)) as u8),
+						operation: Operation::from_packed_code(
+							(code >> (2 * LOG_SHIFT_COUNT)) as u8,
+						),
 						dense_shift_idx: dense_shift_enc.dense_idx(seqs.seq(code)),
 						range: ref_offset..ref_offset + count,
 					});
@@ -479,27 +346,5 @@ pub(super) fn build_key_collection(cs: &ConstraintSystem, inout: InoutSegment) -
 	KeyCollection {
 		public: build_segment(&offsets[..=n_public], &refs, &seqs),
 		hidden: build_segment(&offsets[n_public..], &refs, &seqs),
-	}
-}
-
-/// The original one-pass builder, kept as the equivalence oracle for the counting-sort one.
-#[cfg(test)]
-pub(super) fn build_key_collection_reference(
-	cs: &ConstraintSystem,
-	inout: InoutSegment,
-) -> KeyCollection {
-	let mut builder_key_lists = BuilderKeyLists::new(cs.value_vec_len());
-
-	// Update the builder keys lists with respect to each operand of each operation.
-	builder_key_lists.update_with_constraints(Operation::Zero, &cs.zero_constraints, cs);
-	builder_key_lists.update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, cs);
-	builder_key_lists.update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, cs);
-	builder_key_lists.update_with_constraints(Operation::BinMul, &cs.bmul_constraints, cs);
-
-	// Split the builder key lists at the public segment boundary, one half per segment.
-	let hidden_lists = builder_key_lists.split_off(cs.n_public_words(inout));
-	KeyCollection {
-		public: KeySegment::build(builder_key_lists.into_inner()),
-		hidden: KeySegment::build(hidden_lists.into_inner()),
 	}
 }
