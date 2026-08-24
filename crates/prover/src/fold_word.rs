@@ -36,6 +36,11 @@ const LOG_CHUNK_SIZE: usize = CHUNK_SIZE.ilog2() as usize;
 ///
 /// Sixteen chunks is 1024 words, which is the setting that loses at neither end.
 const MIN_CHUNKS_PER_TASK: usize = 16;
+/// One 64-bit word with its bit axis expanded into full field elements.
+///
+/// Each bit position becomes one element, so the word is carried in oblong form.
+pub type FoldedWord<F> = [F; Word::BITS];
+
 /// Minimum words one parallel task folds along the bit axis.
 ///
 /// A packed element is the unit of work here, and it holds as few as one word.
@@ -138,6 +143,7 @@ impl<F: BinaryField> BitWeightTables<F> {
 /// [`fold_words`] rebuilds its Method of Four Russians lookup transform on every call. A caller
 /// folding several word-lists against the same scalar vector can instead build the transform once
 /// with [`new`](Self::new) and reuse it across [`fold`](Self::fold) calls.
+#[derive(Debug)]
 pub struct BitAxisFolder<F: BinaryField> {
 	tables: BitWeightTables<F>,
 }
@@ -326,7 +332,7 @@ fn accumulate_word_chunk<F: BinaryField>(
 	chunk: &[Word; CHUNK_SIZE],
 	tables: &RowFoldTables<F, { Word::BYTES }>,
 	weight: F,
-	acc: &mut [F; Word::BITS],
+	acc: &mut FoldedWord<F>,
 ) {
 	// Reshape the chunk into one contiguous group of eight rows per table.
 	let groups = bytemuck::must_cast_ref::<
@@ -356,7 +362,7 @@ fn accumulate_word_chunk<F: BinaryField>(
 /// ## Preconditions
 ///
 /// * `words.len() <= 1 << point.len()`
-pub fn fold_across_words<F>(words: &[Word], point: &[F]) -> [F; Word::BITS]
+pub fn fold_across_words<F>(words: &[Word], point: &[F]) -> FoldedWord<F>
 where
 	F: BinaryField,
 {
@@ -374,6 +380,7 @@ where
 /// * one weight per chunk, built from the point's suffix.
 ///
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
+#[derive(Debug)]
 pub struct WordFolder<F: BinaryField> {
 	/// One 256-entry subset-sum table per byte of a word, from the prefix expansion.
 	///
@@ -382,9 +389,11 @@ pub struct WordFolder<F: BinaryField> {
 	lookups: RowFoldTables<F, { Word::BYTES }>,
 	/// One weight per chunk of `CHUNK_SIZE` words, from the suffix expansion.
 	suffix_weights: FieldBuffer<F>,
-	/// The word axis's length, which each [`fold`](Self::fold) call's list fits in:
-	/// `2^point.len()`.
-	n_words: usize,
+	/// Base-2 log of the word axis's length, which every folded list fits in.
+	///
+	/// This is the point's own width, stored rather than the length it stands for.
+	/// A point as wide as a `usize` would overflow that length, but never its log.
+	log_n_words: usize,
 }
 
 impl<F: BinaryField> WordFolder<F> {
@@ -412,7 +421,7 @@ impl<F: BinaryField> WordFolder<F> {
 		Self {
 			lookups,
 			suffix_weights,
-			n_words: 1 << point.len(),
+			log_n_words: point.len(),
 		}
 	}
 
@@ -437,8 +446,8 @@ impl<F: BinaryField> WordFolder<F> {
 	/// ## Preconditions
 	///
 	/// * `words.len() <= 1 << point.len()`
-	pub fn fold(&self, words: &[Word]) -> [F; Word::BITS] {
-		assert!(words.len() <= self.n_words, "words.len() must not exceed 2^point.len()");
+	pub fn fold(&self, words: &[Word]) -> FoldedWord<F> {
+		assert!(words.len() <= 1 << self.log_n_words, "words.len() must not exceed 2^point.len()");
 
 		let (chunks, tail) = words.as_chunks::<CHUNK_SIZE>();
 		let mut folded = [F::ZERO; Word::BITS];
@@ -465,8 +474,8 @@ impl<F: BinaryField> WordFolder<F> {
 	/// ## Preconditions
 	///
 	/// * `words.len() <= 1 << point.len()`
-	pub fn fold_par(&self, words: &[Word]) -> [F; Word::BITS] {
-		assert!(words.len() <= self.n_words, "words.len() must not exceed 2^point.len()");
+	pub fn fold_par(&self, words: &[Word]) -> FoldedWord<F> {
+		assert!(words.len() <= 1 << self.log_n_words, "words.len() must not exceed 2^point.len()");
 
 		let (chunks, tail) = words.as_chunks::<CHUNK_SIZE>();
 

@@ -8,13 +8,9 @@ use binius_compute::Allocator;
 use binius_core::{ValueTable, word::Word};
 use binius_field::{BinaryField, PackedField};
 use binius_math::{FieldVec, inner_product::inner_product};
+pub use binius_prover::fold_word::FoldedWord;
 use binius_prover::fold_word::WordFolder;
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-
-/// One 64-bit word with its bit axis expanded into full field elements.
-///
-/// Each bit position becomes one element, so the word is carried in oblong form.
-pub type FoldedWord<F> = [F; Word::BITS];
 
 /// The committed witness of a batch, with its instance axis collapsed at a point.
 ///
