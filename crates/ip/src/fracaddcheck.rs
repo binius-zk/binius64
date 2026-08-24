@@ -98,9 +98,7 @@ where
 ///
 /// * `fraction` - The unpadded leaf's numerator and denominator.
 /// * `pad_eq` - The padding coordinates' equality weight $\text{eq}(0^\nu; X_\text{pad})$, which is
-///   [`eq_ind_zero`] over the lowest coordinates of the leaf point.
-///
-/// [`eq_ind_zero`]: binius_math::multilinear::eq::eq_ind_zero
+///   the all-zeros equality indicator over the lowest coordinates of the leaf point.
 pub fn pad_leaf_fraction<E: FieldOps>(fraction: (E, E), pad_eq: E) -> (E, E) {
 	let (num, den) = fraction;
 	(num * pad_eq.clone(), E::one() + (den - E::one()) * pad_eq)

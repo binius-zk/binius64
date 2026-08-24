@@ -17,8 +17,10 @@ use binius_ip_prover::{
 	sumcheck::{bivariate_product_prover, prove_single},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_packed,
-	multilinear::eq::eq_ind_partial_eval, tensor_algebra::TensorAlgebra,
+	FieldBuffer, FieldSlice, FieldVec,
+	inner_product::inner_product_packed,
+	multilinear::hypercube::{Hypercube, OneCube},
+	tensor_algebra::TensorAlgebra,
 };
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::{
@@ -251,7 +253,10 @@ where
 /// The low factor spans one row fold chunk, or the whole point when that is shorter.
 fn expand_tensor_factors(point: &[B128]) -> (FieldBuffer<B128>, FieldBuffer<B128>) {
 	let (point_lo, point_hi) = point.split_at(point.len().min(LOG_SPLIT_BLOCK));
-	(eq_ind_partial_eval::<B128>(point_lo), eq_ind_partial_eval::<B128>(point_hi))
+	(
+		OneCube::eq_ind_partial_eval::<B128>(point_lo),
+		OneCube::eq_ind_partial_eval::<B128>(point_hi),
+	)
 }
 
 /// Output of ring-switching prover.
@@ -313,7 +318,7 @@ where
 
 	// Sample row-batching challenges
 	let r_double_prime = channel.sample_many(log_packing);
-	let eq_r_double_prime = eq_ind_partial_eval::<B128>(&r_double_prime);
+	let eq_r_double_prime = OneCube::eq_ind_partial_eval::<B128>(&r_double_prime);
 
 	// GF(2^128) reduction is F2-linear, so it commutes with XOR.
 	// Summing 128 wide products then reducing once matches reducing each term first.
@@ -399,7 +404,10 @@ mod test {
 	use binius_math::{
 		FieldBuffer,
 		inner_product::{inner_product_buffers, inner_product_subfield},
-		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate_inplace},
+		multilinear::{
+			evaluate::evaluate_inplace,
+			hypercube::{Hypercube, OneCube},
+		},
 		test_utils::{index_to_hypercube_point, random_field_buffer, random_scalars},
 	};
 	use binius_verifier::{config::B1, ring_switch::eval_rs_eq};
@@ -439,14 +447,14 @@ mod test {
 		let mat = random_field_buffer::<P>(&mut rng, log_len);
 		let point: Vec<F> = random_scalars(&mut rng, log_len);
 
-		let expected = naive_fold_1b_rows(&mat, eq_ind_partial_eval::<F>(&point).as_ref());
+		let expected = naive_fold_1b_rows(&mat, OneCube::eq_ind_partial_eval::<F>(&point).as_ref());
 
 		// The low factor must cover whole packed elements, unless the matrix is one element.
 		// The ceiling is the 128-row chunk the row fold consumes.
 		for split_at in P::LOG_WIDTH.min(log_len)..=log_len.min(LOG_SPLIT_BLOCK) {
 			let (point_lo, point_hi) = point.split_at(split_at);
-			let eq_lo = eq_ind_partial_eval::<F>(point_lo);
-			let eq_hi = eq_ind_partial_eval::<F>(point_hi);
+			let eq_lo = OneCube::eq_ind_partial_eval::<F>(point_lo);
+			let eq_hi = OneCube::eq_ind_partial_eval::<F>(point_hi);
 
 			let split = fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi);
 			assert_eq!(
@@ -479,13 +487,13 @@ mod test {
 		let point: Vec<F> = random_scalars(&mut rng, log_len);
 		let row_batching_challenges: Vec<F> =
 			random_scalars(&mut rng, <F as ExtensionField<B1>>::LOG_DEGREE);
-		let row_batch_query = eq_ind_partial_eval::<F>(&row_batching_challenges);
+		let row_batch_query = OneCube::eq_ind_partial_eval::<F>(&row_batching_challenges);
 
 		// The indicator has no chunk ceiling, so the low factor may span the whole point.
 		for split_at in P::LOG_WIDTH.min(log_len)..=log_len {
 			let (point_lo, point_hi) = point.split_at(split_at);
-			let eq_lo = eq_ind_partial_eval::<F>(point_lo);
-			let eq_hi = eq_ind_partial_eval::<F>(point_hi);
+			let eq_lo = OneCube::eq_ind_partial_eval::<F>(point_lo);
+			let eq_hi = OneCube::eq_ind_partial_eval::<F>(point_hi);
 
 			let rs_eq_ind =
 				rs_eq_ind_from_factors::<_, P>(&GlobalAllocator, &eq_lo, &eq_hi, &row_batch_query);
@@ -533,7 +541,7 @@ mod test {
 			random_scalars(&mut rng, <F as ExtensionField<B1>>::LOG_DEGREE);
 
 		let row_batching_expanded_query: FieldBuffer<F> =
-			eq_ind_partial_eval(&row_batching_challenges);
+			OneCube::eq_ind_partial_eval(&row_batching_challenges);
 
 		let (eq_lo, eq_hi) = expand_tensor_factors(&z_vals);
 		let rs_eq = rs_eq_ind_from_factors::<_, F>(
@@ -548,7 +556,7 @@ mod test {
 
 		// compare eval against inner product w/ eq ind mle of eval point
 
-		let tensor_expanded_eval_point = eq_ind_partial_eval::<F>(&eval_point);
+		let tensor_expanded_eval_point = OneCube::eq_ind_partial_eval::<F>(&eval_point);
 		let expected_eval = inner_product_buffers(&rs_eq, &tensor_expanded_eval_point);
 
 		let actual_eval =
@@ -578,7 +586,7 @@ mod test {
 		let (prefix, suffix) = eval_point.split_at(log_degree);
 
 		// Reference: expand the whole point and contract it against every bit.
-		let full_tensor = eq_ind_partial_eval::<F>(&eval_point);
+		let full_tensor = OneCube::eq_ind_partial_eval::<F>(&eval_point);
 		let expected = inner_product_subfield(
 			PackedField::iter_slice(bit_matrix.as_ref()),
 			PackedField::iter_slice(full_tensor.as_ref()),

@@ -3,7 +3,10 @@
 use std::{iter, rc::Rc};
 
 use binius_field::field::FieldOps;
-use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
+use binius_math::{
+	multilinear::hypercube::{Hypercube, OneCube},
+	univariate::evaluate_univariate,
+};
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex, WitnessSegment};
 
 /// Returns a closure that evaluates the wiring transparent polynomial for a specific segment.
@@ -38,7 +41,7 @@ pub fn evaluate_segment_wiring_mle<F: FieldOps>(
 ) -> F {
 	let mut acc = [F::zero(), F::zero(), F::zero()];
 
-	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
+	let r_y_tensor = OneCube::eq_ind_partial_eval_scalars(r_y);
 	for (r_x_tensor_i, MulConstraint { a, b, c }) in iter::zip(r_x_tensor, mul_constraints) {
 		for (dst, operand) in iter::zip(&mut acc, [a, b, c]) {
 			let r_y_tensor_sum = operand

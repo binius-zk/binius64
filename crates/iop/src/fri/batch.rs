@@ -4,7 +4,14 @@ use std::iter;
 
 use binius_field::{BinaryField, FieldOps, util::expand_subset_sums};
 use binius_ip::channel::WordIPVerifierChannel;
-use binius_math::{line::extrapolate_line, multilinear, ntt::DomainContext};
+use binius_math::{
+	line::extrapolate_line,
+	multilinear::{
+		self,
+		hypercube::{Hypercube, OneCube},
+	},
+	ntt::DomainContext,
+};
 
 use crate::merkle_channel::MerkleIPVerifierChannel;
 /// A virtual oracle for a code proximity test.
@@ -140,7 +147,7 @@ impl<F: BinaryField, E: FieldOps<Scalar = F>, C> ProxTestOracle<F, E>
 		// Receive each bundled oracle's openings in commit order (matching the prover), then
 		// combine across oracles by the outer-challenge tensor expansion:
 		// combined[q] = \sum_i values_i[q] * outer_tensor[i].
-		let outer_tensor = multilinear::eq::eq_ind_partial_eval_scalars(&self.outer_challenges);
+		let outer_tensor = OneCube::eq_ind_partial_eval_scalars(&self.outer_challenges);
 		let mut combined = vec![E::zero(); indices.len()];
 		for (oracle, scalar) in self.oracles.iter().zip(&outer_tensor) {
 			let values = oracle.open_queries(indices, channel)?;

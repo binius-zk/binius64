@@ -145,7 +145,10 @@ mod tests {
 	use super::*;
 	use crate::{
 		line::extrapolate_line,
-		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
+		multilinear::{
+			evaluate::evaluate,
+			hypercube::{Hypercube, OneCube},
+		},
 		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
 	};
 
@@ -228,7 +231,7 @@ mod tests {
 
 		let point = random_scalars::<F>(&mut rng, tensor_n_vars);
 
-		let tensor = eq_ind_partial_eval::<P>(&point);
+		let tensor = OneCube::eq_ind_partial_eval::<P>(&point);
 
 		let bits = repeat_with(|| rng.random())
 			.take(1 << n_vars)

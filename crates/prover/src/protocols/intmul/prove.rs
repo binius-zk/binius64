@@ -28,8 +28,8 @@ use binius_math::{
 	field_buffer::FieldBuffer,
 	inner_product::inner_product_buffers,
 	multilinear::{
-		eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
 		evaluate::{evaluate, evaluate_inplace},
+		hypercube::{Hypercube, OneCube},
 	},
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -323,7 +323,7 @@ where
 		padded_column_evals.resize(1 << log_cols, F::ZERO);
 		let folded_index_claim =
 			evaluate(&FieldBuffer::<P>::from_values(&padded_column_evals), &rho);
-		let rho_tensor = eq_ind_partial_eval_scalars::<F>(&rho);
+		let rho_tensor = OneCube::eq_ind_partial_eval_scalars::<F>(&rho);
 		let fold_guard = tracing::debug_span!("Fold index columns by rho").entered();
 		// Each row folds through the embedding table directly, in parallel:
 		//     V[i] = sum_j rho_tensor[j] * iota(index_j[i])
@@ -368,7 +368,7 @@ where
 		// B(x) = sum_i eq(r_I^b, i) * b(i, x), then re-randomize its claim B(r_2) = b_recomb from
 		// `b_eval_point` (r_2) to the shared point via a single-claim MLE-eval check.
 		assert!(b_exponents.len() <= 1 << n_vars);
-		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
+		let b_tensor = OneCube::eq_ind_partial_eval_scalars::<F>(r_ib);
 		let b_folded = fold_words::<_, P, _>(alloc, b_exponents, &b_tensor);
 		let b_sumcheck_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
 			alloc,
@@ -459,7 +459,7 @@ where
 
 		// Compute leaf evaluations at x_point
 		let leaf_guard = tracing::debug_span!("Compute base layer partial evals").entered();
-		let x_tensor = eq_ind_partial_eval(x_point);
+		let x_tensor = OneCube::eq_ind_partial_eval(x_point);
 		let b_leaves_evals = b_leaves
 			.chunks_par(n_vars)
 			.map(|b_leaf| inner_product_buffers(&b_leaf, &x_tensor))
@@ -510,7 +510,7 @@ where
 		// terms by eq_k(γ, ·). γ is sampled before the batched sumcheck so the round polynomials
 		// are fixed against it.
 		let gamma = self.channel.sample_many(Word::LOG_BITS);
-		let eq_weights = eq_ind_partial_eval_scalars::<F>(&gamma);
+		let eq_weights = OneCube::eq_ind_partial_eval_scalars::<F>(&gamma);
 		// `SelectorMlecheckProver` reads the exponent bits through the `Bitwise` bitmask
 		// abstraction, which is implemented for the primitive integer types. `Word` is
 		// `repr(transparent)` over `u64`, so reinterpret the slice in place.
@@ -625,7 +625,7 @@ where
 		// eq(r_limb) to bind them to the final-layer sumchecks.
 		let regather_guard = tracing::debug_span!("Regather per-limb evals").entered();
 		let twists = limb_column_twists();
-		let x_tensor = eq_ind_partial_eval(r_content);
+		let x_tensor = OneCube::eq_ind_partial_eval(r_content);
 		let limb_evals = |tree: usize| {
 			(0..N_LIMBS)
 				.map(|limb| {

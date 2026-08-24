@@ -31,7 +31,10 @@ use std::iter;
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::fracaddcheck::FracAddEvalClaim;
-use binius_math::{batch_invert::BatchInversion, multilinear::eq::eq_one_var};
+use binius_math::{
+	batch_invert::BatchInversion,
+	multilinear::hypercube::{Hypercube, OneCube},
+};
 use either::Either;
 use itertools::izip;
 
@@ -67,7 +70,7 @@ where
 	// products serves the whole batch.
 	let pad_eq_prefixes = iter::once(F::ONE)
 		.chain(node_point.iter().scan(F::ONE, |acc, &coord| {
-			*acc *= eq_one_var(F::ZERO, coord);
+			*acc *= OneCube::eq_one_var(F::ZERO, coord);
 			Some(*acc)
 		}))
 		.collect::<Vec<_>>();
@@ -143,7 +146,7 @@ pub fn unpad_leaf_claim<F: Field>(
 
 	let pad_eq = point[..n_pad_vars]
 		.iter()
-		.map(|&coord| eq_one_var(F::ZERO, coord))
+		.map(|&coord| OneCube::eq_one_var(F::ZERO, coord))
 		.product::<F>();
 	assert!(pad_eq != F::ZERO, "a padding coordinate equals one");
 	let pad_eq_inv = pad_eq.invert_or_zero();

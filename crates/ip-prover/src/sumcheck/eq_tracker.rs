@@ -27,7 +27,7 @@ use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{
 	field_buffer::FieldBuffer,
-	multilinear::eq::{eq_ind_partial_eval, eq_ind_truncate_low_inplace, eq_one_var},
+	multilinear::hypercube::{Hypercube, OneCube},
 };
 
 use super::round_evals::RoundEvals;
@@ -68,7 +68,7 @@ impl<F: Field> EqPrefix<F> {
 		assert!(self.n_vars_remaining > 0);
 
 		// The bound variable's linear term becomes a constant in the product.
-		self.eq_prefix_eval *= eq_one_var(challenge, self.next_coordinate());
+		self.eq_prefix_eval *= OneCube::eq_one_var(challenge, self.next_coordinate());
 		self.n_vars_remaining -= 1;
 	}
 }
@@ -93,7 +93,7 @@ impl<F: Field, P: PackedField<Scalar = F>> EqTracker<P> {
 		let expanded = &eval_point[..eval_point.len().saturating_sub(1)];
 		Self {
 			prefix: EqPrefix::new(eval_point),
-			expansion: eq_ind_partial_eval(expanded),
+			expansion: OneCube::eq_ind_partial_eval(expanded),
 		}
 	}
 
@@ -144,7 +144,9 @@ impl<F: Field, P: PackedField<Scalar = F>> EqTracker<P> {
 	/// Advances one round, contracting the expansion onto the coordinates that remain.
 	pub fn fold(&mut self, challenge: F) {
 		// Summing the two halves marginalises out the highest variable.
-		self.advance(challenge, |expansion, shrunk| eq_ind_truncate_low_inplace(expansion, shrunk));
+		self.advance(challenge, |expansion, shrunk| {
+			OneCube::eq_ind_truncate_low_inplace(expansion, shrunk)
+		});
 	}
 
 	/// Advances one round over values the caller has already contracted.
@@ -196,8 +198,8 @@ impl<F: Field, P: PackedField<Scalar = F>> ChunkedEqTracker<P> {
 		let (chunk_point, suffix_point) = expanded.split_at(chunk_vars);
 		Self {
 			prefix: EqPrefix::new(eval_point),
-			chunk: eq_ind_partial_eval(chunk_point),
-			suffix: eq_ind_partial_eval(suffix_point),
+			chunk: OneCube::eq_ind_partial_eval(chunk_point),
+			suffix: OneCube::eq_ind_partial_eval(suffix_point),
 		}
 	}
 
@@ -269,7 +271,7 @@ impl<F: Field, P: PackedField<Scalar = F>> ChunkedEqTracker<P> {
 
 		// Summing the two halves marginalises out that factor's highest variable.
 		if let Some(factor) = factor {
-			eq_ind_truncate_low_inplace(factor, factor.log_len() - 1);
+			OneCube::eq_ind_truncate_low_inplace(factor, factor.log_len() - 1);
 		}
 
 		self.prefix.advance(challenge);
@@ -317,14 +319,14 @@ mod tests {
 			assert_eq!(tracker.eq_prefix_eval(), expected_prefix);
 
 			// The expansion matches one built from scratch over the lower coordinates.
-			let expected = eq_ind_partial_eval::<P>(&point[..unbound - 1]);
+			let expected = OneCube::eq_ind_partial_eval::<P>(&point[..unbound - 1]);
 			assert_eq!(tracker.expansion().log_len(), expected.log_len());
 			for i in 0..expected.len() {
 				assert_eq!(tracker.expansion().get(i), expected.get(i), "round {round}, slot {i}");
 			}
 
 			tracker.fold(challenge);
-			expected_prefix *= eq_one_var(challenge, point[unbound - 1]);
+			expected_prefix *= OneCube::eq_one_var(challenge, point[unbound - 1]);
 		}
 
 		// Every coordinate is bound, so the product covers the whole point.
@@ -350,7 +352,7 @@ mod tests {
 		let mut folded = EqTracker::<P>::new(&point);
 		let mut truncated = EqTracker::<P>::new(&point);
 		// The values the truncating path never rewrites.
-		let original = eq_ind_partial_eval::<P>(&point[..n_vars - 1]);
+		let original = OneCube::eq_ind_partial_eval::<P>(&point[..n_vars - 1]);
 
 		for (round, &challenge) in challenges.iter().enumerate() {
 			folded.fold(challenge);
@@ -400,7 +402,7 @@ mod tests {
 		for (round, &challenge) in challenges.iter().enumerate() {
 			let unbound = n_vars - round;
 			// The reference the two factors must rebuild between them.
-			let full = eq_ind_partial_eval::<P>(&point[..unbound - 1]);
+			let full = OneCube::eq_ind_partial_eval::<P>(&point[..unbound - 1]);
 			let chunk = tracker.chunk();
 			let suffix = tracker.suffix();
 

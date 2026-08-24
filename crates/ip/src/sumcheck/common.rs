@@ -242,7 +242,10 @@ impl<F: FieldOps> RoundProof<F> {
 #[cfg(test)]
 mod tests {
 	use binius_field::{Field, Random, arch::OptimalB128 as B128};
-	use binius_math::{multilinear::eq::eq_one_var, test_utils::random_scalars};
+	use binius_math::{
+		multilinear::hypercube::{Hypercube, OneCube},
+		test_utils::random_scalars,
+	};
 	use rand::prelude::*;
 
 	use super::*;
@@ -311,7 +314,7 @@ mod tests {
 			// The equality factor is linear, so the product gains exactly one degree.
 			assert_eq!(scaled.0.len(), coeffs.0.len() + 1);
 			for x in random_scalars::<B128>(&mut rng, 4) {
-				let eq_at_x = eq_one_var(x, alpha);
+				let eq_at_x = OneCube::eq_one_var(x, alpha);
 				assert_eq!(scaled.evaluate(&x), coeffs.evaluate(&x) * eq_at_x);
 			}
 		}
