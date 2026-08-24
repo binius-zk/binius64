@@ -284,7 +284,7 @@ mod test {
 	use binius_core::word::Word;
 	use binius_field::{AESTowerField8b, arch::OptimalPackedB128};
 	use binius_math::{
-		BinarySubspace, FieldBuffer, multilinear::evaluate::evaluate,
+		BinarySubspace, FieldBuffer, multilinear::Multilinear,
 		univariate::subspace_lagrange_evals_scalars,
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::CanSample};
@@ -381,7 +381,7 @@ mod test {
 		let folder = BitAxisFolder::new(&verifier_lagrange_evals);
 		for (i, eval) in [a_eval, b_eval, c_eval].iter().enumerate() {
 			let folded: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &one_bit_mlvs[i]);
-			assert_eq!(evaluate(&folded, &eval_point), *eval);
+			assert_eq!(folded.evaluate(&eval_point), *eval);
 		}
 	}
 }

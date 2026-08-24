@@ -323,7 +323,7 @@ mod tests {
 	use binius_field::{Random, arithmetic_traits::InvertOrZero, field::FieldOps};
 	use binius_math::{
 		FieldBuffer,
-		multilinear::evaluate::evaluate,
+		multilinear::Multilinear,
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 	};
 	use rand::prelude::*;
@@ -361,7 +361,7 @@ mod tests {
 			let values = (0..num_0.len())
 				.map(|i| compose(num_0.get(i), num_1.get(i), den_0.get(i), den_1.get(i)))
 				.collect::<Vec<_>>();
-			evaluate(&FieldBuffer::<P>::from_values(&values), eval_point)
+			FieldBuffer::<P>::from_values(&values).evaluate(eval_point)
 		};
 		[
 			composite(|num_0, num_1, den_0, den_1| num_0 * den_1 + num_1 * den_0),

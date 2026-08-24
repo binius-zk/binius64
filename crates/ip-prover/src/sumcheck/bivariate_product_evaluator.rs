@@ -104,10 +104,7 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
 	use binius_ip::sumcheck::verify;
-	use binius_math::{
-		inner_product::inner_product_par, multilinear::evaluate::evaluate,
-		test_utils::random_field_buffer,
-	};
+	use binius_math::{multilinear::Multilinear, test_utils::random_field_buffer};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use rand::prelude::*;
 
@@ -130,7 +127,7 @@ mod tests {
 
 		let multilinear_a = random_field_buffer::<P>(&mut rng, n_vars);
 		let multilinear_b = random_field_buffer::<P>(&mut rng, n_vars);
-		let expected_sum = inner_product_par(&multilinear_a, &multilinear_b);
+		let expected_sum = multilinear_a.par_inner_product(&multilinear_b);
 
 		let prover = bivariate_product_prover(
 			&alloc,
@@ -157,8 +154,8 @@ mod tests {
 		// The prover binds variables high-to-low; `evaluate` expects them low-to-high.
 		let mut eval_point = sumcheck_output.challenges.clone();
 		eval_point.reverse();
-		assert_eq!(evaluate(&multilinear_a, &eval_point), multilinear_evals[0]);
-		assert_eq!(evaluate(&multilinear_b, &eval_point), multilinear_evals[1]);
+		assert_eq!(multilinear_a.evaluate(&eval_point), multilinear_evals[0]);
+		assert_eq!(multilinear_b.evaluate(&eval_point), multilinear_evals[1]);
 		assert_eq!(output.challenges, sumcheck_output.challenges);
 	}
 }

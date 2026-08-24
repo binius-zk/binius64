@@ -123,9 +123,8 @@ mod tests {
 		sumcheck::{RoundCoeffs, RoundProof},
 	};
 	use binius_math::{
-		inner_product::inner_product_par,
 		multilinear::{
-			evaluate::evaluate,
+			Multilinear,
 			hypercube::{Hypercube, OneCube},
 		},
 		test_utils::random_field_buffer,
@@ -151,7 +150,7 @@ mod tests {
 	) -> (SharedSumcheckProver<'alloc, GlobalAllocator, P, BivariateProductEvaluator>, F) {
 		let a = random_field_buffer::<P>(&mut *rng, n_vars);
 		let b = random_field_buffer::<P>(&mut *rng, n_vars);
-		let sum = inner_product_par(&a, &b);
+		let sum = a.par_inner_product(&b);
 		let prover = bivariate_product_prover(alloc, [a, b], sum);
 		(prover, sum)
 	}
@@ -243,7 +242,7 @@ mod tests {
 
 		let a = random_field_buffer::<P>(&mut rng, n_vars);
 		let b = random_field_buffer::<P>(&mut rng, n_vars);
-		let sum = inner_product_par(&a, &b);
+		let sum = a.par_inner_product(&b);
 		let inner = bivariate_product_prover(&alloc, [a.clone(), b.clone()], sum);
 		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum]);
 
@@ -284,8 +283,8 @@ mod tests {
 		// The inner multilinears evaluate to the claimed values at the (reversed) inner challenges.
 		let mut inner_point = challenges[n_extra_vars..].to_vec();
 		inner_point.reverse();
-		assert_eq!(evaluate(&a, &inner_point), multilinear_evals[0]);
-		assert_eq!(evaluate(&b, &inner_point), multilinear_evals[1]);
+		assert_eq!(a.evaluate(&inner_point), multilinear_evals[0]);
+		assert_eq!(b.evaluate(&inner_point), multilinear_evals[1]);
 	}
 
 	/// With no extra variables the decorator is a transparent passthrough.

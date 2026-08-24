@@ -212,7 +212,7 @@ mod tests {
 	use binius_ip::mlecheck;
 	use binius_math::{
 		FieldBuffer,
-		multilinear::evaluate::evaluate,
+		multilinear::Multilinear,
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -247,7 +247,7 @@ mod tests {
 			.collect_vec();
 		let composite_vals = FieldBuffer::new(n_vars, composite_vals);
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate(&composite_vals, &eval_point);
+		let eval_claim = composite_vals.evaluate(&eval_point);
 
 		let prover = quadratic_mlecheck_prover(
 			&alloc,
@@ -290,7 +290,7 @@ mod tests {
 
 		// Each column evaluates to its claimed value at the challenge point.
 		for (multilinear, claimed_eval) in iter::zip(&multilinears, multilinear_evals) {
-			assert_eq!(evaluate(multilinear, &reduced_eval_point), claimed_eval);
+			assert_eq!(multilinear.evaluate(&reduced_eval_point), claimed_eval);
 		}
 
 		assert_eq!(

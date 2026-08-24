@@ -11,7 +11,7 @@ use std::{iter, slice};
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::{
-	buffer::{BufferData, VecLike},
+	buffer::VecLike,
 	rayon::{
 		prelude::*,
 		task_size::{IndexedParallelIteratorExt, WorkPerItem},
@@ -180,44 +180,6 @@ pub trait Hypercube: Sized {
 		buffer.push(P::from_scalars(iter::once(scale)));
 		let values = FieldBuffer::new(0, buffer);
 		tensor_prod_eq_ind_reserved::<Self, P, Data>(values, point)
-	}
-
-	/// Truncate the equality indicator expansion to the low indexed variables.
-	///
-	/// Each step contracts the two halves of the buffer, stripping the highest variable.
-	/// Truncating to $n'$ variables therefore leaves the indicator over $r_0, \ldots, r_{n'-1}$.
-	///
-	/// The expansion occupies a prefix of the field buffer.
-	/// Scalars after the truncated length are zeroed out.
-	///
-	/// ## Preconditions
-	///
-	/// * `truncated_log_len` must be at most `values.log_len()`
-	fn eq_ind_truncate_low_inplace<P: PackedField, Data: BufferData<P>>(
-		values: &mut FieldBuffer<P, Data>,
-		truncated_log_len: usize,
-	) {
-		assert!(
-			truncated_log_len <= values.log_len(),
-			"precondition: truncated_log_len must be at most values.log_len()"
-		);
-
-		for log_len in (truncated_log_len..values.log_len()).rev() {
-			{
-				let mut split = values.split_half_mut();
-				let (mut lo, hi) = split.halves();
-				// Contracting a variable costs additions only.
-				// So the cost of one step is the two words it reads, not its arithmetic.
-				(lo.as_mut(), hi.as_ref())
-					.into_par_iter()
-					.with_min_task_bytes::<[P; 2]>()
-					.for_each(|(zero, one)| {
-						Self::contract_var(zero, one);
-					});
-			}
-
-			values.truncate(log_len);
-		}
 	}
 
 	/// Evaluates the equality indicator multilinear at a pair of points.
@@ -436,7 +398,10 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars};
+	use crate::{
+		multilinear::MultilinearMut,
+		test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars},
+	};
 
 	type P = Packed128b;
 	type F = B128;
@@ -745,7 +710,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_one_cube_eq_ind_truncate_low_inplace_iterated() {
+	fn test_one_cube_eq_ind_truncate_low_iterated() {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Truncate the same buffer repeatedly, by a shrinking number of variables each time.
@@ -758,7 +723,7 @@ mod tests {
 
 		for reduction in (0..=reds).rev() {
 			let truncated_log_n_values = log_n_values - reduction;
-			OneCube::eq_ind_truncate_low_inplace(&mut eq_ind, truncated_log_n_values);
+			eq_ind.eq_ind_truncate_low::<OneCube>(truncated_log_n_values);
 
 			// Each step must match a direct expansion of the surviving prefix of the point.
 			let eq_ind_ref = OneCube::eq_ind_partial_eval::<P>(&point[..truncated_log_n_values]);
@@ -878,7 +843,7 @@ mod tests {
 		// Contraction above the threshold: strip the top variable and compare against a
 		// direct expansion of the prefix, whose rounds also run through the split path.
 		let mut truncated = packed;
-		OneCube::eq_ind_truncate_low_inplace(&mut truncated, n_vars - 1);
+		truncated.eq_ind_truncate_low::<OneCube>(n_vars - 1);
 		assert_eq!(truncated, OneCube::eq_ind_partial_eval::<P>(&point[..n_vars - 1]));
 	}
 
@@ -906,7 +871,7 @@ mod tests {
 
 		/// Truncation strips the trailing variables of an expansion, for either cube.
 		#[test]
-		fn eq_ind_truncate_low_inplace_strips_trailing_vars(
+		fn eq_ind_truncate_low_strips_trailing_vars(
 			seed in any::<u64>(),
 			log_n in 0usize..=8,
 		) {
@@ -915,14 +880,14 @@ mod tests {
 
 			for truncated_log_len in 0..=log_n {
 				let mut one_cube = OneCube::eq_ind_partial_eval::<P>(&point);
-				OneCube::eq_ind_truncate_low_inplace(&mut one_cube, truncated_log_len);
+				one_cube.eq_ind_truncate_low::<OneCube>(truncated_log_len);
 				prop_assert_eq!(
 					one_cube,
 					OneCube::eq_ind_partial_eval::<P>(&point[..truncated_log_len])
 				);
 
 				let mut inf_cube = InfCube::eq_ind_partial_eval::<P>(&point);
-				InfCube::eq_ind_truncate_low_inplace(&mut inf_cube, truncated_log_len);
+				inf_cube.eq_ind_truncate_low::<InfCube>(truncated_log_len);
 				prop_assert_eq!(
 					inf_cube,
 					InfCube::eq_ind_partial_eval::<P>(&point[..truncated_log_len])

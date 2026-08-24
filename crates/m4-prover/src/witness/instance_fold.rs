@@ -165,7 +165,7 @@ mod tests {
 	use binius_frontend::{CircuitBuilder, Wire};
 	use binius_math::{
 		multilinear::{
-			evaluate::evaluate,
+			Multilinear,
 			hypercube::{Hypercube, OneCube},
 		},
 		test_utils::random_scalars,
@@ -330,7 +330,7 @@ mod tests {
 			// Route B evaluates over (word, instance), so the point is reordered to match.
 			let mut point = r_wire.to_vec();
 			point.extend_from_slice(&r_rho);
-			let rhs = evaluate(&folded_words, &point);
+			let rhs = folded_words.evaluate(&point);
 
 			assert_eq!(lhs, rhs, "mismatch at log_instances = {log_instances}");
 		}
@@ -369,7 +369,7 @@ mod tests {
 			let packed =
 				folded.fold_bits::<PackedBinaryGhash1x128b>(r_j_tensor.as_ref(), &GlobalAllocator);
 			assert_eq!(
-				evaluate(&packed, &r_y),
+				packed.evaluate(&r_y),
 				folded.evaluate(&r_j, &r_y),
 				"mismatch at {} committed words",
 				table.n_hidden_words()

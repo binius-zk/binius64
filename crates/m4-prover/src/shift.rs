@@ -237,7 +237,7 @@ mod tests {
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
 		multilinear::{
-			evaluate::evaluate,
+			Multilinear,
 			hypercube::{Hypercube, OneCube},
 		},
 		test_utils::random_scalars,
@@ -284,7 +284,7 @@ mod tests {
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
 			let folded_column = fold_words::<B128, P, _>(&GlobalAllocator, column, &lagrange);
-			evaluate(&folded_column, &row_point)
+			folded_column.evaluate(&row_point)
 		};
 		// The batch witness stores only the `A` and `B` columns.
 		// The reduction reads `C` as the word-by-word AND of the two.

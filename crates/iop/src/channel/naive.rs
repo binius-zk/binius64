@@ -4,7 +4,10 @@
 
 use binius_field::Field;
 use binius_ip::channel::IPVerifierChannel;
-use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
+use binius_math::{
+	FieldBuffer,
+	multilinear::{Multilinear, MultilinearMut},
+};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -196,7 +199,7 @@ where
 		// Verify the inner product claim directly
 		let stored_poly = &self.stored_polynomials[index];
 		let witness_poly = stored_poly.to_ref();
-		let actual_inner_product: F = inner_product_buffers(&witness_poly, &transparent_poly);
+		let actual_inner_product: F = witness_poly.inner_product(&transparent_poly);
 
 		assert_eq!(
 			actual_inner_product, claim,
@@ -210,10 +213,7 @@ where
 		let transparent_eval = transparent(&point);
 
 		// Verify the transparent evaluation matches using assert_zero
-		self.assert_zero(
-			transparent_eval
-				- binius_math::multilinear::evaluate::evaluate_inplace(transparent_poly, &point),
-		)?;
+		self.assert_zero(transparent_eval - transparent_poly.evaluate_inplace(&point))?;
 
 		Ok(())
 	}

@@ -381,7 +381,7 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{
-			evaluate::evaluate,
+			Multilinear,
 			hypercube::{Hypercube, OneCube},
 		},
 		test_utils::{random_field_buffer, random_scalars},
@@ -526,7 +526,7 @@ mod tests {
 
 			assert_eq!(
 				prover_out.tables[table_index].eval_claim,
-				evaluate(&table.values, own_point),
+				table.values.evaluate(own_point),
 				"table claim wrong for table {table_index} ({shape})"
 			);
 
@@ -542,7 +542,7 @@ mod tests {
 			let pushforward = FieldBuffer::<P>::from_values(&pushforward);
 			assert_eq!(
 				prover_out.tables[table_index].pushforward_claim,
-				evaluate(&pushforward, own_point),
+				pushforward.evaluate(own_point),
 				"pushforward claim wrong for table {table_index} ({shape})"
 			);
 		}
@@ -560,7 +560,7 @@ mod tests {
 				let own_point = &index_point[index_point.len() - looker.eval_point.len()..];
 				assert_eq!(
 					*claim,
-					evaluate(&embedded, own_point),
+					embedded.evaluate(own_point),
 					"index claim wrong for table {table_index}, n={} ({shape})",
 					looker.eval_point.len()
 				);

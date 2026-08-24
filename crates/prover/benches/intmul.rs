@@ -18,7 +18,7 @@ use binius_ip_prover::{
 use binius_math::{
 	FieldBuffer,
 	multilinear::{
-		evaluate::evaluate,
+		Multilinear,
 		hypercube::{Hypercube, OneCube},
 	},
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerPreExpanded},
@@ -184,7 +184,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 	// evaluation point) is sufficient.
 	let n_vars = witness.b_root.log_len();
 	let initial_eval_point = random_scalars::<F>(&mut rand::rng(), n_vars);
-	let exp_eval = evaluate(&witness.b_root, &initial_eval_point);
+	let exp_eval = witness.b_root.evaluate(&initial_eval_point);
 
 	let phase1 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
@@ -365,7 +365,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 	let b_bitmasks: &[u64] = bytemuck::cast_slice(witness.b_exponents);
 	let n_vars = witness.b_root.log_len();
 	let initial_eval_point = random_scalars::<F>(&mut rand::rng(), n_vars);
-	let exp_eval = evaluate(&witness.b_root, &initial_eval_point);
+	let exp_eval = witness.b_root.evaluate(&initial_eval_point);
 	let phase1 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);

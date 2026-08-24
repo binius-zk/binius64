@@ -27,7 +27,10 @@ use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{
 	field_buffer::FieldBuffer,
-	multilinear::hypercube::{Hypercube, OneCube},
+	multilinear::{
+		MultilinearMut,
+		hypercube::{Hypercube, OneCube},
+	},
 };
 
 use super::round_evals::RoundEvals;
@@ -145,7 +148,7 @@ impl<F: Field, P: PackedField<Scalar = F>> EqTracker<P> {
 	pub fn fold(&mut self, challenge: F) {
 		// Summing the two halves marginalises out the highest variable.
 		self.advance(challenge, |expansion, shrunk| {
-			OneCube::eq_ind_truncate_low_inplace(expansion, shrunk)
+			expansion.eq_ind_truncate_low::<OneCube>(shrunk)
 		});
 	}
 
@@ -271,7 +274,7 @@ impl<F: Field, P: PackedField<Scalar = F>> ChunkedEqTracker<P> {
 
 		// Summing the two halves marginalises out that factor's highest variable.
 		if let Some(factor) = factor {
-			OneCube::eq_ind_truncate_low_inplace(factor, factor.log_len() - 1);
+			factor.eq_ind_truncate_low::<OneCube>(factor.log_len() - 1);
 		}
 
 		self.prefix.advance(challenge);
