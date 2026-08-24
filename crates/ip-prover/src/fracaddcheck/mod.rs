@@ -6,10 +6,7 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::{fracaddcheck::FracAddEvalClaim, mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
-	FieldBuffer, FieldVec,
-	batch_invert::BatchInversion,
-	line::extrapolate_line,
-	multilinear::eq::{eq_ind_partial_eval, eq_one_var},
+	FieldBuffer, FieldVec, line::extrapolate_line, multilinear::eq::eq_ind_partial_eval,
 };
 use binius_utils::{
 	buffer::VecLike,
@@ -18,7 +15,6 @@ use binius_utils::{
 		task_size::{IndexedParallelIteratorExt, WorkPerItem},
 	},
 };
-use either::Either;
 use itertools::izip;
 
 use crate::{
@@ -33,10 +29,12 @@ use crate::{
 };
 
 pub mod fraction;
+pub mod padding;
 pub mod zero_pad_mle;
 
 use fraction::Fraction;
-use zero_pad_mle::{ConstantFraction, ZeroPadMleCheckProver};
+use padding::layer_provers;
+pub use padding::unpad_leaf_claim;
 
 pub use crate::sumcheck::frac_add_mle::LayerProver;
 
@@ -469,18 +467,18 @@ where
 
 /// Runs a batched fractional-addition check for trees of *unequal* depths.
 ///
-/// Every tree shallower than the deepest is proved as a fracadd check over its witness padded with
-/// zero fractions — the same witness with the extra depth filled by $0/1$ leaves, which leaves its
-/// fractional sum unchanged. The transcript is then exactly that of an equal-depth batch of the
-/// maximum depth: the verifier runs the ordinary [`binius_ip::fracaddcheck::verify`] over
-/// `n_layers` layers and never learns the individual depths.
+/// Every tree shallower than the deepest is proved over its zero-fraction-padded witness.
+/// [`padding`] states the identity that such a padding satisfies.
+/// The transcript is then exactly that of an equal-depth batch of the maximum depth.
+/// The verifier runs the ordinary [`binius_ip::fracaddcheck::verify`] over `n_layers` layers.
+/// It never learns the individual depths.
 ///
 /// Every prover must reduce over *all* of its witness variables, so each fractional sum is a
 /// scalar and there is no content point.
 /// Dropping the content dimension keeps the padding bookkeeping to four scalars per layer.
 ///
-/// The prover does not materialize the padded witnesses. Each layer's per-tree reduction runs
-/// through [`zero_pad_mle`], which corrects the unpadded layer's messages in $O(1)$ per round.
+/// The prover does not materialize the padded witnesses.
+/// Each layer's per-tree reduction corrects the unpadded layer's messages in $O(1)$ per round.
 ///
 /// # Arguments
 ///
@@ -503,8 +501,7 @@ where
 /// shared reduced `eval_point`.
 ///
 /// Those leaf claims are on the *padded* witnesses.
-/// [`unpad_leaf_claim`] reduces one to the claims on the tree's own
-/// witness, given how much depth that tree was padded by.
+/// [`unpad_leaf_claim`] reduces one to the claims on the tree's own witness.
 pub fn batch_prove_unequal_depths<'a, A, F, P>(
 	provers: Vec<FracAddCheckProver<'a, A, P>>,
 	claimed_fractions: Vec<Fraction<F>>,
@@ -563,131 +560,6 @@ where
 	BatchProveOutput {
 		eval_point,
 		fractions,
-	}
-}
-
-/// The per-tree layer prover: either a real layer of the tree, or the padding layer it contributes
-/// while the batch is still above it.
-type PaddedLayerProver<'a, A, F, P> =
-	ZeroPadMleCheckProver<F, Either<LayerProver<'a, A, F, P>, ConstantFraction<F>>>;
-
-/// Builds one padded layer prover per tree, for the layer claimed at `node_point`.
-///
-/// The provers come back in input order, one per tree, so they stay aligned with `pad_lens` and
-/// `claims`. A tree the batch has not reached yet keeps every layer it has.
-fn layer_provers<'a, A, F, P>(
-	provers: &mut [FracAddCheckProver<'a, A, P>],
-	pad_lens: &[usize],
-	claims: &[Fraction<F>],
-	node_point: &[F],
-) -> Vec<PaddedLayerProver<'a, A, F, P>>
-where
-	A: Allocator,
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	let node_len = node_point.len();
-
-	// Every tree's padding segment is a prefix of this one node point, so a single table of prefix
-	// products serves the whole batch.
-	let pad_eq_prefixes = iter::once(F::ONE)
-		.chain(node_point.iter().scan(F::ONE, |acc, &coord| {
-			*acc *= eq_one_var(F::ZERO, coord);
-			Some(*acc)
-		}))
-		.collect::<Vec<_>>();
-
-	// De-padding a claim divides by the padding segment's equality weight, so the batch pays one
-	// inversion rather than one per tree.
-	let mut pad_eq_invs = pad_lens
-		.iter()
-		.map(|&pad_len| pad_eq_prefixes[pad_len.min(node_len)])
-		.collect::<Vec<_>>();
-	assert!(
-		pad_eq_invs.iter().all(|&pad_eq| pad_eq != F::ZERO),
-		"a padding coordinate of the claim point equals one"
-	);
-	BatchInversion::<F>::new(pad_eq_invs.len()).invert_nonzero(&mut pad_eq_invs);
-
-	izip!(provers, pad_lens, claims, &pad_eq_invs)
-		.map(|(prover, &tree_pad_len, &Fraction { num, den }, &pad_eq_inv)| {
-			let pad_len = tree_pad_len.min(node_len);
-			let point = node_point[pad_len..].to_vec();
-			let [num_claim, den_claim] = zero_pad_mle::unpad_claims(pad_eq_inv, [num, den]);
-
-			let inner = if node_len < tree_pad_len {
-				// The batch is still above this tree, so every variable of its layer is a padding
-				// variable and the de-padded claim is the tree's own fractional sum. The layer is
-				// that fraction beside the zero fraction 0/1, and the tree keeps all of its layers.
-				Either::Right(ConstantFraction::new(num_claim, den_claim))
-			} else {
-				Either::Left(prover.pop_layer(FracAddEvalClaim {
-					num_eval: num_claim,
-					den_eval: den_claim,
-					point,
-				}))
-			};
-
-			zero_pad_mle::new(pad_eq_prefixes[..=pad_len].to_vec(), node_point.to_vec(), inner)
-		})
-		.collect()
-}
-
-/// Reduces a leaf claim on a zero-fraction-padded witness to the claim on the witness itself.
-///
-/// A batched fractional-addition check over trees of unequal depths lifts each shallow tree to the
-/// batch's depth by filling `n_pad_vars` extra leaf positions with the zero fraction $0/1$, which
-/// leaves its fractional sum unchanged. [`binius_ip::fracaddcheck::verify`] is oblivious to that,
-/// so the claims it outputs for such a tree are claims on the padded witness
-///
-/// $$
-/// N'(X_\text{pad}, X_\text{real}) = N(X_\text{real}) \cdot \text{eq}(0^\nu; X_\text{pad}),
-/// \qquad
-/// D'(X_\text{pad}, X_\text{real}) = 1 + \bigl( D(X_\text{real}) - 1 \bigr) \cdot
-/// \text{eq}(0^\nu; X_\text{pad}),
-/// $$
-///
-/// whose padding variables are the lowest ones. This divides out their equality weight and drops
-/// them from the point, leaving the claims on $N$ and $D$.
-///
-/// # Arguments
-///
-/// * `fraction` - The claimed numerator and denominator evaluations of the padded witness.
-/// * `point` - The reduced evaluation point, with the batch's selector coordinates already
-///   stripped.
-/// * `n_pad_vars` - How much depth this tree was padded by: the batch's layer count less the tree's
-///   own.
-///
-/// # Preconditions
-/// * `point.len() >= n_pad_vars`
-///
-/// # Panics
-///
-/// Panics if the padding coordinates' equality weight is zero, which requires one of them to equal
-/// one. They are the verifier's own challenges, so no prover can induce this; it happens with
-/// probability at most $\nu / |K|$.
-pub fn unpad_leaf_claim<F: Field>(
-	fraction: Fraction<F>,
-	point: &[F],
-	n_pad_vars: usize,
-) -> FracAddEvalClaim<F> {
-	assert!(point.len() >= n_pad_vars); // precondition
-
-	let pad_eq = point[..n_pad_vars]
-		.iter()
-		.map(|&coord| eq_one_var(F::ZERO, coord))
-		.product::<F>();
-	assert!(pad_eq != F::ZERO, "a padding coordinate equals one");
-	let pad_eq_inv = pad_eq.invert_or_zero();
-
-	let Fraction {
-		num: num_eval,
-		den: den_eval,
-	} = fraction;
-	FracAddEvalClaim {
-		num_eval: num_eval * pad_eq_inv,
-		den_eval: F::ONE + (den_eval - F::ONE) * pad_eq_inv,
-		point: point[n_pad_vars..].to_vec(),
 	}
 }
 
