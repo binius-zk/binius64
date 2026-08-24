@@ -289,102 +289,16 @@ where
 	}
 }
 
-/// Output of [`batch_prove`].
+/// Output of [`batch_prove_unequal_depths`].
 ///
-/// After the full `n_layers` reduction, `fractions` holds each input prover's reduced
-/// `(num, den)` fraction at `eval_point`. The batched claim the verifier checks is the
-/// eq(selector)-weighted combination of these fractions.
+/// After the full `n_layers` reduction, `fractions` holds each input tree's reduced fraction at
+/// `eval_point`. The batched claim the verifier checks is the eq(selector)-weighted combination of
+/// these fractions.
 pub struct BatchProveOutput<F> {
 	/// The reduced evaluation point (`selector ++ content`) at which the fractions are claimed.
 	pub eval_point: Vec<F>,
 	/// Each input prover's reduced `(num, den)` fraction at `eval_point`, in input order.
 	pub fractions: Vec<Fraction<F>>,
-}
-
-/// Runs a batched fractional-addition check for multiple independent fracaddcheck provers,
-/// reducing all `n_layers` layers.
-///
-/// This is the fractional-addition analog of [`crate::prodcheck::batch_prove`]. It combines `n`
-/// provers, each for an $m$-variate numerator/denominator pair, using multilinear interpolation
-/// over `k = selector_point.len()` selector variables (where $n \le 2^k$). The combined claim is
-/// the multilinear extrapolation of the individual claimed fractions (padded with the zero
-/// fraction `0/1` to $2^k$: numerators with 0, denominators with 1) evaluated at
-/// `selector_point ++ content_point`.
-///
-/// The claimed fractions may themselves be evaluations of the $m$-variate fractional-sum
-/// multilinears at a shared `content_point`. When the fractions are scalars (each prover reduces
-/// over all of its variables), `content_point` is empty.
-///
-/// Returns the reduced per-input-prover fractions at the reduced evaluation point. The batched
-/// claim is checked by the ordinary `binius_ip::fracaddcheck::verify` recursion over
-/// `k + n_layers` variables (the eq(selector)-weighted combination of the returned fractions),
-/// with the selector coordinates forming the first `k` coordinates of the claim point — there is
-/// no separate batched verifier, mirroring prodcheck.
-///
-/// # Arguments
-/// * `provers` - Vec of `n` fracaddcheck provers. All must have the same `n_layers()`, which is
-///   $m$.
-/// * `claimed_fractions` - Vec of `n` claimed `(num, den)` fraction values, one per prover. Each is
-///   the corresponding prover's fractional-sum multilinears evaluated at `content_point`.
-/// * `selector_point` - Evaluation point for the selector variables. Length is $k$.
-/// * `content_point` - Shared evaluation point at which the claimed fractions are taken. Length is
-///   the fractional-sum multilinear dimension (i.e. `witness.log_len() - n_layers`). Empty for
-///   scalar fractions.
-/// * `channel` - The channel for sending prover messages and sampling challenges.
-///
-/// # Preconditions
-/// * `provers` must be non-empty.
-/// * All provers must have the same `n_layers()` value.
-/// * `2^selector_point.len() >= provers.len()`.
-/// * `claimed_fractions.len() == provers.len()`.
-/// * `content_point.len() == witness.log_len() - n_layers` for each prover.
-pub fn batch_prove<'a, A, F, P>(
-	mut provers: Vec<FracAddCheckProver<'a, A, P>>,
-	claimed_fractions: Vec<Fraction<F>>,
-	selector_point: Vec<F>,
-	content_point: Vec<F>,
-	channel: &mut impl IPProverChannel<F>,
-) -> BatchProveOutput<F>
-where
-	A: Allocator,
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	assert!(!provers.is_empty()); // precondition
-	assert_eq!(claimed_fractions.len(), provers.len()); // precondition
-
-	let n = provers.len();
-	let k = selector_point.len();
-	assert!(provers.len() <= (1 << k)); // precondition
-
-	let n_layers = provers[0].n_layers();
-	assert!(n_layers >= 1); // precondition
-	assert!(provers.iter().all(|p| p.n_layers() == n_layers)); // precondition
-
-	// Thread the content point as the initial inner (content) coordinates of the evaluation point.
-	// `batch_prove_layer` splits `eval_point.split_at(k)` into (selector, content); on the first
-	// layer this seeds each layer prover with a claim at `content_point`.
-	let mut eval_point = [selector_point, content_point].concat();
-
-	let mut fractions = claimed_fractions;
-	for _ in 0..n_layers {
-		let (next_fractions, next_point) =
-			batch_prove_layer(&mut provers, &fractions, &eval_point, k, channel);
-		fractions = next_fractions;
-		eval_point = next_point;
-	}
-	debug_assert!(
-		provers.iter().all(|prover| prover.n_layers() == 0),
-		"the final layer leaves every circuit exhausted"
-	);
-
-	// Drop the padded (2^k) selector slots, keeping one reduced fraction per input prover.
-	fractions.truncate(n);
-
-	BatchProveOutput {
-		eval_point,
-		fractions,
-	}
 }
 
 /// Combines the per-claim round polynomials of one fracaddcheck layer prover into a single
@@ -553,59 +467,27 @@ where
 	(next_fractions, next_point)
 }
 
-/// Runs one interior batched fracaddcheck layer, returning the remaining provers, the reduced
-/// per-instance fractions (padded to `2^k`), and the next evaluation point.
-#[allow(clippy::type_complexity)]
-fn batch_prove_layer<A, F, P>(
-	provers: &mut [FracAddCheckProver<'_, A, P>],
-	claimed_fractions: &[Fraction<F>],
-	eval_point: &[F],
-	k: usize,
-	channel: &mut impl IPProverChannel<F>,
-) -> (Vec<Fraction<F>>, Vec<F>)
-where
-	A: Allocator,
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	// Build a fractional-addition MLE-check prover per instance, seeded with a claim at the content
-	// coordinates.
-	let alloc = provers[0].alloc;
-	let inner_coords = eval_point[k..].to_vec();
-	let layer_provers = iter::zip(provers, claimed_fractions)
-		.map(|(prover, &Fraction { num, den })| {
-			prover.pop_layer(FracAddEvalClaim {
-				num_eval: num,
-				den_eval: den,
-				point: inner_coords.clone(),
-			})
-		})
-		.collect::<Vec<_>>();
-
-	reduce_layer::<A, F, P, _>(alloc, layer_provers, eval_point, k, channel)
-}
-
 /// Runs a batched fractional-addition check for trees of *unequal* depths.
 ///
-/// This is [`batch_prove`] without the requirement that every prover have the same layer count.
-/// Each tree shallower than the deepest is proved as a fracadd check over its witness padded with
+/// Every tree shallower than the deepest is proved as a fracadd check over its witness padded with
 /// zero fractions — the same witness with the extra depth filled by $0/1$ leaves, which leaves its
 /// fractional sum unchanged. The transcript is then exactly that of an equal-depth batch of the
 /// maximum depth: the verifier runs the ordinary [`binius_ip::fracaddcheck::verify`] over
 /// `n_layers` layers and never learns the individual depths.
 ///
-/// Unlike [`batch_prove`], every prover must reduce over *all* of its witness variables, so each
-/// fractional sum is a scalar and there is no content point. The padding is only worth its
-/// bookkeeping on full trees, and dropping the content dimension keeps that bookkeeping to four
-/// scalars per layer.
+/// Every prover must reduce over *all* of its witness variables, so each fractional sum is a
+/// scalar and there is no content point.
+/// Dropping the content dimension keeps the padding bookkeeping to four scalars per layer.
 ///
 /// The prover does not materialize the padded witnesses. Each layer's per-tree reduction runs
 /// through [`zero_pad_mle`], which corrects the unpadded layer's messages in $O(1)$ per round.
 ///
 /// # Arguments
 ///
-/// As [`batch_prove`], except that the provers' layer counts may differ and there is no
-/// `content_point`.
+/// * `provers` - The trees to batch, whose layer counts may differ.
+/// * `claimed_fractions` - Each tree's claimed root fraction, one per prover.
+/// * `selector_point` - Evaluation point for the selector variables.
+/// * `channel` - The channel for sending prover messages and sampling challenges.
 ///
 /// # Preconditions
 /// * `provers` must be non-empty.
@@ -811,7 +693,7 @@ pub fn unpad_leaf_claim<F: Field>(
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{PackedField, field::FieldOps};
+	use binius_field::PackedField;
 	use binius_ip::fracaddcheck;
 	use binius_math::{
 		inner_product::inner_product,
@@ -922,281 +804,6 @@ mod tests {
 	#[test]
 	fn test_frac_add_check_layer_computation() {
 		test_frac_add_check_layer_computation_helper::<Packed128b>(4, 3);
-	}
-
-	// ==================== batch_prove tests ====================
-
-	/// Combines the per-input-prover fractions returned by [`batch_prove`] into the single
-	/// [`FracAddEvalClaim`] the verifier produces: the eq(selector)-weighted sum over the first `k`
-	/// (selector) coordinates of the reduced evaluation point.
-	fn combine_batch_prove<F: Field, P: PackedField<Scalar = F>>(
-		output: BatchProveOutput<F>,
-		log_n_provers: usize,
-	) -> fracaddcheck::FracAddEvalClaim<F> {
-		let BatchProveOutput {
-			eval_point,
-			fractions,
-		} = output;
-		let selector_weights = eq_ind_partial_eval::<P>(&eval_point[..log_n_provers]);
-		let num_eval = inner_product(
-			fractions.iter().map(|f| f.num),
-			(0..fractions.len()).map(|i| selector_weights.get(i)),
-		);
-		// The padding slots hold the zero fraction 0/1, so they contribute their eq weight to
-		// the denominator.
-		let den_eval = inner_product(
-			fractions
-				.iter()
-				.map(|f| f.den)
-				.chain(iter::repeat_n(F::ONE, (1 << log_n_provers) - fractions.len())),
-			(0..1 << log_n_provers).map(|i| selector_weights.get(i)),
-		);
-		fracaddcheck::FracAddEvalClaim {
-			num_eval,
-			den_eval,
-			point: eval_point,
-		}
-	}
-
-	/// Helper for testing `batch_prove` over `n_provers` fracaddcheck instances of `n_layers` each.
-	///
-	/// Each witness has exactly `n_layers` variables so that the fractional sums are scalars
-	/// (0-variate).
-	fn test_batch_prove_verify_helper<P: PackedField>(n_layers: usize, n_provers: usize) {
-		let mut rng = StdRng::seed_from_u64(42);
-		let alloc = GlobalAllocator;
-
-		let log_n_provers = log2_ceil_usize(n_provers);
-
-		// Each witness has exactly n_layers variables; fractional sums are scalars.
-		let witnesses: Vec<(FieldBuffer<P>, FieldBuffer<P>)> = (0..n_provers)
-			.map(|_| {
-				(
-					random_field_buffer::<P>(&mut rng, n_layers),
-					random_field_buffer::<P>(&mut rng, n_layers),
-				)
-			})
-			.collect();
-
-		let (provers, individual_sums): (Vec<_>, Vec<_>) = witnesses
-			.iter()
-			.map(|witness| {
-				FracAddCheckProver::new(
-					n_layers,
-					&alloc,
-					Fraction::new(witness.0.clone(), witness.1.clone()),
-				)
-			})
-			.unzip();
-
-		// Fractions are 0-variate (scalars): just get the single num/den value.
-		let claimed_fractions: Vec<Fraction<P::Scalar>> = individual_sums
-			.iter()
-			.map(|sums| {
-				assert_eq!(sums.num.log_len(), 0);
-				sums.as_ref().map(|buffer| buffer.get(0))
-			})
-			.collect();
-
-		// Combined verifier claim: eq(selector)-weighted sums of the claimed fractions, at point
-		// selector.
-		let selector_challenge = random_scalars::<P::Scalar>(&mut rng, log_n_provers);
-		let eq_weights = eq_ind_partial_eval::<P>(&selector_challenge);
-		let combined_num = inner_product(
-			claimed_fractions.iter().map(|f| f.num),
-			(0..n_provers).map(|i| eq_weights.get(i)),
-		);
-		let combined_den = inner_product(
-			claimed_fractions
-				.iter()
-				.map(|f| f.den)
-				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
-			(0..1 << log_n_provers).map(|i| eq_weights.get(i)),
-		);
-
-		let claim = fracaddcheck::FracAddEvalClaim {
-			num_eval: combined_num,
-			den_eval: combined_den,
-			point: selector_challenge.clone(),
-		};
-
-		// Run batch_prove (scalar fractions: empty content point).
-		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let batch_output = batch_prove(
-			provers,
-			claimed_fractions,
-			selector_challenge,
-			Vec::new(),
-			&mut prover_transcript,
-		);
-		assert_eq!(batch_output.fractions.len(), n_provers);
-		let prover_output = combine_batch_prove::<_, P>(batch_output, log_n_provers);
-
-		// Run verifier with n_layers layers.
-		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_output =
-			fracaddcheck::verify(n_layers, claim, &mut verifier_transcript).unwrap();
-
-		assert_eq!(prover_output, verifier_output);
-
-		// Verify the final fraction against the eq(selector)-weighted interpolation of the input
-		// witnesses.
-		let final_point = &verifier_output.point;
-		assert_eq!(final_point.len(), log_n_provers + n_layers);
-
-		let selector_challenges = &final_point[..log_n_provers];
-		let content_challenges = &final_point[log_n_provers..];
-
-		let selector_weights = eq_ind_partial_eval::<P>(selector_challenges);
-
-		let expected_num = inner_product(
-			(0..n_provers).map(|i| evaluate(&witnesses[i].0, content_challenges)),
-			(0..n_provers).map(|i| selector_weights.get(i)),
-		);
-		let expected_den = inner_product(
-			(0..n_provers)
-				.map(|i| evaluate(&witnesses[i].1, content_challenges))
-				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
-			(0..1 << log_n_provers).map(|i| selector_weights.get(i)),
-		);
-
-		assert_eq!(verifier_output.num_eval, expected_num);
-		assert_eq!(verifier_output.den_eval, expected_den);
-	}
-
-	#[test]
-	fn test_batch_prove_power_of_two_provers() {
-		// 4 provers, 3 layers.
-		test_batch_prove_verify_helper::<Packed128b>(3, 4);
-	}
-
-	#[test]
-	fn test_batch_prove_non_power_of_two_provers() {
-		// 3 provers (non-power of 2, requires padding), 4 layers.
-		test_batch_prove_verify_helper::<Packed128b>(4, 3);
-	}
-
-	#[test]
-	fn test_batch_prove_single_prover() {
-		// 1 prover (edge case), 5 layers.
-		test_batch_prove_verify_helper::<Packed128b>(5, 1);
-	}
-
-	#[test]
-	fn test_batch_prove_single_layer() {
-		// n_layers=1 edge case: the single layer is the final one.
-		test_batch_prove_verify_helper::<Packed128b>(1, 4);
-	}
-
-	/// Helper for testing `batch_prove` where the claimed fractions are non-scalar: each prover's
-	/// fractional-sum multilinears are `content_len`-variate, claimed at a shared content point.
-	fn test_batch_prove_with_content_helper<P: PackedField>(
-		n_layers: usize,
-		n_provers: usize,
-		content_len: usize,
-	) {
-		let mut rng = StdRng::seed_from_u64(7);
-		let alloc = GlobalAllocator;
-
-		let log_n_provers = log2_ceil_usize(n_provers);
-
-		// Each witness has log_len = content_len + n_layers; fractional sums are
-		// content_len-variate.
-		let witnesses: Vec<(FieldBuffer<P>, FieldBuffer<P>)> = (0..n_provers)
-			.map(|_| {
-				(
-					random_field_buffer::<P>(&mut rng, content_len + n_layers),
-					random_field_buffer::<P>(&mut rng, content_len + n_layers),
-				)
-			})
-			.collect();
-
-		let (provers, individual_sums): (Vec<_>, Vec<_>) = witnesses
-			.iter()
-			.map(|witness| {
-				FracAddCheckProver::new(
-					n_layers,
-					&alloc,
-					Fraction::new(witness.0.clone(), witness.1.clone()),
-				)
-			})
-			.unzip();
-
-		// Shared content point; each claimed fraction is its multilinears evaluated there.
-		let content_point = random_scalars::<P::Scalar>(&mut rng, content_len);
-		let claimed_fractions: Vec<Fraction<P::Scalar>> = individual_sums
-			.iter()
-			.map(|sums| {
-				assert_eq!(sums.num.log_len(), content_len);
-				sums.as_ref().map(|buffer| evaluate(buffer, &content_point))
-			})
-			.collect();
-
-		let selector_challenge = random_scalars::<P::Scalar>(&mut rng, log_n_provers);
-		let eq_weights = eq_ind_partial_eval::<P>(&selector_challenge);
-		let combined_num = inner_product(
-			claimed_fractions.iter().map(|f| f.num),
-			(0..n_provers).map(|i| eq_weights.get(i)),
-		);
-		let combined_den = inner_product(
-			claimed_fractions
-				.iter()
-				.map(|f| f.den)
-				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
-			(0..1 << log_n_provers).map(|i| eq_weights.get(i)),
-		);
-
-		let claim = fracaddcheck::FracAddEvalClaim {
-			num_eval: combined_num,
-			den_eval: combined_den,
-			point: [selector_challenge.clone(), content_point.clone()].concat(),
-		};
-
-		// Run batch_prove with non-empty content point.
-		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let batch_output = batch_prove(
-			provers,
-			claimed_fractions,
-			selector_challenge,
-			content_point,
-			&mut prover_transcript,
-		);
-		assert_eq!(batch_output.fractions.len(), n_provers);
-		let prover_output = combine_batch_prove::<_, P>(batch_output, log_n_provers);
-
-		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_output =
-			fracaddcheck::verify(n_layers, claim, &mut verifier_transcript).unwrap();
-
-		assert_eq!(prover_output, verifier_output);
-
-		let final_point = &verifier_output.point;
-		assert_eq!(final_point.len(), log_n_provers + n_layers + content_len);
-
-		let selector_challenges = &final_point[..log_n_provers];
-		let witness_challenges = &final_point[log_n_provers..];
-
-		let selector_weights = eq_ind_partial_eval::<P>(selector_challenges);
-
-		let expected_num = inner_product(
-			(0..n_provers).map(|i| evaluate(&witnesses[i].0, witness_challenges)),
-			(0..n_provers).map(|i| selector_weights.get(i)),
-		);
-		let expected_den = inner_product(
-			(0..n_provers)
-				.map(|i| evaluate(&witnesses[i].1, witness_challenges))
-				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
-			(0..1 << log_n_provers).map(|i| selector_weights.get(i)),
-		);
-
-		assert_eq!(verifier_output.num_eval, expected_num);
-		assert_eq!(verifier_output.den_eval, expected_den);
-	}
-
-	#[test]
-	fn test_batch_prove_with_content() {
-		// 3 provers (non power of 2), 4 layers, content_len = 2.
-		test_batch_prove_with_content_helper::<Packed128b>(4, 3, 2);
 	}
 
 	// ==================== batch_prove_unequal_depths tests ====================
@@ -1335,47 +942,9 @@ mod tests {
 		test_unequal_depths_helper::<Packed128b>(&[1, 6]);
 	}
 
-	/// At equal depths every tree is padded by nothing, so the unequal-depth driver must emit
-	/// byte-for-byte the transcript that [`batch_prove`] does.
 	#[test]
-	fn test_unequal_depths_matches_batch_prove_at_equal_depths() {
-		type P = Packed128b;
-		type F = <P as FieldOps>::Scalar;
-
-		let depths = [4; 3];
-		let k = log2_ceil_usize(depths.len());
-		let alloc = GlobalAllocator;
-
-		let mut rng = StdRng::seed_from_u64(23);
-		let selector_point = random_scalars::<F>(&mut rng, k);
-		// Both drivers see the same trees, so both rebuild them from the same seed.
-		let prover_seed = 24;
-
-		let unequal_proof = {
-			let mut rng = StdRng::seed_from_u64(prover_seed);
-			let (_, provers, claimed_fractions) =
-				unequal_depth_provers::<P>(&mut rng, &alloc, &depths);
-
-			let mut transcript = ProverTranscript::new(StdChallenger::default());
-			batch_prove_unequal_depths(
-				provers,
-				claimed_fractions,
-				selector_point.clone(),
-				&mut transcript,
-			);
-			transcript.finalize()
-		};
-
-		let equal_proof = {
-			let mut rng = StdRng::seed_from_u64(prover_seed);
-			let (_, provers, claimed_fractions) =
-				unequal_depth_provers::<P>(&mut rng, &alloc, &depths);
-
-			let mut transcript = ProverTranscript::new(StdChallenger::default());
-			batch_prove(provers, claimed_fractions, selector_point, Vec::new(), &mut transcript);
-			transcript.finalize()
-		};
-
-		assert_eq!(unequal_proof, equal_proof);
+	fn test_unequal_depths_equal_depths() {
+		// Equal depths pad nothing, so every wrapper is a pass-through.
+		test_unequal_depths_helper::<Packed128b>(&[4, 4, 4]);
 	}
 }
