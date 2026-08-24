@@ -590,8 +590,7 @@ mod tests {
 	use binius_ip::sumcheck::{batch_verify, batch_verify_mle};
 	use binius_math::{
 		FieldBuffer,
-		inner_product::inner_product_par,
-		multilinear::{evaluate::evaluate, hypercube::Hypercube},
+		multilinear::{Multilinear, hypercube::Hypercube},
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 		univariate::evaluate_univariate,
 	};
@@ -652,7 +651,7 @@ mod tests {
 						.expect("packed field has at least one lane")
 				})
 				.collect::<Vec<_>>();
-			evaluate(&FieldBuffer::<P>::from_values(&vals), &eval_point)
+			FieldBuffer::<P>::from_values(&vals).evaluate(&eval_point)
 		});
 
 		(cols, eval_point, claims)
@@ -713,7 +712,7 @@ mod tests {
 
 			// Each recovered column evaluation is the column's evaluation at the challenge point.
 			for (col, &eval) in cols.iter().zip(&verified_evals) {
-				assert_eq!(evaluate(col, &point), eval);
+				assert_eq!(col.evaluate(&point), eval);
 			}
 
 			// The reduced evaluation is the batch combination of the two compositions at the evals.
@@ -756,10 +755,10 @@ mod tests {
 							.expect("packed field has at least one lane")
 					})
 					.collect::<Vec<_>>();
-				evaluate(&FieldBuffer::<P>::from_values(&vals), &z)
+				FieldBuffer::<P>::from_values(&vals).evaluate(&z)
 			});
-			let e_0 = inner_product_par(&y_0, &t_0);
-			let e_1 = inner_product_par(&y_1, &t_1);
+			let e_0 = y_0.par_inner_product(&t_0);
+			let e_1 = y_1.par_inner_product(&t_1);
 
 			// One store with six borrowed columns, in push order [Y_0, Y_1, D_0, D_1, T_0, T_1].
 			let alloc = GlobalAllocator;
@@ -817,7 +816,7 @@ mod tests {
 				.iter()
 				.zip(&verified_evals)
 			{
-				assert_eq!(evaluate(col, &point), eval);
+				assert_eq!(col.evaluate(&point), eval);
 			}
 
 			// The reduced evaluation batches the four claims' reduced compositions in evaluator

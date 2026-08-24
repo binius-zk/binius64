@@ -47,7 +47,7 @@ use binius_ip_prover::{
 };
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
-	multilinear::hypercube::Hypercube,
+	multilinear::{Multilinear, hypercube::Hypercube},
 	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::evaluate_univariate,
 };
@@ -302,10 +302,7 @@ impl<F: Field> IOPProver<F> {
 		// The prover sends this as a scalar; the oracle relation then verifies it.
 		let precommit_wiring_poly =
 			fold_constraints(alloc, &self.precommit_wiring_transpose, lambda, r_x_tensor.as_ref());
-		let precommit_claim = binius_math::inner_product::inner_product_buffers(
-			&precommit_packed.to_ref(),
-			&precommit_wiring_poly,
-		);
+		let precommit_claim = precommit_packed.inner_product(&precommit_wiring_poly);
 		channel.send_one(precommit_claim);
 
 		let private_claim = batched_sum - public_eval - precommit_claim;

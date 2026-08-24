@@ -13,10 +13,11 @@
 //! chunk <  one packed word  ->  some lanes of one word
 //! ```
 //!
-//! The iterators here cover the first shape, where a chunk is a borrowed run of words.
-//! The second shape gets a type of its own, since locating those lanes is shared work.
+//! The shared iterator here covers both shapes, so any size up to the buffer's length works.
+//! The mutable one covers only the first, since a borrowed run of words is all it can lend out.
+//! Locating the lanes of the second shape is shared work, so it gets a type of its own.
 
-use std::{iter, marker::PhantomData, slice};
+use std::{iter, marker::PhantomData, ops::Range, slice};
 
 use binius_field::PackedField;
 
@@ -73,12 +74,6 @@ impl<P: PackedField> SubWordChunk<P> {
 		self.word_index
 	}
 
-	/// Element count of the chunk, as a base-2 logarithm.
-	#[inline]
-	pub(super) const fn log_len(self) -> usize {
-		self.log_len
-	}
-
 	/// Reads the chunk's elements out of the word holding it.
 	#[inline]
 	pub(super) fn scalars(self, word: P) -> impl Iterator<Item = P::Scalar> + Send + Clone {
@@ -92,23 +87,33 @@ impl<P: PackedField> SubWordChunk<P> {
 	pub(super) fn repack(self, words: &[P]) -> P {
 		P::from_scalars(self.scalars(words[self.word_index]))
 	}
+}
 
-	/// Copies an edited chunk back into the lanes it came from.
-	#[inline]
-	pub(super) fn merge_into(self, word: &mut P, chunk: &P) {
-		for i in 0..1 << self.log_len {
-			word.set(self.lane_offset | i, chunk.get(i));
-		}
-	}
+/// How a shared chunk iterator walks the store, settled by the chunk size before the first step.
+///
+/// ```text
+/// chunk >= one packed word  ->  Words, stepping runs of the store
+/// chunk <  one packed word  ->  Lanes, stepping chunk indices into one word each
+/// ```
+#[derive(Clone)]
+enum ChunkSource<'a, P: PackedField> {
+	/// Runs of words, one per chunk, cut off at the buffer's logical chunk count.
+	Words(iter::Take<slice::Chunks<'a, P>>),
+	/// Chunk indices to locate lanes with, alongside the store those lanes are repacked from.
+	Lanes {
+		words: &'a [P],
+		indices: Range<usize>,
+	},
 }
 
 /// Iterator over a buffer's chunks of a fixed size, each borrowed as a shared view.
 ///
 /// Yielded by asking a buffer for its chunks.
-/// The chunk size is at least one packed word, so every chunk is a borrowed run of words.
+/// A chunk of at least one packed word is a borrowed run of words.
+/// A smaller one is a copy of its lanes, repacked to start at lane 0.
 pub struct Chunks<'a, P: PackedField> {
-	/// Runs of words, one per chunk, cut off at the buffer's logical chunk count.
-	runs: iter::Take<slice::Chunks<'a, P>>,
+	/// Where the next chunk comes from, one shape or the other for the whole iteration.
+	source: ChunkSource<'a, P>,
 	/// Element count of each chunk, as a base-2 logarithm.
 	log_chunk_size: usize,
 }
@@ -117,9 +122,17 @@ impl<'a, P: PackedField> Chunks<'a, P> {
 	/// Builds the iterator over `words`, whose length must be the buffer's live word count.
 	#[inline]
 	pub(super) fn new(words: &'a [P], log_chunk_size: usize, chunk_count: usize) -> Self {
-		let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
+		let source = if log_chunk_size >= P::LOG_WIDTH {
+			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
+			ChunkSource::Words(words.chunks(words_per_chunk).take(chunk_count))
+		} else {
+			ChunkSource::Lanes {
+				words,
+				indices: 0..chunk_count,
+			}
+		};
 		Self {
-			runs: words.chunks(words_per_chunk).take(chunk_count),
+			source,
 			log_chunk_size,
 		}
 	}
@@ -130,15 +143,24 @@ impl<'a, P: PackedField> Iterator for Chunks<'a, P> {
 
 	#[inline]
 	fn next(&mut self) -> Option<Self::Item> {
-		self.runs.next().map(|run| FieldBuffer {
+		let values = match &mut self.source {
+			ChunkSource::Words(runs) => FieldSliceData::Slice(runs.next()?),
+			ChunkSource::Lanes { words, indices } => FieldSliceData::Single(
+				SubWordChunk::<P>::new(self.log_chunk_size, indices.next()?).repack(words),
+			),
+		};
+		Some(FieldBuffer {
 			log_len: self.log_chunk_size,
-			values: FieldSliceData::Slice(run),
+			values,
 		})
 	}
 
 	#[inline]
 	fn size_hint(&self) -> (usize, Option<usize>) {
-		self.runs.size_hint()
+		match &self.source {
+			ChunkSource::Words(runs) => runs.size_hint(),
+			ChunkSource::Lanes { indices, .. } => indices.size_hint(),
+		}
 	}
 }
 
@@ -147,7 +169,7 @@ impl<P: PackedField> ExactSizeIterator for Chunks<'_, P> {}
 impl<P: PackedField> Clone for Chunks<'_, P> {
 	fn clone(&self) -> Self {
 		Self {
-			runs: self.runs.clone(),
+			source: self.source.clone(),
 			log_chunk_size: self.log_chunk_size,
 		}
 	}
@@ -155,7 +177,7 @@ impl<P: PackedField> Clone for Chunks<'_, P> {
 
 /// Iterator over a buffer's chunks of a fixed size, each borrowed as a mutable view.
 ///
-/// The mutable counterpart of the shared chunk iterator.
+/// The mutable counterpart of the shared chunk iterator, restricted to chunks of whole words.
 /// The chunks are disjoint, so each is lent out for the whole iteration rather than one at a time.
 pub struct ChunksMut<'a, P: PackedField> {
 	/// Runs of words, one per chunk, cut off at the buffer's logical chunk count.

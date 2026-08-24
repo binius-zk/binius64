@@ -8,13 +8,9 @@ use binius_compute::Allocator;
 use binius_core::{ValueTable, word::Word};
 use binius_field::{BinaryField, PackedField};
 use binius_math::{FieldVec, inner_product::inner_product};
+pub use binius_prover::fold_word::FoldedWord;
 use binius_prover::fold_word::WordFolder;
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-
-/// One 64-bit word with its bit axis expanded into full field elements.
-///
-/// Each bit position becomes one element, so the word is carried in oblong form.
-pub type FoldedWord<F> = [F; Word::BITS];
 
 /// The committed witness of a batch, with its instance axis collapsed at a point.
 ///
@@ -168,7 +164,7 @@ mod tests {
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use binius_math::{
-		multilinear::{evaluate::evaluate, hypercube::Hypercube},
+		multilinear::{Multilinear, hypercube::Hypercube},
 		test_utils::random_scalars,
 	};
 	use binius_prover::fold_word::fold_words;
@@ -331,7 +327,7 @@ mod tests {
 			// Route B evaluates over (word, instance), so the point is reordered to match.
 			let mut point = r_wire.to_vec();
 			point.extend_from_slice(&r_rho);
-			let rhs = evaluate(&folded_words, &point);
+			let rhs = folded_words.evaluate(&point);
 
 			assert_eq!(lhs, rhs, "mismatch at log_instances = {log_instances}");
 		}
@@ -370,7 +366,7 @@ mod tests {
 			let packed =
 				folded.fold_bits::<PackedBinaryGhash1x128b>(r_j_tensor.as_ref(), &GlobalAllocator);
 			assert_eq!(
-				evaluate(&packed, &r_y),
+				packed.evaluate(&r_y),
 				folded.evaluate(&r_j, &r_y),
 				"mismatch at {} committed words",
 				table.n_hidden_words()

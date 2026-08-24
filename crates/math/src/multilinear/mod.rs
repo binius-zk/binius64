@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 pub mod evaluate;
-pub mod fold;
+mod ext;
 pub mod hypercube;
+
+pub use ext::{Multilinear, MultilinearMut};

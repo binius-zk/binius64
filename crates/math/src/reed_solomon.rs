@@ -19,7 +19,7 @@ use super::{
 	FieldBuffer, FieldSlice, FieldSliceMut, binary_subspace::BinarySubspace, ntt::AdditiveNTT,
 };
 use crate::{
-	bit_reverse::{bit_reverse_indices, bit_reverse_packed},
+	bit_reverse::bit_reverse_indices,
 	ntt::{DomainContext, NeighborsLastMultiThread, domain_context::GaoMateerOnTheFly},
 };
 
@@ -298,7 +298,7 @@ fn repeated_message_buffer<P: PackedField, A: Allocator>(
 	unsafe { output.set_len(msg_len) };
 
 	// Permute the leading copy, so the copies below inherit it.
-	bit_reverse_packed(FieldSliceMut::from_slice(msg.log_len(), &mut output));
+	FieldSliceMut::from_slice(msg.log_len(), &mut output).bit_reverse();
 
 	// The source is read through an address rather than a borrow.
 	// That is what lets the workers read the leading copy while the rest is held mutably.
@@ -484,7 +484,7 @@ mod tests {
 		let mut output = Vec::with_capacity(total);
 		output.extend_from_slice(msg.as_ref());
 
-		bit_reverse_packed(FieldSliceMut::from_slice(msg.log_len(), output.as_mut_slice()));
+		FieldSliceMut::from_slice(msg.log_len(), output.as_mut_slice()).bit_reverse();
 
 		while output.len() < total {
 			output.extend_from_within(..);

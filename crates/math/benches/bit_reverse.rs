@@ -4,7 +4,7 @@ use binius_field::{
 	BinaryField, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
 	PackedField,
 };
-use binius_math::{bit_reverse::bit_reverse_packed, test_utils::random_field_buffer};
+use binius_math::test_utils::random_field_buffer;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 fn bench_bit_reverse_helper<F: BinaryField, P: PackedField<Scalar = F>>(
@@ -20,9 +20,9 @@ fn bench_bit_reverse_helper<F: BinaryField, P: PackedField<Scalar = F>>(
 		let throughput = Throughput::Bytes(((F::N_BITS / 8) << log_d) as u64);
 		group.throughput(throughput);
 
-		group.bench_function(BenchmarkId::new("bit_reverse_packed", &parameter), |b| {
+		group.bench_function(BenchmarkId::new("bit_reverse", &parameter), |b| {
 			let mut data = random_field_buffer::<P>(&mut rng, log_d);
-			b.iter(|| bit_reverse_packed(data.to_mut()))
+			b.iter(|| data.to_mut().bit_reverse())
 		});
 	}
 

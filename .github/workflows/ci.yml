@@ -132,6 +132,26 @@ jobs:
         if: github.event_name != 'push'
         run: cargo test --doc --workspace
 
+  unused-deps:
+    name: unused-deps
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@v2.86.5
+        with:
+          tool: cargo-machete@0.8.0
+      # No toolchain setup and no build: machete only parses the manifests and greps the sources,
+      # so the whole job takes seconds and needs nothing from the build cache.
+      #
+      # `--with-metadata` resolves each package through `cargo metadata` instead of reading the
+      # manifests alone. It is not optional here: without it dev-dependencies are never examined,
+      # which is where every unused dependency in this workspace happened to be.
+      - name: Check for unused dependencies
+        run: cargo machete --with-metadata
+
   # Build against wasm32-unknown-unknown target to test that our libraries compile to wasm.
   wasm-vanilla-build:
     name: wasm-vanilla-build

@@ -5,14 +5,9 @@
 
 use std::iter;
 
-use binius_field::{Field, PackedField, field::FieldOps};
-use binius_utils::{
-	buffer::BufferData,
-	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
-};
+use binius_field::{Field, field::FieldOps};
 
 use super::Expansion;
-use crate::FieldBuffer;
 
 /// A hypercube of coefficients for multilinear polynomials.
 ///
@@ -125,48 +120,6 @@ impl Hypercube {
 		Expansion::new(self, point)
 	}
 
-	/// Truncates an equality indicator expansion to its low indexed variables.
-	///
-	/// Each step contracts the two halves of the buffer, stripping the highest variable.
-	/// Truncating to `m` variables therefore leaves the indicator over `r_0, ..., r_{m-1}`.
-	///
-	/// The surviving expansion occupies a prefix of the buffer.
-	/// Scalars past the truncated length are zeroed.
-	///
-	/// # Preconditions
-	///
-	/// * The truncated log length must not exceed the current log length.
-	pub fn truncate_low_inplace<P: PackedField, Data: BufferData<P>>(
-		self,
-		values: &mut FieldBuffer<P, Data>,
-		truncated_log_len: usize,
-	) {
-		assert!(
-			truncated_log_len <= values.log_len(),
-			"precondition: truncated_log_len must be at most values.log_len()"
-		);
-
-		// One round per stripped variable, highest variable first.
-		for log_len in (truncated_log_len..values.log_len()).rev() {
-			{
-				// The surviving values land in the low half, so the buffer shrinks in place.
-				let mut split = values.split_half_mut();
-				let (mut lo, hi) = split.halves();
-				// Contracting a variable costs additions only.
-				// So the cost of one round is the two words it reads, not its arithmetic.
-				(lo.as_mut(), hi.as_ref())
-					.into_par_iter()
-					.with_min_task_bytes::<[P; 2]>()
-					.for_each(|(zero, one)| {
-						self.contract_var(zero, one);
-					});
-			}
-
-			// Drop the now-stale high half, zeroing the scalars past the new length.
-			values.truncate(log_len);
-		}
-	}
-
 	/// Evaluates the equality indicator multilinear at a pair of points.
 	///
 	/// This is the `2n`-variate multilinear
@@ -210,7 +163,10 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars};
+	use crate::{
+		multilinear::MultilinearMut,
+		test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars},
+	};
 
 	type P = Packed128b;
 	type F = B128;
@@ -472,7 +428,7 @@ mod tests {
 
 		for reduction in (0..=reductions).rev() {
 			let truncated_log_n_values = log_n_values - reduction;
-			Hypercube::One.truncate_low_inplace(&mut eq_ind, truncated_log_n_values);
+			eq_ind.eq_ind_truncate_low(Hypercube::One, truncated_log_n_values);
 
 			// Each step must match a direct expansion of the surviving prefix of the point.
 			let eq_ind_ref = Hypercube::One
@@ -507,7 +463,7 @@ mod tests {
 
 		// Strip the top variable and compare against a direct expansion of the prefix.
 		let mut truncated = Hypercube::One.expand(&point).build::<P>();
-		Hypercube::One.truncate_low_inplace(&mut truncated, n_vars - 1);
+		truncated.eq_ind_truncate_low(Hypercube::One, n_vars - 1);
 		assert_eq!(truncated, Hypercube::One.expand(&point[..n_vars - 1]).build::<P>());
 	}
 
@@ -526,7 +482,7 @@ mod tests {
 			for truncated_log_len in 0..=log_n {
 				for cube in CUBES {
 					let mut truncated = cube.expand(&point).build::<P>();
-					cube.truncate_low_inplace(&mut truncated, truncated_log_len);
+					truncated.eq_ind_truncate_low(cube, truncated_log_len);
 					prop_assert_eq!(
 						truncated,
 						cube.expand(&point[..truncated_log_len]).build::<P>()

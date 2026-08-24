@@ -22,5 +22,3 @@ thiserror.workspace = true
 
 [dev-dependencies]
 binius-math = { path = "../math", features = ["test-utils"] }
-rand.workspace = true
-sha2.workspace = true

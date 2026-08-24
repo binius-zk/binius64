@@ -266,7 +266,7 @@ mod tests {
 	use binius_field::{Random, field::FieldOps};
 	use binius_math::{
 		FieldBuffer,
-		multilinear::evaluate::evaluate,
+		multilinear::Multilinear,
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 	};
 	use rand::prelude::*;
@@ -300,7 +300,7 @@ mod tests {
 		let products = (0..low.len())
 			.map(|i| low.get(i) * high.get(i))
 			.collect::<Vec<_>>();
-		evaluate(&FieldBuffer::<P>::from_values(&products), eval_point)
+		FieldBuffer::<P>::from_values(&products).evaluate(eval_point)
 	}
 
 	/// Runs the padded prover and the reference prover over the materialized padded layer in

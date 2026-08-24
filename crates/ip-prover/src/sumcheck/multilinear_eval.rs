@@ -144,7 +144,7 @@ mod tests {
 	};
 	use binius_ip::mlecheck;
 	use binius_math::{
-		multilinear::evaluate::evaluate,
+		multilinear::Multilinear,
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -173,7 +173,7 @@ mod tests {
 
 		let witness = random_field_buffer::<P>(&mut rng, n_vars);
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate(&witness, &eval_point);
+		let eval_claim = witness.evaluate(&eval_point);
 
 		let mut eval_prover =
 			multilinear_eval_prover(&alloc, witness.clone(), &eval_point, eval_claim);
@@ -214,7 +214,7 @@ mod tests {
 
 		let witness = random_field_buffer::<P>(&mut rng, n_vars);
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate(&witness, &eval_point);
+		let eval_claim = witness.evaluate(&eval_point);
 
 		let prover = multilinear_eval_prover(&alloc, witness.clone(), &eval_point, eval_claim);
 
@@ -236,6 +236,6 @@ mod tests {
 
 		let mut reduced_point = sumcheck_output.challenges;
 		reduced_point.reverse();
-		assert_eq!(evaluate(&witness, &reduced_point), multilinear_evals[0]);
+		assert_eq!(witness.evaluate(&reduced_point), multilinear_evals[0]);
 	}
 }

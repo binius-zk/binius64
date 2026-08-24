@@ -13,7 +13,7 @@ use binius_ip_prover::sumcheck::{
 };
 use binius_math::{
 	FieldBuffer,
-	multilinear::evaluate::evaluate_inplace,
+	multilinear::MultilinearMut,
 	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_transcript::{
@@ -66,7 +66,7 @@ where
 			composite_vals.push(composed);
 		}
 		let composite_buffer = FieldBuffer::new(n_vars, composite_vals);
-		evaluate_inplace(composite_buffer, eval_point)
+		composite_buffer.evaluate_inplace(eval_point)
 	})
 }
 

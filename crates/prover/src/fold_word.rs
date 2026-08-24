@@ -1,24 +1,17 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, hint::assert_unchecked, iter};
+use std::{array, hint::assert_unchecked, iter, marker::PhantomData, mem::MaybeUninit};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, Divisible, PackedBinaryField64x1b, PackedField, WideMul,
-	linear_transformation::{
-		BytewiseLookupTransformationFactory, LinearTransformationFactory,
-		OutputWrappingTransformationFactory, Transformation,
-	},
-	util::expand_subset_sums_array,
+	BinaryField, Divisible, PackedBinaryField64x1b, PackedField, util::expand_subset_sums_array,
 };
-use binius_math::{FieldBuffer, FieldSlice, multilinear::hypercube::Hypercube};
+use binius_math::{FieldBuffer, multilinear::hypercube::Hypercube};
 use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
-use crate::bit_matrix::{
-	LOG_WEIGHTS_PER_TABLE, WEIGHTS_PER_TABLE, fold_row_group, row_fold_tables,
-};
+use crate::bit_matrix::{ColumnSums, RowFoldTables, WEIGHTS_PER_TABLE};
 
 /// Number of words folded together within a single chunk.
 ///
@@ -40,6 +33,11 @@ const LOG_CHUNK_SIZE: usize = CHUNK_SIZE.ilog2() as usize;
 ///
 /// Sixteen chunks is 1024 words, which is the setting that loses at neither end.
 const MIN_CHUNKS_PER_TASK: usize = 16;
+/// One 64-bit word with its bit axis expanded into full field elements.
+///
+/// Each bit position becomes one element, so the word is carried in oblong form.
+pub type FoldedWord<F> = [F; Word::BITS];
+
 /// Minimum words one parallel task folds along the bit axis.
 ///
 /// A packed element is the unit of work here, and it holds as few as one word.
@@ -136,12 +134,69 @@ impl<F: BinaryField> BitWeightTables<F> {
 	}
 }
 
+/// A field buffer under construction, filled in two stages.
+///
+/// Stage one writes one packed element per whole chunk of words, in parallel, through spare
+/// capacity. Stage two pushes the short tail and zero-fills up to the power-of-two length.
+///
+/// Owning both stages is what keeps the length claim in one place, so the unchecked write is
+/// argued once rather than at every fold.
+struct PackedOutput<P, V> {
+	values: V,
+	capacity: usize,
+	log_n: usize,
+	_marker: PhantomData<P>,
+}
+
+impl<P: PackedField, V: VecLike<P>> PackedOutput<P, V> {
+	/// Claims room for a buffer covering `n_words` words, rounded up to a power of two.
+	///
+	/// A word count that is not a power of two leaves the high words reading as zero.
+	fn for_words<A: Allocator<Vec<P> = V>>(alloc: &A, n_words: usize) -> Self {
+		let log_n = log2_ceil_usize(n_words);
+		let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
+
+		Self {
+			values: alloc.alloc::<P>(capacity),
+			capacity,
+			log_n,
+			_marker: PhantomData,
+		}
+	}
+
+	/// The uninitialized slots for the whole chunks, to be written before closing them.
+	fn chunk_slots(&mut self, n_chunks: usize) -> &mut [MaybeUninit<P>] {
+		&mut self.values.spare_capacity_mut()[..n_chunks]
+	}
+
+	/// Closes the slots handed out by the matching call above.
+	///
+	/// # Safety
+	///
+	/// Every slot of the matching `n_chunks` must have been written.
+	unsafe fn commit_chunks(&mut self, n_chunks: usize) {
+		unsafe { self.values.set_len(n_chunks) }
+	}
+
+	/// Appends the element the short tail folds to.
+	fn push(&mut self, elem: P) {
+		self.values.push(elem);
+	}
+
+	/// Zero-fills up to the power-of-two length and closes the buffer.
+	fn finish(mut self) -> FieldBuffer<P, V> {
+		self.values.resize(self.capacity, P::default());
+		FieldBuffer::new(self.log_n, self.values)
+	}
+}
+
 /// A reusable folder over a fixed vector of bit-index scalars, the [`fold_words`] analogue of
 /// [`WordFolder`].
 ///
 /// [`fold_words`] rebuilds its Method of Four Russians lookup transform on every call. A caller
 /// folding several word-lists against the same scalar vector can instead build the transform once
 /// with [`new`](Self::new) and reuse it across [`fold`](Self::fold) calls.
+#[derive(Debug)]
 pub struct BitAxisFolder<F: BinaryField> {
 	tables: BitWeightTables<F>,
 }
@@ -164,43 +219,38 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		P: PackedField<Scalar = F>,
 		A: Allocator,
 	{
-		// `words` need not have a power-of-two length; the high words up to the next power of two
-		// are treated as zero, so the slots after the last real word are zero-filled by resize.
-		let log_n = log2_ceil_usize(words.len());
-		let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
+		let mut out = PackedOutput::for_words(alloc, words.len());
 
-		let mut values = alloc.alloc::<P>(capacity);
-
+		// Partition the words into whole packed-width chunks and a short tail.
+		//
+		//     words:  [ chunk 0 | chunk 1 | ... | chunk n-1 | tail (< P::WIDTH) ]
 		let n_chunks = words.len() / P::WIDTH;
 		let (words_aligned, words_remaining) = words.split_at(n_chunks * P::WIDTH);
 
-		let values_aligned = &mut values.spare_capacity_mut()[..n_chunks];
+		let slots = out.chunk_slots(n_chunks);
 		let word_chunks = words_aligned.par_chunks_exact(P::WIDTH);
-		assert_eq!(values_aligned.len(), word_chunks.len());
+		assert_eq!(slots.len(), word_chunks.len());
 
-		(values_aligned, word_chunks)
+		(slots, word_chunks)
 			.into_par_iter()
 			// One item is one packed element, so the floor converts from words to items.
 			.with_min_len(MIN_WORDS_PER_TASK.div_ceil(P::WIDTH))
-			.for_each(|(out, word_chunk)| {
+			.for_each(|(slot, word_chunk)| {
 				// Safety:
 				// - words_aligned has length that is a multiple of P::WIDTH
 				// - words_aligned is split into P::WIDTH chunks
 				unsafe { assert_unchecked(word_chunk.len() == P::WIDTH) };
-				out.write(P::from_scalars(word_chunk.iter().map(|&word| self.tables.fold(word))));
+				slot.write(P::from_scalars(word_chunk.iter().map(|&word| self.tables.fold(word))));
 			});
 
-		// Safety: every one of the n_chunks slots is initialized above.
-		unsafe { values.set_len(n_chunks) };
+		// Safety: the loop above writes every one of the n_chunks slots exactly once.
+		unsafe { out.commit_chunks(n_chunks) };
 
 		if !words_remaining.is_empty() {
-			values
-				.push(P::from_scalars(words_remaining.iter().map(|&word| self.tables.fold(word))));
+			out.push(P::from_scalars(words_remaining.iter().map(|&word| self.tables.fold(word))));
 		}
 
-		values.resize(capacity, P::default());
-
-		FieldBuffer::new(log_n, values)
+		out.finish()
 	}
 
 	/// Folds the two stored BitAnd operand columns and their derived AND column in one pass.
@@ -250,13 +300,10 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		// Padding contract, mirrored from the single-column fold:
 		// the high words up to the next power of two read as zero.
 		// `0 & 0 = 0`, so the derived column stays consistent over that padding.
-		let log_n = log2_ceil_usize(a_words.len());
-		let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
-
+		//
 		// One output buffer per folded column, filled through spare capacity.
-		let mut a_values = alloc.alloc::<P>(capacity);
-		let mut b_values = alloc.alloc::<P>(capacity);
-		let mut c_values = alloc.alloc::<P>(capacity);
+		let [mut a_out, mut b_out, mut c_out] =
+			array::from_fn(|_| PackedOutput::for_words(alloc, a_words.len()));
 
 		// Phase 1: partition the inputs into full packed-width chunks and a short tail.
 		//
@@ -265,16 +312,16 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		let (a_aligned, a_remaining) = a_words.split_at(n_chunks * P::WIDTH);
 		let (b_aligned, b_remaining) = b_words.split_at(n_chunks * P::WIDTH);
 
-		let a_out = &mut a_values.spare_capacity_mut()[..n_chunks];
-		let b_out = &mut b_values.spare_capacity_mut()[..n_chunks];
-		let c_out = &mut c_values.spare_capacity_mut()[..n_chunks];
+		let a_slots = a_out.chunk_slots(n_chunks);
+		let b_slots = b_out.chunk_slots(n_chunks);
+		let c_slots = c_out.chunk_slots(n_chunks);
 
 		// Phase 2: fold the aligned chunks in parallel.
 		// Each task owns one chunk of both inputs and writes one packed element per output.
 		(
-			a_out,
-			b_out,
-			c_out,
+			a_slots,
+			b_slots,
+			c_slots,
 			a_aligned.par_chunks_exact(P::WIDTH),
 			b_aligned.par_chunks_exact(P::WIDTH),
 		)
@@ -298,87 +345,26 @@ impl<F: BinaryField> BitAxisFolder<F> {
 				));
 			});
 
-		// Safety: every one of the n_chunks slots of each vector is initialized above.
+		// Safety: the loop above writes every one of the n_chunks slots of each output exactly
+		// once.
 		unsafe {
-			a_values.set_len(n_chunks);
-			b_values.set_len(n_chunks);
-			c_values.set_len(n_chunks);
+			a_out.commit_chunks(n_chunks);
+			b_out.commit_chunks(n_chunks);
+			c_out.commit_chunks(n_chunks);
 		}
 
 		// Phase 3: fold the short tail into one final packed element per output.
 		if !a_remaining.is_empty() {
-			a_values.push(P::from_scalars(a_remaining.iter().map(|&word| self.tables.fold(word))));
-			b_values.push(P::from_scalars(b_remaining.iter().map(|&word| self.tables.fold(word))));
-			c_values.push(P::from_scalars(
+			a_out.push(P::from_scalars(a_remaining.iter().map(|&word| self.tables.fold(word))));
+			b_out.push(P::from_scalars(b_remaining.iter().map(|&word| self.tables.fold(word))));
+			c_out.push(P::from_scalars(
 				iter::zip(a_remaining, b_remaining).map(|(&a, &b)| self.tables.fold(a & b)),
 			));
 		}
 
-		// Phase 4: zero-pad each output up to the power-of-two capacity.
-		[a_values, b_values, c_values].map(|mut values| {
-			values.resize(capacity, P::default());
-			FieldBuffer::new(log_n, values)
-		})
+		// Phase 4: each output zero-pads itself up to the power-of-two capacity.
+		[a_out, b_out, c_out].map(PackedOutput::finish)
 	}
-}
-
-/// Folds a slice of words along both axes at once, contracting the matrix to a single scalar.
-///
-/// The words form a matrix over GF(2): row `i` is `words[i]`, column `b` is bit position `b`.
-/// The result is the bilinear form
-///
-/// ```text
-/// out = sum_i sum_b bit_b(words[i]) * index_scalars[b] * row_scalars[i]
-/// ```
-///
-/// reading a clear bit as zero and a set bit as one.
-///
-/// - [`fold_words`] contracts only the bit-index axis, giving one scalar per word.
-/// - [`fold_across_words`] contracts only the word axis, giving one scalar per bit position.
-/// - This contracts both axes, giving a single scalar.
-///
-/// A `words` slice shorter than `row_scalars` reads the missing high rows as zero.
-///
-/// ## Preconditions
-///
-/// * `index_scalars.len()` is exactly [`Word::BITS`]
-/// * `words.len()` is less than or equal to `row_scalars.len()`
-pub fn fold_words_both_axes<F, P>(
-	words: &[Word],
-	index_scalars: &[F],
-	row_scalars: FieldSlice<P>,
-) -> F
-where
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-{
-	assert_eq!(index_scalars.len(), Word::BITS);
-	assert!(words.len() <= row_scalars.len());
-
-	// Build the Method of Four Russians transform from the bit-index scalars, as `fold_words` does.
-	// Each word then folds to one scalar by bytewise table lookup.
-	let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-		.create(index_scalars);
-
-	// Fold each chunk to a packed element, then wide-multiply against the matching row element.
-	// Alignment: chunk `c` spans words `c*WIDTH .. (c+1)*WIDTH`, which is exactly packed row
-	// element `c`.
-	//
-	// The zip stops at the shorter word side.
-	// Dropped trailing row scalars pair with zero words, so they add nothing.
-	let wide = words
-		.par_chunks(P::WIDTH)
-		.zip(row_scalars.as_ref().par_iter())
-		.map(|(word_chunk, &row_i)| {
-			let folded =
-				P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)));
-			P::wide_mul(folded, row_i)
-		})
-		.reduce(<P as WideMul>::Output::default, |lhs, rhs| lhs + rhs);
-
-	// One reduction closes the deferred products.
-	// Summing the lanes collapses the packed inner product to the scalar `out` above.
-	P::reduce(wide).iter().sum()
 }
 
 /// Folds one chunk of words into the accumulator, scaled by that chunk's weight.
@@ -387,9 +373,9 @@ where
 /// A word and a 64-bit row of single-bit scalars share one underlier, so the view below is free.
 fn accumulate_word_chunk<F: BinaryField>(
 	chunk: &[Word; CHUNK_SIZE],
-	tables: &[[F; 1 << WEIGHTS_PER_TABLE]; Word::BYTES],
+	tables: &RowFoldTables<F, { Word::BYTES }>,
 	weight: F,
-	acc: &mut [F; Word::BITS],
+	acc: &mut FoldedWord<F>,
 ) {
 	// Reshape the chunk into one contiguous group of eight rows per table.
 	let groups = bytemuck::must_cast_ref::<
@@ -397,18 +383,10 @@ fn accumulate_word_chunk<F: BinaryField>(
 		[[PackedBinaryField64x1b; WEIGHTS_PER_TABLE]; Word::BYTES],
 	>(chunk);
 
-	// Accumulate every group into one column accumulator before scaling it.
-	let mut columns = [[F::ZERO; WEIGHTS_PER_TABLE]; Word::BYTES];
-	for (group, table) in iter::zip(groups, tables) {
-		fold_row_group(group, table, &mut columns);
-	}
-
-	// Scale once per column and merge, unpacking the nesting into bit-position order.
-	for (i, group) in columns.iter().enumerate() {
-		for (j, &column) in group.iter().enumerate() {
-			acc[(i << LOG_WEIGHTS_PER_TABLE) | j] += column * weight;
-		}
-	}
+	// Sum every group's contribution before scaling, so the chunk costs one multiply per column.
+	let mut sums = ColumnSums::zero();
+	tables.fold_into(groups.iter().copied(), &mut sums);
+	sums.add_scaled_to(weight, acc);
 }
 
 /// Computes the bitwise fold of the word vector with a tensor product, by bit position.
@@ -427,7 +405,7 @@ fn accumulate_word_chunk<F: BinaryField>(
 /// ## Preconditions
 ///
 /// * `words.len() <= 1 << point.len()`
-pub fn fold_across_words<F>(words: &[Word], point: &[F]) -> [F; Word::BITS]
+pub fn fold_across_words<F>(words: &[Word], point: &[F]) -> FoldedWord<F>
 where
 	F: BinaryField,
 {
@@ -445,17 +423,20 @@ where
 /// * one weight per chunk, built from the point's suffix.
 ///
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
+#[derive(Debug)]
 pub struct WordFolder<F: BinaryField> {
 	/// One 256-entry subset-sum table per byte of a word, from the prefix expansion.
 	///
 	/// Table `s` folds the words at positions `s * WEIGHTS_PER_TABLE + t` within a chunk.
 	/// Each such word is weighted by prefix-expansion entry `t` of that group.
-	lookups: [[F; 1 << WEIGHTS_PER_TABLE]; Word::BYTES],
+	lookups: RowFoldTables<F, { Word::BYTES }>,
 	/// One weight per chunk of `CHUNK_SIZE` words, from the suffix expansion.
 	suffix_weights: FieldBuffer<F>,
-	/// The word axis's length, which each [`fold`](Self::fold) call's list fits in:
-	/// `2^point.len()`.
-	n_words: usize,
+	/// Base-2 log of the word axis's length, which every folded list fits in.
+	///
+	/// This is the point's own width, stored rather than the length it stands for.
+	/// A point as wide as a `usize` would overflow that length, but never its log.
+	log_n_words: usize,
 }
 
 impl<F: BinaryField> WordFolder<F> {
@@ -475,7 +456,7 @@ impl<F: BinaryField> WordFolder<F> {
 		// Those zeros pair with the repeated words a short list is filled with, so they add
 		// nothing.
 		let prefix_expansion = Hypercube::One.expand(prefix).build_scalars();
-		let lookups = row_fold_tables::<F, { Word::BYTES }>(&prefix_expansion);
+		let lookups = RowFoldTables::new(&prefix_expansion);
 
 		// One weight per chunk of CHUNK_SIZE words, from the suffix.
 		let suffix_weights = Hypercube::One.expand(suffix).build::<F>();
@@ -483,7 +464,7 @@ impl<F: BinaryField> WordFolder<F> {
 		Self {
 			lookups,
 			suffix_weights,
-			n_words: 1 << point.len(),
+			log_n_words: point.len(),
 		}
 	}
 
@@ -508,8 +489,8 @@ impl<F: BinaryField> WordFolder<F> {
 	/// ## Preconditions
 	///
 	/// * `words.len() <= 1 << point.len()`
-	pub fn fold(&self, words: &[Word]) -> [F; Word::BITS] {
-		assert!(words.len() <= self.n_words, "words.len() must not exceed 2^point.len()");
+	pub fn fold(&self, words: &[Word]) -> FoldedWord<F> {
+		assert!(words.len() <= 1 << self.log_n_words, "words.len() must not exceed 2^point.len()");
 
 		let (chunks, tail) = words.as_chunks::<CHUNK_SIZE>();
 		let mut folded = [F::ZERO; Word::BITS];
@@ -536,8 +517,8 @@ impl<F: BinaryField> WordFolder<F> {
 	/// ## Preconditions
 	///
 	/// * `words.len() <= 1 << point.len()`
-	pub fn fold_par(&self, words: &[Word]) -> [F; Word::BITS] {
-		assert!(words.len() <= self.n_words, "words.len() must not exceed 2^point.len()");
+	pub fn fold_par(&self, words: &[Word]) -> FoldedWord<F> {
+		assert!(words.len() <= 1 << self.log_n_words, "words.len() must not exceed 2^point.len()");
 
 		let (chunks, tail) = words.as_chunks::<CHUNK_SIZE>();
 
@@ -606,341 +587,188 @@ impl<F: BinaryField> WordFolder<F> {
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Field, arch::OptimalPackedB128};
-	use binius_math::test_utils::{random_field_buffer, random_scalars};
-	use binius_utils::checked_arithmetics::checked_log_2;
+	use binius_field::{Field, PackedBinaryGhash2x128b, arch::OptimalPackedB128};
+	use binius_math::test_utils::random_scalars;
 	use binius_verifier::config::B128;
+	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
 
-	fn naive_fold_words<F, P>(words: &[Word], vec: &[F]) -> FieldBuffer<P>
-	where
-		F: Field,
-		P: PackedField<Scalar = F>,
-	{
-		assert_eq!(vec.len(), Word::BITS);
-		assert!(words.len().is_power_of_two());
+	/// The two folds, written straight from their definitions.
+	///
+	/// A word list is a matrix over GF(2): row `i` is word `i`, column `b` is bit position `b`.
+	/// Each fold contracts one axis of it, and each is one nested loop over set bits.
+	mod reference {
+		use super::*;
 
-		let log_n = checked_log_2(words.len());
+		/// Contracts the bit axis, leaving one element per word.
+		///
+		/// A list shorter than a power of two reads its high words as zero, so the padded slots
+		/// fold to zero and the buffer is the next power of two long.
+		pub fn fold_bit_axis<F: Field, P: PackedField<Scalar = F>>(
+			words: &[Word],
+			weights: &[F],
+		) -> FieldBuffer<P> {
+			assert_eq!(weights.len(), Word::BITS);
 
-		let values = words
-			.par_chunks(P::WIDTH)
-			.map(|word_chunk| {
-				P::from_scalars(word_chunk.iter().map(|&word| {
-					// Decompose word into bits and compute inner product
-					let mut sum = F::ZERO;
-					for bit_idx in 0..Word::BITS {
-						if (word.as_u64() >> bit_idx) & 1 == 1 {
-							sum += vec[bit_idx];
-						}
+			let log_n = log2_ceil_usize(words.len());
+			let scalars = (0..1 << log_n)
+				.map(|i| {
+					// Absent high words are zero, and a zero word has no set bits to weight.
+					words.get(i).map_or(F::ZERO, |word| {
+						(0..Word::BITS)
+							.filter(|bit| (word.as_u64() >> bit) & 1 == 1)
+							.map(|bit| weights[bit])
+							.sum()
+					})
+				})
+				.collect::<Vec<_>>();
+
+			FieldBuffer::from_values(&scalars)
+		}
+
+		/// Contracts the word axis, leaving one element per bit position.
+		///
+		/// A list shorter than the axis reads its high rows as zero, which weight nothing.
+		pub fn fold_word_axis<F: BinaryField>(words: &[Word], point: &[F]) -> FoldedWord<F> {
+			assert!(words.len() <= 1 << point.len());
+
+			let eq = Hypercube::One.expand(point).build_scalars();
+			let mut out = [F::ZERO; Word::BITS];
+			for (word, &weight) in iter::zip(words, &eq) {
+				for (bit, out_bit) in out.iter_mut().enumerate() {
+					if (word.as_u64() >> bit) & 1 == 1 {
+						*out_bit += weight;
 					}
-					sum
-				}))
-			})
-			.collect();
-
-		FieldBuffer::new(log_n, values)
-	}
-
-	#[test]
-	fn test_fold_words_equivalence() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		let log_n = 6;
-		let n_words = 1 << log_n;
-
-		let words = (0..n_words)
-			.map(|_| Word::from_u64(rng.random()))
-			.collect::<Vec<_>>();
-
-		let vec = random_scalars(&mut rng, Word::BITS);
-
-		// Compute using both methods
-		let result_optimized = fold_words::<B128, B128, _>(&GlobalAllocator, &words, &vec);
-		let result_naive = naive_fold_words::<B128, B128>(&words, &vec);
-
-		// Compare results
-		assert_eq!(result_optimized, result_naive);
-	}
-
-	#[test]
-	fn test_fold_bitand_operands_matches_separate_folds() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// Invariant: the fused three-output fold equals three independent single-column folds.
-		//
-		//     fused(A, B)  ==  [ fold(A), fold(B), fold(A & B) ]
-		//
-		// The single-column fold is itself pinned to a naive reference elsewhere in this module.
-		//
-		// Fixture state: word counts crossing every regime of the fused kernel.
-		//
-		//     0             → empty input, output is one zero element
-		//     1             → tail only, no aligned chunk
-		//     width         → exactly one aligned chunk, no tail
-		//     width + 1     → aligned chunk plus tail
-		//     4*width       → several aligned chunks
-		//     4*width + 3   → several chunks plus tail
-		//     40            → non-power-of-two, exercises the zero padding
-		let width = OptimalPackedB128::WIDTH;
-		for n_words in [0, 1, width, width + 1, 4 * width, 4 * width + 3, 40] {
-			// Two random operand columns of the chosen length.
-			let a_words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random()))
-				.collect::<Vec<_>>();
-			let b_words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random()))
-				.collect::<Vec<_>>();
-			// The reference third column, materialized word-by-word.
-			let c_words = iter::zip(&a_words, &b_words)
-				.map(|(&a, &b)| a & b)
-				.collect::<Vec<_>>();
-
-			// One random bit-weight vector shared by all folds.
-			let vec = random_scalars::<B128>(&mut rng, Word::BITS);
-			let folder = BitAxisFolder::new(&vec);
-
-			// Fold the two stored columns and the derived column in one fused pass.
-			let [a_fused, b_fused, c_fused] = folder.fold_bitand_operands::<OptimalPackedB128, _>(
-				&GlobalAllocator,
-				&a_words,
-				&b_words,
-			);
-			// Each fused output must equal the independent single-column fold.
-			assert_eq!(
-				a_fused,
-				folder.fold(&GlobalAllocator, &a_words),
-				"a mismatch at n_words = {n_words}"
-			);
-			assert_eq!(
-				b_fused,
-				folder.fold(&GlobalAllocator, &b_words),
-				"b mismatch at n_words = {n_words}"
-			);
-			assert_eq!(
-				c_fused,
-				folder.fold(&GlobalAllocator, &c_words),
-				"c mismatch at n_words = {n_words}"
-			);
-		}
-	}
-
-	fn naive_fold_words_both_axes<F, P>(
-		words: &[Word],
-		index_scalars: &[F],
-		row_scalars: &FieldBuffer<P>,
-	) -> F
-	where
-		F: BinaryField,
-		P: PackedField<Scalar = F>,
-	{
-		assert_eq!(index_scalars.len(), Word::BITS);
-		assert!(words.len() <= row_scalars.len());
-
-		// Contract row by row: fold each word's set bits against `index_scalars`, then weight the
-		// per-word scalar by its row scalar and sum. Words beyond `words.len()` are absent (zero).
-		let mut out = F::ZERO;
-		for (i, &word) in words.iter().enumerate() {
-			let mut per_word = F::ZERO;
-			for bit_idx in 0..Word::BITS {
-				if (word.as_u64() >> bit_idx) & 1 == 1 {
-					per_word += index_scalars[bit_idx];
 				}
 			}
-			out += per_word * row_scalars.get(i);
-		}
-		out
-	}
-
-	#[test]
-	fn test_fold_words_both_axes_equivalence() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// (log_rows, n_words) covering: single element, full chunk, shorter power-of-two list,
-		// non-power-of-two list with a partial trailing chunk, a multi-chunk partial list, and the
-		// empty list.
-		for (log_rows, n_words) in [
-			(0, 1),
-			(LOG_CHUNK_SIZE, 1 << LOG_CHUNK_SIZE),
-			(LOG_CHUNK_SIZE, 1 << 3),
-			(LOG_CHUNK_SIZE, 40),
-			(LOG_CHUNK_SIZE + 2, (1 << (LOG_CHUNK_SIZE + 2)) - 3),
-			(3, 0),
-		] {
-			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random()))
-				.collect::<Vec<_>>();
-			let index_scalars = random_scalars::<B128>(&mut rng, Word::BITS);
-			let row_scalars = random_field_buffer::<OptimalPackedB128>(&mut rng, log_rows);
-
-			let result_optimized = fold_words_both_axes::<_, OptimalPackedB128>(
-				&words,
-				&index_scalars,
-				row_scalars.to_ref(),
-			);
-			let result_naive = naive_fold_words_both_axes(&words, &index_scalars, &row_scalars);
-
-			assert_eq!(
-				result_optimized, result_naive,
-				"mismatch at log_rows = {log_rows}, n_words = {n_words}"
-			);
+			out
 		}
 	}
 
-	fn naive_fold_across_words<F: BinaryField>(words: &[Word], point: &[F]) -> [F; Word::BITS] {
-		assert_eq!(words.len(), 1 << point.len());
-
-		let eq = Hypercube::One.expand(point).build_scalars();
-		let mut out = [F::ZERO; Word::BITS];
-		for (word, &weight) in iter::zip(words, &eq) {
-			for (bit_idx, out_i) in out.iter_mut().enumerate() {
-				if (word.as_u64() >> bit_idx) & 1 == 1 {
-					*out_i += weight;
-				}
-			}
-		}
-		out
+	/// Word counts spanning every regime both folds branch on.
+	///
+	/// The folds split their input into whole chunks and a short tail, so the interesting lengths
+	/// sit around those boundaries rather than at round powers of two.
+	fn any_n_words() -> impl Strategy<Value = usize> {
+		0..=4 * CHUNK_SIZE
 	}
 
-	#[test]
-	fn test_fold_across_words_equivalence() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// Cover chunks smaller than, equal to, and larger than CHUNK_SIZE.
-		for log_n in [
-			0,
-			1,
-			3,
-			LOG_CHUNK_SIZE,
-			LOG_CHUNK_SIZE + 1,
-			LOG_CHUNK_SIZE + 4,
-		] {
-			let n_words = 1 << log_n;
-
-			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random()))
-				.collect::<Vec<_>>();
-			let point = random_scalars::<B128>(&mut rng, log_n);
-
-			let result_optimized = fold_across_words(&words, &point);
-			let result_naive = naive_fold_across_words(&words, &point);
-
-			assert_eq!(result_optimized, result_naive, "mismatch at log_n = {log_n}");
-		}
+	fn words_of(n: usize, seed: u64) -> Vec<Word> {
+		let mut rng = StdRng::seed_from_u64(seed);
+		(0..n).map(|_| Word::from_u64(rng.random())).collect()
 	}
 
-	// A word list shorter than the word axis folds as the same list zero-padded up to it, through
-	// both the sequential folder and the parallel `fold_across_words`.
+	// The bit-axis folds split their input at a multiple of the packing width, so the width decides
+	// which branches run at all:
 	//
-	// The naive reference is only defined on a full axis, so it is the padded side here; the point
-	// of the test is that the short side reaches the same value without materializing the padding.
-	#[test]
-	fn word_folder_folds_a_short_list_as_if_zero_padded() {
-		let mut rng = StdRng::seed_from_u64(0);
+	//     width 1 : every word is its own chunk, so the short tail is never taken
+	//     width 2 : an odd word count leaves a tail, and the buffer above it is zero-padded
+	//
+	// The optimal packing is one scalar wide on some targets, so pinning only that would leave the
+	// tail and padding paths untested there. Every bit-axis property runs at both widths.
+	fn check_bit_axis_fold<P: PackedField<Scalar = B128>>(words: &[Word], weights: &[B128]) {
+		assert_eq!(
+			fold_words::<_, P, _>(&GlobalAllocator, words, weights),
+			reference::fold_bit_axis(words, weights),
+			"bit-axis fold differs at P::WIDTH = {}, {} words",
+			P::WIDTH,
+			words.len()
+		);
+	}
 
-		// (log_rows, n_words) covering: a sub-chunk list in a one-chunk axis, a non-power-of-two
-		// list straddling the chunk boundary, a list filling whole chunks of a wider axis, a list
-		// short of a whole chunk in a wider axis, and the empty list.
-		for (log_rows, n_words) in [
-			(LOG_CHUNK_SIZE, 1),
-			(LOG_CHUNK_SIZE, 40),
-			(LOG_CHUNK_SIZE + 2, 2 * CHUNK_SIZE),
-			(LOG_CHUNK_SIZE + 2, 2 * CHUNK_SIZE + 5),
-			(LOG_CHUNK_SIZE, 0),
-		] {
-			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random()))
-				.collect::<Vec<_>>();
+	fn check_fused_bitand_fold<P: PackedField<Scalar = B128>>(
+		a_words: &[Word],
+		b_words: &[Word],
+		weights: &[B128],
+	) {
+		let c_words = iter::zip(a_words, b_words)
+			.map(|(&a, &b)| a & b)
+			.collect::<Vec<_>>();
+		let folder = BitAxisFolder::new(weights);
+
+		let [a, b, c] = folder.fold_bitand_operands::<P, _>(&GlobalAllocator, a_words, b_words);
+		let width = P::WIDTH;
+
+		assert_eq!(a, folder.fold(&GlobalAllocator, a_words), "a differs at width {width}");
+		assert_eq!(b, folder.fold(&GlobalAllocator, b_words), "b differs at width {width}");
+		assert_eq!(c, folder.fold(&GlobalAllocator, &c_words), "c differs at width {width}");
+	}
+
+	proptest! {
+		#[test]
+		fn bit_axis_fold_matches_the_definition(n_words in any_n_words(), seed: u64) {
+			// Every length, not just the powers of two the old fixture used. A non-power-of-two
+			// list exercises the tail element and the zero padding above it, which is the path
+			// the fixture never reached.
+			let words = words_of(n_words, seed);
+			let mut rng = StdRng::seed_from_u64(seed ^ 1);
+			let weights = random_scalars::<B128>(&mut rng, Word::BITS);
+
+			check_bit_axis_fold::<OptimalPackedB128>(&words, &weights);
+			check_bit_axis_fold::<PackedBinaryGhash2x128b>(&words, &weights);
+		}
+
+		#[test]
+		fn word_axis_fold_matches_the_definition(n_words in any_n_words(), seed: u64) {
+			// The point must cover the list, so its width is the list's rounded-up log.
+			let words = words_of(n_words, seed);
+			let mut rng = StdRng::seed_from_u64(seed ^ 2);
+			let point = random_scalars::<B128>(&mut rng, log2_ceil_usize(words.len()));
+
+			prop_assert_eq!(
+				fold_across_words(&words, &point),
+				reference::fold_word_axis(&words, &point),
+			);
+		}
+
+		#[test]
+		fn word_axis_drivers_agree(n_words in any_n_words(), seed: u64) {
+			// Dividing the chunk axis across workers changes the grouping of the sums, not their
+			// value, because field addition is associative and exact.
+			let words = words_of(n_words, seed);
+			let mut rng = StdRng::seed_from_u64(seed ^ 3);
+			let point = random_scalars::<B128>(&mut rng, log2_ceil_usize(words.len()));
+
+			let folder = WordFolder::new(&point);
+			prop_assert_eq!(folder.fold_par(&words), folder.fold(&words));
+		}
+
+		#[test]
+		fn fused_bitand_fold_matches_three_separate_folds(n_words in any_n_words(), seed: u64) {
+			// The AND-reduction fold derives its third column in registers rather than reading it.
+			// That must equal folding a materialized third column.
+			//
+			//     fused(A, B)  ==  [ fold(A), fold(B), fold(A & B) ]
+			let a_words = words_of(n_words, seed);
+			let b_words = words_of(n_words, seed ^ 0xff);
+
+			let mut rng = StdRng::seed_from_u64(seed ^ 4);
+			let weights = random_scalars::<B128>(&mut rng, Word::BITS);
+
+			check_fused_bitand_fold::<OptimalPackedB128>(&a_words, &b_words, &weights);
+			check_fused_bitand_fold::<PackedBinaryGhash2x128b>(&a_words, &b_words, &weights);
+		}
+
+		#[test]
+		fn word_axis_fold_reads_a_short_list_as_zero_padded(
+			log_rows in LOG_CHUNK_SIZE..LOG_CHUNK_SIZE + 3,
+			seed: u64,
+		) {
+			// A list shorter than the word axis must fold as that list zero-padded up to it,
+			// without ever materializing the padding.
+			let n_words = (seed as usize) % (1 << log_rows);
+			let words = words_of(n_words, seed);
+			let mut rng = StdRng::seed_from_u64(seed ^ 5);
 			let point = random_scalars::<B128>(&mut rng, log_rows);
 
 			let mut padded = words.clone();
 			padded.resize(1 << log_rows, Word::ZERO);
+			let expected = reference::fold_word_axis(&padded, &point);
 
-			let expected = naive_fold_across_words(&padded, &point);
-
-			let folder = WordFolder::new(&point);
-			assert_eq!(
-				folder.fold(&words),
-				expected,
-				"short WordFolder::fold differs at log_rows = {log_rows}, n_words = {n_words}"
-			);
-			assert_eq!(
-				fold_across_words(&words, &point),
-				expected,
-				"short fold_across_words differs at log_rows = {log_rows}, n_words = {n_words}"
-			);
-		}
-	}
-
-	#[test]
-	fn parallel_driver_matches_sequential_driver() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// Invariant: dividing the chunk axis across workers changes nothing about the result.
-		// Field addition is associative and exact, so any grouping of the chunk sums agrees.
-		//
-		//     sequential: (((c_0 + c_1) + c_2) + c_3)
-		//     parallel  : ((c_0 + c_1) + (c_2 + c_3))
-		//     → identical, because the merge order is the only difference
-		//
-		// Fixture state: word counts crossing every regime of both drivers.
-		//
-		//     0                 → empty list, no chunks and no tail
-		//     1                 → tail only, no whole chunk
-		//     CHUNK_SIZE        → exactly one whole chunk, no tail
-		//     CHUNK_SIZE + 1    → one whole chunk plus a tail
-		//     5 * CHUNK_SIZE    → several whole chunks, no tail
-		//     5 * CHUNK_SIZE+17 → several whole chunks plus a tail
-		let log_rows = LOG_CHUNK_SIZE + 3;
-		for n_words in [
-			0,
-			1,
-			CHUNK_SIZE,
-			CHUNK_SIZE + 1,
-			5 * CHUNK_SIZE,
-			5 * CHUNK_SIZE + 17,
-		] {
-			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random()))
-				.collect::<Vec<_>>();
-			let point = random_scalars::<B128>(&mut rng, log_rows);
-
-			let folder = WordFolder::new(&point);
-			assert_eq!(
-				folder.fold_par(&words),
-				folder.fold(&words),
-				"drivers disagree at n_words = {n_words}"
-			);
-		}
-	}
-
-	#[test]
-	fn test_word_folder_fold_matches_naive() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// The sequential fold driver differs from the parallel one, so pin it to the naive
-		// reference. Cover every chunk regime: sub-chunk (log_n < 6), one chunk (log_n = 6), many
-		// chunks (> 6).
-		for log_n in [
-			0,
-			1,
-			3,
-			LOG_CHUNK_SIZE,
-			LOG_CHUNK_SIZE + 1,
-			LOG_CHUNK_SIZE + 4,
-		] {
-			let n_words = 1 << log_n;
-
-			let words = (0..n_words)
-				.map(|_| Word::from_u64(rng.random()))
-				.collect::<Vec<_>>();
-			let point = random_scalars::<B128>(&mut rng, log_n);
-
-			let result_folder = WordFolder::new(&point).fold(&words);
-			let result_naive = naive_fold_across_words(&words, &point);
-
-			assert_eq!(result_folder, result_naive, "mismatch at log_n = {log_n}");
+			prop_assert_eq!(WordFolder::new(&point).fold(&words), expected);
+			prop_assert_eq!(fold_across_words(&words, &point), expected);
 		}
 	}
 }

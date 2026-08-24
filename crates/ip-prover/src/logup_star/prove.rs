@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
 	channel::IPProverChannel,
-	fracaddcheck::{self, FracAddCheckProver, fraction::Fraction, unpad_leaf_claim},
+	fracaddcheck::{self, FracAddCircuit, fraction::Fraction, unpad_leaf_claim},
 };
 
 /// One looker's column and claim: `(I^* T)(eval_point) = eval_claim` against the table it reads.
@@ -201,7 +201,7 @@ where
 		.map(|(&(looker, c), numerator)| {
 			let den = witness::looker_denominator::<A, F, P>(alloc, c, looker.index);
 			// Lookers may differ in length, so each circuit is built at its own depth.
-			let (prover, root) = FracAddCheckProver::new(
+			let (prover, root) = FracAddCircuit::build(
 				looker.eval_point.len(),
 				alloc,
 				Fraction::new(numerator, den),
@@ -216,7 +216,7 @@ where
 		let table_den = witness::table_denominator::<A, F, P>(alloc, c, table.log_len());
 		// The pushforward is borrowed — a committing caller keeps it for the oracle opening — so
 		// the table circuit's leaf layer, which it folds in place, is a clone drawn from `alloc`.
-		let (table_prover, table_root) = FracAddCheckProver::new(
+		let (table_prover, table_root) = FracAddCircuit::build(
 			table.log_len(),
 			alloc,
 			Fraction::new(FieldBuffer::clone_from_slice(alloc, pushforward.to_ref()), table_den),
@@ -232,7 +232,7 @@ where
 	//     sum_j num_j / den_j  -  sum_t num_t / den_t
 	//
 	// which is zero exactly when the logUp identities hold.
-	let (top_prover, top_root) = FracAddCheckProver::new(k, alloc, {
+	let (top_prover, top_root) = FracAddCircuit::build(k, alloc, {
 		let (mut root_nums, mut root_dens): (Vec<_>, Vec<_>) =
 			roots.iter().map(|&root| (root.num, root.den)).unzip();
 		// The slots past the last instance hold the zero fraction, which the sum ignores.
@@ -380,7 +380,7 @@ mod tests {
 	use binius_ip::{channel::IPVerifierChannel, logup_star};
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{evaluate::evaluate, hypercube::Hypercube},
+		multilinear::{Multilinear, hypercube::Hypercube},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -523,7 +523,7 @@ mod tests {
 
 			assert_eq!(
 				prover_out.tables[table_index].eval_claim,
-				evaluate(&table.values, own_point),
+				table.values.evaluate(own_point),
 				"table claim wrong for table {table_index} ({shape})"
 			);
 
@@ -539,7 +539,7 @@ mod tests {
 			let pushforward = FieldBuffer::<P>::from_values(&pushforward);
 			assert_eq!(
 				prover_out.tables[table_index].pushforward_claim,
-				evaluate(&pushforward, own_point),
+				pushforward.evaluate(own_point),
 				"pushforward claim wrong for table {table_index} ({shape})"
 			);
 		}
@@ -557,7 +557,7 @@ mod tests {
 				let own_point = &index_point[index_point.len() - looker.eval_point.len()..];
 				assert_eq!(
 					*claim,
-					evaluate(&embedded, own_point),
+					embedded.evaluate(own_point),
 					"index claim wrong for table {table_index}, n={} ({shape})",
 					looker.eval_point.len()
 				);

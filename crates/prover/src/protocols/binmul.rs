@@ -163,7 +163,7 @@ mod tests {
 	use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random};
 	use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
 	use binius_iop_prover::channel::naive::NaiveProverChannel;
-	use binius_math::{inner_product::inner_product_buffers, multilinear::hypercube::Hypercube};
+	use binius_math::multilinear::{Multilinear, hypercube::Hypercube};
 	use binius_transcript::{ProverTranscript, VerifierTranscript};
 	use binius_verifier::{
 		config::StdChallenger,
@@ -194,7 +194,7 @@ mod tests {
 			prefix_tensor.as_ref(),
 		);
 
-		inner_product_buffers(&partially_folded_witness, &suffix_tensor)
+		partially_folded_witness.inner_product(&suffix_tensor)
 	}
 
 	/// Split a GHASH-field element into its `(lo, hi)` 64-bit word pair.
