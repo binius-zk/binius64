@@ -104,6 +104,34 @@ pub fn expand_subset_sums<P: PackedField>(elems: &[P]) -> Vec<P> {
 	expanded
 }
 
+/// Expands `elems` into all `2^elems.len()` subset products, indexed by subset bitmask.
+///
+/// The multiplicative counterpart of [`expand_subset_sums`].
+/// Entry `mask` holds the product of `elems[i]` over every bit `i` set in `mask`.
+/// So entry `0` is one and entry `2^i` is `elems[i]`.
+///
+/// This is the tensor expansion `(1, elems[0]) x ... x (1, elems[k-1])`.
+/// A caller holding `k` factors of a product basis recovers all `2^k` basis elements from them.
+///
+/// Each entry costs one multiplication.
+/// Multiplying a subset directly would cost one per set bit.
+///
+/// ## Preconditions
+///
+/// * `elems.len()` must be less than `usize::BITS`
+pub fn expand_subset_products<P: PackedField>(elems: &[P]) -> Vec<P> {
+	assert!(elems.len() < usize::BITS as usize); // precondition
+
+	let mut expanded = vec![P::one(); 1 << elems.len()];
+	for (i, &elem_i) in elems.iter().enumerate() {
+		let (lo_half, hi_half) = expanded[..1 << (i + 1)].split_at_mut(1 << i);
+		for (lo_half_i, hi_half_i) in iter::zip(lo_half, hi_half) {
+			*hi_half_i = *lo_half_i * elem_i;
+		}
+	}
+	expanded
+}
+
 /// Expands `elems` into all `2^N` subset XOR combinations, indexed by subset bitmask.
 ///
 /// Entry `mask` holds the XOR of `elems[i]` over every bit `i` set in `mask`. This is the
@@ -186,6 +214,26 @@ mod tests {
 				7 => check_subset_sums::<7, 128>(n as u64, index),
 				8 => check_subset_sums::<8, 256>(n as u64, index),
 				_ => unreachable!("n is constrained to 0..=8"),
+			}
+		}
+	}
+	proptest! {
+		#[test]
+		fn expand_subset_products_selects_the_product_over_set_bits(seed: u64, n in 0usize..=8) {
+			let mut rng = StdRng::seed_from_u64(seed);
+			let elems = (0..n)
+				.map(|_| F::random(&mut rng))
+				.collect::<Vec<_>>();
+
+			let expanded = expand_subset_products(&elems);
+			prop_assert_eq!(expanded.len(), 1 << n);
+
+			// Entry `mask` multiplies exactly the elements whose bit is set in `mask`.
+			for (mask, &entry) in expanded.iter().enumerate() {
+				let expected = (0..n)
+					.filter(|i| (mask >> i) & 1 == 1)
+					.fold(F::ONE, |acc, i| acc * elems[i]);
+				prop_assert_eq!(entry, expected);
 			}
 		}
 	}
