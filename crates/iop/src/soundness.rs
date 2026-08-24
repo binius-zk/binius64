@@ -8,8 +8,8 @@
 //! ```text
 //!     bits    = min(algebra, queries)
 //!
-//!     algebra = -log2(eps_ca)                  <- fixed by the code and the field
-//!     queries = -n_queries * log2(1 - delta)   <- bought one query at a time
+//!     algebra = -log2(eps_ca)                + challenge_grind   <- code, field, proof of work
+//!     queries = -n_queries * log2(1 - delta) + query_grind       <- one query at a time
 //! ```
 //!
 //! The right-hand term is the one everybody counts.
@@ -80,10 +80,9 @@
 //! reference implementations disagree on how much: one charges a factor `l`, the other `2^(l-1)`.
 //! [`crate::ligerito::LigeritoParams::correlated_agreement_bits`] charges the pessimistic one.
 //!
-//! Proof-of-work grinding is also absent, and it is what both references use to close the last
-//! few bits.
-//! Grinding is a transcript-level device rather than a property of the code, so it belongs to
-//! whichever protocol adopts it.
+//! Proof-of-work grinding *is* counted, through [`Grinding`].
+//! It is the one lever that moves the left-hand term.
+//! It does that without touching the code, by making a re-rolled challenge cost a fresh search.
 //!
 //! One warning is *stronger* in characteristic 2 than elsewhere.
 //! [BCHKS25] Theorem 1.6 and Cor. 1.7 show proximity gaps past the Johnson radius fail, and they
@@ -105,7 +104,70 @@
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 //! [ABF26]: <https://eprint.iacr.org/2026/680>
 
+use binius_transcript::MAX_GRINDING_BITS;
+
 use crate::fri::calculate_n_test_queries;
+
+/// Proof-of-work bits ground into a transcript, split by the term each one buys back.
+///
+/// Grinding does not change the code, so it cannot move a proximity bound on its own.
+/// What it changes is the cost of *retrying*.
+/// A prover that dislikes a challenge must redo a `2^bits` search to see another one.
+/// Every term derived from that challenge therefore gains `bits`.
+///
+/// The two fields are not interchangeable.
+/// Charging one where the other belongs overstates the security reached.
+///
+/// - [`Self::challenge_bits`] is ground before the fold or batching challenge.
+/// - [`Self::query_bits`] is ground after the commitment, before query positions are drawn.
+///
+/// The first raises the ceiling that no query count can touch.
+/// The second lets the query phase reach the same target with fewer rows opened.
+///
+/// Both reference Ligerito implementations carry both kinds, at 16 and 17 bits.
+/// [`binius_transcript::ProverTranscript::grind`] is the primitive that produces them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Grinding {
+	/// Bits ground before the challenge the algebraic terms depend on.
+	challenge_bits: usize,
+	/// Bits ground after the commitment and before query positions are drawn.
+	query_bits: usize,
+}
+
+impl Grinding {
+	/// No proof of work at all, which is what an unmodified protocol does.
+	pub const NONE: Self = Self {
+		challenge_bits: 0,
+		query_bits: 0,
+	};
+
+	/// Grinding of the given depth on each of the two challenges.
+	///
+	/// The prover pays about `2^challenge_bits + 2^query_bits` hashes per level for this.
+	pub const fn new(challenge_bits: usize, query_bits: usize) -> Self {
+		// A budget that claims more grinding than the transcript can deliver would report a
+		// security level nothing produces: `sample_bits_reader` masks to 32, so a larger
+		// difficulty silently weakens to that one.
+		assert!(
+			challenge_bits <= MAX_GRINDING_BITS && query_bits <= MAX_GRINDING_BITS,
+			"precondition: each grind must be within what the transcript can express"
+		);
+		Self {
+			challenge_bits,
+			query_bits,
+		}
+	}
+
+	/// Bits ground before the challenge the algebraic terms depend on.
+	pub const fn challenge_bits(self) -> usize {
+		self.challenge_bits
+	}
+
+	/// Bits ground after the commitment and before query positions are drawn.
+	pub const fn query_bits(self) -> usize {
+		self.query_bits
+	}
+}
 
 /// Which proximity-testing regime a code's parameters are derived in.
 ///
@@ -293,9 +355,12 @@ impl SoundnessRegime {
 		log_inv_rate: usize,
 		log_field_size: usize,
 		n_queries: usize,
+		grinding: Grinding,
 	) -> f64 {
-		let algebra = self.correlated_agreement_bits(log_msg_len, log_inv_rate, log_field_size);
-		let queries = n_queries as f64 * self.bits_per_query(log_inv_rate);
+		let algebra = self.correlated_agreement_bits(log_msg_len, log_inv_rate, log_field_size)
+			+ grinding.challenge_bits() as f64;
+		let queries =
+			n_queries as f64 * self.bits_per_query(log_inv_rate) + grinding.query_bits() as f64;
 		algebra.min(queries)
 	}
 
@@ -303,8 +368,11 @@ impl SoundnessRegime {
 	///
 	/// A `None` is not a parameter that needs more queries.
 	/// It is a configuration that cannot reach the target at all, because
-	/// [`Self::correlated_agreement_bits`] is already under it.
-	/// Widen the field, grind, or lower the target.
+	/// [`Self::correlated_agreement_bits`] plus `grinding`'s challenge side is still under it.
+	/// Widen the field, grind harder, or lower the target.
+	///
+	/// Grinding past `security_bits` on the query side returns zero queries.
+	/// That is a misconfiguration rather than a protocol.
 	///
 	/// # Panics
 	/// Those of [`Self::proximity_parameter`].
@@ -314,12 +382,38 @@ impl SoundnessRegime {
 		log_msg_len: usize,
 		log_inv_rate: usize,
 		log_field_size: usize,
+		grinding: Grinding,
 	) -> Option<usize> {
-		let algebra = self.correlated_agreement_bits(log_msg_len, log_inv_rate, log_field_size);
+		let algebra = self.correlated_agreement_bits(log_msg_len, log_inv_rate, log_field_size)
+			+ grinding.challenge_bits() as f64;
 		if algebra < security_bits as f64 {
 			return None;
 		}
-		Some(self.n_queries(security_bits, log_inv_rate))
+		// Query grinding closes part of the target on its own, so the rows only cover the rest.
+		let from_queries = security_bits.saturating_sub(grinding.query_bits());
+		Some(self.n_queries(from_queries, log_inv_rate))
+	}
+
+	/// Proof-of-work bits that would lift the algebraic term to `security_bits`.
+	///
+	/// Zero when the term already clears the target.
+	/// This is the ceiling read backwards.
+	/// Rather than what a configuration reaches, it says what reaching a given target would take.
+	///
+	/// Only the challenge side is returned, because only that side is ever *required*.
+	/// Query grinding trades proof size against prover time, so it is a choice, not a deficit.
+	///
+	/// # Panics
+	/// Those of [`Self::proximity_parameter`].
+	pub fn required_challenge_grinding(
+		self,
+		security_bits: usize,
+		log_msg_len: usize,
+		log_inv_rate: usize,
+		log_field_size: usize,
+	) -> usize {
+		let algebra = self.correlated_agreement_bits(log_msg_len, log_inv_rate, log_field_size);
+		(security_bits as f64 - algebra).max(0.0).ceil() as usize
 	}
 
 	/// The [`Self::Johnson`] slack minimizing queries at `security_bits`, with the count it
@@ -356,6 +450,7 @@ impl SoundnessRegime {
 					log_msg_len,
 					log_inv_rate,
 					log_field_size,
+					Grinding::NONE,
 				)?;
 				Some((regime, queries))
 			})
@@ -397,6 +492,7 @@ impl SoundnessRegime {
 					log_msg_len,
 					log_inv_rate,
 					log_field_size,
+					Grinding::NONE,
 				)?;
 				Some((regime, queries))
 			})
@@ -503,10 +599,21 @@ mod tests {
 			assert!((ceiling - expected).abs() < 0.01, "log_msg_len={log_msg_len} {ceiling}");
 
 			// The query count clears the target, and the algebra clears it too, so 96 holds.
-			let queries = SoundnessRegime::UniqueDecoding.plan_queries(96, log_msg_len, 1, B128);
+			let queries = SoundnessRegime::UniqueDecoding.plan_queries(
+				96,
+				log_msg_len,
+				1,
+				B128,
+				Grinding::NONE,
+			);
 			assert_eq!(queries, Some(232));
-			let achieved =
-				SoundnessRegime::UniqueDecoding.achieved_security_bits(log_msg_len, 1, B128, 232);
+			let achieved = SoundnessRegime::UniqueDecoding.achieved_security_bits(
+				log_msg_len,
+				1,
+				B128,
+				232,
+				Grinding::NONE,
+			);
 			assert!(achieved >= 96.0, "log_msg_len={log_msg_len} achieved={achieved}");
 		}
 	}
@@ -542,7 +649,8 @@ mod tests {
 						128,
 						log_msg_len,
 						log_inv_rate,
-						B128
+						B128,
+						Grinding::NONE,
 					),
 					None,
 				);
@@ -606,7 +714,7 @@ mod tests {
 		for log_msg_len in [24, 28, 30] {
 			assert!(
 				SoundnessRegime::UniqueDecoding
-					.plan_queries(128, log_msg_len, 1, 256)
+					.plan_queries(128, log_msg_len, 1, 256, Grinding::NONE)
 					.is_some()
 			);
 			assert!(SoundnessRegime::optimal_johnson(128, log_msg_len, 1, 256).is_some());
@@ -667,5 +775,94 @@ mod tests {
 	#[should_panic(expected = "eta must be less than 1 - sqrt(rho)")]
 	fn a_slack_past_the_johnson_radius_is_rejected() {
 		SoundnessRegime::Johnson { eta: 0.5 }.bits_per_query(1);
+	}
+	/// The slack that maximizes the lossy unique-decoding ceiling at the shape used below.
+	fn best_lossy() -> SoundnessRegime {
+		(1..4096)
+			.map(|i| SoundnessRegime::UniqueDecodingWithLoss {
+				loss: 0.25 * f64::from(i) / 4096.0,
+			})
+			.max_by(|a, b| {
+				a.correlated_agreement_bits(24, 1, B128)
+					.total_cmp(&b.correlated_agreement_bits(24, 1, B128))
+			})
+			.expect("the sweep is non-empty")
+	}
+
+	#[test]
+	fn no_grinding_is_the_default_and_changes_nothing() {
+		assert_eq!(Grinding::default(), Grinding::NONE);
+		assert_eq!(Grinding::NONE.challenge_bits(), 0);
+		assert_eq!(Grinding::NONE.query_bits(), 0);
+
+		// The shipped configuration reads the same with an explicit empty grind as without one.
+		let regime = SoundnessRegime::UniqueDecoding;
+		let bare = regime.correlated_agreement_bits(24, 1, B128);
+		let with_none = regime.achieved_security_bits(24, 1, B128, 1 << 30, Grinding::NONE);
+		assert!((with_none - bare).abs() < 1e-9);
+	}
+
+	#[test]
+	fn challenge_grinding_lifts_the_ceiling_that_queries_cannot() {
+		let regime = best_lossy();
+
+		// Over B128 the lossy ceiling stops at 124.5 bits, so 128 is out of reach unaided.
+		assert!((regime.correlated_agreement_bits(24, 1, B128) - 124.457).abs() < 0.01);
+		assert_eq!(regime.plan_queries(128, 24, 1, B128, Grinding::NONE), None);
+
+		// Four bits of proof of work close that gap, and the function says so before the fact.
+		assert_eq!(regime.required_challenge_grinding(128, 24, 1, B128), 4);
+		let ground = Grinding::new(4, 0);
+		assert!(regime.plan_queries(128, 24, 1, B128, ground).is_some());
+
+		// Nothing is owed once the term already clears the target.
+		assert_eq!(regime.required_challenge_grinding(124, 24, 1, B128), 0);
+		assert_eq!(regime.required_challenge_grinding(96, 24, 1, B128), 0);
+	}
+
+	#[test]
+	fn query_grinding_buys_rows_and_leaves_the_ceiling_alone() {
+		let regime = SoundnessRegime::UniqueDecoding;
+
+		// Seventeen bits is what one reference implementation grinds before drawing positions.
+		// The rows then only have to close the remaining target.
+		let bare = regime
+			.plan_queries(96, 24, 1, B128, Grinding::NONE)
+			.expect("96 bits is reachable");
+		let ground = regime
+			.plan_queries(96, 24, 1, B128, Grinding::new(0, 17))
+			.expect("grinding does not make it unreachable");
+		assert_eq!(bare, 232);
+		assert_eq!(ground, 191);
+
+		// But it does not touch the ceiling, so an out-of-reach target stays out of reach.
+		let lossy = best_lossy();
+		// Even the largest query grind the transcript can express leaves it out of reach.
+		let most = Grinding::new(0, MAX_GRINDING_BITS);
+		assert_eq!(lossy.plan_queries(128, 24, 1, B128, most), None);
+	}
+
+	#[test]
+	fn the_two_grinds_do_not_substitute_for_each_other() {
+		let regime = SoundnessRegime::UniqueDecoding;
+
+		// Challenge grinding raises the algebraic term and leaves the row count where it was.
+		let rows = regime
+			.plan_queries(96, 24, 1, B128, Grinding::new(17, 0))
+			.expect("96 bits is reachable");
+		assert_eq!(rows, regime.n_queries(96, 1));
+
+		// And it shows up in the achieved figure exactly once, on the side it belongs to.
+		let queries = 1 << 30;
+		let bare = regime.achieved_security_bits(24, 1, B128, queries, Grinding::NONE);
+		let ground = regime.achieved_security_bits(24, 1, B128, queries, Grinding::new(17, 0));
+		assert!((ground - bare - 17.0).abs() < 1e-9);
+	}
+	#[test]
+	#[should_panic(expected = "each grind must be within what the transcript can express")]
+	fn a_budget_past_what_the_transcript_can_deliver_is_rejected() {
+		// The sampler masks to 32 bits, so 40 would silently become 32 and the budget would claim
+		// eight bits nothing produces.
+		Grinding::new(MAX_GRINDING_BITS + 1, 0);
 	}
 }

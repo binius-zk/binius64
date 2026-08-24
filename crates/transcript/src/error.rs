@@ -8,4 +8,12 @@ pub enum Error {
 	NotEnoughBytes,
 	#[error("Serialization error: {0}")]
 	Serialization(#[from] binius_utils::SerializationError),
+	/// A proof of work in the transcript does not meet the difficulty the verifier asked for.
+	#[error("proof of work is short: {bits} zero bits required, transcript sampled {sampled}")]
+	InsufficientWork {
+		/// Number of zero bits the verifier required.
+		bits: usize,
+		/// Bits the transcript actually sampled after observing the prover's nonce.
+		sampled: u32,
+	},
 }
