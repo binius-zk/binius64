@@ -19,7 +19,7 @@ use bytes::{Buf, BufMut};
 use tracing::instrument;
 
 use super::{
-	builder::BuilderKeyLists, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment,
+	builder, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment,
 	operation::Operation,
 };
 use crate::protocols::shift::{
@@ -43,27 +43,18 @@ pub struct KeyCollection {
 }
 
 impl KeyCollection {
-	/// Walks a constraint system once, collecting every shift key into its segment.
+	/// Walks a constraint system, collecting every shift key into its segment.
+	///
+	/// Runs as a stable counting sort by word: one pass counts the references each word
+	/// receives, one pass scatters them into a flat array in walk order, and the per-word
+	/// grouping into keys runs over disjoint word ranges in parallel.
 	///
 	/// # Arguments
 	///
 	/// - `cs`: the constraint system to walk.
 	/// - `inout`: the split point between the public and hidden segments.
 	pub fn build(cs: &ConstraintSystem, inout: InoutSegment) -> Self {
-		let mut builder_key_lists = BuilderKeyLists::new(cs.value_vec_len());
-
-		// Update the builder keys lists with respect to each operand of each operation.
-		builder_key_lists.update_with_constraints(Operation::Zero, &cs.zero_constraints, cs);
-		builder_key_lists.update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, cs);
-		builder_key_lists.update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, cs);
-		builder_key_lists.update_with_constraints(Operation::BinMul, &cs.bmul_constraints, cs);
-
-		// Split the builder key lists at the public segment boundary, one half per segment.
-		let hidden_lists = builder_key_lists.split_off(cs.n_public_words(inout));
-		Self {
-			public: KeySegment::build(builder_key_lists.into_inner()),
-			hidden: KeySegment::build(hidden_lists.into_inner()),
-		}
+		builder::build_key_collection(cs, inout)
 	}
 
 	/// The base-2 logarithm of the hidden segment length in words, rounded up to a power of two.
@@ -429,5 +420,132 @@ mod tests {
 				deserialized.dense_shift_enc.iter().collect::<Vec<_>>()
 			);
 		}
+	}
+
+	fn serialized(kc: &KeyCollection) -> Vec<u8> {
+		let mut bytes = Vec::new();
+		kc.serialize(&mut bytes).unwrap();
+		bytes
+	}
+
+	#[test]
+	fn counting_sort_builder_matches_the_reference_on_the_shifted_system() {
+		let cs = shifted_constraint_system();
+		for inout in [InoutSegment::Public, InoutSegment::Hidden] {
+			assert_eq!(
+				serialized(&KeyCollection::build(&cs, inout)),
+				serialized(&builder::build_key_collection_reference(&cs, inout)),
+			);
+		}
+	}
+
+	/// A random system with every operation, multi-term operands, two-slot shifts, and a few
+	/// words (constants) referenced far more often than the rest — the shape that makes the
+	/// per-word key lists long and interleaved.
+	fn random_constraint_system(seed: u64, n_and: usize) -> ConstraintSystem {
+		use binius_core::constraint_system::{
+			BmulConstraint, ImulConstraint, Operand, ShiftVariant, ZeroConstraint,
+		};
+		use rand::{RngExt, SeedableRng, rngs::StdRng};
+		let mut rng = StdRng::seed_from_u64(seed);
+		let n_const = 8usize;
+		let n_inout = 6usize;
+		let n_private = 4096usize;
+		let variants = [
+			ShiftVariant::Sll,
+			ShiftVariant::Slr,
+			ShiftVariant::Sar,
+			ShiftVariant::Rotr,
+			ShiftVariant::Sll32,
+			ShiftVariant::Srl32,
+			ShiftVariant::Sra32,
+			ShiftVariant::Rotr32,
+		];
+		let shift = |rng: &mut StdRng| -> Shift {
+			if rng.random_bool(0.5) {
+				return Shift::IDENTITY;
+			}
+			let variant = variants[rng.random_range(0..variants.len())];
+			// 32-bit lanewise variants shift by less than 32.
+			let bound = if variant.is_half_word() { 32 } else { 64 };
+			Shift::new(variant, rng.random_range(1..bound))
+		};
+		let term = |rng: &mut StdRng| -> ShiftedValueIndex {
+			// A quarter of all references land on the first constant, another quarter on a
+			// handful of hot words; the rest spread over the whole vector.
+			let value_index = match rng.random_range(0..4u8) {
+				0 => ValueIndex::constant(0),
+				1 => match rng.random_range(0..3u8) {
+					0 => ValueIndex::constant(rng.random_range(0..n_const as u32)),
+					1 => ValueIndex::inout(rng.random_range(0..n_inout as u32)),
+					_ => ValueIndex::private(rng.random_range(0..8)),
+				},
+				_ => ValueIndex::private(rng.random_range(0..n_private as u32)),
+			};
+			ShiftedValueIndex::new(value_index, [shift(rng), shift(rng)])
+		};
+		let operand = |rng: &mut StdRng| -> Operand {
+			(0..rng.random_range(1..=4)).map(|_| term(rng)).collect()
+		};
+		let operands = |rng: &mut StdRng, arity: usize| -> Vec<Operand> {
+			(0..arity).map(|_| operand(rng)).collect()
+		};
+		let zero_constraints = (0..n_and / 8)
+			.map(|_| ZeroConstraint(operands(&mut rng, 1).try_into().ok().unwrap()))
+			.collect();
+		let and_constraints = (0..n_and)
+			.map(|_| AndConstraint(operands(&mut rng, 3).try_into().ok().unwrap()))
+			.collect();
+		let imul_constraints = (0..n_and / 16)
+			.map(|_| ImulConstraint(operands(&mut rng, 4).try_into().ok().unwrap()))
+			.collect();
+		let bmul_constraints = (0..n_and / 4)
+			.map(|_| BmulConstraint(operands(&mut rng, 6).try_into().ok().unwrap()))
+			.collect();
+		ConstraintSystem {
+			constants: vec![Word::ZERO; n_const],
+			n_inout,
+			n_private,
+			zero_constraints,
+			and_constraints,
+			imul_constraints,
+			bmul_constraints,
+		}
+	}
+
+	#[test]
+	fn counting_sort_builder_matches_the_reference_on_random_systems() {
+		for (seed, n_and) in [(1u64, 64usize), (2, 1000), (3, 20_000)] {
+			let cs = random_constraint_system(seed, n_and);
+			for inout in [InoutSegment::Public, InoutSegment::Hidden] {
+				let fast = KeyCollection::build(&cs, inout);
+				let slow = builder::build_key_collection_reference(&cs, inout);
+				assert_eq!(fast.public.keys.len(), slow.public.keys.len(), "seed {seed}");
+				assert_eq!(fast.hidden.keys.len(), slow.hidden.keys.len(), "seed {seed}");
+				assert_eq!(serialized(&fast), serialized(&slow), "seed {seed} inout {inout:?}");
+			}
+		}
+	}
+
+	#[test]
+	fn counting_sort_builder_handles_an_empty_system() {
+		let cs = ConstraintSystem {
+			constants: vec![Word::ZERO; 2],
+			n_inout: 0,
+			n_private: 4,
+			zero_constraints: Vec::new(),
+			and_constraints: Vec::new(),
+			imul_constraints: Vec::new(),
+			bmul_constraints: Vec::new(),
+		};
+		let kc = KeyCollection::build(&cs, InoutSegment::Public);
+		assert_eq!(kc.public.keys.len(), 0);
+		assert_eq!(kc.hidden.keys.len(), 0);
+		assert_eq!(kc.public.key_ranges.len(), 2);
+		assert_eq!(kc.hidden.key_ranges.len(), 4);
+		assert_eq!(
+			serialized(&kc),
+			serialized(&builder::build_key_collection_reference(&cs, InoutSegment::Public))
+		);
 	}
 }

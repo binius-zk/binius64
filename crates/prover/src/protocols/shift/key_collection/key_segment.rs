@@ -17,9 +17,10 @@ use bytes::{Buf, BufMut};
 use itertools::izip;
 use tracing::instrument;
 
+#[cfg(test)]
+use super::builder::BuilderKey;
 use super::{
 	super::{claims::PreparedOperatorClaims, phase_1::row_len},
-	builder::BuilderKey,
 	dense_shift_encoding::DenseShiftEncoding,
 	key::{ConstraintIndex, Key},
 };
@@ -177,6 +178,9 @@ impl KeySegment {
 	}
 
 	/// Builds the segment's keys from the builder keys lists of its words.
+	///
+	/// The reference layout the counting-sort builder is checked against.
+	#[cfg(test)]
 	pub(super) fn build(builder_key_lists: Vec<Vec<BuilderKey>>) -> Self {
 		// Every distinct shift sequence across every word, before any per-key index is assigned.
 		let dense_shift_enc = DenseShiftEncoding::new(
