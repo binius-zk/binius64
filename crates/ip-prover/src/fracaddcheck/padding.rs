@@ -20,8 +20,8 @@
 //! so the numerators are zero-padded and the denominators one-padded.
 //!
 //! The prover never materializes a padded witness.
-//! [`PaddedBatch`] holds the trees and how deep each one sits.
-//! Every layer it pops hands out one [`PaddedLayerProver`] per tree.
+//! `PaddedBatch` holds the trees and how deep each one sits.
+//! Every layer it pops hands out one `PaddedLayerProver` per tree.
 //!
 //! Each of those wraps the tree's own layer prover in a [`ZeroPadMleCheckProver`].
 //! That wrapper corrects the unpadded layer's messages at a cost of $O(1)$ per round.
