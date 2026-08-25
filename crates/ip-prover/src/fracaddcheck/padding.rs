@@ -20,17 +20,22 @@
 //! so the numerators are zero-padded and the denominators one-padded.
 //!
 //! The prover never materializes a padded witness.
-//! `layer_provers` wraps each tree's own layer prover in a [`ZeroPadMleCheckProver`].
+//! `PaddedBatch` holds the trees and how deep each one sits.
+//! Every layer it pops hands out one `PaddedLayerProver` per tree.
+//!
+//! Each of those wraps the tree's own layer prover in a [`ZeroPadMleCheckProver`].
 //! That wrapper corrects the unpadded layer's messages at a cost of $O(1)$ per round.
+//!
 //! A tree the batch has not reached yet has no layer to wrap.
 //! It contributes a [`ConstantFraction`] instead.
+//!
 //! [`unpad_leaf_claim`] inverts the identity above on the claims the batch outputs.
 
 use std::iter;
 
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
-use binius_ip::fracaddcheck::FracAddEvalClaim;
+use binius_ip::{fracaddcheck::FracAddEvalClaim, sumcheck::RoundCoeffs};
 use binius_math::{batch_invert::BatchInversion, multilinear::hypercube::Hypercube};
 use either::Either;
 use itertools::izip;
@@ -40,72 +45,191 @@ use super::{
 	fraction::Fraction,
 	zero_pad_mle::{self, ConstantFraction, ZeroPadMleCheckProver},
 };
+use crate::sumcheck::common::MleCheckProver;
 
-/// The per-tree layer prover: either a real layer of the tree, or the padding layer it contributes
-/// while the batch is still above it.
-pub(super) type PaddedLayerProver<'a, A, F, P> =
-	ZeroPadMleCheckProver<F, Either<LayerProver<'a, A, F, P>, ConstantFraction<F>>>;
-
-/// Builds one padded layer prover per tree, for the layer claimed at `node_point`.
+/// The layer one tree contributes to the batch's current depth.
 ///
-/// The provers come back in input order, one per tree, so they stay aligned with `pad_lens` and
-/// `claims`. A tree the batch has not reached yet keeps every layer it has.
-pub(super) fn layer_provers<'a, A, F, P>(
-	provers: &mut [FracAddCircuit<'a, A, P>],
-	pad_lens: &[usize],
-	claims: &[Fraction<F>],
-	node_point: &[F],
-) -> Vec<PaddedLayerProver<'a, A, F, P>>
+/// Once the batch has reached the tree, that is a real layer of it.
+///
+/// Until then it is the layer standing in for one.
+/// That stand-in is the tree's own fractional sum beside the zero fraction $0/1$.
+type TreeLayer<'a, A, F, P> = Either<LayerProver<'a, A, F, P>, ConstantFraction<F>>;
+
+/// One tree's contribution to a batched layer, lifted to the batch's depth.
+///
+/// Either kind of [`TreeLayer`] is a layer of the padded tree.
+///
+/// So either one needs its messages corrected.
+/// One [`ZeroPadMleCheckProver`] does that for both.
+pub(super) struct PaddedLayerProver<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	ZeroPadMleCheckProver<F, TreeLayer<'a, A, F, P>>,
+);
+
+impl<A, F, P> MleCheckProver<F> for PaddedLayerProver<'_, A, F, P>
 where
 	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	let node_len = node_point.len();
+	fn n_vars(&self) -> usize {
+		self.0.n_vars()
+	}
 
-	// Every tree's padding segment is a prefix of this one node point, so a single table of prefix
-	// products serves the whole batch.
-	let pad_eq_prefixes = iter::once(F::ONE)
-		.chain(node_point.iter().scan(F::ONE, |acc, &coord| {
-			*acc *= Hypercube::One.eq_one_var(F::ZERO, coord);
-			Some(*acc)
-		}))
-		.collect::<Vec<_>>();
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		self.0.execute()
+	}
 
-	// De-padding a claim divides by the padding segment's equality weight, so the batch pays one
-	// inversion rather than one per tree.
-	let mut pad_eq_invs = pad_lens
-		.iter()
-		.map(|&pad_len| pad_eq_prefixes[pad_len.min(node_len)])
-		.collect::<Vec<_>>();
-	assert!(
-		pad_eq_invs.iter().all(|&pad_eq| pad_eq != F::ZERO),
-		"a padding coordinate of the claim point equals one"
-	);
-	BatchInversion::<F>::new(pad_eq_invs.len()).invert_nonzero(&mut pad_eq_invs);
+	fn fold(&mut self, challenge: F) {
+		self.0.fold(challenge);
+	}
 
-	izip!(provers, pad_lens, claims, &pad_eq_invs)
-		.map(|(prover, &tree_pad_len, &Fraction { num, den }, &pad_eq_inv)| {
-			let pad_len = tree_pad_len.min(node_len);
-			let point = node_point[pad_len..].to_vec();
-			let [num_claim, den_claim] = zero_pad_mle::unpad_claims(pad_eq_inv, [num, den]);
+	fn finish(self) -> Vec<F> {
+		self.0.finish()
+	}
 
-			let inner = if node_len < tree_pad_len {
-				// The batch is still above this tree, so every variable of its layer is a padding
-				// variable and the de-padded claim is the tree's own fractional sum. The layer is
-				// that fraction beside the zero fraction 0/1, and the tree keeps all of its layers.
-				Either::Right(ConstantFraction::new(num_claim, den_claim))
-			} else {
-				Either::Left(prover.pop_layer(FracAddEvalClaim {
-					num_eval: num_claim,
-					den_eval: den_claim,
-					point,
-				}))
-			};
+	fn eval_point(&self) -> &[F] {
+		self.0.eval_point()
+	}
+}
 
-			zero_pad_mle::new(pad_eq_prefixes[..=pad_len].to_vec(), node_point.to_vec(), inner)
-		})
-		.collect()
+/// A batch's trees, lifted to one uniform depth by zero-fraction padding.
+///
+/// The batch runs a single layer schedule, so every tree in it must have the same depth.
+/// Padding lifts each tree to the depth of the deepest one.
+///
+/// A padded tree sits out the layers above its own root.
+/// It contributes a stand-in layer for each of them, and only then starts spending its real ones.
+///
+/// No padded layer is ever materialized.
+/// The whole padding is these two vectors, plus the $O(1)$ per-round correction each layer carries.
+pub(super) struct PaddedBatch<'a, A: Allocator, P: PackedField> {
+	/// The trees, in input order, each spending its layers deepest-first.
+	trees: Vec<FracAddCircuit<'a, A, P>>,
+	/// How much depth each tree is padded by, in tree order.
+	pad_lens: Vec<usize>,
+	/// The depth every tree is padded to, which is how many layers the schedule runs.
+	n_layers: usize,
+}
+
+impl<'a, A, F, P> PaddedBatch<'a, A, P>
+where
+	A: Allocator,
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	/// Pads `trees` up to the depth of the deepest one.
+	///
+	/// # Preconditions
+	/// * `trees` is non-empty
+	/// * at least one tree has a layer
+	pub(super) fn new(trees: Vec<FracAddCircuit<'a, A, P>>) -> Self {
+		let n_layers = trees
+			.iter()
+			.map(FracAddCircuit::n_layers)
+			.max()
+			.expect("precondition: trees is non-empty");
+		assert!(n_layers >= 1); // precondition
+
+		let pad_lens = trees
+			.iter()
+			.map(|tree| n_layers - tree.n_layers())
+			.collect();
+
+		Self {
+			trees,
+			pad_lens,
+			n_layers,
+		}
+	}
+
+	/// How many layers the batch's schedule runs.
+	pub(super) const fn n_layers(&self) -> usize {
+		self.n_layers
+	}
+
+	/// How many trees the batch holds.
+	pub(super) const fn n_trees(&self) -> usize {
+		self.trees.len()
+	}
+
+	/// The allocator every tree's layer buffers are drawn from.
+	pub(super) fn alloc(&self) -> &'a A {
+		self.trees[0].alloc
+	}
+
+	/// Consumes the spent batch.
+	///
+	/// A depth-zero tree is all padding, so it is passed through every layer and never popped.
+	/// Every tree that had layers has spent them all.
+	pub(super) fn finish(self) {
+		debug_assert!(
+			self.trees.iter().all(|tree| tree.n_layers() == 0),
+			"every tree with layers is exhausted after n_layers reductions"
+		);
+	}
+
+	/// Pops one padded layer prover per tree, for the layer claimed at `node_point`.
+	///
+	/// The provers come back in tree order, so they stay aligned with `claims`.
+	///
+	/// A tree the batch has not reached yet keeps every layer it has.
+	pub(super) fn pop_layer(
+		&mut self,
+		claims: &[Fraction<F>],
+		node_point: &[F],
+	) -> Vec<PaddedLayerProver<'a, A, F, P>> {
+		let node_len = node_point.len();
+
+		// Every tree's padding segment is a prefix of this one node point, so a single table of
+		// prefix products serves the whole batch.
+		let pad_eq_prefixes = iter::once(F::ONE)
+			.chain(node_point.iter().scan(F::ONE, |acc, &coord| {
+				*acc *= Hypercube::One.eq_one_var(F::ZERO, coord);
+				Some(*acc)
+			}))
+			.collect::<Vec<_>>();
+
+		// De-padding a claim divides by the padding segment's equality weight, so the batch pays
+		// one inversion rather than one per tree.
+		let mut pad_eq_invs = self
+			.pad_lens
+			.iter()
+			.map(|&pad_len| pad_eq_prefixes[pad_len.min(node_len)])
+			.collect::<Vec<_>>();
+		assert!(
+			pad_eq_invs.iter().all(|&pad_eq| pad_eq != F::ZERO),
+			"a padding coordinate of the claim point equals one"
+		);
+		BatchInversion::<F>::new(pad_eq_invs.len()).invert_nonzero(&mut pad_eq_invs);
+
+		izip!(&mut self.trees, &self.pad_lens, claims, &pad_eq_invs)
+			.map(|(tree, &tree_pad_len, &Fraction { num, den }, &pad_eq_inv)| {
+				let pad_len = tree_pad_len.min(node_len);
+				let point = node_point[pad_len..].to_vec();
+				let [num_claim, den_claim] = zero_pad_mle::unpad_claims(pad_eq_inv, [num, den]);
+
+				let inner = if node_len < tree_pad_len {
+					// The batch is still above this tree, so every variable of its layer is a
+					// padding variable and the de-padded claim is the tree's own fractional sum.
+					// The layer is that fraction beside the zero fraction 0/1, and the tree keeps
+					// all of its layers.
+					Either::Right(ConstantFraction::new(num_claim, den_claim))
+				} else {
+					Either::Left(tree.pop_layer(FracAddEvalClaim {
+						num_eval: num_claim,
+						den_eval: den_claim,
+						point,
+					}))
+				};
+
+				PaddedLayerProver(zero_pad_mle::new(
+					pad_eq_prefixes[..=pad_len].to_vec(),
+					node_point.to_vec(),
+					inner,
+				))
+			})
+			.collect()
+	}
 }
 
 /// Reduces a leaf claim on a zero-fraction-padded witness to the claim on the witness itself.
