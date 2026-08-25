@@ -69,9 +69,11 @@ pub struct InducedBasis<F> {
 	/// Entry `j` of that row is the product of the factors its set bits select.
 	/// So the row is `2^n_vars` values described by `n_vars` of them.
 	factors: Vec<Vec<F>>,
-	/// `alpha^0, .., alpha^{t-1}`, the coefficients the rows are batched with.
+	/// The coefficient each row is batched with, `alpha^0, .., alpha^{t-1}` as built.
 	///
 	/// Held here so that no caller can batch the two halves of the claim with different values.
+	/// [`InducedBasis::fold_high`] scales each entry by what its row contributes to the fold, so a
+	/// folded basis carries the powers of `alpha` multiplied through.
 	batching: Vec<F>,
 	/// The code's `log_dim`, and the number of variables the weight vector spans.
 	///
@@ -233,6 +235,61 @@ impl<F: FieldOps> InducedBasis<F> {
 		inner_product_scalars(self.batching.iter().cloned(), terms)
 	}
 
+	/// Binds the top `challenges.len()` variables, giving the basis of the folded message.
+	///
+	/// A recursive level glues its induced basis into a running sumcheck, and every later level's
+	/// rounds bind more of that sumcheck's variables.
+	/// So a basis introduced at one level has to follow the message it weighs down the ladder.
+	///
+	/// Sumcheck binds the highest variable first, so `challenges[0]` binds variable `n_vars - 1`.
+	/// A row is a tensor, and binding variable `k` of a tensor at `c` scales the whole row:
+	///
+	/// ```text
+	///     (1 - c) * 1 + c * f[k]  =  1 + c * (1 + f[k])
+	/// ```
+	///
+	/// which is the same per-variable factor [`Self::evaluate`] uses.
+	/// The scale is therefore folded into the row's batching coefficient and the factor dropped,
+	/// which costs `O(n_rows * challenges.len())` and no allocation per row beyond the truncation.
+	///
+	/// [`Self::enforced_sum`] is not meaningful on the result.
+	/// The opened row values it batches belong to the level that introduced the basis, and this
+	/// basis no longer weighs that level's message.
+	///
+	/// ## Preconditions
+	///
+	/// * `challenges.len()` is at most [`Self::n_vars`].
+	pub fn fold_high(&self, challenges: &[F]) -> Self {
+		assert!(
+			challenges.len() <= self.n_vars,
+			"precondition: cannot bind more variables than the basis has"
+		);
+
+		let n_vars = self.n_vars - challenges.len();
+		let batching = std::iter::zip(&self.batching, &self.factors)
+			.map(|(coefficient, row)| {
+				// `challenges[0]` binds the highest variable, which is the last factor.
+				let scale = std::iter::zip(row[n_vars..].iter().rev(), challenges)
+					.map(|(factor, challenge)| {
+						F::one() + challenge.clone() * (F::one() + factor.clone())
+					})
+					.product::<F>();
+				coefficient.clone() * scale
+			})
+			.collect();
+		let factors = self
+			.factors
+			.iter()
+			.map(|row| row[..n_vars].to_vec())
+			.collect();
+
+		Self {
+			factors,
+			batching,
+			n_vars,
+		}
+	}
+
 	/// Pairs the basis with a message held in the clear, giving `<w, message>`.
 	///
 	/// This is the other side of the equation [`Self::enforced_sum`] gives, so a terminal level
@@ -322,7 +379,8 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_math::{
-		multilinear::evaluate::evaluate_inplace_scalars,
+		FieldBuffer,
+		multilinear::{MultilinearMut, evaluate::evaluate_inplace_scalars},
 		ntt::{
 			NeighborsLastSingleThread,
 			domain_context::{GaoMateerOnTheFly, GaoMateerPreExpanded},
@@ -439,6 +497,27 @@ mod tests {
 		InducedBasis::new(&domain(3, 1), 3, &[0, 1], B128::ONE).enforced_sum(&[B128::ONE]);
 	}
 
+	#[test]
+	#[should_panic(expected = "cannot bind more variables than the basis has")]
+	fn folding_past_the_last_variable_is_rejected() {
+		InducedBasis::new(&domain(3, 1), 3, &[0], B128::ONE).fold_high(&[B128::ONE; 4]);
+	}
+
+	#[test]
+	fn the_two_ends_of_a_fold_are_the_identity_and_a_scalar() {
+		let basis = InducedBasis::new(&domain(4, 1), 4, &[0, 3, 9], B128::ONE);
+
+		// Binding nothing leaves the weight vector alone.
+		assert_eq!(basis.fold_high(&[]).to_dense(), basis.to_dense());
+
+		// Binding every variable leaves a zero-variate weight, whose one entry is the whole
+		// multilinear evaluated there.
+		let point = [B128::ONE, B128::ZERO, B128::ONE, B128::ONE];
+		let all = basis.fold_high(&[point[3], point[2], point[1], point[0]]);
+		assert_eq!(all.n_vars(), 0);
+		assert_eq!(all.to_dense(), vec![basis.evaluate(&point)]);
+	}
+
 	proptest! {
 		/// The closed form is the verifier's only route.
 		/// So it must agree with the dense vector everywhere, not at points a fixed test picks.
@@ -460,6 +539,36 @@ mod tests {
 			let point = (0..log_dim).map(|_| B128::random(&mut rng)).collect::<Vec<_>>();
 			let reference = evaluate_inplace_scalars(basis.to_dense(), &point);
 			prop_assert_eq!(basis.evaluate(&point), reference);
+		}
+
+		/// A glued basis follows its message down the ladder, so folding it must be folding it.
+		/// The reference is the dense weight vector put through the multilinear fold itself.
+		#[test]
+		fn folding_the_basis_folds_the_weight_vector(
+			seed: u64,
+			log_dim in 1usize..7,
+			log_inv_rate in 1usize..4,
+			n_rows in 0usize..6,
+			n_folded in 0usize..7,
+		) {
+			let n_folded = n_folded.min(log_dim);
+			let mut rng = StdRng::seed_from_u64(seed);
+			let log_len = log_dim + log_inv_rate;
+			let indices = (0..n_rows)
+				.map(|_| rng.random_range(0..1usize << log_len))
+				.collect::<Vec<_>>();
+			let alpha = B128::random(&mut rng);
+			let basis = InducedBasis::new(&domain(log_dim, log_inv_rate), log_dim, &indices, alpha);
+
+			let challenges = (0..n_folded).map(|_| B128::random(&mut rng)).collect::<Vec<_>>();
+			let mut reference = FieldBuffer::<B128>::from_values(&basis.to_dense());
+			for challenge in &challenges {
+				reference.fold_highest_var(*challenge);
+			}
+
+			let folded = basis.fold_high(&challenges);
+			prop_assert_eq!(folded.n_vars(), log_dim - n_folded);
+			prop_assert_eq!(folded.to_dense(), reference.as_ref().to_vec());
 		}
 	}
 	/// The recursion-safe route must agree with the native one at every index.

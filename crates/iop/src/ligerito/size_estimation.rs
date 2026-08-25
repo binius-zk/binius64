@@ -56,12 +56,6 @@ impl ByteSizes {
 /// Only level 0 versus not-level-0 changes a price, so every deeper level shares one index.
 const DEEPER_LEVEL: usize = 1;
 
-/// Round-polynomial degree of a fold round past level 0.
-///
-/// The weight there is `eq_remaining + alpha * w`, where `w` is a query-induced basis.
-/// A product of two general multilinears is degree 2 in the bound variable.
-const DEEP_ROUND_DEGREE: usize = 2;
-
 /// Field elements one fold round's message costs at `level_index`.
 ///
 /// A degree-`d` round message is `d` elements, whichever protocol sends it.
@@ -69,13 +63,12 @@ const DEEP_ROUND_DEGREE: usize = 2;
 /// An MLE-check truncates the low one and recovers it from the claimed evaluation.
 ///
 /// Level 0 folds under the equality indicator `eq(z)` alone, which is what makes it an MLE-check.
-/// Its composite is then the multilinear itself, of degree [`opening::DEGREE`].
 /// Gluing a query-induced basis into the weight destroys that structure at every deeper level.
-/// So those pay [`DEEP_ROUND_DEGREE`] instead, and the difference is one element per fold round.
+/// Both degrees are read from the protocol itself, so the price cannot drift from what is sent.
 const fn round_degree(level_index: usize) -> usize {
 	match level_index {
-		0 => opening::DEGREE,
-		_ => DEEP_ROUND_DEGREE,
+		0 => opening::MLECHECK_DEGREE,
+		_ => opening::PRODUCT_DEGREE,
 	}
 }
 
