@@ -18,7 +18,7 @@
 //!
 //! - [`LigeritoParams`] and its invariants;
 //! - [`InducedBasis`], the weight vector a level's opened rows put on its message;
-//! - [`LevelVerifier`], one committed level whose residual is sent in the clear;
+//! - [`LigeritoVerifier`], the ladder of committed levels down to a cleartext residual;
 //! - [`LigeritoParams::proof_size`], the byte-exact estimate;
 //! - [`LigeritoParams::optimal_ladder`], the search that minimizes it subject to a security target.
 //!
@@ -37,5 +37,5 @@ mod size_estimation;
 pub use common::*;
 pub use error::{Error, VerificationError};
 pub use induced_basis::InducedBasis;
-pub use opening::LevelVerifier;
+pub use opening::LigeritoVerifier;
 pub use size_estimation::{MAX_LOG_INV_RATE, MAX_LOG_LANES};
