@@ -2,17 +2,20 @@
 
 //! Ligerito implementation of the IOP verifier channel.
 //!
-//! One file per concern: the oracle handle here, the queued relation beside it, and the channel
-//! that turns a queue of relations into one ladder opening.
+//! One file per concern.
+//! The oracle handle is here, and the pieces the channel assembles sit beside it.
 
 mod relation;
 mod verifier;
 
 pub use verifier::LigeritoVerifierChannel;
 
-/// A handle to the oracle a Ligerito channel opens.
+/// A handle to one of the oracles a Ligerito channel opens.
 ///
 /// The inner field is private, so the only way to hold one is to have received the commitment.
-/// A ladder opens exactly one committed message, so the handle carries nothing else.
+/// It names the position the commitment arrived in, which is the position its relations queue at.
 #[derive(Debug, Clone, Copy)]
-pub struct LigeritoOracle(());
+pub struct LigeritoOracle {
+	/// The order this oracle's commitment was received in.
+	index: usize,
+}

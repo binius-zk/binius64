@@ -20,13 +20,13 @@ use crate::{
 
 /// A compiler that creates Ligerito verifier channels from a precomputed ladder.
 ///
-/// The ladder is chosen once, for the one oracle the channel opens.
-/// Every channel the compiler creates reuses it.
+/// The ladder is chosen once, for the longest oracle the channel opens.
+/// Every channel the compiler creates reuses it, and every oracle shares its column count.
 ///
-/// Ligerito commits no mask, so the oracle it opens is never zero-knowledge.
+/// Ligerito commits no mask, so the oracles it opens are never zero-knowledge.
 #[derive(Debug, Clone)]
 pub struct LigeritoVerifierCompiler<F> {
-	/// The one oracle every channel this compiler makes will open.
+	/// The oracles every channel this compiler makes will open, in the order they arrive.
 	oracle_specs: Vec<OracleSpec>,
 	/// The ladder each of those openings runs down.
 	params: LigeritoParams,
@@ -43,24 +43,39 @@ where
 	///
 	/// ## Preconditions
 	///
-	/// * `oracle_specs` holds exactly one spec.
-	/// * That spec is not zero-knowledge.
-	/// * Its message length is the ladder's message length.
+	/// * `oracle_specs` is non-empty.
+	/// * No spec is zero-knowledge.
+	/// * The longest message is the ladder's message length.
 	pub fn new(oracle_specs: Vec<OracleSpec>, params: LigeritoParams) -> Self {
-		assert_eq!(
-			oracle_specs.len(),
-			1,
-			"precondition: a Ligerito compiler serves exactly one oracle, got {}",
-			oracle_specs.len()
+		assert!(
+			!oracle_specs.is_empty(),
+			"precondition: a Ligerito compiler serves at least one oracle"
 		);
 		assert!(
-			!oracle_specs[0].is_zk,
+			oracle_specs.iter().all(|spec| !spec.is_zk),
 			"precondition: Ligerito commits no mask, so a zero-knowledge oracle cannot be opened"
 		);
 		assert_eq!(
-			oracle_specs[0].log_msg_len,
+			oracle_specs
+				.iter()
+				.map(|spec| spec.log_msg_len)
+				.max()
+				.expect("oracle_specs is non-empty"),
 			params.log_msg_len(),
-			"precondition: the oracle's message length must be the ladder's message length"
+			"precondition: the longest oracle's message length must be the ladder's message length"
+		);
+		// Batching widens level 0's row union, which lowers a ceiling no query count can raise.
+		// A ladder sized for one message can therefore miss a target it otherwise clears, and the
+		// miss is silent: the unbatched figure keeps reporting the number the batch does not pay.
+		// Whether the ladder clears its target on its own is `LigeritoParams`'s business, so this
+		// refuses only the batches that cause the shortfall.
+		let target = params.security_bits() as f64;
+		let batched = params.batched_achieved_security_bits(F::N_BITS, oracle_specs.len());
+		assert!(
+			batched >= target || params.achieved_security_bits(F::N_BITS) < target,
+			"precondition: {} oracles reach {batched:.2} bits against a target of {}",
+			oracle_specs.len(),
+			params.security_bits()
 		);
 
 		Self {
@@ -70,12 +85,15 @@ where
 		}
 	}
 
-	/// Creates a compiler whose ladder is the proof-size-minimizing one for the oracle.
+	/// Creates a compiler whose ladder is the proof-size-minimizing one for the longest oracle.
 	///
 	/// Level 0's rate is pinned by the caller, because level 0's encoding dominates prover time.
 	/// The deeper levels are small, so the search is free to drop their rate as far as it likes.
 	///
-	/// `None` means no ladder over this message reaches the security target.
+	/// The search input is the longest message, since every oracle shares level 0's column count.
+	/// A shorter one then simply carries fewer interleaved lanes.
+	///
+	/// `None` means no ladder over that message reaches the security target.
 	///
 	/// `grinding` is what the ladder will pay per level.
 	/// The search prices it rather than assuming it away.
@@ -83,8 +101,8 @@ where
 	///
 	/// ## Preconditions
 	///
-	/// * `oracle_specs` holds exactly one spec.
-	/// * That spec is not zero-knowledge.
+	/// * `oracle_specs` is non-empty.
+	/// * No spec is zero-knowledge.
 	/// * `l0_log_inv_rate` is a usable inverse rate and `security_bits` is positive.
 	pub fn optimal<MerkleScheme>(
 		merkle_scheme: &MerkleScheme,
@@ -97,17 +115,19 @@ where
 	where
 		MerkleScheme: MerkleTreeScheme<F>,
 	{
-		assert_eq!(
-			oracle_specs.len(),
-			1,
-			"precondition: a Ligerito compiler serves exactly one oracle, got {}",
-			oracle_specs.len()
+		assert!(
+			!oracle_specs.is_empty(),
+			"precondition: a Ligerito compiler serves at least one oracle"
 		);
 
-		// The ladder is searched over the one message it commits, so its size is the search input.
+		// Level 0's shape is shared, so the longest message is what the ladder is searched over.
 		let (params, _proof_size) = LigeritoParams::optimal_ladder::<F, _>(
 			merkle_scheme,
-			oracle_specs[0].log_msg_len,
+			oracle_specs
+				.iter()
+				.map(|spec| spec.log_msg_len)
+				.max()
+				.expect("oracle_specs is non-empty"),
 			l0_log_inv_rate,
 			regime,
 			security_bits,
@@ -252,14 +272,29 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "precondition: a Ligerito compiler serves exactly one oracle")]
-	fn two_oracles_are_refused() {
-		// Batching several committed oracles into one ladder is not implemented.
-		// So the compiler refuses the shape rather than silently opening only the first.
-		LigeritoVerifierCompiler::<B128>::new(
-			vec![OracleSpec::new(8), OracleSpec::new(8)],
-			params(),
-		);
+	fn several_oracles_share_the_ladder_of_the_longest() {
+		// Fixture state: level 0 is 2^6 columns by 2^2 lanes, so the ladder commits 2^8 elements.
+		//
+		//     2^8 elements -> 2^2 lanes   the oracle the ladder was sized for
+		//     2^7 elements -> 2^1 lanes   one lane fewer over the same codeword
+		//     2^5 elements -> 2^0 lanes   a single lane, zero-padded out to 2^6 columns
+		let specs = vec![OracleSpec::new(8), OracleSpec::new(7), OracleSpec::new(5)];
+		let compiler = LigeritoVerifierCompiler::<B128>::new(specs.clone(), params());
+
+		assert_eq!(compiler.oracle_specs(), &specs);
+		for (spec, log_lanes) in std::iter::zip(&specs, [2, 1, 0]) {
+			let shape = compiler.params().level_zero_shape(spec.log_msg_len);
+			assert_eq!(shape.log_lanes, log_lanes);
+			// One codeword length, so one set of query positions serves every oracle.
+			assert_eq!(shape.log_codeword_len(), 7);
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition: a Ligerito compiler serves at least one oracle")]
+	fn no_oracle_at_all_is_refused() {
+		// A ladder with nothing to open is a mis-specified channel rather than a trivial one.
+		LigeritoVerifierCompiler::<B128>::new(Vec::new(), params());
 	}
 
 	#[test]
@@ -271,10 +306,44 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "precondition: the oracle's message length must be the ladder's")]
+	#[should_panic(expected = "precondition: the longest oracle's message length must be the")]
 	fn a_ladder_over_a_different_message_length_is_refused() {
-		// The ladder commits 2^8 elements and the oracle claims 2^9.
+		// The ladder commits 2^8 elements and the longest oracle claims 2^9.
 		// So level 0's codeword would not encode the buffer the channel is handed.
 		LigeritoVerifierCompiler::<B128>::new(vec![OracleSpec::new(9)], params());
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition: the longest oracle's message length must be the")]
+	fn a_ladder_wider_than_every_oracle_is_refused() {
+		// The ladder commits 2^8 elements and no oracle reaches that.
+		// Level 0 would then fold lanes that none of them has, wasting a round on nothing.
+		LigeritoVerifierCompiler::<B128>::new(
+			vec![OracleSpec::new(7), OracleSpec::new(6)],
+			params(),
+		);
+	}
+
+	/// A batch that would miss the target the ladder was sized for must be refused.
+	///
+	/// At 96 bits the query term binds, so batching costs nothing there.
+	/// Above roughly 117 bits over `B128` the algebraic ceiling binds instead.
+	/// Each doubling of the oracle count then takes one bit off it.
+	/// A ladder sized for one message misses its target once several share it.
+	#[test]
+	#[should_panic(expected = "oracles reach")]
+	fn a_batch_that_would_miss_the_target_is_refused() {
+		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
+		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
+			.expect("120 bits is reachable with a constant loss");
+		let (params, _) =
+			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
+				.expect("a 120-bit ladder exists for one message");
+
+		// One oracle clears 120, so the shortfall below is caused by the batch and nothing else.
+		assert!(params.achieved_security_bits(128) >= 120.0);
+
+		let spec = OracleSpec::new(params.log_msg_len());
+		LigeritoVerifierCompiler::<B128>::new(vec![spec, spec], params);
 	}
 }

@@ -35,7 +35,7 @@ use binius_math::{
 use super::induced_weight::InducedWeight;
 use crate::{
 	channel::grinding::GrindingProverChannel,
-	fri::{BrakedownOracleProver, ProxTestOracleProver},
+	fri::{BatchBrakedownOracleProver, BrakedownOracleProver, ProxTestOracleProver},
 	merkle_channel::MerkleIPProverChannel,
 };
 
@@ -64,7 +64,7 @@ use crate::{
 ///
 /// * `message` has `level.log_msg_len()` variables.
 /// * `ntt`'s domain covers the level's codeword domain.
-fn commit_level<F, P, NTT, Channel>(
+pub(crate) fn commit_level<F, P, NTT, Channel>(
 	level: &LigeritoLevel,
 	ntt: &NTT,
 	message: FieldSlice<'_, P>,
@@ -91,16 +91,15 @@ where
 
 /// Proves a Ligerito opening against a committed ladder of Reed-Solomon codewords.
 ///
-/// Holds the ladder's shape, the transform its levels encode over, and the oracle that answers
-/// queries against level 0's codeword.
+/// Holds the ladder's shape, the transform its levels encode over, and level 0's oracles.
 /// Deeper levels only exist once the folds above them have run, so [`Self::prove`] commits those.
 pub struct LigeritoProver<'a, P: PackedField, C, NTT> {
 	/// The ladder's shape, one [`LigeritoLevel`] per committed level.
 	params: &'a LigeritoParams,
 	/// The transform every level encodes over, sized for the largest of them.
 	ntt: &'a NTT,
-	/// Level 0's committed interleaved codeword, and the handle that opens it.
-	oracle: BrakedownOracleProver<P, C>,
+	/// Level 0's committed interleaved codewords, in the order their openings are written.
+	oracles: BatchBrakedownOracleProver<P, C>,
 }
 
 impl<'a, F, P, C, NTT> LigeritoProver<'a, P, C, NTT>
@@ -130,11 +129,33 @@ where
 		Channel: MerkleIPProverChannel<F, Commitment = C>,
 	{
 		let level = &params.levels()[0];
+		let oracle = commit_level(level, ntt, message, channel);
+		Self::new(params, ntt, BatchBrakedownOracleProver::new(vec![oracle]))
+	}
+
+	/// Binds a prover to a ladder and the level-0 codewords its opening answers queries against.
+	///
+	/// The codewords must be listed in the order their commitments were sent.
+	/// That is the order the verifier reads their openings in.
+	///
+	/// ## Preconditions
+	///
+	/// * Every codeword spans level 0's codeword length, so one query position addresses all.
+	pub const fn new(
+		params: &'a LigeritoParams,
+		ntt: &'a NTT,
+		oracles: BatchBrakedownOracleProver<P, C>,
+	) -> Self {
 		Self {
 			params,
 			ntt,
-			oracle: commit_level(level, ntt, message, channel),
+			oracles,
 		}
+	}
+
+	/// The ladder's shape, one level per committed level.
+	pub const fn params(&self) -> &LigeritoParams {
+		self.params
 	}
 
 	/// Proves the opening of `<message, eq(eval_point)> = eval_claim`.
@@ -247,10 +268,12 @@ where
 			let indices = (0..level.n_queries)
 				.map(|_| channel.sample_bits(level.log_codeword_len()))
 				.collect::<Vec<_>>();
-			deeper
-				.as_ref()
-				.unwrap_or(&self.oracle)
-				.open_queries(&indices, channel);
+			match deeper.as_ref() {
+				// Level 0 writes every committed codeword's openings, one after another.
+				None => self.oracles.open_queries(&indices, channel),
+				// A deeper level has one codeword, committed by the level above it.
+				Some(oracle) => oracle.open_queries(&indices, channel),
+			}
 
 			// The row-batching challenge.
 			// The last level's is drawn only to keep the two transcripts in step, since its rows

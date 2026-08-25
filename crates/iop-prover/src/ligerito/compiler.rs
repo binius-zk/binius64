@@ -43,7 +43,7 @@ where
 {
 	/// The transform every level encodes over, sized for the ladder's longest codeword.
 	ntt: NTT,
-	/// The one oracle every channel this compiler makes will commit.
+	/// The oracles every channel this compiler makes will commit, in the order they are sent.
 	oracle_specs: Vec<OracleSpec>,
 	/// The ladder each of those openings runs down.
 	params: LigeritoParams,
@@ -61,8 +61,8 @@ where
 	///
 	/// ## Preconditions
 	///
-	/// * `oracle_specs` holds exactly one spec, and that spec is not zero-knowledge.
-	/// * Its message length is the ladder's message length.
+	/// * `oracle_specs` is non-empty and no spec is zero-knowledge.
+	/// * The longest message is the ladder's message length.
 	/// * `ntt`'s domain covers every level's codeword domain.
 	pub fn new(ntt: NTT, oracle_specs: Vec<OracleSpec>, params: LigeritoParams) -> Self {
 		// The two sides must agree on the ladder, so the checks are the verifier's, run here too.
@@ -70,15 +70,15 @@ where
 		Self::from_verifier_compiler(&verifier, ntt)
 	}
 
-	/// Creates a compiler whose ladder is the proof-size-minimizing one for the oracle.
+	/// Creates a compiler whose ladder is the proof-size-minimizing one for the longest oracle.
 	///
-	/// `None` means no ladder over this message reaches the security target.
+	/// `None` means no ladder over that message reaches the security target.
 	///
 	/// `grinding` is what the ladder will pay per level; pass [`Grinding::NONE`] for none.
 	///
 	/// ## Preconditions
 	///
-	/// * `oracle_specs` holds exactly one spec, and that spec is not zero-knowledge.
+	/// * `oracle_specs` is non-empty and no spec is zero-knowledge.
 	/// * `l0_log_inv_rate` is a usable inverse rate and `security_bits` is positive.
 	/// * `ntt`'s domain covers every level's codeword domain.
 	pub fn optimal<MerkleScheme>(

@@ -9,6 +9,6 @@
 pub mod channel;
 pub mod compiler;
 mod induced_weight;
-mod opening;
+pub(crate) mod opening;
 
 pub use opening::LigeritoProver;
