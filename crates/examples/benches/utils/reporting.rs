@@ -72,6 +72,10 @@ pub fn print_env_help() {
 			"                           (default: {} for hash, {} for signature)",
 			DEFAULT_HASH_LOG_INV_RATE, DEFAULT_SIGN_LOG_INV_RATE
 		);
+		println!(
+			"  PCS                    - Commitment scheme opening the trace: basefold (default) \
+			 or ligerito"
+		);
 		println!("  BENCH_HELP             - Show this help message");
 		println!("\nHash benchmarks:");
 		println!(

@@ -898,12 +898,15 @@ mod tests {
 		let merkle_scheme = test_merkle_scheme();
 
 		// FRI at one fixed rate, a single non-ZK oracle, its own proof-size-minimizing arities.
+		//
+		// Both sides are sized to the same target. A comparison whose two arms are sized to
+		// different targets is not a comparison of the schemes, it is a comparison of the targets.
 		let fri_size = |log_n: usize, log_inv_rate: usize, regime: SoundnessRegime| {
 			let (params, _) = FRIParams::<B128>::optimal_for_batch(
 				&merkle_scheme,
 				&[OracleSpec::new(log_n)],
 				log_inv_rate,
-				regime.n_queries(100, log_inv_rate),
+				regime.n_queries(SECURITY_BITS, log_inv_rate),
 			);
 			params.proof_size(&merkle_scheme)
 		};

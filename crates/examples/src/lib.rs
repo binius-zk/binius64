@@ -18,12 +18,12 @@ use binius_hash::{binary_merkle_tree::HashSuite, sha256::Sha256HashSuite};
 use binius_prover::{KeyCollection, OptimalPackedB128, Prover, zk_config::ZKProver};
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use binius_verifier::{
-	Verifier,
+	Pcs, Verifier,
 	config::StdChallenger,
 	transcript::{ProverTranscript, VerifierTranscript},
 	zk_config::ZKVerifier,
 };
-use clap::ValueEnum;
+use clap::{Arg, ValueEnum};
 pub use cli::Cli;
 use digest::Output;
 use tracing::level_filters::LevelFilter;
@@ -67,6 +67,71 @@ pub enum HashSuiteType {
 	Blake3,
 }
 
+/// Selects which polynomial commitment scheme opens the committed trace.
+///
+/// The command line carries the choice as a word, and this is what that word parses into.
+/// The proof system's own selector is not a command-line type, so this stands in for it.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum PcsType {
+	/// A sumcheck interleaved with one FRI over a codeword committed at a single rate.
+	#[default]
+	Basefold,
+	/// A ladder of Reed-Solomon commitments whose rate falls at every level.
+	Ligerito,
+}
+
+impl PcsType {
+	/// The name of the environment variable that selects a scheme for a benchmark.
+	pub const ENV_VAR: &'static str = "PCS";
+
+	/// Reads the scheme from [`Self::ENV_VAR`], defaulting when it is unset.
+	///
+	/// A benchmark reads it from the environment so one binary measures either scheme.
+	/// That is what makes two runs comparable, on one machine and one circuit, with no rebuild.
+	///
+	/// ## Panics
+	///
+	/// Panics when the variable is set to something no scheme answers to.
+	/// Falling back to the default there would report one scheme's numbers under another's name,
+	/// which is the one mistake a comparison benchmark cannot survive.
+	pub fn from_env() -> Self {
+		let Ok(name) = std::env::var(Self::ENV_VAR) else {
+			return Self::default();
+		};
+		Self::from_str(&name, true)
+			.unwrap_or_else(|_| panic!("{}={name} names no commitment scheme", Self::ENV_VAR))
+	}
+
+	/// The command-line flag that selects a scheme.
+	///
+	/// `has_zk_flag` says whether the command also offers the zero-knowledge config.
+	/// That config wraps a different proof system and commits its own oracles.
+	/// So wherever both are offered the two choices are declared to conflict.
+	/// Silently ignoring one of them would report a scheme the proof was not written with.
+	pub fn arg(has_zk_flag: bool) -> Arg {
+		let arg = Arg::new("pcs")
+			.long("pcs")
+			.value_name("SCHEME")
+			.help("Polynomial commitment scheme that opens the committed trace")
+			.value_parser(clap::value_parser!(Self))
+			.default_value("basefold");
+		if has_zk_flag {
+			arg.conflicts_with("zk")
+		} else {
+			arg
+		}
+	}
+}
+
+impl From<PcsType> for Pcs {
+	fn from(value: PcsType) -> Self {
+		match value {
+			PcsType::Basefold => Self::BaseFold,
+			PcsType::Ligerito => Self::Ligerito,
+		}
+	}
+}
+
 /// Standard verifier using SHA256 compression
 pub type StdVerifier = Verifier<Sha256HashSuite>;
 /// Standard prover using SHA256 compression
@@ -90,8 +155,24 @@ where
 	H: HashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
+	setup_with_pcs(cs, log_inv_rate, Pcs::default(), key_collection)
+}
+
+/// Set up a non-ZK prover and verifier that open the trace with the given commitment scheme.
+///
+/// The prover mirrors the verifier's scheme, so the two cannot be set up differently.
+pub fn setup_with_pcs<H>(
+	cs: ConstraintSystem,
+	log_inv_rate: usize,
+	scheme: Pcs,
+	key_collection: Option<KeyCollection>,
+) -> Result<(Verifier<H>, Prover<OptimalPackedB128, H>)>
+where
+	H: HashSuite + Clone,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
 	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
-	let verifier = Verifier::<H>::setup(cs, log_inv_rate)?;
+	let verifier = Verifier::<H>::setup_with_pcs(cs, log_inv_rate, scheme)?;
 	let prover = if let Some(key_collection) = key_collection {
 		Prover::setup_with_key_collection(verifier.clone(), key_collection)?
 	} else {
@@ -123,8 +204,23 @@ where
 	H: HashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
+	setup_verifier_with_pcs(cs, log_inv_rate, Pcs::default())
+}
+
+/// Set up only the verifier for the given commitment scheme, using `H` as the Merkle hash suite.
+///
+/// A proof is readable only by the scheme that wrote it, so this must match the prover's.
+pub fn setup_verifier_with_pcs<H>(
+	cs: ConstraintSystem,
+	log_inv_rate: usize,
+	scheme: Pcs,
+) -> Result<Verifier<H>>
+where
+	H: HashSuite + Clone,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
 	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
-	Ok(Verifier::<H>::setup(cs, log_inv_rate)?)
+	Ok(Verifier::<H>::setup_with_pcs(cs, log_inv_rate, scheme)?)
 }
 
 /// Set up only the ZK verifier (no prover) for the given constraint system using `H` as the
