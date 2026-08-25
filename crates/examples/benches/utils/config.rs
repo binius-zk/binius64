@@ -3,9 +3,6 @@
 
 use std::env;
 
-use binius_examples::PcsType;
-use clap::ValueEnum;
-
 /// Default HASH_MAX_BYTES for hash benchmarks (1KiB)
 pub const DEFAULT_HASH_MAX_BYTES: usize = 1024;
 
@@ -74,22 +71,4 @@ impl SignBenchConfig {
 			log_inv_rate,
 		}
 	}
-}
-
-/// Which commitment scheme the benchmark's prover and verifier open the trace with.
-///
-/// Read from the environment so one benchmark binary measures either scheme without a rebuild.
-/// That is what makes the two runs comparable, on one machine and one circuit.
-///
-/// ## Panics
-///
-/// Panics when `PCS` is set to something no scheme answers to.
-/// Falling back to the default there would report one scheme's numbers under another's name,
-/// which is the only mistake a comparison benchmark cannot survive.
-pub fn pcs_from_env() -> PcsType {
-	let Ok(name) = env::var("PCS") else {
-		return PcsType::default();
-	};
-	PcsType::from_str(&name, true)
-		.unwrap_or_else(|_| panic!("PCS={name} names no commitment scheme"))
 }

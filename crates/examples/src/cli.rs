@@ -60,25 +60,6 @@ fn maybe_write_proof(proof_bytes: &[u8], output: Option<&str>) -> Result<()> {
 	Ok(())
 }
 
-/// The flag choosing which polynomial commitment scheme opens the committed trace.
-///
-/// The zero-knowledge config wraps a different proof system and commits its own oracles.
-/// So on a command that offers that config, the two choices are declared to conflict.
-/// Silently ignoring one of them would report a scheme the proof was not written with.
-fn pcs_arg(has_zk_flag: bool) -> Arg {
-	let arg = Arg::new("pcs")
-		.long("pcs")
-		.value_name("SCHEME")
-		.help("Polynomial commitment scheme that opens the committed trace")
-		.value_parser(clap::value_parser!(PcsType))
-		.default_value("basefold");
-	if has_zk_flag {
-		arg.conflicts_with("zk")
-	} else {
-		arg
-	}
-}
-
 /// Prove and verify with the given `HashSuite`, branching on `zk`.
 fn prove_with_hash_suite<H>(
 	cs: ConstraintSystem,
@@ -321,7 +302,7 @@ where
 					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
-			.arg(pcs_arg(true))
+			.arg(PcsType::arg(true))
 			.arg(
 				Arg::new("zk")
 					.long("zk")
@@ -379,7 +360,7 @@ where
 					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
-			.arg(pcs_arg(true))
+			.arg(PcsType::arg(true))
 			.arg(
 				Arg::new("zk")
 					.long("zk")
@@ -513,7 +494,7 @@ where
 					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
-			.arg(pcs_arg(false))
+			.arg(PcsType::arg(false))
 	}
 
 	fn build_verify_subcommand() -> Command {
@@ -544,7 +525,7 @@ where
 					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
-			.arg(pcs_arg(true))
+			.arg(PcsType::arg(true))
 			.arg(
 				Arg::new("zk")
 					.long("zk")

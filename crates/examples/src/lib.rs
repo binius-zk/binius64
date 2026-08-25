@@ -23,7 +23,7 @@ use binius_verifier::{
 	transcript::{ProverTranscript, VerifierTranscript},
 	zk_config::ZKVerifier,
 };
-use clap::ValueEnum;
+use clap::{Arg, ValueEnum};
 pub use cli::Cli;
 use digest::Output;
 use tracing::level_filters::LevelFilter;
@@ -78,6 +78,49 @@ pub enum PcsType {
 	Basefold,
 	/// A ladder of Reed-Solomon commitments whose rate falls at every level.
 	Ligerito,
+}
+
+impl PcsType {
+	/// The name of the environment variable that selects a scheme for a benchmark.
+	pub const ENV_VAR: &'static str = "PCS";
+
+	/// Reads the scheme from [`Self::ENV_VAR`], defaulting when it is unset.
+	///
+	/// A benchmark reads it from the environment so one binary measures either scheme.
+	/// That is what makes two runs comparable, on one machine and one circuit, with no rebuild.
+	///
+	/// ## Panics
+	///
+	/// Panics when the variable is set to something no scheme answers to.
+	/// Falling back to the default there would report one scheme's numbers under another's name,
+	/// which is the one mistake a comparison benchmark cannot survive.
+	pub fn from_env() -> Self {
+		let Ok(name) = std::env::var(Self::ENV_VAR) else {
+			return Self::default();
+		};
+		Self::from_str(&name, true)
+			.unwrap_or_else(|_| panic!("{}={name} names no commitment scheme", Self::ENV_VAR))
+	}
+
+	/// The command-line flag that selects a scheme.
+	///
+	/// `has_zk_flag` says whether the command also offers the zero-knowledge config.
+	/// That config wraps a different proof system and commits its own oracles.
+	/// So wherever both are offered the two choices are declared to conflict.
+	/// Silently ignoring one of them would report a scheme the proof was not written with.
+	pub fn arg(has_zk_flag: bool) -> Arg {
+		let arg = Arg::new("pcs")
+			.long("pcs")
+			.value_name("SCHEME")
+			.help("Polynomial commitment scheme that opens the committed trace")
+			.value_parser(clap::value_parser!(Self))
+			.default_value("basefold");
+		if has_zk_flag {
+			arg.conflicts_with("zk")
+		} else {
+			arg
+		}
+	}
 }
 
 impl From<PcsType> for Pcs {
