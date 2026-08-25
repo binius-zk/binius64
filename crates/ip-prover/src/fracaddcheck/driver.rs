@@ -13,7 +13,7 @@ use binius_math::{
 use binius_utils::rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use itertools::izip;
 
-use super::{FracAddCircuit, fraction::Fraction, padding::layer_provers};
+use super::{FracAddCircuit, fraction::Fraction, padding::PaddedLayerProver};
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
@@ -384,7 +384,8 @@ where
 	// Each iteration reduces the layer whose node variables are the point's suffix past the
 	// selector coordinates. A tree the batch has not yet reached contributes a padding layer.
 	for _ in 0..n_layers {
-		let layer_provers = layer_provers(&mut provers, &pad_lens, &claims, &eval_point[k..]);
+		let layer_provers =
+			PaddedLayerProver::pop_layer(&mut provers, &pad_lens, &claims, &eval_point[k..]);
 		let (next_claims, next_point) =
 			reduce_layer::<A, F, P, _>(alloc, layer_provers, &eval_point, k, channel);
 		claims = next_claims;
