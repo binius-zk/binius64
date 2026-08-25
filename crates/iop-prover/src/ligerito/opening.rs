@@ -294,26 +294,42 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{Field, Ghash128b as B128, Random};
-	use binius_hash::{StdDigest, StdHashSuite};
+	use std::{
+		cell::Cell,
+		iter::{Product, Sum},
+		ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+	};
+
+	use binius_field::{
+		ExtensionField, Field, Ghash128b as B128, Random,
+		arithmetic_traits::{InvertOrZero, Square},
+		field::FieldOps,
+	};
+	use binius_hash::{
+		CompressionFunction, ParallelCompressionAdaptor, StdDigest, StdHashSuite,
+		binary_merkle_tree::HashSuite,
+	};
 	use binius_iop::{
-		ligerito::{Error, LigeritoVerifier},
+		ligerito::{Error, LigeritoVerifier, VerifierCost},
 		merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
 		merkle_tree::BinaryMerkleTreeScheme,
 		soundness::SoundnessRegime,
 	};
+	use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 	use binius_math::{
 		multilinear::Multilinear,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::random_field_buffer,
 	};
 	use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
+	use digest::Output;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
 	use crate::merkle_channel::ProverMerkleTranscriptChannel;
 
 	type StdChallenger = HasherChallenger<StdDigest>;
+	type StdLeafHash = <StdHashSuite as HashSuite>::LeafHash;
 
 	/// A ladder whose level `i` commits at inverse rate `2^(i + 1)` and opens `n_queries` rows.
 	///
@@ -340,21 +356,21 @@ mod tests {
 		LigeritoParams::new(levels, SoundnessRegime::default(), 32)
 	}
 
-	/// Commits `committed`, then proves and verifies `<opened, eq(z)> = opened(z) + claim_offset`.
+	/// Commits `committed`, then proves `<opened, eq(z)> = opened(z) + claim_offset`.
 	///
 	/// Splitting the committed message from the opened one is how a dishonest prover is expressed
 	/// here: every value it sends in the clear is consistent with `opened`, while the codeword
 	/// level 0's queries land in encodes `committed`.
 	/// An honest run passes the same buffer twice and a zero offset.
 	///
-	/// Returns the finished proof's length in bytes, so a byte count is only ever taken from a
-	/// transcript that convinced the verifier.
-	fn run(
+	/// Returns the finished transcript alongside the point and claim it opens at.
+	/// A verifier can then be pointed at it through whichever channel a test wants to watch.
+	fn write_proof(
 		params: &LigeritoParams,
 		committed: &FieldBuffer<B128>,
 		opened: &FieldBuffer<B128>,
 		claim_offset: B128,
-	) -> Result<usize, Error> {
+	) -> (Vec<u8>, Vec<B128>, B128) {
 		let n_vars = params.log_msg_len();
 		let mut rng = StdRng::seed_from_u64(n_vars as u64);
 		let eval_point = (0..n_vars)
@@ -371,22 +387,28 @@ mod tests {
 			.expect("levels is non-empty");
 		let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(log_domain));
 
-		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let mut prover_channel =
+		let mut transcript = ProverTranscript::new(StdChallenger::default());
+		let mut channel =
 			ProverMerkleTranscriptChannel::<_, StdChallenger, B128, StdHashSuite>::new(
-				&mut prover_transcript,
+				&mut transcript,
 			);
-		let prover = LigeritoProver::commit(params, &ntt, committed.as_view(), &mut prover_channel);
-		prover.prove(
-			opened.as_view(),
-			&eval_point,
-			eval_claim,
-			&GlobalAllocator,
-			&mut prover_channel,
-		);
-		prover_channel.into_transcript();
+		let prover = LigeritoProver::commit(params, &ntt, committed.as_view(), &mut channel);
+		prover.prove(opened.as_view(), &eval_point, eval_claim, &GlobalAllocator, &mut channel);
+		channel.into_transcript();
 
-		let proof = prover_transcript.finalize();
+		(transcript.finalize(), eval_point, eval_claim)
+	}
+
+	/// Proves and verifies one opening, returning the finished proof's length in bytes.
+	///
+	/// The byte count is only ever taken from a transcript that convinced the verifier.
+	fn run(
+		params: &LigeritoParams,
+		committed: &FieldBuffer<B128>,
+		opened: &FieldBuffer<B128>,
+		claim_offset: B128,
+	) -> Result<usize, Error> {
+		let (proof, eval_point, eval_claim) = write_proof(params, committed, opened, claim_offset);
 		let proof_size = proof.len();
 
 		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
@@ -541,5 +563,602 @@ mod tests {
 				assert_eq!(params.proof_size(&scheme), written, "{lanes:?} n_queries={n_queries}");
 			}
 		}
+	}
+
+	// Counting what the verifier spends
+
+	thread_local! {
+		/// Field multiplications the verifier on this thread has performed.
+		static FIELD_MULS: Cell<usize> = const { Cell::new(0) };
+		/// Two-to-one Merkle compressions the verifier on this thread has performed.
+		static COMPRESSIONS: Cell<usize> = const { Cell::new(0) };
+	}
+
+	/// A field element that counts its own multiplications.
+	///
+	/// Every arithmetic helper the verifier reaches for is generic over the field operations.
+	/// So substituting this for the concrete field counts multiplications wherever they happen.
+	///
+	/// - Inside the induced basis, where the closed form is evaluated.
+	/// - Inside the sumcheck round recovery.
+	/// - Inside the residual's evaluation and pairing.
+	///
+	/// Inversion is refused rather than implemented.
+	/// A verifier compiled into a circuit cannot invert a value that depends on the proof.
+	/// A test that silently allowed one would not notice the day it appeared.
+	///
+	/// This is deliberately not a packed field.
+	/// The dense weight vector is built by a routine that requires one.
+	/// That routine therefore does not typecheck against this type at all.
+	/// A verification that compiles here is one that never took the dense route.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+	struct Counted(B128);
+
+	impl Counted {
+		/// Runs the verification with the counter zeroed, and reports its value afterwards.
+		fn measure<T>(f: impl FnOnce() -> T) -> (T, usize) {
+			FIELD_MULS.with(|muls| muls.set(0));
+			let out = f();
+			(out, FIELD_MULS.with(Cell::get))
+		}
+
+		/// The counter's value right now, for a mark taken part way through a run.
+		fn so_far() -> usize {
+			FIELD_MULS.with(Cell::get)
+		}
+
+		/// Multiplies, charging one multiplication.
+		fn multiply(self, other: Self) -> Self {
+			FIELD_MULS.with(|muls| muls.set(muls.get() + 1));
+			Self(self.0 * other.0)
+		}
+	}
+
+	impl From<B128> for Counted {
+		fn from(value: B128) -> Self {
+			Self(value)
+		}
+	}
+
+	impl Neg for Counted {
+		type Output = Self;
+
+		fn neg(self) -> Self {
+			Self(-self.0)
+		}
+	}
+
+	impl Add for Counted {
+		type Output = Self;
+
+		fn add(self, other: Self) -> Self {
+			Self(self.0 + other.0)
+		}
+	}
+
+	impl Sub for Counted {
+		type Output = Self;
+
+		fn sub(self, other: Self) -> Self {
+			Self(self.0 - other.0)
+		}
+	}
+
+	impl Mul for Counted {
+		type Output = Self;
+
+		fn mul(self, other: Self) -> Self {
+			self.multiply(other)
+		}
+	}
+
+	impl Add<&Self> for Counted {
+		type Output = Self;
+
+		fn add(self, other: &Self) -> Self {
+			self + *other
+		}
+	}
+
+	impl Sub<&Self> for Counted {
+		type Output = Self;
+
+		fn sub(self, other: &Self) -> Self {
+			self - *other
+		}
+	}
+
+	impl Mul<&Self> for Counted {
+		type Output = Self;
+
+		fn mul(self, other: &Self) -> Self {
+			self.multiply(*other)
+		}
+	}
+
+	impl AddAssign for Counted {
+		fn add_assign(&mut self, other: Self) {
+			*self = *self + other;
+		}
+	}
+
+	impl SubAssign for Counted {
+		fn sub_assign(&mut self, other: Self) {
+			*self = *self - other;
+		}
+	}
+
+	impl MulAssign for Counted {
+		fn mul_assign(&mut self, other: Self) {
+			*self = self.multiply(other);
+		}
+	}
+
+	impl AddAssign<&Self> for Counted {
+		fn add_assign(&mut self, other: &Self) {
+			*self = *self + *other;
+		}
+	}
+
+	impl SubAssign<&Self> for Counted {
+		fn sub_assign(&mut self, other: &Self) {
+			*self = *self - *other;
+		}
+	}
+
+	impl MulAssign<&Self> for Counted {
+		fn mul_assign(&mut self, other: &Self) {
+			*self = self.multiply(*other);
+		}
+	}
+
+	impl Sum for Counted {
+		fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+			// Addition is a bitwise exclusive or in characteristic two, so a sum charges nothing.
+			iter.fold(Self(B128::ZERO), |acc, item| acc + item)
+		}
+	}
+
+	impl<'a> Sum<&'a Self> for Counted {
+		fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+			iter.copied().sum()
+		}
+	}
+
+	impl Product for Counted {
+		fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
+			// Folding through the counting multiply is what charges `n - 1` for `n` factors.
+			iter.fold(Self(B128::ONE), Self::multiply)
+		}
+	}
+
+	impl<'a> Product<&'a Self> for Counted {
+		fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+			iter.copied().product()
+		}
+	}
+
+	impl Square for Counted {
+		fn square(self) -> Self {
+			self.multiply(self)
+		}
+	}
+
+	impl InvertOrZero for Counted {
+		fn invert_or_zero(self) -> Self {
+			panic!("the verifier must never invert a value that depends on the proof")
+		}
+	}
+
+	impl FieldOps for Counted {
+		type Scalar = B128;
+
+		fn zero() -> Self {
+			Self(B128::ZERO)
+		}
+
+		fn one() -> Self {
+			Self(B128::ONE)
+		}
+
+		fn square_transpose<FSub: Field>(elems: &mut [Self])
+		where
+			B128: ExtensionField<FSub>,
+		{
+			let mut raw = elems.iter().map(|elem| elem.0).collect::<Vec<_>>();
+			<B128 as FieldOps>::square_transpose::<FSub>(&mut raw);
+			for (elem, value) in zip(elems, raw) {
+				*elem = Self(value);
+			}
+		}
+	}
+
+	/// A two-to-one compression that counts its calls before delegating.
+	#[derive(Debug, Clone, Default)]
+	struct CountingCompression(<StdHashSuite as HashSuite>::Compression);
+
+	impl CompressionFunction<Output<StdLeafHash>, 2> for CountingCompression {
+		fn compress(&self, input: [Output<StdLeafHash>; 2]) -> Output<StdLeafHash> {
+			COMPRESSIONS.with(|count| count.set(count.get() + 1));
+			self.0.compress(input)
+		}
+	}
+
+	/// The shipped hash suite with its compression function counted.
+	///
+	/// The leaf hash is left alone.
+	/// So a transcript written under the shipped suite verifies under this one unchanged.
+	#[derive(Debug)]
+	struct CountingHashSuite;
+
+	impl HashSuite for CountingHashSuite {
+		type LeafHash = StdLeafHash;
+		type Compression = CountingCompression;
+		type ParLeafHash = <StdHashSuite as HashSuite>::ParLeafHash;
+		type ParCompression = ParallelCompressionAdaptor<CountingCompression>;
+	}
+
+	/// Wraps a verifier channel, carrying counting elements and tallying what it is asked for.
+	///
+	/// The wrapper sees what a circuit-building channel would have to emit gates for.
+	///
+	/// - The bit decompositions of a query index.
+	/// - The leaves whose digests have to be rebuilt.
+	struct CountingChannel<C> {
+		inner: C,
+		/// Bit-decomposition sums performed over fixed constants.
+		subset_sums: usize,
+		/// Merkle leaves the verifier handed back to the scheme to re-hash.
+		leaves_rebuilt: usize,
+		/// The multiplication count at the moment each level's rows were opened.
+		marks: Vec<usize>,
+	}
+
+	impl<C> CountingChannel<C> {
+		fn new(inner: C) -> Self {
+			Self {
+				inner,
+				subset_sums: 0,
+				leaves_rebuilt: 0,
+				marks: Vec::new(),
+			}
+		}
+	}
+
+	impl<C> IPVerifierChannel<B128> for CountingChannel<C>
+	where
+		C: IPVerifierChannel<B128, Elem = B128>,
+	{
+		type Elem = Counted;
+
+		fn recv_one(&mut self) -> Result<Counted, binius_ip::channel::Error> {
+			self.inner.recv_one().map(Counted)
+		}
+
+		fn sample(&mut self) -> Counted {
+			Counted(self.inner.sample())
+		}
+
+		fn observe_one(&mut self, val: B128) -> Counted {
+			Counted(self.inner.observe_one(val))
+		}
+
+		fn assert_zero(&mut self, val: Counted) -> Result<(), binius_ip::channel::Error> {
+			self.inner.assert_zero(val.0)
+		}
+	}
+
+	impl<C> WordIPVerifierChannel<B128> for CountingChannel<C>
+	where
+		C: WordIPVerifierChannel<B128, Elem = B128>,
+	{
+		type Word = C::Word;
+
+		fn observe_words(&mut self, words: &[Word]) -> Vec<Self::Word> {
+			self.inner.observe_words(words)
+		}
+
+		fn subset_sum(&mut self, elems: &[Counted], word: &Self::Word) -> Counted {
+			// One call is one bit decomposition, whatever the constants behind it.
+			self.subset_sums += 1;
+			let raw = elems.iter().map(|elem| elem.0).collect::<Vec<_>>();
+			Counted(self.inner.subset_sum(&raw, word))
+		}
+
+		fn select(&mut self, elems: &[Counted], word: &Self::Word) -> Counted {
+			let raw = elems.iter().map(|elem| elem.0).collect::<Vec<_>>();
+			Counted(self.inner.select(&raw, word))
+		}
+
+		fn sample_bits(&mut self, bits: usize) -> Self::Word {
+			self.inner.sample_bits(bits)
+		}
+
+		fn pack_words(&mut self, words: &[Self::Word]) -> Vec<Counted> {
+			self.inner
+				.pack_words(words)
+				.into_iter()
+				.map(Counted)
+				.collect()
+		}
+	}
+
+	impl<C> MerkleIPVerifierChannel<B128> for CountingChannel<C>
+	where
+		C: MerkleIPVerifierChannel<B128, Elem = B128>,
+	{
+		type Commitment = C::Commitment;
+
+		fn recv_merkle_commitment(
+			&mut self,
+			leaf_size: usize,
+			depth: usize,
+		) -> Result<Self::Commitment, binius_iop::merkle_channel::Error> {
+			self.inner.recv_merkle_commitment(leaf_size, depth)
+		}
+
+		fn recv_openings(
+			&mut self,
+			commitment: &Self::Commitment,
+			indices: &[Self::Word],
+		) -> Result<Vec<Counted>, binius_iop::merkle_channel::Error> {
+			// Exactly one call per level, which makes this the boundary the cost table is cut at.
+			self.marks.push(Counted::so_far());
+			// Every opened row is one leaf digest recomputed from the revealed values.
+			self.leaves_rebuilt += indices.len();
+			Ok(self
+				.inner
+				.recv_openings(commitment, indices)?
+				.into_iter()
+				.map(Counted)
+				.collect())
+		}
+
+		fn recv_committed_vector(
+			&mut self,
+			commitment: &Self::Commitment,
+		) -> Result<Vec<Counted>, binius_iop::merkle_channel::Error> {
+			let values = self.inner.recv_committed_vector(commitment)?;
+			// The residual is committed one element to a leaf, so its whole tree is rebuilt.
+			self.leaves_rebuilt += values.len();
+			Ok(values.into_iter().map(Counted).collect())
+		}
+	}
+
+	/// What the verifier spent, as counted rather than as predicted by the cost model.
+	struct Measured {
+		/// Field multiplications over the whole verification.
+		field_muls: usize,
+		/// The multiplication count at each level's query round, in ladder order.
+		marks: Vec<usize>,
+		/// Merkle leaves rebuilt.
+		leaf_hashes: usize,
+		/// Merkle compressions performed.
+		compressions: usize,
+		/// Bit decompositions of a query index.
+		subset_sums: usize,
+	}
+
+	/// Verifies an honest opening through the counting element type and the counting hash suite.
+	///
+	/// The prover runs first, under the shipped suite, so nothing it does reaches an instrument.
+	fn measure(params: &LigeritoParams) -> Result<Measured, Error> {
+		let msg = message(params, 0);
+		let (proof, eval_point, eval_claim) = write_proof(params, &msg, &msg, B128::ZERO);
+
+		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
+		let inner =
+			VerifierMerkleTranscriptChannel::<_, StdChallenger, B128, CountingHashSuite>::new(
+				&mut transcript,
+			);
+		let mut channel = CountingChannel::new(inner);
+
+		let level = &params.levels()[0];
+		let commitment =
+			channel.recv_merkle_commitment(1 << level.log_lanes, level.log_codeword_len())?;
+		let point = eval_point.into_iter().map(Counted).collect::<Vec<_>>();
+		let verifier = LigeritoVerifier::new(params, commitment);
+
+		COMPRESSIONS.with(|count| count.set(0));
+		let (verified, field_muls) = Counted::measure(|| {
+			verifier.verify::<B128, _>(&point, Counted(eval_claim), &mut channel)
+		});
+		verified?;
+
+		Ok(Measured {
+			field_muls,
+			marks: channel.marks.clone(),
+			leaf_hashes: channel.leaves_rebuilt,
+			compressions: COMPRESSIONS.with(Cell::get),
+			subset_sums: channel.subset_sums,
+		})
+	}
+
+	/// The multiplications charged between one level's query round and the next one's.
+	///
+	/// The tail entry runs from the last level's query round to the end of the verification.
+	/// So it carries the closing checks against the cleartext residual.
+	fn segments(measured: &Measured) -> Vec<usize> {
+		measured
+			.marks
+			.iter()
+			.skip(1)
+			.chain(std::iter::once(&measured.field_muls))
+			.zip(&measured.marks)
+			.map(|(end, start)| end - start)
+			.collect()
+	}
+
+	/// The model prices a ladder without running it, so a real run has to agree with it.
+	#[test]
+	fn the_measured_costs_are_the_ones_the_model_predicts() {
+		// Invariant: the cost table prices a ladder without running it, so what it says has to be
+		// what a real verification does. All three of its columns are observable: the leaves
+		// handed back for re-hashing, the compressions the scheme performs, and the bit
+		// decompositions a query index drives.
+		//
+		// Fixture state: ladders moving depth, fold amounts, column count and query count
+		// independently, since the table's layer-depth term turns on the query count alone.
+		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
+		let shapes: &[(usize, &[usize], usize)] = &[
+			(4, &[2], 1),
+			(4, &[2], 5),
+			(6, &[2, 2], 8),
+			(6, &[1, 1, 1], 3),
+			(8, &[2, 2, 2], 12),
+			(7, &[3, 1, 1, 1], 5),
+		];
+
+		for &(log_msg_cols, lanes, n_queries) in shapes {
+			let params = ladder(log_msg_cols, lanes, n_queries);
+			let measured = measure(&params).unwrap_or_else(|err| {
+				panic!("{log_msg_cols} {lanes:?}: honest proof rejected: {err}")
+			});
+
+			assert_eq!(
+				VerifierCost {
+					leaf_hashes: measured.leaf_hashes,
+					compressions: measured.compressions,
+					subset_sums: measured.subset_sums,
+				},
+				VerifierCost::total(&params.verifier_cost(&scheme)),
+				"{log_msg_cols} {lanes:?} n_queries={n_queries}"
+			);
+		}
+	}
+
+	/// A message sixteen times longer costs the verifier a little more, not sixteen times more.
+	#[test]
+	fn a_longer_message_costs_a_logarithm_rather_than_a_factor() {
+		// Invariant: the closed-form basis keeps the verifier's work logarithmic in the message.
+		// Whether an opening verifies says nothing about which route produced it, so the growth
+		// rate is the only thing that separates the two.
+		//
+		// Fixture state: two ladders reduced to the same 2^4 residual at the same query count.
+		//
+		//     small: cols_0 = 8,  three levels -> a dense weight vector of 256 entries
+		//     large: cols_0 = 12, five levels  -> 4096 entries, sixteen times more
+		let small = measure(&ladder(8, &[2, 2, 2], 8)).expect("honest proof rejected");
+		let large = measure(&ladder(12, &[2, 2, 2, 2, 2], 8)).expect("honest proof rejected");
+
+		assert!(
+			large.field_muls < 3 * small.field_muls,
+			"multiplications went from {} to {} while the message grew sixteenfold",
+			small.field_muls,
+			large.field_muls
+		);
+		assert!(
+			large.subset_sums < 3 * small.subset_sums,
+			"decompositions went from {} to {} while the message grew sixteenfold",
+			small.subset_sums,
+			large.subset_sums
+		);
+	}
+
+	/// The per-level figures a recursive circuit pays, printed and held to their protocol shape.
+	#[test]
+	fn the_verifier_cost_table() {
+		// Invariant: expanding a level's induced weight vector costs at least 2^cols
+		// multiplications, one per entry. So a level charged far fewer than that provably did not
+		// expand it, which is the succinctness claim stated as a number rather than a comment.
+		//
+		// Fixture state: a four-level ladder over 2^18 message elements, 30 queries a level,
+		// reduced to a 2^10 residual.
+		let params = ladder(16, &[2, 2, 2, 2], 30);
+		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
+		let rows = params.verifier_cost(&scheme);
+		let measured = measure(&params).expect("honest proof rejected");
+		let segments = segments(&measured);
+
+		println!();
+		println!(
+			"Ligerito verifier cost, message 2^{}, residual 2^{}",
+			params.log_msg_len(),
+			params.log_residual_dim()
+		);
+		println!();
+		println!(
+			"{:>5}  {:>5}  {:>7}  {:>7}  {:>9}  {:>8}  {:>11}  {:>12}",
+			"level",
+			"cols",
+			"queries",
+			"leaves",
+			"compress",
+			"subsets",
+			"field muls",
+			"if expanded"
+		);
+		for (i, (level, row)) in zip(params.levels(), &rows).enumerate() {
+			println!(
+				"{i:>5}  {:>5}  {:>7}  {:>7}  {:>9}  {:>8}  {:>11}  {:>12}",
+				level.log_msg_cols,
+				level.n_queries,
+				row.leaf_hashes,
+				row.compressions,
+				row.subset_sums,
+				segments[i],
+				1usize << level.log_msg_cols,
+			);
+		}
+		let residual = rows
+			.last()
+			.expect("the table always ends with the residual");
+		println!(
+			"{:>5}  {:>5}  {:>7}  {:>7}  {:>9}  {:>8}  {:>11}  {:>12}",
+			"resid",
+			params.log_residual_dim(),
+			"-",
+			residual.leaf_hashes,
+			residual.compressions,
+			residual.subset_sums,
+			"-",
+			"-",
+		);
+		let total = VerifierCost::total(&rows);
+		println!(
+			"{:>5}  {:>5}  {:>7}  {:>7}  {:>9}  {:>8}  {:>11}  {:>12}",
+			"total",
+			"",
+			"",
+			total.leaf_hashes,
+			total.compressions,
+			total.subset_sums,
+			measured.field_muls,
+			"",
+		);
+		println!();
+		println!(
+			"the last level's multiplications carry the closing check, which pairs every glued \
+			 basis against the 2^{} residual in the clear",
+			params.log_residual_dim()
+		);
+
+		// Every level but the last is charged far fewer multiplications than its own weight vector
+		// has entries, and expanding that vector costs at least one multiplication per entry.
+		for (i, (level, spent)) in zip(params.levels(), &segments)
+			.enumerate()
+			.take(params.n_levels() - 1)
+		{
+			assert!(
+				*spent < 1 << level.log_msg_cols,
+				"level {i} spent {spent} multiplications against a dense vector's {}",
+				1usize << level.log_msg_cols
+			);
+		}
+
+		// The last segment is the closing check, which pairs every glued basis against the
+		// residual in the clear. That is the one place the verifier works at a level's full width,
+		// and the width is the residual's rather than the message's.
+		let pairing =
+			(params.n_levels() * params.levels()[0].n_queries) << params.log_residual_dim();
+		let closing = segments.last().expect("a ladder has at least one level");
+		assert!(
+			*closing < 2 * pairing,
+			"closing check spent {closing} against a bound of {pairing}"
+		);
+
+		// The residual is the only row that grows with a power of two, so a recursive circuit's
+		// hash budget turns on the residual dimension rather than on the message length.
+		assert!(residual.hash_calls() > total.hash_calls() / 2);
 	}
 }

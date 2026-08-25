@@ -3,7 +3,7 @@
 use binius_field::BinaryField;
 use getset::CopyGetters;
 
-use super::size_estimation;
+use super::{size_estimation, verifier_cost, verifier_cost::VerifierCost};
 use crate::{merkle_tree::MerkleTreeScheme, soundness::SoundnessRegime};
 
 /// One committed level of the Ligerito recursion.
@@ -243,6 +243,25 @@ impl LigeritoParams {
 		VCS: MerkleTreeScheme<F>,
 	{
 		size_estimation::proof_size(self, vcs)
+	}
+
+	/// What checking a proof at these parameters costs the verifier, one row per level.
+	///
+	/// The rows are the committed levels in ladder order.
+	/// One final row follows them, for the cleartext residual.
+	///
+	/// Counted from the ladder alone, the way the byte-size estimate is.
+	/// So a shape can be priced before anyone implements it.
+	///
+	/// The units are the ones a recursion circuit pays in.
+	/// Hash calls, and the bit decompositions a query index drives.
+	/// The residual's row is the only one that grows with a power of two.
+	pub fn verifier_cost<F, VCS>(&self, vcs: &VCS) -> Vec<VerifierCost>
+	where
+		F: BinaryField,
+		VCS: MerkleTreeScheme<F>,
+	{
+		verifier_cost::verifier_cost(self, vcs)
 	}
 
 	/// The ladder minimizing [`Self::proof_size`], with level 0's rate pinned by the caller.
