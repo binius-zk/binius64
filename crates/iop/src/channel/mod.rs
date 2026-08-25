@@ -9,7 +9,7 @@ pub mod size_tracking;
 use binius_field::Field;
 use binius_ip::channel::IPVerifierChannel;
 
-use crate::basefold;
+use crate::{basefold, ligerito};
 
 /// Error type for IOP verifier channel operations.
 #[derive(Debug, thiserror::Error)]
@@ -18,6 +18,8 @@ pub enum Error {
 	ProofEmpty,
 	#[error("BaseFold verification failed: {0}")]
 	BaseFold(#[from] basefold::Error),
+	#[error("Ligerito verification failed: {0}")]
+	Ligerito(#[from] ligerito::Error),
 	#[error("IP channel error: {0}")]
 	IPChannel(#[from] binius_ip::channel::Error),
 	#[error("sumcheck error: {0}")]

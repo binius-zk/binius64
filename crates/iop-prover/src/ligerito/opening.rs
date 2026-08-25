@@ -363,13 +363,9 @@ mod tests {
 		let eval_claim = opened.evaluate(&eval_point) + claim_offset;
 
 		// One transform for the whole ladder, sized for its longest codeword.
-		let log_domain = params
-			.levels()
-			.iter()
-			.map(LigeritoLevel::log_codeword_len)
-			.max()
-			.expect("levels is non-empty");
-		let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(log_domain));
+		let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(
+			params.max_log_codeword_len(),
+		));
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel =

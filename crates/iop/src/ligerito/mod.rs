@@ -19,6 +19,7 @@
 //! - [`LigeritoParams`] and its invariants;
 //! - [`InducedBasis`], the weight vector a level's opened rows put on its message;
 //! - [`LigeritoVerifier`], the ladder of committed levels down to a cleartext residual;
+//! - [`channel::LigeritoVerifierChannel`], the ladder behind the IOP verifier channel trait;
 //! - [`LigeritoParams::proof_size`], the byte-exact estimate;
 //! - [`LigeritoParams::optimal_ladder`], the search that minimizes it subject to a security target.
 //!
@@ -28,7 +29,9 @@
 //!
 //! [NA25]: <https://eprint.iacr.org/2025/1187>
 
+pub mod channel;
 mod common;
+pub mod compiler;
 mod error;
 mod induced_basis;
 mod opening;
