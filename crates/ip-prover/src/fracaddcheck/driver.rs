@@ -13,7 +13,7 @@ use binius_math::{
 use binius_utils::rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use itertools::izip;
 
-use super::{FracAddCircuit, fraction::Fraction, padding::PaddedLayerProver};
+use super::{FracAddCircuit, fraction::Fraction, padding::PaddedBatch};
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
@@ -363,40 +363,23 @@ where
 	let k = selector_point.len();
 	assert!(provers.len() <= (1 << k)); // precondition
 
-	let alloc = provers[0].alloc;
-	let mut provers = provers;
-	let n_layers = provers
-		.iter()
-		.map(FracAddCircuit::n_layers)
-		.max()
-		.expect("provers is non-empty");
-	assert!(n_layers >= 1); // precondition
-	// How much depth each tree is padded by.
-	let pad_lens = provers
-		.iter()
-		.map(|prover| n_layers - prover.n_layers())
-		.collect::<Vec<_>>();
+	let mut batch = PaddedBatch::new(provers);
+	let alloc = batch.alloc();
+	let n_trees = batch.n_trees();
 
-	let n_trees = provers.len();
 	let mut claims = claimed_fractions;
 	let mut eval_point = selector_point;
 
 	// Each iteration reduces the layer whose node variables are the point's suffix past the
 	// selector coordinates. A tree the batch has not yet reached contributes a padding layer.
-	for _ in 0..n_layers {
-		let layer_provers =
-			PaddedLayerProver::pop_layer(&mut provers, &pad_lens, &claims, &eval_point[k..]);
+	for _ in 0..batch.n_layers() {
+		let layer_provers = batch.pop_layer(&claims, &eval_point[k..]);
 		let (next_claims, next_point) =
 			reduce_layer::<A, F, P, _>(alloc, layer_provers, &eval_point, k, channel);
 		claims = next_claims;
 		eval_point = next_point;
 	}
-	// A depth-0 tree is all padding, so it is passed through every round and never popped; every
-	// tree that had a layer has spent them all.
-	debug_assert!(
-		provers.iter().all(|prover| prover.n_layers() == 0),
-		"every tree with layers is exhausted after n_layers reductions"
-	);
+	batch.finish();
 
 	// `reduce_layer` pads its output to the 2^k selector slots; only the real trees remain.
 	let mut fractions = claims;
