@@ -13,14 +13,13 @@
 //! [`OnePadMleCheckProver`] wraps the unpadded layer's own MLE-check and corrects its messages at a
 //! cost of $O(1)$ per round.
 
-use std::{iter, mem};
+use std::mem;
 
-use binius_compute::Allocator;
-use binius_field::{Field, PackedField};
+use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldVec, multilinear::hypercube::Hypercube};
+use binius_math::multilinear::hypercube::Hypercube;
 
-use crate::sumcheck::{bivariate_product_mle, common::MleCheckProver};
+use crate::sumcheck::common::MleCheckProver;
 
 /// The one-padding selector $\textsf{sel}(s, v) = 1 + (v - 1) s$.
 ///
@@ -84,77 +83,68 @@ enum Phase<F, Inner> {
 	},
 }
 
-/// Creates the prover for one padded product-check layer.
+/// Divides the padding back out of a padded layer's claim.
+///
+/// The padded layer's evaluation is the unpadded one pushed through the padding selector at $q$.
+/// So recovering the unpadded claim is one more selector, at $q^{-1}$.
+///
+/// Callers seed the inner prover with the result.
+/// For a layer that is *all* padding it is the tree's own product.
 ///
 /// # Arguments
 ///
-/// * `layer` - The unpadded child layer, whose low and high halves on its highest variable are the
-///   two multilinears whose product this layer reduces.
-/// * `pad_len` - Length of `eval_point`'s padding segment. Zero leaves the inner reduction
-///   uncorrected.
-/// * `eval_point` - The padded layer's claim point, `[padding | real]`.
-/// * `claim` - The padded layer's claimed evaluation at `eval_point`.
-///
-/// # Preconditions
-///
-/// * `layer.log_len() >= 1`
-/// * `eval_point.len() == layer.log_len() - 1 + pad_len`
-///
-/// # Panics
-///
-/// Panics if the padding segment's equality weight $q$ is zero, which requires one of its
-/// coordinates — all verifier challenges — to equal one, and so happens with probability at most
-/// $\nu / |K|$.
-pub fn new<'alloc, A, F, P>(
-	alloc: &'alloc A,
-	layer: FieldVec<P, A>,
-	pad_len: usize,
-	eval_point: Vec<F>,
-	claim: F,
-) -> OnePadMleCheckProver<F, impl MleCheckProver<F> + 'alloc>
-where
-	A: Allocator,
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	assert!(layer.log_len() >= 1); // precondition
-	let n_real_rounds = layer.log_len() - 1;
-	assert_eq!(eval_point.len(), pad_len + n_real_rounds); // precondition
-
-	// Prefix products over the padding segment, so both the round polynomials' `e` factors and the
-	// claim's `q` are lookups.
-	let pad_eq_prefixes = iter::once(F::ONE)
-		.chain(eval_point[..pad_len].iter().scan(F::ONE, |acc, &coord| {
-			*acc *= Hypercube::One.eq_one_var(F::ZERO, coord);
-			Some(*acc)
-		}))
-		.collect::<Vec<_>>();
-	let pad_eq = pad_eq_prefixes[pad_len];
-	assert!(pad_eq != F::ZERO, "a padding coordinate of the claim point equals one");
-
-	// The padded claim is `sel(q, z)` for the unpadded claim `z`, so the inner prover starts from
-	// the preimage.
-	let inner_claim = F::ONE + (claim - F::ONE) * pad_eq.invert_or_zero();
-	let inner = bivariate_product_mle::new_split_half(
-		alloc,
-		layer,
-		eval_point[pad_len..].to_vec(),
-		inner_claim,
-	);
-
-	let mut prover = OnePadMleCheckProver {
-		eval_point,
-		pad_len,
-		round: 0,
-		pad_eq_prefixes,
-		phase: Phase::Real(inner),
-	};
-	// A layer with no real variables starts in the padding phase.
-	prover.advance();
-	prover
+/// * `pad_eq_inv` - The inverse of the padding segment's equality weight $q$.
+/// * `claim` - The padded layer's claimed evaluation.
+pub fn unpad_claim<F: Field>(pad_eq_inv: F, claim: F) -> F {
+	select(pad_eq_inv, claim)
 }
 
 impl<F: Field, Inner: MleCheckProver<F>> OnePadMleCheckProver<F, Inner> {
+	/// Creates the prover for one padded product-check layer.
+	///
+	/// Entry `i` of `pad_eq_prefixes` is $\prod_{c < i} \textsf{eq}(0, \rho_{\text{pa}, c})$.
+	///
+	/// Its length fixes the padding segment at one less.
+	/// A single-entry table therefore leaves the inner reduction uncorrected.
+	///
+	/// Every tree of a batch shares one claim point.
+	/// So one table of prefix products serves all of them.
+	///
+	/// The inner prover runs over the real segment of the claim point.
+	/// Its claim is the padded one with the padding divided back out by [`unpad_claim`].
+	///
+	/// # Arguments
+	///
+	/// * `pad_eq_prefixes` - Equality weights of the claim point's padding segment.
+	/// * `eval_point` - The padded layer's claim point, `[padding | real]`.
+	/// * `inner` - The unpadded layer's MLE-check.
+	///
+	/// # Preconditions
+	///
+	/// * `pad_eq_prefixes` is non-empty and its last entry is non-zero
+	/// * `eval_point.len() + 1 >= pad_eq_prefixes.len()`
+	/// * `inner.n_vars() == eval_point.len() + 1 - pad_eq_prefixes.len()`
+	pub fn new(pad_eq_prefixes: Vec<F>, eval_point: Vec<F>, inner: Inner) -> Self {
+		let pad_len = pad_eq_prefixes
+			.len()
+			.checked_sub(1)
+			.expect("precondition: non-empty");
+		assert!(eval_point.len() >= pad_len); // precondition
+		assert_ne!(pad_eq_prefixes[pad_len], F::ZERO); // precondition
+		assert_eq!(inner.n_vars(), eval_point.len() - pad_len); // precondition
+
+		let mut prover = Self {
+			eval_point,
+			pad_len,
+			round: 0,
+			pad_eq_prefixes,
+			phase: Phase::Real(inner),
+		};
+		// A layer with no real variables starts in the padding phase.
+		prover.advance();
+		prover
+	}
+
 	/// The number of rounds that reduce the unpadded layer's real variables.
 	const fn n_real_rounds(&self) -> usize {
 		self.eval_point.len() - self.pad_len
@@ -262,8 +252,10 @@ impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for OnePadMleCheckPro
 // produce the same round polynomials and the same child evaluations.
 #[cfg(test)]
 mod tests {
+	use std::iter;
+
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Random, field::FieldOps};
+	use binius_field::{Random, arithmetic_traits::InvertOrZero, field::FieldOps};
 	use binius_math::{
 		FieldBuffer,
 		multilinear::Multilinear,
@@ -272,14 +264,15 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
+	use crate::sumcheck::bivariate_product_mle;
 
 	type P = Packed128b;
 	type F = <P as FieldOps>::Scalar;
 
 	/// Materializes `OnePad_{pad_len}` of a layer, whose variables are `[real | split]`.
 	///
-	/// The padding variables land below the real ones, matching the claim-point layout [`new`]
-	/// expects.
+	/// The padding variables land below the real ones.
+	/// That matches the claim-point layout [`OnePadMleCheckProver::new`] expects.
 	fn one_pad_layer(layer: &FieldBuffer<P>, pad_len: usize) -> FieldBuffer<P> {
 		let values = (0..1 << (layer.log_len() + pad_len))
 			.map(|index| {
@@ -303,6 +296,16 @@ mod tests {
 		FieldBuffer::<P>::from_values(&products).evaluate(eval_point)
 	}
 
+	/// Prefix products over the first `pad_len` coordinates of `eval_point`.
+	fn pad_eq_prefixes(eval_point: &[F], pad_len: usize) -> Vec<F> {
+		iter::once(F::ONE)
+			.chain(eval_point[..pad_len].iter().scan(F::ONE, |acc, &coord| {
+				*acc *= Hypercube::One.eq_one_var(F::ZERO, coord);
+				Some(*acc)
+			}))
+			.collect()
+	}
+
 	/// Runs the padded prover and the reference prover over the materialized padded layer in
 	/// lockstep.
 	fn assert_matches_padded_reference(layer: FieldBuffer<P>, pad_len: usize) {
@@ -316,7 +319,16 @@ mod tests {
 
 		let mut reference =
 			bivariate_product_mle::new_split_half(&alloc, padded_layer, eval_point.clone(), claim);
-		let mut prover = new(&alloc, layer, pad_len, eval_point, claim);
+
+		let prefixes = pad_eq_prefixes(&eval_point, pad_len);
+		let pad_eq_inv = prefixes[pad_len].invert_or_zero();
+		let inner = bivariate_product_mle::new_split_half(
+			&alloc,
+			layer,
+			eval_point[pad_len..].to_vec(),
+			unpad_claim(pad_eq_inv, claim),
+		);
+		let mut prover = OnePadMleCheckProver::new(prefixes, eval_point, inner);
 
 		for round in 0..n_vars {
 			assert_eq!(prover.n_vars(), n_vars - round);

@@ -6,7 +6,8 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
-	FieldBuffer, FieldVec, line::extrapolate_line, multilinear::hypercube::Hypercube,
+	FieldBuffer, FieldVec, batch_invert::BatchInversion, line::extrapolate_line,
+	multilinear::hypercube::Hypercube,
 };
 use binius_utils::{
 	buffer::VecLike,
@@ -556,24 +557,57 @@ fn layer_provers<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 ) -> Vec<OnePadMleCheckProver<F, impl MleCheckProver<F> + use<'a, A, F, P>>> {
 	let node_len = node_point.len();
 
-	izip!(provers, pad_lens, products, claims)
-		.map(|(prover, &pad_len, &product, &claim)| {
+	// Every tree's padding segment is a prefix of this one node point, so a single table of prefix
+	// products serves the whole batch.
+	let pad_eq_prefixes = iter::once(F::ONE)
+		.chain(node_point.iter().scan(F::ONE, |acc, &coord| {
+			*acc *= Hypercube::One.eq_one_var(F::ZERO, coord);
+			Some(*acc)
+		}))
+		.collect::<Vec<_>>();
+
+	// De-padding a claim divides by the padding segment's equality weight, so the batch pays one
+	// inversion rather than one per tree.
+	let mut pad_eq_invs = pad_lens
+		.iter()
+		.map(|&pad_len| pad_eq_prefixes[pad_len.min(node_len)])
+		.collect::<Vec<_>>();
+	assert!(
+		pad_eq_invs.iter().all(|&pad_eq| pad_eq != F::ZERO),
+		"a padding coordinate of the claim point equals one"
+	);
+	BatchInversion::<F>::new(pad_eq_invs.len()).invert_nonzero(&mut pad_eq_invs);
+
+	izip!(provers, pad_lens, products, claims, &pad_eq_invs)
+		.map(|(prover, &tree_pad_len, &product, &claim, &pad_eq_inv)| {
 			let alloc = prover.alloc;
+			let pad_len = tree_pad_len.min(node_len);
 			// While the batch is still above this tree, the layer is a one-padding of the tree's
 			// product, whose two children are that product and the constant one. Only once the
 			// batch reaches the tree does it start consuming its layers.
-			let layer = if node_len < pad_len {
+			let layer = if node_len < tree_pad_len {
 				FieldBuffer::from_values_in(alloc, &[product, F::ONE])
 			} else {
 				let layer = prover.pop_layer();
 				assert_eq!(
 					layer.log_len(),
-					node_len - pad_len + 1,
+					node_len - tree_pad_len + 1,
 					"precondition: the witness has exactly n_layers variables"
 				);
 				layer
 			};
-			one_pad_mle::new(alloc, layer, pad_len.min(node_len), node_point.to_vec(), claim)
+
+			let inner = bivariate_product_mle::new_split_half(
+				alloc,
+				layer,
+				node_point[pad_len..].to_vec(),
+				one_pad_mle::unpad_claim(pad_eq_inv, claim),
+			);
+			OnePadMleCheckProver::new(
+				pad_eq_prefixes[..=pad_len].to_vec(),
+				node_point.to_vec(),
+				inner,
+			)
 		})
 		.collect()
 }
