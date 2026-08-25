@@ -2,6 +2,7 @@
 
 //! Channel abstraction for interactive oracle protocol (IOP) verifiers.
 
+pub mod grinding;
 pub mod naive;
 pub mod oracle_setup;
 pub mod size_tracking;

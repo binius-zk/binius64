@@ -24,7 +24,10 @@ use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
 
-use crate::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
+use crate::{
+	channel::grinding::GrindingProverChannel,
+	merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver},
+};
 
 /// An extension of [`WordIPProverChannel`] that can send and open Merkle commitments.
 ///
@@ -181,6 +184,21 @@ where
 	}
 }
 
+impl<T, Challenger_, F, H: HashSuite, A: Allocator> GrindingProverChannel
+	for ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
+where
+	T: BorrowMut<ProverTranscript<Challenger_>>,
+	Challenger_: Challenger + Clone,
+{
+	fn grind(&mut self, bits: usize) -> u64 {
+		// Zero difficulty is not a grind, so no nonce goes out and the challenger does not move.
+		if bits == 0 {
+			return 0;
+		}
+		self.transcript.borrow_mut().grind(bits)
+	}
+}
+
 impl<F, T, Challenger_, H, A> MerkleIPProverChannel<F>
 	for ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
 where
@@ -264,13 +282,21 @@ mod tests {
 	use binius_core::word::Word;
 	use binius_field::{Ghash128b as B128, PackedBinaryGhash2x128b};
 	use binius_hash::{StdDigest, StdHashSuite};
-	use binius_iop::merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel};
-	use binius_ip::channel::WordIPVerifierChannel;
+	use binius_iop::{
+		channel::grinding::GrindingVerifierChannel,
+		merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
+	};
+	use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 	use binius_math::{FieldBuffer, test_utils::random_scalars};
-	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use binius_transcript::{
+		Error as TranscriptError, ProverTranscript, fiat_shamir::HasherChallenger,
+	};
 	use rand::prelude::*;
 
-	use super::{MerkleIPProverChannel, ProverMerkleTranscriptChannel};
+	use super::{
+		GrindingProverChannel, IPProverChannel, MerkleIPProverChannel,
+		ProverMerkleTranscriptChannel,
+	};
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 	type P = PackedBinaryGhash2x128b;
@@ -328,6 +354,66 @@ mod tests {
 		assert_eq!(vector, scalars);
 
 		verifier_channel.into_transcript().finalize().unwrap();
+	}
+
+	#[test]
+	fn a_grind_round_trips_and_zero_bits_is_not_a_grind() {
+		// Invariant: the two sides read the same difficulty out of the same parameters, so a grind
+		// has to leave the channels in step. And a difficulty of zero must be indistinguishable
+		// from never having grinding in the protocol at all, since that is what keeps
+		// `Grinding::NONE` free.
+		//
+		// Fixture state: four bits, which costs sixteen challenger trials on average.
+		const BITS: usize = 4;
+
+		let mut prover_channel =
+			ProverChannel::new(ProverTranscript::new(StdChallenger::default()));
+		prover_channel.grind(BITS);
+		let challenge = IPProverChannel::<B128>::sample(&mut prover_channel);
+
+		let mut transcript = ProverChannel::into_transcript(prover_channel).into_verifier();
+		{
+			let mut verifier_channel = VerifierChannel::new(&mut transcript);
+			verifier_channel.verify_grind(BITS).unwrap();
+			// The challenger absorbed the same nonce on both sides, so the next draw agrees.
+			assert_eq!(IPVerifierChannel::<B128>::sample(&mut verifier_channel), challenge);
+		}
+		transcript.finalize().unwrap();
+
+		// A zero-bit grind writes no nonce and moves no challenger, so the two transcripts below
+		// are byte for byte the same and both sample the same challenge.
+		let write = |bits: Option<usize>| {
+			let mut channel = ProverChannel::new(ProverTranscript::new(StdChallenger::default()));
+			if let Some(bits) = bits {
+				channel.grind(bits);
+			}
+			let challenge = IPProverChannel::<B128>::sample(&mut channel);
+			(ProverChannel::into_transcript(channel).finalize(), challenge)
+		};
+		assert_eq!(write(Some(0)), write(None));
+	}
+
+	#[test]
+	fn a_grind_checked_at_the_wrong_difficulty_is_rejected() {
+		// Invariant: the sampler reads four bytes whatever the difficulty, so a mismatch leaves
+		// both challengers in step and shows up only as work the prover never did.
+		//
+		// Fixture state: four bits are ground and twenty-four demanded, a gap wide enough that a
+		// nonce satisfying the larger demand by accident turns up once in a million.
+		let mut prover_channel =
+			ProverChannel::new(ProverTranscript::new(StdChallenger::default()));
+		prover_channel.grind(4);
+
+		let mut transcript = ProverChannel::into_transcript(prover_channel).into_verifier();
+		let mut verifier_channel = VerifierChannel::new(&mut transcript);
+		let err = verifier_channel
+			.verify_grind(24)
+			.expect_err("four bits of work cannot satisfy a twenty-four bit demand");
+		let TranscriptError::InsufficientWork { bits, sampled } = err else {
+			panic!("expected unmet proof of work, got {err}")
+		};
+		assert_eq!(bits, 24);
+		assert_ne!(sampled, 0);
 	}
 
 	#[test]

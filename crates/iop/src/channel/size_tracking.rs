@@ -12,6 +12,7 @@ use binius_ip::channel::{
 use binius_utils::serialization::FixedSizeSerializeBytes;
 
 use crate::{
+	channel::grinding::GrindingVerifierChannel,
 	merkle_channel::{Error, MerkleIPVerifierChannel},
 	merkle_tree::MerkleTreeScheme,
 };
@@ -132,6 +133,18 @@ where
 	}
 }
 
+impl<F, MerkleScheme_> GrindingVerifierChannel for SizeTrackingChannel<'_, F, MerkleScheme_> {
+	fn verify_grind(&mut self, bits: usize) -> Result<(), binius_transcript::Error> {
+		// Zero difficulty is not a grind, so nothing reaches the tape and nothing is charged.
+		if bits == 0 {
+			return Ok(());
+		}
+		// A grind puts one `u64` nonce on the tape, whatever its difficulty.
+		self.proof_size += size_of::<u64>();
+		Ok(())
+	}
+}
+
 impl<F, MerkleScheme_> MerkleIPVerifierChannel<F> for SizeTrackingChannel<'_, F, MerkleScheme_>
 where
 	F: BinaryField + FixedSizeSerializeBytes,
@@ -174,5 +187,36 @@ where
 		let len = commitment.leaf_size << commitment.depth;
 		self.proof_size += len * F::BYTE_SIZE;
 		Ok(vec![F::ZERO; len])
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::Ghash128b as B128;
+	use binius_hash::StdHashSuite;
+
+	use super::*;
+	use crate::merkle_tree::BinaryMerkleTreeScheme;
+
+	#[test]
+	fn a_grind_is_charged_one_nonce_and_a_zero_bit_one_is_charged_nothing() {
+		// Invariant: this channel prices a protocol by running it, so what it charges for a grind
+		// has to be what the prover really writes. That is one `u64` nonce, whatever the
+		// difficulty, and nothing at all when the difficulty is zero.
+		//
+		// Fixture state: a channel over the shipped Merkle scheme, with nothing else received.
+		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
+		let mut channel = SizeTrackingChannel::<B128, _>::new(&scheme);
+		assert_eq!(channel.proof_size(), 0);
+
+		channel
+			.verify_grind(0)
+			.expect("a zero-bit grind cannot fail");
+		assert_eq!(channel.proof_size(), 0);
+
+		for bits in [1, 8, 32] {
+			channel.verify_grind(bits).expect("nothing here can fail");
+		}
+		assert_eq!(channel.proof_size(), 3 * size_of::<u64>());
 	}
 }

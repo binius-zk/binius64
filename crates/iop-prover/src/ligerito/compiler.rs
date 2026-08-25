@@ -12,7 +12,7 @@ use binius_iop::{
 	channel::OracleSpec,
 	ligerito::{LigeritoParams, compiler::LigeritoVerifierCompiler},
 	merkle_tree::MerkleTreeScheme,
-	soundness::SoundnessRegime,
+	soundness::{Grinding, SoundnessRegime},
 };
 use binius_math::ntt::AdditiveNTT;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
@@ -74,6 +74,8 @@ where
 	///
 	/// `None` means no ladder over this message reaches the security target.
 	///
+	/// `grinding` is what the ladder will pay per level; pass [`Grinding::NONE`] for none.
+	///
 	/// ## Preconditions
 	///
 	/// * `oracle_specs` holds exactly one spec, and that spec is not zero-knowledge.
@@ -86,6 +88,7 @@ where
 		l0_log_inv_rate: usize,
 		regime: SoundnessRegime,
 		security_bits: usize,
+		grinding: Grinding,
 	) -> Option<Self>
 	where
 		MerkleScheme: MerkleTreeScheme<F>,
@@ -96,6 +99,7 @@ where
 			l0_log_inv_rate,
 			regime,
 			security_bits,
+			grinding,
 		)?;
 		Some(Self::from_verifier_compiler(&verifier, ntt))
 	}

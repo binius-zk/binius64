@@ -11,7 +11,9 @@ use binius_ip::{
 
 use super::{LigeritoOracle, relation::QueuedRelation};
 use crate::{
-	channel::{Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn},
+	channel::{
+		Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn, grinding::GrindingVerifierChannel,
+	},
 	ligerito::{LigeritoParams, LigeritoVerifier},
 	merkle_channel::MerkleIPVerifierChannel,
 };
@@ -101,7 +103,13 @@ where
 	/// Nothing happens when no relation was queued, since a commitment alone asserts nothing.
 	///
 	/// Returns the Merkle channel, so a caller can still reach what it accumulated.
-	pub fn finish(self) -> Result<Channel, Error> {
+	///
+	/// The channel has to be able to check a proof of work, because the ladder may pay one.
+	/// A configuration that grinds nothing still asks for the capability, and never uses it.
+	pub fn finish(self) -> Result<Channel, Error>
+	where
+		Channel: GrindingVerifierChannel,
+	{
 		let Self {
 			mut channel,
 			oracle_specs,
@@ -145,7 +153,10 @@ where
 		params: &LigeritoParams,
 		commitment: Channel::Commitment,
 		queue: Vec<QueuedRelation<Channel::Elem>>,
-	) -> Result<(), Error> {
+	) -> Result<(), Error>
+	where
+		Channel: GrindingVerifierChannel,
+	{
 		// Every claim in the queue is already bound to the transcript, so a coefficient drawn
 		// here cannot be anticipated by any of them.
 		let lambda = channel.sample();

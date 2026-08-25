@@ -22,7 +22,10 @@ use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
-use crate::merkle_tree::{BinaryMerkleTreeScheme, Commitment, MerkleTreeScheme};
+use crate::{
+	channel::grinding::GrindingVerifierChannel,
+	merkle_tree::{BinaryMerkleTreeScheme, Commitment, MerkleTreeScheme},
+};
 
 /// An extension of [`WordIPVerifierChannel`] that can receive and open Merkle commitments.
 ///
@@ -172,6 +175,22 @@ where
 
 	fn pack_words(&mut self, words: &[Word]) -> Vec<F> {
 		WordIPVerifierChannel::<F>::pack_words(self.transcript.borrow_mut(), words)
+	}
+}
+
+impl<T, Challenger_, F, H: HashSuite> GrindingVerifierChannel
+	for VerifierMerkleTranscriptChannel<T, Challenger_, F, H>
+where
+	T: BorrowMut<VerifierTranscript<Challenger_>>,
+	Challenger_: Challenger,
+{
+	fn verify_grind(&mut self, bits: usize) -> Result<(), binius_transcript::Error> {
+		// Zero difficulty is not a grind, so the tape holds no nonce to read here.
+		if bits == 0 {
+			return Ok(());
+		}
+		self.transcript.borrow_mut().verify_grind(bits)?;
+		Ok(())
 	}
 }
 

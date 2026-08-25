@@ -15,7 +15,7 @@ use crate::{
 	channel::OracleSpec,
 	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
 	merkle_tree::MerkleTreeScheme,
-	soundness::SoundnessRegime,
+	soundness::{Grinding, SoundnessRegime},
 };
 
 /// A compiler that creates Ligerito verifier channels from a precomputed ladder.
@@ -77,6 +77,10 @@ where
 	///
 	/// `None` means no ladder over this message reaches the security target.
 	///
+	/// `grinding` is what the ladder will pay per level.
+	/// The search prices it rather than assuming it away.
+	/// Pass [`Grinding::NONE`] for a transcript with no proof of work in it.
+	///
 	/// ## Preconditions
 	///
 	/// * `oracle_specs` holds exactly one spec.
@@ -88,6 +92,7 @@ where
 		l0_log_inv_rate: usize,
 		regime: SoundnessRegime,
 		security_bits: usize,
+		grinding: Grinding,
 	) -> Option<Self>
 	where
 		MerkleScheme: MerkleTreeScheme<F>,
@@ -106,6 +111,7 @@ where
 			l0_log_inv_rate,
 			regime,
 			security_bits,
+			grinding,
 		)?;
 
 		Some(Self::new(oracle_specs, params))
@@ -218,6 +224,7 @@ mod tests {
 			1,
 			SoundnessRegime::UniqueDecoding,
 			96,
+			Grinding::NONE,
 		)
 		.expect("a 2^20 message at rate 1/2 admits a ladder at 96 bits");
 
@@ -239,6 +246,7 @@ mod tests {
 			1,
 			SoundnessRegime::UniqueDecoding,
 			96,
+			Grinding::NONE,
 		);
 		assert!(compiler.is_none());
 	}

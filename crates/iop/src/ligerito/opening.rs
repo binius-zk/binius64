@@ -42,6 +42,28 @@
 //! A prover therefore has to fix what it folded to without knowing which rows will be checked
 //! against it, which is the entire soundness argument for a cleartext residual.
 //!
+//! # Where the proof of work stands
+//!
+//! [`super::LigeritoParams::grinding`] fixes two difficulties, and each has one place it belongs.
+//!
+//! ```text
+//!     level i:  round message -> GRIND challenge_bits -> fold challenge     (log_lanes times)
+//!               next commitment -> GRIND query_bits -> query positions
+//! ```
+//!
+//! The fold challenge is the one the correlated-agreement term is about.
+//! Everything a prover could vary to re-roll it is this round's coefficients, already sent.
+//! So a grind standing here is the whole cost of asking for another challenge.
+//!
+//! The query positions are drawn once the level's commitment is fixed.
+//! A grind standing there taxes re-rolling the positions.
+//! That is what lets a target be reached with fewer rows opened.
+//!
+//! The two are not interchangeable.
+//! The first raises a ceiling no query count touches.
+//! The second only shortens the query phase.
+//! [`crate::soundness::Grinding`] charges them separately for that reason.
+//!
 //! # Why only level 0 gets the MLE-check shortcut
 //!
 //! An MLE-check is a sumcheck whose weight is known to be an equality indicator, which lets the
@@ -69,6 +91,7 @@ use binius_math::{
 
 use super::{InducedBasis, LigeritoParams, error::Error};
 use crate::{
+	channel::grinding::GrindingVerifierChannel,
 	fri::batch::{BrakedownOracle, ProxTestOracle},
 	merkle_channel::MerkleIPVerifierChannel,
 };
@@ -114,6 +137,9 @@ impl<'a, C: Clone> LigeritoVerifier<'a, C> {
 	/// Both are asserted through the channel rather than compared, so a channel that builds a
 	/// circuit records them as constraints.
 	///
+	/// The proof of work the parameters fix is checked at the two points named above.
+	/// A difficulty of zero costs the transcript nothing.
+	///
 	/// ## Preconditions
 	///
 	/// * `eval_point` has `params.log_msg_len()` coordinates, in low-to-high variable order.
@@ -125,10 +151,11 @@ impl<'a, C: Clone> LigeritoVerifier<'a, C> {
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
-		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
+		Channel: MerkleIPVerifierChannel<F, Commitment = C> + GrindingVerifierChannel,
 		Channel::Elem: From<F>,
 	{
 		let levels = self.params.levels();
+		let grinding = self.params.grinding();
 		assert_eq!(
 			eval_point.len(),
 			self.params.log_msg_len(),
@@ -160,6 +187,9 @@ impl<'a, C: Clone> LigeritoVerifier<'a, C> {
 					sumcheck::RoundProof(RoundCoeffs(channel.recv_many(PRODUCT_DEGREE)?))
 						.recover(sum)
 				};
+				// The round message is out, so this is the last moment before the challenge it
+				// decides. A prover asking for another one redoes the search from here.
+				channel.verify_grind(grinding.challenge_bits())?;
 				let challenge = channel.sample();
 				sum = coeffs.evaluate(&challenge);
 				// The MLE-check divides its round's equality factor out; a plain round does not.
@@ -185,6 +215,10 @@ impl<'a, C: Clone> LigeritoVerifier<'a, C> {
 			for (_, basis) in &mut glued {
 				*basis = basis.fold_high(&challenges);
 			}
+
+			// The commitment above is fixed, and no position exists yet. A prover that dislikes
+			// the positions it is about to see pays for the next draw here.
+			channel.verify_grind(grinding.query_bits())?;
 
 			let indices = (0..level.n_queries)
 				.map(|_| channel.sample_bits(level.log_codeword_len()))
