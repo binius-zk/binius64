@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! Ligerito implementation of the IOP prover channel.
+//! The prover channel: a queue of relations in, one ladder opening out.
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -8,31 +8,14 @@ use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, ligerito::LigeritoParams};
 use binius_ip_prover::{
 	channel::{IPProverChannel, WordIPProverChannel},
-	sumcheck::{
-		ProveSingleOutput, bivariate_product_evaluator::bivariate_product_prover, prove_single,
-	},
+	sumcheck::{ProveSingleOutput, bivariate_product_prover, prove_single},
 };
 use binius_math::{FieldBuffer, FieldSlice, FieldVec, ntt::AdditiveNTT};
 
+use super::{LigeritoOracle, relation::QueuedRelation};
 use crate::{
 	channel::IOPProverChannel, ligerito::LigeritoProver, merkle_channel::MerkleIPProverChannel,
 };
-
-/// A handle to the oracle a Ligerito channel opens.
-///
-/// The inner field is private, so the only way to hold one is to have committed the oracle.
-/// A ladder opens exactly one committed message, so the handle carries nothing else.
-#[derive(Debug, Clone, Copy)]
-pub struct LigeritoOracle(());
-
-/// A committed-oracle relation queued until the opening runs.
-struct QueuedRelation<P: PackedField, A: Allocator> {
-	/// The transparent multilinear the message is opened against.
-	/// It is backed by the caller's allocator.
-	transparent: FieldVec<P, A>,
-	/// The claimed inner product of the committed multilinear with the transparent one.
-	claim: P::Scalar,
-}
 
 /// A prover channel that opens its one committed oracle with a Ligerito ladder.
 ///
@@ -153,7 +136,57 @@ where
 
 		let prover = prover.expect("a relation can only be queued against a committed oracle");
 		let message = message.expect("the oracle was committed but never finalized");
-		prove_ligerito(&mut channel, &prover, message.as_view(), queue, &alloc);
+		Self::prove(&mut channel, &prover, message.as_view(), queue, &alloc);
+	}
+
+	/// Proves the queued relations against the committed ladder.
+	///
+	/// The two reductions the verifier runs, in the same order.
+	///
+	/// ```text
+	///     <pi, t> = s          the relations, batched into one
+	///       -> sumcheck        binds every variable at a sampled point r
+	///     pi(r) = alpha        the evaluation claim the ladder takes
+	///       -> ladder
+	/// ```
+	///
+	/// The sumcheck leaves both multilinears evaluated at `r`.
+	/// Only the committed one has to be sent, since the verifier builds the transparent itself.
+	fn prove(
+		channel: &mut Channel,
+		prover: &LigeritoProver<'_, P, Channel::Commitment, NTT>,
+		message: FieldSlice<'_, P>,
+		queue: Vec<QueuedRelation<P, A>>,
+		alloc: &A,
+	) {
+		// Every claim in the queue is already bound to the transcript, so a coefficient drawn
+		// here cannot be anticipated by any of them.
+		let lambda = channel.sample();
+		let QueuedRelation { transparent, claim } = QueuedRelation::batch(queue, lambda);
+
+		// The sumcheck consumes both of its multilinears, and the ladder still needs the message.
+		// So it runs over a copy.
+		let sumcheck_prover = bivariate_product_prover(
+			alloc,
+			[
+				FieldBuffer::from_view_in(alloc, message.as_view()),
+				transparent,
+			],
+			claim,
+		);
+		let ProveSingleOutput {
+			multilinear_evals,
+			mut challenges,
+		} = prove_single(sumcheck_prover, channel);
+
+		// The store holds the message first, so its evaluation is the one the ladder opens.
+		let alpha = multilinear_evals[0];
+		channel.send_one(alpha);
+
+		// Sumcheck rounds bind the highest variable first, so reversing gives variable order.
+		challenges.reverse();
+
+		prover.prove(message, &challenges, alpha, alloc, channel);
 	}
 }
 
@@ -170,92 +203,6 @@ where
 ///
 /// The sumcheck leaves both multilinears evaluated at `r`.
 /// Only the committed one has to be sent, since the verifier builds the transparent itself.
-fn prove_ligerito<F, P, NTT, Channel, A>(
-	channel: &mut Channel,
-	prover: &LigeritoProver<'_, P, Channel::Commitment, NTT>,
-	message: FieldSlice<'_, P>,
-	relations: Vec<QueuedRelation<P, A>>,
-	alloc: &A,
-) where
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-	NTT: AdditiveNTT<Field = F> + Sync,
-	Channel: MerkleIPProverChannel<F, Word = Word>,
-	A: Allocator,
-{
-	let QueuedRelation { transparent, claim } = batch_relations(channel, relations);
-
-	// The sumcheck consumes both of its multilinears, and the ladder still needs the message.
-	// So it runs over a copy.
-	let sumcheck_prover = bivariate_product_prover(
-		alloc,
-		[
-			FieldBuffer::from_view_in(alloc, message.as_view()),
-			transparent,
-		],
-		claim,
-	);
-	let ProveSingleOutput {
-		multilinear_evals,
-		mut challenges,
-	} = prove_single(sumcheck_prover, channel);
-
-	// The store holds the message first, so its evaluation is the one the ladder opens.
-	let alpha = multilinear_evals[0];
-	channel.send_one(alpha);
-
-	// Sumcheck rounds bind the highest variable first, so reversing gives variable order.
-	challenges.reverse();
-
-	prover.prove(message, &challenges, alpha, alloc, channel);
-}
-
-/// Folds every queued relation into one, against one transparent and one claim.
-///
-/// Relations `j = 0, 1, ...` are combined with the powers of a sampled coefficient `lambda`:
-///
-/// ```text
-///     T = sum_j lambda^j * t_j     the combined transparent
-///     S = sum_j lambda^j * s_j     the combined claim
-/// ```
-///
-/// Mirrors the verifier-side batching, which folds the same claims at the same coefficient.
-fn batch_relations<F, P, Channel, A>(
-	channel: &mut Channel,
-	relations: Vec<QueuedRelation<P, A>>,
-) -> QueuedRelation<P, A>
-where
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-	Channel: MerkleIPProverChannel<F>,
-	A: Allocator,
-{
-	let lambda = channel.sample();
-
-	let mut relations = relations.into_iter();
-	let mut batched = relations
-		.next()
-		.expect("precondition: the queue is non-empty");
-
-	// Powers of the coefficient scale the remaining transparents into the first, in place.
-	let mut coeff = lambda;
-	for relation in relations {
-		let scale = P::broadcast(coeff);
-		for (accum, addend) in batched
-			.transparent
-			.as_mut()
-			.iter_mut()
-			.zip(relation.transparent.as_ref())
-		{
-			*accum += scale * *addend;
-		}
-		batched.claim += coeff * relation.claim;
-		coeff *= lambda;
-	}
-
-	batched
-}
-
 impl<F, P, NTT, Channel, A> IPProverChannel<F> for LigeritoProverChannel<'_, F, P, NTT, Channel, A>
 where
 	F: BinaryField,

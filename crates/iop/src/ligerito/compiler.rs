@@ -26,9 +26,12 @@ use crate::{
 /// Ligerito commits no mask, so the oracle it opens is never zero-knowledge.
 #[derive(Debug, Clone)]
 pub struct LigeritoVerifierCompiler<F> {
+	/// The one oracle every channel this compiler makes will open.
 	oracle_specs: Vec<OracleSpec>,
+	/// The ladder each of those openings runs down.
 	params: LigeritoParams,
 	/// Pins the field the created channels open over, which the ladder itself does not name.
+	/// Ties the field to the compiler without storing a value of it.
 	_marker: PhantomData<F>,
 }
 

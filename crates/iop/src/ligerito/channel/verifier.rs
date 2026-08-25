@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! Ligerito implementation of the IOP verifier channel.
+//! The verifier channel: a queue of relations in, one ladder opening out.
 
 use binius_core::word::Word;
 use binius_field::BinaryField;
@@ -8,11 +8,11 @@ use binius_ip::{
 	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{self, SumcheckOutput},
 };
-use binius_math::univariate::evaluate_univariate;
 
-use super::{LigeritoParams, LigeritoVerifier};
+use super::{LigeritoOracle, relation::QueuedRelation};
 use crate::{
 	channel::{Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn},
+	ligerito::{LigeritoParams, LigeritoVerifier},
 	merkle_channel::MerkleIPVerifierChannel,
 };
 
@@ -22,21 +22,6 @@ use crate::{
 /// That is three coefficients.
 /// The constant one is recovered from the running claim, leaving two on the wire.
 const RELATION_DEGREE: usize = 2;
-
-/// A handle to the oracle a Ligerito channel opens.
-///
-/// The inner field is private, so the only way to hold one is to have received the commitment.
-/// A ladder opens exactly one committed message, so the handle carries nothing else.
-#[derive(Debug, Clone, Copy)]
-pub struct LigeritoOracle(());
-
-/// A committed-oracle relation queued until the opening runs.
-struct QueuedRelation<Elem> {
-	/// Evaluates the transparent multilinear at the point the relation sumcheck reduces to.
-	transparent: TransparentEvalFn<Elem>,
-	/// The claimed inner product of the committed multilinear with the transparent one.
-	claim: Elem,
-}
 
 /// A verifier channel that opens its one committed oracle with a Ligerito ladder.
 ///
@@ -134,9 +119,56 @@ where
 		}
 
 		let commitment = commitment.expect("a relation can only be queued against a commitment");
-		verify_ligerito(&mut channel, params, commitment, queue)?;
+		Self::verify(&mut channel, params, commitment, queue)?;
 
 		Ok(channel)
+	}
+
+	/// Verifies the queued relations against the committed ladder.
+	///
+	/// Two reductions run back to back.
+	/// A sumcheck turns the relation into an evaluation claim at a point neither party chose.
+	/// That is the only shape the ladder opens.
+	///
+	/// ```text
+	///     <pi, t> = s          the relations, batched into one
+	///       -> sumcheck        binds every variable at a sampled point r
+	///     pi(r) = alpha        the evaluation claim the ladder takes
+	///       -> ladder
+	/// ```
+	///
+	/// The sumcheck's reduced value is the product of both multilinears at `r`.
+	/// The prover states `pi(r)` and the verifier computes `t(r)` itself.
+	/// So the product pins the stated evaluation.
+	fn verify(
+		channel: &mut Channel,
+		params: &LigeritoParams,
+		commitment: Channel::Commitment,
+		queue: Vec<QueuedRelation<Channel::Elem>>,
+	) -> Result<(), Error> {
+		// Every claim in the queue is already bound to the transcript, so a coefficient drawn
+		// here cannot be anticipated by any of them.
+		let lambda = channel.sample();
+		let QueuedRelation { transparent, claim } = QueuedRelation::batch(queue, lambda);
+
+		// Bind every variable of the committed multilinear at a point the prover cannot predict.
+		let SumcheckOutput { eval, challenges } =
+			sumcheck::verify::<F, _>(params.log_msg_len(), RELATION_DEGREE, claim, channel)?;
+
+		// The evaluation of the committed multilinear at that point, which the prover has to state.
+		let alpha = channel.recv_one()?;
+
+		// Sumcheck rounds bind the highest variable first, so reversing gives variable order.
+		let mut point = challenges;
+		point.reverse();
+
+		// The reduced value is the product of the two multilinears, and only one factor is
+		// committed.
+		channel.assert_zero(eval - alpha.clone() * transparent(&point))?;
+
+		LigeritoVerifier::new(params, commitment).verify(&point, alpha, channel)?;
+
+		Ok(())
 	}
 }
 
@@ -156,92 +188,6 @@ where
 /// The sumcheck's reduced value is the product of both multilinears at `r`.
 /// The prover states `pi(r)` and the verifier computes `t(r)` itself.
 /// So the product pins the stated evaluation.
-fn verify_ligerito<F, Channel>(
-	channel: &mut Channel,
-	params: &LigeritoParams,
-	commitment: Channel::Commitment,
-	relations: Vec<QueuedRelation<Channel::Elem>>,
-) -> Result<(), Error>
-where
-	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
-{
-	let QueuedRelation { transparent, claim } = batch_relations(channel, relations);
-
-	// Bind every variable of the committed multilinear at a point the prover cannot predict.
-	let SumcheckOutput { eval, challenges } =
-		sumcheck::verify::<F, _>(params.log_msg_len(), RELATION_DEGREE, claim, channel)?;
-
-	// The evaluation of the committed multilinear at that point, which the prover has to state.
-	let alpha = channel.recv_one()?;
-
-	// Sumcheck rounds bind the highest variable first, so reversing gives variable order.
-	let mut point = challenges;
-	point.reverse();
-
-	// The reduced value is the product of the two multilinears, and only one factor is committed.
-	channel.assert_zero(eval - alpha.clone() * transparent(&point))?;
-
-	LigeritoVerifier::new(params, commitment).verify(&point, alpha, channel)?;
-
-	Ok(())
-}
-
-/// Folds every queued relation into one, against one transparent and one claim.
-///
-/// Relations `j = 0, 1, ...` are combined with the powers of a sampled coefficient `lambda`:
-///
-/// ```text
-///     T = sum_j lambda^j * t_j     the combined transparent
-///     S = sum_j lambda^j * s_j     the combined claim
-/// ```
-///
-/// An inner product is linear in the transparent.
-/// So `<pi, T> = S` holds exactly when every `<pi, t_j> = s_j` does.
-/// The exception has probability at most `(k - 1) / |F|` over `lambda`.
-/// The coefficient is drawn once every claim it combines is already bound to the transcript.
-/// So no claim can be chosen as a function of it.
-///
-/// Mirrors the prover-side batching in `binius_iop_prover::ligerito::channel`.
-fn batch_relations<F, Channel>(
-	channel: &mut Channel,
-	mut relations: Vec<QueuedRelation<Channel::Elem>>,
-) -> QueuedRelation<Channel::Elem>
-where
-	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
-{
-	let lambda = channel.sample();
-
-	// A single relation folds nothing.
-	// Evaluating one transparent directly is cheaper than a closure that wraps it.
-	if relations.len() <= 1 {
-		return relations
-			.pop()
-			.expect("precondition: the queue is non-empty");
-	}
-
-	// Split the queue so the combined claim can be a univariate evaluation at `lambda`.
-	let (transparents, claims): (Vec<_>, Vec<_>) = relations
-		.into_iter()
-		.map(|relation| (relation.transparent, relation.claim))
-		.unzip();
-	let claim = evaluate_univariate(&claims, &lambda);
-
-	QueuedRelation {
-		transparent: Box::new(move |point: &[Channel::Elem]| {
-			// The combined transparent is only ever read at one point.
-			// So it stays a closure rather than a materialized multilinear.
-			let evals = transparents
-				.iter()
-				.map(|transparent| transparent(point))
-				.collect::<Vec<_>>();
-			evaluate_univariate(&evals, &lambda)
-		}),
-		claim,
-	}
-}
-
 impl<F, Channel> IPVerifierChannel<F> for LigeritoVerifierChannel<'_, F, Channel>
 where
 	F: BinaryField,

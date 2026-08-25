@@ -41,9 +41,13 @@ where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
 {
+	/// The transform every level encodes over, sized for the ladder's longest codeword.
 	ntt: NTT,
+	/// The one oracle every channel this compiler makes will commit.
 	oracle_specs: Vec<OracleSpec>,
+	/// The ladder each of those openings runs down.
 	params: LigeritoParams,
+	/// Ties the packed field to the compiler without storing a value of it.
 	_marker: PhantomData<P>,
 }
 
