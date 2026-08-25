@@ -334,8 +334,7 @@ mod tests {
 							log_inv_rate,
 							n_queries,
 						};
-						// Queries are drawn without replacement, so a level opening more rows than
-						// its codeword has positions is not a protocol.
+						// A level never opens more rows than its codeword has positions.
 						if !level.is_feasible() {
 							continue;
 						}

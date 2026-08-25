@@ -128,7 +128,7 @@ where
 /// - **Residual**: its commitment, then `2^log_residual_dim` elements in the clear.
 ///
 /// Exact is meant literally.
-/// The `ligerito_proof_size` test proves real openings and compares this byte for byte.
+/// `the_estimate_equals_the_proof_the_prover_writes` proves real openings and compares this.
 pub(super) fn proof_size<F, VCS>(params: &LigeritoParams, vcs: &VCS) -> usize
 where
 	F: BinaryField,
