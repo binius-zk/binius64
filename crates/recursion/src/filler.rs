@@ -9,11 +9,14 @@ use binius_field::Ghash128b as B128;
 use binius_frontend::WitnessFiller;
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
+	channel::grinding::GrindingVerifierChannel,
 	merkle_channel::{self, MerkleIPVerifierChannel, TranscriptMerkleCommitment},
 	merkle_tree::{BinaryMerkleTreeScheme, MerkleTreeScheme},
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
-use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
+use binius_transcript::{
+	Error as TranscriptError, MAX_GRINDING_BITS, VerifierTranscript, fiat_shamir::Challenger,
+};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
@@ -170,6 +173,35 @@ where
 	// The build pairs up wires it already has, allocating none, so there is nothing to fill.
 	fn pack_words(&mut self, words: &[Word]) -> Vec<B128> {
 		self.transcript.borrow_mut().pack_words(words)
+	}
+}
+
+impl<T, Challenger_, H> GrindingVerifierChannel for WitnessFillerChannel<'_, '_, T, Challenger_, H>
+where
+	T: BorrowMut<VerifierTranscript<Challenger_>>,
+	Challenger_: Challenger,
+	H: HashSuite,
+{
+	/// Reads the nonce the prover ground and fills the wire the build allocated for it.
+	///
+	/// The draw it decides is deliberately not checked here.
+	/// The build emitted a ZERO constraint over that draw.
+	/// So a nonce that did no work leaves the circuit unsatisfied.
+	/// It is not an error out of a witness generator.
+	fn verify_grind(&mut self, bits: usize) -> Result<(), TranscriptError> {
+		// Zero difficulty is not a grind, so the tape holds no nonce to read here.
+		if bits == 0 {
+			return Ok(());
+		}
+		assert!(bits <= MAX_GRINDING_BITS); // precondition
+
+		// Read as a message, so the native challenger observes the bytes the prover fed it.
+		let nonce: u64 = self.transcript.borrow_mut().message().read()?;
+		self.fill_word("grind_nonce", Word(nonce));
+
+		// The draw still has to happen, since it advances the native Fiat-Shamir state.
+		WordIPVerifierChannel::<B128>::sample_bits(self.transcript.borrow_mut(), bits);
+		Ok(())
 	}
 }
 
