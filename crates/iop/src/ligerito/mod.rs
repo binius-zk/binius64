@@ -21,6 +21,7 @@
 //! - [`LigeritoVerifier`], the ladder of committed levels down to a cleartext residual;
 //! - [`channel::LigeritoVerifierChannel`], the ladder behind the IOP verifier channel trait;
 //! - [`LigeritoParams::proof_size`], the byte-exact estimate;
+//! - [`LigeritoParams::verifier_cost`], what checking that proof costs, level by level;
 //! - [`LigeritoParams::optimal_ladder`], the search that minimizes it subject to a security target.
 //!
 //! The soundness regimes and the error terms live in [`crate::soundness`], because they describe
@@ -36,9 +37,11 @@ mod error;
 mod induced_basis;
 mod opening;
 mod size_estimation;
+mod verifier_cost;
 
 pub use common::*;
 pub use error::{Error, VerificationError};
 pub use induced_basis::InducedBasis;
 pub use opening::LigeritoVerifier;
 pub use size_estimation::{MAX_LOG_INV_RATE, MAX_LOG_LANES};
+pub use verifier_cost::VerifierCost;
