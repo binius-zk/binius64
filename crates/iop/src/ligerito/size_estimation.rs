@@ -4,7 +4,10 @@ use std::marker::PhantomData;
 
 use binius_field::BinaryField;
 
-use super::common::{LigeritoLevel, LigeritoParams};
+use super::{
+	common::{LigeritoLevel, LigeritoParams},
+	opening,
+};
 use crate::{merkle_tree::MerkleTreeScheme, soundness::SoundnessRegime};
 
 /// The largest `log_lanes` the ladder search considers.
@@ -48,7 +51,35 @@ impl ByteSizes {
 	}
 }
 
-/// The proof bytes one committed level contributes.
+/// Stands for any level below the root, where the ladder search tabulates its subproblems.
+///
+/// Only level 0 versus not-level-0 changes a price, so every deeper level shares one index.
+const DEEPER_LEVEL: usize = 1;
+
+/// Round-polynomial degree of a fold round past level 0.
+///
+/// The weight there is `eq_remaining + alpha * w`, where `w` is a query-induced basis.
+/// A product of two general multilinears is degree 2 in the bound variable.
+const DEEP_ROUND_DEGREE: usize = 2;
+
+/// Field elements one fold round's message costs at `level_index`.
+///
+/// A degree-`d` round message is `d` elements, whichever protocol sends it.
+/// Sumcheck truncates the high coefficient and recovers it from the claimed sum.
+/// An MLE-check truncates the low one and recovers it from the claimed evaluation.
+///
+/// Level 0 folds under the equality indicator `eq(z)` alone, which is what makes it an MLE-check.
+/// Its composite is then the multilinear itself, of degree [`opening::DEGREE`].
+/// Gluing a query-induced basis into the weight destroys that structure at every deeper level.
+/// So those pay [`DEEP_ROUND_DEGREE`] instead, and the difference is one element per fold round.
+const fn round_degree(level_index: usize) -> usize {
+	match level_index {
+		0 => opening::DEGREE,
+		_ => DEEP_ROUND_DEGREE,
+	}
+}
+
+/// The proof bytes one committed level contributes, as the `level_index`-th of its ladder.
 ///
 /// Per formula (19) of [NA25], a level sends:
 ///
@@ -56,12 +87,10 @@ impl ByteSizes {
 ///     root        one digest
 ///     rows        n_queries * 2^log_lanes field elements
 ///     branches    one Merkle multi-proof over 2^(log_msg_cols + log_inv_rate) leaves
-///     sumcheck    2 field elements per fold round, and there are log_lanes of them
+///     sumcheck    round_degree(level_index) field elements per fold round, log_lanes of them
 /// ```
 ///
-/// A round message is `(u_0, u_2)` only.
-/// The degree-2 round polynomial's middle coefficient is `u_1 = T_r + u_2` in characteristic 2.
-/// The verifier recovers it, so it is never sent.
+/// The index is carried only for that last line; see [`round_degree`] for why it matters.
 ///
 /// The Merkle tree is indexed by codeword position, one leaf per position across all lanes.
 /// So it is `log_lanes` levels shorter than the level's element count.
@@ -69,7 +98,12 @@ impl ByteSizes {
 /// The search would then minimize a proof size no prover produces.
 ///
 /// [NA25]: <https://eprint.iacr.org/2025/1187>
-fn level_size<F, VCS>(level: &LigeritoLevel, vcs: &VCS, sizes: &ByteSizes) -> usize
+fn level_size<F, VCS>(
+	level: &LigeritoLevel,
+	level_index: usize,
+	vcs: &VCS,
+	sizes: &ByteSizes,
+) -> usize
 where
 	F: BinaryField,
 	VCS: MerkleTreeScheme<F>,
@@ -79,7 +113,7 @@ where
 	let merkle_size = vcs.proof_size(1 << log_n_leaves, level.n_queries, layer_depth);
 
 	let rows_size = level.n_queries * (1 << level.log_lanes) * sizes.value;
-	let sumcheck_size = 2 * level.log_lanes * sizes.value;
+	let sumcheck_size = round_degree(level_index) * level.log_lanes * sizes.value;
 
 	sizes.digest + rows_size + merkle_size + sumcheck_size
 }
@@ -90,8 +124,11 @@ where
 ///
 /// - **Message channel**: one Merkle root per committed level (digests observed by Fiat-Shamir).
 /// - **Decommitment channel**: per level, the opened rows and one Merkle multi-proof.
-/// - **Sumcheck transcript**: two field elements per fold round, over `sum_i log_lanes_i` rounds.
-/// - **Residual**: `2^log_residual_dim` field elements of the last fold, sent in the clear.
+/// - **Sumcheck transcript**: [`round_degree`] elements per fold round, which level 0 discounts.
+/// - **Residual**: its commitment, then `2^log_residual_dim` elements in the clear.
+///
+/// Exact is meant literally.
+/// `the_estimate_equals_the_proof_the_prover_writes` proves real openings and compares this.
 pub(super) fn proof_size<F, VCS>(params: &LigeritoParams, vcs: &VCS) -> usize
 where
 	F: BinaryField,
@@ -102,11 +139,10 @@ where
 	let levels_size = params
 		.levels()
 		.iter()
-		.map(|level| level_size(level, vcs, &sizes))
+		.enumerate()
+		.map(|(level_index, level)| level_size(level, level_index, vcs, &sizes))
 		.sum::<usize>();
-	let residual_size = (1 << params.log_residual_dim()) * sizes.value;
-
-	levels_size + residual_size
+	levels_size + residual_size(params.log_residual_dim(), &sizes)
 }
 
 /// One entry of the ladder search: the best continuation from a subproblem, and its cost.
@@ -120,6 +156,15 @@ struct Decision {
 	log_inv_rate: usize,
 	/// Whether a further committed level follows, rather than the residual terminating here.
 	recurse: bool,
+}
+
+/// Bytes the terminating residual costs.
+///
+/// It is committed before any query position is sampled.
+/// So it costs a digest on top of its elements.
+/// The reported size and the search's objective both price it here, so they cannot disagree.
+const fn residual_size(log_residual_dim: usize, sizes: &ByteSizes) -> usize {
+	sizes.digest + (1 << log_residual_dim) * sizes.value
 }
 
 /// Everything the ladder search needs that does not vary between subproblems.
@@ -165,6 +210,9 @@ where
 	/// `min_log_inv_rate ..= max_log_inv_rate` is the range of rates this level may commit at.
 	/// Level 0 gets a pinned singleton, and deeper levels get `previous + 1 ..= MAX_LOG_INV_RATE`.
 	///
+	/// `level_index` prices this level's fold rounds and nothing else.
+	/// A subproblem is always solved as a deeper level, since only the root call is level 0.
+	///
 	/// `best` holds the already-solved subproblems, indexed by `[log_total][rate_floor]`.
 	/// Every subproblem read here has a smaller `log_total`, since a level folds at least one axis.
 	///
@@ -175,6 +223,7 @@ where
 		log_total: usize,
 		min_log_inv_rate: usize,
 		max_log_inv_rate: usize,
+		level_index: usize,
 	) -> Option<Decision> {
 		let mut chosen: Option<Decision> = None;
 		let mut consider = |candidate: Decision| {
@@ -195,11 +244,11 @@ where
 				if !self.reaches_target(&level) {
 					continue;
 				}
-				let here = level_size(&level, self.merkle_scheme, &self.sizes);
+				let here = level_size(&level, level_index, self.merkle_scheme, &self.sizes);
 
 				// Terminate: fold this level and send the remaining columns in the clear.
 				consider(Decision {
-					cost: here + (1 << log_msg_cols) * self.sizes.value,
+					cost: here + residual_size(log_msg_cols, &self.sizes),
 					log_lanes,
 					log_inv_rate,
 					recurse: false,
@@ -311,13 +360,14 @@ where
 	let mut best = vec![vec![None::<Decision>; MAX_LOG_INV_RATE + 2]; log_n + 1];
 	for log_total in 0..=log_n {
 		for rate_floor in 1..=MAX_LOG_INV_RATE {
+			// Every tabulated subproblem is reached by recursing, so it is never level 0.
 			best[log_total][rate_floor] =
-				search.choose_level(&best, log_total, rate_floor, MAX_LOG_INV_RATE);
+				search.choose_level(&best, log_total, rate_floor, MAX_LOG_INV_RATE, DEEPER_LEVEL);
 		}
 	}
 
 	// Level 0 is the same subproblem with its rate pinned to a single value.
-	let root = search.choose_level(&best, log_n, l0_log_inv_rate, l0_log_inv_rate)?;
+	let root = search.choose_level(&best, log_n, l0_log_inv_rate, l0_log_inv_rate, 0)?;
 
 	let estimated_size = root.cost;
 
@@ -427,11 +477,11 @@ mod tests {
 
 		// Level 0's lane count comes out at 3 or 4, matching the arity `fri`'s own optimizer picks.
 		let expected = [
-			(17, 161_504),
-			(20, 236_960),
-			(24, 348_288),
-			(28, 472_960),
-			(30, 542_816),
+			(17, 161_488),
+			(20, 236_944),
+			(24, 348_272),
+			(28, 472_928),
+			(30, 542_800),
 		];
 		for (log_n, bytes) in expected {
 			let (_, size) = LigeritoParams::optimal_ladder::<B128, _>(
@@ -535,12 +585,50 @@ mod tests {
 		let digest_size = size_of::<<TestMerkleScheme as MerkleTreeScheme<B128>>::Digest>();
 		let queries = UDR.n_queries(SECURITY_BITS, 1);
 		let layer_depth = merkle_scheme.optimal_verify_layer(queries, 10);
+		// The codeword root, the opened rows, their multi-proof, one round polynomial per folded
+		// lane, then the residual: its own commitment, and its elements in the clear.
 		let expected = digest_size
 			+ queries * 8 * value_size
 			+ merkle_scheme.proof_size(1 << 10, queries, layer_depth)
-			+ 2 * 3 * value_size
+			+ round_degree(0) * 3 * value_size
+			+ digest_size
 			+ (1 << 9) * value_size;
 		assert_eq!(params.proof_size(&merkle_scheme), expected);
+	}
+
+	// Level 0 folds under an equality indicator and the levels below it do not, so the two are
+	// charged different round messages. Two ladders identical but for where a level sits pin the
+	// gap, since nothing else in `level_size` reads the index.
+	#[test]
+	fn a_deeper_level_is_charged_a_wider_round_message() {
+		let merkle_scheme = test_merkle_scheme();
+		let value_size = size_of::<B128>();
+
+		// The same shape, once as the only level and once as the second of two.
+		let deep = LigeritoLevel::new(10, 3, 2, UDR, SECURITY_BITS);
+		let alone = LigeritoParams::new(vec![deep], UDR, SECURITY_BITS);
+		let below = LigeritoParams::new(
+			vec![LigeritoLevel::new(13, 3, 1, UDR, SECURITY_BITS), deep],
+			UDR,
+			SECURITY_BITS,
+		);
+
+		// Level 0 of the two-level ladder, priced on its own, plus the extra element per fold
+		// round the deeper copy pays.
+		let level_zero = LigeritoParams::new(
+			vec![LigeritoLevel::new(13, 3, 1, UDR, SECURITY_BITS)],
+			UDR,
+			SECURITY_BITS,
+		);
+		let level_zero_size = level_zero.proof_size(&merkle_scheme)
+			- size_of::<<TestMerkleScheme as MerkleTreeScheme<B128>>::Digest>()
+			- (1 << 13) * value_size;
+		let widening = (round_degree(DEEPER_LEVEL) - round_degree(0)) * deep.log_lanes * value_size;
+
+		assert_eq!(
+			below.proof_size(&merkle_scheme),
+			level_zero_size + alone.proof_size(&merkle_scheme) + widening
+		);
 	}
 
 	#[test]

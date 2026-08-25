@@ -170,15 +170,17 @@ mod tests {
 	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
-		ligerito::{Error, LevelVerifier},
+		ligerito::{Error, LevelVerifier, LigeritoParams},
 		merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
+		merkle_tree::BinaryMerkleTreeScheme,
+		soundness::SoundnessRegime,
 	};
 	use binius_math::{
 		multilinear::Multilinear,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::random_field_buffer,
 	};
-	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
@@ -192,12 +194,15 @@ mod tests {
 	/// here: every value it sends in the clear is consistent with `opened`, while the codeword the
 	/// queries land in encodes `committed`.
 	/// An honest run passes the same buffer twice and a zero offset.
+	///
+	/// Returns the finished proof's length in bytes, so a byte count is only ever taken from a
+	/// transcript that convinced the verifier.
 	fn run(
 		level: LigeritoLevel,
 		committed: &FieldBuffer<B128>,
 		opened: &FieldBuffer<B128>,
 		claim_offset: B128,
-	) -> Result<(), Error> {
+	) -> Result<usize, Error> {
 		let mut rng = StdRng::seed_from_u64(level.log_msg_len() as u64);
 		let eval_point = (0..level.log_msg_len())
 			.map(|_| B128::random(&mut rng))
@@ -221,14 +226,23 @@ mod tests {
 		);
 		prover_channel.into_transcript();
 
-		let mut verifier_transcript = prover_transcript.into_verifier();
+		let proof = prover_transcript.finalize();
+		let proof_size = proof.len();
+
+		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		let mut verifier_channel =
 			VerifierMerkleTranscriptChannel::<_, StdChallenger, B128, StdHashSuite>::new(
 				&mut verifier_transcript,
 			);
 		let commitment = verifier_channel
 			.recv_merkle_commitment(1 << level.log_lanes, level.log_codeword_len())?;
-		LevelVerifier::new(level, commitment).verify(&eval_point, eval_claim, &mut verifier_channel)
+		LevelVerifier::new(level, commitment).verify(
+			&eval_point,
+			eval_claim,
+			&mut verifier_channel,
+		)?;
+
+		Ok(proof_size)
 	}
 
 	/// A random message of the level's shape.
@@ -297,5 +311,47 @@ mod tests {
 		let err =
 			run(level, &msg, &msg, B128::ONE).expect_err("the evaluation claim is off by one");
 		assert!(matches!(err, Error::IPChannel(binius_ip::channel::Error::InvalidAssert)));
+	}
+	/// The proof-size estimate must equal the transcript, not merely approximate it.
+	///
+	/// [`LigeritoParams::proof_size`] calls itself exact, and the ladder search minimizes it.
+	/// An estimate that undercounts therefore picks the shape of a proof nobody produces.
+	///
+	/// The sweep moves all four dimensions of a level independently.
+	/// `n_queries` is swept because it alone picks the Merkle layer the prover decommits at, and
+	/// the estimate has to pick the same one.
+	#[test]
+	fn the_estimate_equals_the_proof_the_prover_writes() {
+		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
+
+		for log_msg_cols in 2..6 {
+			for log_lanes in 0..4 {
+				for log_inv_rate in 1..3 {
+					for n_queries in [1, 3, 5, 12, 31] {
+						let level = LigeritoLevel {
+							log_msg_cols,
+							log_lanes,
+							log_inv_rate,
+							n_queries,
+						};
+						// A level never opens more rows than its codeword has positions.
+						if !level.is_feasible() {
+							continue;
+						}
+
+						// The query count is pinned on the level, so the security target only has
+						// to be one the constructor's feasibility check accepts.
+						let params =
+							LigeritoParams::new(vec![level], SoundnessRegime::UniqueDecoding, 8);
+						let msg = message(level, 0);
+						let written = run(level, &msg, &msg, B128::ZERO).unwrap_or_else(|err| {
+							panic!("{level:?}: honest proof rejected: {err}")
+						});
+
+						assert_eq!(params.proof_size(&scheme), written, "{level:?}");
+					}
+				}
+			}
+		}
 	}
 }

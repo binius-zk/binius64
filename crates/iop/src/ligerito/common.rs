@@ -61,8 +61,12 @@ impl LigeritoLevel {
 
 	/// Whether this level has at least as many codeword positions as queries to open.
 	///
-	/// Queries are sampled without replacement.
-	/// A level with fewer positions than queries is not a protocol at all.
+	/// Positions are sampled independently, so the same one can come up twice.
+	/// The query count is derived under exactly that model: `n_queries` solves `(1 - delta)^t`.
+	/// Nothing in it assumes the draws are distinct.
+	///
+	/// So a level opening more rows than its codeword has is not unsound, merely incoherent.
+	/// The ladder search declines to price such a shape.
 	pub const fn is_feasible(&self) -> bool {
 		self.n_queries <= pow2_saturating(self.log_codeword_len())
 	}
@@ -140,8 +144,7 @@ impl LigeritoParams {
 		}
 
 		for (i, level) in levels.iter().enumerate() {
-			// Invariant: queries are sampled without replacement, so there must be at least as
-			// many codeword positions as queries.
+			// Invariant: a level never opens more rows than its codeword has positions.
 			assert!(
 				level.is_feasible(),
 				"precondition: level {i} is infeasible, it opens {} queries against a codeword of \
@@ -232,7 +235,8 @@ impl LigeritoParams {
 	/// - the opened rows, `n_queries * 2^log_lanes` field elements;
 	/// - one Merkle multi-proof over the level's codeword positions.
 	///
-	/// Plus the sumcheck transcript, two field elements per fold round, and the cleartext residual.
+	/// Plus the sumcheck transcript: one element per fold round of level 0, two per round below it.
+	/// Plus the residual: its commitment, then its elements in the clear.
 	pub fn proof_size<F, VCS>(&self, vcs: &VCS) -> usize
 	where
 		F: BinaryField,
