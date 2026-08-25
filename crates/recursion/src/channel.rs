@@ -10,10 +10,12 @@ use binius_field::{Field, FieldOps, Ghash128b as B128};
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_hash::StdHashSuite;
 use binius_iop::{
+	channel::grinding::GrindingVerifierChannel,
 	merkle_channel::{self, MerkleIPVerifierChannel},
 	merkle_tree::{BinaryMerkleTreeScheme, MerkleTreeScheme},
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel, select_word, subset_sum_word};
+use binius_transcript::{Error as TranscriptError, MAX_GRINDING_BITS};
 
 use crate::{
 	challenger::Sha256Challenger,
@@ -71,6 +73,8 @@ pub struct Binius64BuilderChannel {
 	n_merkle_checks: usize,
 	/// Words bound to public inputs so far, so each binding gets a distinct name.
 	n_public: usize,
+	/// Proofs of work checked so far, so each gets a distinct name.
+	n_grinds: usize,
 }
 
 impl Binius64BuilderChannel {
@@ -86,6 +90,7 @@ impl Binius64BuilderChannel {
 			scheme: BinaryMerkleTreeScheme::new(),
 			n_merkle_checks: 0,
 			n_public: 0,
+			n_grinds: 0,
 		}
 	}
 
@@ -323,6 +328,38 @@ impl WordIPVerifierChannel<B128> for Binius64BuilderChannel {
 	}
 }
 
+impl GrindingVerifierChannel for Binius64BuilderChannel {
+	/// Records a proof of work as a nonce wire and one assertion over the draw it decides.
+	///
+	/// The nonce is proof data, so it enters as an input wire the replay fills.
+	/// Absorbing it is what makes the draw below depend on it.
+	///
+	/// ```text
+	///     nonce wire -> challenger -> the bits it decides -> asserted zero
+	/// ```
+	fn verify_grind(&mut self, bits: usize) -> Result<(), TranscriptError> {
+		// Zero difficulty is not a grind, so nothing is read and nothing is checked.
+		if bits == 0 {
+			return Ok(());
+		}
+		assert!(bits <= MAX_GRINDING_BITS); // precondition
+
+		// The nonce goes out as one little-endian `u64` message, which is one absorbed word.
+		let nonce = self.shared.input_wire("grind_nonce");
+		self.challenger.observe_words(&[nonce]);
+
+		// The gadget masks the draw to `bits` with a real gate.
+		// So asserting the masked wire is zero is the whole proof-of-work check.
+		let sampled = self.challenger.sample_bits(bits);
+		let n = self.n_grinds;
+		self.n_grinds += 1;
+		self.shared
+			.builder()
+			.assert_zero(format!("grind[{n}]"), sampled);
+		Ok(())
+	}
+}
+
 impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 	type Commitment = Commitment;
 
@@ -449,7 +486,7 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 #[cfg(test)]
 mod tests {
 	use binius_transcript::{
-		Buf,
+		Buf, ProverTranscript,
 		fiat_shamir::{Challenger, HasherChallenger, sample_bits_reader},
 	};
 	use sha2::Sha256;
@@ -577,5 +614,84 @@ mod tests {
 			w[input.wire] = Word::ZERO;
 		}
 		recorded.circuit.populate_wire_witness(&mut w).unwrap();
+	}
+
+	/// A grind moves the Fiat-Shamir state exactly as far as the native one does.
+	///
+	/// The nonce is absorbed, and the requested bits are then sampled.
+	/// A channel that skipped either would hand the next challenge different bytes.
+	/// Pinning that challenge is what catches it.
+	#[test]
+	fn a_challenge_after_a_grind_matches_the_native_challenger() {
+		// Eight bits is a search of about 256 trials, which is instant and still a real one.
+		const BITS: usize = 8;
+
+		// The native round trip: the prover searches, the verifier checks, then both draw.
+		let mut prover = ProverTranscript::new(HasherChallenger::<Sha256>::default());
+		let nonce = prover.grind(BITS);
+		let mut native = prover.into_verifier();
+		native
+			.verify_grind(BITS)
+			.expect("the nonce the search returned meets its own difficulty");
+		let want = IPVerifierChannel::<B128>::sample(&mut native);
+
+		// The same two steps over the builder, where the nonce is a wire rather than a value.
+		let mut channel = Binius64BuilderChannel::new();
+		GrindingVerifierChannel::verify_grind(&mut channel, BITS)
+			.expect("recording a grind cannot fail");
+		let challenge = IPVerifierChannel::<B128>::sample(&mut channel);
+
+		// The challenge is pinned to a public wire carrying the native value.
+		// A divergence then fails witness population rather than a Rust comparison.
+		let claimed = {
+			let builder = channel.shared.builder();
+			let (lo, hi) = challenge.to_wires(builder);
+			let claimed = [builder.add_inout(), builder.add_inout()];
+			builder.assert_eq_v("challenge", [lo, hi], claimed);
+			claimed
+		};
+
+		drop(challenge);
+		let recorded = channel.build();
+
+		// The nonce is the one thing a replay supplies here.
+		let inputs = recorded
+			.inputs
+			.iter()
+			.map(|input| input.kind)
+			.collect::<Vec<_>>();
+		assert_eq!(inputs, ["grind_nonce"]);
+
+		let fill = |nonce: u64| {
+			let mut w = recorded.circuit.new_witness_filler();
+			w[recorded.inputs[0].wire] = Word(nonce);
+			for (wire, word) in claimed.iter().zip(element_words(u128::from(want))) {
+				w[*wire] = Word(word);
+			}
+			recorded.circuit.populate_wire_witness(&mut w)
+		};
+
+		fill(nonce).expect("the ground nonce must satisfy the assertion and reach the challenge");
+		// One away from the landing nonce lands on zero once in 2^BITS, so this is the check.
+		fill(nonce + 1)
+			.expect_err("a nonce that met no difficulty must leave the circuit unsatisfied");
+	}
+
+	/// Zero difficulty is not a grind, so it touches neither the tape nor the challenger.
+	#[test]
+	fn a_zero_difficulty_grind_records_nothing() {
+		let mut plain = Binius64BuilderChannel::new();
+		let mut ground = Binius64BuilderChannel::new();
+		GrindingVerifierChannel::verify_grind(&mut ground, 0).expect("zero difficulty cannot fail");
+
+		// Two channels that have done the same amount of nothing must draw the same challenge.
+		let (plain_lo, plain_hi) =
+			IPVerifierChannel::<B128>::sample(&mut plain).to_wires(plain.shared.builder());
+		let (ground_lo, ground_hi) =
+			IPVerifierChannel::<B128>::sample(&mut ground).to_wires(ground.shared.builder());
+		assert_eq!((plain_lo, plain_hi), (ground_lo, ground_hi));
+
+		// And no wire was allocated for a nonce that was never read.
+		assert!(ground.build().inputs.is_empty());
 	}
 }

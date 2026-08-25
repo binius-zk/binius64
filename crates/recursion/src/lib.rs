@@ -30,6 +30,7 @@
 //! - the two field gadgets that used to be bare hints
 //! - the Merkle commitments, by [`merkle`]
 //! - the Fiat-Shamir state, by [`challenger`]
+//! - the proof of work, whose nonce is absorbed and whose draw is asserted zero
 //!
 //! An opened leaf is hashed and climbed to a decommitted layer the root fixes.
 //! A committed vector has its tree rebuilt over it.
