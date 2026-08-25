@@ -80,11 +80,16 @@ impl SignBenchConfig {
 ///
 /// Read from the environment so one benchmark binary measures either scheme without a rebuild.
 /// That is what makes the two runs comparable, on one machine and one circuit.
-/// An unrecognized value falls back to the default scheme.
-#[allow(dead_code)]
+///
+/// ## Panics
+///
+/// Panics when `PCS` is set to something no scheme answers to.
+/// Falling back to the default there would report one scheme's numbers under another's name,
+/// which is the only mistake a comparison benchmark cannot survive.
 pub fn pcs_from_env() -> PcsType {
-	env::var("PCS")
-		.ok()
-		.and_then(|name| PcsType::from_str(&name, true).ok())
-		.unwrap_or_default()
+	let Ok(name) = env::var("PCS") else {
+		return PcsType::default();
+	};
+	PcsType::from_str(&name, true)
+		.unwrap_or_else(|_| panic!("PCS={name} names no commitment scheme"))
 }
