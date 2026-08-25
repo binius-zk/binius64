@@ -7,6 +7,6 @@ pub mod runner;
 
 // Re-export commonly used items
 #[allow(unused_imports)]
-pub use config::{HashBenchConfig, SignBenchConfig};
+pub use config::{HashBenchConfig, SignBenchConfig, pcs_from_env};
 pub use reporting::print_benchmark_header;
 pub use runner::{ExampleBenchmark, run_cs_benchmark};

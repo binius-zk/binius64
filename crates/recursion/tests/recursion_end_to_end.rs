@@ -149,9 +149,12 @@ struct Recording {
 /// What the verifier does over it becomes the circuit.
 fn record(proved: &Proved) -> Recording {
 	let builder_channel = Binius64BuilderChannel::new();
+	// The circuit is written against the FRI opening, so the compiler is asked for by name.
 	let mut channel = proved
 		.verifier
 		.iop_compiler()
+		.as_basefold()
+		.expect("the recursion circuit verifies a FRI opening")
 		.create_channel(builder_channel);
 	// The statement is observed by the caller, and what comes back is what the verifier reads.
 	// On this channel those are wires, so the recorded circuit takes the statement as input
@@ -186,6 +189,8 @@ fn replay(proved: &Proved, recorded: &Recorded, filler: &mut WitnessFiller<'_>) 
 	let mut channel = proved
 		.verifier
 		.iop_compiler()
+		.as_basefold()
+		.expect("the recursion circuit verifies a FRI opening")
 		.create_channel(filler_channel);
 	let inout = channel.observe_words(proved.witness.inout());
 	proved

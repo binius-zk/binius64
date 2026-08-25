@@ -3,6 +3,9 @@
 
 use std::env;
 
+use binius_examples::PcsType;
+use clap::ValueEnum;
+
 /// Default HASH_MAX_BYTES for hash benchmarks (1KiB)
 pub const DEFAULT_HASH_MAX_BYTES: usize = 1024;
 
@@ -71,4 +74,17 @@ impl SignBenchConfig {
 			log_inv_rate,
 		}
 	}
+}
+
+/// Which commitment scheme the benchmark's prover and verifier open the trace with.
+///
+/// Read from the environment so one benchmark binary measures either scheme without a rebuild.
+/// That is what makes the two runs comparable, on one machine and one circuit.
+/// An unrecognized value falls back to the default scheme.
+#[allow(dead_code)]
+pub fn pcs_from_env() -> PcsType {
+	env::var("PCS")
+		.ok()
+		.and_then(|name| PcsType::from_str(&name, true).ok())
+		.unwrap_or_default()
 }
