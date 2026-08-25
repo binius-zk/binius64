@@ -44,25 +44,25 @@
 //!
 //! # Where the proof of work stands
 //!
-//! [`super::LigeritoParams::grinding`] fixes two difficulties, and each has one place it belongs.
+//! [`LigeritoParams::grinding`](super::LigeritoParams::grinding) fixes two difficulties.
+//! Each of them has exactly one place in the transcript where it belongs.
 //!
 //! ```text
 //!     level i:  round message -> GRIND challenge_bits -> fold challenge     (log_lanes times)
 //!               next commitment -> GRIND query_bits -> query positions
 //! ```
 //!
-//! The fold challenge is the one the correlated-agreement term is about.
-//! Everything a prover could vary to re-roll it is this round's coefficients, already sent.
-//! So a grind standing here is the whole cost of asking for another challenge.
+//! The fold challenge is the one the correlated-agreement term bounds.
+//! By the time it is drawn, the only thing a prover could still vary is this round's coefficients.
+//! Those are already sent, so a grind there is the entire cost of asking for a second challenge.
 //!
 //! The query positions are drawn once the level's commitment is fixed.
-//! A grind standing there taxes re-rolling the positions.
-//! That is what lets a target be reached with fewer rows opened.
+//! A grind before them taxes re-rolling the positions rather than the challenge.
+//! That is what lets a security target be reached with fewer rows opened.
 //!
-//! The two are not interchangeable.
-//! The first raises a ceiling no query count touches.
+//! The two are not interchangeable, and [`Grinding`](crate::soundness::Grinding) keeps them apart.
+//! The first raises a ceiling that no number of queries can touch.
 //! The second only shortens the query phase.
-//! [`crate::soundness::Grinding`] charges them separately for that reason.
 //!
 //! # Why only level 0 gets the MLE-check shortcut
 //!
