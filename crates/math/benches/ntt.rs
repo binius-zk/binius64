@@ -36,7 +36,7 @@ enum ThroughputVariant {
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::single_element_loop)]
 fn bench_ntts<F: BinaryField, P: PackedField<Scalar = F>>(
-	group: &mut BenchmarkGroup<WallTime>,
+	group: &mut BenchmarkGroup<'_, WallTime>,
 	throughput_var: ThroughputVariant,
 	log_d: usize,
 	domain_context: &(impl DomainContext<Field = P::Scalar> + Sync),
@@ -65,7 +65,7 @@ fn bench_ntts<F: BinaryField, P: PackedField<Scalar = F>>(
 			};
 
 			let mut data = random_field_buffer::<P>(&mut rng, log_d);
-			b.iter(|| ntt.forward_transform(data.as_mut_view(), skip_early, skip_late))
+			b.iter(|| ntt.forward_transform(data.as_mut_view(), skip_early, skip_late));
 		});
 	}
 
@@ -74,7 +74,7 @@ fn bench_ntts<F: BinaryField, P: PackedField<Scalar = F>>(
 		let ntt = NeighborsLastBreadthFirst { domain_context };
 
 		let mut data = random_field_buffer::<P>(&mut rng, log_d);
-		b.iter(|| ntt.forward_transform(data.as_mut_view(), skip_early, skip_late))
+		b.iter(|| ntt.forward_transform(data.as_mut_view(), skip_early, skip_late));
 	});
 
 	for log_num_shares in [0, 3] {
@@ -97,8 +97,8 @@ fn bench_ntts<F: BinaryField, P: PackedField<Scalar = F>>(
 					.build()
 					.unwrap();
 				thread_pool.install(|| {
-					b.iter(|| ntt.forward_transform(data.as_mut_view(), skip_early, skip_late))
-				})
+					b.iter(|| ntt.forward_transform(data.as_mut_view(), skip_early, skip_late));
+				});
 			});
 		}
 	}

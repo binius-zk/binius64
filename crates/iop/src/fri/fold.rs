@@ -83,7 +83,7 @@ where
 				(chunk_index << (log_size - 1)) | index_offset,
 				pair,
 				challenge,
-			)
+			);
 		}
 
 		log_len -= 1;

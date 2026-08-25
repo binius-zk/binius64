@@ -19,7 +19,7 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastReference<DC> {
 
 	fn forward_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		mut data: FieldSliceMut<P>,
+		mut data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	) {
@@ -48,7 +48,7 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastReference<DC> {
 
 	fn inverse_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		mut data: FieldSliceMut<P>,
+		mut data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	) {

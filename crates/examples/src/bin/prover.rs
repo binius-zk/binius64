@@ -1,4 +1,7 @@
 // Copyright 2025 Irreducible Inc.
+
+//! Proves a constraint system read from disk, writing the proof out as a file.
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};

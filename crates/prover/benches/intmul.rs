@@ -133,7 +133,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 					intmul_prover.prove(witness.take().expect("set in setup"));
 				},
 				BatchSize::SmallInput,
-			)
+			);
 		},
 	);
 
@@ -156,7 +156,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 					intmul_prover.prove(witness);
 				},
 				BatchSize::SmallInput,
-			)
+			);
 		},
 	);
 

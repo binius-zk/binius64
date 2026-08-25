@@ -21,7 +21,7 @@ pub(crate) fn single_element_mask_bits<T: UnderlierType + Shl<usize, Output = T>
 	} else {
 		let mut result = T::ONE;
 		for height in 0..checked_log_2(bits_count) {
-			result |= result << (1usize << height)
+			result |= result << (1usize << height);
 		}
 
 		result

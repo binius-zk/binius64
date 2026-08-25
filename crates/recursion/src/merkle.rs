@@ -184,7 +184,7 @@ pub fn digest_words(bytes: &[u8; 32]) -> [u64; DIGEST_WORDS] {
 }
 
 /// Writes a 32-byte digest into the wires that carry it.
-pub fn populate_digest(w: &mut WitnessFiller, digest: &Digest, bytes: &[u8; 32]) {
+pub fn populate_digest(w: &mut WitnessFiller<'_>, digest: &Digest, bytes: &[u8; 32]) {
 	// One wire per eight digest bytes, in the packed order the digest convention fixes.
 	for (wire, value) in digest.iter().zip(digest_words(bytes)) {
 		w[*wire] = Word(value);
@@ -200,7 +200,7 @@ pub const fn element_words(value: u128) -> [u64; ELEMENT_WORDS] {
 }
 
 /// Writes a field element into the wires that carry it.
-pub fn populate_element(w: &mut WitnessFiller, element: &Element, value: u128) {
+pub fn populate_element(w: &mut WitnessFiller<'_>, element: &Element, value: u128) {
 	// Two wires per element, low serialized half first.
 	for (wire, word) in element.iter().zip(element_words(value)) {
 		w[*wire] = Word(word);

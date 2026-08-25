@@ -136,23 +136,19 @@ impl Binius64BuilderChannel {
 	}
 
 	/// Allocates the `(lo, hi)` pair one field element occupies, as circuit inputs.
-	fn input_element(&mut self, kind: &'static str) -> Element {
+	fn input_element(&self, kind: &'static str) -> Element {
 		array::from_fn(|_| self.shared.input_wire(kind))
 	}
 
 	/// Allocates the wires one digest occupies, as circuit inputs.
-	fn input_digest(&mut self, kind: &'static str) -> Digest {
+	fn input_digest(&self, kind: &'static str) -> Digest {
 		array::from_fn(|_| self.shared.input_wire(kind))
 	}
 
 	/// Allocates the input wires one query's opening occupies: its leaf, then its branch.
 	///
 	/// The tape carries an opening in this order, so a replay fills the wires in it too.
-	fn input_opening(
-		&mut self,
-		leaf_size: usize,
-		branch_len: usize,
-	) -> (Vec<Element>, Vec<Digest>) {
+	fn input_opening(&self, leaf_size: usize, branch_len: usize) -> (Vec<Element>, Vec<Digest>) {
 		let leaf = (0..leaf_size)
 			.map(|_| self.input_element("opening"))
 			.collect();

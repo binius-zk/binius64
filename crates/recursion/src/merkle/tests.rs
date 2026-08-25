@@ -56,7 +56,7 @@ fn digest_wires(builder: &CircuitBuilder, n: usize) -> Vec<Digest> {
 }
 
 /// Writes one field element into each element's pair of wires.
-fn fill_elements(w: &mut WitnessFiller, wires: &[Element], values: &[B128]) {
+fn fill_elements(w: &mut WitnessFiller<'_>, wires: &[Element], values: &[B128]) {
 	// A count mismatch would leave wires unwritten, which reads later as a wrong value.
 	assert_eq!(wires.len(), values.len(), "one element per value");
 	// Splitting a value across its two wires is the packing convention, not a choice here.
@@ -66,7 +66,7 @@ fn fill_elements(w: &mut WitnessFiller, wires: &[Element], values: &[B128]) {
 }
 
 /// Writes one 32-byte digest into each digest's wires.
-fn fill_digests(w: &mut WitnessFiller, wires: &[Digest], bytes: &[[u8; 32]]) {
+fn fill_digests(w: &mut WitnessFiller<'_>, wires: &[Digest], bytes: &[[u8; 32]]) {
 	// As with elements, an unwritten wire would masquerade as a corrupted digest.
 	assert_eq!(wires.len(), bytes.len(), "one digest per byte string");
 	// The byte order each wire holds is fixed by the digest convention.

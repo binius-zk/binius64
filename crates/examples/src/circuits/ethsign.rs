@@ -121,7 +121,7 @@ impl ExampleCircuit for EthSignExample {
 		})
 	}
 
-	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		// Generate random initial state with fixed seed for reproducibility
 		let mut rng = StdRng::seed_from_u64(42);
 

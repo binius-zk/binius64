@@ -586,15 +586,9 @@ mod tests {
 
 			// Check sign bit is extended
 			let is_negative = (val as i64) < 0;
-			if is_negative {
-				// High bits should all be 1
-				let mask = !((1u64 << (64 - shift)) - 1);
-				assert_eq!(result.0 & mask, mask);
-			} else {
-				// High bits should all be 0
-				let mask = !((1u64 << (64 - shift)) - 1);
-				assert_eq!(result.0 & mask, 0);
-			}
+			// The high bits are all 1 for a negative input and all 0 otherwise.
+			let mask = !((1u64 << (64 - shift)) - 1);
+			assert_eq!(result.0 & mask, if is_negative { mask } else { 0 });
 		}
 
 		#[test]

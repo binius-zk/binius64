@@ -37,7 +37,7 @@ pub fn encode_interleaved<F, P, NTT, A>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
 	ntt: &NTT,
-	message: FieldSlice<P>,
+	message: FieldSlice<'_, P>,
 	alloc: &A,
 ) -> FieldBuffer<P, A::Vec<P>>
 where
@@ -108,7 +108,7 @@ pub fn encode_masked<F, P, NTT, A>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
 	ntt: &NTT,
-	message: FieldSlice<P>,
+	message: FieldSlice<'_, P>,
 	mut rng: impl CryptoRng,
 	alloc: &A,
 ) -> MaskedCodeword<P, A::Vec<P>>

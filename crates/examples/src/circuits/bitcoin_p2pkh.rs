@@ -70,8 +70,10 @@ impl ExampleCircuit for BitcoinP2PKHExample {
 		})
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
-		// Generate or use provided private key
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
+		// Generate or use provided private key.
+		// The generating arm is much the longer one, so `map_or_else` would bury the common case.
+		#[allow(clippy::option_if_let_else)]
 		let private_key_bytes = match instance.private_key {
 			Some(key) => {
 				tracing::info!("Using provided private key");

@@ -36,7 +36,7 @@ impl ExampleCircuit for Blake2sExample {
 		})
 	}
 
-	fn populate_witness(&self, instance: HasherInstance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: HasherInstance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let message = utils::resolve_hasher_message(&self.mode, &instance)?;
 
 		// Compute digest using reference implementation

@@ -119,7 +119,7 @@ impl ByteVec {
 	///
 	/// # Panics
 	/// * If `len_bytes` lies outside `self.len_range`.
-	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
+	pub fn populate_len_bytes(&self, w: &mut WitnessFiller<'_>, len_bytes: usize) {
 		self.assert_len_in_range(len_bytes);
 		w[self.len_bytes] = Word(len_bytes as u64);
 	}
@@ -139,7 +139,7 @@ impl ByteVec {
 	///
 	/// # Panics
 	/// * If bytes.len() exceeds self.max_len
-	pub fn populate_bytes_le(&self, w: &mut WitnessFiller, bytes: &[u8]) {
+	pub fn populate_bytes_le(&self, w: &mut WitnessFiller<'_>, bytes: &[u8]) {
 		self.assert_len_in_range(bytes.len());
 		w.pack_bytes_le(&self.data, bytes);
 		w[self.len_bytes] = Word(bytes.len() as u64);
@@ -152,7 +152,7 @@ impl ByteVec {
 	///
 	/// # Panics
 	/// Panics if `data_bytes.len()` > `self.max_len_bytes()`
-	pub fn populate_data(&self, w: &mut WitnessFiller, data_bytes: &[u8]) {
+	pub fn populate_data(&self, w: &mut WitnessFiller<'_>, data_bytes: &[u8]) {
 		assert!(
 			data_bytes.len() <= self.max_len_bytes(),
 			"vector data length {} exceeds maximum {}",

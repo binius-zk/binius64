@@ -45,7 +45,7 @@ pub trait MerkleIPProverChannel<F: Field>: WordIPProverChannel<F> {
 	///   power of two.
 	fn send_merkle_commitment<P: PackedField<Scalar = F>>(
 		&mut self,
-		data: FieldSlice<P>,
+		data: FieldSlice<'_, P>,
 		leaf_size: usize,
 	) -> Self::Commitment;
 
@@ -60,7 +60,7 @@ pub trait MerkleIPProverChannel<F: Field>: WordIPProverChannel<F> {
 	fn send_openings<P: PackedField<Scalar = F>>(
 		&mut self,
 		commitment: &Self::Commitment,
-		data: FieldSlice<P>,
+		data: FieldSlice<'_, P>,
 		indices: &[Self::Word],
 	);
 
@@ -72,7 +72,7 @@ pub trait MerkleIPProverChannel<F: Field>: WordIPProverChannel<F> {
 	fn send_committed_vector<P: PackedField<Scalar = F>>(
 		&mut self,
 		commitment: &Self::Commitment,
-		data: FieldSlice<P>,
+		data: FieldSlice<'_, P>,
 	);
 }
 
@@ -141,19 +141,19 @@ where
 	A: Allocator,
 {
 	fn send_one(&mut self, elem: F) {
-		self.transcript.borrow_mut().send_one(elem)
+		self.transcript.borrow_mut().send_one(elem);
 	}
 
 	fn send_many(&mut self, elems: &[F]) {
-		self.transcript.borrow_mut().send_many(elems)
+		self.transcript.borrow_mut().send_many(elems);
 	}
 
 	fn observe_one(&mut self, val: F) {
-		self.transcript.borrow_mut().observe_one(val)
+		self.transcript.borrow_mut().observe_one(val);
 	}
 
 	fn observe_many(&mut self, vals: &[F]) {
-		self.transcript.borrow_mut().observe_many(vals)
+		self.transcript.borrow_mut().observe_many(vals);
 	}
 
 	fn sample(&mut self) -> F {
@@ -195,7 +195,7 @@ where
 
 	fn send_merkle_commitment<P: PackedField<Scalar = F>>(
 		&mut self,
-		data: FieldSlice<P>,
+		data: FieldSlice<'_, P>,
 		leaf_size: usize,
 	) -> Self::Commitment {
 		assert!(leaf_size.is_power_of_two(), "precondition: leaf_size must be a power of two");
@@ -215,7 +215,7 @@ where
 	fn send_openings<P: PackedField<Scalar = F>>(
 		&mut self,
 		commitment: &Self::Commitment,
-		data: FieldSlice<P>,
+		data: FieldSlice<'_, P>,
 		indices: &[Word],
 	) {
 		let tree_depth = commitment.depth;
@@ -248,7 +248,7 @@ where
 	fn send_committed_vector<P: PackedField<Scalar = F>>(
 		&mut self,
 		commitment: &Self::Commitment,
-		data: FieldSlice<P>,
+		data: FieldSlice<'_, P>,
 	) {
 		debug_assert_eq!(commitment.depth, data.log_len() - commitment.log_leaf_size);
 

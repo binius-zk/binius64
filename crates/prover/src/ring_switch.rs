@@ -285,7 +285,7 @@ pub struct RingSwitchOutput<A: Allocator, P: PackedField> {
 ///   log of the extension degree of B128 over B1 (= 7)
 pub fn prove<A, P, Channel>(
 	alloc: &A,
-	packed_witness: FieldSlice<P>,
+	packed_witness: FieldSlice<'_, P>,
 	eval_point: &[B128],
 	channel: &mut Channel,
 ) -> RingSwitchOutput<A, P>

@@ -52,7 +52,7 @@ impl ExampleCircuit for HashBasedSigExample {
 		})
 	}
 
-	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(SEED);
 
 		let mut message: Message = [0u8; MESSAGE_LEN];

@@ -1,6 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+//! Example circuits and the harness that runs them.
+//!
+//! Each module under [`circuits`] builds one circuit and knows how to fill its witness; [`cli`]
+//! turns that into a runnable binary and [`snapshot`] records the circuit's statistics so a change
+//! in size shows up as a diff.
+
 pub mod circuits;
 pub mod cli;
 pub mod snapshot;
@@ -310,7 +316,11 @@ pub trait ExampleCircuit: Sized {
 	/// - Process the instance data (e.g., parse inputs, compute hashes)
 	/// - Fill all witness values using the provided filler
 	/// - Validate that instance data is compatible with circuit parameters
-	fn populate_witness(&self, instance: Self::Instance, filler: &mut WitnessFiller) -> Result<()>;
+	fn populate_witness(
+		&self,
+		instance: Self::Instance,
+		filler: &mut WitnessFiller<'_>,
+	) -> Result<()>;
 
 	/// Generate a concise parameter summary for perfetto trace filenames.
 	///

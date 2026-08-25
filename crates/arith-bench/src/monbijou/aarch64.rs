@@ -171,10 +171,13 @@ pub fn mul_wide_128b_schoolbook(x: poly64x2_t, y: poly64x2_t) -> [poly64x2_t; 3]
 /// Reduce the three raw schoolbook combinations from [`mul_wide_128b_schoolbook`] into a packed
 /// GF(2^128) element.
 ///
-/// The extension is `Y^2 = XY + 1`, so `coeff 0 = x0·y0 + x1·y1 = p00 + p11` and `coeff 1 = (x0·y1
-/// + x1·y0) + X·(x1·y1) = cross + X·p11`. The multiply-by-X on the unreduced `p11` (degree ≤ 126)
-/// is a plain 128-bit left shift; the two coefficient products are reduced together in one
-/// [`reduce`].
+/// The extension is `Y^2 = XY + 1`, so the two coefficients are
+///
+/// - `coeff 0 = x0·y0 + x1·y1 = p00 + p11`
+/// - `coeff 1 = (x0·y1 + x1·y0) + X·(x1·y1) = cross + X·p11`
+///
+/// The multiply-by-X on the unreduced `p11` (degree ≤ 126) is a plain 128-bit left shift; the two
+/// coefficient products are reduced together in one [`reduce`].
 #[inline]
 pub fn reduce_128b_schoolbook([p00, cross, p11]: [poly64x2_t; 3]) -> poly64x2_t {
 	unsafe {
@@ -222,8 +225,8 @@ pub fn reduce_sliced_128b([t0, t1, t2]: [Wide; 3]) -> [poly64x2_t; 2] {
 }
 
 /// Multiplies two elements of GF(2^128), the degree-2 extension of the Monbijou field, in the
-/// *sliced* representation. Same field product as [`mul_128b`], with the coefficients kept in
-/// separate registers. Composes [`mul_wide_sliced_128b`] with [`reduce_sliced_128b`].
+/// *sliced* representation. Same field product as [`mul_128b_schoolbook`], with the coefficients
+/// kept in separate registers. Composes [`mul_wide_sliced_128b`] with [`reduce_sliced_128b`].
 #[inline]
 pub fn mul_sliced_128b(x: [poly64x2_t; 2], y: [poly64x2_t; 2]) -> [poly64x2_t; 2] {
 	reduce_sliced_128b(mul_wide_sliced_128b(x, y))

@@ -16,7 +16,7 @@ pub const SKIPPED_VARS: usize = binius_core::Word::LOG_BITS;
 pub const ROWS_PER_HYPERCUBE_VERTEX: usize = 1 << SKIPPED_VARS;
 
 /// Output from the AND constraint reduction protocol verification.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AndCheckOutput<F> {
 	pub a_eval: F,
 	pub b_eval: F,

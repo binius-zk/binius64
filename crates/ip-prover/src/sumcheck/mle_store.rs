@@ -483,7 +483,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 					*column = Column::Owned(
 						dst.take()
 							.expect("borrowed columns get a destination buffer"),
-					)
+					);
 				}
 				Column::Owned(buffer) => buffer.truncate(n_vars),
 				Column::SplitHalf(_) => {}

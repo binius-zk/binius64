@@ -181,7 +181,7 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Copies a borrowed buffer into memory drawn from `alloc`.
 	///
 	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
-	pub fn from_view_in<A>(alloc: &A, src: FieldSlice<P>) -> Self
+	pub fn from_view_in<A>(alloc: &A, src: FieldSlice<'_, P>) -> Self
 	where
 		A: Allocator<Vec<P> = Data>,
 	{

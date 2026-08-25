@@ -230,7 +230,7 @@ where
 		layer_depth: usize,
 		tree_depth: usize,
 		layer_digests: &[Self::Digest],
-		proof: &mut TranscriptReader<B>,
+		proof: &mut TranscriptReader<'_, B>,
 	) -> Result<(), Error> {
 		// A layer that many levels below the root holds exactly that many digests.
 		assert_eq!(

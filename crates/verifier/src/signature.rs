@@ -73,7 +73,7 @@ use digest::Digest;
 ///
 /// The `writer` must be an *observing* writer (obtained from `transcript.observe()`), so the
 /// digest is mixed into the Fiat-Shamir state without being written to the proof tape.
-pub fn observe_message<H, B>(writer: &mut TranscriptWriter<B>, message: &[u8])
+pub fn observe_message<H, B>(writer: &mut TranscriptWriter<'_, B>, message: &[u8])
 where
 	H: HashSuite,
 	B: BufMut,

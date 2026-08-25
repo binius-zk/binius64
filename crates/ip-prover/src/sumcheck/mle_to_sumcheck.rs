@@ -66,7 +66,7 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 		let alpha = self.mlecheck_prover.eval_point()[self.n_vars() - 1];
 		self.eq_prefix_eval *= Hypercube::One.eq_one_var(challenge, alpha);
 
-		self.mlecheck_prover.fold(challenge)
+		self.mlecheck_prover.fold(challenge);
 	}
 
 	fn finish(self) -> Vec<F> {
@@ -121,7 +121,7 @@ where
 
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {
 		self.inner
-			.accumulate(chunk, chunk.eq(self.eq_tracker).as_view(), accum)
+			.accumulate(chunk, chunk.eq(self.eq_tracker).as_view(), accum);
 	}
 
 	fn interpolate(&self, ctx: &RoundContext<'_, P>, accum: &[P], claim: F) -> RoundCoeffs<F> {

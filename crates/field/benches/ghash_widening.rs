@@ -27,7 +27,7 @@ fn bench_at_n<P: PackedField>(group: &mut BenchmarkGroup<'_, WallTime>, label: &
 				acc += black_box(a_vals[i]) * black_box(b_vals[i]);
 			}
 			black_box(acc)
-		})
+		});
 	});
 
 	group.bench_function(format!("wide_mul/{label}/n={n}"), |b| {
@@ -37,7 +37,7 @@ fn bench_at_n<P: PackedField>(group: &mut BenchmarkGroup<'_, WallTime>, label: &
 				acc += P::wide_mul(black_box(a_vals[i]), black_box(b_vals[i]));
 			}
 			black_box(P::reduce(acc))
-		})
+		});
 	});
 }
 

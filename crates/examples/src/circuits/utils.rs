@@ -119,15 +119,18 @@ pub fn resolve_hasher_mode(
 /// length `--random-message-len` (defaulting to `mode`'s capacity). The resulting length must be
 /// compatible with the circuit: exactly the fixed length, or at most the variable-length maximum.
 pub fn resolve_hasher_message(mode: &HasherMode, instance: &HasherInstance) -> Result<Vec<u8>> {
-	let message = if let Some(s) = &instance.message {
-		s.clone().into_bytes()
-	} else {
-		let len = instance.random_message_len.unwrap_or(mode.capacity_bytes());
-		let mut rng = StdRng::seed_from_u64(DEFAULT_RANDOM_SEED);
-		let mut bytes = vec![0u8; len];
-		rng.fill_bytes(&mut bytes);
-		bytes
-	};
+	let message = instance.message.as_ref().map_or_else(
+		|| {
+			let len = instance
+				.random_message_len
+				.unwrap_or_else(|| mode.capacity_bytes());
+			let mut rng = StdRng::seed_from_u64(DEFAULT_RANDOM_SEED);
+			let mut bytes = vec![0u8; len];
+			rng.fill_bytes(&mut bytes);
+			bytes
+		},
+		|s| s.clone().into_bytes(),
+	);
 
 	ensure!(!message.is_empty(), "Message length must be positive");
 	match mode {

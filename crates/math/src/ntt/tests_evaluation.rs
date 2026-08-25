@@ -234,7 +234,7 @@ fn novel_basis<DC: DomainContext>(domain_context: &DC) -> Vec<Polynomial<DC::Fie
 	novel_basis.push(Polynomial::one());
 	for i in 0..log_d {
 		for j in 0..novel_basis.len() {
-			novel_basis.push(&novel_basis[j] * &w_hat[i])
+			novel_basis.push(&novel_basis[j] * &w_hat[i]);
 		}
 	}
 

@@ -104,6 +104,10 @@
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 //! [ABF26]: <https://eprint.iacr.org/2026/680>
 
+// The expressions here are theorem statements copied term for term, so they stay readable against
+// the papers rather than folded into `mul_add`.
+#![allow(clippy::suboptimal_flops)]
+
 use binius_transcript::MAX_GRINDING_BITS;
 
 use crate::fri::calculate_n_test_queries;

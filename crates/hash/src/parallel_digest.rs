@@ -143,7 +143,7 @@ impl<D: MultiDigest<N, Digest: Send> + Send + Sync, const N: usize> ParallelDige
 					buf.clear();
 					for item in chunk {
 						item.serialize(&mut buf)
-							.expect("pre-condition: items must serialize without error")
+							.expect("pre-condition: items must serialize without error");
 					}
 				}
 				let data = array::from_fn(|i| buffers[i].as_ref());
@@ -200,7 +200,7 @@ where
 					let mut buffer = HashBuffer::new(hasher);
 					for item in items {
 						item.serialize(&mut buffer)
-							.expect("pre-condition: items must serialize without error")
+							.expect("pre-condition: items must serialize without error");
 					}
 				}
 				out.write(hasher.finalize_reset());

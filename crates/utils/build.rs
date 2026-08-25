@@ -14,17 +14,7 @@ fn main() {
 		.replace('\x1f', " "); // CARGO_ENCODED_RUSTFLAGS uses 0x1f as separator
 	println!("cargo:rustc-env=BUILD_RUSTFLAGS={rustflags}");
 
-	// Collect target features
-	let target_features = if let Ok(features) = env::var("CARGO_CFG_TARGET_FEATURE") {
-		if features.is_empty() {
-			Vec::new()
-		} else {
-			features.split(',').map(|s| s.to_string()).collect()
-		}
-	} else {
-		Vec::new()
-	};
-
-	// Pass target features as comma-separated list
-	println!("cargo:rustc-env=COMPILE_TIME_FEATURES={}", target_features.join(","));
+	// Cargo already sets this as a comma-separated list, which is the form we forward.
+	let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+	println!("cargo:rustc-env=COMPILE_TIME_FEATURES={target_features}");
 }

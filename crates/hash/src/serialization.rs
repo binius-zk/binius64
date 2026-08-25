@@ -60,7 +60,7 @@ unsafe impl<D: Digest + BlockSizeUser> BufMut for HashBuffer<'_, D> {
 
 impl<D: Digest + BlockSizeUser> Drop for HashBuffer<'_, D> {
 	fn drop(&mut self) {
-		self.flush()
+		self.flush();
 	}
 }
 

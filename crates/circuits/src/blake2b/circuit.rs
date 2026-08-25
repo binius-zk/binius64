@@ -63,7 +63,7 @@ impl Blake2bCircuit {
 	}
 
 	/// Populate the message data into the witness
-	pub fn populate_message(&self, w: &mut WitnessFiller, message: &[u8]) {
+	pub fn populate_message(&self, w: &mut WitnessFiller<'_>, message: &[u8]) {
 		assert!(message.len() <= self.length, "Message exceeds circuit capacity");
 
 		// Pack message bytes into 64-bit words (little-endian)
@@ -82,7 +82,7 @@ impl Blake2bCircuit {
 	}
 
 	/// Populate the expected digest output for verification
-	pub fn populate_digest(&self, w: &mut WitnessFiller, digest: &[u8; 64]) {
+	pub fn populate_digest(&self, w: &mut WitnessFiller<'_>, digest: &[u8; 64]) {
 		// Pack digest bytes into 64-bit words (little-endian)
 		for i in 0..8 {
 			let mut word_value = 0u64;

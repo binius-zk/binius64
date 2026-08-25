@@ -6,7 +6,7 @@ use bytes::{Buf, BufMut};
 
 /// The constraint kind a key names.
 /// Every constraint in a Binius64 system reduces to one of these four checks over 64-bit words.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
 	/// A single word equals zero.
 	///

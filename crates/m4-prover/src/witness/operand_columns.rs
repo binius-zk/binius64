@@ -434,7 +434,7 @@ impl<'a> ValueWords<'a> {
 			// * the row holds one word per instance, so it is exactly as long as the stripe;
 			// * `MaybeUninit<Word>` has the same memory representation as `Word`.
 			TermWords::Plain(row) => unsafe {
-				ptr::copy_nonoverlapping(row.as_ptr(), out.as_mut_ptr() as *mut Word, out.len())
+				ptr::copy_nonoverlapping(row.as_ptr(), out.as_mut_ptr() as *mut Word, out.len());
 			},
 			TermWords::Shifted {
 				row,

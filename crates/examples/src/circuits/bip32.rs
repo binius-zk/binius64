@@ -228,7 +228,7 @@ impl ExampleCircuit for Bip32Example {
 		})
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		if instance.path.len() > self.max_depth {
 			bail!("path depth {} exceeds max_depth {}", instance.path.len(), self.max_depth);
 		}
@@ -279,10 +279,9 @@ impl ExampleCircuit for Bip32Example {
 /// Parse a single derivation-path child like "0", "44'", or "5h" into a 32-bit index with the
 /// hardened bit set when suffixed.
 fn parse_child(s: &str) -> Result<u32, String> {
-	let (digits, hardened) = match s.strip_suffix(['\'', 'h', 'H']) {
-		Some(rest) => (rest, true),
-		None => (s, false),
-	};
+	let (digits, hardened) = s
+		.strip_suffix(['\'', 'h', 'H'])
+		.map_or((s, false), |rest| (rest, true));
 	let idx: u32 = digits
 		.parse()
 		.map_err(|e| format!("invalid child index '{s}': {e}"))?;

@@ -122,7 +122,7 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 					// Safety: different instances of StridedArray2DViewMut created with the same
 					// data slice do not access overlapping indices.
 					data: unsafe {
-						slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.data.len())
+						slice::from_raw_parts_mut(self.data.as_ptr().cast_mut(), self.data.len())
 					},
 					data_width: self.data_width,
 					height: self.height,

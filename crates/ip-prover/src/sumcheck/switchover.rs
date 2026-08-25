@@ -93,18 +93,19 @@ where
 		assert!(bit_offset < self.n_multilinears);
 		assert_eq!(scratchpad.len(), 1 << chunk_vars);
 
-		if let Some(folded) = &self.folded {
-			folded[bit_offset].chunk(chunk_vars, chunk_index)
-		} else {
-			get_binary_chunk(
-				scratchpad,
-				&self.tensor,
-				&BitSelector::new(bit_offset, self.bitmasks),
-				chunk_vars,
-				chunk_index,
-			);
-			scratchpad.as_view()
-		}
+		self.folded.as_ref().map_or_else(
+			|| {
+				get_binary_chunk(
+					scratchpad,
+					&self.tensor,
+					&BitSelector::new(bit_offset, self.bitmasks),
+					chunk_vars,
+					chunk_index,
+				);
+				scratchpad.as_view()
+			},
+			|folded| folded[bit_offset].chunk(chunk_vars, chunk_index),
+		)
 	}
 
 	pub fn fold(&mut self, challenge: F) {

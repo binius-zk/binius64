@@ -63,12 +63,13 @@ impl Hint for ModInverseHint {
 		let modulus = num_biguint_from_u64_limbs(mod_limbs.iter().map(|w| w.as_u64()));
 
 		let zero = num_bigint::BigUint::ZERO;
-		let (quotient, inverse) = if let Some(inverse) = base.modinv(&modulus) {
-			let quotient = (base * &inverse - num_bigint::BigUint::from(1usize)) / &modulus;
-			(quotient, inverse)
-		} else {
-			(zero.clone(), zero)
-		};
+		let (quotient, inverse) = base.modinv(&modulus).map_or_else(
+			|| (zero.clone(), zero),
+			|inverse| {
+				let quotient = (base * &inverse - num_bigint::BigUint::from(1usize)) / &modulus;
+				(quotient, inverse)
+			},
+		);
 
 		assert_eq!(outputs.len(), 2 * *n_mod);
 		let (quotient_words, inverse_words) = outputs.split_at_mut(*n_mod);

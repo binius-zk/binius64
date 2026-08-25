@@ -75,7 +75,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 			AddedConstraint::Bmul(bmul_constraint) => new_bmul_constraints.push(bmul_constraint),
 			AddedConstraint::Zero(zero_constraint) => new_zero_constraints.push(zero_constraint),
 			AddedConstraint::Linear(linear_constraint) => {
-				new_linear_constraints.push(linear_constraint)
+				new_linear_constraints.push(linear_constraint);
 			}
 		}
 	}
@@ -582,7 +582,7 @@ mod tests {
 			for term in cb.operand_terms(inner) {
 				match push_inner(shift_seq, term.sole_shift(), LOWERED_SHIFT_SLOTS) {
 					PushInner::Seq(composed) => {
-						expand_term_recursive(cb, leg, result, term.wire, composed)
+						expand_term_recursive(cb, leg, result, term.wire, composed);
 					}
 					// A term the shifts clear contributes nothing to the XOR.
 					PushInner::Zero => {}

@@ -69,7 +69,7 @@ where
 	group.bench_function(format!("{case} pooled"), |b| {
 		b.iter(|| pooled_prover.commit_field_buffer(buffer.as_view(), LOG_ELEMS_IN_LEAF));
 	});
-	group.finish()
+	group.finish();
 }
 
 fn bench_sha256_merkle_tree(c: &mut Criterion) {

@@ -48,7 +48,7 @@ pub type PipelinedCommit<P, H, A> = (
 pub fn encode_and_commit_pipelined<F, P, DC, H, N, A>(
 	rs_code: &ReedSolomonCode<F>,
 	ntt: &NeighborsLastMultiThread<DC>,
-	message: FieldSlice<P>,
+	message: FieldSlice<'_, P>,
 	log_batch_size: usize,
 	log_leaf_len: usize,
 	alloc: &A,

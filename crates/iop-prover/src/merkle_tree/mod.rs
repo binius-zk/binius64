@@ -63,7 +63,7 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 	/// * `log_leaf_len` must be at most the buffer's log length.
 	fn commit_field_buffer<P>(
 		&self,
-		buffer: FieldSlice<P>,
+		buffer: FieldSlice<'_, P>,
 		log_leaf_len: usize,
 	) -> (Commitment<ProverDigest<T, Self>>, Self::Committed)
 	where
@@ -118,6 +118,6 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 		committed: &Self::Committed,
 		layer_depth: usize,
 		index: usize,
-		proof: &mut TranscriptWriter<B>,
+		proof: &mut TranscriptWriter<'_, B>,
 	);
 }

@@ -32,10 +32,10 @@ fn bench_single_column(c: &mut Criterion) {
 		group.throughput(Throughput::Elements(n_words as u64));
 
 		group.bench_with_input(BenchmarkId::new("sequential", n_words), &n_words, |b, _| {
-			b.iter(|| folder.fold(&words))
+			b.iter(|| folder.fold(&words));
 		});
 		group.bench_with_input(BenchmarkId::new("parallel", n_words), &n_words, |b, _| {
-			b.iter(|| folder.fold_par(&words))
+			b.iter(|| folder.fold_par(&words));
 		});
 	}
 
@@ -75,7 +75,7 @@ fn bench_shared_point_columns(c: &mut Criterion) {
 						.iter()
 						.map(|col| folder.fold(col))
 						.collect::<Vec<_>>()
-				})
+				});
 			},
 		);
 		group.bench_with_input(
@@ -87,7 +87,7 @@ fn bench_shared_point_columns(c: &mut Criterion) {
 						.iter()
 						.map(|col| folder.fold_par(col))
 						.collect::<Vec<_>>()
-				})
+				});
 			},
 		);
 	}

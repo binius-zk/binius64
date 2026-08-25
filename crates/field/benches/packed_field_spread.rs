@@ -28,7 +28,7 @@ fn benchmark_get_impl<P: PackedField>(
 			array::from_fn::<_, BATCH_SIZE, _>(|j| {
 				values[j].spread(log_block_len, (j % 1) << (P::LOG_WIDTH - log_block_len))
 			})
-		})
+		});
 	});
 }
 

@@ -116,7 +116,7 @@ where
 		Digest::update(&mut self.hasher, &digest);
 
 		self.buffer = digest;
-		self.index = 0
+		self.index = 0;
 	}
 }
 
@@ -140,7 +140,7 @@ where
 {
 	fn flush(&mut self) {
 		self.hasher.update(&self.buffer[..self.index]);
-		self.index = 0
+		self.index = 0;
 	}
 }
 

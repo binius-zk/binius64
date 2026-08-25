@@ -70,7 +70,7 @@ impl ExampleCircuit for Sha3_512Example {
 		Ok(Self { circuit, mode })
 	}
 
-	fn populate_witness(&self, instance: HasherInstance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: HasherInstance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let message = utils::resolve_hasher_message(&self.mode, &instance)?;
 		let digest: [u8; 64] = sha3::Sha3_512::digest(&message).into();
 

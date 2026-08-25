@@ -145,7 +145,7 @@ impl<F: Field, P: PackedField<Scalar = F>> EqTracker<P> {
 	pub fn fold(&mut self, challenge: F) {
 		// Summing the two halves marginalises out the highest variable.
 		self.advance(challenge, |expansion, shrunk| {
-			expansion.eq_ind_truncate_low(Hypercube::One, shrunk)
+			expansion.eq_ind_truncate_low(Hypercube::One, shrunk);
 		});
 	}
 

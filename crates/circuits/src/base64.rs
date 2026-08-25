@@ -88,7 +88,7 @@ impl Base64UrlSafe {
 	///
 	/// * `w` - Witness filler to populate
 	/// * `length` - Actual length of decoded data in bytes
-	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
+	pub fn populate_len_bytes(&self, w: &mut WitnessFiller<'_>, len_bytes: usize) {
 		w[self.len_bytes] = Word(len_bytes as u64);
 	}
 
@@ -102,7 +102,7 @@ impl Base64UrlSafe {
 	/// # Panics
 	///
 	/// Panics if `data.len()` exceeds the maximum size specified during construction.
-	pub fn populate_decoded(&self, w: &mut WitnessFiller, data: &[u8]) {
+	pub fn populate_decoded(&self, w: &mut WitnessFiller<'_>, data: &[u8]) {
 		w.pack_bytes_le(&self.decoded, data);
 	}
 
@@ -116,7 +116,7 @@ impl Base64UrlSafe {
 	/// # Panics
 	///
 	/// Panics if `data.len()` exceeds the maximum size specified during construction.
-	pub fn populate_encoded(&self, w: &mut WitnessFiller, data: &[u8]) {
+	pub fn populate_encoded(&self, w: &mut WitnessFiller<'_>, data: &[u8]) {
 		w.pack_bytes_le(&self.encoded, data);
 	}
 }

@@ -90,7 +90,7 @@ impl<F: Field, Prover: SumcheckProver<F>> RoundProver<F> for SumcheckRounds<Prov
 	}
 
 	fn fold(&mut self, challenge: F) {
-		self.0.fold(challenge)
+		self.0.fold(challenge);
 	}
 
 	fn finish(self) -> Vec<F> {
@@ -116,7 +116,7 @@ impl<F: Field, Prover: MleCheckProver<F>> RoundProver<F> for MleCheckRounds<Prov
 	}
 
 	fn fold(&mut self, challenge: F) {
-		self.0.fold(challenge)
+		self.0.fold(challenge);
 	}
 
 	fn finish(self) -> Vec<F> {

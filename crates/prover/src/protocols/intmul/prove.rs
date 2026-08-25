@@ -114,9 +114,9 @@ where
 	///
 	/// This method consumes a `Witness` in order to reduce integer multiplication statement to
 	/// evaluation claims on 1-bit multilinears. More formally:
-	///  * `witness` contains po2-sized integer arrays  `a`, `b`, `c_lo` and `c_hi` that satisfy `a
-	///    * b = c_lo | c_hi << Word::BITS`, as well as the layers of the constant- and
-	///      variable-base GKR product check circuits
+	///  * `witness` contains po2-sized integer arrays `a`, `b`, `c_lo` and `c_hi` that satisfy `a *
+	///    b = c_lo | c_hi << Word::BITS`, as well as the layers of the constant- and variable-base
+	///    GKR product check circuits
 	///  * The proving consists of five phases:
 	///    - Phase 1: GKR tree roots for B & C are evaluated at a sampled point, after which
 	///      reductions are performed to obtain evaluation claims on $(b * (G^{a_i} - 1) + 1)^{2^i}$
@@ -234,7 +234,7 @@ where
 		a_exponents: &[Word],
 		c_lo_exponents: &[Word],
 		c_hi_exponents: &[Word],
-		table: FieldSlice<P>,
+		table: FieldSlice<'_, P>,
 	) -> IntMulOutput<F> {
 		let alloc = self.alloc;
 		let n_vars = b_eval_point.len();
@@ -431,7 +431,7 @@ where
 		&mut self,
 		eval_point: &[F],
 		b_prover: ProdcheckProver<'alloc, A, P>,
-		b_leaves: FieldSlice<P>,
+		b_leaves: FieldSlice<'_, P>,
 		b_root_eval: F,
 	) -> Phase1Output<F> {
 		let n_vars = eval_point.len();

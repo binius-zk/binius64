@@ -62,7 +62,7 @@ impl XmssSignatureWires {
 	}
 
 	/// Populates the wires from a signature.
-	pub fn populate(&self, w: &mut binius_frontend::WitnessFiller, signature: &XmssSignature) {
+	pub fn populate(&self, w: &mut binius_frontend::WitnessFiller<'_>, signature: &XmssSignature) {
 		w.pack_bytes_le(&self.randomness, &signature.randomness);
 		for (wires, tip) in iter::zip(&self.chain_tips, &signature.chain_tips) {
 			w.pack_bytes_le(wires, tip);

@@ -158,7 +158,7 @@ impl BitAnd for M512 {
 impl BitAndAssign for M512 {
 	#[inline(always)]
 	fn bitand_assign(&mut self, rhs: Self) {
-		*self = *self & rhs
+		*self = *self & rhs;
 	}
 }
 
@@ -174,7 +174,7 @@ impl BitOr for M512 {
 impl BitOrAssign for M512 {
 	#[inline(always)]
 	fn bitor_assign(&mut self, rhs: Self) {
-		*self = *self | rhs
+		*self = *self | rhs;
 	}
 }
 
@@ -1120,7 +1120,7 @@ mod tests {
 
 		#[test]
 		fn test_negate(a in any::<[u128; 4]>()) {
-			assert_eq!(M512::from([!a[0], !a[1], !a[2], !a[3]]), !M512::from(a))
+			assert_eq!(M512::from([!a[0], !a[1], !a[2], !a[3]]), !M512::from(a));
 		}
 
 		#[test]

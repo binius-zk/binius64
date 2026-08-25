@@ -58,7 +58,7 @@ fn run_google_mul_benchmark<U, R>(
 				x = mul_fn(y[j], x);
 			}
 			x
-		})
+		});
 	});
 }
 
@@ -100,7 +100,7 @@ fn run_mul_benchmark<T, R>(
 					batch[i] = mul_fn(batch[i], batch[(i + BATCH_SIZE / 2) % BATCH_SIZE]);
 				}
 			}
-		})
+		});
 	});
 }
 
@@ -138,7 +138,7 @@ fn run_unary_op_benchmark<T, R>(
 					batch[i] = op_fn(batch[i]);
 				}
 			}
-		})
+		});
 	});
 }
 
@@ -179,7 +179,7 @@ fn run_inner_product_benchmark<T, W, R>(
 			black_box(std::iter::zip(&a, &b).fold(W::ZERO, |acc, (&ai, &bi)| {
 				W::xor(acc, wide_mul(black_box(ai), black_box(bi)))
 			}))
-		})
+		});
 	});
 }
 
@@ -302,6 +302,8 @@ fn bench_polyval(c: &mut Criterion) {
 
 /// Benchmark GF(2^128) GHASH multiplication using CLMUL instructions
 #[allow(unused_imports, unused_variables, unused_mut)]
+// The benchmark group lives until `finish()`, which is how criterion's API is meant to be used.
+#[allow(clippy::significant_drop_tightening)]
 fn bench_ghash(c: &mut Criterion) {
 	use binius_arith_bench::ghash::{mul_clmul, square_clmul};
 
