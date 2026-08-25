@@ -229,9 +229,7 @@ where
 		}
 
 		// Horner-fold round polynomials into a single batched polynomial.
-		let batched_round_coeffs = all_round_coeffs
-			.into_iter()
-			.rfold(RoundCoeffs::default(), |acc, coeffs| acc * batch_coeff + &coeffs);
+		let batched_round_coeffs = RoundCoeffs::batch(all_round_coeffs, &batch_coeff);
 
 		// Commit to the batched round polynomial, then sample the next challenge.
 		Prover::ROUND_PROOF_KIND.send(batched_round_coeffs, channel);
