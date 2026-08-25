@@ -29,6 +29,7 @@
 //! With it goes the deref-coercion design a vector and its two slice types enjoy.
 
 use std::{
+	mem::MaybeUninit,
 	ops::{Deref, DerefMut},
 	slice,
 };
@@ -41,7 +42,7 @@ use binius_field::{
 use binius_utils::{
 	buffer::{BufferData, VecLike},
 	checked_arithmetics::strict_log_2,
-	rayon::{iter::Either, prelude::*, slice::ParallelSlice},
+	rayon::{iter::Either, prelude::*, slice::ParallelSlice, task_size::task_chunk_len},
 };
 use bytemuck::zeroed_vec;
 
@@ -188,6 +189,116 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 		let mut words = alloc.alloc::<P>(src.as_ref().len());
 		words.extend_from_slice(src.as_ref());
 		FieldBuffer::new(src.log_len(), words)
+	}
+
+	/// Copies a borrowed buffer into memory drawn from `alloc`, with room reserved to grow.
+	///
+	/// The buffer spans `src.log_len()` elements and its store is sized for `2^log_capacity`.
+	/// Growing it to that many elements therefore never reallocates.
+	/// [`Self::repeat_extend`] is the growth this reserves for.
+	///
+	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
+	/// The copy splits into runs, so more than one worker carries a long source.
+	///
+	/// # Panics
+	///
+	/// Panics if `log_capacity` is shorter than what `src` spans.
+	#[track_caller]
+	pub fn from_view_with_capacity_in<A>(
+		alloc: &A,
+		src: FieldSlice<'_, P>,
+		log_capacity: usize,
+	) -> Self
+	where
+		A: Allocator<Vec<P> = Data>,
+	{
+		assert!(
+			log_capacity >= src.log_len(),
+			"precondition: log_capacity must be at least src.log_len()"
+		);
+
+		let mut words = alloc.alloc::<P>(1 << log_capacity.saturating_sub(P::LOG_WIDTH));
+
+		// A run is the words one worker copies at a time.
+		// It is a power of two at most the source length, so it divides the source evenly.
+		let source = src.as_ref();
+		let run = source.len().min(task_chunk_len::<P>().next_power_of_two());
+
+		let head = &mut words.spare_capacity_mut()[..source.len()];
+		(head.par_chunks_mut(run), source.par_chunks(run))
+			.into_par_iter()
+			.for_each(|(dst, src)| {
+				dst.write_copy_of_slice(src);
+			});
+
+		// SAFETY: the loop above wrote every word of the source.
+		unsafe { words.set_len(source.len()) };
+
+		FieldBuffer::new(src.log_len(), words)
+	}
+
+	/// Grows the buffer to span `2^log_len` elements, repeating what it already holds.
+	///
+	/// ```text
+	///     [x]  ->  [x | x | x | x]
+	/// ```
+	///
+	/// This is the buffer's [`Vec::extend_from_within`], split across workers.
+	/// Every copy is drawn from the live prefix, so one pass fills the whole buffer.
+	///
+	/// Returns the buffer untouched when it already spans that many elements.
+	///
+	/// # Panics
+	///
+	/// Panics if `log_len` is shorter than what the buffer already spans.
+	/// Panics if the store has no room reserved for `2^log_len` elements.
+	#[track_caller]
+	pub fn repeat_extend(&mut self, log_len: usize) {
+		assert!(
+			log_len >= self.log_len,
+			"precondition: log_len must be at least the buffer's own log_len"
+		);
+		if log_len == self.log_len {
+			return;
+		}
+
+		let total = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+		assert!(
+			total <= self.words.capacity(),
+			"precondition: the store must have room reserved for 2^log_len elements"
+		);
+
+		if self.log_len < P::LOG_WIDTH {
+			// The live elements share one word, so repeating them cycles lanes, not words.
+			let word = P::from_scalars(self.iter_scalars().cycle());
+			self.words.clear();
+			self.words.resize(total, word);
+		} else {
+			let prefix = self.words.len();
+
+			// A run is the words one worker copies at a time.
+			// It is a power of two at most the prefix, so it divides the prefix evenly.
+			let run = prefix.min(task_chunk_len::<P>().next_power_of_two());
+
+			// One borrow has to span both the prefix the copies read and the room they fill.
+			// Emptying the buffer first is what puts the whole store behind that single borrow.
+			//
+			// SAFETY: a packed field has no destructor, so forgetting the live words is a no-op.
+			unsafe { self.words.set_len(0) };
+			let store = &mut self.words.spare_capacity_mut()[..total];
+			let (head, tail) = store.split_at_mut(prefix);
+
+			// SAFETY: the split point is the length the buffer just had.
+			// So every word of `head` was written before this call.
+			let head = unsafe { &*(head as *const [MaybeUninit<P>] as *const [P]) };
+
+			repeat_words(head, tail, run);
+
+			// SAFETY: the call above wrote every word between the prefix and `total`.
+			unsafe { self.words.set_len(total) };
+		}
+
+		self.log_len = log_len;
 	}
 
 	/// Builds a buffer from scalar values, directly into memory drawn from `alloc`.
@@ -727,14 +838,42 @@ impl<P: PackedField> FromIterator<P::Scalar> for FieldBuffer<P> {
 	}
 }
 
+/// Fills `tail` with copies of `head`, `run` words at a time.
+///
+/// ```text
+///     head            tail
+///     [x]      ->     [x | x | x]
+/// ```
+///
+/// Every destination run draws from one contiguous run of `head`.
+/// So a worker copying one run never reads outside it.
+///
+/// # Preconditions
+///
+/// * `head.len()` is a power of two, and `run` is a power of two at most that
+/// * `tail.len()` is a multiple of `head.len()`
+fn repeat_words<P: PackedField>(head: &[P], tail: &mut [MaybeUninit<P>], run: usize) {
+	debug_assert!(head.len().is_power_of_two());
+	debug_assert!(run.is_power_of_two() && run <= head.len());
+	debug_assert_eq!(tail.len() % head.len(), 0);
+
+	tail.par_chunks_mut(run).enumerate().for_each(|(i, dst)| {
+		// Run `i` of the tail sits one whole head past run `i` of the buffer.
+		// The head length is a power of two, so masking that position gives its source.
+		let source = (i * run) & (head.len() - 1);
+		dst.write_copy_of_slice(&head[source..source + dst.len()]);
+	});
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_field::packed::get_packed_slice;
 	use proptest::prelude::*;
+	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b};
+	use crate::test_utils::{B128, Packed128b, random_field_buffer};
 
 	type P = Packed128b;
 	type F = B128;
@@ -808,6 +947,115 @@ mod tests {
 		assert_eq!(widened.get(0), F::new(0));
 		assert_eq!(widened.get(1), F::new(1));
 		assert!((2..8).all(|i| widened.get(i) == F::ZERO));
+
+		// Reserving room copies the source and leaves the buffer at the source's own length.
+		let reserved: FieldVec<P, A> =
+			FieldBuffer::from_view_with_capacity_in(alloc, src.as_view(), 6);
+		assert_eq!(reserved.log_len(), 4);
+		assert_eq!(reserved.as_view(), src.as_view());
+
+		// Growing into that reserved room repeats the source, four copies over.
+		let mut repeated = reserved;
+		repeated.repeat_extend(6);
+		assert_eq!(repeated.log_len(), 6);
+		assert!((0..64).all(|i| repeated.get(i) == F::new((i % 16) as u128)));
+
+		// A source narrower than one packed word repeats its live lanes, never its dead ones.
+		//
+		//     source (log_len 1)    [0, 1 | dead, dead]
+		//     result (log_len 3)    [0, 1 | 0, 1] [0, 1 | 0, 1]
+		let mut cycled: FieldVec<P, A> =
+			FieldBuffer::from_view_with_capacity_in(alloc, small.as_view(), 3);
+		cycled.repeat_extend(3);
+		assert_eq!(cycled.log_len(), 3);
+		assert!((0..8).all(|i| cycled.get(i) == F::new((i % 2) as u128)));
+	}
+
+	/// Pins `repeat_words` against the definition: word `i` of the tail is word `i mod n` of head.
+	fn check_repeat_words(log_head: usize, log_copies: usize) {
+		let head: Vec<P> = (0..1 << log_head)
+			.map(|i| P::broadcast(F::new(i)))
+			.collect();
+
+		// Every run width the caller can pass, from one word up to the whole head.
+		// A run under the head length is what splits a fill across workers.
+		for log_run in 0..=log_head {
+			let mut tail = vec![MaybeUninit::uninit(); head.len() * ((1 << log_copies) - 1)];
+			repeat_words(&head, &mut tail, 1 << log_run);
+
+			for (i, word) in tail.iter().enumerate() {
+				// SAFETY: the call above wrote every word of the tail.
+				let word = unsafe { word.assume_init() };
+				assert_eq!(word, head[i % head.len()], "log_run={log_run} i={i}");
+			}
+		}
+	}
+
+	#[test]
+	fn repeat_words_tiles_the_head_at_every_run_width() {
+		// Heads of 1 to 16 words, each repeated 1 to 8 times over.
+		for log_head in 0..5 {
+			for log_copies in 0..4 {
+				check_repeat_words(log_head, log_copies);
+			}
+		}
+	}
+
+	/// Pins `repeat_extend` against the definition, in scalars rather than words.
+	fn check_repeat_extend(log_src: usize, log_dst: usize) {
+		let mut rng = StdRng::seed_from_u64(0);
+		let src = random_field_buffer::<P>(&mut rng, log_src);
+
+		let mut buffer: FieldVec<P, GlobalAllocator> =
+			FieldBuffer::from_view_with_capacity_in(&GlobalAllocator, src.as_view(), log_dst);
+		buffer.repeat_extend(log_dst);
+
+		assert_eq!(buffer.log_len(), log_dst);
+		for i in 0..1 << log_dst {
+			let expected = src.get(i % (1 << log_src));
+			assert_eq!(buffer.get(i), expected, "log_src={log_src} log_dst={log_dst} i={i}");
+		}
+	}
+
+	#[test]
+	fn repeat_extend_repeats_the_live_scalars() {
+		// A packed word holds 4 lanes here, so `log_src` 0 and 1 exercise the sub-word path,
+		// and a `log_dst` that stays under the width exercises repeating inside one word.
+		for log_src in 0..5 {
+			for log_dst in log_src..7 {
+				check_repeat_extend(log_src, log_dst);
+			}
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition: log_len must be at least the buffer's own log_len")]
+	fn repeat_extend_rejects_shrinking() {
+		let mut buffer: FieldVec<P, GlobalAllocator> = FieldBuffer::from_view_with_capacity_in(
+			&GlobalAllocator,
+			FieldBuffer::<P>::zeros(4).as_view(),
+			5,
+		);
+		buffer.repeat_extend(3);
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition: the store must have room reserved")]
+	fn repeat_extend_rejects_a_store_without_room() {
+		let mut buffer: FieldVec<P, GlobalAllocator> = FieldBuffer::from_view_with_capacity_in(
+			&GlobalAllocator,
+			FieldBuffer::<P>::zeros(4).as_view(),
+			4,
+		);
+		buffer.repeat_extend(5);
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition: log_capacity must be at least src.log_len()")]
+	fn from_view_with_capacity_rejects_a_capacity_below_the_source() {
+		let src = FieldBuffer::<P>::zeros(4);
+		let _: FieldVec<P, GlobalAllocator> =
+			FieldBuffer::from_view_with_capacity_in(&GlobalAllocator, src.as_view(), 3);
 	}
 
 	#[test]

@@ -5,23 +5,16 @@
 //!
 //! See [`ReedSolomonCode`] for details.
 
-use std::{iter, marker::PhantomData, ptr};
+use std::{iter, marker::PhantomData};
 
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
-use binius_utils::{
-	buffer::VecLike,
-	rayon::{prelude::*, task_size::task_chunk_len},
-};
 use getset::CopyGetters;
 
 use super::{
 	FieldBuffer, FieldSlice, FieldSliceMut, binary_subspace::BinarySubspace, ntt::AdditiveNTT,
 };
-use crate::{
-	bit_reverse::bit_reverse_indices,
-	ntt::{DomainContext, NeighborsLastMultiThread, domain_context::GaoMateerOnTheFly},
-};
+use crate::ntt::{DomainContext, NeighborsLastMultiThread, domain_context::GaoMateerOnTheFly};
 
 /// [Reed–Solomon] codes over binary fields.
 ///
@@ -139,35 +132,18 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		)
 		.entered();
 
-		// Repeat the message to fill the entire buffer.
+		// The forward transform below skips its first `log_inv_rate` layers.
+		// Each skipped layer would butterfly a coefficient with a zero pad:
+		//
+		//     u += v * twiddle; v += u;   with v = 0   =>   (c, 0) -> (c, c)
+		//
+		// That is one doubling per layer, so repeating the message does the skipped work.
 		let log_output_len = self.log_dim() + log_batch_size + self.log_inv_rate;
-		let output_data = if data.log_len() < P::LOG_WIDTH {
-			let mut scalars = data.iter_scalars().collect::<Vec<_>>();
-			bit_reverse_indices(&mut scalars);
-			let elem_0 = P::from_scalars(scalars.into_iter().cycle());
-			let len = 1 << log_output_len.saturating_sub(P::LOG_WIDTH);
-			let mut output = alloc.alloc::<P>(len);
-			output.resize(len, elem_0);
-			output
-		} else {
-			// The forward transform below skips its first `log_inv_rate` layers.
-			// Each skipped layer would butterfly a coefficient with a zero pad:
-			//
-			//     u += v * twiddle; v += u;   with v = 0   =>   (c, 0) -> (c, c)
-			//
-			// That is one doubling per layer, so repeating the message does the skipped work.
-			let output_packed_len = 1 << (log_output_len - P::LOG_WIDTH);
+		let mut output = FieldBuffer::from_view_with_capacity_in(alloc, data, log_output_len);
 
-			// A run is the words one worker copies at a time.
-			// It is a power of two at most the message length, so it divides the message evenly.
-			let run = data
-				.as_ref()
-				.len()
-				.min(task_chunk_len::<P>().next_power_of_two());
-
-			repeated_message_buffer(data, output_packed_len, run, alloc)
-		};
-		let mut output = FieldBuffer::new(log_output_len, output_data);
+		// Permute the message once, then repeat it, so every copy inherits the permutation.
+		output.as_mut_view().bit_reverse();
+		output.repeat_extend(log_output_len);
 
 		ntt.forward_transform(output.as_mut_view(), self.log_inv_rate, log_batch_size);
 		output
@@ -218,24 +194,15 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		.entered();
 
 		let log_output_len = self.log_dim() + log_batch_size + self.log_inv_rate;
-		let output_data = if data.log_len() < P::LOG_WIDTH {
-			let mut scalars = data.iter_scalars().collect::<Vec<_>>();
-			bit_reverse_indices(&mut scalars);
-			let elem_0 = P::from_scalars(scalars.into_iter().cycle());
-			let len = 1 << log_output_len.saturating_sub(P::LOG_WIDTH);
-			let mut output = alloc.alloc::<P>(len);
-			output.resize(len, elem_0);
-			on_chunk_ready(0, &output);
-			return FieldBuffer::new(log_output_len, output);
-		} else {
-			let output_packed_len = 1 << (log_output_len - P::LOG_WIDTH);
-			let run = data
-				.as_ref()
-				.len()
-				.min(task_chunk_len::<P>().next_power_of_two());
-			repeated_message_buffer(data, output_packed_len, run, alloc)
-		};
-		let mut output = FieldBuffer::new(log_output_len, output_data);
+		let mut output = FieldBuffer::from_view_with_capacity_in(alloc, data, log_output_len);
+		output.as_mut_view().bit_reverse();
+		output.repeat_extend(log_output_len);
+
+		// A message inside one packed word leaves the chunked transform nothing to split.
+		if data.log_len() < P::LOG_WIDTH {
+			on_chunk_ready(0, output.as_ref());
+			return output;
+		}
 
 		ntt.forward_transform_with_callback(
 			output.as_mut_view(),
@@ -326,85 +293,6 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		folded.as_mut_view().bit_reverse();
 		folded
 	}
-}
-
-/// Builds a buffer of `total` words holding the bit-reversed message, repeated.
-///
-/// # Overview
-///
-/// ```text
-///     [msg]  ->  [rev msg | rev msg | rev msg | rev msg]
-/// ```
-///
-/// The leading copy is filled from the message, then permuted.
-/// Every later copy is filled from that leading copy, so the permutation runs once.
-/// Both fills split into runs, so more than one worker carries a long message.
-///
-/// # Arguments
-///
-/// * `msg` - the message to repeat
-/// * `total` - word count of the returned buffer
-/// * `run` - words one worker copies at a time
-///
-/// # Preconditions
-///
-/// * `msg` holds at least one whole word, and `total` is a multiple of its word count
-/// * `run` is a power of two, and at most the message's word count
-fn repeated_message_buffer<P: PackedField, A: Allocator>(
-	msg: FieldSlice<'_, P>,
-	total: usize,
-	run: usize,
-	alloc: &A,
-) -> A::Vec<P> {
-	let msg_len = msg.as_ref().len();
-	debug_assert!(msg_len.is_power_of_two());
-	debug_assert!(run.is_power_of_two() && run <= msg_len);
-	debug_assert_eq!(total % msg_len, 0);
-
-	let mut output = alloc.alloc::<P>(total);
-
-	// Copy the message into the leading copy.
-	let head = &mut output.spare_capacity_mut()[..msg_len];
-	(head.par_chunks_mut(run), msg.as_ref().par_chunks(run))
-		.into_par_iter()
-		.for_each(|(dst, src)| {
-			// SAFETY:
-			// - The two runs have equal length: one position, two buffers of one length.
-			// - They live in different buffers, so they cannot overlap.
-			unsafe {
-				ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr().cast::<P>(), src.len());
-			}
-		});
-	// SAFETY: the loop above wrote every one of the leading `msg_len` words.
-	unsafe { output.set_len(msg_len) };
-
-	// Permute the leading copy, so the copies below inherit it.
-	FieldSliceMut::from_slice(msg.log_len(), &mut output).bit_reverse();
-
-	// The source is read through an address rather than a borrow.
-	// That is what lets the workers read the leading copy while the rest is held mutably.
-	let msg_ptr = output.as_ptr() as usize;
-	let tail = &mut output.spare_capacity_mut()[..total - msg_len];
-	tail.par_chunks_mut(run).enumerate().for_each(|(i, dst)| {
-		// Run `i` of the tail sits one whole message past run `i` of the buffer.
-		// The message length is a power of two, so masking that position gives its source.
-		let src_offset = (i * run) & (msg_len - 1);
-
-		// SAFETY:
-		// - The offset is masked into the leading copy, and a run divides it evenly.
-		// - So the source run lies inside the leading copy, which is initialized.
-		// - Nothing writes the leading copy here, and the destination lies past it.
-		// - The address stays live because the buffer outlives this loop.
-		unsafe {
-			let msg = msg_ptr as *const P;
-			ptr::copy_nonoverlapping(msg.add(src_offset), dst.as_mut_ptr().cast::<P>(), dst.len());
-		}
-	});
-
-	// SAFETY: the loop above wrote every word between the leading copy and `total`.
-	unsafe { output.set_len(total) };
-
-	output
 }
 
 #[cfg(test)]
@@ -556,50 +444,6 @@ mod tests {
 		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(0, 4, 3);
 		// Same lifts with a wider packing width.
 		test_lift_duplicate_identity_helper::<PackedBinaryGhash4x128b>(4, 8, 2);
-	}
-
-	// One serial copy of the message, one permutation, then a chain of doublings.
-	// That is the plain form of the same construction, so it pins the run-split form.
-	fn repeated_message_buffer_reference<P: PackedField>(
-		msg: FieldSlice<'_, P>,
-		total: usize,
-	) -> Vec<P> {
-		let mut output = Vec::with_capacity(total);
-		output.extend_from_slice(msg.as_ref());
-
-		FieldSliceMut::from_slice(msg.log_len(), output.as_mut_slice()).bit_reverse();
-
-		while output.len() < total {
-			output.extend_from_within(..);
-		}
-		output
-	}
-
-	#[test]
-	fn test_repeated_message_buffer_matches_the_doubling_chain() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// Fixture state: messages of 1 to 16 words, each repeated 1 to 8 times over.
-		for log_msg in 0..5 {
-			for log_copies in 0..4 {
-				let msg = random_field_buffer::<PackedBinaryGhash1x128b>(&mut rng, log_msg);
-				let total = (1 << log_msg) << log_copies;
-				let expected = repeated_message_buffer_reference(msg.as_view(), total);
-
-				// Every run width a caller can pass, from one word up to the whole message.
-				// A run under the message length is what splits a fill across workers.
-				// The encoder only reaches that on a message above one mebibyte.
-				for log_run in 0..=log_msg {
-					let built = repeated_message_buffer(
-						msg.as_view(),
-						total,
-						1 << log_run,
-						&GlobalAllocator,
-					);
-					assert_eq!(built, expected, "log_msg={log_msg} log_run={log_run}");
-				}
-			}
-		}
 	}
 
 	/// Checks the adjoint identity at one shape, over the packing `P`.
