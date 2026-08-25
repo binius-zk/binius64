@@ -217,8 +217,9 @@ fn forward_breadth_first<P: PackedField>(
 			}
 		}
 
-		// log2 the number of packed element pairs to process in this layer
-		let log_packed_pairs = packed_cutoff - base_layer - 1;
+		// log2 the number of packed element pairs to process in this layer.
+		// This call's data is `2^(log_d - P::LOG_WIDTH)` packed elements, hence half that in pairs.
+		let log_packed_pairs = log_d - P::LOG_WIDTH - 1;
 		let layer_twiddles = domain_context
 			.iter_twiddles(layer, log_half_blocks_per_packed)
 			.skip(base_block << log_packed_pairs)
