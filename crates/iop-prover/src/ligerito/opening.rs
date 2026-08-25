@@ -13,7 +13,7 @@ use std::iter::zip;
 use binius_compute::{Allocator, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
-use binius_iop::ligerito::{InducedBasis, LigeritoLevel, LigeritoParams};
+use binius_iop::ligerito::{LigeritoLevel, LigeritoParams};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
 	bivariate_product_evaluator::bivariate_product_prover,
@@ -24,10 +24,11 @@ use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
 	inner_product::inner_product_packed,
 	multilinear::{MultilinearMut, hypercube::Hypercube},
-	ntt::{AdditiveNTT, domain_context::GaoMateerOnTheFly},
+	ntt::AdditiveNTT,
 	reed_solomon::ReedSolomonCode,
 };
 
+use super::induced_weight::InducedWeight;
 use crate::{
 	fri::{BrakedownOracleProver, ProxTestOracleProver},
 	merkle_channel::MerkleIPProverChannel,
@@ -81,26 +82,6 @@ where
 	let commitment = channel.send_merkle_commitment(codeword.as_view(), 1 << level.log_lanes);
 
 	BrakedownOracleProver::new(codeword, commitment, 0)
-}
-
-/// The weight vector `level`'s opened rows induce, built over that level's codeword domain.
-///
-/// The prover needs every entry of it, unlike the verifier, which reaches the same weight through
-/// [`InducedBasis::evaluate`] alone.
-/// So this is the one place the ladder holds a query position as a number rather than a word, and
-/// the only reason [`LigeritoProver::prove`] pins the channel's word type.
-///
-/// [`InducedBasis::to_dense`] expands one row at a time, costing `O(t * 2^log_msg_cols)`.
-/// `AdditiveNTT::transpose_transform` computes the same vector as one encode, independent of `t`.
-/// Which wins turns on the row count, so substituting it needs a selection rule rather than an
-/// edit, and that is left to the pass that benchmarks the ladder.
-fn induced_weight<F: BinaryField>(level: &LigeritoLevel, indices: &[Word], alpha: F) -> Vec<F> {
-	let domain_context = GaoMateerOnTheFly::generate(level.log_codeword_len());
-	let indices = indices
-		.iter()
-		.map(|index| index.as_u64() as usize)
-		.collect::<Vec<_>>();
-	InducedBasis::new(&domain_context, level.log_msg_cols, &indices, alpha).to_dense()
 }
 
 /// Proves a Ligerito opening against a committed ladder of Reed-Solomon codewords.
@@ -262,8 +243,7 @@ where
 
 			if next.is_some() {
 				let beta: F = channel.sample();
-				let mut glued =
-					FieldBuffer::from_values_in(alloc, &induced_weight(level, &indices, alpha));
+				let mut glued = InducedWeight::new(level, self.ntt, &indices, alpha).build(alloc);
 
 				// The claim the opened rows make is the induced weight paired with the message
 				// they folded to, which is what the verifier reads off as `enforced_sum`.
