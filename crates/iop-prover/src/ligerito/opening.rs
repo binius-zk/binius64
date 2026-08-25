@@ -83,8 +83,16 @@ where
 	);
 
 	let code = ReedSolomonCode::<F>::new(level.log_msg_cols, level.log_inv_rate);
-	let codeword = code.encode_batch(ntt, message, level.log_lanes, &GlobalAllocator);
-	let commitment = channel.send_merkle_commitment(codeword.as_view(), 1 << level.log_lanes);
+	// Named per level shape, so a profile attributes the ladder's encoding level by level.
+	let codeword = tracing::debug_span!(
+		"Encode level",
+		log_msg_cols = level.log_msg_cols,
+		log_lanes = level.log_lanes,
+		log_inv_rate = level.log_inv_rate
+	)
+	.in_scope(|| code.encode_batch(ntt, message, level.log_lanes, &GlobalAllocator));
+	let commitment = tracing::debug_span!("Merkle commit level")
+		.in_scope(|| channel.send_merkle_commitment(codeword.as_view(), 1 << level.log_lanes));
 
 	BrakedownOracleProver::new(codeword, commitment, 0)
 }
@@ -207,8 +215,12 @@ where
 
 		for (i, level) in levels.iter().enumerate() {
 			let n_vars = level.log_msg_len();
+			let _level_guard =
+				tracing::debug_span!("Ligerito level", level = i, log_msg_len = n_vars).entered();
 			let witness = FieldBuffer::from_view_in(alloc, current.as_view());
 
+			let fold_guard =
+				tracing::debug_span!("Fold rounds", n_rounds = level.log_lanes).entered();
 			match weight.take() {
 				None => {
 					// Level 0's weight is the equality indicator, which the MLE-check factors out.
@@ -248,6 +260,7 @@ where
 					weight = Some(running);
 				}
 			}
+			drop(fold_guard);
 
 			// Whatever this level folded to is bound here, before a query position exists.
 			let next = match levels.get(i + 1) {
@@ -255,6 +268,7 @@ where
 					Some(commit_level(next_level, self.ntt, current.as_view(), channel))
 				}
 				None => {
+					let _residual_guard = tracing::debug_span!("Send residual").entered();
 					let commitment = channel.send_merkle_commitment(current.as_view(), 1);
 					channel.send_committed_vector(&commitment, current.as_view());
 					None
@@ -268,12 +282,15 @@ where
 			let indices = (0..level.n_queries)
 				.map(|_| channel.sample_bits(level.log_codeword_len()))
 				.collect::<Vec<_>>();
+			let query_guard =
+				tracing::debug_span!("Open queries", n_queries = level.n_queries).entered();
 			match deeper.as_ref() {
 				// Level 0 writes every committed codeword's openings, one after another.
 				None => self.oracles.open_queries(&indices, channel),
 				// A deeper level has one codeword, committed by the level above it.
 				Some(oracle) => oracle.open_queries(&indices, channel),
 			}
+			drop(query_guard);
 
 			// The row-batching challenge.
 			// The last level's is drawn only to keep the two transcripts in step, since its rows
@@ -281,6 +298,7 @@ where
 			let alpha: F = channel.sample();
 
 			if next.is_some() {
+				let _glue_guard = tracing::debug_span!("Glue induced weight").entered();
 				let beta: F = channel.sample();
 				let mut glued = InducedWeight::new(level, self.ntt, &indices, alpha).build(alloc);
 
