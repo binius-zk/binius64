@@ -40,7 +40,7 @@ use binius_utils::{
 };
 
 use crate::{
-	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_packed, line::extrapolate_line,
+	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_packed,
 	multilinear::hypercube::Hypercube,
 };
 
@@ -243,7 +243,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> Multilinear<P> for FieldBuffer<P
 			.into_par_iter()
 			.with_min_task(WorkPerItem::FieldMuls)
 			.for_each(|(out, &lo_i, &hi_i)| {
-				out.write(extrapolate_line(lo_i, hi_i, broadcast_scalar));
+				out.write(Hypercube::One.fold_var(lo_i, hi_i, &broadcast_scalar));
 			});
 		// SAFETY: the parallel loop initialized all `len` slots.
 		unsafe { data.set_len(len) };
@@ -262,7 +262,9 @@ impl<P: PackedField, Data: BufferData<P>> MultilinearMut<P> for FieldBuffer<P, D
 			(lo.as_mut(), hi.as_mut())
 				.into_par_iter()
 				.with_min_task(WorkPerItem::FieldMuls)
-				.for_each(|(lo_i, hi_i)| *lo_i = extrapolate_line(*lo_i, *hi_i, broadcast_scalar));
+				.for_each(|(lo_i, hi_i)| {
+					*lo_i = Hypercube::One.fold_var(*lo_i, *hi_i, &broadcast_scalar);
+				});
 		}
 
 		self.truncate(self.log_len() - 1);
@@ -428,7 +430,8 @@ mod tests {
 
 		// Scalar reference: each output interpolates one (lo, hi) pair at the challenge.
 		for i in 0..half {
-			let expected = extrapolate_line(original.get(i), original.get(i | half), challenge);
+			let expected =
+				Hypercube::One.fold_var(original.get(i), original.get(i | half), &challenge);
 			assert_eq!(folded.get(i), expected, "mismatch at index {i}");
 		}
 	}

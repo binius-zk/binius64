@@ -121,7 +121,6 @@ mod test {
 	use binius_ip_prover::channel::IPProverChannel;
 	use binius_math::{
 		FieldBuffer,
-		line::extrapolate_line,
 		multilinear::{Multilinear, hypercube::Hypercube},
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
@@ -201,7 +200,7 @@ mod test {
 		(witness_prime.as_mut(), mask.as_ref())
 			.into_par_iter()
 			.for_each(|(w, &m)| {
-				*w = extrapolate_line(*w, m, gamma_broadcast);
+				*w = Hypercube::One.fold_var(*w, m, &gamma_broadcast);
 			});
 
 		let eval_point_eq = Hypercube::One.expand(evaluation_point).build::<P>();

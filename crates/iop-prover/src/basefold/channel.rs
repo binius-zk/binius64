@@ -17,7 +17,6 @@ use binius_ip_prover::{
 };
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
-	line::extrapolate_line,
 	multilinear::{Multilinear, hypercube::Hypercube},
 	ntt::AdditiveNTT,
 };
@@ -282,7 +281,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 				.into_par_iter()
 				.with_min_task(WorkPerItem::FieldMuls)
 				.for_each(|(message_i, &mask_i)| {
-					*message_i = extrapolate_line(*message_i, mask_i, gamma_broadcast);
+					*message_i = Hypercube::One.fold_var(*message_i, mask_i, &gamma_broadcast);
 				});
 		}
 	}
@@ -300,7 +299,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 			let sum_prime = if spec.is_zk {
 				let sigma = sigma_iter.next().expect("one σ per ZK oracle");
 				let gamma = gamma.expect("γ sampled when ZK oracles present");
-				extrapolate_line(claim, sigma, gamma)
+				Hypercube::One.fold_var(claim, sigma, &gamma)
 			} else {
 				claim
 			};

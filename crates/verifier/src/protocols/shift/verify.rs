@@ -14,7 +14,6 @@ use binius_ip::{
 };
 use binius_math::{
 	BinarySubspace,
-	line::extrapolate_line,
 	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
 	univariate::{evaluate_univariate, subspace_lagrange_evals_scalars},
 };
@@ -406,7 +405,7 @@ where
 	};
 
 	// Reconstruct the witness evaluation from its two segments.
-	let trace_eval = extrapolate_line(public_eval, witness_eval.clone(), r_segment.clone());
+	let trace_eval = Hypercube::One.fold_var(public_eval, witness_eval.clone(), r_segment);
 
 	// Check if the reconstructed trace value is satisfying.
 	//

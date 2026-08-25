@@ -274,7 +274,6 @@ mod tests {
 	use crate::{
 		BinarySubspace,
 		inner_product::inner_product,
-		line::extrapolate_line,
 		test_utils::{B128, random_scalars},
 	};
 
@@ -372,18 +371,6 @@ mod tests {
 		let x = B128::random(&mut rng);
 		let expected_y = evaluate_univariate(&coeffs, &x);
 		assert_eq!(domain.extrapolate(&values, x), expected_y);
-	}
-
-	#[test]
-	fn test_extrapolate_line() {
-		let mut rng = StdRng::seed_from_u64(0);
-		for _ in 0..10 {
-			let x0 = B128::random(&mut rng);
-			let x1 = B128::random(&mut rng);
-			// Use a smaller field element for z to test the subfield scalar multiplication
-			let z = B128::from(rng.next_u64() as u128);
-			assert_eq!(extrapolate_line(x0, x1, z), x0 + (x1 - x0) * z);
-		}
 	}
 
 	#[test]

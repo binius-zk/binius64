@@ -63,6 +63,28 @@ impl Hypercube {
 		}
 	}
 
+	/// Binds one variable to a coordinate, joining the two halves it splits a cube into.
+	///
+	/// A vertex of the cube fixes the variable to one of the two basis vertices.
+	/// So the coefficients split into a half taken against `b_0` and a half taken against `b_1`.
+	///
+	/// Evaluating the variable at `coord` pairs those halves with the basis there:
+	///
+	/// ```text
+	/// fold(v_0, v_1, r) = v_0 * b_0(r) + v_1 * b_1(r)
+	/// ```
+	///
+	/// This is the inner loop of every fold, so each arm beats that pairing term by term.
+	#[inline(always)]
+	pub fn fold_var<F: FieldOps>(self, lo: F, hi: F, coord: &F) -> F {
+		match self {
+			// The two basis polynomials sum to one, so the fold is the line through the halves.
+			Self::One => lo.clone() + (hi - lo) * coord,
+			// The constant basis polynomial is one, so the low half passes through untouched.
+			Self::Inf => lo + hi * coord,
+		}
+	}
+
 	/// Strips one variable's basis factor from the two halves of an expansion.
 	///
 	/// The halves hold `v * b_0(r)` and `v * b_1(r)` for the stripped variable's coordinate `r`.
@@ -201,6 +223,30 @@ mod tests {
 			cube.contract_var(&mut lo, &hi);
 			assert_eq!(lo, value, "mismatch for {cube:?}");
 		}
+	}
+
+	#[test]
+	fn fold_var_matches_the_basis_pairing() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Each arm folds the basis into one multiplication rather than pairing it term by term.
+		// So both must land on the value the definition gives.
+		let [lo, hi, coord] = [(); 3].map(|_| random_scalars::<F>(&mut rng, 1)[0]);
+		for cube in CUBES {
+			let [b_0, b_1] = cube.basis(&coord);
+			assert_eq!(cube.fold_var(lo, hi, &coord), lo * b_0 + hi * b_1, "mismatch for {cube:?}");
+		}
+	}
+
+	#[test]
+	fn folding_the_boolean_cube_reads_the_halves_at_its_vertices() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// The Boolean basis is the Lagrange pair on the vertices 0 and 1.
+		// So folding there selects one half outright, which is what fixes their order.
+		let [lo, hi] = [(); 2].map(|_| random_scalars::<F>(&mut rng, 1)[0]);
+		assert_eq!(Hypercube::One.fold_var(lo, hi, &F::ZERO), lo);
+		assert_eq!(Hypercube::One.fold_var(lo, hi, &F::ONE), hi);
 	}
 
 	#[test]

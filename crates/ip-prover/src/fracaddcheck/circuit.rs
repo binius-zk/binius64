@@ -5,7 +5,7 @@
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::fracaddcheck::FracAddEvalClaim;
-use binius_math::{FieldBuffer, FieldVec, line::extrapolate_line};
+use binius_math::{FieldBuffer, FieldVec, multilinear::hypercube::Hypercube};
 use binius_utils::{
 	buffer::VecLike,
 	rayon::{
@@ -247,8 +247,8 @@ where
 			// Fold the highest variable to combine the two halves into the next layer's claim.
 			let r = channel.sample();
 
-			let next_num = extrapolate_line(num_0, num_1, r);
-			let next_den = extrapolate_line(den_0, den_1, r);
+			let next_num = Hypercube::One.fold_var(num_0, num_1, &r);
+			let next_den = Hypercube::One.fold_var(den_0, den_1, &r);
 
 			// Sumcheck binds variables high-to-low; reverse to low-to-high for the claim point.
 			let mut next_point = output.challenges;
