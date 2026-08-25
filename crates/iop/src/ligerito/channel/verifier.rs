@@ -182,6 +182,19 @@ where
 	/// Its row union therefore grows from `2^log_lanes` rows to `2^log_lanes * k` of them.
 	/// The ladder prices exactly that.
 	/// Nothing below level 0 is affected, since the batch is one combined message from level 1 on.
+	///
+	/// Two limits on where that third charge comes from, since neither is obvious from the code.
+	///
+	/// The coefficients `e_i` are a tensor rather than a power curve.
+	/// So the step they batch is covered by [DP24], and only in the unique-decoding regime.
+	/// Read a Johnson-regime figure as a bound on the fold, never on the batch.
+	///
+	/// [NA25] section 6.5 sketches this very construction, level 0 per proof and combined after.
+	/// It states no error bound for it, and suspects only that communication is reduced.
+	/// So the row-union charge is this repository's conservative reading, not a citation.
+	///
+	/// [DP24]: <https://eprint.iacr.org/2024/504>
+	/// [NA25]: <https://eprint.iacr.org/2025/1187>
 	fn verify(
 		channel: &mut Channel,
 		oracle_specs: &[OracleSpec],

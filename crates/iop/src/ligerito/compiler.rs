@@ -64,6 +64,19 @@ where
 			params.log_msg_len(),
 			"precondition: the longest oracle's message length must be the ladder's message length"
 		);
+		// Batching widens level 0's row union, which lowers a ceiling no query count can raise.
+		// A ladder sized for one message can therefore miss a target it otherwise clears, and the
+		// miss is silent: the unbatched figure keeps reporting the number the batch does not pay.
+		// Whether the ladder clears its target on its own is `LigeritoParams`'s business, so this
+		// refuses only the batches that cause the shortfall.
+		let target = params.security_bits() as f64;
+		let batched = params.batched_achieved_security_bits(F::N_BITS, oracle_specs.len());
+		assert!(
+			batched >= target || params.achieved_security_bits(F::N_BITS) < target,
+			"precondition: {} oracles reach {batched:.2} bits against a target of {}",
+			oracle_specs.len(),
+			params.security_bits()
+		);
 
 		Self {
 			oracle_specs,
@@ -309,5 +322,28 @@ mod tests {
 			vec![OracleSpec::new(7), OracleSpec::new(6)],
 			params(),
 		);
+	}
+
+	/// A batch that would miss the target the ladder was sized for must be refused.
+	///
+	/// At 96 bits the query term binds, so batching costs nothing there.
+	/// Above roughly 117 bits over `B128` the algebraic ceiling binds instead.
+	/// Each doubling of the oracle count then takes one bit off it.
+	/// A ladder sized for one message misses its target once several share it.
+	#[test]
+	#[should_panic(expected = "oracles reach")]
+	fn a_batch_that_would_miss_the_target_is_refused() {
+		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
+		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
+			.expect("120 bits is reachable with a constant loss");
+		let (params, _) =
+			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
+				.expect("a 120-bit ladder exists for one message");
+
+		// One oracle clears 120, so the shortfall below is caused by the batch and nothing else.
+		assert!(params.achieved_security_bits(128) >= 120.0);
+
+		let spec = OracleSpec::new(params.log_msg_len());
+		LigeritoVerifierCompiler::<B128>::new(vec![spec, spec], params);
 	}
 }
