@@ -405,7 +405,7 @@ where
 	};
 
 	// Reconstruct the witness evaluation from its two segments.
-	let trace_eval = Hypercube::One.fold_var(public_eval, witness_eval.clone(), &r_segment);
+	let trace_eval = Hypercube::One.fold_var(public_eval, witness_eval.clone(), r_segment);
 
 	// Check if the reconstructed trace value is satisfying.
 	//

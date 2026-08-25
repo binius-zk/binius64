@@ -114,12 +114,12 @@ fn evaluate_sum_inds<E: FieldOps>(r_i: &[E], r_j: &[E], r_s: &[E]) -> (E, E) {
 				Hypercube::One.fold_var(
 					agree.clone() * &no_carry + j_only.clone() * &carry,
 					j_only * &no_carry,
-					&i,
+					i,
 				),
 				Hypercube::One.fold_var(
 					s_only.clone() * &carry,
 					s_only * &no_carry + agree * &carry,
-					&i,
+					i,
 				),
 			)
 		},
@@ -135,7 +135,7 @@ fn evaluate_overflow_ind<E: FieldOps>(r_i: &[E], r_s: &[E]) -> E {
 	iter::zip(r_i, r_s).fold(E::zero(), |carry, (i, s)| {
 		// With `i = 0` only a carry in that `s` propagates survives; with `i = 1` the position
 		// carries out whenever `s` is set or a carry comes in.
-		Hypercube::One.fold_var(s.clone() * &carry, s.clone() + (E::one() - s) * &carry, &i)
+		Hypercube::One.fold_var(s.clone() * &carry, s.clone() + (E::one() - s) * &carry, i)
 	})
 }
 

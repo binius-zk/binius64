@@ -334,7 +334,7 @@ where
 			let mut u = values[index_offset << 1].clone();
 			let v = values[(index_offset << 1) | 1].clone() + &u;
 			u += v.clone() * twiddle;
-			values[index_offset] = Hypercube::One.fold_var(u, v, &challenge);
+			values[index_offset] = Hypercube::One.fold_var(u, v, challenge);
 		}
 
 		log_len -= 1;

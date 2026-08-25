@@ -263,7 +263,7 @@ impl<P: PackedField, Data: BufferData<P>> MultilinearMut<P> for FieldBuffer<P, D
 				.into_par_iter()
 				.with_min_task(WorkPerItem::FieldMuls)
 				.for_each(|(lo_i, hi_i)| {
-					*lo_i = Hypercube::One.fold_var(*lo_i, *hi_i, &broadcast_scalar)
+					*lo_i = Hypercube::One.fold_var(*lo_i, *hi_i, &broadcast_scalar);
 				});
 		}
 
