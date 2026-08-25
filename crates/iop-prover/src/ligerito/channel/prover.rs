@@ -8,20 +8,29 @@ use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, ligerito::LigeritoParams};
 use binius_ip_prover::{
 	channel::{IPProverChannel, WordIPProverChannel},
-	sumcheck::{ProveSingleOutput, bivariate_product_prover, prove_single},
+	sumcheck::{
+		self, PaddedSumcheckDecorator, batch::BatchSumcheckOutput,
+		bivariate_product_evaluator::BivariateProductEvaluator, mle_store::MleStore,
+		round_evaluator::SharedSumcheckProver,
+	},
 };
-use binius_math::{FieldBuffer, FieldSlice, FieldVec, ntt::AdditiveNTT};
+use binius_math::{
+	FieldBuffer, FieldSlice, FieldVec, multilinear::hypercube::Hypercube, ntt::AdditiveNTT,
+};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
+use itertools::izip;
 
-use super::{LigeritoOracle, relation::QueuedRelation};
+use super::{LigeritoOracle, combined_message::CombinedMessage, relation::QueuedRelation};
 use crate::{
 	channel::{IOPProverChannel, grinding::GrindingProverChannel},
-	ligerito::LigeritoProver,
+	fri::{BatchBrakedownOracleProver, BrakedownOracleProver},
+	ligerito::{LigeritoProver, opening::commit_level},
 	merkle_channel::MerkleIPProverChannel,
 };
 
-/// A prover channel that opens its one committed oracle with a Ligerito ladder.
+/// A prover channel that opens every committed oracle with one Ligerito ladder.
 ///
-/// The counterpart of the Ligerito verifier channel, where the two reductions are described.
+/// The counterpart of the Ligerito verifier channel, where the three reductions are described.
 ///
 /// The channel is transparent rather than zero-knowledge.
 /// No mask is drawn, so it needs no randomness of its own.
@@ -49,14 +58,16 @@ where
 	ntt: &'a NTT,
 	/// The ladder the opening runs down.
 	params: &'a LigeritoParams,
-	/// The one oracle this channel expects, held as a vector so the trait can hand it back.
+	/// The oracles this channel expects, in the order it will commit them.
 	oracle_specs: Vec<OracleSpec>,
-	/// Level 0's committed codeword and the handle that opens it, absent until the oracle is sent.
-	prover: Option<LigeritoProver<'a, P, Channel::Commitment, NTT>>,
-	/// The committed message, handed over when the caller finalizes the oracle.
-	message: Option<FieldVec<P, A>>,
-	/// Relations queued against the oracle, all opened together once the caller finishes.
-	queue: Vec<QueuedRelation<P, A>>,
+	/// The committed level-0 codewords, in the order their commitments were sent.
+	oracles: Vec<BrakedownOracleProver<P, Channel::Commitment>>,
+	/// The committed messages, each handed over when the caller finalizes its oracle.
+	/// One entry per committed oracle, absent until that oracle is finalized.
+	messages: Vec<Option<FieldVec<P, A>>>,
+	/// Relations queued against each oracle, all opened together once the caller finishes.
+	/// One entry per committed oracle, so its length is also the number committed so far.
+	queue: Vec<Vec<QueuedRelation<P, A>>>,
 	/// The allocator the opening's working buffers are drawn from.
 	alloc: A,
 }
@@ -69,13 +80,13 @@ where
 	Channel: MerkleIPProverChannel<F, Word = Word>,
 	A: Allocator,
 {
-	/// Creates a channel that opens one oracle with the given ladder.
+	/// Creates a channel that opens the given oracles with the given ladder.
 	///
 	/// ## Preconditions
 	///
-	/// * `oracle_specs` holds exactly one spec.
-	/// * That spec is not zero-knowledge.
-	/// * Its message length is the ladder's message length.
+	/// * `oracle_specs` is non-empty.
+	/// * No spec is zero-knowledge.
+	/// * The longest message is the ladder's message length.
 	/// * `ntt`'s domain covers every level's codeword domain.
 	pub fn new(
 		channel: Channel,
@@ -84,20 +95,22 @@ where
 		params: &'a LigeritoParams,
 		alloc: A,
 	) -> Self {
-		assert_eq!(
-			oracle_specs.len(),
-			1,
-			"precondition: a Ligerito channel opens exactly one oracle, got {}",
-			oracle_specs.len()
+		assert!(
+			!oracle_specs.is_empty(),
+			"precondition: a Ligerito channel opens at least one oracle"
 		);
 		assert!(
-			!oracle_specs[0].is_zk,
+			oracle_specs.iter().all(|spec| !spec.is_zk),
 			"precondition: Ligerito commits no mask, so a zero-knowledge oracle cannot be opened"
 		);
 		assert_eq!(
-			oracle_specs[0].log_msg_len,
+			oracle_specs
+				.iter()
+				.map(|spec| spec.log_msg_len)
+				.max()
+				.expect("oracle_specs is non-empty"),
 			params.log_msg_len(),
-			"precondition: the oracle's message length must be the ladder's message length"
+			"precondition: the longest oracle's message length must be the ladder's message length"
 		);
 
 		Self {
@@ -105,8 +118,8 @@ where
 			ntt,
 			params,
 			oracle_specs,
-			prover: None,
-			message: None,
+			oracles: Vec::new(),
+			messages: Vec::new(),
 			queue: Vec::new(),
 			alloc,
 		}
@@ -115,104 +128,139 @@ where
 	/// Consumes the channel and proves every queued relation in one opening.
 	///
 	/// Mirrors the verifier's own finishing step, message for message.
-	/// Nothing happens when no relation was queued, since the commitment alone asserts nothing.
+	/// Nothing happens when no relation was queued, since commitments alone assert nothing.
 	///
 	/// The channel has to be able to pay a proof of work, because the ladder may ask for one.
 	/// A configuration that grinds nothing still asks for the capability, and never uses it.
+	///
+	/// ## Preconditions
+	///
+	/// * Either every oracle carries a relation, or none of them does.
+	/// * Every oracle carrying a relation was finalized.
 	pub fn finish(self)
 	where
 		Channel: GrindingProverChannel,
 	{
 		let Self {
 			mut channel,
-			ntt: _,
-			params: _,
+			ntt,
+			params,
 			oracle_specs,
-			prover,
-			message,
+			oracles,
+			messages,
 			queue,
 			alloc,
 		} = self;
 
-		// The oracle is committed at most once, so what remains is one spec or none.
-		let n_remaining = oracle_specs.len() - usize::from(prover.is_some());
+		// Every oracle is committed at most once, so what remains is whatever was not.
+		let n_remaining = oracle_specs.len() - oracles.len();
 		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining");
 
-		if queue.is_empty() {
+		if queue.iter().all(Vec::is_empty) {
 			return;
 		}
+		assert!(
+			queue.iter().all(|relations| !relations.is_empty()),
+			"precondition: every committed oracle must carry at least one relation"
+		);
 
-		let prover = prover.expect("a relation can only be queued against a committed oracle");
-		let message = message.expect("the oracle was committed but never finalized");
-		Self::prove(&mut channel, &prover, message.as_view(), queue, &alloc);
+		let messages = messages
+			.into_iter()
+			.map(|message| message.expect("the oracle was committed but never finalized"))
+			.collect::<Vec<_>>();
+		let prover = LigeritoProver::new(params, ntt, BatchBrakedownOracleProver::new(oracles));
+
+		Self::prove(&mut channel, &prover, &oracle_specs, &messages, queue, &alloc);
 	}
 
 	/// Proves the queued relations against the committed ladder.
 	///
-	/// The two reductions the verifier runs, in the same order.
+	/// The three reductions the verifier runs, in the same order.
 	///
 	/// ```text
-	///     <pi, t> = s          the relations, batched into one
-	///       -> sumcheck        binds every variable at a sampled point r
-	///     pi(r) = alpha        the evaluation claim the ladder takes
+	///     <pi_i, t_ij> = s_ij      the relations, batched per oracle into <pi_i, T_i> = S_i
+	///       -> sumcheck            binds every variable at a sampled point r
+	///     pi_i(r) = alpha_i        one evaluation claim per oracle
+	///       -> eq-combine          at coefficients e_i drawn once every alpha is on the wire
+	///     PI(r) = sum_i e_i alpha_i
 	///       -> ladder
 	/// ```
 	///
-	/// The sumcheck leaves both multilinears evaluated at `r`.
-	/// Only the committed one has to be sent, since the verifier builds the transparent itself.
+	/// The sumcheck leaves both multilinears of every oracle evaluated at `r`.
+	/// Only the committed ones have to be sent, since the verifier builds the transparents itself.
 	fn prove(
 		channel: &mut Channel,
 		prover: &LigeritoProver<'_, P, Channel::Commitment, NTT>,
-		message: FieldSlice<'_, P>,
-		queue: Vec<QueuedRelation<P, A>>,
+		oracle_specs: &[OracleSpec],
+		messages: &[FieldVec<P, A>],
+		queue: Vec<Vec<QueuedRelation<P, A>>>,
 		alloc: &A,
 	) where
 		Channel: GrindingProverChannel,
 	{
+		let n_oracles = messages.len();
+		let max_n_vars = prover.params().log_msg_len();
+
 		// Every claim in the queue is already bound to the transcript, so a coefficient drawn
 		// here cannot be anticipated by any of them.
 		let lambda = channel.sample();
-		let QueuedRelation { transparent, claim } = QueuedRelation::batch(queue, lambda);
 
-		// The sumcheck consumes both of its multilinears, and the ladder still needs the message.
-		// So it runs over a copy.
-		let sumcheck_prover = bivariate_product_prover(
-			alloc,
-			[
-				FieldBuffer::from_view_in(alloc, message.as_view()),
-				transparent,
-			],
-			claim,
-		);
-		let ProveSingleOutput {
-			multilinear_evals,
+		// One padded sumcheck prover per oracle, in the order the oracles were committed. A
+		// message shorter than the longest one rides the same rounds, its claim carried through
+		// the extra ones by the equality indicator at zero.
+		let provers = izip!(queue, messages, oracle_specs)
+			.map(|(relations, message, spec)| {
+				let QueuedRelation { transparent, claim } =
+					QueuedRelation::batch(relations, lambda);
+				let n_vars = spec.log_msg_len;
+
+				let mut store = MleStore::new(n_vars, alloc);
+				let message_col = store.push(message.as_view());
+				let transparent_col = store.push_owned(transparent);
+				let inner = SharedSumcheckProver::new(
+					store,
+					[(claim, BivariateProductEvaluator::new([message_col, transparent_col]))],
+				);
+				PaddedSumcheckDecorator::new(inner, max_n_vars - n_vars, vec![claim])
+			})
+			.collect::<Vec<_>>();
+
+		let BatchSumcheckOutput {
 			mut challenges,
-		} = prove_single(sumcheck_prover, channel);
+			multilinear_evals,
+		} = sumcheck::batch_prove(provers, channel);
 
-		// The store holds the message first, so its evaluation is the one the ladder opens.
-		let alpha = multilinear_evals[0];
-		channel.send_one(alpha);
+		// The store holds each message first, so its evaluation is the one the ladder opens.
+		let alphas = multilinear_evals
+			.iter()
+			.map(|evals| evals[0])
+			.collect::<Vec<_>>();
+		channel.send_many(&alphas);
 
 		// Sumcheck rounds bind the highest variable first, so reversing gives variable order.
 		challenges.reverse();
+		let point = challenges;
 
-		prover.prove(message, &challenges, alpha, alloc, channel);
+		// Every stated evaluation is now bound to the transcript, so the coefficients that combine
+		// the messages into one cannot be anticipated either.
+		let outer_challenges = channel.sample_many(log2_ceil_usize(n_oracles));
+		let coefficients = Hypercube::One.expand(&outer_challenges).build_scalars();
+
+		let mut combined = CombinedMessage::zeros_in(alloc, max_n_vars);
+		let mut combined_claim = F::ZERO;
+		for (message, spec, coefficient, alpha) in
+			izip!(messages, oracle_specs, &coefficients, &alphas)
+		{
+			combined.add_scaled(message.as_view(), *coefficient);
+			combined_claim +=
+				*coefficient * *alpha * Hypercube::One.eq_ind_zero(&point[spec.log_msg_len..]);
+		}
+
+		let combined = combined.into_buffer();
+		prover.prove(combined.as_view(), &point, combined_claim, alloc, channel);
 	}
 }
 
-/// Proves the queued relations against the committed ladder.
-///
-/// The two reductions the verifier runs, in the same order.
-///
-/// ```text
-///     <pi, t> = s          the relations, batched into one
-///       -> sumcheck        binds every variable at a sampled point r
-///     pi(r) = alpha        the evaluation claim the ladder takes
-///       -> ladder
-/// ```
-///
-/// The sumcheck leaves both multilinears evaluated at `r`.
-/// Only the committed one has to be sent, since the verifier builds the transparent itself.
 impl<F, P, NTT, Channel, A> IPProverChannel<F> for LigeritoProverChannel<'_, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
@@ -278,7 +326,7 @@ where
 	type Oracle = LigeritoOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs[usize::from(self.prover.is_some())..]
+		&self.oracle_specs[self.oracles.len()..]
 	}
 
 	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
@@ -292,29 +340,52 @@ where
 			buffer.log_len()
 		);
 
+		// Every oracle shares level 0's column count, so only the lane count follows the message
+		// length. A message below one column block commits a single zero-padded lane.
+		let level = self.params.level_zero_shape(buffer.log_len());
+		// Only a message below one column block needs padding, so a longer one is never copied.
+		let padded = (buffer.log_len() < level.log_msg_len()).then(|| {
+			FieldBuffer::from_view_in(&self.alloc, buffer)
+				.zero_extend_in(&self.alloc, level.log_msg_len())
+		});
+		let message = padded
+			.as_ref()
+			.map_or_else(|| buffer.as_view(), FieldBuffer::as_view);
+
 		// Encoding and committing level 0 is the whole of the commit phase.
 		// The deeper levels only exist once the folds above them have run.
-		self.prover =
-			Some(LigeritoProver::commit(self.params, self.ntt, buffer, &mut self.channel));
+		let index = self.oracles.len();
+		self.oracles
+			.push(commit_level(&level, self.ntt, message, &mut self.channel));
+		self.messages.push(None);
+		self.queue.push(Vec::new());
 
-		LigeritoOracle(())
+		LigeritoOracle { index }
 	}
 
 	fn prove_oracle_relation(
 		&mut self,
-		_oracle: Self::Oracle,
+		oracle: Self::Oracle,
 		transparent: FieldVec<P, A>,
 		claim: P::Scalar,
 	) {
-		// A handle can only exist once the oracle was committed, and there is one oracle.
-		// So the handle names no index to look up.
-		self.queue.push(QueuedRelation { transparent, claim });
+		// A handle can only exist once its oracle was committed, so the slot is already there.
+		let n_committed = self.queue.len();
+		self.queue
+			.get_mut(oracle.index)
+			.unwrap_or_else(|| {
+				panic!("oracle index {} out of bounds, expected < {n_committed}", oracle.index)
+			})
+			.push(QueuedRelation { transparent, claim });
 	}
 
-	fn finalize_oracle(&mut self, _oracle: Self::Oracle, buffer: FieldVec<P, A>) {
+	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
 		// The ladder folds the message down to the residual.
 		// So it needs the buffer itself and not just the codeword it was encoded into.
-		assert!(self.message.replace(buffer).is_none(), "the oracle was finalized twice");
+		assert!(
+			self.messages[oracle.index].replace(buffer).is_none(),
+			"the oracle was finalized twice"
+		);
 	}
 }
 
@@ -341,6 +412,48 @@ mod tests {
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 
+	/// One oracle a run commits, opens, and states relations about.
+	///
+	/// Splitting the committed message from the opened one is how a dishonest prover is expressed.
+	/// Every value it sends in the clear is consistent with the opened buffer.
+	/// The codeword level 0's queries land in encodes the committed one.
+	/// An honest oracle holds the same buffer twice.
+	struct Oracle {
+		/// The buffer level 0's codeword encodes.
+		committed: FieldBuffer<B128>,
+		/// The buffer every value sent in the clear is consistent with.
+		opened: FieldBuffer<B128>,
+		/// The transparent multilinears, each with the inner product claimed against it.
+		relations: Vec<(FieldBuffer<B128>, B128)>,
+	}
+
+	impl Oracle {
+		/// An honest oracle over `log_msg_len` variables, carrying `n_relations` true claims.
+		///
+		/// A dense random weight rather than an equality indicator.
+		/// So each relation is a general inner product, not the evaluation claim the ladder takes.
+		fn honest(rng: &mut StdRng, log_msg_len: usize, n_relations: usize) -> Self {
+			let message = random_field_buffer::<B128>(&mut *rng, log_msg_len);
+			let relations = (0..n_relations)
+				.map(|_| {
+					let transparent = random_field_buffer::<B128>(&mut *rng, log_msg_len);
+					let claim = message.inner_product(&transparent);
+					(transparent, claim)
+				})
+				.collect();
+			Self {
+				committed: message.clone(),
+				opened: message,
+				relations,
+			}
+		}
+
+		/// The oracle's shape, as the channel is told about it up front.
+		fn spec(&self) -> OracleSpec {
+			OracleSpec::new(self.opened.log_len())
+		}
+	}
+
 	/// A ladder whose level `i` commits at inverse rate `2^(i + 1)` and opens `n_queries` rows.
 	///
 	/// `lanes[i]` is level `i`'s fold amount, and `log_msg_cols` is level 0's column count.
@@ -366,39 +479,19 @@ mod tests {
 		LigeritoParams::new(levels, SoundnessRegime::default(), 32)
 	}
 
-	/// A random multilinear of the ladder's message shape.
-	fn message(params: &LigeritoParams, seed: u64) -> FieldBuffer<B128> {
-		random_field_buffer(&mut StdRng::seed_from_u64(seed), params.log_msg_len())
+	/// One honest oracle filling the ladder, carrying one relation.
+	fn one_oracle(params: &LigeritoParams, seed: u64) -> Vec<Oracle> {
+		let mut rng = StdRng::seed_from_u64(seed);
+		vec![Oracle::honest(&mut rng, params.log_msg_len(), 1)]
 	}
 
-	/// A random dense transparent over the message, paired with the claim it truthfully makes.
-	///
-	/// A dense random weight rather than an equality indicator.
-	/// So the relation is a general inner product, not the evaluation claim the ladder takes.
-	fn relation(rng: &mut StdRng, message: &FieldBuffer<B128>) -> (FieldBuffer<B128>, B128) {
-		let transparent = random_field_buffer::<B128>(rng, message.log_len());
-		let claim = message.inner_product(&transparent);
-		(transparent, claim)
-	}
-
-	/// Commits `committed`, proves `relations` about `opened`, and verifies the result.
-	///
-	/// Splitting the committed message from the opened one is how a dishonest prover is expressed.
-	/// Every value it sends in the clear is consistent with the opened buffer.
-	/// The codeword level 0's queries land in encodes the committed one.
-	/// An honest run passes the same buffer twice.
+	/// Commits every oracle, proves its relations, and verifies the whole batch in one opening.
 	///
 	/// Returns the finished proof's length in bytes.
 	/// So a byte count is only ever taken from a transcript that convinced the verifier.
-	fn run(
-		params: &LigeritoParams,
-		committed: &FieldBuffer<B128>,
-		opened: &FieldBuffer<B128>,
-		relations: &[(FieldBuffer<B128>, B128)],
-	) -> Result<usize, Error> {
-		let n_vars = params.log_msg_len();
-		let verifier_compiler =
-			LigeritoVerifierCompiler::<B128>::new(vec![OracleSpec::new(n_vars)], params.clone());
+	fn run(params: &LigeritoParams, oracles: &[Oracle]) -> Result<usize, Error> {
+		let specs = oracles.iter().map(Oracle::spec).collect::<Vec<_>>();
+		let verifier_compiler = LigeritoVerifierCompiler::<B128>::new(specs, params.clone());
 
 		// One transform for the whole ladder, sized by the compiler rather than by hand.
 		let domain = GaoMateerOnTheFly::generate(verifier_compiler.max_log_domain_size());
@@ -414,13 +507,19 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		// The commit phase: level 0's codeword, and nothing else.
-		let oracle = prover_channel.send_oracle(committed.as_view());
-		for (transparent, claim) in relations {
-			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
+		// The commit phase: one level-0 codeword per oracle, and nothing else.
+		let handles = oracles
+			.iter()
+			.map(|oracle| prover_channel.send_oracle(oracle.committed.as_view()))
+			.collect::<Vec<_>>();
+		for (handle, oracle) in std::iter::zip(&handles, oracles) {
+			for (transparent, claim) in &oracle.relations {
+				prover_channel.prove_oracle_relation(*handle, transparent.clone(), *claim);
+			}
+			// The ladder folds the message itself, so it needs the buffer and not just its
+			// codeword.
+			prover_channel.finalize_oracle(*handle, oracle.opened.clone());
 		}
-		// The ladder folds the message itself, so it needs the buffer and not just its codeword.
-		prover_channel.finalize_oracle(oracle, opened.clone());
 		prover_channel.finish();
 
 		let proof = prover_transcript.finalize();
@@ -432,14 +531,19 @@ mod tests {
 				&mut verifier_transcript,
 			);
 
-		let oracle = verifier_channel.recv_oracle(n_vars, true)?;
-		for (transparent, claim) in relations {
-			let transparent = transparent.clone();
-			verifier_channel.verify_oracle_relation(
-				oracle,
-				Box::new(move |point: &[B128]| transparent.evaluate(point)),
-				*claim,
-			)?;
+		let handles = oracles
+			.iter()
+			.map(|oracle| verifier_channel.recv_oracle(oracle.opened.log_len(), true))
+			.collect::<Result<Vec<_>, _>>()?;
+		for (handle, oracle) in std::iter::zip(&handles, oracles) {
+			for (transparent, claim) in &oracle.relations {
+				let transparent = transparent.clone();
+				verifier_channel.verify_oracle_relation(
+					*handle,
+					Box::new(move |point: &[B128]| transparent.evaluate(point)),
+					*claim,
+				)?;
+			}
 		}
 		verifier_channel.finish()?;
 
@@ -466,10 +570,8 @@ mod tests {
 			// proof of work to both sides and the two stay in step through it.
 			for grinding in [Grinding::NONE, Grinding::new(3, 4)] {
 				let params = ladder(log_msg_cols, lanes).with_grinding(grinding);
-				let msg = message(&params, 0);
-				let mut rng = StdRng::seed_from_u64(1);
-				let relations = [relation(&mut rng, &msg)];
-				run(&params, &msg, &msg, &relations)
+				let oracles = one_oracle(&params, 0);
+				run(&params, &oracles)
 					.unwrap_or_else(|err| panic!("{log_msg_cols} {lanes:?} {grinding:?}: {err}"));
 			}
 		}
@@ -487,42 +589,93 @@ mod tests {
 	#[test]
 	fn several_relations_on_one_oracle_share_a_single_opening() {
 		let params = ladder(5, &[2, 1]);
-		let msg = message(&params, 0);
 		let mut rng = StdRng::seed_from_u64(1);
+		let one = [Oracle::honest(&mut rng, params.log_msg_len(), 1)];
+		let three = [Oracle::honest(&mut rng, params.log_msg_len(), 3)];
 
-		let one = [relation(&mut rng, &msg)];
-		let three = [
-			relation(&mut rng, &msg),
-			relation(&mut rng, &msg),
-			relation(&mut rng, &msg),
-		];
-
-		let one_size = run(&params, &msg, &msg, &one).expect("one honest relation");
-		let three_size = run(&params, &msg, &msg, &three).expect("three honest relations");
+		let one_size = run(&params, &one).expect("one honest relation");
+		let three_size = run(&params, &three).expect("three honest relations");
 
 		// The extra relations are folded before anything is committed or opened.
 		// So they add nothing to the transcript.
 		assert_eq!(one_size, three_size);
 	}
 
+	/// Several oracles of the same length collapse into a single ladder.
+	///
+	/// Their level-0 codewords have one length over one domain, so one query set serves all three.
+	/// Their folded rows are combined at the batching coefficients into one claim per position.
+	/// That is a claim about the single message level 1 commits.
+	///
+	///     level 0: three Merkle trees, one query set, three openings per query
+	///     level 1: one Merkle tree over `sum_i e_i * X_1^(i)`
+	///
+	/// So a batch pays three level-0 openings but only one of everything below.
+	#[test]
+	fn several_oracles_of_one_length_share_a_single_ladder() {
+		let params = ladder(5, &[2, 1]);
+		let mut rng = StdRng::seed_from_u64(2);
+		let batch = [
+			Oracle::honest(&mut rng, params.log_msg_len(), 1),
+			Oracle::honest(&mut rng, params.log_msg_len(), 1),
+			Oracle::honest(&mut rng, params.log_msg_len(), 1),
+		];
+
+		let batch_size = run(&params, &batch).expect("three honest oracles");
+		let alone = batch
+			.iter()
+			.map(|oracle| run(&params, std::slice::from_ref(oracle)).expect("one honest oracle"))
+			.sum::<usize>();
+
+		assert!(
+			batch_size < alone,
+			"one ladder over three oracles wrote {batch_size} bytes, three ladders {alone}"
+		);
+	}
+
+	/// Oracles of different lengths share the ladder of the longest.
+	///
+	/// Level 0's column count is shared, so a shorter message carries fewer interleaved lanes.
+	/// One shorter than a single column block carries one lane, zero-padded out to the count.
+	///
+	/// Fixture state: 2^5 columns and 2^2 lanes at level 0, so the ladder commits 2^7 elements.
+	///
+	///     2^7 elements -> 2^2 lanes
+	///     2^6 elements -> 2^1 lanes
+	///     2^5 elements -> 2^0 lanes, exactly one column block
+	///     2^3 elements -> 2^0 lanes, zero-padded out to 2^5 columns
+	#[test]
+	fn oracles_of_different_lengths_share_a_single_ladder() {
+		let params = ladder(5, &[2, 1]);
+		let mut rng = StdRng::seed_from_u64(3);
+		let batch = [7, 6, 5, 3]
+			.map(|log_msg_len| Oracle::honest(&mut rng, log_msg_len, 1))
+			.into_iter()
+			.collect::<Vec<_>>();
+
+		run(&params, &batch).expect("four honest oracles of four lengths");
+	}
+
 	/// A claim the message does not satisfy must be caught by the relation sumcheck.
 	///
 	/// The ladder itself is honest here.
-	/// The commitment encodes the message that was opened.
+	/// Every commitment encodes the message that was opened.
 	/// Every value sent in the clear is internally consistent.
-	/// Only the claim is wrong.
-	/// So the reduced sumcheck value no longer matches the two stated evaluations multiplied.
+	/// Only one claim, on one oracle of several, is wrong.
+	/// So the reduced sumcheck value no longer matches the stated evaluations multiplied.
 	#[test]
 	fn a_claim_the_message_does_not_satisfy_is_rejected() {
 		let params = ladder(5, &[2, 1]);
-		let msg = message(&params, 0);
-		let mut rng = StdRng::seed_from_u64(1);
-		let (transparent, claim) = relation(&mut rng, &msg);
+		let mut rng = StdRng::seed_from_u64(4);
+		let mut batch = [
+			Oracle::honest(&mut rng, params.log_msg_len(), 1),
+			Oracle::honest(&mut rng, 6, 1),
+		];
 
-		// Mutation: the claim is off by one, and nothing else changes.
-		let relations = [(transparent, claim + B128::ONE)];
-		let err = run(&params, &msg, &msg, &relations)
-			.expect_err("the inner-product claim is off by one");
+		// Mutation: the second oracle's claim is off by one, and nothing else changes.
+		batch[1].relations[0].1 += B128::ONE;
+
+		let err = run(&params, &batch).expect_err("the inner-product claim is off by one");
 
 		match err {
 			Error::IPChannel(binius_ip::channel::Error::InvalidAssert) => {}
@@ -533,7 +686,7 @@ mod tests {
 	/// A commitment that does not encode the opened message must be caught by the ladder.
 	///
 	/// The relation is honest about the message the prover reduced.
-	/// So the sumcheck passes and the stated evaluation matches.
+	/// So the sumcheck passes and every stated evaluation matches.
 	/// The rows the query phase opens come from a different codeword, and only the ladder sees it.
 	///
 	///     relation sumcheck: about `opened`      -> consistent
@@ -541,13 +694,17 @@ mod tests {
 	#[test]
 	fn a_commitment_that_does_not_encode_the_opened_message_is_rejected() {
 		let params = ladder(5, &[2, 1]);
-		let committed = message(&params, 0);
-		let opened = message(&params, 1);
-		let mut rng = StdRng::seed_from_u64(1);
-		let relations = [relation(&mut rng, &opened)];
+		let mut rng = StdRng::seed_from_u64(5);
+		let mut batch = [
+			Oracle::honest(&mut rng, params.log_msg_len(), 1),
+			Oracle::honest(&mut rng, 6, 1),
+		];
 
-		let err = run(&params, &committed, &opened, &relations)
-			.expect_err("the committed codeword encodes a different message");
+		// Mutation: the second oracle commits a different buffer from the one it opens.
+		batch[1].committed = random_field_buffer::<B128>(&mut rng, 6);
+
+		let err =
+			run(&params, &batch).expect_err("the committed codeword encodes a different message");
 
 		// The ladder's own assertion, so the error arrives wrapped rather than raised here.
 		match err {
@@ -558,20 +715,19 @@ mod tests {
 		}
 	}
 
-	/// A commitment carrying no relation opens nothing.
+	/// Commitments carrying no relation open nothing.
 	///
-	/// The commitment on its own asserts nothing about the message.
+	/// A commitment on its own asserts nothing about the message.
 	/// So neither side runs a sumcheck, a query round, or a residual.
-	/// The transcript then holds the Merkle root and nothing more.
+	/// The transcript then holds the Merkle roots and nothing more.
 	#[test]
-	fn a_commitment_with_no_relation_opens_nothing() {
+	fn commitments_with_no_relation_open_nothing() {
 		let params = ladder(5, &[2, 1]);
-		let msg = message(&params, 0);
-		let mut rng = StdRng::seed_from_u64(1);
-		let relations = [relation(&mut rng, &msg)];
+		let mut oracles = one_oracle(&params, 6);
+		let opened_size = run(&params, &oracles).expect("one honest relation");
 
-		let empty_size = run(&params, &msg, &msg, &[]).expect("a commitment alone always verifies");
-		let opened_size = run(&params, &msg, &msg, &relations).expect("one honest relation");
+		oracles[0].relations.clear();
+		let empty_size = run(&params, &oracles).expect("a commitment alone always verifies");
 
 		assert!(
 			empty_size < opened_size,
@@ -579,7 +735,26 @@ mod tests {
 		);
 	}
 
-	/// The buffer handed to the commit phase must have the ladder's message length.
+	/// Opening some oracles but not others is refused rather than silently skipped.
+	///
+	/// One ladder opens every committed message together, so leaving one out has no meaning.
+	/// The prover would have to commit a codeword whose rows nothing ever checks.
+	#[test]
+	#[should_panic(expected = "every committed oracle must carry at least one relation")]
+	fn an_oracle_left_unopened_beside_an_opened_one_is_refused() {
+		let params = ladder(5, &[2, 1]);
+		let mut rng = StdRng::seed_from_u64(7);
+		let mut batch = [
+			Oracle::honest(&mut rng, params.log_msg_len(), 1),
+			Oracle::honest(&mut rng, 6, 1),
+		];
+
+		// Mutation: the second oracle is committed and finalized, but never opened.
+		batch[1].relations.clear();
+		let _ = run(&params, &batch);
+	}
+
+	/// The buffer handed to the commit phase must have the length its spec announced.
 	///
 	/// A shorter one would encode into a codeword of the wrong shape.
 	/// The verifier would then read its Merkle tree at a depth the prover never committed.
@@ -587,9 +762,13 @@ mod tests {
 	#[should_panic(expected = "oracle buffer log_len mismatch")]
 	fn a_message_of_the_wrong_length_is_refused() {
 		let params = ladder(5, &[2, 1]);
+		let mut oracles = one_oracle(&params, 8);
+
+		// Mutation: the buffer loses a variable while its spec keeps the ladder's length.
 		let short =
-			random_field_buffer::<B128>(&mut StdRng::seed_from_u64(0), params.log_msg_len() - 1);
-		run(&params, &short, &short, &[]).expect("the commit phase panics before this");
+			random_field_buffer::<B128>(&mut StdRng::seed_from_u64(9), params.log_msg_len() - 1);
+		oracles[0].committed = short;
+		let _ = run(&params, &oracles);
 	}
 
 	/// The committed buffer must be handed back before the opening runs.
@@ -599,14 +778,11 @@ mod tests {
 	#[should_panic(expected = "the oracle was committed but never finalized")]
 	fn an_unfinalized_oracle_cannot_be_opened() {
 		let params = ladder(5, &[2, 1]);
-		let msg = message(&params, 0);
-		let mut rng = StdRng::seed_from_u64(1);
-		let (transparent, claim) = relation(&mut rng, &msg);
+		let oracles = one_oracle(&params, 10);
+		let (transparent, claim) = oracles[0].relations[0].clone();
 
-		let verifier_compiler = LigeritoVerifierCompiler::<B128>::new(
-			vec![OracleSpec::new(params.log_msg_len())],
-			params,
-		);
+		let verifier_compiler =
+			LigeritoVerifierCompiler::<B128>::new(vec![oracles[0].spec()], params);
 		let domain = GaoMateerOnTheFly::generate(verifier_compiler.max_log_domain_size());
 		let prover_compiler = LigeritoProverCompiler::<B128, _>::from_verifier_compiler(
 			&verifier_compiler,
@@ -621,8 +797,8 @@ mod tests {
 			);
 
 		// Mutation: the relation is queued, but the message is never handed over.
-		let oracle = channel.send_oracle(msg.as_view());
-		channel.prove_oracle_relation(oracle, transparent, claim);
+		let handle = channel.send_oracle(oracles[0].committed.as_view());
+		channel.prove_oracle_relation(handle, transparent, claim);
 		channel.finish();
 	}
 }

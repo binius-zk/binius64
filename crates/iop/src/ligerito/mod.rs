@@ -18,6 +18,7 @@
 //!
 //! - [`LigeritoParams`] and its invariants;
 //! - [`InducedBasis`], the weight vector a level's opened rows put on its message;
+//! - [`CommittedOracle`], one committed message as level 0 sees it;
 //! - [`LigeritoVerifier`], the ladder of committed levels down to a cleartext residual;
 //! - [`channel::LigeritoVerifierChannel`], the ladder behind the IOP verifier channel trait;
 //! - [`LigeritoParams::proof_size`], the byte-exact estimate;
@@ -31,6 +32,7 @@
 //! [NA25]: <https://eprint.iacr.org/2025/1187>
 
 pub mod channel;
+mod committed_oracle;
 mod common;
 pub mod compiler;
 mod error;
@@ -39,6 +41,7 @@ mod opening;
 mod size_estimation;
 mod verifier_cost;
 
+pub use committed_oracle::CommittedOracle;
 pub use common::*;
 pub use error::{Error, VerificationError};
 pub use induced_basis::InducedBasis;
