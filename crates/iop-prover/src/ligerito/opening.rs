@@ -587,10 +587,10 @@ mod tests {
 	/// A verifier compiled into a circuit cannot invert a value that depends on the proof.
 	/// A test that silently allowed one would not notice the day it appeared.
 	///
-	/// This is deliberately not a packed field.
-	/// The dense weight vector is built by a routine that requires one.
-	/// That routine therefore does not typecheck against this type at all.
-	/// A verification that compiles here is one that never took the dense route.
+	/// This is not a packed field, but that buys nothing the ordinary build does not already give.
+	/// `verify` is generic over an element type bounded by `FieldOps + From<F>`, and `to_dense`
+	/// requires `PackedField`, so a call to it fails to compile at `verify`'s own definition.
+	/// The succinct route is enforced every time the crate builds, instantiation or not.
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 	struct Counted(B128);
 
