@@ -214,7 +214,9 @@ fn bench_fields(c: &mut Criterion) {
 			(PackedBinaryGhash4x128b, "4xGhash"),
 		],
 		log_d = [16, 20, 24],
-		skip_params = [(0, 0), (4, 0), (0, 4)],
+		// `skip_early = 1` is the shape a rate-1/2 Reed-Solomon encoder asks for.
+		// It is also the smallest skip that leaves the multithreaded shared phase non-empty.
+		skip_params = [(0, 0), (1, 0), (4, 0), (0, 4)],
 	}
 }
 

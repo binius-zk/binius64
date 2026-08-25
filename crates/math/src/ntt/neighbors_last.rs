@@ -12,6 +12,7 @@ use binius_utils::rayon::{
 	iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
 	slice::ParallelSliceMut,
 };
+use itertools::izip;
 
 use super::{
 	AdditiveNTT, DomainContext,
@@ -326,6 +327,174 @@ fn forward_shared_layer<P: PackedField>(
 		});
 }
 
+/// Applies one butterfly of the network: `u += v * twiddle`, then `v += u`.
+#[inline(always)]
+fn butterfly<P: PackedField>(u: &mut P, v: &mut P, twiddle: P) {
+	*u += *v * twiddle;
+	*v += *u;
+}
+
+/// Applies two consecutive butterfly layers to four planes held in registers.
+///
+/// The four planes are the quarters of one super-block, in plane order.
+/// `twiddle_0` belongs to the first layer, which pairs planes `(0, 2)` and `(1, 3)`.
+/// `twiddle_1_even` and `twiddle_1_odd` belong to the second, which pairs `(0, 1)` and `(2, 3)`.
+///
+/// Each element is loaded once, takes part in both layers, and is stored once.
+fn fused_pair<P: PackedField>(
+	planes: [&mut [P]; 4],
+	twiddle_0: P,
+	twiddle_1_even: P,
+	twiddle_1_odd: P,
+) {
+	let [plane_0, plane_1, plane_2, plane_3] = planes;
+
+	for (x_0, x_1, x_2, x_3) in izip!(plane_0, plane_1, plane_2, plane_3) {
+		butterfly(x_0, x_2, twiddle_0);
+		butterfly(x_1, x_3, twiddle_0);
+		butterfly(x_0, x_1, twiddle_1_even);
+		butterfly(x_2, x_3, twiddle_1_odd);
+	}
+}
+
+/// Same as [`fused_pair`], for the super-block whose index is zero.
+///
+/// There `twiddle_0` and `twiddle_1_even` are both the layer's block-0 twiddle, which is zero.
+/// Each of their butterflies collapses to `v += u`, leaving `u` untouched.
+/// So plane 0 is never written, and its cache lines stay clean.
+fn fused_pair_zero_block<P: PackedField>(planes: [&mut [P]; 4], twiddle_1_odd: P) {
+	let [plane_0, plane_1, plane_2, plane_3] = planes;
+
+	for (x_0, x_1, x_2, x_3) in izip!(plane_0, plane_1, plane_2, plane_3) {
+		*x_2 += *x_0;
+		*x_3 += *x_1;
+		*x_1 += *x_0;
+		butterfly(x_2, x_3, twiddle_1_odd);
+	}
+}
+
+/// Processes layers `first_layer` and `first_layer + 1` in a single pass over the buffer.
+///
+/// Index the buffer by `i` in `[0, 2^log_d)`.
+/// Layer `l` pairs `i` with `i XOR 2^(log_d - 1 - l)`, under the twiddle of block `i >> (log_d -
+/// l)`.
+///
+/// Writing `a` for `first_layer`, split the index three ways:
+///
+/// ```text
+///     i = h * 2^(log_d - a)  +  m * 2^(log_d - a - 2)  +  offset
+///
+///     h < 2^a                    super-block index, which the two layers never move
+///     m < 4                      plane index, the only bits they do move
+///     offset < 2^(log_d - a - 2) position inside a plane, which they never move
+/// ```
+///
+/// The four entries sharing one `(h, offset)` are closed under both layers, and distinct pairs
+/// never interact.
+/// So a quarter of the buffer's elements can be transformed independently of the rest, which is
+/// what lets both layers run without a barrier between them.
+///
+/// Layer `a` reads the twiddle of block `h`, shared by both of its pairs.
+/// Layer `a + 1` reads blocks `2h` and `2h + 1`, one per pair.
+///
+/// ## Preconditions
+///
+/// - `2^log_d == data.len() * packing_width`
+/// - `first_layer + 2 <= log_num_shares`
+/// - `first_layer + 2 + P::LOG_WIDTH < log_d`
+/// - `domain_context` holds the twiddles of layers `first_layer` and `first_layer + 1`
+fn forward_shared_layer_pair<P: PackedField>(
+	domain_context: &(impl DomainContext<Field = P::Scalar> + Sync),
+	data: &mut [P],
+	log_d: usize,
+	first_layer: usize,
+	log_num_shares: usize,
+) {
+	// check preconditions
+	debug_assert_eq!(data.len() << P::LOG_WIDTH, 1 << log_d);
+	debug_assert!(first_layer + 2 <= log_num_shares);
+	debug_assert!(first_layer + 2 + P::LOG_WIDTH < log_d);
+	debug_assert!(first_layer + 2 <= domain_context.log_domain_size());
+
+	let log_plane_len = log_d - first_layer - 2 - P::LOG_WIDTH;
+	let plane_len = 1 << log_plane_len;
+
+	// Cut every plane into equal runs, enough of them to feed each share at least one.
+	// A run never drops below one packed element.
+	let log_run_len = log_plane_len.saturating_sub(log_num_shares - first_layer);
+	let run_len = 1 << log_run_len;
+
+	// One task per (super-block, run) pair, which the borrow checker proves disjoint for us.
+	let tasks = data
+		.chunks_exact_mut(plane_len << 2)
+		.enumerate()
+		.flat_map(|(h, super_block)| {
+			let twiddle = |layer, block| P::broadcast(domain_context.twiddle(layer, block));
+			let twiddles = (
+				twiddle(first_layer, h),
+				twiddle(first_layer + 1, h << 1),
+				twiddle(first_layer + 1, (h << 1) | 1),
+			);
+
+			let (halves_0_1, halves_2_3) = super_block.split_at_mut(plane_len << 1);
+			let (plane_0, plane_1) = halves_0_1.split_at_mut(plane_len);
+			let (plane_2, plane_3) = halves_2_3.split_at_mut(plane_len);
+
+			izip!(
+				plane_0.chunks_exact_mut(run_len),
+				plane_1.chunks_exact_mut(run_len),
+				plane_2.chunks_exact_mut(run_len),
+				plane_3.chunks_exact_mut(run_len),
+			)
+			.map(move |(run_0, run_1, run_2, run_3)| ([run_0, run_1, run_2, run_3], h, twiddles))
+		})
+		.collect::<Vec<_>>();
+
+	tasks
+		.into_par_iter()
+		.for_each(|(planes, h, (twiddle_0, twiddle_1_even, twiddle_1_odd))| {
+			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+			// Only super-block 0 reads block 0, and it does so in both of its layers.
+			if h == 0 {
+				fused_pair_zero_block(planes, twiddle_1_odd);
+			} else {
+				fused_pair(planes, twiddle_0, twiddle_1_even, twiddle_1_odd);
+			}
+		});
+}
+
+/// Runs the shared layers of the butterfly network, two layers per pass where possible.
+///
+/// Pairing halves the passes a window of layers costs, so it halves its memory traffic.
+/// A layer that cannot be paired -- an odd one out, or a shape whose planes would fall below one
+/// packed element -- runs alone, exactly as it did before pairing existed.
+///
+/// ## Preconditions
+///
+/// - same as the routines this dispatches to
+/// - `layers.end <= log_num_shares`
+fn forward_shared_layers<P: PackedField>(
+	domain_context: &(impl DomainContext<Field = P::Scalar> + Sync),
+	data: &mut [P],
+	log_d: usize,
+	layers: Range<usize>,
+	log_num_shares: usize,
+) {
+	debug_assert!(layers.end <= log_num_shares);
+
+	let mut layer = layers.start;
+	while layer < layers.end {
+		// A pair needs one more layer to pair with, and planes of at least one packed element.
+		if layers.end - layer >= 2 && layer + 2 + P::LOG_WIDTH < log_d {
+			forward_shared_layer_pair(domain_context, data, log_d, layer, log_num_shares);
+			layer += 2;
+		} else {
+			forward_shared_layer(domain_context, data, log_d, layer, log_num_shares);
+			layer += 1;
+		}
+	}
+}
+
 /// How many elements ahead [`prefetch_read`] hints the CPU to fetch.
 ///
 /// Each loop iteration does at most one packed GF(2^128) multiply-add.
@@ -600,15 +769,13 @@ impl<DC: DomainContext + Sync> NeighborsLastMultiThread<DC> {
 		let shared_layers = skip_early..min(first_independent_layer, last_layer);
 		let independent_layers = max(first_independent_layer, skip_early)..last_layer;
 
-		for layer in shared_layers {
-			forward_shared_layer(
-				&self.domain_context,
-				data.as_mut(),
-				log_d,
-				layer,
-				actual_log_num_shares,
-			);
-		}
+		forward_shared_layers(
+			&self.domain_context,
+			data.as_mut(),
+			log_d,
+			shared_layers,
+			actual_log_num_shares,
+		);
 
 		// One might think that we could just call `forward_depth_first` with
 		// `layer=independent_layers.start`. However, this would mean that the chunk size (that we
@@ -662,7 +829,219 @@ impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
 
 #[cfg(test)]
 mod tests {
+	use binius_field::{PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b};
+	use proptest::prelude::*;
+	use rand::{SeedableRng, rngs::StdRng};
+
 	use super::*;
+	use crate::{ntt::domain_context::GaoMateerPreExpanded, test_utils::random_field_buffer};
+
+	/// The shared-layer window the multithreaded transform would pick for these parameters.
+	///
+	/// Returns the window together with the share count after the transform's own clamp.
+	/// An empty window means the transform runs no shared layers at all.
+	fn shared_window<P: PackedField>(
+		log_d: usize,
+		skip_early: usize,
+		skip_late: usize,
+		log_num_shares: usize,
+	) -> (Range<usize>, usize) {
+		// Every share needs two packed elements, which caps how finely the buffer splits.
+		let actual_log_num_shares = min(log_num_shares, log_d - P::LOG_WIDTH - 1);
+		let layers = skip_early..min(actual_log_num_shares, log_d - skip_late);
+		(layers, actual_log_num_shares)
+	}
+
+	/// Asserts the fused dispatcher and the one-pass-per-layer loop agree bit for bit.
+	fn check_fused_matches_per_layer<P: PackedField<Scalar: BinaryField>>(
+		log_d: usize,
+		skip_early: usize,
+		skip_late: usize,
+		log_num_shares: usize,
+		seed: u64,
+	) {
+		let (layers, actual_log_num_shares) =
+			shared_window::<P>(log_d, skip_early, skip_late, log_num_shares);
+		if layers.is_empty() {
+			return;
+		}
+
+		let domain_context = GaoMateerPreExpanded::<P::Scalar>::generate(log_d);
+		let mut rng = StdRng::seed_from_u64(seed);
+
+		// Same random contents down both paths, so any difference is the fusion's fault.
+		let mut fused = random_field_buffer::<P>(&mut rng, log_d);
+		let mut per_layer = fused.clone();
+
+		forward_shared_layers(
+			&domain_context,
+			fused.as_mut(),
+			log_d,
+			layers.clone(),
+			actual_log_num_shares,
+		);
+		for layer in layers {
+			forward_shared_layer(
+				&domain_context,
+				per_layer.as_mut(),
+				log_d,
+				layer,
+				actual_log_num_shares,
+			);
+		}
+
+		assert_eq!(fused, per_layer);
+	}
+
+	/// Asserts the whole multithreaded transform matches the independent reference transform.
+	fn check_transform_matches_reference<P: PackedField<Scalar: BinaryField>>(
+		log_d: usize,
+		skip_early: usize,
+		skip_late: usize,
+		log_num_shares: usize,
+		seed: u64,
+	) {
+		let domain_context = GaoMateerPreExpanded::<P::Scalar>::generate(log_d);
+		let mut rng = StdRng::seed_from_u64(seed);
+
+		let mut actual = random_field_buffer::<P>(&mut rng, log_d);
+		let mut expected = actual.clone();
+
+		let multi_thread = NeighborsLastMultiThread {
+			domain_context: &domain_context,
+			log_base_len: 3,
+			log_num_shares,
+		};
+		let reference = NeighborsLastReference {
+			domain_context: &domain_context,
+		};
+
+		multi_thread.forward_transform(actual.as_mut_view(), skip_early, skip_late);
+		reference.forward_transform(expected.as_mut_view(), skip_early, skip_late);
+
+		assert_eq!(actual, expected);
+	}
+
+	/// Every window width from one shared layer up to five, at every start offset that fits.
+	///
+	/// Width 1 has nothing to fuse, widths 2 to 4 fuse in one window, width 5 splits into 4 plus 1.
+	/// The start offset is what shifts the super-block count, so it must move too.
+	fn sweep_window_widths<P: PackedField<Scalar: BinaryField>>(log_d: usize, seed: u64) {
+		for skip_early in 0..4 {
+			for width in 1..=5 {
+				// Layer indices only exist below the buffer's own depth.
+				if skip_early + width > log_d {
+					continue;
+				}
+				// Ending the shared phase at `skip_early + width` is what sets the window width.
+				check_fused_matches_per_layer::<P>(log_d, skip_early, 0, skip_early + width, seed);
+			}
+		}
+	}
+
+	#[test]
+	fn fused_shared_layers_match_per_layer_over_window_widths() {
+		// Fixture: 128-bit scalars at three packing widths.
+		//
+		//     1x128b -> LOG_WIDTH 0, planes are always whole packed elements
+		//     2x128b -> LOG_WIDTH 1
+		//     4x128b -> LOG_WIDTH 2, the width that first refuses the widest windows
+		for log_d in 6..13 {
+			sweep_window_widths::<PackedBinaryGhash1x128b>(log_d, 0);
+			sweep_window_widths::<PackedBinaryGhash2x128b>(log_d, 1);
+			sweep_window_widths::<PackedBinaryGhash4x128b>(log_d, 2);
+		}
+	}
+
+	#[test]
+	fn fused_shared_layers_match_per_layer_at_the_narrowest_plane() {
+		// Invariant: a window is fused only while each plane still holds two packed elements.
+		//
+		//     log_d = 8, LOG_WIDTH = 2, skip_early = 1, width = 4
+		//     plane length = 2^(8 - 1 - 4 - 2) = 2 packed elements, the smallest fusable plane
+		check_fused_matches_per_layer::<PackedBinaryGhash4x128b>(8, 1, 0, 5, 7);
+
+		// One layer deeper the plane would hold a single packed element, so this shape falls back.
+		//
+		//     log_d = 8, LOG_WIDTH = 2, skip_early = 0, width = 5 -> plane length 2^1
+		//     the same start with width 6 would need plane length 2^0, refused
+		check_fused_matches_per_layer::<PackedBinaryGhash4x128b>(8, 0, 0, 5, 8);
+	}
+
+	#[test]
+	fn multi_thread_transform_matches_the_reference() {
+		// Sweep the skips against the share count, so the shared phase starts and ends everywhere.
+		for log_d in [6, 9, 12] {
+			for skip_early in [0, 1, 2, 4] {
+				for skip_late in [0, 1, 3] {
+					if skip_early + skip_late > log_d {
+						continue;
+					}
+					for log_num_shares in [0, 1, 2, 3, 5, 1000] {
+						check_transform_matches_reference::<PackedBinaryGhash1x128b>(
+							log_d,
+							skip_early,
+							skip_late,
+							log_num_shares,
+							0,
+						);
+						check_transform_matches_reference::<PackedBinaryGhash4x128b>(
+							log_d,
+							skip_early,
+							skip_late,
+							log_num_shares,
+							1,
+						);
+					}
+				}
+			}
+		}
+	}
+
+	proptest! {
+		#[test]
+		fn prop_fused_shared_layers_match_per_layer(
+			log_d in 6..13usize,
+			skip_early in 0..5usize,
+			skip_late in 0..4usize,
+			log_num_shares in 0..8usize,
+			seed: u64,
+		) {
+			// Property: fusing a window of layers is the same linear map as running them one by
+			// one, for every shape the multithreaded transform can hand the shared phase.
+			prop_assume!(skip_early + skip_late <= log_d);
+
+			check_fused_matches_per_layer::<PackedBinaryGhash1x128b>(
+				log_d, skip_early, skip_late, log_num_shares, seed,
+			);
+			check_fused_matches_per_layer::<PackedBinaryGhash2x128b>(
+				log_d, skip_early, skip_late, log_num_shares, seed,
+			);
+			check_fused_matches_per_layer::<PackedBinaryGhash4x128b>(
+				log_d, skip_early, skip_late, log_num_shares, seed,
+			);
+		}
+
+		#[test]
+		fn prop_multi_thread_transform_matches_the_reference(
+			log_d in 1..11usize,
+			skip_early in 0..5usize,
+			skip_late in 0..4usize,
+			log_num_shares in 0..8usize,
+			seed: u64,
+		) {
+			// Property: the fused shared phase leaves the transform equal to the reference one,
+			// which shares no code with it.
+			prop_assume!(skip_early + skip_late <= log_d);
+
+			check_transform_matches_reference::<PackedBinaryGhash1x128b>(
+				log_d, skip_early, skip_late, log_num_shares, seed,
+			);
+			check_transform_matches_reference::<PackedBinaryGhash4x128b>(
+				log_d, skip_early, skip_late, log_num_shares, seed,
+			);
+		}
+	}
 
 	#[test]
 	fn test_with_middle_bit() {
