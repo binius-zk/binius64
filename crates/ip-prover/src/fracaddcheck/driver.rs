@@ -36,15 +36,6 @@ pub struct BatchProveOutput<F> {
 	pub fractions: Vec<Fraction<F>>,
 }
 
-/// Combines the per-claim round polynomials of one fracaddcheck layer prover into a single
-/// polynomial by Horner-folding with `batch_coeff`, matching the `[num, den]` batching that
-/// [`sumcheck::batch_verify_mle`](binius_ip::sumcheck::batch_verify_mle) performs on the verifier.
-fn combine_claims<F: Field>(coeffs: Vec<RoundCoeffs<F>>, batch_coeff: F) -> RoundCoeffs<F> {
-	coeffs
-		.into_iter()
-		.rfold(RoundCoeffs::default(), |acc, c| acc * batch_coeff + &c)
-}
-
 /// Runs one batched fracaddcheck layer given its per-instance final-layer MLE-check provers.
 ///
 /// The layer runs in four steps, one function each:
@@ -138,7 +129,7 @@ fn prove_content_rounds<F, MP>(
 		// One instance's round is too small a parallel region to fill the pool alone.
 		let per_instance: Vec<RoundCoeffs<F>> = layer_provers
 			.par_iter_mut()
-			.map(|prover| combine_claims(prover.execute(), batch_coeff))
+			.map(|prover| RoundCoeffs::batch(prover.execute(), &batch_coeff))
 			.collect();
 
 		// Weight instance j's polynomial by eq_j and sum, in instance order.
@@ -259,7 +250,7 @@ where
 		SharedMleCheckProver::new(selector_store, claims_with_evaluators, outer_coords.to_vec());
 
 	for _round in 0..k {
-		let round_coeffs = combine_claims(selector_prover.execute(), batch_coeff);
+		let round_coeffs = RoundCoeffs::batch(selector_prover.execute(), &batch_coeff);
 		channel.send_many(mlecheck::RoundProof::truncate(round_coeffs).coeffs());
 
 		let challenge = channel.sample();
