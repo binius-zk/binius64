@@ -485,9 +485,12 @@ where
 				channel.finish();
 			}
 			PcsProverCompiler::Ligerito(compiler) => {
-				// The ladder commits no mask at all, so it needs no randomness of its own.
+				// This path produces a transparent proof whose only oracle is non-ZK, so no mask is
+				// drawn and the channel needs no randomness of its own.
 				let mut channel = compiler
-					.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
+					.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(
+						transcript, alloc,
+					);
 				self.iop_prover
 					.prove::<_, P, _>(witness, &mut channel, &alloc)?;
 				channel.finish();

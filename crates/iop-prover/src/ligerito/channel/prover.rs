@@ -15,25 +15,31 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldVec, multilinear::hypercube::Hypercube, ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, FieldVec, line::extrapolate_line, multilinear::hypercube::Hypercube,
+	ntt::AdditiveNTT,
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use super::{LigeritoOracle, combined_message::CombinedMessage, relation::QueuedRelation};
+use super::{
+	LigeritoOracle, combined_message::CombinedMessage, committed_oracle::CommittedOracle,
+	mask::Mask, relation::QueuedRelation,
+};
 use crate::{
 	channel::{IOPProverChannel, grinding::GrindingProverChannel},
-	fri::{BatchBrakedownOracleProver, BrakedownOracleProver},
+	fri::BatchBrakedownOracleProver,
 	ligerito::{LigeritoProver, opening::commit_level},
 	merkle_channel::MerkleIPProverChannel,
 };
 
 /// A prover channel that opens every committed oracle with one Ligerito ladder.
 ///
-/// The counterpart of the Ligerito verifier channel, where the three reductions are described.
+/// The counterpart of the Ligerito verifier channel, where the reductions are described.
 ///
-/// The channel is transparent rather than zero-knowledge.
-/// No mask is drawn, so it needs no randomness of its own.
+/// Each oracle is masked or not according to its own specification, so a batch may mix the two.
+/// A masked oracle draws a fresh mask of its message's own length from the channel's generator.
+/// That mask is committed in a lane beside the message and never leaves the channel.
 ///
 /// # Type Parameters
 ///
@@ -60,14 +66,13 @@ where
 	params: &'a LigeritoParams,
 	/// The oracles this channel expects, in the order it will commit them.
 	oracle_specs: Vec<OracleSpec>,
-	/// The committed level-0 codewords, in the order their commitments were sent.
-	oracles: Vec<BrakedownOracleProver<P, Channel::Commitment>>,
-	/// The committed messages, each handed over when the caller finalizes its oracle.
-	/// One entry per committed oracle, absent until that oracle is finalized.
-	messages: Vec<Option<FieldVec<P, A>>>,
+	/// The committed oracles, in the order their commitments were sent.
+	oracles: Vec<CommittedOracle<P, Channel::Commitment, A>>,
 	/// Relations queued against each oracle, all opened together once the caller finishes.
 	/// One entry per committed oracle, so its length is also the number committed so far.
 	queue: Vec<Vec<QueuedRelation<P, A>>>,
+	/// The generator every mask is drawn from, seeded once when the channel is built.
+	rng: StdRng,
 	/// The allocator the opening's working buffers are drawn from.
 	alloc: A,
 }
@@ -82,10 +87,12 @@ where
 {
 	/// Creates a channel that opens the given oracles with the given ladder.
 	///
+	/// `rng` seeds the generator every mask is drawn from.
+	/// A channel with no zero-knowledge oracle never reads it, so its seed cannot reach a proof.
+	///
 	/// ## Preconditions
 	///
 	/// * `oracle_specs` is non-empty.
-	/// * No spec is zero-knowledge.
 	/// * The longest message is the ladder's message length.
 	/// * `ntt`'s domain covers every level's codeword domain.
 	pub fn new(
@@ -93,15 +100,12 @@ where
 		ntt: &'a NTT,
 		oracle_specs: Vec<OracleSpec>,
 		params: &'a LigeritoParams,
+		mut rng: impl Rng,
 		alloc: A,
 	) -> Self {
 		assert!(
 			!oracle_specs.is_empty(),
 			"precondition: a Ligerito channel opens at least one oracle"
-		);
-		assert!(
-			oracle_specs.iter().all(|spec| !spec.is_zk),
-			"precondition: Ligerito commits no mask, so a zero-knowledge oracle cannot be opened"
 		);
 		assert_eq!(
 			oracle_specs
@@ -119,8 +123,8 @@ where
 			params,
 			oracle_specs,
 			oracles: Vec::new(),
-			messages: Vec::new(),
 			queue: Vec::new(),
+			rng: StdRng::from_rng(&mut rng),
 			alloc,
 		}
 	}
@@ -147,8 +151,8 @@ where
 			params,
 			oracle_specs,
 			oracles,
-			messages,
 			queue,
+			rng: _,
 			alloc,
 		} = self;
 
@@ -164,27 +168,37 @@ where
 			"precondition: every committed oracle must carry at least one relation"
 		);
 
-		let messages = messages
-			.into_iter()
-			.map(|message| message.expect("the oracle was committed but never finalized"))
-			.collect::<Vec<_>>();
-		let prover = LigeritoProver::new(params, ntt, BatchBrakedownOracleProver::new(oracles));
+		// The codewords answer the query phase; the masks and messages drive the reductions.
+		let mut codewords = Vec::with_capacity(oracles.len());
+		let mut masks = Vec::with_capacity(oracles.len());
+		let mut messages = Vec::with_capacity(oracles.len());
+		for oracle in oracles {
+			let parts = oracle.split();
+			codewords.push(parts.codeword);
+			masks.push(parts.mask);
+			messages.push(parts.message);
+		}
+		let prover = LigeritoProver::new(params, ntt, BatchBrakedownOracleProver::new(codewords));
 
-		Self::prove(&mut channel, &prover, &oracle_specs, &messages, queue, &alloc);
+		Self::prove(&mut channel, &prover, &oracle_specs, &masks, messages, queue, &alloc);
 	}
 
 	/// Proves the queued relations against the committed ladder.
 	///
-	/// The three reductions the verifier runs, in the same order.
+	/// The reductions the verifier runs, in the same order.
 	///
 	/// ```text
 	///     <pi_i, t_ij> = s_ij      the relations, batched per oracle into <pi_i, T_i> = S_i
+	///       -> blend               at gamma, against sigma_i = <omega_i, T_i>
+	///     <pi_i', T_i> = S_i'      one claim per oracle, about the blended message
 	///       -> sumcheck            binds every variable at a sampled point r
-	///     pi_i(r) = alpha_i        one evaluation claim per oracle
+	///     pi_i'(r) = alpha_i       one evaluation claim per oracle
 	///       -> eq-combine          at coefficients e_i drawn once every alpha is on the wire
 	///     PI(r) = sum_i e_i alpha_i
 	///       -> ladder
 	/// ```
+	///
+	/// An oracle committed in the clear skips the blend, and its message rides on unchanged.
 	///
 	/// The sumcheck leaves both multilinears of every oracle evaluated at `r`.
 	/// Only the committed ones have to be sent, since the verifier builds the transparents itself.
@@ -192,7 +206,8 @@ where
 		channel: &mut Channel,
 		prover: &LigeritoProver<'_, P, Channel::Commitment, NTT>,
 		oracle_specs: &[OracleSpec],
-		messages: &[FieldVec<P, A>],
+		masks: &[Option<Mask<P, A>>],
+		mut messages: Vec<FieldVec<P, A>>,
 		queue: Vec<Vec<QueuedRelation<P, A>>>,
 		alloc: &A,
 	) where
@@ -204,15 +219,48 @@ where
 		// Every claim in the queue is already bound to the transcript, so a coefficient drawn
 		// here cannot be anticipated by any of them.
 		let lambda = channel.sample();
+		let relations = queue
+			.into_iter()
+			.map(|relations| QueuedRelation::batch(relations, lambda))
+			.collect::<Vec<_>>();
+
+		// What each mask pairs to against the transparent its oracle was just batched against.
+		// Sending these before the blending challenge is what stops a mask being chosen for it.
+		let sigmas = izip!(masks, &relations)
+			.filter_map(|(mask, relation)| {
+				mask.as_ref()
+					.map(|mask| mask.pair(relation.transparent.as_view()))
+			})
+			.collect::<Vec<_>>();
+		channel.send_many(&sigmas);
+		let gamma = (!sigmas.is_empty()).then(|| channel.sample());
+
+		// Every masked message becomes the blend the whole ladder is then about.
+		for (message, mask) in std::iter::zip(&mut messages, masks) {
+			if let Some(mask) = mask {
+				mask.blend(message, gamma.expect("the challenge is drawn when a mask is present"));
+			}
+		}
 
 		// One padded sumcheck prover per oracle, in the order the oracles were committed. A
 		// message shorter than the longest one rides the same rounds, its claim carried through
 		// the extra ones by the equality indicator at zero.
-		let provers = izip!(queue, messages, oracle_specs)
-			.map(|(relations, message, spec)| {
-				let QueuedRelation { transparent, claim } =
-					QueuedRelation::batch(relations, lambda);
+		let mut sigmas = sigmas.into_iter();
+		let provers = izip!(relations, &messages, oracle_specs)
+			.map(|(relation, message, spec)| {
+				let QueuedRelation { transparent, claim } = relation;
 				let n_vars = spec.log_msg_len;
+
+				// A masked oracle's claim moves onto the blended message, along the same line.
+				let claim = if spec.is_zk {
+					extrapolate_line(
+						claim,
+						sigmas.next().expect("one mask pairing per masked oracle"),
+						gamma.expect("the challenge is drawn when a mask is present"),
+					)
+				} else {
+					claim
+				};
 
 				let mut store = MleStore::new(n_vars, alloc);
 				let message_col = store.push(message.as_view());
@@ -339,15 +387,28 @@ where
 			remaining[0].log_msg_len,
 			buffer.log_len()
 		);
+		let spec = remaining[0];
 
 		// Every oracle shares level 0's column count, so only the lane count follows the message
-		// length. A message below one column block commits a single zero-padded lane.
-		let level = self.params.level_zero_shape(buffer.log_len());
+		// length. A message below one column block commits a single zero-padded lane, and a
+		// zero-knowledge oracle commits one lane more, holding its mask.
+		let level = self.params.level_zero_shape(&spec);
+		// The length each half of the committed buffer is padded out to, mask half included.
+		let log_padded_len = level.log_msg_len() - usize::from(spec.is_zk);
+
+		// A masked oracle draws its mask here, before any challenge in the transcript exists.
+		let mask = spec
+			.is_zk
+			.then(|| Mask::draw(&self.alloc, buffer.log_len(), &mut self.rng));
+
 		// Only a message below one column block needs padding, so a longer one is never copied.
-		let padded = (buffer.log_len() < level.log_msg_len()).then(|| {
-			FieldBuffer::from_view_in(&self.alloc, buffer)
-				.zero_extend_in(&self.alloc, level.log_msg_len())
-		});
+		let padded = match &mask {
+			Some(mask) => Some(mask.interleaved_with(&self.alloc, buffer, log_padded_len)),
+			None => (buffer.log_len() < log_padded_len).then(|| {
+				FieldBuffer::from_view_in(&self.alloc, buffer)
+					.zero_extend_in(&self.alloc, log_padded_len)
+			}),
+		};
 		let message = padded
 			.as_ref()
 			.map_or_else(|| buffer.as_view(), FieldBuffer::as_view);
@@ -355,9 +416,8 @@ where
 		// Encoding and committing level 0 is the whole of the commit phase.
 		// The deeper levels only exist once the folds above them have run.
 		let index = self.oracles.len();
-		self.oracles
-			.push(commit_level(&level, self.ntt, message, &mut self.channel));
-		self.messages.push(None);
+		let codeword = commit_level(&level, self.ntt, message, &mut self.channel);
+		self.oracles.push(CommittedOracle::new(codeword, mask));
 		self.queue.push(Vec::new());
 
 		LigeritoOracle { index }
@@ -382,23 +442,22 @@ where
 	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
 		// The ladder folds the message down to the residual.
 		// So it needs the buffer itself and not just the codeword it was encoded into.
-		assert!(
-			self.messages[oracle.index].replace(buffer).is_none(),
-			"the oracle was finalized twice"
-		);
+		self.oracles[oracle.index].finalize(buffer);
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Field, Ghash128b as B128};
+	use binius_field::{Field, Ghash128b as B128, Random, arithmetic_traits::InvertOrZero};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
-		channel::{Error, IOPVerifierChannel},
+		channel::{Error, IOPVerifierChannel, grinding::GrindingVerifierChannel},
 		ligerito::{LigeritoLevel, compiler::LigeritoVerifierCompiler},
+		merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
 		soundness::{Grinding, SoundnessRegime},
 	};
+	use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 	use binius_math::{
 		multilinear::Multilinear,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
@@ -418,6 +477,7 @@ mod tests {
 	/// Every value it sends in the clear is consistent with the opened buffer.
 	/// The codeword level 0's queries land in encodes the committed one.
 	/// An honest oracle holds the same buffer twice.
+	#[derive(Clone)]
 	struct Oracle {
 		/// The buffer level 0's codeword encodes.
 		committed: FieldBuffer<B128>,
@@ -425,6 +485,8 @@ mod tests {
 		opened: FieldBuffer<B128>,
 		/// The transparent multilinears, each with the inner product claimed against it.
 		relations: Vec<(FieldBuffer<B128>, B128)>,
+		/// Whether this oracle is committed with a mask interleaved beside its message.
+		is_zk: bool,
 	}
 
 	impl Oracle {
@@ -445,12 +507,58 @@ mod tests {
 				committed: message.clone(),
 				opened: message,
 				relations,
+				is_zk: false,
+			}
+		}
+
+		/// The same oracle, asking to be committed with a mask.
+		fn masked(mut self) -> Self {
+			self.is_zk = true;
+			self
+		}
+
+		/// A different message satisfying this oracle's single relation, claim for claim.
+		///
+		/// The two messages differ by a vector the transparent pairs to zero with.
+		/// Two positions carry that difference:
+		///
+		///     delta[0] = d,   delta[h] = d * t[0] / t[h]
+		///     <t, delta> = t[0] * d + t[h] * d * t[0] / t[h] = 0   over a binary field
+		///
+		/// So the claim on the wire is unchanged and only the witness behind it moves.
+		/// That is the pair a hiding argument has to keep apart.
+		///
+		/// ## Preconditions
+		///
+		/// * The oracle carries exactly one relation, over at least one variable.
+		fn sibling(&self, rng: &mut StdRng) -> Self {
+			assert_eq!(self.relations.len(), 1, "a sibling is built against one transparent");
+			let log_msg_len = self.opened.log_len();
+			let (transparent, _) = &self.relations[0];
+
+			let (left, right) = (0, 1 << (log_msg_len - 1));
+			let head = B128::random(&mut *rng);
+			let tail = head * transparent.get(left) * transparent.get(right).invert_or_zero();
+
+			let mut message = self.opened.clone();
+			message.set(left, message.get(left) + head);
+			message.set(right, message.get(right) + tail);
+
+			Self {
+				committed: message.clone(),
+				opened: message,
+				relations: self.relations.clone(),
+				is_zk: self.is_zk,
 			}
 		}
 
 		/// The oracle's shape, as the channel is told about it up front.
 		fn spec(&self) -> OracleSpec {
-			OracleSpec::new(self.opened.log_len())
+			if self.is_zk {
+				OracleSpec::new_zk(self.opened.log_len())
+			} else {
+				OracleSpec::new(self.opened.log_len())
+			}
 		}
 	}
 
@@ -485,11 +593,154 @@ mod tests {
 		vec![Oracle::honest(&mut rng, params.log_msg_len(), 1)]
 	}
 
+	/// The Merkle channel one verification runs over.
+	type InnerChannel<'a> = VerifierMerkleTranscriptChannel<
+		&'a mut VerifierTranscript<StdChallenger>,
+		StdChallenger,
+		B128,
+		StdHashSuite,
+	>;
+
+	/// The Merkle channel a verification runs over, with the cleartext residual kept aside.
+	///
+	/// A ladder that opens anything receives exactly one committed vector, at its last level.
+	/// That vector is the residual.
+	/// Everything else is delegated untouched, so a recorded run is the ordinary run.
+	struct ResidualRecorder<'a> {
+		/// The channel every call is forwarded to.
+		inner: InnerChannel<'a>,
+		/// The committed vectors received so far, in the order the ladder read them.
+		received: Vec<Vec<B128>>,
+	}
+
+	impl<'a> ResidualRecorder<'a> {
+		fn new(transcript: &'a mut VerifierTranscript<StdChallenger>) -> Self {
+			Self {
+				inner: VerifierMerkleTranscriptChannel::new(transcript),
+				received: Vec::new(),
+			}
+		}
+
+		/// The committed vector a ladder sends in the clear, absent when nothing was opened.
+		fn into_residual(self) -> Option<Vec<B128>> {
+			let mut received = self.received;
+			assert!(received.len() <= 1, "a ladder sends at most one cleartext vector");
+			received.pop()
+		}
+	}
+
+	impl IPVerifierChannel<B128> for ResidualRecorder<'_> {
+		type Elem = B128;
+
+		fn recv_one(&mut self) -> Result<B128, binius_ip::channel::Error> {
+			self.inner.recv_one()
+		}
+
+		fn recv_many(&mut self, n: usize) -> Result<Vec<B128>, binius_ip::channel::Error> {
+			self.inner.recv_many(n)
+		}
+
+		fn recv_array<const N: usize>(&mut self) -> Result<[B128; N], binius_ip::channel::Error> {
+			self.inner.recv_array()
+		}
+
+		fn recv_public_claim(&mut self) -> Result<B128, binius_ip::channel::Error> {
+			self.inner.recv_public_claim()
+		}
+
+		fn sample(&mut self) -> B128 {
+			self.inner.sample()
+		}
+
+		fn observe_one(&mut self, val: B128) -> B128 {
+			self.inner.observe_one(val)
+		}
+
+		fn observe_many(&mut self, vals: &[B128]) -> Vec<B128> {
+			self.inner.observe_many(vals)
+		}
+
+		fn assert_zero(&mut self, val: B128) -> Result<(), binius_ip::channel::Error> {
+			self.inner.assert_zero(val)
+		}
+	}
+
+	impl WordIPVerifierChannel<B128> for ResidualRecorder<'_> {
+		type Word = Word;
+
+		fn observe_words(&mut self, words: &[Word]) -> Vec<Word> {
+			self.inner.observe_words(words)
+		}
+
+		fn subset_sum(&mut self, elems: &[B128], word: &Word) -> B128 {
+			self.inner.subset_sum(elems, word)
+		}
+
+		fn select(&mut self, elems: &[B128], word: &Word) -> B128 {
+			self.inner.select(elems, word)
+		}
+
+		fn sample_bits(&mut self, bits: usize) -> Word {
+			self.inner.sample_bits(bits)
+		}
+
+		fn pack_words(&mut self, words: &[Word]) -> Vec<B128> {
+			self.inner.pack_words(words)
+		}
+	}
+
+	impl MerkleIPVerifierChannel<B128> for ResidualRecorder<'_> {
+		type Commitment = <InnerChannel<'static> as MerkleIPVerifierChannel<B128>>::Commitment;
+
+		fn recv_merkle_commitment(
+			&mut self,
+			leaf_size: usize,
+			depth: usize,
+		) -> Result<Self::Commitment, binius_iop::merkle_channel::Error> {
+			self.inner.recv_merkle_commitment(leaf_size, depth)
+		}
+
+		fn recv_openings(
+			&mut self,
+			commitment: &Self::Commitment,
+			indices: &[Word],
+		) -> Result<Vec<B128>, binius_iop::merkle_channel::Error> {
+			self.inner.recv_openings(commitment, indices)
+		}
+
+		fn recv_committed_vector(
+			&mut self,
+			commitment: &Self::Commitment,
+		) -> Result<Vec<B128>, binius_iop::merkle_channel::Error> {
+			let values = self.inner.recv_committed_vector(commitment)?;
+			self.received.push(values.clone());
+			Ok(values)
+		}
+	}
+
+	impl GrindingVerifierChannel for ResidualRecorder<'_> {
+		fn verify_grind(&mut self, bits: usize) -> Result<(), binius_transcript::Error> {
+			self.inner.verify_grind(bits)
+		}
+	}
+
+	/// What one honest run leaves behind, once the verifier has accepted it.
+	#[derive(Debug)]
+	struct Opening {
+		/// The finished proof bytes.
+		proof: Vec<u8>,
+		/// The residual the last level sent in the clear, absent when nothing was opened.
+		residual: Option<Vec<B128>>,
+	}
+
 	/// Commits every oracle, proves its relations, and verifies the whole batch in one opening.
 	///
-	/// Returns the finished proof's length in bytes.
-	/// So a byte count is only ever taken from a transcript that convinced the verifier.
-	fn run(params: &LigeritoParams, oracles: &[Oracle]) -> Result<usize, Error> {
+	/// `mask_seed` seeds the generator every masked oracle draws its mask from.
+	/// It has no effect on a run whose oracles are all committed in the clear.
+	///
+	/// Nothing is returned unless the verifier accepted.
+	/// So a byte count or a residual is only ever read off a transcript that convinced it.
+	fn run(params: &LigeritoParams, oracles: &[Oracle], mask_seed: u64) -> Result<Opening, Error> {
 		let specs = oracles.iter().map(Oracle::spec).collect::<Vec<_>>();
 		let verifier_compiler = LigeritoVerifierCompiler::<B128>::new(specs, params.clone());
 
@@ -504,6 +755,7 @@ mod tests {
 		let mut prover_channel = prover_compiler
 			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
+				StdRng::seed_from_u64(mask_seed),
 				GlobalAllocator,
 			);
 
@@ -523,13 +775,11 @@ mod tests {
 		prover_channel.finish();
 
 		let proof = prover_transcript.finalize();
-		let proof_size = proof.len();
 
-		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
-		let mut verifier_channel = verifier_compiler
-			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
-				&mut verifier_transcript,
-			);
+		let mut verifier_transcript =
+			VerifierTranscript::new(StdChallenger::default(), proof.clone());
+		let mut verifier_channel =
+			verifier_compiler.create_channel(ResidualRecorder::new(&mut verifier_transcript));
 
 		let handles = oracles
 			.iter()
@@ -545,9 +795,12 @@ mod tests {
 				)?;
 			}
 		}
-		verifier_channel.finish()?;
+		let recorder = verifier_channel.finish()?;
 
-		Ok(proof_size)
+		Ok(Opening {
+			proof,
+			residual: recorder.into_residual(),
+		})
 	}
 
 	/// Every ladder shape an honest prover can produce must verify through the channel.
@@ -571,9 +824,209 @@ mod tests {
 			for grinding in [Grinding::NONE, Grinding::new(3, 4)] {
 				let params = ladder(log_msg_cols, lanes).with_grinding(grinding);
 				let oracles = one_oracle(&params, 0);
-				run(&params, &oracles)
+				run(&params, &oracles, 0)
 					.unwrap_or_else(|err| panic!("{log_msg_cols} {lanes:?} {grinding:?}: {err}"));
 			}
+		}
+	}
+
+	/// Every ladder shape must also verify with a mask interleaved at level 0.
+	///
+	/// A masked oracle commits one lane more than it folds, over the same codeword.
+	/// So the query positions, the fold rounds and the residual are all unchanged in shape.
+	/// What moves is the leaf width and the one extra element the mask pairing costs.
+	#[test]
+	fn an_honest_masked_opening_verifies() {
+		let shapes: &[(usize, &[usize])] = &[
+			(3, &[1]),
+			(5, &[2, 1]),
+			(6, &[1, 1, 1]),
+			(6, &[2, 2, 2]),
+			(4, &[2, 0, 1]),
+		];
+		for &(log_msg_cols, lanes) in shapes {
+			// Both grinding profiles run the whole channel, so masking has to leave the two proof
+			// of work call sites exactly where the ladder puts them.
+			for grinding in [Grinding::NONE, Grinding::new(3, 4)] {
+				let params = ladder(log_msg_cols, lanes).with_grinding(grinding);
+				let oracles = one_oracle(&params, 0)
+					.into_iter()
+					.map(Oracle::masked)
+					.collect::<Vec<_>>();
+				run(&params, &oracles, 0)
+					.unwrap_or_else(|err| panic!("{log_msg_cols} {lanes:?} {grinding:?}: {err}"));
+			}
+		}
+	}
+
+	/// A masked opening and a transparent one over the same message both verify, and differ.
+	///
+	/// The masked run pays for one extra interleaved lane at level 0 and one mask pairing.
+	///
+	///     transparent: 2^log_lanes elements per opened row
+	///     masked     : 2^(log_lanes + 1) elements per opened row, plus one sigma
+	///
+	/// So a mask is bought with proof size, and nothing deeper than level 0 changes shape.
+	#[test]
+	fn a_masked_opening_costs_one_lane_and_still_verifies() {
+		let params = ladder(5, &[2, 1]);
+		let clear = one_oracle(&params, 11);
+		let masked = clear
+			.iter()
+			.cloned()
+			.map(Oracle::masked)
+			.collect::<Vec<_>>();
+
+		let clear = run(&params, &clear, 0).expect("a transparent opening");
+		let masked = run(&params, &masked, 0).expect("a masked opening");
+
+		assert!(
+			masked.proof.len() > clear.proof.len(),
+			"a masked proof wrote {} bytes against a transparent {}",
+			masked.proof.len(),
+			clear.proof.len()
+		);
+		assert_ne!(masked.residual, clear.residual);
+	}
+
+	/// A batch may mix masked and transparent oracles, and each gets what it asked for.
+	///
+	/// Masking is declared per oracle, so one ladder can carry both kinds at once.
+	/// Level 0 opens each committed codeword on its own, at the shared positions.
+	/// Everything below is one combined message, so a single mask anywhere blinds the residual.
+	#[test]
+	fn a_batch_may_mix_masked_and_transparent_oracles() {
+		let params = ladder(5, &[2, 1]);
+		let mut rng = StdRng::seed_from_u64(12);
+		let batch = [
+			Oracle::honest(&mut rng, params.log_msg_len(), 1).masked(),
+			Oracle::honest(&mut rng, 6, 1),
+			Oracle::honest(&mut rng, 6, 1).masked(),
+		];
+
+		run(&params, &batch, 0).expect("a mixed batch of three oracles");
+	}
+
+	/// A masked commitment that does not encode the opened message must still be caught.
+	///
+	/// The blend is a linear map, so the fold identity level 0 checks survives it unchanged.
+	/// A mask must therefore buy hiding without buying the prover any freedom.
+	///
+	///     relation sumcheck: about `opened`      -> consistent
+	///     level 0 codeword : encodes `committed` -> caught
+	#[test]
+	fn a_masked_commitment_that_does_not_encode_the_opened_message_is_rejected() {
+		let params = ladder(5, &[2, 1]);
+		let mut rng = StdRng::seed_from_u64(13);
+		let mut oracle = Oracle::honest(&mut rng, params.log_msg_len(), 1).masked();
+
+		// Mutation: the oracle commits a different buffer from the one it opens.
+		oracle.committed = random_field_buffer::<B128>(&mut rng, params.log_msg_len());
+
+		let err = run(&params, std::slice::from_ref(&oracle), 0)
+			.expect_err("the committed codeword encodes a different message");
+
+		// The ladder's own assertion, so the error arrives wrapped rather than raised here.
+		match err {
+			Error::Ligerito(binius_iop::ligerito::Error::IPChannel(
+				binius_ip::channel::Error::InvalidAssert,
+			)) => {}
+			other => panic!("wrong error variant: {other:?}"),
+		}
+	}
+
+	/// The residual is a function of the witness only through the mask.
+	///
+	/// Without a mask it is fixed by the witness: two runs over one oracle write the same bytes.
+	/// With a mask it moves with the generator's seed alone, the witness held still.
+	/// That is the property the cleartext residual needs.
+	/// It is the one value a ladder never hides behind a commitment.
+	#[test]
+	fn the_residual_moves_with_the_mask_and_not_without_one() {
+		let params = ladder(5, &[2, 1]);
+		let clear = one_oracle(&params, 14);
+		let masked = clear
+			.iter()
+			.cloned()
+			.map(Oracle::masked)
+			.collect::<Vec<_>>();
+
+		// Fixture state: one oracle, two mask seeds, the same message throughout.
+		let residual = |oracles: &[Oracle], seed| {
+			run(&params, oracles, seed)
+				.expect("an honest opening")
+				.residual
+				.expect("an opened ladder sends a residual")
+		};
+
+		// A transparent ladder is deterministic, so the seed reaches nothing.
+		assert_eq!(residual(&clear, 0), residual(&clear, 1));
+
+		// A masked one is not, and every coordinate of the residual moves.
+		let first = residual(&masked, 0);
+		let second = residual(&masked, 1);
+		assert_eq!(first.len(), second.len());
+		for (index, (left, right)) in std::iter::zip(&first, &second).enumerate() {
+			assert_ne!(left, right, "residual coordinate {index} did not move");
+		}
+
+		// And it is not the transparent residual either, so the mask is really in the value.
+		assert_ne!(first, residual(&clear, 0));
+	}
+
+	/// Two witnesses satisfying one claim leave residuals no bucket count tells apart.
+	///
+	/// This is the distribution test the cleartext residual deserves.
+	/// The two oracles state the same claim against the same transparent and differ in the witness.
+	/// Each is opened under many mask seeds.
+	/// The residual coordinates are then bucketed by their leading bits.
+	///
+	///     buckets  : 8, by the top three bits of each coordinate
+	///     samples  : 32 seeds * 2^4 coordinates = 512 per witness
+	///     statistic: sum over buckets of (observed - expected)^2 / expected
+	///
+	/// A residual carrying the witness in the clear would be one fixed vector per witness.
+	/// Its 512 samples would collapse onto 16 values and the statistic would explode.
+	/// Both collections instead sit inside the bound a uniform draw clears with probability 0.999.
+	#[test]
+	fn two_witnesses_with_one_claim_leave_residuals_of_one_distribution() {
+		const SEEDS: u64 = 32;
+		const BUCKETS: usize = 8;
+		// The 0.999 quantile of a chi-squared with 7 degrees of freedom.
+		const BOUND: f64 = 24.32;
+
+		let params = ladder(5, &[2, 1]);
+		let mut rng = StdRng::seed_from_u64(15);
+		let first = Oracle::honest(&mut rng, params.log_msg_len(), 1).masked();
+		let second = first.sibling(&mut rng);
+
+		// Fixture state: the two witnesses differ, and their claims do not.
+		assert_ne!(first.opened.as_ref(), second.opened.as_ref());
+		assert_eq!(first.relations[0].1, second.relations[0].1);
+
+		let statistic = |oracle: &Oracle| {
+			let mut counts = [0usize; BUCKETS];
+			for seed in 0..SEEDS {
+				let residual = run(&params, std::slice::from_ref(oracle), seed)
+					.expect("an honest masked opening")
+					.residual
+					.expect("an opened ladder sends a residual");
+				for value in residual {
+					// The top three bits of a 128-bit value, which are uniform when it is.
+					counts[(u128::from(value) >> 125) as usize] += 1;
+				}
+			}
+			let total = counts.iter().sum::<usize>() as f64;
+			let expected = total / BUCKETS as f64;
+			counts
+				.iter()
+				.map(|&count| (count as f64 - expected).powi(2) / expected)
+				.sum::<f64>()
+		};
+
+		for (name, oracle) in [("first", &first), ("second", &second)] {
+			let statistic = statistic(oracle);
+			assert!(statistic < BOUND, "{name} witness scored {statistic:.2} against {BOUND}");
 		}
 	}
 
@@ -593,8 +1046,14 @@ mod tests {
 		let one = [Oracle::honest(&mut rng, params.log_msg_len(), 1)];
 		let three = [Oracle::honest(&mut rng, params.log_msg_len(), 3)];
 
-		let one_size = run(&params, &one).expect("one honest relation");
-		let three_size = run(&params, &three).expect("three honest relations");
+		let one_size = run(&params, &one, 0)
+			.expect("one honest relation")
+			.proof
+			.len();
+		let three_size = run(&params, &three, 0)
+			.expect("three honest relations")
+			.proof
+			.len();
 
 		// The extra relations are folded before anything is committed or opened.
 		// So they add nothing to the transcript.
@@ -621,10 +1080,18 @@ mod tests {
 			Oracle::honest(&mut rng, params.log_msg_len(), 1),
 		];
 
-		let batch_size = run(&params, &batch).expect("three honest oracles");
+		let batch_size = run(&params, &batch, 0)
+			.expect("three honest oracles")
+			.proof
+			.len();
 		let alone = batch
 			.iter()
-			.map(|oracle| run(&params, std::slice::from_ref(oracle)).expect("one honest oracle"))
+			.map(|oracle| {
+				run(&params, std::slice::from_ref(oracle), 0)
+					.expect("one honest oracle")
+					.proof
+					.len()
+			})
 			.sum::<usize>();
 
 		assert!(
@@ -653,7 +1120,7 @@ mod tests {
 			.into_iter()
 			.collect::<Vec<_>>();
 
-		run(&params, &batch).expect("four honest oracles of four lengths");
+		run(&params, &batch, 0).expect("four honest oracles of four lengths");
 	}
 
 	/// A claim the message does not satisfy must be caught by the relation sumcheck.
@@ -675,7 +1142,7 @@ mod tests {
 		// Mutation: the second oracle's claim is off by one, and nothing else changes.
 		batch[1].relations[0].1 += B128::ONE;
 
-		let err = run(&params, &batch).expect_err("the inner-product claim is off by one");
+		let err = run(&params, &batch, 0).expect_err("the inner-product claim is off by one");
 
 		match err {
 			Error::IPChannel(binius_ip::channel::Error::InvalidAssert) => {}
@@ -703,8 +1170,8 @@ mod tests {
 		// Mutation: the second oracle commits a different buffer from the one it opens.
 		batch[1].committed = random_field_buffer::<B128>(&mut rng, 6);
 
-		let err =
-			run(&params, &batch).expect_err("the committed codeword encodes a different message");
+		let err = run(&params, &batch, 0)
+			.expect_err("the committed codeword encodes a different message");
 
 		// The ladder's own assertion, so the error arrives wrapped rather than raised here.
 		match err {
@@ -724,10 +1191,16 @@ mod tests {
 	fn commitments_with_no_relation_open_nothing() {
 		let params = ladder(5, &[2, 1]);
 		let mut oracles = one_oracle(&params, 6);
-		let opened_size = run(&params, &oracles).expect("one honest relation");
+		let opened_size = run(&params, &oracles, 0)
+			.expect("one honest relation")
+			.proof
+			.len();
 
 		oracles[0].relations.clear();
-		let empty_size = run(&params, &oracles).expect("a commitment alone always verifies");
+		let empty_size = run(&params, &oracles, 0)
+			.expect("a commitment alone always verifies")
+			.proof
+			.len();
 
 		assert!(
 			empty_size < opened_size,
@@ -751,7 +1224,7 @@ mod tests {
 
 		// Mutation: the second oracle is committed and finalized, but never opened.
 		batch[1].relations.clear();
-		let _ = run(&params, &batch);
+		let _ = run(&params, &batch, 0);
 	}
 
 	/// The buffer handed to the commit phase must have the length its spec announced.
@@ -768,7 +1241,7 @@ mod tests {
 		let short =
 			random_field_buffer::<B128>(&mut StdRng::seed_from_u64(9), params.log_msg_len() - 1);
 		oracles[0].committed = short;
-		let _ = run(&params, &oracles);
+		let _ = run(&params, &oracles, 0);
 	}
 
 	/// The committed buffer must be handed back before the opening runs.
@@ -791,7 +1264,7 @@ mod tests {
 
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut channel = prover_compiler
-			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
+			.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut transcript,
 				GlobalAllocator,
 			);

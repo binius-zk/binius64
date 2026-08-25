@@ -1,11 +1,11 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::BinaryField;
-use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::CopyGetters;
 
-use super::{size_estimation, verifier_cost, verifier_cost::VerifierCost};
+use super::{LevelZeroBatch, size_estimation, verifier_cost, verifier_cost::VerifierCost};
 use crate::{
+	channel::OracleSpec,
 	merkle_tree::MerkleTreeScheme,
 	soundness::{Grinding, SoundnessRegime},
 };
@@ -224,29 +224,35 @@ impl LigeritoParams {
 		self.levels[0].log_msg_len()
 	}
 
-	/// The level-0 shape a message of `log_msg_len` elements is committed at.
+	/// The level-0 shape one oracle is committed at.
 	///
 	/// A ladder can open several messages at once, and they all share level 0's column count.
 	/// So every level-0 codeword has one length over one domain, and one query set serves them all.
-	/// The lane count is then the only thing a shorter message changes.
+	/// The lane count is then the only thing that varies between them.
 	///
 	/// A message with fewer elements than one column block folds nothing at level 0.
 	/// It commits a single lane, zero-padded out to the shared column count.
 	/// That costs a full-width encoding for a message that does not need one.
 	/// It is the price of sharing the query set.
 	///
+	/// A zero-knowledge oracle interleaves one further lane, holding its mask.
+	/// The returned lane count includes it, because it is a lane of the committed codeword.
+	/// The codeword's length is unchanged, so a mask costs leaf size rather than query positions.
+	///
 	/// ## Preconditions
 	///
-	/// * `log_msg_len` is at most the ladder's own message length.
-	pub fn level_zero_shape(&self, log_msg_len: usize) -> LigeritoLevel {
+	/// * The oracle's message is at most the ladder's own message length.
+	pub fn level_zero_shape(&self, spec: &OracleSpec) -> LigeritoLevel {
 		assert!(
-			log_msg_len <= self.log_msg_len(),
-			"precondition: a message of 2^{log_msg_len} elements exceeds the ladder's 2^{}",
+			spec.log_msg_len <= self.log_msg_len(),
+			"precondition: a message of 2^{} elements exceeds the ladder's 2^{}",
+			spec.log_msg_len,
 			self.log_msg_len()
 		);
 
+		let log_msg_lanes = spec.log_msg_len.saturating_sub(self.levels[0].log_msg_cols);
 		LigeritoLevel {
-			log_lanes: log_msg_len.saturating_sub(self.levels[0].log_msg_cols),
+			log_lanes: log_msg_lanes + usize::from(spec.is_zk),
 			..self.levels[0]
 		}
 	}
@@ -288,31 +294,25 @@ impl LigeritoParams {
 	/// `log_lanes` and `2^(log_lanes - 1)` respectively.
 	/// This charges the second, which is the pessimistic one.
 	pub fn correlated_agreement_bits(&self, log_field_size: usize) -> f64 {
-		self.batched_correlated_agreement_bits(log_field_size, 1)
+		self.batched_correlated_agreement_bits(log_field_size, LevelZeroBatch::single())
 	}
 
-	/// The same ceiling when level 0 opens `n_oracles` separately committed messages at once.
+	/// The same ceiling when level 0 opens a whole batch of messages at once.
 	///
 	/// The messages are combined by a tensor of `ceil(log2 n_oracles)` challenges.
-	/// That sits on top of the `log_lanes` challenges level 0 already folds its own lanes by.
-	/// So level 0's proximity test runs against a fold of `2^log_lanes * n_oracles` rows.
-	/// Its row union grows by exactly that factor.
+	/// A masked message adds one more interleaved lane, folded by the masking challenge.
+	/// Both sit on top of the `log_lanes` challenges level 0 already folds its own lanes by.
+	/// So level 0's proximity test runs against a wider fold, and its row union grows to match.
 	///
 	/// The deeper levels are untouched.
-	/// The batch is one combined message from level 1 onwards.
-	/// So nothing below level 0 knows how many messages went into it.
-	///
-	/// ## Preconditions
-	///
-	/// * `n_oracles` is positive.
+	/// The batch is one combined message from level 1 onwards, and the mask is blended into it.
+	/// So nothing below level 0 knows how many messages went into it, or which of them were masked.
 	pub fn batched_correlated_agreement_bits(
 		&self,
 		log_field_size: usize,
-		n_oracles: usize,
+		batch: LevelZeroBatch,
 	) -> f64 {
-		assert!(n_oracles > 0, "precondition: a ladder opens at least one message");
-
-		let log_n_oracles = log2_ceil_usize(n_oracles);
+		let log_extra_rows = batch.log_extra_rows();
 		self.levels
 			.iter()
 			.enumerate()
@@ -322,8 +322,8 @@ impl LigeritoParams {
 					level.log_inv_rate,
 					log_field_size,
 				);
-				// Level 0 folds the lane index and the message index together.
-				let log_rows = level.log_lanes + if i == 0 { log_n_oracles } else { 0 };
+				// Level 0 folds its own lane index, the message index, and any mask lane together.
+				let log_rows = level.log_lanes + if i == 0 { log_extra_rows } else { 0 };
 				// The worst of those fold rounds pays `2^(log_rows - 1)`.
 				base - (log_rows.saturating_sub(1)) as f64
 			})
@@ -341,20 +341,20 @@ impl LigeritoParams {
 	/// A level grinds once more before its queries are drawn.
 	/// That is where [`Grinding::query_bits`] lands.
 	pub fn achieved_security_bits(&self, log_field_size: usize) -> f64 {
-		self.batched_achieved_security_bits(log_field_size, 1)
+		self.batched_achieved_security_bits(log_field_size, LevelZeroBatch::single())
 	}
 
-	/// The same figure when level 0 opens `n_oracles` separately committed messages at once.
+	/// The same figure when level 0 opens a whole batch of messages at once.
 	///
 	/// Only the correlated-agreement half moves.
 	/// The query counts are per level, and one query position serves every message.
-	/// So opening more messages changes nothing about how many rows are checked.
-	///
-	/// ## Preconditions
-	///
-	/// * `n_oracles` is positive.
-	pub fn batched_achieved_security_bits(&self, log_field_size: usize, n_oracles: usize) -> f64 {
-		let algebra = self.batched_correlated_agreement_bits(log_field_size, n_oracles)
+	/// So neither opening more messages nor masking one changes how many rows are checked.
+	pub fn batched_achieved_security_bits(
+		&self,
+		log_field_size: usize,
+		batch: LevelZeroBatch,
+	) -> f64 {
+		let algebra = self.batched_correlated_agreement_bits(log_field_size, batch)
 			+ self.grinding.challenge_bits() as f64;
 		// The same grind stands before every level's queries, so crediting it to the worst level
 		// is crediting it to all of them.
@@ -569,11 +569,33 @@ mod tests {
 		//     2^9  elements -> 2^9 columns * 2^0 lanes   a single lane, nothing to fold
 		//     2^6  elements -> 2^9 columns * 2^0 lanes   zero-padded out to the column count
 		for (log_msg_len, log_lanes) in [(12, 3), (11, 2), (9, 0), (6, 0)] {
-			let shape = params.level_zero_shape(log_msg_len);
+			let shape = params.level_zero_shape(&OracleSpec::new(log_msg_len));
 			assert_eq!(shape.log_lanes, log_lanes);
 			// The column count, the rate and the query count are shared by every oracle.
 			assert_eq!(shape.log_msg_cols, 9);
 			assert_eq!(shape.log_inv_rate, 1);
+			assert_eq!(shape.log_codeword_len(), 10);
+		}
+	}
+
+	#[test]
+	fn a_masked_message_commits_one_more_lane_over_the_same_codeword() {
+		// Invariant: the mask rides beside the message in the same tree, so it widens the leaf and
+		// leaves the number of leaves alone. One query set therefore still serves every oracle.
+		//
+		// Fixture state: level 0 is 2^9 columns by 2^3 lanes, so the ladder commits 2^12 elements.
+		//
+		//     2^12 elements, clear  -> 2^3 lanes
+		//     2^12 elements, masked -> 2^4 lanes, the mask riding in the extra one
+		//     2^6  elements, masked -> 2^1 lanes, message and mask each zero-padded to 2^9
+		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		for (spec, log_lanes) in [
+			(OracleSpec::new(12), 3),
+			(OracleSpec::new_zk(12), 4),
+			(OracleSpec::new_zk(6), 1),
+		] {
+			let shape = params.level_zero_shape(&spec);
+			assert_eq!(shape.log_lanes, log_lanes);
 			assert_eq!(shape.log_codeword_len(), 10);
 		}
 	}
@@ -665,7 +687,7 @@ mod tests {
 	fn a_message_longer_than_the_ladder_has_no_level_zero_shape() {
 		// The ladder commits 2^12 elements, so 2^13 has no lane count that fits its level 0.
 		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
-		params.level_zero_shape(13);
+		params.level_zero_shape(&OracleSpec::new(13));
 	}
 
 	#[test]
@@ -674,25 +696,44 @@ mod tests {
 		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
 		let alone = params.correlated_agreement_bits(128);
 
-		// One message is the unbatched figure, so the two routes must not drift.
-		assert_eq!(params.batched_correlated_agreement_bits(128, 1), alone);
+		// One clear message is the unbatched figure, so the two routes must not drift.
+		assert_eq!(params.batched_correlated_agreement_bits(128, LevelZeroBatch::single()), alone);
 
 		//     1 message  -> 2^3 rows folded -> union 2^2
 		//     4 messages -> 2^5 rows folded -> union 2^4, two bits worse
 		//     5 messages -> 2^6 rows folded -> union 2^5, three bits worse
-		assert_eq!(params.batched_correlated_agreement_bits(128, 4), alone - 2.0);
-		assert_eq!(params.batched_correlated_agreement_bits(128, 5), alone - 3.0);
+		for (n_oracles, cost) in [(4, 2.0), (5, 3.0)] {
+			let batch = LevelZeroBatch::new(n_oracles, false);
+			assert_eq!(params.batched_correlated_agreement_bits(128, batch), alone - cost);
+		}
 
 		// The queries are unchanged, since one position serves every message.
 		let queries = params.achieved_security_bits(128);
-		assert_eq!(params.batched_achieved_security_bits(128, 4), queries.min(alone - 2.0));
+		let four = LevelZeroBatch::new(4, false);
+		assert_eq!(params.batched_achieved_security_bits(128, four), queries.min(alone - 2.0));
 	}
 
 	#[test]
-	#[should_panic(expected = "precondition: a ladder opens at least one message")]
-	fn a_batch_of_no_messages_has_no_ceiling() {
+	fn masking_costs_level_zero_the_same_bit_a_doubling_costs() {
+		// Invariant: a mask is one more interleaved lane at level 0, so the ceiling has to charge
+		// it exactly as it charges one more message. Anything cheaper would report security the
+		// widened row union does not deliver.
+		//
+		// Fixture state: level 0 folds 2^3 lanes, so alone it already pays a union of 2^2 rows.
 		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
-		params.batched_correlated_agreement_bits(128, 0);
+		let alone = params.correlated_agreement_bits(128);
+
+		//     1 message,  masked -> 2^4 rows folded -> one bit worse
+		//     2 messages, clear  -> 2^4 rows folded -> one bit worse
+		//     2 messages, masked -> 2^5 rows folded -> two bits worse
+		let masked = params.batched_correlated_agreement_bits(128, LevelZeroBatch::new(1, true));
+		let doubled = params.batched_correlated_agreement_bits(128, LevelZeroBatch::new(2, false));
+		assert_eq!(masked, alone - 1.0);
+		assert_eq!(masked, doubled);
+		assert_eq!(
+			params.batched_correlated_agreement_bits(128, LevelZeroBatch::new(2, true)),
+			alone - 2.0
+		);
 	}
 
 	#[test]
@@ -707,29 +748,6 @@ mod tests {
 		level.n_queries = 513;
 		assert!(!level.is_feasible());
 	}
-	#[test]
-	fn scratch_grind_offsets_batching() {
-		use binius_field::Ghash128b as B128;
-
-		use crate::merkle_tree::BinaryMerkleTreeScheme;
-		let scheme = BinaryMerkleTreeScheme::<B128, binius_hash::StdHashSuite>::new();
-		let (regime, _) =
-			SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128).expect("reachable");
-		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
-				.expect("feasible");
-		for bits in [0usize, 1, 2, 3] {
-			let g = params.clone().with_grinding(Grinding::new(bits, 0));
-			println!(
-				"INT grind={bits} k=1 {:.2} k=2 {:.2} k=4 {:.2} k=8 {:.2}",
-				g.batched_achieved_security_bits(128, 1),
-				g.batched_achieved_security_bits(128, 2),
-				g.batched_achieved_security_bits(128, 4),
-				g.batched_achieved_security_bits(128, 8),
-			);
-		}
-	}
-
 	/// Challenge grinding buys back exactly what batching costs.
 	///
 	/// Both act on the algebraic term and neither touches the query one.
@@ -754,16 +772,23 @@ mod tests {
 
 		for log_k in 0..4 {
 			let k = 1usize << log_k;
+			let batch = LevelZeroBatch::new(k, false);
 			// Unground, each doubling of the oracle count takes one bit off the target.
-			let unground = params.batched_achieved_security_bits(128, k);
+			let unground = params.batched_achieved_security_bits(128, batch);
 			assert!(unground < 120.0 || k == 1, "k={k} kept {unground:.2}");
 
 			// Ground by that many bits, the batch reaches the target again.
 			let ground = params
 				.clone()
 				.with_grinding(Grinding::new(log_k, 0))
-				.batched_achieved_security_bits(128, k);
+				.batched_achieved_security_bits(128, batch);
 			assert!(ground >= 120.0, "k={k} ground to {ground:.2}");
 		}
+
+		// A mask is charged on the same footing, so one grind bit buys it back too.
+		let masked = LevelZeroBatch::new(1, true);
+		assert!(params.batched_achieved_security_bits(128, masked) < 120.0);
+		let ground = params.with_grinding(Grinding::new(1, 0));
+		assert!(ground.batched_achieved_security_bits(128, masked) >= 120.0);
 	}
 }

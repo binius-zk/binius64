@@ -6,6 +6,8 @@
 //! The oracle handle is here, and the pieces the channel assembles sit beside it.
 
 mod combined_message;
+mod committed_oracle;
+mod mask;
 mod prover;
 mod relation;
 

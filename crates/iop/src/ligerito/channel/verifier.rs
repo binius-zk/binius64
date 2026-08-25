@@ -8,7 +8,9 @@ use binius_ip::{
 	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{self, BatchSumcheckOutput},
 };
-use binius_math::{multilinear::hypercube::Hypercube, univariate::evaluate_univariate};
+use binius_math::{
+	line::extrapolate_line, multilinear::hypercube::Hypercube, univariate::evaluate_univariate,
+};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
 
@@ -30,9 +32,12 @@ const RELATION_DEGREE: usize = 2;
 
 /// A verifier channel that opens every committed oracle with one Ligerito ladder.
 ///
-/// The channel is transparent rather than zero-knowledge.
-/// No committed message is ever masked.
-/// The ladder's residual reaches the verifier in the clear.
+/// Each oracle is masked or not according to its own specification, so a batch may mix the two.
+/// A masked oracle interleaves one extra lane, holding a mask of its message's own length.
+/// A shared masking challenge blends every mask into the message its ladder then folds.
+///
+/// The ladder's residual still reaches the verifier in the clear.
+/// It is a fold of the blended messages, so a single mask anywhere in the batch blinds it.
 ///
 /// # Type Parameters
 ///
@@ -68,7 +73,6 @@ where
 	/// ## Preconditions
 	///
 	/// * `oracle_specs` is non-empty.
-	/// * No spec is zero-knowledge.
 	/// * The longest message is the ladder's message length.
 	pub fn new(
 		channel: Channel,
@@ -78,10 +82,6 @@ where
 		assert!(
 			!oracle_specs.is_empty(),
 			"precondition: a Ligerito channel opens at least one oracle"
-		);
-		assert!(
-			oracle_specs.iter().all(|spec| !spec.is_zk),
-			"precondition: Ligerito commits no mask, so a zero-knowledge oracle cannot be opened"
 		);
 		// Every oracle shares level 0's column count, so the ladder must fit the longest message.
 		assert_eq!(
@@ -148,15 +148,18 @@ where
 
 	/// Verifies the queued relations against the committed ladder.
 	///
-	/// Three reductions run back to back.
+	/// Four reductions run back to back.
 	/// Each oracle's relations fold into one at a shared coefficient.
+	/// A masked oracle's claim is moved onto the message its mask blends it into.
 	/// A batched sumcheck turns those into one evaluation claim per oracle, at a shared point.
 	/// Those claims are combined into a claim about the one message the ladder folds.
 	///
 	/// ```text
 	///     <pi_i, t_ij> = s_ij      the relations, batched per oracle into <pi_i, T_i> = S_i
+	///       -> blend               at gamma, against sigma_i = <omega_i, T_i>
+	///     <pi_i', T_i> = S_i'      one claim per oracle, about the blended message
 	///       -> sumcheck            binds every variable at a sampled point r
-	///     pi_i(r) = alpha_i        one evaluation claim per oracle
+	///     pi_i'(r) = alpha_i       one evaluation claim per oracle
 	///       -> eq-combine          at coefficients e_i drawn once every alpha is on the wire
 	///     PI(r) = sum_i e_i alpha_i
 	///       -> ladder
@@ -164,6 +167,27 @@ where
 	///
 	/// A message shorter than the longest one is that multilinear zero-extended.
 	/// Its claim then carries the factor the extra coordinates contribute at zero.
+	///
+	/// # Zero knowledge
+	///
+	/// The blend is a line through the message and its mask:
+	///
+	/// ```text
+	///     pi_i' = (1 - gamma) * pi_i + gamma * omega_i
+	/// ```
+	///
+	/// Nothing downstream removes the mask again.
+	/// Every deeper level commits a fold of the blend, and folding is linear.
+	/// So the residual sent in the clear is `(1 - gamma) * fold(pi) + gamma * fold(omega)`.
+	/// A fold is a partial evaluation, which is onto, so the mask term is uniform there.
+	/// One mask at level 0 therefore blinds every later level, and no level needs its own.
+	///
+	/// The mask is committed before `gamma` exists, so a prover cannot choose it against the blend.
+	/// `gamma` is zero with probability `1 / |F|`, and the blend carries no mask when it is.
+	///
+	/// The rows level 0 opens are a lane of the mask beside a lane of the message.
+	/// So a query position reveals both, and the blend is what the *later* levels inherit.
+	/// This is the same construction the FRI-based zero-knowledge channel commits.
 	///
 	/// # Soundness
 	///
@@ -174,14 +198,15 @@ where
 	///   coefficient rather than by `k_i` independent ones;
 	/// - `(k - 1) / |F|`, for folding the `k` oracle claims into one sumcheck the same way;
 	/// - a wider row union at level 0, for combining the `k` messages into the one the ladder
-	///   folds.
+	///   folds, and for the extra lane a masked message interleaves.
 	///
 	/// The third is a proximity-gap statement rather than a linear-independence one.
 	/// So no number of queries buys it back.
-	/// Level 0 folds a tensor over its own lane index *and* the message index.
-	/// Its row union therefore grows from `2^log_lanes` rows to `2^log_lanes * k` of them.
+	/// Level 0 folds a tensor over its own lane index, the message index, and any mask lane.
+	/// Its row union therefore grows from `2^log_lanes` rows to `2^log_lanes * k * 2` of them.
 	/// The ladder prices exactly that.
-	/// Nothing below level 0 is affected, since the batch is one combined message from level 1 on.
+	/// The compiler then refuses a shape whose widened union would miss the target.
+	/// Nothing below level 0 is affected, since level 1 commits one combined message.
 	///
 	/// Two limits on where that third charge comes from, since neither is obvious from the code.
 	///
@@ -215,9 +240,28 @@ where
 			.into_iter()
 			.map(|relations| QueuedRelation::batch(relations, lambda.clone()))
 			.collect::<Vec<_>>();
-		let claims = relations
-			.iter()
-			.map(|relation| relation.claim.clone())
+
+		// A masked oracle states what its mask pairs to against the same transparent.
+		// Those values are on the wire before the challenge that blends them is drawn.
+		let n_masked = oracle_specs.iter().filter(|spec| spec.is_zk).count();
+		let sigmas = channel.recv_many(n_masked)?;
+		let gamma = (n_masked > 0).then(|| channel.sample());
+
+		// Each masked claim moves onto the blended message, along the line the mask defines.
+		let mut sigmas = sigmas.into_iter();
+		let claims = izip!(&relations, oracle_specs)
+			.map(|(relation, spec)| {
+				if !spec.is_zk {
+					return relation.claim.clone();
+				}
+				extrapolate_line(
+					relation.claim.clone(),
+					sigmas.next().expect("one mask pairing per masked oracle"),
+					gamma
+						.clone()
+						.expect("the challenge is drawn when a mask is present"),
+				)
+			})
 			.collect::<Vec<_>>();
 
 		// Bind every variable of every committed multilinear at a point the prover cannot predict.
@@ -264,8 +308,18 @@ where
 
 		let oracles = izip!(commitments, oracle_specs, coefficients)
 			.map(|(commitment, spec, coefficient)| {
-				let log_lanes = params.level_zero_shape(spec.log_msg_len).log_lanes;
-				CommittedOracle::new(commitment, log_lanes, coefficient)
+				let log_lanes = params.level_zero_shape(spec).log_lanes;
+				if !spec.is_zk {
+					return CommittedOracle::new(commitment, log_lanes, coefficient);
+				}
+				CommittedOracle::masked(
+					commitment,
+					log_lanes,
+					coefficient,
+					gamma
+						.clone()
+						.expect("the challenge is drawn when a mask is present"),
+				)
 			})
 			.collect();
 
@@ -368,10 +422,9 @@ where
 
 		// Level 0 holds one codeword position per leaf, across every interleaved lane. Every
 		// oracle shares the column count, so only the lane count follows the message length.
+		// A masked oracle carries one lane more, holding its mask, over the same codeword.
 		let index = self.commitments.len();
-		let level = self
-			.params
-			.level_zero_shape(self.oracle_specs[index].log_msg_len);
+		let level = self.params.level_zero_shape(&self.oracle_specs[index]);
 		let commitment = self
 			.channel
 			.recv_merkle_commitment(1 << level.log_lanes, level.log_codeword_len())?;

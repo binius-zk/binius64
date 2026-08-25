@@ -161,6 +161,9 @@ impl<'a, E: FieldOps, C: Clone> LigeritoVerifier<'a, E, C> {
 	/// The messages fold to one column count, so level 1 commits a single combined message.
 	/// Every level below it is then the one-message ladder unchanged.
 	///
+	/// A masked message keeps one of its lanes for the mask, and that lane is not counted here.
+	/// It is folded by the masking challenge rather than by one of the ladder's own.
+	///
 	/// ## Preconditions
 	///
 	/// * `oracles` is non-empty.
@@ -172,7 +175,7 @@ impl<'a, E: FieldOps, C: Clone> LigeritoVerifier<'a, E, C> {
 		let log_lanes = params.levels()[0].log_lanes;
 		let max_log_lanes = oracles
 			.iter()
-			.map(CommittedOracle::log_lanes)
+			.map(CommittedOracle::log_folded_lanes)
 			.max()
 			.expect("oracles is non-empty");
 		assert_eq!(
@@ -376,7 +379,7 @@ mod tests {
 	use binius_field::{Field, Ghash128b as B128};
 
 	use super::*;
-	use crate::{ligerito::LigeritoLevel, soundness::SoundnessRegime};
+	use crate::{channel::OracleSpec, ligerito::LigeritoLevel, soundness::SoundnessRegime};
 
 	/// A two-level ladder over a 2^8 message: 2^6 columns and 4 lanes, then 2^5 columns and 2.
 	fn params() -> LigeritoParams {
@@ -402,7 +405,9 @@ mod tests {
 
 	/// One message, weighed by one, carrying the lanes the ladder names for a message that long.
 	fn oracle(log_msg_len: usize) -> CommittedOracle<B128, ()> {
-		let log_lanes = params().level_zero_shape(log_msg_len).log_lanes;
+		let log_lanes = params()
+			.level_zero_shape(&OracleSpec::new(log_msg_len))
+			.log_lanes;
 		CommittedOracle::new((), log_lanes, B128::ONE)
 	}
 
@@ -449,6 +454,20 @@ mod tests {
 		// The extra round would bind a variable no message has, so the ladder is mis-sized.
 		let params = params();
 		LigeritoVerifier::<B128, ()>::batched(&params, vec![oracle(7), oracle(6)]);
+	}
+
+	#[test]
+	fn a_masked_message_fills_level_zero_with_one_lane_to_spare() {
+		// Invariant: the mask lane is folded by the masking challenge, so it must not be counted
+		// against the fold rounds the ladder has. A masked message that filled level 0 would
+		// otherwise look one lane too wide and be refused.
+		//
+		// Fixture state: level 0 folds 2^2 lanes, and the masked codeword carries 2^3.
+		let params = params();
+		let oracle = CommittedOracle::masked((), 3, B128::ONE, B128::ONE);
+		let verifier = LigeritoVerifier::<B128, ()>::batched(&params, vec![oracle]);
+		assert_eq!(verifier.oracles[0].log_lanes(), 3);
+		assert_eq!(verifier.oracles[0].log_folded_lanes(), 2);
 	}
 
 	#[test]

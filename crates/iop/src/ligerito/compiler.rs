@@ -10,7 +10,7 @@ use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
-use super::{LigeritoParams, channel::LigeritoVerifierChannel};
+use super::{LevelZeroBatch, LigeritoParams, channel::LigeritoVerifierChannel};
 use crate::{
 	channel::OracleSpec,
 	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
@@ -23,7 +23,8 @@ use crate::{
 /// The ladder is chosen once, for the longest oracle the channel opens.
 /// Every channel the compiler creates reuses it, and every oracle shares its column count.
 ///
-/// Ligerito commits no mask, so the oracles it opens are never zero-knowledge.
+/// An oracle asking for zero knowledge is committed with a mask interleaved beside its message.
+/// That widens level 0's row union, which the ladder has to be able to afford.
 #[derive(Debug, Clone)]
 pub struct LigeritoVerifierCompiler<F> {
 	/// The oracles every channel this compiler makes will open, in the order they arrive.
@@ -44,16 +45,12 @@ where
 	/// ## Preconditions
 	///
 	/// * `oracle_specs` is non-empty.
-	/// * No spec is zero-knowledge.
 	/// * The longest message is the ladder's message length.
+	/// * The batch these oracles form reaches the target, unless the ladder misses it alone.
 	pub fn new(oracle_specs: Vec<OracleSpec>, params: LigeritoParams) -> Self {
 		assert!(
 			!oracle_specs.is_empty(),
 			"precondition: a Ligerito compiler serves at least one oracle"
-		);
-		assert!(
-			oracle_specs.iter().all(|spec| !spec.is_zk),
-			"precondition: Ligerito commits no mask, so a zero-knowledge oracle cannot be opened"
 		);
 		assert_eq!(
 			oracle_specs
@@ -65,16 +62,20 @@ where
 			"precondition: the longest oracle's message length must be the ladder's message length"
 		);
 		// Batching widens level 0's row union, which lowers a ceiling no query count can raise.
-		// A ladder sized for one message can therefore miss a target it otherwise clears, and the
-		// miss is silent: the unbatched figure keeps reporting the number the batch does not pay.
+		// So does a mask, which is one more interleaved lane at level 0 and nothing else.
+		// A ladder sized for one clear message can therefore miss a target it otherwise clears,
+		// and the miss is silent: the unbatched figure keeps reporting the number it does not pay.
 		// Whether the ladder clears its target on its own is `LigeritoParams`'s business, so this
-		// refuses only the batches that cause the shortfall.
+		// refuses only the shapes that cause the shortfall.
 		let target = params.security_bits() as f64;
-		let batched = params.batched_achieved_security_bits(F::N_BITS, oracle_specs.len());
+		let batch = LevelZeroBatch::from_specs(&oracle_specs);
+		let batched = params.batched_achieved_security_bits(F::N_BITS, batch);
 		assert!(
 			batched >= target || params.achieved_security_bits(F::N_BITS) < target,
-			"precondition: {} oracles reach {batched:.2} bits against a target of {}",
-			oracle_specs.len(),
+			"precondition: {} oracles, masked {}, reach {batched:.2} bits against a target of \
+			 {}",
+			batch.n_oracles(),
+			batch.is_masked(),
 			params.security_bits()
 		);
 
@@ -99,11 +100,13 @@ where
 	/// The search prices it rather than assuming it away.
 	/// Pass [`Grinding::NONE`] for a transcript with no proof of work in it.
 	///
+	/// The search prices one clear message, so a batch or a mask is checked against it afterwards.
+	///
 	/// ## Preconditions
 	///
 	/// * `oracle_specs` is non-empty.
-	/// * No spec is zero-knowledge.
 	/// * `l0_log_inv_rate` is a usable inverse rate and `security_bits` is positive.
+	/// * The batch these oracles form reaches the target, unless the ladder misses it alone.
 	pub fn optimal<MerkleScheme>(
 		merkle_scheme: &MerkleScheme,
 		oracle_specs: Vec<OracleSpec>,
@@ -283,7 +286,7 @@ mod tests {
 
 		assert_eq!(compiler.oracle_specs(), &specs);
 		for (spec, log_lanes) in std::iter::zip(&specs, [2, 1, 0]) {
-			let shape = compiler.params().level_zero_shape(spec.log_msg_len);
+			let shape = compiler.params().level_zero_shape(spec);
 			assert_eq!(shape.log_lanes, log_lanes);
 			// One codeword length, so one set of query positions serves every oracle.
 			assert_eq!(shape.log_codeword_len(), 7);
@@ -298,11 +301,19 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "precondition: Ligerito commits no mask")]
-	fn a_zero_knowledge_oracle_is_refused() {
-		// A masked oracle interleaves its message with a mask, which the ladder has no place for.
-		// Its residual would reach the verifier in the clear regardless.
-		LigeritoVerifierCompiler::<B128>::new(vec![OracleSpec::new_zk(8)], params());
+	fn a_zero_knowledge_oracle_commits_one_extra_lane() {
+		// Fixture state: level 0 is 2^6 columns by 2^2 lanes over a 2^8 message.
+		//
+		//     clear  : 2^2 lanes, one per quarter of the message
+		//     masked : 2^3 lanes, the extra one holding a mask of the message's own length
+		//
+		// The codeword length is untouched, so one query set still serves clear and masked alike.
+		let compiler = LigeritoVerifierCompiler::<B128>::new(vec![OracleSpec::new_zk(8)], params());
+		let shape = compiler
+			.params()
+			.level_zero_shape(&compiler.oracle_specs()[0]);
+		assert_eq!(shape.log_lanes, 3);
+		assert_eq!(shape.log_codeword_len(), 7);
 	}
 
 	#[test]
@@ -324,15 +335,11 @@ mod tests {
 		);
 	}
 
-	/// A batch that would miss the target the ladder was sized for must be refused.
+	/// The ladder a 120-bit target admits over a 2^24 message, where the ceiling binds.
 	///
-	/// At 96 bits the query term binds, so batching costs nothing there.
-	/// Above roughly 117 bits over `B128` the algebraic ceiling binds instead.
-	/// Each doubling of the oracle count then takes one bit off it.
-	/// A ladder sized for one message misses its target once several share it.
-	#[test]
-	#[should_panic(expected = "oracles reach")]
-	fn a_batch_that_would_miss_the_target_is_refused() {
+	/// At the shipped 96-bit target the query term binds instead.
+	/// Neither batching nor masking shows there, so a rejection test needs this shape.
+	fn ceiling_bound_params() -> LigeritoParams {
 		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
 		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
 			.expect("120 bits is reachable with a constant loss");
@@ -340,10 +347,44 @@ mod tests {
 			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
 				.expect("a 120-bit ladder exists for one message");
 
-		// One oracle clears 120, so the shortfall below is caused by the batch and nothing else.
+		// One clear oracle clears 120, so any shortfall below is caused by the shape under test.
 		assert!(params.achieved_security_bits(128) >= 120.0);
+		params
+	}
 
+	/// A batch that would miss the target the ladder was sized for must be refused.
+	///
+	/// Each doubling of the oracle count takes one bit off the ceiling.
+	/// A ladder sized for one message misses its target once several share it.
+	#[test]
+	#[should_panic(expected = "oracles, masked false, reach")]
+	fn a_batch_that_would_miss_the_target_is_refused() {
+		let params = ceiling_bound_params();
 		let spec = OracleSpec::new(params.log_msg_len());
 		LigeritoVerifierCompiler::<B128>::new(vec![spec, spec], params);
+	}
+
+	/// A mask that would miss the same target must be refused by the same guard.
+	///
+	/// A mask is one more interleaved lane at level 0.
+	/// So it widens the row union exactly as a second oracle does.
+	/// Letting it through would report a number that union does not deliver.
+	#[test]
+	#[should_panic(expected = "oracles, masked true, reach")]
+	fn a_mask_that_would_miss_the_target_is_refused() {
+		let params = ceiling_bound_params();
+		let spec = OracleSpec::new_zk(params.log_msg_len());
+		LigeritoVerifierCompiler::<B128>::new(vec![spec], params);
+	}
+
+	/// The same mask is accepted once a challenge grind pays for the lane it adds.
+	///
+	/// The grind raises the ceiling one bit per bit ground, and the mask costs exactly one.
+	/// So the two cancel and the masked oracle reaches the target the clear one reached.
+	#[test]
+	fn a_ground_ladder_affords_the_mask() {
+		let params = ceiling_bound_params().with_grinding(Grinding::new(1, 0));
+		let spec = OracleSpec::new_zk(params.log_msg_len());
+		LigeritoVerifierCompiler::<B128>::new(vec![spec], params);
 	}
 }

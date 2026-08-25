@@ -18,6 +18,7 @@ use binius_math::ntt::AdditiveNTT;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
 use digest::Output;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
 	ligerito::channel::LigeritoProverChannel,
@@ -61,7 +62,7 @@ where
 	///
 	/// ## Preconditions
 	///
-	/// * `oracle_specs` is non-empty and no spec is zero-knowledge.
+	/// * `oracle_specs` is non-empty.
 	/// * The longest message is the ladder's message length.
 	/// * `ntt`'s domain covers every level's codeword domain.
 	pub fn new(ntt: NTT, oracle_specs: Vec<OracleSpec>, params: LigeritoParams) -> Self {
@@ -78,7 +79,7 @@ where
 	///
 	/// ## Preconditions
 	///
-	/// * `oracle_specs` is non-empty and no spec is zero-knowledge.
+	/// * `oracle_specs` is non-empty.
 	/// * `l0_log_inv_rate` is a usable inverse rate and `security_bits` is positive.
 	/// * `ntt`'s domain covers every level's codeword domain.
 	pub fn optimal<MerkleScheme>(
@@ -132,13 +133,15 @@ where
 		&self.params
 	}
 
-	/// Creates a prover channel over the given Merkle channel.
+	/// Creates a prover channel over the given Merkle channel and a generator for its masks.
 	///
 	/// The returned channel drives all prover interaction through the one it is given.
 	/// So the caller decides how commitments are produced.
+	/// `rng` seeds the generator every zero-knowledge oracle draws its mask from.
 	pub fn create_channel<Channel, A>(
 		&self,
 		channel: Channel,
+		rng: impl Rng,
 		alloc: A,
 	) -> LigeritoProverChannel<'_, F, P, NTT, Channel, A>
 	where
@@ -150,8 +153,37 @@ where
 			&self.ntt,
 			self.oracle_specs.clone(),
 			&self.params,
+			rng,
 			alloc,
 		)
+	}
+
+	/// Creates a prover channel for a compiler whose oracles are all committed in the clear.
+	///
+	/// A mask is drawn only when committing a zero-knowledge oracle.
+	/// With none of those the generator is never read, so its seed cannot reach the proof.
+	/// The seed is therefore fixed, and the caller supplies no randomness at all.
+	///
+	/// # Panics
+	///
+	/// Panics if any configured oracle asks for zero knowledge.
+	/// Such an oracle would mask from a fixed seed, which is no masking at all.
+	pub fn create_channel_without_zk<Channel, A>(
+		&self,
+		channel: Channel,
+		alloc: A,
+	) -> LigeritoProverChannel<'_, F, P, NTT, Channel, A>
+	where
+		Channel: MerkleIPProverChannel<F, Word = Word>,
+		A: Allocator,
+	{
+		assert!(
+			self.oracle_specs.iter().all(|spec| !spec.is_zk),
+			"precondition: a channel built without randomness opens no zero-knowledge oracle"
+		);
+
+		// No mask is ever drawn, so the seed is arbitrary.
+		self.create_channel(channel, StdRng::seed_from_u64(0), alloc)
 	}
 
 	/// Creates a prover channel over a transcript, for the common case.
@@ -164,6 +196,7 @@ where
 	pub fn create_channel_from_transcript<H, Challenger_, T, A>(
 		&self,
 		transcript: T,
+		rng: impl Rng,
 		alloc: A,
 	) -> TranscriptLigeritoProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
 	where
@@ -174,6 +207,32 @@ where
 		A: Allocator,
 	{
 		self.create_channel(
+			ProverMerkleTranscriptChannel::with_merkle_prover(
+				transcript,
+				BinaryMerkleTreeProver::with_allocator(alloc),
+			),
+			rng,
+			alloc,
+		)
+	}
+
+	/// Creates a channel over a transcript for a compiler whose oracles are all in the clear.
+	///
+	/// The transcript handling matches the constructor that takes a generator.
+	/// The channel is built without one, and refuses a zero-knowledge oracle for that reason.
+	pub fn create_channel_without_zk_from_transcript<H, Challenger_, T, A>(
+		&self,
+		transcript: T,
+		alloc: A,
+	) -> TranscriptLigeritoProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
+	where
+		H: HashSuite,
+		Challenger_: Challenger,
+		T: BorrowMut<ProverTranscript<Challenger_>>,
+		Output<H::LeafHash>: SerializeBytes,
+		A: Allocator,
+	{
+		self.create_channel_without_zk(
 			ProverMerkleTranscriptChannel::with_merkle_prover(
 				transcript,
 				BinaryMerkleTreeProver::with_allocator(alloc),
