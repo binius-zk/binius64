@@ -184,6 +184,20 @@ impl LigeritoParams {
 		self.levels.iter().map(|level| level.log_lanes).sum()
 	}
 
+	/// log2 the length of the longest codeword any level of this ladder commits.
+	///
+	/// One additive transform serves the whole ladder, and this is the domain it must cover.
+	/// The levels encode over nested Gao-Mateer domains, so the largest of them covers them all.
+	/// That is normally level 0, whose codeword is the longest.
+	/// A level that drops the rate without folding any lanes has a longer one still.
+	pub fn max_log_codeword_len(&self) -> usize {
+		self.levels
+			.iter()
+			.map(LigeritoLevel::log_codeword_len)
+			.max()
+			.expect("levels is non-empty")
+	}
+
 	/// The ceiling the correlated-agreement term puts on this ladder, over a field of that size.
 	///
 	/// Every level is an independent proximity test, so the ladder is only as sound as its worst
@@ -351,6 +365,26 @@ mod tests {
 		// 2^(6 + 3) = 512 positions cannot serve 513 distinct queries.
 		levels[2].n_queries = 513;
 		LigeritoParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
+	}
+
+	#[test]
+	fn the_transform_domain_covers_every_level() {
+		// Codeword lengths of the three levels: 9 + 1, 7 + 2, 6 + 3 = 10, 9, 9.
+		// Level 0 is the longest, which is the usual case.
+		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		assert_eq!(params.max_log_codeword_len(), 10);
+
+		// A level that folds no lanes keeps its predecessor's column count and only drops the rate.
+		// Its codeword is then longer than level 0's, so the maximum is not always level 0's.
+		//
+		//     level 0: 2^4 columns at rate 1/2  -> 2^5 positions
+		//     level 1: 2^4 columns at rate 1/4  -> 2^6 positions
+		let flat = vec![
+			LigeritoLevel::new(4, 0, 1, SoundnessRegime::UniqueDecoding, 8),
+			LigeritoLevel::new(4, 0, 2, SoundnessRegime::UniqueDecoding, 8),
+		];
+		let params = LigeritoParams::new(flat, SoundnessRegime::UniqueDecoding, 8);
+		assert_eq!(params.max_log_codeword_len(), 6);
 	}
 
 	#[test]
