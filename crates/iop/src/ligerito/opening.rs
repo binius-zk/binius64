@@ -52,7 +52,11 @@ use crate::{
 };
 
 /// The MLE-check round polynomial is degree 1, since the composite is the multilinear itself.
-const DEGREE: usize = 1;
+///
+/// The proof-size estimate reads this rather than restating it, so the two cannot drift.
+/// Recovering the missing coefficient is what the equality indicator buys.
+/// A weight that is not an equality indicator would have to send it.
+pub(super) const DEGREE: usize = 1;
 
 /// Verifies one committed Ligerito level whose residual is sent in the clear.
 ///

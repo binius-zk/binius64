@@ -232,7 +232,8 @@ impl LigeritoParams {
 	/// - the opened rows, `n_queries * 2^log_lanes` field elements;
 	/// - one Merkle multi-proof over the level's codeword positions.
 	///
-	/// Plus the sumcheck transcript, two field elements per fold round, and the cleartext residual.
+	/// Plus the sumcheck transcript: one element per fold round of level 0, two per round below it.
+	/// Plus the residual: its commitment, then its elements in the clear.
 	pub fn proof_size<F, VCS>(&self, vcs: &VCS) -> usize
 	where
 		F: BinaryField,
