@@ -14,7 +14,9 @@ use binius_math::{FieldBuffer, FieldSlice, FieldVec, ntt::AdditiveNTT};
 
 use super::{LigeritoOracle, relation::QueuedRelation};
 use crate::{
-	channel::IOPProverChannel, ligerito::LigeritoProver, merkle_channel::MerkleIPProverChannel,
+	channel::{IOPProverChannel, grinding::GrindingProverChannel},
+	ligerito::LigeritoProver,
+	merkle_channel::MerkleIPProverChannel,
 };
 
 /// A prover channel that opens its one committed oracle with a Ligerito ladder.
@@ -114,7 +116,13 @@ where
 	///
 	/// Mirrors the verifier's own finishing step, message for message.
 	/// Nothing happens when no relation was queued, since the commitment alone asserts nothing.
-	pub fn finish(self) {
+	///
+	/// The channel has to be able to pay a proof of work, because the ladder may ask for one.
+	/// A configuration that grinds nothing still asks for the capability, and never uses it.
+	pub fn finish(self)
+	where
+		Channel: GrindingProverChannel,
+	{
 		let Self {
 			mut channel,
 			ntt: _,
@@ -158,7 +166,9 @@ where
 		message: FieldSlice<'_, P>,
 		queue: Vec<QueuedRelation<P, A>>,
 		alloc: &A,
-	) {
+	) where
+		Channel: GrindingProverChannel,
+	{
 		// Every claim in the queue is already bound to the transcript, so a coefficient drawn
 		// here cannot be anticipated by any of them.
 		let lambda = channel.sample();
@@ -316,7 +326,7 @@ mod tests {
 	use binius_iop::{
 		channel::{Error, IOPVerifierChannel},
 		ligerito::{LigeritoLevel, compiler::LigeritoVerifierCompiler},
-		soundness::SoundnessRegime,
+		soundness::{Grinding, SoundnessRegime},
 	};
 	use binius_math::{
 		multilinear::Multilinear,
@@ -452,12 +462,16 @@ mod tests {
 			(4, &[2, 0, 1]),
 		];
 		for &(log_msg_cols, lanes) in shapes {
-			let params = ladder(log_msg_cols, lanes);
-			let msg = message(&params, 0);
-			let mut rng = StdRng::seed_from_u64(1);
-			let relations = [relation(&mut rng, &msg)];
-			run(&params, &msg, &msg, &relations)
-				.unwrap_or_else(|err| panic!("{log_msg_cols} {lanes:?}: {err}"));
+			// Both grinding profiles run the whole channel, so the compiler carries the ladder's
+			// proof of work to both sides and the two stay in step through it.
+			for grinding in [Grinding::NONE, Grinding::new(3, 4)] {
+				let params = ladder(log_msg_cols, lanes).with_grinding(grinding);
+				let msg = message(&params, 0);
+				let mut rng = StdRng::seed_from_u64(1);
+				let relations = [relation(&mut rng, &msg)];
+				run(&params, &msg, &msg, &relations)
+					.unwrap_or_else(|err| panic!("{log_msg_cols} {lanes:?} {grinding:?}: {err}"));
+			}
 		}
 	}
 

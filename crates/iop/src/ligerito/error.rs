@@ -14,6 +14,9 @@ pub enum Error {
 	/// A committed value did not match what the transcript bound it to.
 	#[error("verification: {0}")]
 	Verification(#[from] VerificationError),
+	/// The prover did not pay the proof of work the parameters fix, or sent no nonce at all.
+	#[error("proof of work: {0}")]
+	ProofOfWork(#[from] binius_transcript::Error),
 }
 
 /// A prover message that was well-formed but wrong.

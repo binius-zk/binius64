@@ -7,6 +7,10 @@
 //! The sumcheck challenges of a level are its lane fold.
 //! Whatever a level folds to is committed before that level's queries are drawn.
 //! And only level 0 may use the MLE-check shortcut.
+//!
+//! A fourth fact is this side's alone.
+//! The proof of work is paid at exactly the two points the verifier checks it.
+//! That module's `Where the proof of work stands` section draws them.
 
 use std::iter::zip;
 
@@ -30,6 +34,7 @@ use binius_math::{
 
 use super::induced_weight::InducedWeight;
 use crate::{
+	channel::grinding::GrindingProverChannel,
 	fri::{BrakedownOracleProver, ProxTestOracleProver},
 	merkle_channel::MerkleIPProverChannel,
 };
@@ -139,6 +144,10 @@ where
 	/// An intermediate level's query claim is glued into the running sumcheck at a fresh challenge;
 	/// the last level's is left for the verifier to check against the cleartext residual.
 	///
+	/// The proof of work the parameters fix is ground before every fold challenge.
+	/// One more grind stands before each level's queries.
+	/// The verifier checks each of them at the point it was paid.
+	///
 	/// ## Preconditions
 	///
 	/// * `message` is the multilinear [`Self::commit`] committed.
@@ -152,9 +161,10 @@ where
 		channel: &mut Channel,
 	) where
 		A: Allocator,
-		Channel: MerkleIPProverChannel<F, Commitment = C, Word = Word>,
+		Channel: MerkleIPProverChannel<F, Commitment = C, Word = Word> + GrindingProverChannel,
 	{
 		let levels = self.params.levels();
+		let grinding = self.params.grinding();
 		assert_eq!(
 			message.log_len(),
 			self.params.log_msg_len(),
@@ -187,6 +197,7 @@ where
 					for _ in 0..level.log_lanes {
 						let coeffs = prover.execute().pop().expect("the prover has one claim");
 						channel.send_many(mlecheck::RoundProof::truncate(coeffs.clone()).coeffs());
+						channel.grind(grinding.challenge_bits());
 						let challenge = channel.sample();
 						prover.fold(challenge);
 						// The full round polynomial at the challenge is the reduced claim, which
@@ -206,6 +217,7 @@ where
 					for _ in 0..level.log_lanes {
 						let coeffs = prover.execute().pop().expect("the prover has one claim");
 						channel.send_many(coeffs.clone().truncate().coeffs());
+						channel.grind(grinding.challenge_bits());
 						let challenge = channel.sample();
 						prover.fold(challenge);
 						sum = coeffs.evaluate(&challenge);
@@ -227,6 +239,10 @@ where
 					None
 				}
 			};
+
+			// The commitment above is fixed, and no position exists yet, which is where the
+			// verifier checks this grind too.
+			channel.grind(grinding.query_bits());
 
 			let indices = (0..level.n_queries)
 				.map(|_| channel.sample_bits(level.log_codeword_len()))
@@ -290,10 +306,11 @@ mod tests {
 		binary_merkle_tree::HashSuite,
 	};
 	use binius_iop::{
+		channel::grinding::GrindingVerifierChannel,
 		ligerito::{Error, LigeritoVerifier, VerifierCost},
-		merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
-		merkle_tree::BinaryMerkleTreeScheme,
-		soundness::SoundnessRegime,
+		merkle_channel::{self, MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
+		merkle_tree::{self, BinaryMerkleTreeScheme},
+		soundness::{Grinding, SoundnessRegime},
 	};
 	use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 	use binius_math::{
@@ -301,7 +318,10 @@ mod tests {
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::random_field_buffer,
 	};
-	use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
+	use binius_transcript::{
+		Error as TranscriptError, ProverTranscript, VerifierTranscript,
+		fiat_shamir::HasherChallenger,
+	};
 	use digest::Output;
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -375,16 +395,16 @@ mod tests {
 		(transcript.finalize(), eval_point, eval_claim)
 	}
 
-	/// Proves and verifies one opening, returning the finished proof's length in bytes.
+	/// Verifies a written proof against `params`, returning its length in bytes.
 	///
-	/// The byte count is only ever taken from a transcript that convinced the verifier.
-	fn run(
+	/// The ladder is taken from `params` rather than from the transcript, so a verifier can be
+	/// pointed at a proof written under different parameters.
+	fn verify_proof(
 		params: &LigeritoParams,
-		committed: &FieldBuffer<B128>,
-		opened: &FieldBuffer<B128>,
-		claim_offset: B128,
+		proof: Vec<u8>,
+		eval_point: &[B128],
+		eval_claim: B128,
 	) -> Result<usize, Error> {
-		let (proof, eval_point, eval_claim) = write_proof(params, committed, opened, claim_offset);
 		let proof_size = proof.len();
 
 		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
@@ -396,12 +416,38 @@ mod tests {
 		let commitment = verifier_channel
 			.recv_merkle_commitment(1 << level.log_lanes, level.log_codeword_len())?;
 		LigeritoVerifier::new(params, commitment).verify(
-			&eval_point,
+			eval_point,
 			eval_claim,
 			&mut verifier_channel,
 		)?;
 
 		Ok(proof_size)
+	}
+
+	/// Proves and verifies one opening, returning the finished proof's length in bytes.
+	///
+	/// The byte count is only ever taken from a transcript that convinced the verifier.
+	fn run(
+		params: &LigeritoParams,
+		committed: &FieldBuffer<B128>,
+		opened: &FieldBuffer<B128>,
+		claim_offset: B128,
+	) -> Result<usize, Error> {
+		let (proof, eval_point, eval_claim) = write_proof(params, committed, opened, claim_offset);
+		verify_proof(params, proof, &eval_point, eval_claim)
+	}
+
+	/// Proves an honest opening under one ladder and verifies it under another.
+	///
+	/// The two ladders are the same shape and differ only in the proof of work they pay, which is
+	/// how a grind checked in the wrong place is expressed here.
+	fn run_across(
+		prover_params: &LigeritoParams,
+		verifier_params: &LigeritoParams,
+	) -> Result<usize, Error> {
+		let msg = message(prover_params, 0);
+		let (proof, eval_point, eval_claim) = write_proof(prover_params, &msg, &msg, B128::ZERO);
+		verify_proof(verifier_params, proof, &eval_point, eval_claim)
 	}
 
 	/// A random message of the ladder's shape.
@@ -476,6 +522,176 @@ mod tests {
 				.expect_err("the evaluation claim is off by one");
 			assert!(matches!(err, Error::IPChannel(binius_ip::channel::Error::InvalidAssert)));
 		}
+	}
+
+	// Proof of work
+
+	/// A ladder that grinds must still verify, at every depth and on either side of the split.
+	#[test]
+	fn an_honest_opening_with_a_proof_of_work_verifies() {
+		// Fixture state: the two grinds are exercised alone and together, and zero is included so
+		// the grinding path and the ungrinding one are held to the same ladder.
+		let grinds = [
+			Grinding::NONE,
+			Grinding::new(0, 4),
+			Grinding::new(4, 0),
+			Grinding::new(3, 5),
+		];
+		for grinding in grinds {
+			for lanes in [&[2usize] as &[usize], &[2, 2], &[1, 2, 1]] {
+				let params = ladder(6, lanes, 5).with_grinding(grinding);
+				let msg = message(&params, 0);
+				run(&params, &msg, &msg, B128::ZERO)
+					.unwrap_or_else(|err| panic!("{lanes:?} {grinding:?}: {err}"));
+			}
+		}
+	}
+
+	/// Grinding lengthens the proof by one nonce per grind, and by nothing else.
+	#[test]
+	fn a_grind_costs_one_nonce_and_the_estimate_counts_it() {
+		// Invariant: the two call sites are the only thing grinding adds to a transcript. One
+		// nonce stands before each fold challenge, one more before each level's queries, and a
+		// difficulty of zero writes nothing at all.
+		//
+		// Fixture state: ladders of three shapes, priced bare and then at each of the three
+		// grinding profiles.
+		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
+		for lanes in [&[2usize] as &[usize], &[2, 2], &[1, 2, 1]] {
+			let bare = ladder(6, lanes, 5);
+			let msg = message(&bare, 0);
+			let bare_size = run(&bare, &msg, &msg, B128::ZERO).expect("honest proof rejected");
+			assert_eq!(bare.proof_size(&scheme), bare_size);
+
+			for grinding in [
+				Grinding::new(0, 4),
+				Grinding::new(4, 0),
+				Grinding::new(3, 5),
+			] {
+				let ground = bare.clone().with_grinding(grinding);
+				let ground_size =
+					run(&ground, &msg, &msg, B128::ZERO).expect("honest proof rejected");
+
+				// One `u64` per nonce, and the ladder says how many nonces it writes.
+				let nonces = ground
+					.levels()
+					.iter()
+					.map(|level| level.n_grind_nonces(grinding))
+					.sum::<usize>();
+				assert_eq!(
+					ground_size - bare_size,
+					nonces * size_of::<u64>(),
+					"{lanes:?} {grinding:?}"
+				);
+				// Which is also what the estimate says, so the ladder search prices a real proof.
+				assert_eq!(ground.proof_size(&scheme), ground_size, "{lanes:?} {grinding:?}");
+			}
+
+			// A query grind writes one nonce per level; a challenge grind writes one per fold
+			// round. So the two profiles differ in length whenever a level folds more than one
+			// lane, which is what keeps them from being confused for one another by size alone.
+			let query_only = bare
+				.levels()
+				.iter()
+				.map(|level| level.n_grind_nonces(Grinding::new(0, 4)))
+				.sum::<usize>();
+			let challenge_only = bare
+				.levels()
+				.iter()
+				.map(|level| level.n_grind_nonces(Grinding::new(4, 0)))
+				.sum::<usize>();
+			assert_eq!(query_only, bare.n_levels());
+			assert_eq!(challenge_only, bare.n_fold_rounds());
+		}
+	}
+
+	/// A verifier expecting a different amount of work must reject the proof.
+	#[test]
+	fn a_proof_ground_at_one_difficulty_is_rejected_at_another() {
+		// Invariant: the difficulty is part of the statement, not advice the prover carries. The
+		// sampler reads four bytes whatever the difficulty, so a mismatch of nonzero difficulties
+		// leaves both transcripts in step and shows up only as unmet work.
+		//
+		// Fixture state: four bits are ground and twenty-four are demanded. The gap is what makes
+		// the rejection certain rather than a coin flip: a nonce that happens to satisfy twenty
+		// more bits than it was searched for turns up once in a million.
+		let base = ladder(6, &[2, 2], 5);
+		let ground = base.clone().with_grinding(Grinding::new(4, 0));
+		let demanded = base.clone().with_grinding(Grinding::new(24, 0));
+		let err = run_across(&ground, &demanded)
+			.expect_err("four bits of work cannot satisfy a twenty-four bit demand");
+		let Error::ProofOfWork(TranscriptError::InsufficientWork { bits, sampled }) = err else {
+			panic!("expected unmet proof of work, got {err}")
+		};
+		assert_eq!(bits, 24);
+		assert_ne!(sampled, 0);
+
+		// The same on the query side, where the nonce stands after the commitment instead.
+		let ground = base.clone().with_grinding(Grinding::new(0, 4));
+		let demanded = base.clone().with_grinding(Grinding::new(0, 24));
+		let err = run_across(&ground, &demanded)
+			.expect_err("four bits of work cannot satisfy a twenty-four bit demand");
+		let Error::ProofOfWork(TranscriptError::InsufficientWork { bits, sampled }) = err else {
+			panic!("expected unmet proof of work, got {err}")
+		};
+		assert_eq!(bits, 24);
+		assert_ne!(sampled, 0);
+
+		// And the other way round: work the verifier never asks for is eight stray bytes on the
+		// tape. The two sides then read different things at every offset below, and the residual
+		// is the first value checked against a commitment, so that is where it breaks.
+		let bare = base.clone();
+		let ground = base.with_grinding(Grinding::new(4, 4));
+		let err = run_across(&ground, &bare)
+			.expect_err("a nonce the verifier never reads desynchronizes the transcript");
+		let Error::Channel(merkle_channel::Error::MerkleTree(merkle_tree::Error::Verification(
+			merkle_tree::VerificationError::InvalidProof,
+		))) = err
+		else {
+			panic!("expected a Merkle verification failure, got {err}")
+		};
+	}
+
+	/// Work paid at one call site must not settle the debt at the other.
+	#[test]
+	fn a_challenge_grind_is_not_accepted_as_a_query_grind() {
+		// Invariant: the two grinds buy different terms of the security budget, so the transcript
+		// has to tell them apart by *where* the nonce stands rather than by how the tape looks.
+		//
+		// The two ladders below swap the difficulties between the sites. Both write one nonce
+		// before the fold challenge and one before the queries, both of the same width, so the
+		// two transcripts are laid out byte for byte alike and stay in step to the very end.
+		// Nothing but the position separates them. A grind checked at the wrong site would
+		// therefore be checked against the *other* site's work and pass.
+		//
+		// Fixture state: one level folding one lane, so each site carries exactly one nonce. The
+		// difficulties differ by sixteen bits, which is what makes the rejection certain rather
+		// than a coin flip.
+		let base = ladder(6, &[1], 5);
+		let heavy_fold = base.clone().with_grinding(Grinding::new(18, 2));
+		let heavy_query = base.with_grinding(Grinding::new(2, 18));
+		assert_eq!(
+			heavy_fold.levels()[0].n_grind_nonces(heavy_fold.grinding()),
+			heavy_query.levels()[0].n_grind_nonces(heavy_query.grinding()),
+		);
+
+		// Eighteen bits before the fold challenge do not pay for the query positions.
+		let err = run_across(&heavy_fold, &heavy_query)
+			.expect_err("work before the fold challenge does not pay for the query positions");
+		let Error::ProofOfWork(TranscriptError::InsufficientWork { bits, sampled }) = err else {
+			panic!("expected unmet proof of work, got {err}")
+		};
+		assert_eq!(bits, 18);
+		assert_ne!(sampled, 0);
+
+		// And eighteen bits before the query positions do not pay for the fold challenge.
+		let err = run_across(&heavy_query, &heavy_fold)
+			.expect_err("work before the query positions does not pay for the fold challenge");
+		let Error::ProofOfWork(TranscriptError::InsufficientWork { bits, sampled }) = err else {
+			panic!("expected unmet proof of work, got {err}")
+		};
+		assert_eq!(bits, 18);
+		assert_ne!(sampled, 0);
 	}
 
 	/// The proof-size estimate must equal the transcript, not merely approximate it.
@@ -856,6 +1072,12 @@ mod tests {
 				.into_iter()
 				.map(Counted)
 				.collect()
+		}
+	}
+
+	impl<C: GrindingVerifierChannel> GrindingVerifierChannel for CountingChannel<C> {
+		fn verify_grind(&mut self, bits: usize) -> Result<(), binius_transcript::Error> {
+			self.inner.verify_grind(bits)
 		}
 	}
 

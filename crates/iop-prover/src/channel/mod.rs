@@ -2,6 +2,7 @@
 
 //! Channel abstraction for interactive oracle protocol (IOP) provers.
 
+pub mod grinding;
 pub mod naive;
 
 use binius_compute::Allocator;
