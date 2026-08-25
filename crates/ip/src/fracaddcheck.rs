@@ -6,7 +6,7 @@
 //! (a0 / b0) + (a1 / b1) = (a0 * b1 + a1 * b0) / (b0 * b1).
 
 use binius_field::{Field, field::FieldOps};
-use binius_math::line::extrapolate_line;
+use binius_math::multilinear::hypercube::Hypercube;
 use binius_transcript::Error as TranscriptError;
 
 use crate::{
@@ -66,8 +66,8 @@ where
 
 	// Reduce evaluations of the two halves to a single evaluation at the next point.
 	let r = channel.sample();
-	let next_num = extrapolate_line(num_0, num_1, r.clone());
-	let next_den = extrapolate_line(den_0, den_1, r.clone());
+	let next_num = Hypercube::One.fold_var(num_0, num_1, &r);
+	let next_den = Hypercube::One.fold_var(den_0, den_1, &r);
 
 	let mut next_point = reduced_eval_point;
 	next_point.push(r);
