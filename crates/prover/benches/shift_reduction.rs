@@ -16,7 +16,7 @@ use binius_math::{
 use binius_prover::{
 	fold_word::BitAxisFolder,
 	protocols::shift::{
-		KeyCollection, OperatorClaims, OperatorData, ShiftProver,
+		self, KeyCollection, OperatorClaims, OperatorData,
 		monster::shift_operator_table,
 		phase_1::{Phase1Output, SparseShiftRows},
 		phase_2::run_sumcheck,
@@ -151,7 +151,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-				ShiftProver::<_, P, _>::new(&mut prover_transcript, &alloc).prove(
+				shift::prove::<_, P, _, _>(
 					&key_collection,
 					value_vec.public(),
 					value_vec.non_public(),
@@ -162,6 +162,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 						binmul: OperatorData::zero_claim(r_zhat_prime),
 					},
 					&subspace,
+					&mut prover_transcript,
+					&alloc,
 				)
 			});
 		});
@@ -185,7 +187,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-		ShiftProver::<_, P, _>::new(&mut prover_transcript, &&BufferPool::new()).prove(
+		shift::prove::<_, P, _, _>(
 			&key_collection,
 			value_vec.public(),
 			value_vec.non_public(),
@@ -196,6 +198,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				binmul: OperatorData::zero_claim(r_zhat_prime),
 			},
 			&subspace,
+			&mut prover_transcript,
+			&&BufferPool::new(),
 		);
 
 		let setup_verifier_transcript = prover_transcript.into_verifier();

@@ -20,9 +20,63 @@ use binius_verifier::protocols::shift::LOG_SHIFT_COUNT;
 use tracing::instrument;
 
 use super::{
-	key_collection::DenseShiftEncoding, monster::shift_operator_table, outer::OuterShiftStage,
+	SegmentWords,
+	claims::PreparedOperatorClaims,
+	key_collection::{DenseShiftEncoding, KeyCollection},
+	monster::shift_operator_table,
+	outer::OuterShiftStage,
 	shift_ind::ShiftChallenge,
 };
+
+/// Proves the first phase of the shift reduction.
+///
+/// Builds the witness-and-batching multilinear for both segments and concatenates their rows.
+/// One sumcheck then runs over their product, against a weight table that is never materialized.
+///
+/// # Arguments
+///
+/// - `key_collection`: the prover's key collection for the constraint system.
+/// - `words`: the value-vector words.
+/// - `prepared`: the prepared claim of each operation, indexed by the operation a key names.
+/// - `oblong_weights`: the weights of the reduction's first factor, one per bit position.
+/// - `channel`: the prover channel the interactive rounds run over.
+/// - `alloc`: the allocator the intermediate buffers are drawn from.
+///
+/// # Returns
+///
+/// The challenge point split into its axes, alongside the leftover weights.
+/// Also the two evaluations this phase reduced to.
+#[instrument(skip_all, name = "prover_phase_1")]
+pub fn prove_phase_1<F, P, Channel, A>(
+	key_collection: &KeyCollection,
+	words: SegmentWords<'_>,
+	prepared: &PreparedOperatorClaims<F>,
+	oblong_weights: &[F],
+	channel: &mut Channel,
+	alloc: &A,
+) -> Phase1Output<F>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+	A: Allocator,
+{
+	// Accumulate the witness-and-batching rows of the public and hidden segments separately.
+	// The public words are the prefix of the value vector.
+	// Each segment's key ranges are relative to its own segment.
+	let public = key_collection
+		.public
+		.build_g::<_, P>(words.public, prepared);
+	let hidden = key_collection
+		.hidden
+		.build_g::<_, P>(words.hidden, prepared);
+	let g = SparseShiftRows::from_segments([
+		(&public, &key_collection.public.dense_shift_enc),
+		(&hidden, &key_collection.hidden.dense_shift_enc),
+	]);
+
+	g.run_phase_1_sumcheck(oblong_weights, prepared.batched_eval(), channel, alloc)
+}
 
 /// The number of variables the shift-and-bit phases of the reduction span: the bit position
 /// within a word, the inner shift slot, and the outer shift slot.

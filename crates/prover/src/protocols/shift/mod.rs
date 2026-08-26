@@ -14,6 +14,6 @@ mod shift_ind;
 pub use claims::{OperatorClaims, PreparedOperatorClaims};
 pub use key_collection::{DenseShiftEncoding, KeyCollection, KeySegment, Operation};
 pub use phase_2::ShiftOutput;
-pub use prove::{OperatorData, PreparedOperatorData, ShiftProver};
+pub use prove::{OperatorData, PreparedOperatorData, prove};
 pub use segment_words::SegmentWords;
 pub use shift_ind::{ShiftChallenge, ShiftChallengePoint, ShiftIndOutput, ShiftIndSumcheck};
