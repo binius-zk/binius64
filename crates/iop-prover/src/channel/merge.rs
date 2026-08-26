@@ -90,10 +90,10 @@ struct Group<P: PackedField, A: Allocator, Oracle> {
 /// A round of a single oracle needs no combining.
 /// It is forwarded unchanged, at zero cost.
 ///
-/// Every oracle in a round must declare the same witness-dependence.
+/// A round is masked as a whole, never partly.
 ///
-/// A commitment is masked as a whole, never partly.
-/// So mixing witness-carrying and structural oracles in one round is not supported.
+/// So a round carrying any witness data is masked in full by the underlying channel.
+/// The verifier-side decorator is where that choice is made.
 ///
 /// # Timing
 ///

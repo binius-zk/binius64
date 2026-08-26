@@ -92,10 +92,10 @@ struct Record<Oracle> {
 /// A round of a single oracle needs no combining.
 /// It is forwarded unchanged, at zero cost.
 ///
-/// Every oracle in a round must declare the same witness-dependence.
+/// A round is witness-dependent as soon as any of its oracles is.
 ///
 /// A commitment is masked as a whole, never partly.
-/// So mixing witness-carrying and structural oracles in one round is not supported.
+/// So a structural oracle sharing a round with a witness-carrying one is masked too.
 ///
 /// # Timing
 ///
@@ -188,15 +188,10 @@ where
 
 		// One commitment is masked as a whole, never partly.
 		//
-		// Every oracle in the round must agree on its witness-dependence.
-		let is_witness_dependent = self.records[order[0]].is_witness_dependent;
-		assert!(
-			order
-				.iter()
-				.all(|&i| self.records[i].is_witness_dependent == is_witness_dependent),
-			"MergeVerifierChannel: every oracle merged into one round must share \
-			 is_witness_dependent"
-		);
+		// So the combined oracle is witness-dependent as soon as any constituent is.
+		// A structural oracle sharing the round is masked along with it, which costs
+		// randomness but never correctness.
+		let is_witness_dependent = order.iter().any(|&i| self.records[i].is_witness_dependent);
 
 		// Size the combined oracle to fit every oracle end to end.
 		let total_len: usize = order
@@ -533,18 +528,21 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "must share is_witness_dependent")]
-	fn heterogeneous_witness_dependence_panics() {
+	fn mixed_witness_dependence_masks_the_whole_round() {
 		// One oracle depends on the witness.
 		// The other does not.
 		//
 		// One commitment cannot be masked for one and not the other.
-		// Mixing the two in a round must be rejected.
+		// So the round as a whole is masked, and the combined spec is zero-knowledge.
 		let fine_specs = [OracleSpec::new(2), OracleSpec::new(2)];
 		let mut channel = MergeVerifierChannel::new(OracleSetupChannel::new(true), &fine_specs);
 		channel.recv_oracle(2, true).unwrap();
 		channel.recv_oracle(2, false).unwrap();
 		let _ = IPVerifierChannel::<F>::sample(&mut channel);
+
+		// 2^2 + 2^2 = 2^3, masked because one constituent carries witness data.
+		let coarse = channel.into_inner().unwrap().into_oracle_specs();
+		assert_eq!(coarse, vec![OracleSpec::new_zk(3)]);
 	}
 
 	#[test]
