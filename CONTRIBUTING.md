@@ -203,6 +203,10 @@ pub struct Session {
 }
 ```
 
+### Prefer generic functions over trait methods
+
+Use a generic function unless the logic must vary by implementor. Add a trait method with a default implementation only when at least one implementor overrides it.
+
 ## Unit Testing
 
 New functionality should come with tests that cover the expected behavior and edge cases. A few
