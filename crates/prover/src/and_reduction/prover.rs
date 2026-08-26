@@ -12,10 +12,7 @@ use binius_ip_prover::{
 		ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck, quadratic_mlecheck_prover,
 	},
 };
-use binius_math::{
-	BinarySubspace,
-	univariate::{extrapolate_over_subspace, subspace_lagrange_evals_scalars},
-};
+use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 use binius_verifier::{
 	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	protocols::bitand::{AndCheckOutput, ROWS_PER_HYPERCUBE_VERTEX},
@@ -172,7 +169,7 @@ where
 		alloc: &'alloc A,
 	) -> impl MleCheckProver<F> + 'alloc {
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
-		let lagrange_evals = subspace_lagrange_evals_scalars(&univariate_domain, &challenge);
+		let lagrange_evals = univariate_domain.lagrange_evals(&challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
 		let proving_polys =
@@ -199,11 +196,7 @@ where
 			|[a, b, c]| a * b - c,
 			|[a, b, _]| a * b,
 			verifier_field_zerocheck_challenges,
-			extrapolate_over_subspace(
-				round_message_domain,
-				&first_round_message_coeffs,
-				&challenge,
-			),
+			round_message_domain.extrapolate(&first_round_message_coeffs, &challenge),
 		)
 	}
 
@@ -284,8 +277,7 @@ mod test {
 	use binius_core::word::Word;
 	use binius_field::{AESTowerField8b, arch::OptimalPackedB128};
 	use binius_math::{
-		BinarySubspace, FieldBuffer, multilinear::Multilinear,
-		univariate::subspace_lagrange_evals_scalars,
+		BinarySubspace, FieldBuffer, multilinear::Multilinear, univariate::EvaluationDomain,
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::CanSample};
 	use binius_verifier::{
@@ -376,8 +368,7 @@ mod test {
 
 		let one_bit_mlvs = [first_mlv, second_mlv, third_mlv];
 
-		let verifier_lagrange_evals =
-			subspace_lagrange_evals_scalars(&verifier_univariate_domain, &z_challenge);
+		let verifier_lagrange_evals = verifier_univariate_domain.lagrange_evals(&z_challenge);
 		let folder = BitAxisFolder::new(&verifier_lagrange_evals);
 		for (i, eval) in [a_eval, b_eval, c_eval].iter().enumerate() {
 			let folded: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &one_bit_mlvs[i]);

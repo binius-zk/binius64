@@ -5,7 +5,7 @@ use std::iter::{self};
 
 use binius_field::{BinaryField, field::FieldOps};
 use binius_ip::{channel::IPVerifierChannel, mlecheck::verify, sumcheck::SumcheckOutput};
-use binius_math::{BinarySubspace, univariate::extrapolate_over_subspace};
+use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 
 use crate::Error;
 
@@ -112,11 +112,8 @@ where
 
 	let univariate_sumcheck_challenge = channel.sample();
 
-	let sumcheck_claim = extrapolate_over_subspace(
-		round_message_univariate_domain,
-		&univariate_message_coeffs,
-		&univariate_sumcheck_challenge,
-	);
+	let sumcheck_claim = round_message_univariate_domain
+		.extrapolate(&univariate_message_coeffs, &univariate_sumcheck_challenge);
 
 	let SumcheckOutput {
 		eval,

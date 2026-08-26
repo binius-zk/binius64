@@ -303,10 +303,7 @@ mod test {
 
 	use binius_compute::GlobalAllocator;
 	use binius_field::{Field, Ghash128b as B128, Random};
-	use binius_math::{
-		BinarySubspace, FieldBuffer,
-		univariate::{extrapolate_over_subspace, subspace_lagrange_evals_scalars},
-	};
+	use binius_math::{BinarySubspace, FieldBuffer, univariate::EvaluationDomain};
 	use binius_utils::checked_arithmetics::log2_ceil_usize;
 	use binius_verifier::protocols::bitand::SKIPPED_VARS;
 	use rand::prelude::*;
@@ -442,14 +439,10 @@ mod test {
 			verifier_message_domain.reduce_dim(verifier_message_domain.dim() - 1);
 
 		let first_sumcheck_challenge = B128::random(&mut rng);
-		let expected_next_round_sum = extrapolate_over_subspace(
-			&verifier_message_domain,
-			&first_round_message_coeffs,
-			&first_sumcheck_challenge,
-		);
+		let expected_next_round_sum = verifier_message_domain
+			.extrapolate(&first_round_message_coeffs, &first_sumcheck_challenge);
 
-		let lagrange_evals =
-			subspace_lagrange_evals_scalars(&verifier_input_domain, &first_sumcheck_challenge);
+		let lagrange_evals = verifier_input_domain.lagrange_evals(&first_sumcheck_challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
 		let folded_first_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, mlv_1);
