@@ -51,7 +51,11 @@
 //! It needs a packed field, so a verifier written against a channel cannot reach it at all.
 //! [`InducedBasis::pair`] is how a terminal level pairs `w` with a message it holds in the clear.
 
-use binius_field::{BinaryField, PackedField, field::FieldOps, util::expand_subset_products};
+use binius_field::{
+	BinaryField, PackedField,
+	field::FieldOps,
+	util::{expand_subset_products, powers},
+};
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::{
 	inner_product::inner_product_scalars,
@@ -130,7 +134,7 @@ impl<F: FieldOps> InducedBasis<F> {
 			.collect::<Vec<_>>();
 
 		// Powers of the batching challenge, one per opened row.
-		let batching = alpha.powers().take(indices.len()).collect();
+		let batching = powers(alpha).take(indices.len()).collect();
 
 		Self {
 			factors,
@@ -198,7 +202,7 @@ impl<F: FieldOps> InducedBasis<F> {
 
 		Self {
 			factors,
-			batching: alpha.powers().take(indices.len()).collect(),
+			batching: powers(alpha.clone()).take(indices.len()).collect(),
 			n_vars: log_dim,
 		}
 	}

@@ -28,6 +28,11 @@ pub trait FieldFn<F: Field> {
 	}
 }
 
+/// Iterate the powers of a given value, beginning with 1 (the 0'th power).
+pub fn powers<F: FieldOps>(val: F) -> impl Iterator<Item = F> {
+	iter::successors(Some(F::one()), move |power| Some(power.clone() * val.clone()))
+}
+
 /// Expands an array of field elements into all possible subset sums.
 ///
 /// For an input array `[a, b, c]`, this computes all possible sums of subsets:
@@ -168,6 +173,17 @@ mod tests {
 
 	use super::*;
 	use crate::{Ghash128b, Random};
+
+	#[test]
+	fn test_powers_against_pow() {
+		// The iterator starts at the 0'th power, so entry i must equal the base raised to i.
+		let generator = Ghash128b::MULTIPLICATIVE_GENERATOR;
+		let power_values: Vec<_> = powers(generator).take(10).collect();
+
+		for (i, power) in power_values.iter().enumerate() {
+			assert_eq!(*power, generator.pow(i as u64));
+		}
+	}
 
 	type F = Ghash128b;
 

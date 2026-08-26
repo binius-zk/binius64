@@ -177,7 +177,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{Field, Ghash128b, Random};
+	use binius_field::{Field, Ghash128b, Random, util::powers};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
@@ -192,7 +192,7 @@ mod tests {
 
 	/// The definition of [`evaluate_univariate`], written out as a sum over powers.
 	fn evaluate_univariate_with_powers<F: Field>(coeffs: &[F], x: F) -> F {
-		inner_product(coeffs.iter().copied(), x.powers().take(coeffs.len()))
+		inner_product(coeffs.iter().copied(), powers(x).take(coeffs.len()))
 	}
 
 	/// The textbook Lagrange basis: one weight per point, each built with its own inversion.

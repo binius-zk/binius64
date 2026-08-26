@@ -6,7 +6,7 @@ use std::iter::zip;
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField, PackedField};
+use binius_field::{BinaryField, PackedField, util::powers};
 use binius_iop::ligerito::{InducedBasis, LigeritoLevel};
 use binius_math::{
 	FieldBuffer, FieldVec, ReedSolomonCode,
@@ -132,7 +132,7 @@ where
 		// A position can be drawn twice, so the powers landing on it accumulate rather than
 		// overwrite.
 		let mut weights = FieldBuffer::zeros_in(alloc, self.level.log_codeword_len());
-		for (&index, power) in zip(&self.indices, self.alpha.powers()) {
+		for (&index, power) in zip(&self.indices, powers(self.alpha)) {
 			weights.set(index, weights.get(index) + power);
 		}
 
