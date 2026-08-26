@@ -1,20 +1,16 @@
 /target
 .envrc
-profile.json
+*.local.md
+.worktreeinclude
+# Library repos shouldn't track lockfiles
 Cargo.lock
-CLAUDE.local.md
-.claude/settings.local.json
-.claude/local/
-.claude/skills/
+# Agent harness configs
+/.claude/
+# IDE configs
 /.idea/
+/.vscode/
+# Apple bullshit
 **/.DS_Store
-/.vscode
-# Mobile directory
-mobile/
-# Perfetto traces from benchmarks
-perfetto_traces/
-*.perfetto-trace
-.last_perfetto_trace_path
-*.pending-snap
 # Proptest failure seeds, written by whichever crate's tests happened to fail locally
 proptest-regressions/
+
