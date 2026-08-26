@@ -10,7 +10,7 @@ use std::{
 use binius_utils::{
 	DeserializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
-	serialization::{assert_enough_data_for, assert_enough_space_for},
+	serialization::{assert_enough_data_for, assert_enough_space_for, serialize_slice_le},
 };
 use bytemuck::{Pod, Zeroable};
 use rand::{
@@ -120,6 +120,10 @@ impl SerializeBytes for M128 {
 
 		write_buf.put_u128_le(raw_value);
 		Ok(())
+	}
+
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
+		serialize_slice_le(slice, write_buf)
 	}
 }
 

@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 array-util.workspace = true
+bytemuck.workspace = true
 bytes.workspace = true
 hybrid-array.workspace = true
 rand.workspace = true
@@ -19,6 +20,7 @@ thiserror.workspace = true
 trait-set.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 
 [features]
 default = []

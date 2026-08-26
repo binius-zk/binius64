@@ -1,5 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
+use bytemuck::Pod;
 use bytes::{Buf, BufMut};
 use hybrid_array::{Array, ArraySize};
 use thiserror::Error;
@@ -13,8 +14,11 @@ pub trait SerializeBytes {
 	/// The default loops, calling [`serialize`](Self::serialize) once per element.
 	/// That default is always correct.
 	/// Overriding this method is an optimization, never a correctness requirement.
-	/// Override it only when `slice`'s byte layout already matches its serialized form.
-	/// Then the whole call collapses to one bulk copy instead of N small writes.
+	///
+	/// Two kinds of type override it.
+	/// An integer whose serialized bytes are its in-memory bytes calls [`serialize_slice_le`].
+	/// A transparent wrapper over such an integer forwards to its underlier's implementation.
+	/// The wrapper forwards here exactly as its [`serialize`](Self::serialize) forwards.
 	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError>
 	where
 		Self: Sized,
@@ -57,6 +61,33 @@ impl_fixed_size_serialize_bytes!(u128, 16);
 // `usize` is serialized as a `u32`.
 impl_fixed_size_serialize_bytes!(usize, 4);
 impl_fixed_size_serialize_bytes!(bool, 1);
+
+/// Serializes `slice` as one bulk copy of its raw memory, on a little-endian target.
+///
+/// `T`'s serialized form must be its in-memory bytes, in little-endian order.
+/// Every fixed-width integer written with a `put_*_le` satisfies that on a little-endian target.
+/// There the whole call is a single `put_slice`, in place of `slice.len()` word-sized writes.
+///
+/// On a big-endian target the two byte orders disagree, so this falls back to the per-element loop.
+/// The bytes written are identical either way; only the number of writes differs.
+pub fn serialize_slice_le<T: SerializeBytes + Pod>(
+	slice: &[T],
+	mut write_buf: impl BufMut,
+) -> Result<(), SerializationError> {
+	#[cfg(target_endian = "little")]
+	{
+		let bytes: &[u8] = bytemuck::cast_slice(slice);
+		assert_enough_space_for(&write_buf, bytes.len())?;
+		write_buf.put_slice(bytes);
+		Ok(())
+	}
+	#[cfg(target_endian = "big")]
+	{
+		slice
+			.iter()
+			.try_for_each(|item| item.serialize(&mut write_buf))
+	}
+}
 
 #[derive(Error, Debug, Clone)]
 pub enum SerializationError {
@@ -105,6 +136,10 @@ impl SerializeBytes for u128 {
 		write_buf.put_u128_le(*self);
 		Ok(())
 	}
+
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
+		serialize_slice_le(slice, write_buf)
+	}
 }
 
 impl DeserializeBytes for u128 {
@@ -122,6 +157,10 @@ impl SerializeBytes for u64 {
 		assert_enough_space_for(&write_buf, std::mem::size_of::<Self>())?;
 		write_buf.put_u64_le(*self);
 		Ok(())
+	}
+
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
+		serialize_slice_le(slice, write_buf)
 	}
 }
 
@@ -141,6 +180,10 @@ impl SerializeBytes for u32 {
 		write_buf.put_u32_le(*self);
 		Ok(())
 	}
+
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
+		serialize_slice_le(slice, write_buf)
+	}
 }
 
 impl DeserializeBytes for u32 {
@@ -159,6 +202,10 @@ impl SerializeBytes for u16 {
 		write_buf.put_u16_le(*self);
 		Ok(())
 	}
+
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
+		serialize_slice_le(slice, write_buf)
+	}
 }
 
 impl DeserializeBytes for u16 {
@@ -176,6 +223,10 @@ impl SerializeBytes for u8 {
 		assert_enough_space_for(&write_buf, std::mem::size_of::<Self>())?;
 		write_buf.put_u8(*self);
 		Ok(())
+	}
+
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
+		serialize_slice_le(slice, write_buf)
 	}
 }
 
@@ -371,10 +422,71 @@ pub fn assert_enough_data_for(read_buf: &impl Buf, size: usize) -> Result<(), Se
 
 #[cfg(test)]
 mod tests {
+	use std::fmt::Debug;
+
 	use hybrid_array::sizes::U32;
+	use proptest::{collection::vec, prelude::any, proptest};
 	use rand::prelude::*;
 
 	use super::*;
+
+	/// Asserts that `T`'s bulk `serialize_slice` agrees with the per-element loop it replaces.
+	///
+	/// The loop is the reference: it is the trait default, and consumers trust the two to agree.
+	/// Round-tripping through `deserialize` then checks the bytes are readable, not merely equal.
+	fn check_serialize_slice_matches_loop<T>(values: &[T])
+	where
+		T: SerializeBytes + DeserializeBytes + Copy + PartialEq + Debug,
+	{
+		let mut expected = Vec::new();
+		for value in values {
+			value.serialize(&mut expected).unwrap();
+		}
+
+		let mut actual = Vec::new();
+		T::serialize_slice(values, &mut actual).unwrap();
+
+		assert_eq!(actual, expected);
+
+		// `serialize_slice` writes no length prefix.
+		// Read back exactly `values.len()` elements from a cursor over the same buffer.
+		let mut cursor = actual.as_slice();
+		let deserialized: Vec<T> = (0..values.len())
+			.map(|_| T::deserialize(&mut cursor).unwrap())
+			.collect();
+		assert_eq!(deserialized, values);
+		assert!(cursor.is_empty());
+	}
+
+	proptest! {
+		/// Every fixed-width integer underlier, at lengths from empty through a few cache lines.
+		#[test]
+		fn test_integer_serialize_slice_matches_loop(
+			bytes in vec(any::<u8>(), 0..300),
+			shorts in vec(any::<u16>(), 0..300),
+			words in vec(any::<u32>(), 0..300),
+			longs in vec(any::<u64>(), 0..300),
+			wide in vec(any::<u128>(), 0..300),
+		) {
+			check_serialize_slice_matches_loop(&bytes);
+			check_serialize_slice_matches_loop(&shorts);
+			check_serialize_slice_matches_loop(&words);
+			check_serialize_slice_matches_loop(&longs);
+			check_serialize_slice_matches_loop(&wide);
+		}
+	}
+
+	#[test]
+	fn test_serialize_slice_rejects_a_buffer_one_byte_short() {
+		let values = [1u64, 2, 3, 4];
+
+		// The bulk copy checks the whole slice's byte length, not one element's.
+		// One byte short of four words must still be refused.
+		let mut buf = [0u8; 4 * size_of::<u64>() - 1];
+		let err = u64::serialize_slice(&values, buf.as_mut_slice()).unwrap_err();
+
+		assert!(matches!(err, SerializationError::WriteBufferFull));
+	}
 
 	#[test]
 	fn test_generic_array_serialize_deserialize() {

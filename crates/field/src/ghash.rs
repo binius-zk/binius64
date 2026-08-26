@@ -13,7 +13,6 @@ use std::{
 use binius_utils::{
 	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
-	serialization::assert_enough_space_for,
 };
 use bytemuck::{Pod, Zeroable};
 
@@ -101,17 +100,8 @@ impl SerializeBytes for Ghash128b {
 		self.0.serialize(write_buf)
 	}
 
-	fn serialize_slice(
-		slice: &[Self],
-		mut write_buf: impl BufMut,
-	) -> Result<(), SerializationError> {
-		// `Self` is `Pod` and little-endian on every supported target.
-		// So each element's serialized bytes are already its raw memory representation.
-		// One `put_slice` over the whole slice replaces `slice.len()` separate 16-byte writes.
-		let bytes: &[u8] = bytemuck::cast_slice(slice);
-		assert_enough_space_for(&write_buf, bytes.len())?;
-		write_buf.put_slice(bytes);
-		Ok(())
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
+		M128::serialize_slice(Self::to_underliers_ref(slice), write_buf)
 	}
 }
 

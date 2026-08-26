@@ -8,9 +8,7 @@ use std::{
 
 use binius_utils::{
 	checked_arithmetics::checked_log_2,
-	serialization::{
-		DeserializeBytes, SerializationError, SerializeBytes, assert_enough_space_for,
-	},
+	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
 };
 use bytemuck::{Pod, Zeroable};
 use bytes::{Buf, BufMut};
@@ -365,17 +363,9 @@ impl SerializeBytes for Word {
 		self.0.serialize(write_buf)
 	}
 
-	fn serialize_slice(
-		slice: &[Self],
-		mut write_buf: impl BufMut,
-	) -> Result<(), SerializationError> {
-		// `Word` is `#[repr(transparent)]` and little-endian on every supported target.
-		// So each word's serialized bytes are already its raw memory representation.
-		// One `put_slice` over the whole slice replaces `slice.len()` separate 8-byte writes.
-		let bytes: &[u8] = bytemuck::cast_slice(slice);
-		assert_enough_space_for(&write_buf, bytes.len())?;
-		write_buf.put_slice(bytes);
-		Ok(())
+	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
+		// `Word` is `#[repr(transparent)]` over `u64`, so the cast is a no-op reinterpretation.
+		u64::serialize_slice(bytemuck::cast_slice(slice), write_buf)
 	}
 }
 
