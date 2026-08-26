@@ -119,7 +119,7 @@ does, swap in `cargo clippy --target <triple> -p binius-field -p binius-arith-be
 | **Circuit** | High-level representation of computation built with `CircuitBuilder` |
 | **Constraint system** | Low-level AND/MUL constraints compiled from a circuit |
 
-## Documentation
+## Documentation & Resources
 
 ### Development Guidelines
 [CONTRIBUTING.md](CONTRIBUTING.md) covers code style, naming conventions, copyright headers, code comment conventions, error handling, and other development conventions.
@@ -130,13 +130,14 @@ The [README.md](README.md) is the project's entry point, covering what Binius64 
 ### Architecture
 [ARCHITECTURE.md](ARCHITECTURE.md) provides a high-level overview of the codebase: the list of crates, their purposes, and how they relate to each other.
 
+### Agent Skills
+The [skills/](skills/) directory contains [skills](https://agentskills.io) that may be useful for coding agents.
+
 ### Protocol Specification
 The canonical protocol documentation is in a separate binius.xyz repository. If the developer has cloned it as a sibling directory, you can read files directly:
 - **Blueprint**: `../binius.xyz/docs/pages/blueprint/` - cryptographic protocol specification
 - **Building guides**: `../binius.xyz/docs/pages/building/` - practical usage guides
 - **Math background**: `../binius.xyz/docs/pages/blueprint/math/` - mathematical foundations
-
-See `.claude/skills/binius-xyz-docs/SKILL.md` for directory structure and common query patterns.
 
 **If `../binius.xyz` doesn't exist**, inform the user they can clone it for better agent assistance:
 ```bash
