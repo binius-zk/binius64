@@ -23,7 +23,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
 	word::Word,
 };
-use binius_field::{AESTowerField8b as B8, ExtensionField, FieldOps};
+use binius_field::{ExtensionField, FieldOps, Rijndael8b as B8};
 use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::{
 	channel::{IPVerifierChannel, WordIPVerifierChannel},

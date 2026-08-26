@@ -8,7 +8,7 @@ use super::{
 	simd_arithmetic::{VmullWideMul, packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_square},
 };
 use crate::{
-	aes_field::AESTowerField8b,
+	aes_field::Rijndael8b,
 	arch::PackedPrimitiveType,
 	arithmetic_traits::{InvertOrZero, Square},
 	underlier::WithUnderlier,
@@ -29,14 +29,14 @@ pub type AesInvert16x<T> = NeonTableLookupArithmetic<T>;
 #[derive(TransparentWrapper)]
 pub struct NeonTableLookupArithmetic<T>(T);
 
-impl Square for NeonTableLookupArithmetic<PackedPrimitiveType<M128, AESTowerField8b>> {
+impl Square for NeonTableLookupArithmetic<PackedPrimitiveType<M128, Rijndael8b>> {
 	#[inline]
 	fn square(self) -> Self {
 		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_square))
 	}
 }
 
-impl InvertOrZero for NeonTableLookupArithmetic<PackedPrimitiveType<M128, AESTowerField8b>> {
+impl InvertOrZero for NeonTableLookupArithmetic<PackedPrimitiveType<M128, Rijndael8b>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_invert_or_zero))

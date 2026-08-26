@@ -232,7 +232,7 @@ mod tests {
 		constraint_system::{AndConstraint, InoutSegment},
 		word::Word,
 	};
-	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
+	use binius_field::{Field, PackedBinaryGhash1x128b, Random, Rijndael8b};
 	use binius_math::{
 		multilinear::{Multilinear, hypercube::Hypercube},
 		test_utils::random_scalars,
@@ -337,8 +337,7 @@ mod tests {
 		let key_collection = KeyCollection::build(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
-		let domain_subspace =
-			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+		let domain_subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
 		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
 		// The Zero claim closes at its own constraint point, as wide as the ZERO set. Its value is
@@ -488,8 +487,7 @@ mod tests {
 		let key_collection = KeyCollection::build(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
-		let domain_subspace =
-			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+		let domain_subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
 		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);

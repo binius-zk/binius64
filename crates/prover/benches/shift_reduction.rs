@@ -8,7 +8,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
 	word::Word,
 };
-use binius_field::{AESTowerField8b, Field, Ghash128b, Random, arch::OptimalPackedB128};
+use binius_field::{Field, Ghash128b, Random, Rijndael8b, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_math::{
 	BinarySubspace, multilinear::hypercube::Hypercube, univariate::EvaluationDomain,
@@ -122,7 +122,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
 		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
-		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+		let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 		let mut group = c.benchmark_group(format!(
 			"shift_reduction_log2_{log_message_len_bytes}_bytes_{message_len_bytes}"
@@ -267,7 +267,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// words with their key ranges, and each fold pads to `log2_ceil(len)` variables.
 	let public_words = value_vec.public();
 	let hidden_words = value_vec.non_public();
-	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+	let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
 	// random lambda (rather than one drawn from a transcript) yields realistic-magnitude data.

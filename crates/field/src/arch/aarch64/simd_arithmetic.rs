@@ -11,8 +11,7 @@ use bytemuck::TransparentWrapper;
 
 use super::m128::M128;
 use crate::{
-	aes_field::AESTowerField8b, arch::portable::packed::PackedPrimitiveType,
-	arithmetic_traits::WideMul,
+	aes_field::Rijndael8b, arch::portable::packed::PackedPrimitiveType, arithmetic_traits::WideMul,
 };
 
 #[inline]
@@ -225,7 +224,7 @@ pub fn packed_aes_16x8b_reduce(wide: WideAes16x8bProduct) -> M128 {
 #[derive(TransparentWrapper)]
 pub struct VmullWideMul<T>(T);
 
-impl WideMul for VmullWideMul<PackedPrimitiveType<M128, AESTowerField8b>> {
+impl WideMul for VmullWideMul<PackedPrimitiveType<M128, Rijndael8b>> {
 	type Output = WideAes16x8bProduct;
 
 	#[inline]

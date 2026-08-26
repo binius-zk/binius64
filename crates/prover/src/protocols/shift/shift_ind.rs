@@ -477,7 +477,7 @@ mod tests {
 	#[test]
 	fn claimed_sum_is_the_weighted_indicator_sum() {
 		use binius_compute::GlobalAllocator;
-		use binius_field::{AESTowerField8b, PackedBinaryGhash2x128b, Random};
+		use binius_field::{PackedBinaryGhash2x128b, Random, Rijndael8b};
 
 		type P = PackedBinaryGhash2x128b;
 
@@ -488,8 +488,7 @@ mod tests {
 		let variant = random_scalars::<B128>(&mut rng, LOG_SHIFT_VARIANT_COUNT);
 
 		let g_eval = B128::random(&mut rng);
-		let subspace =
-			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic::<B128>();
+		let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic::<B128>();
 		let l_tilde = subspace.lagrange_evals(&r_zhat_prime);
 		let shift = ShiftChallenge::new(amount, variant);
 		let point = ShiftChallengePoint::new(&bit, &shift);

@@ -6,11 +6,11 @@ use std::iter;
 use proptest::prelude::*;
 
 use crate::{
-	AESTowerField8b, BinaryField1b, ExtensionField, Field, Ghash128b, PackedAESBinaryField16x8b,
+	BinaryField1b, ExtensionField, Field, Ghash128b, PackedAESBinaryField16x8b,
 	PackedAESBinaryField32x8b, PackedAESBinaryField64x8b, PackedBinaryField64x1b,
 	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
 	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-	SlicedGhashSq2x256b,
+	Rijndael8b, SlicedGhashSq2x256b,
 	field::FieldOps,
 	underlier::{SmallU, WithUnderlier},
 };
@@ -18,7 +18,7 @@ use crate::{
 #[test]
 fn test_field_text_debug() {
 	assert_eq!(format!("{:?}", BinaryField1b::ONE), "BinaryField1b(0x1)");
-	assert_eq!(format!("{:?}", AESTowerField8b::new(127)), "AESTowerField8b(0x7f)");
+	assert_eq!(format!("{:?}", Rijndael8b::new(127)), "Rijndael8b(0x7f)");
 	assert_eq!(
 		format!(
 			"{:?}",
@@ -29,7 +29,7 @@ fn test_field_text_debug() {
 		"Packed1x128([0x000007ffffffffffffffffffffffffff])"
 	);
 	assert_eq!(
-		format!("{:?}", PackedAESBinaryField16x8b::broadcast(AESTowerField8b::new(123))),
+		format!("{:?}", PackedAESBinaryField16x8b::broadcast(Rijndael8b::new(123))),
 		"Packed16x8([0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b])"
 	);
 }
@@ -104,9 +104,9 @@ generate_spread_tests! {
 	spread_equals_basic_spread_1x128, PackedBinaryGhash1x128b, Ghash128b, u128, 1;
 
 	// 8-bit configurations
-	spread_equals_basic_spread_64x8, PackedAESBinaryField64x8b, AESTowerField8b, u8, 64;
-	spread_equals_basic_spread_32x8, PackedAESBinaryField32x8b, AESTowerField8b, u8, 32;
-	spread_equals_basic_spread_16x8, PackedAESBinaryField16x8b, AESTowerField8b, u8, 16;
+	spread_equals_basic_spread_64x8, PackedAESBinaryField64x8b, Rijndael8b, u8, 64;
+	spread_equals_basic_spread_32x8, PackedAESBinaryField32x8b, Rijndael8b, u8, 32;
+	spread_equals_basic_spread_16x8, PackedAESBinaryField16x8b, Rijndael8b, u8, 16;
 }
 
 generate_spread_tests_small! {
@@ -175,7 +175,7 @@ where
 
 #[test]
 fn test_scalar_field_ops_square_transpose_aes8b_over_1b() {
-	check_field_ops_square_transpose::<BinaryField1b, AESTowerField8b>();
+	check_field_ops_square_transpose::<BinaryField1b, Rijndael8b>();
 }
 
 #[test]

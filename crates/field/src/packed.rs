@@ -261,13 +261,13 @@ mod tests {
 	use rand::prelude::*;
 
 	use crate::{
-		AESTowerField8b, BinaryField1b, Ghash128b, PackedAESBinaryField1x8b,
-		PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
-		PackedBinaryField1x1b, PackedBinaryField2x1b, PackedBinaryField4x1b, PackedBinaryField8x1b,
+		BinaryField1b, Ghash128b, PackedAESBinaryField1x8b, PackedAESBinaryField16x8b,
+		PackedAESBinaryField32x8b, PackedAESBinaryField64x8b, PackedBinaryField1x1b,
+		PackedBinaryField2x1b, PackedBinaryField4x1b, PackedBinaryField8x1b,
 		PackedBinaryField16x1b, PackedBinaryField32x1b, PackedBinaryField64x1b,
 		PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
 		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-		SlicedGhashSq1x256b, SlicedGhashSq2x256b, SlicedGhashSq4x256b,
+		Rijndael8b, SlicedGhashSq1x256b, SlicedGhashSq2x256b, SlicedGhashSq4x256b,
 	};
 
 	trait PackedFieldTest {
@@ -290,7 +290,7 @@ mod tests {
 		test.run::<PackedBinaryField512x1b>();
 
 		// AES
-		test.run::<AESTowerField8b>();
+		test.run::<Rijndael8b>();
 		test.run::<PackedAESBinaryField1x8b>();
 		test.run::<PackedAESBinaryField16x8b>();
 		test.run::<PackedAESBinaryField32x8b>();

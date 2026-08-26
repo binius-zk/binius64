@@ -215,7 +215,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{AESTowerField8b, Ghash128b, PackedBinaryGhash2x128b, Random};
+	use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random, Rijndael8b};
 	use binius_math::{
 		BinarySubspace,
 		multilinear::{Multilinear, hypercube::Hypercube},
@@ -255,7 +255,7 @@ mod tests {
 			let shift = ShiftChallenge::new(r_s.clone(), r_v.clone());
 
 			// Method 1: the claim phase 3 starts from, with the carried constant set to one.
-			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+			let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 			let l_tilde = subspace.lagrange_evals_buffer(r_zhat_prime);
 			let claimed = ShiftIndSumcheck::<P, _>::new(
 				&GlobalAllocator,
