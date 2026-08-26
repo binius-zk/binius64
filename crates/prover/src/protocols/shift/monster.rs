@@ -221,7 +221,7 @@ mod tests {
 		BinarySubspace,
 		multilinear::{Multilinear, hypercube::Hypercube},
 		test_utils::random_scalars,
-		univariate::subspace_lagrange_evals,
+		univariate::EvaluationDomain,
 	};
 	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 	use proptest::prelude::*;
@@ -257,7 +257,7 @@ mod tests {
 
 			// Method 1: the claim phase 3 starts from, with the carried constant set to one.
 			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
-			let l_tilde = subspace_lagrange_evals(&subspace, r_zhat_prime);
+			let l_tilde = subspace.lagrange_evals_buffer(r_zhat_prime);
 			let claimed = ShiftIndSumcheck::<P, _>::new(
 				&GlobalAllocator,
 				l_tilde.as_ref(),

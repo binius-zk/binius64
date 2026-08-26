@@ -5,10 +5,7 @@ use binius_compute::{BufferPool, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{Field, Random};
 use binius_ip_prover::sumcheck::{common::MleCheckProver, quadratic_mlecheck_prover};
-use binius_math::{
-	BinarySubspace,
-	univariate::{extrapolate_over_subspace, subspace_lagrange_evals_scalars},
-};
+use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 use binius_prover::{
 	OptimalPackedB128,
 	and_reduction::{
@@ -96,8 +93,7 @@ fn bench(c: &mut Criterion) {
 
 	group.bench_function(format!("univariate fold 2^{log_words}"), |bench| {
 		bench.iter(|| {
-			let lagrange_evals =
-				subspace_lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
+			let lagrange_evals = univariate_domain.lagrange_evals(&univariate_challenge);
 			let folder = BitAxisFolder::new(&lagrange_evals);
 			folder.fold_bitand_operands::<OptimalPackedB128, _>(
 				&GlobalAllocator,
@@ -107,18 +103,17 @@ fn bench(c: &mut Criterion) {
 		});
 	});
 
-	let lagrange_evals = subspace_lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
+	let lagrange_evals = univariate_domain.lagrange_evals(&univariate_challenge);
 	let folder = BitAxisFolder::new(&lagrange_evals);
 
 	let mut univariate_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
 	univariate_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX]
 		.copy_from_slice(&urm);
 
-	let next_round_claim = extrapolate_over_subspace(
-		&prover_message_domain.clone().isomorphic::<B128>(),
-		&univariate_message_coeffs,
-		&univariate_challenge,
-	);
+	let next_round_claim = prover_message_domain
+		.clone()
+		.isomorphic::<B128>()
+		.extrapolate(&univariate_message_coeffs, &univariate_challenge);
 
 	let pool = BufferPool::new();
 

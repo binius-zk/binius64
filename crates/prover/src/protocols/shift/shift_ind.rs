@@ -347,7 +347,7 @@ mod tests {
 	use binius_field::{Field, Ghash128b as B128};
 	use binius_math::{
 		BinarySubspace, multilinear::hypercube::Hypercube, test_utils::random_scalars,
-		univariate::subspace_lagrange_evals_scalars,
+		univariate::EvaluationDomain,
 	};
 	use binius_verifier::protocols::shift::evaluate_shift_inds;
 	use rand::{SeedableRng, rngs::StdRng};
@@ -490,7 +490,7 @@ mod tests {
 		let g_eval = B128::random(&mut rng);
 		let subspace =
 			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic::<B128>();
-		let l_tilde = subspace_lagrange_evals_scalars(&subspace, &r_zhat_prime);
+		let l_tilde = subspace.lagrange_evals(&r_zhat_prime);
 		let shift = ShiftChallenge::new(amount, variant);
 		let point = ShiftChallengePoint::new(&bit, &shift);
 		let sumcheck = ShiftIndSumcheck::<P, _>::new(&GlobalAllocator, &l_tilde, &point, g_eval);

@@ -15,7 +15,7 @@ use binius_ip::{
 use binius_math::{
 	BinarySubspace,
 	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
-	univariate::{evaluate_univariate, subspace_lagrange_evals_scalars},
+	univariate::{EvaluationDomain, evaluate_univariate},
 };
 use getset::Getters;
 
@@ -339,8 +339,7 @@ where
 	// shift indicators, one per slot of a term's shift sequence. The indicators chain through the
 	// intermediate word — the outer one carries the output bit down to `r_k`, the inner one carries
 	// `r_k` down to the witness bit — which is what makes a sequence of two shifts one index entry.
-	let l_tilde_eval =
-		evaluate_inplace_scalars(subspace_lagrange_evals_scalars(subspace, r_zhat_prime), r_i);
+	let l_tilde_eval = evaluate_inplace_scalars(subspace.lagrange_evals(r_zhat_prime), r_i);
 	let outer_ind_eval =
 		evaluate_inplace_scalars(&mut evaluate_shift_inds(r_i, r_k, r_s_outer)[..], r_v_outer);
 	let inner_ind_eval =
