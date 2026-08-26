@@ -5,7 +5,7 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, N
 use binius_utils::{
 	DeserializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
-	serialization::{assert_enough_data_for, assert_enough_space_for, serialize_slice_le},
+	serialization::{assert_enough_data_for, assert_enough_space_for},
 };
 use bytemuck::{Pod, Zeroable};
 use derive_more::{From, Into};
@@ -77,10 +77,6 @@ impl SerializeBytes for M128 {
 		assert_enough_space_for(&write_buf, std::mem::size_of::<Self>())?;
 		write_buf.put_u128_le(self.0);
 		Ok(())
-	}
-
-	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
-		serialize_slice_le(slice, write_buf)
 	}
 }
 

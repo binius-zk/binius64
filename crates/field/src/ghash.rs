@@ -99,10 +99,6 @@ impl SerializeBytes for Ghash128b {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.0.serialize(write_buf)
 	}
-
-	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
-		M128::serialize_slice(Self::to_underliers_ref(slice), write_buf)
-	}
 }
 
 impl DeserializeBytes for Ghash128b {
@@ -552,37 +548,6 @@ mod tests {
 			let wide =
 				Ghash128b::wide_mul(a1, b1) + Ghash128b::wide_mul(a2, b2);
 			assert_eq!(Ghash128b::reduce(wide), a1 * b1 + a2 * b2);
-		}
-
-		/// Pins the bulk `serialize_slice` override to the per-element loop it replaces.
-		///
-		/// Covers every input length from empty through a few cache lines.
-		/// Every generated element is fully random.
-		/// A byte-order or off-by-one slip in the bulk path shows up here, not in a live proof.
-		#[test]
-		fn test_ghash_serialize_slice_matches_loop(values in vec(any::<u128>(), 0..300)) {
-			let values: Vec<Ghash128b> =
-				values.into_iter().map(Ghash128b::from).collect();
-
-			let mut expected = Vec::new();
-			for value in &values {
-				value.serialize(&mut expected).unwrap();
-			}
-
-			let mut actual = Vec::new();
-			Ghash128b::serialize_slice(&values, &mut actual).unwrap();
-
-			assert_eq!(actual, expected);
-
-			// `serialize_slice` writes no length prefix.
-			// Read back exactly `values.len()` elements from a cursor over the same buffer.
-			// That matches how a transcript reader consumes `write_scalar_slice`'s output.
-			let mut cursor = actual.as_slice();
-			let deserialized: Vec<Ghash128b> = (0..values.len())
-				.map(|_| Ghash128b::deserialize(&mut cursor).unwrap())
-				.collect();
-			assert_eq!(deserialized, values);
-			assert!(cursor.is_empty());
 		}
 	}
 }
