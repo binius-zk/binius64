@@ -27,8 +27,10 @@ pub(crate) mod batch;
 mod common;
 mod error;
 pub mod fold;
+mod size_estimation;
 pub mod verify;
 
 pub use common::*;
 pub use error::*;
 pub use fold::FRIFoldVerifier;
+pub use size_estimation::proof_size;

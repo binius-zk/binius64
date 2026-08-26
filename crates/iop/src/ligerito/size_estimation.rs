@@ -420,7 +420,11 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::{channel::OracleSpec, fri::FRIParams, merkle_tree::BinaryMerkleTreeScheme};
+	use crate::{
+		channel::OracleSpec,
+		fri::{FRIParams, proof_size},
+		merkle_tree::BinaryMerkleTreeScheme,
+	};
 
 	type TestMerkleScheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 
@@ -908,7 +912,7 @@ mod tests {
 				log_inv_rate,
 				regime.n_queries(SECURITY_BITS, log_inv_rate),
 			);
-			params.proof_size(&merkle_scheme)
+			proof_size(&params, &merkle_scheme)
 		};
 		// The best constant rate FRI can pick, paired with the rate that won it.
 		let fri_best = |log_n: usize, regime: SoundnessRegime| {
