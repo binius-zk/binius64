@@ -248,8 +248,8 @@ macro_rules! binary_field {
 
 			#[inline]
 			fn make_mask(mut selectors: impl Iterator<Item = bool>) -> $typ {
-				<$typ as $crate::underlier::UnderlierType>::fill_with_bit(
-					u8::from(selectors.next().unwrap_or(false)),
+				<$typ as $crate::Divisible<_>>::broadcast(
+					$crate::underlier::U1::from(selectors.next().unwrap_or(false)),
 				)
 			}
 
@@ -396,11 +396,11 @@ macro_rules! mul_by_binary_field_1b {
 			#[inline]
 			#[allow(clippy::suspicious_arithmetic_impl)]
 			fn mul(self, rhs: BinaryField1b) -> Self::Output {
-				use $crate::underlier::{UnderlierType, WithUnderlier};
+				use $crate::{Divisible, underlier::WithUnderlier};
 
 				$crate::tracing::trace_multiplication!($name, BinaryField1b);
 
-				Self(self.0 & <$name as WithUnderlier>::Underlier::fill_with_bit(u8::from(rhs.0)))
+				Self(self.0 & <$name as WithUnderlier>::Underlier::broadcast(rhs.to_underlier()))
 			}
 		}
 	};
