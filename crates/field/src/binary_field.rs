@@ -401,26 +401,6 @@ macro_rules! binary_field {
 
 pub(crate) use binary_field;
 
-macro_rules! mul_by_binary_field_1b {
-	($name:ident) => {
-		impl Mul<BinaryField1b> for $name {
-			type Output = Self;
-
-			#[inline]
-			#[allow(clippy::suspicious_arithmetic_impl)]
-			fn mul(self, rhs: BinaryField1b) -> Self::Output {
-				use $crate::{Divisible, underlier::WithUnderlier};
-
-				$crate::tracing::trace_multiplication!($name, BinaryField1b);
-
-				Self(self.0 & <$name as WithUnderlier>::Underlier::broadcast(rhs.to_underlier()))
-			}
-		}
-	};
-}
-
-pub(crate) use mul_by_binary_field_1b;
-
 macro_rules! impl_field_extension {
 	($subfield_name:ident($subfield_typ:ty) < @$log_degree:expr => $name:ident($typ:ty)) => {
 		impl TryFrom<$name> for $subfield_name {
@@ -465,6 +445,21 @@ macro_rules! impl_field_extension {
 			#[inline]
 			fn sub(self, rhs: $subfield_name) -> Self::Output {
 				self - Self::from(rhs)
+			}
+		}
+
+		// The subfield coordinates are literally `$typ`'s `$subfield_typ` limbs (see `basis`
+		// below), so multiplying by a subfield scalar is linear in each limb: reinterpret `self`
+		// as a `PackedPrimitiveType` of the subfield, broadcast-multiply by `rhs`, and cast back.
+		impl Mul<$subfield_name> for $name {
+			type Output = Self;
+
+			#[inline]
+			fn mul(self, rhs: $subfield_name) -> Self::Output {
+				$crate::tracing::trace_multiplication!($name, $subfield_name);
+
+				type P = $crate::arch::PackedPrimitiveType<$typ, $subfield_name>;
+				Self((P::from_underlier(self.0) * P::broadcast(rhs)).to_underlier())
 			}
 		}
 

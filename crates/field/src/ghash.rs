@@ -19,7 +19,6 @@ use super::{
 use crate::{
 	AESTowerField8b, Field,
 	arch::M128,
-	mul_by_binary_field_1b,
 	underlier::{U1, WithUnderlier},
 };
 
@@ -88,8 +87,6 @@ impl Ghash128b {
 }
 
 impl_field_extension!(BinaryField1b(U1) < @7 => Ghash128b(M128));
-
-mul_by_binary_field_1b!(Ghash128b);
 
 impl From<AESTowerField8b> for Ghash128b {
 	#[inline]
