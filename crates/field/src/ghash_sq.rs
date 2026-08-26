@@ -8,13 +8,14 @@
 //!
 //! The field is backed by [`M256`], with the low 128 bits holding the coefficient of `1` (`a`) and
 //! the high 128 bits holding the coefficient of `Y` (`b`). This is the same layout as
-//! [`PackedBinaryGhash2x128b`] (two GHASH lanes in an `M256`) and matches the `{1, Y}` basis used
-//! by the `ExtensionField<Ghash128b>` implementation.
+//! [`PackedBinaryGhash2x128b`](crate::PackedBinaryGhash2x128b) (two GHASH lanes in an `M256`) and
+//! matches the `{1, Y}` basis used by the `ExtensionField<Ghash128b>` implementation.
 //!
 //! Reducing with `Y² = X·Y + X` multiplies by `X` (a left shift) rather than by `X⁻¹`, and the
 //! multiply-by-`X` folds into the reduction. Multiplication batches the two GHASH products that
-//! share the AVX2 256-bit CLMUL into a single [`PackedBinaryGhash2x128b`] multiply (the
-//! `mul_m256i_hybrid` algorithm).
+//! share the AVX2 256-bit CLMUL into a single
+//! [`PackedBinaryGhash2x128b`](crate::PackedBinaryGhash2x128b) multiply (the `mul_m256i_hybrid`
+//! algorithm).
 
 use std::{
 	fmt::{Debug, Display, Formatter},
