@@ -4,7 +4,7 @@ use binius_field::BinaryField;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::CopyGetters;
 
-use super::{size_estimation, verifier_cost, verifier_cost::VerifierCost};
+use super::{ladder_cost::LadderCost, size_estimation, verifier_cost, verifier_cost::VerifierCost};
 use crate::{
 	merkle_tree::MerkleTreeScheme,
 	soundness::{Grinding, SoundnessRegime},
@@ -67,6 +67,31 @@ impl LigeritoLevel {
 	/// log2 the total number of message elements this level commits.
 	pub const fn log_msg_len(&self) -> usize {
 		self.log_msg_cols + self.log_lanes
+	}
+
+	/// Butterfly operations the Reed-Solomon encoding of this level's matrix costs.
+	///
+	/// The encoder does not transform every layer of the codeword's index space.
+	/// It bit-reverses the message, repeats it `2^log_inv_rate` times, and transforms the rest:
+	///
+	/// ```text
+	///     layers          log_msg_cols + log_lanes + log_inv_rate
+	///     repeated away   log_inv_rate      a zero pad butterflies to a copy of its partner
+	///     never folded    log_lanes         the lane axis is interleaved, not transformed
+	///     executed        log_msg_cols
+	/// ```
+	///
+	/// Every executed layer butterflies the whole codeword in pairs, half as many as its elements.
+	/// So the count is `log_msg_cols * 2^(log_msg_len + log_inv_rate - 1)`.
+	///
+	/// Two consequences are worth reading off it, because a byte count sees neither.
+	/// Dropping the rate one step doubles this level's encoding.
+	/// Folding one more lane leaves the codeword the same size and removes a layer from it.
+	///
+	/// Saturates rather than overflowing, so an absurd shape prices as expensive, not as cheap.
+	pub const fn encode_butterflies(&self) -> usize {
+		let log_codeword_elems = self.log_msg_len() + self.log_inv_rate;
+		pow2_saturating(log_codeword_elems.saturating_sub(1)).saturating_mul(self.log_msg_cols)
 	}
 
 	/// Whether this level has at least as many codeword positions as queries to open.
@@ -203,7 +228,7 @@ impl LigeritoParams {
 	///
 	/// The query counts are not re-derived here.
 	/// Setting a query grind therefore leaves the rows opening more than the target needs.
-	/// [`Self::optimal_ladder`] is the one that sizes them against the grind.
+	/// [`LadderSearch`](super::LadderSearch) is what sizes them against the grind.
 	pub const fn with_grinding(mut self, grinding: Grinding) -> Self {
 		self.grinding = grinding;
 		self
@@ -409,49 +434,23 @@ impl LigeritoParams {
 		verifier_cost::verifier_cost(self, vcs)
 	}
 
-	/// The ladder minimizing [`Self::proof_size`], with level 0's rate pinned by the caller.
+	/// Both prices of this ladder: the bytes it writes, and the encoding the prover pays for them.
 	///
-	/// Level 0's rate is pinned because level 0's encoding dominates prover time.
-	/// A ladder only compares to today's FRI at the same L0 rate, where it does the same L0 work.
-	/// The deep levels are small, so they are free to drop the rate as far as the search likes.
-	///
-	/// Returns the parameters together with their [`Self::proof_size`] in bytes.
-	///
-	/// `None` means no ladder reaches `security_bits`, for either of two reasons.
-	/// A level must have at least as many codeword positions as it opens queries, which rules out
-	/// small `log_n`.
-	/// And a level's algebraic term must itself clear the target, `grinding` included.
-	/// That rules out large `log_n` over a field this size.
-	/// See [`crate::soundness`] for why the second one cannot be bought back with more queries.
-	///
-	/// `grinding` is paid by the search rather than assumed away.
-	/// Its challenge half raises the ceiling a level has to clear to be priced at all.
-	/// Its query half shrinks the row count every level opens.
-	/// Both halves cost nonce bytes, which the returned size counts.
-	///
-	/// ## Panics
-	///
-	/// Panics if `l0_log_inv_rate` is outside `1..=MAX_LOG_INV_RATE`, or `security_bits` is zero.
-	pub fn optimal_ladder<F, MerkleScheme>(
-		merkle_scheme: &MerkleScheme,
-		log_n: usize,
-		l0_log_inv_rate: usize,
-		regime: SoundnessRegime,
-		security_bits: usize,
-		grinding: Grinding,
-	) -> Option<(Self, usize)>
+	/// A shape cheap on one axis is rarely cheap on the other, so the two always travel together.
+	/// [`LadderSearch`](super::LadderSearch) is what weighs the pair and picks a shape.
+	pub fn ladder_cost<F, VCS>(&self, vcs: &VCS) -> LadderCost
 	where
 		F: BinaryField,
-		MerkleScheme: MerkleTreeScheme<F>,
+		VCS: MerkleTreeScheme<F>,
 	{
-		size_estimation::optimal_ladder(
-			merkle_scheme,
-			log_n,
-			l0_log_inv_rate,
-			regime,
-			security_bits,
-			grinding,
-		)
+		LadderCost {
+			bytes: self.proof_size(vcs),
+			encode_butterflies: self
+				.levels
+				.iter()
+				.map(LigeritoLevel::encode_butterflies)
+				.fold(0, usize::saturating_add),
+		}
 	}
 }
 
@@ -468,7 +467,7 @@ const fn pow2_saturating(log: usize) -> usize {
 mod tests {
 	use binius_transcript::MAX_GRINDING_BITS;
 
-	use super::*;
+	use super::{super::LadderSearch, *};
 
 	// A three-level ladder that satisfies every invariant, used as the base for the rejection
 	// tests below. Message 2^12, lanes 3/2/1, rates 1/2 -> 1/4 -> 1/8, residual 2^6.
@@ -696,6 +695,75 @@ mod tests {
 	}
 
 	#[test]
+	fn the_encode_count_is_the_layers_the_encoder_runs_over_the_codeword() {
+		// Fixture state: 2^14 columns by 2^4 interleaved lanes, committed at rate 1/16. The
+		// codeword holds 2^22 elements, and the encoder transforms 14 of its 22 index layers:
+		// the rate's four are done by repeating the message and the lanes' four are never folded.
+		let level = LigeritoLevel {
+			log_msg_cols: 14,
+			log_lanes: 4,
+			log_inv_rate: 4,
+			n_queries: 1,
+		};
+		assert_eq!(level.encode_butterflies(), 14 * (1 << 21));
+
+		// Dropping the rate one step doubles the codeword and leaves the layer count alone. The
+		// encoder measures 1.9x per step over this range, so the model's 2x is a shade dear.
+		let lower_rate = LigeritoLevel {
+			log_inv_rate: 5,
+			..level
+		};
+		assert_eq!(lower_rate.encode_butterflies(), 2 * level.encode_butterflies());
+
+		// Folding one more lane keeps the codeword the same size and removes a layer from it,
+		// which is the trade a byte count cannot see: the rows it opens get twice as wide.
+		let wider = LigeritoLevel {
+			log_msg_cols: 13,
+			log_lanes: 5,
+			..level
+		};
+		assert_eq!(wider.encode_butterflies(), 13 * (1 << 21));
+
+		// A level with a single column transforms nothing, whatever rate it is committed at.
+		let trivial = LigeritoLevel {
+			log_msg_cols: 0,
+			..level
+		};
+		assert_eq!(trivial.encode_butterflies(), 0);
+	}
+
+	#[test]
+	fn the_encode_model_ranks_the_two_levels_a_traced_opening_timed() {
+		// Invariant: the model is worth having only if it puts real encodes in the right order
+		// with roughly the right gap. Tracing a 2^22 opening timed level 1's encode at 0.34 of
+		// level 0's, and the model has to land near that rather than merely below one.
+		//
+		// Fixture state: the byte-optimal ladder at log_n = 22, whose first two levels are 2^18
+		// columns by 2^4 lanes at rate 1/2, then 2^14 by 2^4 at rate 1/16.
+		let level_zero = LigeritoLevel {
+			log_msg_cols: 18,
+			log_lanes: 4,
+			log_inv_rate: 1,
+			n_queries: 1,
+		};
+		let level_one = LigeritoLevel {
+			log_msg_cols: 14,
+			log_lanes: 4,
+			log_inv_rate: 4,
+			n_queries: 1,
+		};
+
+		let ratio = level_one.encode_butterflies() as f64 / level_zero.encode_butterflies() as f64;
+		assert!((0.35..0.42).contains(&ratio), "ratio={ratio}");
+
+		// Counting codeword elements alone would say 0.5, because it misses that the deeper
+		// level runs four fewer layers over them. The traced 0.34 is on the other side of the
+		// model's 0.39, so the layer count is most of what the element count was missing.
+		let elements = |level: &LigeritoLevel| 1u64 << (level.log_msg_len() + level.log_inv_rate);
+		assert_eq!(elements(&level_one) as f64 / elements(&level_zero) as f64, 0.5);
+	}
+
+	#[test]
 	fn feasibility_is_exact_at_the_boundary() {
 		let mut level = LigeritoLevel {
 			log_msg_cols: 6,
@@ -715,9 +783,9 @@ mod tests {
 		let scheme = BinaryMerkleTreeScheme::<B128, binius_hash::StdHashSuite>::new();
 		let (regime, _) =
 			SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128).expect("reachable");
-		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
-				.expect("feasible");
+		let (params, _) = LadderSearch::new(1, regime, 120)
+			.solve::<B128, _>(&scheme, 24)
+			.expect("feasible");
 		for bits in [0usize, 1, 2, 3] {
 			let g = params.clone().with_grinding(Grinding::new(bits, 0));
 			println!(
@@ -748,9 +816,9 @@ mod tests {
 		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
 		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
 			.expect("120 bits is reachable with a constant loss");
-		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
-				.expect("a 120-bit ladder exists for one message");
+		let (params, _) = LadderSearch::new(1, regime, 120)
+			.solve::<B128, _>(&scheme, 24)
+			.expect("a 120-bit ladder exists for one message");
 
 		for log_k in 0..4 {
 			let k = 1usize << log_k;

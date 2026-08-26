@@ -7,8 +7,8 @@ use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::OracleSpec,
-	ligerito::compiler::LigeritoVerifierCompiler,
-	soundness::{Grinding, SoundnessRegime},
+	ligerito::{LadderSearch, compiler::LigeritoVerifierCompiler},
+	soundness::SoundnessRegime,
 };
 
 use crate::{
@@ -88,15 +88,16 @@ where
 				// The query counts come out of the same unique-decoding radius FRI uses, so the
 				// two schemes are priced against one another rather than against two regimes.
 				let log_msg_len = oracle_specs[0].log_msg_len;
-				// No proof of work: the two schemes are compared on the protocol alone, and FRI
-				// grinds nothing either.
+				// Bytes alone, and no proof of work: the comparison is of protocols, not tunings.
+				// FRI grinds nothing either, and its own optimizer minimizes bytes.
 				LigeritoVerifierCompiler::optimal(
 					merkle_scheme,
 					oracle_specs,
-					log_inv_rate,
-					SoundnessRegime::UniqueDecoding,
-					security_bits,
-					Grinding::NONE,
+					&LadderSearch::new(
+						log_inv_rate,
+						SoundnessRegime::UniqueDecoding,
+						security_bits,
+					),
 				)
 				.map(Self::Ligerito)
 				.ok_or(Error::NoLigeritoLadder {

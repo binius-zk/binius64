@@ -23,7 +23,9 @@
 //! - [`channel::LigeritoVerifierChannel`], the ladder behind the IOP verifier channel trait;
 //! - [`LigeritoParams::proof_size`], the byte-exact estimate;
 //! - [`LigeritoParams::verifier_cost`], what checking that proof costs, level by level;
-//! - [`LigeritoParams::optimal_ladder`], the search that minimizes it subject to a security target.
+//! - [`LadderCost`], the two prices a ladder shape pays, in bytes and in encoding work;
+//! - [`LadderObjective`], the exchange rate that turns those two prices into one;
+//! - [`LadderSearch`], the search for the best ladder under that exchange rate.
 //!
 //! The soundness regimes and the error terms live in [`crate::soundness`], because they describe
 //! Reed-Solomon proximity testing rather than Ligerito.
@@ -37,6 +39,9 @@ mod common;
 pub mod compiler;
 mod error;
 mod induced_basis;
+mod ladder_cost;
+mod ladder_objective;
+mod ladder_search;
 mod opening;
 mod size_estimation;
 mod verifier_cost;
@@ -45,6 +50,8 @@ pub use committed_oracle::CommittedOracle;
 pub use common::*;
 pub use error::{Error, VerificationError};
 pub use induced_basis::InducedBasis;
+pub use ladder_cost::LadderCost;
+pub use ladder_objective::LadderObjective;
+pub use ladder_search::{LadderSearch, MAX_LOG_INV_RATE, MAX_LOG_LANES};
 pub use opening::LigeritoVerifier;
-pub use size_estimation::{MAX_LOG_INV_RATE, MAX_LOG_LANES};
 pub use verifier_cost::VerifierCost;

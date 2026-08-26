@@ -10,12 +10,11 @@ use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
-use super::{LigeritoParams, channel::LigeritoVerifierChannel};
+use super::{LadderSearch, LigeritoParams, channel::LigeritoVerifierChannel};
 use crate::{
 	channel::OracleSpec,
 	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
 	merkle_tree::MerkleTreeScheme,
-	soundness::{Grinding, SoundnessRegime},
 };
 
 /// A compiler that creates Ligerito verifier channels from a precomputed ladder.
@@ -85,32 +84,22 @@ where
 		}
 	}
 
-	/// Creates a compiler whose ladder is the proof-size-minimizing one for the longest oracle.
+	/// Creates a compiler whose ladder is the best one the given search finds.
 	///
-	/// Level 0's rate is pinned by the caller, because level 0's encoding dominates prover time.
-	/// The deeper levels are small, so the search is free to drop their rate as far as it likes.
-	///
-	/// The search input is the longest message, since every oracle shares level 0's column count.
+	/// The search runs over the longest message, since every oracle shares level 0's column
+	/// count.
 	/// A shorter one then simply carries fewer interleaved lanes.
 	///
-	/// `None` means no ladder over that message reaches the security target.
-	///
-	/// `grinding` is what the ladder will pay per level.
-	/// The search prices it rather than assuming it away.
-	/// Pass [`Grinding::NONE`] for a transcript with no proof of work in it.
+	/// `None` means no ladder over that message reaches the search's security target.
 	///
 	/// ## Preconditions
 	///
 	/// * `oracle_specs` is non-empty.
 	/// * No spec is zero-knowledge.
-	/// * `l0_log_inv_rate` is a usable inverse rate and `security_bits` is positive.
 	pub fn optimal<MerkleScheme>(
 		merkle_scheme: &MerkleScheme,
 		oracle_specs: Vec<OracleSpec>,
-		l0_log_inv_rate: usize,
-		regime: SoundnessRegime,
-		security_bits: usize,
-		grinding: Grinding,
+		search: &LadderSearch,
 	) -> Option<Self>
 	where
 		MerkleScheme: MerkleTreeScheme<F>,
@@ -120,19 +109,12 @@ where
 			"precondition: a Ligerito compiler serves at least one oracle"
 		);
 
-		// Level 0's shape is shared, so the longest message is what the ladder is searched over.
-		let (params, _proof_size) = LigeritoParams::optimal_ladder::<F, _>(
-			merkle_scheme,
-			oracle_specs
-				.iter()
-				.map(|spec| spec.log_msg_len)
-				.max()
-				.expect("oracle_specs is non-empty"),
-			l0_log_inv_rate,
-			regime,
-			security_bits,
-			grinding,
-		)?;
+		let log_msg_len = oracle_specs
+			.iter()
+			.map(|spec| spec.log_msg_len)
+			.max()
+			.expect("oracle_specs is non-empty");
+		let (params, _cost) = search.solve::<F, _>(merkle_scheme, log_msg_len)?;
 
 		Some(Self::new(oracle_specs, params))
 	}
@@ -196,7 +178,9 @@ mod tests {
 	use binius_hash::StdHashSuite;
 
 	use super::*;
-	use crate::{ligerito::LigeritoLevel, merkle_tree::BinaryMerkleTreeScheme};
+	use crate::{
+		ligerito::LigeritoLevel, merkle_tree::BinaryMerkleTreeScheme, soundness::SoundnessRegime,
+	};
 
 	/// A two-level ladder over a 2^8 message: 2^6 columns and 4 lanes, then 2^5 columns and 2.
 	fn params() -> LigeritoParams {
@@ -241,10 +225,7 @@ mod tests {
 		let compiler = LigeritoVerifierCompiler::<B128>::optimal(
 			&scheme,
 			vec![OracleSpec::new(20)],
-			1,
-			SoundnessRegime::UniqueDecoding,
-			96,
-			Grinding::NONE,
+			&LadderSearch::new(1, SoundnessRegime::UniqueDecoding, 96),
 		)
 		.expect("a 2^20 message at rate 1/2 admits a ladder at 96 bits");
 
@@ -263,10 +244,7 @@ mod tests {
 		let compiler = LigeritoVerifierCompiler::<B128>::optimal(
 			&scheme,
 			vec![OracleSpec::new(4)],
-			1,
-			SoundnessRegime::UniqueDecoding,
-			96,
-			Grinding::NONE,
+			&LadderSearch::new(1, SoundnessRegime::UniqueDecoding, 96),
 		);
 		assert!(compiler.is_none());
 	}
@@ -336,9 +314,9 @@ mod tests {
 		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
 		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
 			.expect("120 bits is reachable with a constant loss");
-		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
-				.expect("a 120-bit ladder exists for one message");
+		let (params, _) = LadderSearch::new(1, regime, 120)
+			.solve::<B128, _>(&scheme, 24)
+			.expect("a 120-bit ladder exists for one message");
 
 		// One oracle clears 120, so the shortfall below is caused by the batch and nothing else.
 		assert!(params.achieved_security_bits(128) >= 120.0);

@@ -10,9 +10,8 @@ use binius_field::{BinaryField, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	channel::OracleSpec,
-	ligerito::{LigeritoParams, compiler::LigeritoVerifierCompiler},
+	ligerito::{LadderSearch, LigeritoParams, compiler::LigeritoVerifierCompiler},
 	merkle_tree::MerkleTreeScheme,
-	soundness::{Grinding, SoundnessRegime},
 };
 use binius_math::ntt::AdditiveNTT;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
@@ -70,37 +69,24 @@ where
 		Self::from_verifier_compiler(&verifier, ntt)
 	}
 
-	/// Creates a compiler whose ladder is the proof-size-minimizing one for the longest oracle.
+	/// Creates a compiler whose ladder is the best one the given search finds.
 	///
-	/// `None` means no ladder over that message reaches the security target.
-	///
-	/// `grinding` is what the ladder will pay per level; pass [`Grinding::NONE`] for none.
+	/// `None` means no ladder over the longest message reaches the search's security target.
 	///
 	/// ## Preconditions
 	///
 	/// * `oracle_specs` is non-empty and no spec is zero-knowledge.
-	/// * `l0_log_inv_rate` is a usable inverse rate and `security_bits` is positive.
 	/// * `ntt`'s domain covers every level's codeword domain.
 	pub fn optimal<MerkleScheme>(
 		ntt: NTT,
 		merkle_scheme: &MerkleScheme,
 		oracle_specs: Vec<OracleSpec>,
-		l0_log_inv_rate: usize,
-		regime: SoundnessRegime,
-		security_bits: usize,
-		grinding: Grinding,
+		search: &LadderSearch,
 	) -> Option<Self>
 	where
 		MerkleScheme: MerkleTreeScheme<F>,
 	{
-		let verifier = LigeritoVerifierCompiler::<F>::optimal(
-			merkle_scheme,
-			oracle_specs,
-			l0_log_inv_rate,
-			regime,
-			security_bits,
-			grinding,
-		)?;
+		let verifier = LigeritoVerifierCompiler::<F>::optimal(merkle_scheme, oracle_specs, search)?;
 		Some(Self::from_verifier_compiler(&verifier, ntt))
 	}
 
