@@ -3,6 +3,7 @@
 
 use std::{mem, ops::Deref};
 
+use binius_compute::BufferData;
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice,
@@ -10,7 +11,6 @@ use binius_math::{
 };
 use binius_utils::{
 	bitwise::{BitSelector, Bitwise},
-	buffer::BufferData,
 	checked_arithmetics::checked_log_2,
 	random_access_sequence::{MatrixVertSliceSubrange, RandomAccessSequence},
 	rayon::prelude::*,

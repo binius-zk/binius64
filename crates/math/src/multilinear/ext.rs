@@ -28,10 +28,9 @@
 
 use std::ops::Deref;
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, BufferData, VecLike};
 use binius_field::{Field, PackedField, WideMul};
 use binius_utils::{
-	buffer::{BufferData, VecLike},
 	random_access_sequence::RandomAccessSequence,
 	rayon::{
 		prelude::*,

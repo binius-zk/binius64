@@ -3,7 +3,7 @@
 
 use std::{marker::PhantomData, ops::Deref};
 
-use binius_compute::{Allocator, BufferPool};
+use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment, ValueTable},
 	word::Word,
@@ -35,7 +35,7 @@ use binius_prover::{
 	ring_switch::{self, RingSwitchOutput},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{SerializeBytes, buffer::VecLike};
+use binius_utils::SerializeBytes;
 use binius_verifier::{
 	config::B128,
 	protocols::{

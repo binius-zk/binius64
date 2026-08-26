@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::{
@@ -10,7 +10,7 @@ use binius_ip_prover::{
 	sumcheck::{ProveSingleOutput, prove_single_mlecheck, quadratic_mlecheck_prover},
 };
 use binius_math::{FieldVec, field_buffer::FieldBuffer};
-use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 pub use binius_verifier::protocols::binmul::BinMulOutput;
 
 use crate::fold_word::WordAxisFolder;

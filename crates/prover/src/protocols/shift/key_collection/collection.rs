@@ -1,12 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_field::{BinaryField, PackedField, WideMul};
 use binius_math::{FieldBuffer, FieldVec, multilinear::hypercube::Hypercube};
 use binius_utils::{
-	buffer::VecLike,
 	checked_arithmetics::log2_ceil_usize,
 	rayon::{
 		prelude::*,

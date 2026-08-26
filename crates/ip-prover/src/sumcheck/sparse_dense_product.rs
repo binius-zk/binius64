@@ -2,15 +2,13 @@
 
 //! Sumcheck prover for the product of a sparse and a dense multilinear.
 
+use binius_compute::BufferData;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::MultilinearMut};
-use binius_utils::{
-	buffer::BufferData,
-	rayon::{
-		prelude::*,
-		task_size::{IndexedParallelIteratorExt, WorkPerItem},
-	},
+use binius_utils::rayon::{
+	prelude::*,
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
 
 use super::{common::SumcheckProver, round_evals::RoundEvals, round_state::RoundState};

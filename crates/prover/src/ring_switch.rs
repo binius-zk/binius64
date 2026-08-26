@@ -3,7 +3,7 @@
 
 use std::{array, iter, ops::Deref};
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{
 	ExtensionField, PackedField,
@@ -21,7 +21,7 @@ use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_packed,
 	multilinear::hypercube::Hypercube, tensor_algebra::TensorAlgebra,
 };
-use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::{
 	config::{B1, B128, LOG_WORDS_PER_ELEM},
 	protocols::shift::evaluate_words_mle,
