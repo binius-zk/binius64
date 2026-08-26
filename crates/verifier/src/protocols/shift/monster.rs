@@ -4,7 +4,10 @@
 use std::iter;
 
 use binius_core::constraint_system::Operand;
-use binius_field::{BinaryField, FieldOps, WideMul, util::FieldFn};
+use binius_field::{
+	BinaryField, FieldOps, WideMul,
+	util::{FieldFn, powers},
+};
 use binius_math::multilinear::hypercube::Hypercube;
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
@@ -269,7 +272,10 @@ fn operand_shift_scalar_table<E: FieldOps>(
 	lambda: &E,
 	arity: usize,
 ) -> Vec<E> {
-	let lambda_powers = lambda.powers().skip(1).take(arity).collect::<Vec<_>>();
+	let lambda_powers = powers(lambda.clone())
+		.skip(1)
+		.take(arity)
+		.collect::<Vec<_>>();
 	let mut table = Vec::with_capacity(shift_scalars.len() * arity);
 	for shift_scalar in shift_scalars {
 		for lambda_power in &lambda_powers {

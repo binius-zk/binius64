@@ -5,7 +5,7 @@ use std::{cmp::max, marker::PhantomData};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField, util::powers};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::hypercube::Hypercube,
@@ -109,7 +109,7 @@ impl<F: Field> PreparedOperatorData<F> {
 			r_x_prime,
 		} = operator_data;
 		let r_x_prime_tensor = Hypercube::One.expand(&r_x_prime).build::<F>();
-		let lambda_powers: Vec<F> = lambda.powers().skip(1).take(ARITY).collect();
+		let lambda_powers: Vec<F> = powers(lambda).skip(1).take(ARITY).collect();
 		Self {
 			batched_eval: inner_product(evals, lambda_powers.iter().copied()),
 			r_zhat_prime,
