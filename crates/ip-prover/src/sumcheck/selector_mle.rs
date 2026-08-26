@@ -1,10 +1,11 @@
 // Copyright 2023-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::BufferData;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::MultilinearMut};
-use binius_utils::{bitwise::Bitwise, buffer::BufferData, rayon::prelude::*};
+use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
 use itertools::izip;
 
 use super::{

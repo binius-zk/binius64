@@ -3,7 +3,7 @@
 
 use std::{iter, mem::MaybeUninit, ops::Deref};
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::prodcheck::ProdcheckProver;
@@ -12,7 +12,6 @@ use binius_math::{
 	field_buffer::{FieldBuffer, FieldSlice},
 };
 use binius_utils::{
-	buffer::VecLike,
 	checked_arithmetics::log2_ceil_usize,
 	rayon::{
 		prelude::*,

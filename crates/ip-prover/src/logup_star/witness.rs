@@ -11,13 +11,10 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
 use binius_math::{FieldBuffer, FieldSlice, FieldVec, multilinear::hypercube::Hypercube};
-use binius_utils::{
-	buffer::VecLike,
-	rayon::{current_num_threads, prelude::*},
-};
+use binius_utils::rayon::{current_num_threads, prelude::*};
 
 use super::prove::TableLookup;
 

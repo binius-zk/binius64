@@ -4,13 +4,13 @@
 
 use std::ops::Deref;
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_core::{ValueTable, word::Word};
 use binius_field::{BinaryField, PackedField};
 use binius_math::{FieldVec, inner_product::inner_product};
 pub use binius_prover::fold_word::FoldedWord;
 use binius_prover::fold_word::WordAxisFolder;
-use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 /// The committed witness of a batch, with its instance axis collapsed at a point.
 ///

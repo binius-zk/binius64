@@ -3,17 +3,13 @@
 
 //! The artifact a build hands back: a constraint system plus what it takes to fill a witness.
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, BufferData, VecLike};
 use binius_core::{
 	ValueTable,
 	constraint_system::{ConstraintSystem, ValueIndex, ValueSegment, ValueVec, ValueVecLayout},
 	word::Word,
 };
-use binius_utils::{
-	buffer::{BufferData, VecLike},
-	rayon::prelude::*,
-	strided_array::StridedArray2DViewMut,
-};
+use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 use cranelift_entity::SecondaryMap;
 
 use crate::{

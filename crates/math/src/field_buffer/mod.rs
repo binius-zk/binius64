@@ -34,13 +34,12 @@ use std::{
 	slice,
 };
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, BufferData, VecLike};
 use binius_field::{
 	Field, PackedField,
 	packed::{get_packed_slice_unchecked, set_packed_slice_unchecked},
 };
 use binius_utils::{
-	buffer::{BufferData, VecLike},
 	checked_arithmetics::strict_log_2,
 	rayon::{iter::Either, prelude::*, slice::ParallelSlice, task_size::task_chunk_len},
 };

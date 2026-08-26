@@ -5,10 +5,10 @@
 
 use std::{marker::PhantomData, mem::MaybeUninit};
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_field::PackedField;
 use binius_math::FieldBuffer;
-use binius_utils::{buffer::VecLike, checked_arithmetics::log2_ceil_usize};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 /// A field buffer under construction, filled in two stages.
 ///

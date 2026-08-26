@@ -2,16 +2,13 @@
 
 //! The materialized layers of a fractional-addition circuit, and the driver that proves them.
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::fracaddcheck::FracAddEvalClaim;
 use binius_math::{FieldBuffer, FieldVec, multilinear::hypercube::Hypercube};
-use binius_utils::{
-	buffer::VecLike,
-	rayon::{
-		iter::{IntoParallelIterator, ParallelIterator},
-		task_size::{IndexedParallelIteratorExt, WorkPerItem},
-	},
+use binius_utils::rayon::{
+	iter::{IntoParallelIterator, ParallelIterator},
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
 
 use super::{LayerProver, fraction::Fraction};

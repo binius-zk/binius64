@@ -3,11 +3,11 @@
 
 use std::{iter, ops::Deref};
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::fri::FRIParams;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
-use binius_utils::{buffer::VecLike, rand::par_rand, rayon::prelude::*};
+use binius_utils::{rand::par_rand, rayon::prelude::*};
 use rand::{CryptoRng, rngs::StdRng};
 
 /// Reed-Solomon encodes one input oracle's interleaved message.
