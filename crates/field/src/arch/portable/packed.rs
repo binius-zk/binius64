@@ -72,7 +72,7 @@ impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField>
 {
 	#[inline]
 	pub fn broadcast(scalar: Scalar) -> Self {
-		U::broadcast_subvalue(scalar.to_underlier()).into()
+		<U as Divisible<_>>::broadcast(scalar.to_underlier()).into()
 	}
 }
 

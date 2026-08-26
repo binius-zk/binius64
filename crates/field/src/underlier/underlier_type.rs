@@ -67,17 +67,6 @@ pub trait UnderlierType:
 	{
 		Self::from_iter((0..<Self as Divisible<T>>::N).map(f))
 	}
-
-	/// Broadcast subvalue to fill `Self`.
-	/// `Self::BITS/T::BITS` is supposed to be a power of 2.
-	#[inline]
-	fn broadcast_subvalue<T>(value: T) -> Self
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		Divisible::<T>::broadcast(value)
-	}
 }
 
 /// A type that is transparently backed by an underlier.

@@ -83,7 +83,7 @@ const POLY: u128 = 0x87;
 /// Performs reduction step: returns t0 + x^64 * t1
 #[inline]
 fn gf2_128_reduce<U: ClMulUnderlier>(mut t0: U, t1: U) -> U {
-	let poly = <U as UnderlierType>::broadcast_subvalue(POLY);
+	let poly = <U as Divisible<u128>>::broadcast(POLY);
 
 	// t0 = t0 XOR (t1 << 64)
 	// In SIMD, left shift by 64 bits is shifting by 8 bytes
@@ -98,7 +98,7 @@ fn gf2_128_reduce<U: ClMulUnderlier>(mut t0: U, t1: U) -> U {
 
 /// Returns a `x^64 * t` after reduction.
 fn gf2_128_shift_reduce<U: ClMulUnderlier>(t: U) -> U {
-	let poly = <U as UnderlierType>::broadcast_subvalue(POLY);
+	let poly = <U as Divisible<u128>>::broadcast(POLY);
 	let mut result = U::move_64_to_hi(t);
 
 	result ^= U::clmulepi64::<0x01>(t, poly);
