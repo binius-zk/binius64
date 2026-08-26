@@ -8,7 +8,7 @@ use std::{
 
 use binius_field::{ExtensionField, Field, field::FieldOps};
 
-use crate::inner_product::inner_product_scalars;
+use crate::inner_product::inner_product;
 
 /// An element of the tensor algebra defined as the tensor product of `FE` and `FE` as fields.
 ///
@@ -100,7 +100,7 @@ where
 	///
 	/// * `coeffs` must have length $2^\kappa$
 	pub fn fold_vertical(self, coeffs: &[FE]) -> FE {
-		inner_product_scalars(self.transpose().elems, coeffs.iter().cloned())
+		inner_product(self.transpose().elems, coeffs.iter().cloned())
 	}
 }
 

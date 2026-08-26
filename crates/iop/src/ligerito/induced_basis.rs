@@ -58,7 +58,7 @@ use binius_field::{
 };
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::{
-	inner_product::inner_product_scalars,
+	inner_product::inner_product,
 	ntt::{DomainContext, subspace_polys::evals_at_domain_index},
 };
 
@@ -236,7 +236,7 @@ impl<F: FieldOps> InducedBasis<F> {
 				})
 				.product::<F>()
 		});
-		inner_product_scalars(self.batching.iter().cloned(), terms)
+		inner_product(self.batching.iter().cloned(), terms)
 	}
 
 	/// Binds the top `challenges.len()` variables, giving the basis of the folded message.
@@ -337,7 +337,7 @@ impl<F: FieldOps> InducedBasis<F> {
 				.pop()
 				.expect("folding n_vars times leaves exactly one element")
 		});
-		inner_product_scalars(self.batching.iter().cloned(), rows)
+		inner_product(self.batching.iter().cloned(), rows)
 	}
 
 	/// The dense weight vector, `2^n_vars` entries.
@@ -374,7 +374,7 @@ impl<F: FieldOps> InducedBasis<F> {
 			self.n_rows(),
 			"precondition: row_values must have one entry per opened row"
 		);
-		inner_product_scalars(self.batching.iter().cloned(), row_values.iter().cloned())
+		inner_product(self.batching.iter().cloned(), row_values.iter().cloned())
 	}
 }
 
@@ -428,8 +428,7 @@ mod tests {
 					.iter()
 					.map(|&index| codeword.as_ref()[index])
 					.collect::<Vec<_>>();
-				let paired =
-					inner_product_scalars(basis.to_dense(), message.as_ref().iter().copied());
+				let paired = inner_product(basis.to_dense(), message.as_ref().iter().copied());
 				assert_eq!(
 					paired,
 					basis.enforced_sum(&opened),
@@ -461,7 +460,7 @@ mod tests {
 		for index in 0..1 << code.log_len() {
 			let basis =
 				InducedBasis::new(&domain(log_dim, log_inv_rate), log_dim, &[index], B128::ZERO);
-			let paired = inner_product_scalars(basis.to_dense(), message.as_ref().iter().copied());
+			let paired = inner_product(basis.to_dense(), message.as_ref().iter().copied());
 			assert_eq!(paired, codeword.as_ref()[index], "index={index}");
 		}
 	}
