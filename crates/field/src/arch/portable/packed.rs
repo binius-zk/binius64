@@ -30,7 +30,7 @@ use crate::{
 	BinaryField, Divisible, ExtensionField, Field, Maskable, PackedField, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
-	underlier::{UnderlierType, WithUnderlier},
+	underlier::{U1, UnderlierType, WithUnderlier},
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Default, bytemuck::TransparentWrapper)]
@@ -72,7 +72,7 @@ impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField>
 {
 	#[inline]
 	pub fn broadcast(scalar: Scalar) -> Self {
-		U::broadcast_subvalue(scalar.to_underlier()).into()
+		<U as Divisible<_>>::broadcast(scalar.to_underlier()).into()
 	}
 }
 
@@ -511,11 +511,10 @@ where
 	#[inline]
 	fn make_mask(selectors: impl Iterator<Item = bool>) -> U {
 		// Build a per-lane all-ones/all-zeros sub-underlier for each scalar slot and pack into U.
-		// A selected lane produces fill_with_bit(1) (every bit set); unselected gives ZERO.
 		U::from_iter(
 			selectors
 				.take(Self::N)
-				.map(|selected| Scalar::Underlier::fill_with_bit(u8::from(selected))),
+				.map(|selected| Scalar::Underlier::broadcast(U1::from(selected))),
 		)
 	}
 

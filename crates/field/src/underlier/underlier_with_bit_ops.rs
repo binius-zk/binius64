@@ -62,23 +62,23 @@ mod tests {
 	}
 
 	#[test]
-	fn test_broadcast_subvalue() {
-		assert_eq!(u32::broadcast_subvalue(U1::new(0)), 0);
-		assert_eq!(u32::broadcast_subvalue(U1::new(1)), u32::MAX);
+	fn test_broadcast() {
+		assert_eq!(<u32 as Divisible<U1>>::broadcast(U1::new(0)), 0);
+		assert_eq!(<u32 as Divisible<U1>>::broadcast(U1::new(1)), u32::MAX);
 
-		assert_eq!(u32::broadcast_subvalue(U2::new(0)), 0);
-		assert_eq!(u32::broadcast_subvalue(U2::new(1)), 0x55555555);
-		assert_eq!(u32::broadcast_subvalue(U2::new(2)), 0xaaaaaaaa);
-		assert_eq!(u32::broadcast_subvalue(U2::new(3)), u32::MAX);
+		assert_eq!(<u32 as Divisible<U2>>::broadcast(U2::new(0)), 0);
+		assert_eq!(<u32 as Divisible<U2>>::broadcast(U2::new(1)), 0x55555555);
+		assert_eq!(<u32 as Divisible<U2>>::broadcast(U2::new(2)), 0xaaaaaaaa);
+		assert_eq!(<u32 as Divisible<U2>>::broadcast(U2::new(3)), u32::MAX);
 
-		assert_eq!(u32::broadcast_subvalue(U4::new(0)), 0);
-		assert_eq!(u32::broadcast_subvalue(U4::new(1)), 0x11111111);
-		assert_eq!(u32::broadcast_subvalue(U4::new(8)), 0x88888888);
-		assert_eq!(u32::broadcast_subvalue(U4::new(31)), 0xffffffff);
+		assert_eq!(<u32 as Divisible<U4>>::broadcast(U4::new(0)), 0);
+		assert_eq!(<u32 as Divisible<U4>>::broadcast(U4::new(1)), 0x11111111);
+		assert_eq!(<u32 as Divisible<U4>>::broadcast(U4::new(8)), 0x88888888);
+		assert_eq!(<u32 as Divisible<U4>>::broadcast(U4::new(31)), 0xffffffff);
 
-		assert_eq!(u32::broadcast_subvalue(0u8), 0);
-		assert_eq!(u32::broadcast_subvalue(0xabu8), 0xabababab);
-		assert_eq!(u32::broadcast_subvalue(255u8), 0xffffffff);
+		assert_eq!(<u32 as Divisible<u8>>::broadcast(0u8), 0);
+		assert_eq!(<u32 as Divisible<u8>>::broadcast(0xabu8), 0xabababab);
+		assert_eq!(<u32 as Divisible<u8>>::broadcast(255u8), 0xffffffff);
 	}
 
 	#[test]

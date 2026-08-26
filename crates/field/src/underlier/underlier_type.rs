@@ -45,12 +45,6 @@ pub trait UnderlierType:
 	const ONE: Self;
 	const ONES: Self;
 
-	/// Fill value with the given bit
-	/// `val` must be 0 or 1.
-	fn fill_with_bit(val: u8) -> Self {
-		Self::broadcast_subvalue(U1::new(val))
-	}
-
 	/// Interleave with the given bit size
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self);
 
@@ -72,17 +66,6 @@ pub trait UnderlierType:
 		Self: Divisible<T>,
 	{
 		Self::from_iter((0..<Self as Divisible<T>>::N).map(f))
-	}
-
-	/// Broadcast subvalue to fill `Self`.
-	/// `Self::BITS/T::BITS` is supposed to be a power of 2.
-	#[inline]
-	fn broadcast_subvalue<T>(value: T) -> Self
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		Divisible::<T>::broadcast(value)
 	}
 }
 
