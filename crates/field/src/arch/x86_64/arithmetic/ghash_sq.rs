@@ -14,8 +14,8 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	Divisible, Ghash128b, PackedBinaryGhash2x128b, PackedGhashSq1x256b, WideMul,
-	packed_extension::PackedExtension, packed_ghash_sq::ghash_sq_from_coords,
+	Divisible, Ghash128b, PackedBinaryGhash2x128b, PackedGhashSq1x256b, WideMul, packed_extension,
+	packed_ghash_sq::ghash_sq_from_coords,
 };
 
 /// The two unreduced GHASH products `[a·e, b·f]` batched into one packed widening multiply.
@@ -96,8 +96,8 @@ impl WideMul for GhashSqHybridWideMul<PackedGhashSq1x256b> {
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
 		// The GHASH² coordinates already sit in the two 128-bit lanes of the 256-bit value, so
 		// viewing an operand as a packed GHASH pair is a free reinterpretation.
-		let a = PackedExtension::<Ghash128b>::cast_base(Self::peel(a));
-		let b = PackedExtension::<Ghash128b>::cast_base(Self::peel(b));
+		let a = packed_extension::cast_base::<Ghash128b, _>(Self::peel(a));
+		let b = packed_extension::cast_base::<Ghash128b, _>(Self::peel(b));
 
 		WideGhashSqProduct {
 			// Diagonal `[a·e, b·f]` as one two-lane packed widening multiply.

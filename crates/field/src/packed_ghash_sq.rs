@@ -38,7 +38,7 @@ use crate::{
 		portable::packed_macros::{portable_macros::*, *},
 	},
 	arithmetic_traits::{InvertOrZero, Square},
-	packed_extension::PackedExtension,
+	packed_extension,
 	sliced_packed_field::SlicedPackedField,
 	underlier::{UnderlierType, WithUnderlier},
 };
@@ -236,14 +236,14 @@ where
 /// reinterpretation followed by two lane reads.
 #[inline]
 pub(crate) fn ghash_sq_coords(elem: PackedGhashSq1x256b) -> [Ghash128b; 2] {
-	let coords = PackedExtension::<Ghash128b>::cast_base(elem);
+	let coords = packed_extension::cast_base::<Ghash128b, _>(elem);
 	[coords.get(0), coords.get(1)]
 }
 
 /// Assembles a width-one GHASH² element `a + b·Y` from its GHASH coordinates `[a, b]`.
 #[inline]
 pub(crate) fn ghash_sq_from_coords(coords: [Ghash128b; 2]) -> PackedGhashSq1x256b {
-	PackedExtension::<Ghash128b>::cast_ext(PackedBinaryGhash2x128b::from_scalars(coords))
+	packed_extension::cast_ext::<Ghash128b, _>(PackedBinaryGhash2x128b::from_scalars(coords))
 }
 
 /// [`Square`] strategy for [`PackedGhashSq1x256b`].
@@ -255,7 +255,7 @@ impl Square for GhashSqSquare<PackedGhashSq1x256b> {
 	/// `(a + b·Y)² = (a² + X·b²) + (X·b²)·Y` — the cross term vanishes in characteristic two.
 	#[inline]
 	fn square(self) -> Self {
-		let sq = Square::square(PackedExtension::<Ghash128b>::cast_base(Self::peel(self)));
+		let sq = Square::square(packed_extension::cast_base::<Ghash128b, _>(Self::peel(self)));
 
 		let x_t2 = sq.get(1).mul_x();
 		Self::wrap(ghash_sq_from_coords([sq.get(0) + x_t2, x_t2]))

@@ -6,11 +6,12 @@ use std::{array, iter, ops::Deref};
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{
-	ExtensionField, PackedExtension, PackedField,
+	ExtensionField, PackedField,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, InputWrappingTransformationFactory,
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
 	},
+	packed_extension,
 };
 use binius_ip_prover::{
 	channel::IPProverChannel,
@@ -138,7 +139,7 @@ where
 					iter::repeat_with(|| {
 						array::from_fn(|_| {
 							rows.next()
-								.map(PackedExtension::<B1>::cast_base)
+								.map(packed_extension::cast_base::<B1, _>)
 								.unwrap_or_default()
 						})
 					})
@@ -394,7 +395,7 @@ mod test {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		ExtensionField, Field, Ghash128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-		PackedExtension, PackedField, PackedSubfield,
+		PackedField, PackedSubfield, packed_extension,
 	};
 	use binius_math::{
 		FieldBuffer,
@@ -593,7 +594,7 @@ mod test {
 			bit_matrix
 				.as_ref()
 				.iter()
-				.map(|&bits_packed| <P as PackedExtension<B1>>::cast_ext(bits_packed))
+				.map(|&bits_packed| packed_extension::cast_ext::<B1, P>(bits_packed))
 				.collect(),
 		);
 		let (eq_lo, eq_hi) = expand_tensor_factors(suffix);
