@@ -321,6 +321,10 @@ where
 	}
 
 	fn sample_bits(&mut self, bits: usize) -> Self::Word {
+		// A sampled word is a challenge like any other.
+		//
+		// So this round's commitment must be absorbed before it is drawn.
+		self.flush();
 		self.inner.sample_bits(bits)
 	}
 }

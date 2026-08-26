@@ -308,6 +308,11 @@ where
 	}
 
 	fn sample_bits(&mut self, bits: usize) -> Self::Word {
+		// A sampled word is a challenge like any other.
+		//
+		// So this round's commitment must be absorbed before it is drawn.
+		// A flush failure has nowhere to go here, and stays queued for a call that can return one.
+		let _ = self.flush();
 		self.inner.sample_bits(bits)
 	}
 
@@ -498,6 +503,28 @@ mod tests {
 		// The combined oracle must not be zero-knowledge either.
 		let coarse = record_rounds(&[&[5, 3]], false);
 		assert_eq!(coarse, vec![OracleSpec::new(6)]);
+	}
+
+	#[test]
+	fn sampling_bits_closes_the_round() {
+		// A word sampled from the transcript is a challenge like any other.
+		//
+		// So the round before it must already be committed.
+		// Otherwise its oracles would leak into the next round's commitment.
+		let fine_specs = [OracleSpec::new(3), OracleSpec::new(3), OracleSpec::new(1)];
+		let mut channel = MergeVerifierChannel::new(OracleSetupChannel::new(false), &fine_specs);
+
+		// Two oracles, then a sampled word closes their round.
+		channel.recv_oracle(3, true).unwrap();
+		channel.recv_oracle(3, true).unwrap();
+		WordIPVerifierChannel::<F>::sample_bits(&mut channel, 4);
+
+		// The third oracle therefore belongs to a round of its own.
+		channel.recv_oracle(1, true).unwrap();
+
+		// 2^3 + 2^3 = 2^4 for the first round, then 2^1 alone.
+		let coarse = channel.into_inner().unwrap().into_oracle_specs();
+		assert_eq!(coarse, vec![OracleSpec::new(4), OracleSpec::new(1)]);
 	}
 
 	#[test]
