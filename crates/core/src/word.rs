@@ -10,7 +10,7 @@ use binius_utils::{
 	checked_arithmetics::checked_log_2,
 	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
 };
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{Pod, TransparentWrapper, Zeroable};
 use bytes::{Buf, BufMut};
 
 /// [`Word`] is 64-bit value and is a fundamental unit of data in Binius64. All computation and
@@ -18,7 +18,7 @@ use bytes::{Buf, BufMut};
 ///
 /// The transparent layout matches the inner 64-bit integer exactly.
 /// That lets slices of words be reinterpreted as raw bytes, and back, for zero-copy bulk copies.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Pod, Zeroable, TransparentWrapper)]
 #[repr(transparent)]
 pub struct Word(pub u64);
 
@@ -364,8 +364,7 @@ impl SerializeBytes for Word {
 	}
 
 	fn serialize_slice(slice: &[Self], write_buf: impl BufMut) -> Result<(), SerializationError> {
-		// `Word` is `#[repr(transparent)]` over `u64`, so the cast is a no-op reinterpretation.
-		u64::serialize_slice(bytemuck::cast_slice(slice), write_buf)
+		u64::serialize_slice(Self::peel_slice(slice), write_buf)
 	}
 }
 
