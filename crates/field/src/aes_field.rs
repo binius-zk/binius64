@@ -9,10 +9,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 
-use super::{
-	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
-	mul_by_binary_field_1b,
-};
+use super::binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension};
 use crate::{ExtensionField, Field, underlier::U1};
 
 // These fields represent a tower based on AES GF(2^8) field (GF(256)/x^8+x^4+x^3+x+1)
@@ -94,8 +91,6 @@ const AES_LOG_TABLE: [u8; 256] = [
 unsafe impl Pod for AESTowerField8b {}
 
 impl_field_extension!(BinaryField1b(U1) < @3 => AESTowerField8b(u8));
-
-mul_by_binary_field_1b!(AESTowerField8b);
 
 #[cfg(test)]
 mod tests {

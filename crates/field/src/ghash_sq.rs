@@ -29,9 +29,8 @@ use super::{
 	extension::ExtensionField,
 };
 use crate::{
-	Divisible, Field, Ghash128b, PackedBinaryGhash2x128b, PackedField,
+	Field, Ghash128b,
 	arch::{M128, M256, m256_from_u128s},
-	mul_by_binary_field_1b,
 	underlier::U1,
 };
 
@@ -48,23 +47,6 @@ binary_field!(pub GhashSq256b(M256), m256_from_u128s(0, 1), m256_from_u128s(0, 1
 
 unsafe impl Pod for GhashSq256b {}
 
-impl GhashSq256b {
-	/// Splits the element into its `(a, b)` coefficients over GHASH, where `self = a + b·Y`.
-	#[inline]
-	fn to_coeffs(self) -> [Ghash128b; 2] {
-		// `GhashSq256b` and `PackedBinaryGhash2x128b` share the `M256` underlier and lane layout
-		// (low lane = coefficient of `1`, high lane = coefficient of `Y`), so this reinterprets.
-		let packed = PackedBinaryGhash2x128b::from_underlier(self.0);
-		[packed.get(0), packed.get(1)]
-	}
-
-	/// Builds an element from its `(a, b)` coefficients over GHASH, so that `self = a + b·Y`.
-	#[inline]
-	fn from_coeffs(coeffs: [Ghash128b; 2]) -> Self {
-		Self(PackedBinaryGhash2x128b::from_scalars(coeffs).to_underlier())
-	}
-}
-
 // Degree-two extension over GHASH: the low 128 bits are the coefficient of `1`, the high 128 bits
 // the coefficient of `Y`. `square_transpose` uses the packed fast path via
 // `PackedBinaryGhash2x128b`.
@@ -73,26 +55,34 @@ impl_field_extension!(Ghash128b(M128) < @1 => GhashSq256b(M256));
 // Extension over GF(2): the 256 underlier bits are the coordinates in the `BinaryField1b` basis.
 impl_field_extension!(BinaryField1b(U1) < @8 => GhashSq256b(M256));
 
-mul_by_binary_field_1b!(GhashSq256b);
-
-// Scalar multiplication by a GHASH subfield element scales both extension coordinates.
-impl Mul<Ghash128b> for GhashSq256b {
-	type Output = Self;
-
-	#[inline]
-	fn mul(self, rhs: Ghash128b) -> Self::Output {
-		let [a, b] = self.to_coeffs();
-		Self::from_coeffs([a * rhs, b * rhs])
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes, SerializeBytes};
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::arithmetic_traits::{InvertOrZero, Square, WideMul};
+	use crate::{
+		Divisible, PackedBinaryGhash2x128b, PackedField,
+		arithmetic_traits::{InvertOrZero, Square, WideMul},
+	};
+
+	impl GhashSq256b {
+		/// Splits the element into its `(a, b)` coefficients over GHASH, where `self = a + b·Y`.
+		#[inline]
+		fn to_coeffs(self) -> [Ghash128b; 2] {
+			// `GhashSq256b` and `PackedBinaryGhash2x128b` share the `M256` underlier and lane
+			// layout (low lane = coefficient of `1`, high lane = coefficient of `Y`), so this
+			// reinterprets.
+			let packed = PackedBinaryGhash2x128b::from_underlier(self.0);
+			[packed.get(0), packed.get(1)]
+		}
+
+		/// Builds an element from its `(a, b)` coefficients over GHASH, so that `self = a + b·Y`.
+		#[inline]
+		fn from_coeffs(coeffs: [Ghash128b; 2]) -> Self {
+			Self(PackedBinaryGhash2x128b::from_scalars(coeffs).to_underlier())
+		}
+	}
 
 	/// `X`, the generator of the GHASH field in the standard polynomial basis.
 	const GHASH_X: u128 = 0x02;
@@ -233,6 +223,17 @@ mod tests {
 		#[test]
 		fn test_mul_identity(a in arb_elem()) {
 			prop_assert_eq!(a * GhashSq256b::ONE, a);
+		}
+
+		#[test]
+		fn test_subfield_scalar_mul(a in arb_elem(), scalar in any::<u128>()) {
+			// `impl_field_extension!` derives `Mul<Ghash128b> for GhashSq256b` from the
+			// underlier's packing; it must agree with multiplying by the embedded full-field
+			// element, and with scaling each GHASH coordinate independently.
+			let scalar = Ghash128b::new(scalar);
+			prop_assert_eq!(a * scalar, a * GhashSq256b::from(scalar));
+			let [x, y] = a.to_coeffs();
+			prop_assert_eq!(a * scalar, GhashSq256b::from_coeffs([x * scalar, y * scalar]));
 		}
 
 		#[test]
