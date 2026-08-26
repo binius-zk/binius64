@@ -90,4 +90,3 @@ harness = false
 
 [features]
 default = []
-rayon = ["binius-utils/rayon"]

@@ -245,7 +245,7 @@ class CoverageRunner:
                                 # Check if this is a local file (no crate prefix)
                                 has_crate_prefix = any(prefix in filename for prefix in
                                                      ['field/', 'frontend/', 'prover/', 'transcript/',
-                                                      'utils/', 'verifier/', 'maybe-rayon/'])
+                                                      'utils/', 'verifier/'])
                                 if has_crate_prefix:
                                     continue  # Skip files from other crates
 

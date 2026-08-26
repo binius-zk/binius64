@@ -38,4 +38,3 @@ smallvec.workspace = true
 
 [features]
 default = []
-rayon = ["binius-utils/rayon"]

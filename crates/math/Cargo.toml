@@ -27,7 +27,6 @@ rstest.workspace = true
 [features]
 default = []
 test-utils = []
-rayon = ["binius-utils/rayon"]
 
 [lib]
 bench = false
