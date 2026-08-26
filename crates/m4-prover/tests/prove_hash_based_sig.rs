@@ -18,12 +18,13 @@
 //! `--ignored` to run. Run it `--release` as well: an unoptimized prover over this circuit is
 //! slower by orders of magnitude.
 //!
-//! Run it with the timing tree. Signing, witness generation and proving all parallelize behind the
-//! `rayon` feature, so pass it or read single-threaded times:
+//! Run it with the timing tree. Signing, witness generation and proving all parallelize across
+//! Rayon's worker threads by default; set `RAYON_NUM_THREADS=1` to read single-threaded times
+//! instead:
 //!
 //! ```text
 //! RUST_LOG=debug cargo test --release -p binius-m4-prover --test prove_hash_based_sig \
-//!     --features rayon -- --ignored --nocapture
+//!     -- --ignored --nocapture
 //! ```
 
 use binius_circuits::hash_based_sig::{

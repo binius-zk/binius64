@@ -65,9 +65,16 @@ witness bounded by that capacity:
 $ RUSTFLAGS="-Ctarget-cpu=native" cargo run --release --example sha512 prove --max-message-len 131072
 ```
 
-### Enabling multithreading
+### Controlling parallelism
 
-Multithreading using [Rayon](https://github.com/rayon-rs/rayon) is available, but it is disabled by default. This is controlled by the `rayon` Cargo feature. To run an example with multithreading enabled, use `--features rayon`.
+Binius64 uses [Rayon](https://github.com/rayon-rs/rayon) for multithreading and it is always enabled. By default, Rayon uses one worker thread per available CPU core. To pin the number of threads, set the `RAYON_NUM_THREADS` environment variable, or use `taskset` to restrict which CPUs the process can run on:
+
+```bash
+$ RAYON_NUM_THREADS=4 cargo run --release --example sha512 prove --message-len 65536
+$ taskset -c 0-3 cargo run --release --example sha512 prove --message-len 65536
+```
+
+Setting `RAYON_NUM_THREADS=1` runs the proof single-threaded, on the calling thread rather than a spawned worker, which keeps call stacks free of worker frames for profiling and debugging.
 
 ## Development
 
