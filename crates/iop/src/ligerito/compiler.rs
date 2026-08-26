@@ -336,12 +336,21 @@ mod tests {
 		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
 		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
 			.expect("120 bits is reachable with a constant loss");
-		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
-				.expect("a 120-bit ladder exists for one message");
+		// The target sits just under this regime's ceiling, so the ceiling is what binds and the
+		// batch's wider row union is visible in the total. At the shipped 96-bit target the rows
+		// bind instead, and batching costs nothing worth refusing.
+		let (params, _) = LigeritoParams::optimal_ladder::<B128, _>(
+			&scheme,
+			24,
+			1,
+			regime,
+			119,
+			Grinding::new(2, 0),
+		)
+		.expect("a 119-bit ladder exists for one message");
 
-		// One oracle clears 120, so the shortfall below is caused by the batch and nothing else.
-		assert!(params.achieved_security_bits(128) >= 120.0);
+		// One oracle clears 119, so the shortfall below is caused by the batch and nothing else.
+		assert!(params.achieved_security_bits(128) >= 119.0);
 
 		let spec = OracleSpec::new(params.log_msg_len());
 		LigeritoVerifierCompiler::<B128>::new(vec![spec, spec], params);

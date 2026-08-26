@@ -3,14 +3,17 @@
 //! Soundness accounting for Reed-Solomon proximity tests.
 //!
 //! A proximity test bounds the chance that a word far from the code survives.
-//! Two independent terms bound it, and the protocol's security is the worse of the two.
+//! Two independent terms bound it, and a cheating prover wins by beating either one.
 //!
 //! ```text
-//!     bits    = min(algebra, queries)
+//!     bits    = union_bits([algebra, queries])
 //!
 //!     algebra = -log2(eps_ca)                + challenge_grind   <- code, field, proof of work
 //!     queries = -n_queries * log2(1 - delta) + query_grind       <- one query at a time
 //! ```
+//!
+//! The two are combined by [`union_bits`], not by taking the smaller.
+//! Independent chances to cheat add up, so a pair of 96-bit terms is 95 bits, not 96.
 //!
 //! The right-hand term is the one everybody counts.
 //! Sampling `n_queries` positions catches a `delta`-far word all but `(1 - delta)^n_queries` of the
@@ -111,6 +114,36 @@
 use binius_transcript::MAX_GRINDING_BITS;
 
 use crate::fri::calculate_n_test_queries;
+
+/// Combines independent soundness errors, each given in bits, into the bits their union reaches.
+///
+/// A cheating prover wins if *any* one of the events fires, so their probabilities add.
+/// Adding probabilities is not the same as keeping the smallest bit count:
+///
+/// ```text
+///     union_bits([b_0, b_1, ...]) = -log2( sum_i 2^-b_i )
+/// ```
+///
+/// The result never exceeds the smallest term, and never falls more than `log2(n)` below it.
+/// A term of infinity is an event that cannot fire, and drops out.
+/// An empty iterator has nothing to go wrong, so it returns infinity.
+pub fn union_bits(terms: impl IntoIterator<Item = f64>) -> f64 {
+	let total = terms.into_iter().map(|bits| (-bits).exp2()).sum::<f64>();
+	-total.log2()
+}
+
+/// The bits of soundness an error of `count / |F|` reaches over a field of that size.
+///
+/// This is the shape every Schwartz-Zippel and linear-batching term takes.
+/// A `count` of zero is a step that draws no challenge, so nothing about it can go wrong.
+/// It returns infinity, which [`union_bits`] then ignores.
+pub fn ratio_bits(count: f64, log_field_size: usize) -> f64 {
+	if count <= 0.0 {
+		f64::INFINITY
+	} else {
+		log_field_size as f64 - count.log2()
+	}
+}
 
 /// Proof-of-work bits ground into a transcript, split by the term each one buys back.
 ///
@@ -346,10 +379,11 @@ impl SoundnessRegime {
 		log_field_size as f64 - exceptional.log2()
 	}
 
-	/// The security a configuration actually reaches: the worse of its two terms.
+	/// The security a configuration actually reaches, counting both of its terms.
 	///
 	/// See the module documentation for what the two terms are, and why only one of them responds
 	/// to `n_queries`.
+	/// They are independent chances to cheat, so [`union_bits`] adds them instead of keeping one.
 	///
 	/// # Panics
 	/// Those of [`Self::proximity_parameter`].
@@ -365,14 +399,21 @@ impl SoundnessRegime {
 			+ grinding.challenge_bits() as f64;
 		let queries =
 			n_queries as f64 * self.bits_per_query(log_inv_rate) + grinding.query_bits() as f64;
-		algebra.min(queries)
+		union_bits([algebra, queries])
 	}
 
-	/// The smallest query count reaching `security_bits`, or `None` if the algebra caps below it.
+	/// The smallest query count whose [`Self::achieved_security_bits`] reaches `security_bits`.
+	///
+	/// The two terms add, so the rows do not have the whole target to themselves.
+	/// What is left for them is whatever error budget the algebra has not already spent:
+	///
+	/// ```text
+	///     budget = 2^-security_bits - 2^-algebra
+	/// ```
 	///
 	/// A `None` is not a parameter that needs more queries.
-	/// It is a configuration that cannot reach the target at all, because
-	/// [`Self::correlated_agreement_bits`] plus `grinding`'s challenge side is still under it.
+	/// It is a configuration no query count reaches, because the algebra alone spent the budget.
+	/// That happens once the algebraic term sits at or below the target.
 	/// Widen the field, grind harder, or lower the target.
 	///
 	/// Grinding past `security_bits` on the query side returns zero queries.
@@ -390,11 +431,14 @@ impl SoundnessRegime {
 	) -> Option<usize> {
 		let algebra = self.correlated_agreement_bits(log_msg_len, log_inv_rate, log_field_size)
 			+ grinding.challenge_bits() as f64;
-		if algebra < security_bits as f64 {
+		let budget = (-(security_bits as f64)).exp2() - (-algebra).exp2();
+		if budget <= 0.0 {
 			return None;
 		}
-		// Query grinding closes part of the target on its own, so the rows only cover the rest.
-		let from_queries = security_bits.saturating_sub(grinding.query_bits());
+		// Rounding the bit target up can only over-provision, which is the safe direction.
+		let from_queries = (-budget.log2()).ceil() as usize;
+		// Query grinding closes part of that on its own, so the rows only cover the rest.
+		let from_queries = from_queries.saturating_sub(grinding.query_bits());
 		Some(self.n_queries(from_queries, log_inv_rate))
 	}
 
@@ -602,23 +646,26 @@ mod tests {
 				SoundnessRegime::UniqueDecoding.correlated_agreement_bits(log_msg_len, 1, B128);
 			assert!((ceiling - expected).abs() < 0.01, "log_msg_len={log_msg_len} {ceiling}");
 
-			// The query count clears the target, and the algebra clears it too, so 96 holds.
-			let queries = SoundnessRegime::UniqueDecoding.plan_queries(
-				96,
-				log_msg_len,
-				1,
-				B128,
-				Grinding::NONE,
-			);
-			assert_eq!(queries, Some(232));
+			// The rows cover the target minus whatever error the algebra has already spent, so
+			// the count creeps up as the ceiling closes in: 234 rows until 2^32, then 237.
+			let queries = SoundnessRegime::UniqueDecoding
+				.plan_queries(96, log_msg_len, 1, B128, Grinding::NONE)
+				.expect("96 bits is reachable at every size here");
+			assert_eq!(queries, if log_msg_len < 32 { 234 } else { 237 });
+
+			// Planning and reporting agree: a count planned for 96 bits reaches 96 bits.
 			let achieved = SoundnessRegime::UniqueDecoding.achieved_security_bits(
 				log_msg_len,
 				1,
 				B128,
-				232,
+				queries,
 				Grinding::NONE,
 			);
 			assert!(achieved >= 96.0, "log_msg_len={log_msg_len} achieved={achieved}");
+
+			// The bare query count is what the rows would cost if the algebra were free, and it
+			// is strictly cheaper. That gap is exactly what the union charges.
+			assert!(queries > SoundnessRegime::UniqueDecoding.n_queries(96, 1));
 		}
 	}
 
@@ -681,7 +728,7 @@ mod tests {
 			assert!((ceiling - 124.46).abs() < 0.01, "log_msg_len={log_msg_len} {ceiling}");
 		}
 
-		// 120 bits is reachable, at 292 queries, independent of the witness size. That is the
+		// 120 bits is reachable, at 298 queries, independent of the witness size. That is the
 		// target and regime the reference Ligerito implementation ships for its own
 		// conjecture-free profile, which is a useful outside check on this arithmetic.
 		for log_msg_len in [20, 24, 28, 32] {
@@ -689,7 +736,7 @@ mod tests {
 				SoundnessRegime::optimal_unique_decoding(120, log_msg_len, 1, B128)
 					.expect("120 bits is reachable with a constant loss");
 			assert!(matches!(regime, SoundnessRegime::UniqueDecodingWithLoss { .. }));
-			assert_eq!(queries, 292);
+			assert_eq!(queries, 298);
 		}
 	}
 
@@ -836,8 +883,8 @@ mod tests {
 		let ground = regime
 			.plan_queries(96, 24, 1, B128, Grinding::new(0, 17))
 			.expect("grinding does not make it unreachable");
-		assert_eq!(bare, 232);
-		assert_eq!(ground, 191);
+		assert_eq!(bare, 234);
+		assert_eq!(ground, 193);
 
 		// But it does not touch the ceiling, so an out-of-reach target stays out of reach.
 		let lossy = best_lossy();
@@ -854,7 +901,10 @@ mod tests {
 		let rows = regime
 			.plan_queries(96, 24, 1, B128, Grinding::new(17, 0))
 			.expect("96 bits is reachable");
-		assert_eq!(rows, regime.n_queries(96, 1));
+		let bare = regime
+			.plan_queries(96, 24, 1, B128, Grinding::NONE)
+			.expect("96 bits is reachable");
+		assert_eq!(rows, bare);
 
 		// And it shows up in the achieved figure exactly once, on the side it belongs to.
 		let queries = 1 << 30;
