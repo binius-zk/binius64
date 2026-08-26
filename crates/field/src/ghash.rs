@@ -384,7 +384,7 @@ impl From<AESTowerField8b> for Ghash128b {
 
 #[cfg(test)]
 mod tests {
-	use proptest::{collection::vec, prelude::any, proptest};
+	use proptest::{prelude::any, proptest};
 
 	use super::*;
 	use crate::{
