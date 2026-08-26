@@ -38,7 +38,7 @@ use crate::{
 	pcs_compiler::PcsProverCompiler,
 	protocols::{
 		binmul, intmul,
-		shift::{KeyCollection, OperatorClaims, OperatorData, ShiftOutput, ShiftProver},
+		shift::{self, KeyCollection, OperatorClaims, OperatorData, ShiftOutput},
 	},
 	ring_switch,
 };
@@ -289,7 +289,7 @@ impl IOPProver {
 				eval: _,
 			},
 			wiring_eval,
-		} = ShiftProver::<_, P, _>::new(&mut *channel, alloc).prove(
+		} = shift::prove::<_, P, _, _>(
 			&self.key_collection,
 			witness.public(),
 			witness.non_public(),
@@ -300,6 +300,8 @@ impl IOPProver {
 				binmul: binmul_claim,
 			},
 			&subspace,
+			&mut *channel,
+			alloc,
 		);
 		drop(shift_guard);
 

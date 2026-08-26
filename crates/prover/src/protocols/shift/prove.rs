@@ -1,8 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{cmp::max, marker::PhantomData};
-
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, util::powers};
@@ -11,17 +9,15 @@ use binius_math::{
 	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::hypercube::Hypercube,
 	univariate::EvaluationDomain,
 };
-use tracing::instrument;
 
 use super::{
 	SegmentWords,
-	claims::{OperatorClaims, PreparedOperatorClaims},
+	claims::OperatorClaims,
 	key_collection::KeyCollection,
-	phase_1::{Phase1Output, SparseShiftRows},
-	phase_2::{ShiftOutput, run_sumcheck},
+	phase_1::prove_phase_1,
+	phase_2::{ShiftOutput, prove_phase_2},
 	shift_ind::{ShiftChallengePoint, ShiftIndSumcheck},
 };
-use crate::fold_word::BitAxisFolder;
 
 /// One operation's operand evaluation claims, with the point they are claimed at.
 ///
@@ -119,247 +115,111 @@ impl<F: Field> PreparedOperatorData<F> {
 	}
 }
 
-/// Drives the shift protocol reduction, owning the prover channel and the allocator its
-/// intermediate buffers are drawn from.
+/// Proves the shift protocol reduction, collapsing every operation's claims into one.
 ///
-/// Every phase reads and writes the same channel and draws from the same allocator, carried
-/// here once rather than threaded through each phase's own argument list.
-pub struct ShiftProver<'a, 'alloc, A: Allocator, P, Channel> {
-	/// Ties the reduction's packed-field type to this struct, though it is never stored.
-	_p_marker: PhantomData<P>,
-	/// The channel the reduction's interactive rounds run over.
-	channel: &'a mut Channel,
-	/// The allocator the reduction's intermediate buffers are drawn from.
-	alloc: &'alloc A,
-}
-
-impl<'a, 'alloc, A: Allocator, P, Channel> ShiftProver<'a, 'alloc, A, P, Channel> {
-	/// Builds a prover over the given channel and allocator.
-	///
-	/// The packed field is not inferred from either argument, so callers usually need a
-	/// turbofish.
-	pub const fn new(channel: &'a mut Channel, alloc: &'alloc A) -> Self {
-		Self {
-			_p_marker: PhantomData,
-			channel,
-			alloc,
-		}
-	}
-}
-
-impl<'alloc, A, F, P, Channel> ShiftProver<'_, 'alloc, A, P, Channel>
+/// The result is a single multilinear evaluation claim on the witness.
+/// It is reached in five prover phases.
+/// A shifted value index names two shifts applied in sequence.
+/// The reduction peels them off from the output end inward:
+///
+/// 1. bind the outer shift slot, then the inner one, then the bit position within a word;
+/// 2. bind the bit index of the intermediate word, where the two shift indicators meet;
+/// 3. bind the output bit index the reduction's first factor attaches to;
+/// 4. reduce what is left to a witness evaluation, against the constraint-matrix multilinear.
+///
+/// # Arguments
+///
+/// - `key_collection`: the prover's key collection for the constraint system.
+/// - `public_words`: the constants followed by the inout values, as the circuit declares them.
+/// - `hidden_words`: the private values, as the circuit declares them.
+/// - `claims`: the operand evaluation claim of each operation.
+/// - `domain_subspace`: the univariate evaluation domain.
+/// - `channel`: the prover channel the interactive rounds run over.
+/// - `alloc`: the allocator the intermediate buffers are drawn from.
+///
+/// # Returns
+///
+/// The final challenges with the witness evaluation.
+/// Also the wiring multilinear's evaluation, for the caller to send.
+pub fn prove<F, P, Channel, A>(
+	key_collection: &KeyCollection,
+	public_words: &[Word],
+	hidden_words: &[Word],
+	claims: OperatorClaims<F>,
+	domain_subspace: &BinarySubspace<F>,
+	channel: &mut Channel,
+	alloc: &A,
+) -> ShiftOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	/// Proves the shift protocol reduction, collapsing every operation's claims into one.
-	///
-	/// The result is a single multilinear evaluation claim on the witness, reached in five
-	/// prover phases.
-	/// A shifted value index names two shifts applied in sequence, and the reduction peels
-	/// them off from the output end inward:
-	///
-	/// 1. bind the outer shift slot, then the inner one, then the bit position within a word;
-	/// 2. bind the bit index of the intermediate word, where the two shift indicators meet;
-	/// 3. bind the output bit index the reduction's first factor attaches to;
-	/// 4. reduce what is left to a witness evaluation, against the constraint-matrix multilinear.
-	///
-	/// # Arguments
-	///
-	/// - `key_collection`: the prover's key collection for the constraint system.
-	/// - `public_words`: the constants followed by the inout values, as the circuit declares them.
-	/// - `hidden_words`: the private values, as the circuit declares them.
-	/// - `claims`: the operand evaluation claim of each operation.
-	/// - `domain_subspace`: the univariate evaluation domain.
-	///
-	/// # Returns
-	///
-	/// The final challenges with the witness evaluation, and the wiring multilinear's
-	/// evaluation for the caller to send.
-	pub fn prove(
-		&mut self,
-		key_collection: &KeyCollection,
-		public_words: &[Word],
-		hidden_words: &[Word],
-		claims: OperatorClaims<F>,
-		domain_subspace: &BinarySubspace<F>,
-	) -> ShiftOutput<F> {
-		// The segments are passed as the circuit declares them, at whatever length that is.
-		// Neither phase needs them padded.
-		let words = SegmentWords {
-			public: public_words,
-			hidden: hidden_words,
-		};
+	// The segments are passed as the circuit declares them, at whatever length that is.
+	// Neither phase needs them padded.
+	let words = SegmentWords {
+		public: public_words,
+		hidden: hidden_words,
+	};
 
-		// One batching coefficient per operation, expanded along with its constraint point.
-		// SOUNDNESS: this must draw in the same order the verifier draws in.
-		let prepared = {
-			let _scope = tracing::debug_span!("Expand tensor queries").entered();
-			claims.prepare(|| self.channel.sample())
-		};
+	// One batching coefficient per operation, expanded along with its constraint point.
+	// SOUNDNESS: this must draw in the same order the verifier draws in.
+	let prepared = {
+		let _scope = tracing::debug_span!("Expand tensor queries").entered();
+		claims.prepare(|| channel.sample())
+	};
 
-		// The weights the reduction's first factor carries, one per bit position.
-		// Phase 1 and phase 3 both need them, so they are computed once here, drawn from the
-		// BitAnd claim.
-		let oblong_weights = domain_subspace.lagrange_evals_buffer(prepared.bitand.r_zhat_prime);
+	// The weights the reduction's first factor carries, one per bit position.
+	// Phase 1 and phase 3 both need them, so they are computed once here.
+	// All four operations share `r_zhat_prime`, so it is drawn from the BitAnd claim.
+	let oblong_weights = domain_subspace.lagrange_evals_buffer(prepared.bitand.r_zhat_prime);
 
-		// Phase 1: bind the shift variant, the shift amount, and the bit position.
-		let phase_1_output = self.phase1(key_collection, words, &prepared, oblong_weights.as_ref());
+	// Phase 1: bind the shift variant, the shift amount, and the bit position.
+	let phase_1_output = prove_phase_1::<_, P, _, _>(
+		key_collection,
+		words,
+		&prepared,
+		oblong_weights.as_ref(),
+		channel,
+		alloc,
+	);
 
-		// Phases 2 and 3 bind the two bit indices the shift indicators chain through: first
-		// the intermediate word's, then the reduction's first-factor output bit.
-		//
-		// Phase 2 runs against phase 1's leftover weights, carrying phase 1's evaluation as a
-		// constant.
-		let inner = ShiftIndSumcheck::<P, _>::new(
-			self.alloc,
-			&phase_1_output.psi,
-			&ShiftChallengePoint::new(&phase_1_output.r_j, &phase_1_output.inner),
-			phase_1_output.g_eval,
-		);
-		debug_assert_eq!(inner.beta(), phase_1_output.gamma);
-		let inner_output = inner.prove(self.channel, self.alloc);
+	// Phases 2 and 3 bind the two bit indices the shift indicators chain through.
+	// Phase 2 takes the intermediate word's, phase 3 the reduction's first-factor output bit.
+	//
+	// Phase 2 runs against phase 1's leftover weights, carrying its evaluation as a constant.
+	let inner = ShiftIndSumcheck::<P, _>::new(
+		alloc,
+		&phase_1_output.psi,
+		&ShiftChallengePoint::new(&phase_1_output.r_j, &phase_1_output.inner),
+		phase_1_output.g_eval,
+	);
+	debug_assert_eq!(inner.beta(), phase_1_output.gamma);
+	let inner_output = inner.prove(channel, alloc);
 
-		// Phase 3 runs against the reduction's first-factor weights, carrying what phase 2
-		// fixed.
-		// Its own weights evaluate to a factor the verifier recomputes independently, so no
-		// division is needed between phases.
-		let outer = ShiftIndSumcheck::<P, _>::new(
-			self.alloc,
-			oblong_weights.as_ref(),
-			&ShiftChallengePoint::new(&inner_output.point, &phase_1_output.outer),
-			inner_output.ind_eval * phase_1_output.g_eval,
-		);
-		debug_assert_eq!(outer.beta(), inner_output.eval);
-		let outer_output = outer.prove(self.channel, self.alloc);
+	// Phase 3 runs against the reduction's first-factor weights, carrying what phase 2 fixed.
+	// Its own weights evaluate to a factor the verifier recomputes independently.
+	// So no division is needed between phases.
+	let outer = ShiftIndSumcheck::<P, _>::new(
+		alloc,
+		oblong_weights.as_ref(),
+		&ShiftChallengePoint::new(&inner_output.point, &phase_1_output.outer),
+		inner_output.ind_eval * phase_1_output.g_eval,
+	);
+	debug_assert_eq!(outer.beta(), inner_output.eval);
+	let outer_output = outer.prove(channel, alloc);
 
-		// Phase 4 reduces to the final challenges and witness evaluation, against the
-		// constraint-matrix multilinear scaled by the three bit-index factors above.
-		self.phase2(
-			key_collection,
-			words,
-			&prepared,
-			phase_1_output,
-			outer_output.weights_eval * outer_output.ind_eval * inner_output.ind_eval,
-			outer_output.eval,
-		)
-	}
-
-	/// Proves the first phase of the shift reduction.
-	///
-	/// Builds the witness-and-batching multilinear for both segments, concatenates their
-	/// rows, and runs one sumcheck over their product with a weight table that is never
-	/// formed as a table.
-	///
-	/// # Arguments
-	///
-	/// - `oblong_weights`: the weights of the reduction's first factor, one per bit position,
-	///   pushed through both shift slots to build the weight table this phase's sumcheck runs
-	///   against.
-	#[instrument(skip_all, name = "prover_phase_1")]
-	fn phase1(
-		&mut self,
-		key_collection: &KeyCollection,
-		words: SegmentWords<'_>,
-		prepared: &PreparedOperatorClaims<F>,
-		oblong_weights: &[F],
-	) -> Phase1Output<F> {
-		// Accumulate the witness-and-batching rows of the public and hidden segments
-		// separately.
-		// The public words are the prefix of the value vector, and each segment's key ranges
-		// are relative to its own segment.
-		let public = key_collection
-			.public
-			.build_g::<_, P>(words.public, prepared);
-		let hidden = key_collection
-			.hidden
-			.build_g::<_, P>(words.hidden, prepared);
-		let g = SparseShiftRows::from_segments([
-			(&public, &key_collection.public.dense_shift_enc),
-			(&hidden, &key_collection.hidden.dense_shift_enc),
-		]);
-
-		g.run_phase_1_sumcheck(oblong_weights, prepared.batched_eval(), self.channel, self.alloc)
-	}
-
-	/// Proves the second phase of the shift protocol reduction.
-	///
-	/// Folds the value-vector words by the bit-position challenge, builds the
-	/// constraint-matrix multilinear's two segments, and runs a sumcheck between them with a
-	/// sparse first round over the segment selector.
-	///
-	/// # Arguments
-	///
-	/// - `key_collection`: the prover's key collection for the constraint system.
-	/// - `words`: the value-vector words.
-	/// - `prepared`: the prepared claim of each operation, indexed by the operation a key names.
-	/// - `phase_1_output`: the challenges and evaluation the first phase produced.
-	/// - `shift_ind_eval`: the scalar weighting every shift key, the product of the two indicator
-	///   evaluations the earlier bit-index phases reduced to.
-	/// - `epsilon`: the claim this phase's rounds prove.
-	///
-	/// # Returns
-	///
-	/// The combined challenges with the witness evaluation, and the wiring multilinear's
-	/// evaluation.
-	#[instrument(skip_all, name = "prove_phase_2")]
-	fn phase2(
-		&mut self,
-		key_collection: &KeyCollection,
-		words: SegmentWords<'_>,
-		prepared: &PreparedOperatorClaims<F>,
-		phase_1_output: Phase1Output<F>,
-		shift_ind_eval: F,
-		epsilon: F,
-	) -> ShiftOutput<F> {
-		let Phase1Output {
-			r_j,
-			inner,
-			outer,
-			psi: _,
-			gamma: _,
-			g_eval: _,
-		} = phase_1_output;
-
-		let r_j_tensor = Hypercube::One.expand(&r_j).build::<F>();
-
-		// Fold each segment separately.
-		// The combined witness is never materialized: each fold is zero-padded to enough
-		// variables to cover its own segment's length.
-		// Both columns fold against the same round tensor, so the tables are built once.
-		let folder = BitAxisFolder::new(r_j_tensor.as_ref());
-		let public_folded = folder.fold::<P, _>(self.alloc, words.public);
-		let hidden_folded = folder.fold::<P, _>(self.alloc, words.hidden);
-
-		let (public_monster, hidden_monster) = key_collection.build_monster_segments(
-			self.alloc,
-			prepared,
-			shift_ind_eval,
-			&inner,
-			&outer,
-		);
-
-		// Both halves of the sumcheck share one word-index space, spanning the wider of the
-		// two segments.
-		// The hidden segment is normally wider, but a system with more public words than
-		// private values inverts that, so the hidden half is zero-extended to match.
-		let log_segment_words = max(public_folded.log_len(), hidden_folded.log_len());
-		let hidden_folded = hidden_folded.zero_extend_in(self.alloc, log_segment_words);
-		let hidden_monster = hidden_monster.zero_extend_in(self.alloc, log_segment_words);
-
-		run_sumcheck(
-			&public_folded,
-			hidden_folded,
-			&public_monster,
-			hidden_monster,
-			shift_ind_eval,
-			words.public,
-			r_j,
-			epsilon,
-			self.channel,
-			self.alloc,
-		)
-	}
+	// Phase 4 reduces to the final challenges and witness evaluation.
+	// It runs against the constraint-matrix multilinear, scaled by the three factors above.
+	prove_phase_2::<_, P, _, _>(
+		key_collection,
+		words,
+		&prepared,
+		phase_1_output,
+		outer_output.weights_eval * outer_output.ind_eval * inner_output.ind_eval,
+		outer_output.eval,
+		channel,
+		alloc,
+	)
 }

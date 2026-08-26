@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::iter;
+use std::{cmp::max, iter};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -23,6 +23,97 @@ use binius_utils::{
 };
 use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
+
+use super::{
+	SegmentWords, claims::PreparedOperatorClaims, key_collection::KeyCollection,
+	phase_1::Phase1Output,
+};
+use crate::fold_word::BitAxisFolder;
+
+/// Proves the second phase of the shift protocol reduction.
+///
+/// Folds the value-vector words by the bit-position challenge.
+/// Builds the constraint-matrix multilinear's two segments.
+/// Then runs a sumcheck between them, with a sparse first round over the segment selector.
+///
+/// # Arguments
+///
+/// - `key_collection`: the prover's key collection for the constraint system.
+/// - `words`: the value-vector words.
+/// - `prepared`: the prepared claim of each operation, indexed by the operation a key names.
+/// - `phase_1_output`: the challenges and evaluation the first phase produced.
+/// - `shift_ind_eval`: the scalar weighting every shift key.
+/// - `epsilon`: the claim this phase's rounds prove.
+/// - `channel`: the prover channel the interactive rounds run over.
+/// - `alloc`: the allocator the intermediate buffers are drawn from.
+///
+/// `shift_ind_eval` is the product of the two indicator evaluations.
+/// Those are what the earlier bit-index phases reduced to.
+///
+/// # Returns
+///
+/// The combined challenges with the witness evaluation, and the wiring multilinear's evaluation.
+#[allow(clippy::too_many_arguments)]
+#[instrument(skip_all, name = "prove_phase_2")]
+pub fn prove_phase_2<F, P, Channel, A>(
+	key_collection: &KeyCollection,
+	words: SegmentWords<'_>,
+	prepared: &PreparedOperatorClaims<F>,
+	phase_1_output: Phase1Output<F>,
+	shift_ind_eval: F,
+	epsilon: F,
+	channel: &mut Channel,
+	alloc: &A,
+) -> ShiftOutput<F>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+	A: Allocator,
+{
+	let Phase1Output {
+		r_j,
+		inner,
+		outer,
+		psi: _,
+		gamma: _,
+		g_eval: _,
+	} = phase_1_output;
+
+	let r_j_tensor = Hypercube::One.expand(&r_j).build::<F>();
+
+	// Fold each segment separately.
+	// The combined witness is never materialized.
+	// Each fold is zero-padded to enough variables to cover its own segment's length.
+	// Both columns fold against the same round tensor, so the tables are built once.
+	let folder = BitAxisFolder::new(r_j_tensor.as_ref());
+	let public_folded = folder.fold::<P, _>(alloc, words.public);
+	let hidden_folded = folder.fold::<P, _>(alloc, words.hidden);
+
+	let (public_monster, hidden_monster) =
+		key_collection.build_monster_segments(alloc, prepared, shift_ind_eval, &inner, &outer);
+
+	// Both halves of the sumcheck share one word-index space, spanning the wider segment.
+	// The hidden segment is normally the wider one.
+	// A system with more public words than private values inverts that.
+	// So the hidden half is zero-extended to match.
+	let log_segment_words = max(public_folded.log_len(), hidden_folded.log_len());
+	let hidden_folded = hidden_folded.zero_extend_in(alloc, log_segment_words);
+	let hidden_monster = hidden_monster.zero_extend_in(alloc, log_segment_words);
+
+	run_sumcheck(
+		&public_folded,
+		hidden_folded,
+		&public_monster,
+		hidden_monster,
+		shift_ind_eval,
+		words.public,
+		r_j,
+		epsilon,
+		channel,
+		alloc,
+	)
+}
 
 /// A witness or constraint-matrix buffer, split into the public and hidden segments the
 /// phase-2 sumcheck's selector variable chooses between.
