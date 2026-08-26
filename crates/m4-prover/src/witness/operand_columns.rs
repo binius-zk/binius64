@@ -522,7 +522,7 @@ mod tests {
 	use assert_matches::assert_matches;
 	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_core::constraint_system::{AndConstraint, Shift, ShiftVariant, ValueVec};
-	use binius_field::{AESTowerField8b as B8, PackedBinaryGhash1x128b, Random};
+	use binius_field::{PackedBinaryGhash1x128b, Random, Rijndael8b as B8};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
 	use binius_math::{

@@ -628,7 +628,7 @@ pub(crate) mod tests {
 
 	use super::BinaryField1b as BF1;
 	use crate::{
-		AESTowerField8b, BinaryField, BinaryField1b, ExtensionField, Field, Ghash128b, GhashSq256b,
+		BinaryField, BinaryField1b, ExtensionField, Field, Ghash128b, GhashSq256b, Rijndael8b,
 		arithmetic_traits::InvertOrZero,
 	};
 
@@ -720,7 +720,7 @@ pub(crate) mod tests {
 	#[test]
 	fn test_multiplicative_generators() {
 		assert!(is_binary_field_valid_generator::<BinaryField1b>());
-		assert!(is_binary_field_valid_generator::<AESTowerField8b>());
+		assert!(is_binary_field_valid_generator::<Rijndael8b>());
 		assert!(is_binary_field_valid_generator::<Ghash128b>());
 	}
 
@@ -746,7 +746,7 @@ pub(crate) mod tests {
 			assert_eq!(trace(F::TRACE_ONE_ELEMENT), F::ONE);
 		}
 		check::<BinaryField1b>();
-		check::<AESTowerField8b>();
+		check::<Rijndael8b>();
 		check::<Ghash128b>();
 		check::<GhashSq256b>();
 	}
@@ -757,39 +757,39 @@ pub(crate) mod tests {
 	#[test]
 	fn test_trace_lands_in_the_prime_subfield() {
 		for value in 0..=u8::MAX {
-			let t = trace(AESTowerField8b::new(value));
-			assert!(t == AESTowerField8b::ZERO || t == AESTowerField8b::ONE, "value {value:#04x}");
+			let t = trace(Rijndael8b::new(value));
+			assert!(t == Rijndael8b::ZERO || t == Rijndael8b::ONE, "value {value:#04x}");
 		}
 	}
 
 	#[test]
 	fn test_field_degrees() {
 		assert_eq!(BinaryField1b::N_BITS, 1);
-		assert_eq!(AESTowerField8b::N_BITS, 8);
+		assert_eq!(Rijndael8b::N_BITS, 8);
 		assert_eq!(Ghash128b::N_BITS, 128);
 	}
 
 	#[test]
 	fn test_field_formatting() {
 		assert_eq!(format!("{}", BinaryField1b::from(1)), "0x1");
-		assert_eq!(format!("{}", AESTowerField8b::from(3)), "0x03");
+		assert_eq!(format!("{}", Rijndael8b::from(3)), "0x03");
 		assert_eq!(format!("{}", Ghash128b::new(5)), "0x00000000000000000000000000000005");
 	}
 
 	#[test]
 	fn test_inverse_on_zero() {
 		assert!(BinaryField1b::ZERO.invert_or_zero().is_zero());
-		assert!(AESTowerField8b::ZERO.invert_or_zero().is_zero());
+		assert!(Rijndael8b::ZERO.invert_or_zero().is_zero());
 		assert!(Ghash128b::ZERO.invert_or_zero().is_zero());
 	}
 
 	proptest! {
 		#[test]
 		fn test_inverse_8b(val in 1u8..) {
-			let x = AESTowerField8b::new(val);
+			let x = Rijndael8b::new(val);
 			// Safety: `val` is in `1..`, so `x` is non-zero.
 			let x_inverse = unsafe { x.invert() };
-			assert_eq!(x * x_inverse, AESTowerField8b::ONE);
+			assert_eq!(x * x_inverse, Rijndael8b::ONE);
 		}
 
 		#[test]
@@ -827,7 +827,7 @@ pub(crate) mod tests {
 	#[test]
 	fn test_subfield_extraction() {
 		assert_subfield_extraction::<BinaryField1b, Ghash128b>();
-		assert_subfield_extraction::<BinaryField1b, AESTowerField8b>();
+		assert_subfield_extraction::<BinaryField1b, Rijndael8b>();
 		assert_subfield_extraction::<Ghash128b, GhashSq256b>();
 		assert_subfield_extraction::<BinaryField1b, GhashSq256b>();
 	}
@@ -836,7 +836,7 @@ pub(crate) mod tests {
 	fn test_serialization() {
 		let mut buffer = BytesMut::new();
 		let b1 = BinaryField1b::from(0x1);
-		let b8 = AESTowerField8b::new(0x12);
+		let b8 = Rijndael8b::new(0x12);
 		let b128 = Ghash128b::new(0x147AD0369CF258BE8899AABBCCDDEEFF);
 
 		b1.serialize(&mut buffer).unwrap();
@@ -846,7 +846,7 @@ pub(crate) mod tests {
 		let mut read_buffer = buffer.freeze();
 
 		assert_eq!(BinaryField1b::deserialize(&mut read_buffer).unwrap(), b1);
-		assert_eq!(AESTowerField8b::deserialize(&mut read_buffer).unwrap(), b8);
+		assert_eq!(Rijndael8b::deserialize(&mut read_buffer).unwrap(), b8);
 		assert_eq!(Ghash128b::deserialize(&mut read_buffer).unwrap(), b128);
 	}
 }

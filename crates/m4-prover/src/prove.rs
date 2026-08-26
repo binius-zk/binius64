@@ -8,7 +8,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment, ValueTable},
 	word::Word,
 };
-use binius_field::{AESTowerField8b as B8, Field, PackedField};
+use binius_field::{Field, PackedField, Rijndael8b as B8};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::sumcheck::{

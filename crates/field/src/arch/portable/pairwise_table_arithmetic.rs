@@ -5,11 +5,11 @@ use bytemuck::TransparentWrapper;
 
 use super::packed::PackedPrimitiveType;
 use crate::{
-	AESTowerField8b,
+	Rijndael8b,
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
 };
 
-/// Multiplies two `AESTowerField8b` elements (as raw bytes) via the tower-field log/exp tables.
+/// Multiplies two `Rijndael8b` elements (as raw bytes) via the tower-field log/exp tables.
 #[inline]
 fn aes_mul_8b(lhs: u8, rhs: u8) -> u8 {
 	if lhs != 0 && rhs != 0 {
@@ -76,8 +76,8 @@ const AES_LOG_TABLE: [u8; 256] = [
 #[derive(TransparentWrapper)]
 pub struct AesLookupWideMul<T>(T);
 
-impl WideMul for AesLookupWideMul<PackedPrimitiveType<u8, AESTowerField8b>> {
-	type Output = PackedPrimitiveType<u8, AESTowerField8b>;
+impl WideMul for AesLookupWideMul<PackedPrimitiveType<u8, Rijndael8b>> {
+	type Output = PackedPrimitiveType<u8, Rijndael8b>;
 
 	#[inline]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
@@ -100,7 +100,7 @@ impl WideMul for AesLookupWideMul<PackedPrimitiveType<u8, AESTowerField8b>> {
 #[derive(TransparentWrapper)]
 pub struct BytewiseLookup<T>(T);
 
-impl Square for BytewiseLookup<PackedPrimitiveType<u8, AESTowerField8b>> {
+impl Square for BytewiseLookup<PackedPrimitiveType<u8, Rijndael8b>> {
 	#[inline]
 	fn square(self) -> Self {
 		let byte = Self::peel(self).to_underlier();
@@ -108,7 +108,7 @@ impl Square for BytewiseLookup<PackedPrimitiveType<u8, AESTowerField8b>> {
 	}
 }
 
-impl InvertOrZero for BytewiseLookup<PackedPrimitiveType<u8, AESTowerField8b>> {
+impl InvertOrZero for BytewiseLookup<PackedPrimitiveType<u8, Rijndael8b>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		let byte = Self::peel(self).to_underlier();

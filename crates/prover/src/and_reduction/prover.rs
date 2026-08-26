@@ -5,7 +5,7 @@ use std::ops::Deref;
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{AESTowerField8b as B8, BinaryField, PackedField};
+use binius_field::{BinaryField, PackedField, Rijndael8b as B8};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
@@ -275,7 +275,7 @@ mod test {
 
 	use binius_compute::GlobalAllocator;
 	use binius_core::word::Word;
-	use binius_field::{AESTowerField8b, arch::OptimalPackedB128};
+	use binius_field::{Rijndael8b, arch::OptimalPackedB128};
 	use binius_math::{
 		BinarySubspace, FieldBuffer, multilinear::Multilinear, univariate::EvaluationDomain,
 	};
@@ -301,11 +301,8 @@ mod test {
 		let log_num_rows = 6;
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let small_field_zerocheck_challenges = [
-			AESTowerField8b::new(2),
-			AESTowerField8b::new(4),
-			AESTowerField8b::new(16),
-		];
+		let small_field_zerocheck_challenges =
+			[Rijndael8b::new(2), Rijndael8b::new(4), Rijndael8b::new(16)];
 		let first_mlv = random_words(log_num_rows, &mut rng);
 		let second_mlv = random_words(log_num_rows, &mut rng);
 		// The prover receives only the A and B columns.
@@ -315,7 +312,7 @@ mod test {
 			.collect();
 
 		// Agreed-upon proof parameter
-		let prover_message_domain = BinarySubspace::<AESTowerField8b>::with_dim(SKIPPED_VARS + 1);
+		let prover_message_domain = BinarySubspace::<Rijndael8b>::with_dim(SKIPPED_VARS + 1);
 		let verifier_message_domain = prover_message_domain.isomorphic();
 
 		// Prover is instantiated

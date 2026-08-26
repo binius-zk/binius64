@@ -17,7 +17,7 @@ use super::{
 	extension::ExtensionField,
 };
 use crate::{
-	AESTowerField8b, Field,
+	Field, Rijndael8b,
 	arch::M128,
 	underlier::{U1, WithUnderlier},
 };
@@ -88,9 +88,9 @@ impl Ghash128b {
 
 impl_field_extension!(BinaryField1b(U1) < @7 => Ghash128b(M128));
 
-impl From<AESTowerField8b> for Ghash128b {
+impl From<Rijndael8b> for Ghash128b {
 	#[inline]
-	fn from(value: AESTowerField8b) -> Self {
+	fn from(value: Rijndael8b) -> Self {
 		// Raw GHASH values as `u128`, converted to the `M128` underlier at the lookup site so the
 		// table needs no const `M128` construction.
 		const LOOKUP_TABLE: [u128; 256] = [
@@ -496,8 +496,8 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_conversion_from_aes_consistency(a in any::<u8>(), b in any::<u8>()) {
-			let a_val = AESTowerField8b::new(a);
-			let b_val = AESTowerField8b::new(b);
+			let a_val = Rijndael8b::new(a);
+			let b_val = Rijndael8b::new(b);
 			let converted_a = Ghash128b::from(a_val);
 			let converted_b = Ghash128b::from(b_val);
 			assert_eq!(Ghash128b::from(a_val * b_val), converted_a * converted_b);

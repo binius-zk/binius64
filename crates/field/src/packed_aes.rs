@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use crate::{
-	aes_field::AESTowerField8b,
+	aes_field::Rijndael8b,
 	arch::{
 		AesInvert1x, AesInvert16x, AesInvert32x, AesInvert64x, AesSquare1x, AesSquare16x,
 		AesSquare32x, AesSquare64x, AesWideMul1x, AesWideMul16x, AesWideMul32x, AesWideMul64x,
@@ -13,7 +13,7 @@ use crate::{
 
 define_packed_binary_field!(
 	PackedAESBinaryField1x8b,
-	AESTowerField8b,
+	Rijndael8b,
 	u8,
 	(MulFromWideMul),
 	(AesSquare1x),
@@ -22,7 +22,7 @@ define_packed_binary_field!(
 );
 define_packed_binary_field!(
 	PackedAESBinaryField16x8b,
-	AESTowerField8b,
+	Rijndael8b,
 	M128,
 	(MulFromWideMul),
 	(AesSquare16x),
@@ -31,7 +31,7 @@ define_packed_binary_field!(
 );
 define_packed_binary_field!(
 	PackedAESBinaryField32x8b,
-	AESTowerField8b,
+	Rijndael8b,
 	M256,
 	(MulFromWideMul),
 	(AesSquare32x),
@@ -40,7 +40,7 @@ define_packed_binary_field!(
 );
 define_packed_binary_field!(
 	PackedAESBinaryField64x8b,
-	AESTowerField8b,
+	Rijndael8b,
 	M512,
 	(MulFromWideMul),
 	(AesSquare64x),
@@ -69,12 +69,12 @@ mod tests {
 		// not the packed widening path under test.
 		for a in 0..=u8::MAX {
 			for b in 0..=u8::MAX {
-				let expected = crate::AESTowerField8b::new(a) * crate::AESTowerField8b::new(b);
+				let expected = crate::Rijndael8b::new(a) * crate::Rijndael8b::new(b);
 
 				let a_packed =
-					crate::PackedAESBinaryField16x8b::broadcast(crate::AESTowerField8b::new(a));
+					crate::PackedAESBinaryField16x8b::broadcast(crate::Rijndael8b::new(a));
 				let b_packed =
-					crate::PackedAESBinaryField16x8b::broadcast(crate::AESTowerField8b::new(b));
+					crate::PackedAESBinaryField16x8b::broadcast(crate::Rijndael8b::new(b));
 				let reduced = crate::PackedAESBinaryField16x8b::reduce(
 					crate::PackedAESBinaryField16x8b::wide_mul(a_packed, b_packed),
 				);

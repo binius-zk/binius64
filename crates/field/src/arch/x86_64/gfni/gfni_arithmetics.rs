@@ -4,7 +4,7 @@
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	AESTowerField8b,
+	Rijndael8b,
 	arch::{portable::packed::PackedPrimitiveType, x86_64::simd::simd_arithmetic::TowerSimdType},
 	arithmetic_traits::{InvertOrZero, WideMul},
 	underlier::UnderlierType,
@@ -32,7 +32,7 @@ pub(super) trait GfniType: Copy + TowerSimdType {
 #[derive(TransparentWrapper)]
 pub struct Gfni<T>(T);
 
-impl<U: GfniType + UnderlierType> std::ops::Mul for Gfni<PackedPrimitiveType<U, AESTowerField8b>> {
+impl<U: GfniType + UnderlierType> std::ops::Mul for Gfni<PackedPrimitiveType<U, Rijndael8b>> {
 	type Output = Self;
 
 	#[inline(always)]
@@ -49,8 +49,8 @@ impl<U: GfniType + UnderlierType> std::ops::Mul for Gfni<PackedPrimitiveType<U, 
 #[derive(TransparentWrapper)]
 pub struct GfniWideMul<T>(T);
 
-impl<U: GfniType + UnderlierType> WideMul for GfniWideMul<PackedPrimitiveType<U, AESTowerField8b>> {
-	type Output = PackedPrimitiveType<U, AESTowerField8b>;
+impl<U: GfniType + UnderlierType> WideMul for GfniWideMul<PackedPrimitiveType<U, Rijndael8b>> {
+	type Output = PackedPrimitiveType<U, Rijndael8b>;
 
 	#[inline(always)]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
@@ -65,7 +65,7 @@ impl<U: GfniType + UnderlierType> WideMul for GfniWideMul<PackedPrimitiveType<U,
 	}
 }
 
-impl<U: GfniType + UnderlierType> InvertOrZero for Gfni<PackedPrimitiveType<U, AESTowerField8b>> {
+impl<U: GfniType + UnderlierType> InvertOrZero for Gfni<PackedPrimitiveType<U, Rijndael8b>> {
 	#[inline(always)]
 	fn invert_or_zero(self) -> Self {
 		let val_gfni = Self::peel(self).to_underlier();

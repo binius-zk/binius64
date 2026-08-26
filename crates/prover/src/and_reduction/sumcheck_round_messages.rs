@@ -5,8 +5,9 @@ use std::{array, borrow::Cow, iter};
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField, Field,
-	PackedAESBinaryField64x8b as Packed64xB8, PackedField, WideMul, util::expand_subset_sums_array,
+	BinaryField, BinaryField1b as B1, ExtensionField, Field,
+	PackedAESBinaryField64x8b as Packed64xB8, PackedField, Rijndael8b as B8, WideMul,
+	util::expand_subset_sums_array,
 };
 use binius_math::{BinarySubspace, multilinear::hypercube::Hypercube};
 use binius_utils::rayon::{self, iter::Either, prelude::*};

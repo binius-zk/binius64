@@ -11,7 +11,7 @@ use binius_core::{
 	},
 	word::Word,
 };
-use binius_field::{AESTowerField8b, BinaryField};
+use binius_field::{BinaryField, Rijndael8b};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
@@ -378,7 +378,7 @@ fn test_shift_prove_and_verify() {
 		// `r_zhat_prime` so the verifier can compute `h_op_evals` once for both.
 		let r_zhat_prime = F::random(&mut rng);
 
-		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
+		let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 		let bitand_evals = compute_bitand_images(&cs.and_constraints, &value_vec).map(|image| {
 			evaluate_image(

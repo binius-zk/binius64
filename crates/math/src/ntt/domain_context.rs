@@ -331,7 +331,7 @@ impl<F: BinaryField> DomainContext for GaoMateerPreExpanded<F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{AESTowerField8b, GhashSq256b};
+	use binius_field::{GhashSq256b, Rijndael8b};
 
 	use super::*;
 	use crate::test_utils::B128;
@@ -401,7 +401,7 @@ mod tests {
 		}
 
 		// The domain cannot exceed the field's degree over F_2, so each field gets its own size.
-		check::<AESTowerField8b>(8);
+		check::<Rijndael8b>(8);
 		check::<B128>(5);
 		check::<GhashSq256b>(5);
 	}

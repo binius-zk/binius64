@@ -5,7 +5,7 @@ use std::ops::Deref;
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{AESTowerField8b as B8, BinaryField, PackedField};
+use binius_field::{BinaryField, PackedField, Rijndael8b as B8};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::BinarySubspace;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
