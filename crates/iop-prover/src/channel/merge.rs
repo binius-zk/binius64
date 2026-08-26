@@ -7,7 +7,7 @@
 
 use std::{cmp::Reverse, ops::DerefMut};
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
@@ -193,20 +193,44 @@ where
 			.sum();
 		let combined_log_len = log2_ceil_usize(total_len);
 
-		// Lay every buffer into the combined data.
-		// Record where each one landed.
+		// Record where each buffer lands.
 		//
 		// Every step adds a whole multiple of the next block's size.
 		// So each offset divides evenly by that buffer's own size.
-		let mut combined = FieldBuffer::zeros_in(&self.alloc, combined_log_len);
 		let mut block_indices = vec![0usize; self.pending.len()];
 		let mut offset = 0usize;
 		for &k in &order {
 			let n_k = self.pending[k].log_len();
-			let block_index = offset >> n_k;
-			block_indices[k] = block_index;
-			place_block(&mut combined, self.pending[k].as_view(), block_index);
+			block_indices[k] = offset >> n_k;
 			offset += 1 << n_k;
+		}
+
+		// A buffer at least one packed word wide occupies whole words, and nothing else.
+		//
+		// Sorted largest first, those buffers are a prefix of the round.
+		// Their word runs therefore concatenate into exactly the combined layout.
+		let n_whole = order
+			.iter()
+			.take_while(|&&k| self.pending[k].log_len() >= P::LOG_WIDTH)
+			.count();
+
+		// Build the combined store by appending each of those runs once.
+		let n_words = 1 << combined_log_len.saturating_sub(P::LOG_WIDTH);
+		let mut words = self.alloc.alloc::<P>(n_words);
+		for &k in &order[..n_whole] {
+			words.extend_from_slice(self.pending[k].as_ref());
+		}
+
+		// Zero whatever the runs did not cover.
+		//
+		// That is the padding past the round's total, plus any word the narrow tail shares.
+		words.resize(n_words, P::zero());
+		let mut combined = FieldBuffer::new(combined_log_len, words);
+
+		// Buffers narrower than a packed word share one, so they cannot be appended.
+		// Place their scalars individually instead.
+		for &k in &order[n_whole..] {
+			place_block(&mut combined, self.pending[k].as_view(), block_indices[k]);
 		}
 
 		// Commit the whole round as one oracle on the underlying channel.
@@ -739,6 +763,10 @@ mod tests {
 			// It stress-tests the alignment argument the merge relies on.
 			let round_refs: Vec<&[usize]> = rounds.iter().map(Vec::as_slice).collect();
 			run_merge_round_trip::<PackedBinaryGhash1x128b>(&round_refs, false);
+
+			// The wider packing also mixes word-aligned oracles with sub-word ones,
+			// which is where the two placement paths meet.
+			run_merge_round_trip::<PackedBinaryGhash4x128b>(&round_refs, false);
 		}
 	}
 }
