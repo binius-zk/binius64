@@ -1,6 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
-use cfg_if::cfg_if;
+use std::sync::OnceLock;
 
 use super::ThreadPoolBuildError;
 
@@ -21,28 +22,17 @@ use super::ThreadPoolBuildError;
 ///
 /// A reference, because [`ThreadPoolBuildError`] is not `Clone`.
 pub fn adjust_thread_pool() -> &'static Result<(), ThreadPoolBuildError> {
-	cfg_if! {
-		if #[cfg(feature = "rayon")] {
-			use std::sync::OnceLock;
+	static ONCE_GUARD: OnceLock<Result<(), ThreadPoolBuildError>> = OnceLock::new();
 
-			static ONCE_GUARD: OnceLock<Result<(), ThreadPoolBuildError>> = OnceLock::new();
-
-			ONCE_GUARD.get_or_init(|| {
-				// Read the environment rather than `current_num_threads`: that call would build
-				// the global pool, leaving nothing to override.
-				match std::env::var("RAYON_NUM_THREADS") {
-					Ok(v) if v == "1" => super::ThreadPoolBuilder::new()
-						.num_threads(1)
-						.use_current_thread()
-						.build_global(),
-					_ => Ok(()),
-				}
-			})
+	ONCE_GUARD.get_or_init(|| {
+		// Read the environment rather than `current_num_threads`: that call would build the
+		// global pool, leaving nothing to override.
+		match std::env::var("RAYON_NUM_THREADS") {
+			Ok(v) if v == "1" => super::ThreadPoolBuilder::new()
+				.num_threads(1)
+				.use_current_thread()
+				.build_global(),
+			_ => Ok(()),
 		}
-		else {
-			static RESULT: Result<(), ThreadPoolBuildError> = Ok(());
-
-			&RESULT
-		}
-	}
+	})
 }

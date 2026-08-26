@@ -11,11 +11,9 @@ workspace = true
 [dependencies]
 array-util.workspace = true
 bytes.workspace = true
-cfg-if.workspace = true
 hybrid-array.workspace = true
-itertools.workspace = true
 rand.workspace = true
-rayon = { optional = true, workspace = true}
+rayon.workspace = true
 regex = { workspace = true, optional = true }
 thiserror.workspace = true
 trait-set.workspace = true
@@ -24,5 +22,4 @@ trait-set.workspace = true
 
 [features]
 default = []
-rayon = ["dep:rayon"]
 platform-diagnostics = ["dep:regex"]

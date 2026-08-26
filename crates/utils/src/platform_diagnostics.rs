@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use std::{collections::BTreeMap, sync::OnceLock};
 
 use regex::Regex;
@@ -822,11 +823,12 @@ impl PlatformDiagnostics {
 	pub fn get_feature_suffix(&self) -> String {
 		let mut suffix_parts = Vec::new();
 
-		// Threading - check if rayon feature is enabled
-		#[cfg(feature = "rayon")]
-		suffix_parts.push("mt");
-		#[cfg(not(feature = "rayon"))]
-		suffix_parts.push("st");
+		// Threading - check how many threads rayon is actually using
+		if crate::rayon::current_num_threads() > 1 {
+			suffix_parts.push("mt");
+		} else {
+			suffix_parts.push("st");
+		}
 
 		// Architecture
 		#[cfg(target_arch = "x86_64")]

@@ -34,7 +34,6 @@ sha2.workspace = true
 
 [features]
 default = []
-rayon = ["binius-utils/rayon"]
 
 [[bench]]
 name = "binary_merkle_tree"
