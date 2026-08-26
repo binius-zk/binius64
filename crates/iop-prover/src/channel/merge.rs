@@ -619,7 +619,7 @@ mod tests {
 			assert!(
 				PackedBinaryGhash4x128b::LOG_WIDTH > 0,
 				"the fixture needs sub-packed-width oracle sizes to appear"
-			)
+			);
 		};
 		run_merge_round_trip::<PackedBinaryGhash4x128b>(&[&[3, 3], &[4, 2, 2], &[1]], false);
 	}
