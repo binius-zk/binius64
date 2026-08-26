@@ -1092,12 +1092,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_fill_with_bit() {
-		assert_eq!(M256::fill_with_bit(1), M256::from([u128::MAX, u128::MAX]));
-		assert_eq!(M256::fill_with_bit(0), M256::from(0u128));
-	}
-
-	#[test]
 	fn test_eq() {
 		let a = M256::from(0u128);
 		let b = M256::from(42u128);

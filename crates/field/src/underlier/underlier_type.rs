@@ -45,12 +45,6 @@ pub trait UnderlierType:
 	const ONE: Self;
 	const ONES: Self;
 
-	/// Fill value with the given bit
-	/// `val` must be 0 or 1.
-	fn fill_with_bit(val: u8) -> Self {
-		Self::broadcast_subvalue(U1::new(val))
-	}
-
 	/// Interleave with the given bit size
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self);
 
