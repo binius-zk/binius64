@@ -14,7 +14,7 @@ use getset::CopyGetters;
 use super::{
 	FieldBuffer, FieldSlice, FieldSliceMut, binary_subspace::BinarySubspace, ntt::AdditiveNTT,
 };
-use crate::ntt::{DomainContext, NeighborsLastMultiThread, domain_context::GaoMateerOnTheFly};
+use crate::ntt::{DomainContext, domain_context::GaoMateerOnTheFly};
 
 /// [Reed–Solomon] codes over binary fields.
 ///
@@ -146,70 +146,6 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		output.repeat_extend(log_output_len);
 
 		ntt.forward_transform(output.as_mut_view(), self.log_inv_rate, log_batch_size);
-		output
-	}
-
-	/// Same encoding as [`Self::encode_batch`].
-	///
-	/// Invokes `on_chunk_ready` as each independent post-shared-layer chunk finishes.
-	/// [`Self::encode_batch`] instead waits for the whole codeword to finish.
-	///
-	/// Use this to start downstream work on a finished region of the codeword.
-	/// That avoids waiting for the whole encode to complete.
-	/// See [`NeighborsLastMultiThread::forward_transform_with_callback`] for the chunking.
-	///
-	/// ## Preconditions
-	///
-	/// Same as [`Self::encode_batch`].
-	pub fn encode_batch_with_callback<P, DC, A>(
-		&self,
-		ntt: &NeighborsLastMultiThread<DC>,
-		data: FieldSlice<'_, P>,
-		log_batch_size: usize,
-		alloc: &A,
-		on_chunk_ready: impl Fn(usize, &[P]) + Sync,
-	) -> FieldBuffer<P, A::Vec<P>>
-	where
-		P: PackedField<Scalar = F>,
-		DC: DomainContext<Field = F> + Sync,
-		A: Allocator,
-	{
-		assert_eq!(
-			ntt.subspace(self.log_len()),
-			self.subspace(),
-			"precondition: NTT subspace must match code subspace"
-		);
-		assert_eq!(
-			data.log_len(),
-			self.log_dim() + log_batch_size,
-			"precondition: data.log_len() must equal log_dim() + log_batch_size"
-		);
-
-		let _scope = tracing::trace_span!(
-			"Reed-Solomon encode (pipelined)",
-			log_len = self.log_len(),
-			log_batch_size = log_batch_size,
-			symbol_bits = F::N_BITS,
-		)
-		.entered();
-
-		let log_output_len = self.log_dim() + log_batch_size + self.log_inv_rate;
-		let mut output = FieldBuffer::from_view_with_capacity_in(alloc, data, log_output_len);
-		output.as_mut_view().bit_reverse();
-		output.repeat_extend(log_output_len);
-
-		// A message inside one packed word leaves the chunked transform nothing to split.
-		if data.log_len() < P::LOG_WIDTH {
-			on_chunk_ready(0, output.as_ref());
-			return output;
-		}
-
-		ntt.forward_transform_with_callback(
-			output.as_mut_view(),
-			self.log_inv_rate,
-			log_batch_size,
-			on_chunk_ready,
-		);
 		output
 	}
 
