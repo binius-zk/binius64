@@ -7,27 +7,26 @@
 //!        |                              |
 //!        |  verifier run symbolically   |  verifier run for real
 //!        v                              v
-//!   recursive circuit  <----------  its witness  ->  validated
+//!   recursive circuit  <----------  its witness  ->  proved  ->  verified
 //! ```
 //!
 //! One verifier runs over both channels and reaches the same operations in the same order.
-//! The circuit the first produced is satisfied by the witness the second filled.
+//! The circuit the first produced is satisfied by the witness the second filled, and that
+//! circuit is then proved and verified like any other.
 //!
-//! The Merkle commitments are checked in-circuit, so tampering with their advice is rejected here.
-//! The Fiat-Shamir state is not, so a challenge is still whatever the replay supplies.
-
-use std::iter;
+//! Everything the verifier reads is derived in-circuit or bound to something that is: the
+//! Fiat-Shamir state, the Merkle commitments, the query indices, the proof of work. What a
+//! replay still supplies is the proof itself and the statement, which is why tampering with
+//! either is rejected here.
 
 use binius_core::{constraint_system::ValueVec, word::Word};
 use binius_field::arch::OptimalPackedB128;
 use binius_frontend::{
 	Circuit, CircuitBuilder, CircuitStat, MAX_ASSERTION_FAILURES, PopulateError, Wire,
-	WitnessFiller,
 };
 use binius_hash::StdHashSuite;
-use binius_ip::channel::WordIPVerifierChannel;
 use binius_prover::Prover;
-use binius_recursion::{Binius64BuilderChannel, Recorded, WitnessFillerChannel};
+use binius_recursion::{Error, RecursiveCircuit};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_verifier::{Verifier, config::StdChallenger};
 
@@ -101,24 +100,19 @@ fn crc64_witness(crc64: &Crc64, message: &[u64; N_INPUT_WORDS]) -> ValueVec {
 	filler.into_value_vec()
 }
 
-/// One CRC-64 statement, proved once, for the recursion pipeline to consume.
+/// One statement, proved once, for the recursion pipeline to consume.
 struct Proved {
 	verifier: Verifier<StdHashSuite>,
 	witness: ValueVec,
 	proof: Vec<u8>,
 }
 
-/// Proves one CRC-64 statement, and checks it verifies natively.
+/// Proves one statement of `circuit`, and checks it verifies natively.
 ///
 /// A proof that fails here would make every recursion failure below ambiguous.
-fn prove_crc64() -> Proved {
-	let crc64 = crc64_circuit();
-	let message = [0x0123456789abcdef, 0xfedcba9876543210, 1, u64::MAX];
-	let witness = crc64_witness(&crc64, &message);
-
+fn prove(circuit: &Circuit, witness: ValueVec) -> Proved {
 	let verifier =
-		Verifier::<StdHashSuite>::setup(crc64.circuit.constraint_system().clone(), LOG_INV_RATE)
-			.unwrap();
+		Verifier::<StdHashSuite>::setup(circuit.constraint_system().clone(), LOG_INV_RATE).unwrap();
 	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone()).unwrap();
 
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -136,134 +130,129 @@ fn prove_crc64() -> Proved {
 	}
 }
 
-/// The recursive circuit, and the public wires the inner statement was bound to.
-struct Recording {
-	recorded: Recorded,
-	/// One inout wire per inner statement word, each constrained to equal what the verifier read.
-	public: Vec<Wire>,
+/// Proves one CRC-64 statement.
+fn prove_crc64() -> Proved {
+	let crc64 = crc64_circuit();
+	let message = [0x0123456789abcdef, 0xfedcba9876543210, 1, u64::MAX];
+	let witness = crc64_witness(&crc64, &message);
+	prove(&crc64.circuit, witness)
 }
 
-/// Records the verifier run as a circuit, with the whole inner statement made public.
-///
-/// The builder channel is wrapped in the same BaseFold layer the transcript channel gets.
-/// What the verifier does over it becomes the circuit.
-fn record(proved: &Proved) -> Recording {
-	let builder_channel = Binius64BuilderChannel::new();
-	// The circuit is written against the FRI opening, so the compiler is asked for by name.
-	let mut channel = proved
-		.verifier
-		.iop_compiler()
-		.as_basefold()
-		.expect("the recursion circuit verifies a FRI opening")
-		.create_channel(builder_channel);
-	// The statement is observed by the caller, and what comes back is what the verifier reads.
-	// On this channel those are wires, so the recorded circuit takes the statement as input
-	// rather than baking it in.
-	let statement = channel.observe_words(proved.witness.inout());
-	proved
-		.verifier
-		.iop_verifier()
-		.verify(&statement, &mut channel)
-		.expect("the symbolic run records rather than checks, so it cannot fail")
-		.check_symbolic(&mut channel)
-		.expect("the symbolic run records rather than checks, so it cannot fail");
-
-	// Binding every word is this caller's choice, not the channel's.
-	// One that exposed only part of its inner statement would bind only that part.
-	let mut builder_channel = channel.finish().unwrap();
-	let public = builder_channel.bind_public(statement);
-	Recording {
-		recorded: builder_channel.build(),
-		public,
-	}
-}
-
-/// Replays the verifier over the real transcript, filling every wire the build recorded.
-fn replay(proved: &Proved, recorded: &Recorded, filler: &mut WitnessFiller<'_>) {
-	let mut transcript = VerifierTranscript::new(StdChallenger::default(), proved.proof.clone());
-	let filler_channel = WitnessFillerChannel::<_, StdChallenger, StdHashSuite>::new(
-		&mut transcript,
-		filler,
-		recorded.inputs.clone(),
-	);
-	let mut channel = proved
-		.verifier
-		.iop_compiler()
-		.as_basefold()
-		.expect("the recursion circuit verifies a FRI opening")
-		.create_channel(filler_channel);
-	let inout = channel.observe_words(proved.witness.inout());
-	proved
-		.verifier
-		.iop_verifier()
-		.verify(&inout, &mut channel)
-		.unwrap()
-		.check_symbolic(&mut channel)
-		.unwrap();
-	channel.finish().unwrap().finish();
+/// A circuit's constraint rows, which is what one level's cost is compared on.
+const fn rows(stat: &CircuitStat) -> usize {
+	stat.n_and_constraints + stat.n_bmul_constraints + stat.n_zero_constraints
 }
 
 #[test]
 fn recursive_circuit_is_satisfied_by_a_real_proof() {
 	let proved = prove_crc64();
-	let Recording { recorded, public } = record(&proved);
-	let witness = &proved.witness;
+	let recursive = RecursiveCircuit::build(proved.verifier.clone()).unwrap();
 
-	let stat = CircuitStat::collect(&recorded.circuit);
+	let stat = CircuitStat::collect(recursive.circuit());
 	println!(
 		"recursive circuit: {} gates, {} AND, {} BMUL, {} ZERO, {} recorded inputs",
 		stat.n_gates,
 		stat.n_and_constraints,
 		stat.n_bmul_constraints,
 		stat.n_zero_constraints,
-		recorded.inputs.len(),
+		recursive.recorded().inputs.len(),
 	);
 	assert!(stat.n_bmul_constraints > 0, "the verifier's field arithmetic should be recorded");
 
-	// The statement still reaches the verifier as wires the replay fills, one per inout word.
+	// The statement reaches the verifier as wires the replay fills, one per inout word.
+	let inout = proved.witness.inout();
 	assert_eq!(
-		recorded
+		recursive
+			.recorded()
 			.inputs
 			.iter()
 			.filter(|input| input.kind == "observe_words")
 			.count(),
-		witness.inout().len()
+		inout.len()
 	);
 	// One public wire was bound beside each of them.
-	assert_eq!(public.len(), witness.inout().len());
+	assert_eq!(recursive.statement().len(), inout.len());
 
-	// The decommitted layer is on wires now, which is what the opened leaves are matched against.
+	// The decommitted layer is on wires, which is what the opened leaves are matched against.
 	assert!(
-		recorded
+		recursive
+			.recorded()
 			.inputs
 			.iter()
 			.any(|input| input.kind == "merkle_layer"),
 		"the query phase must record the layer it decommits to"
 	);
 
-	// --- its witness ---------------------------------------------------------------------------
-	// Whoever checks the outer proof supplies the public half of each binding.
-	let mut filler = recorded.circuit.new_witness_filler();
-	for (&wire, &word) in iter::zip(&public, witness.inout()) {
-		filler[wire] = word;
-	}
+	let witness = recursive.witness(inout, proved.proof).unwrap();
 
-	// The same verifier runs again over the real transcript, and every value the circuit cannot
-	// derive is written into the wire the build recorded for it.
-	replay(&proved, &recorded, &mut filler);
-
-	recorded
-		.circuit
-		.populate_wire_witness(&mut filler)
-		.expect("the recorded circuit is satisfied by the replayed witness");
-
-	// The point of the change: the circuit's public interface *is* the inner statement.
+	// The point of the binding: the circuit's public interface *is* the inner statement.
 	// An outer proof can pin what was verified instead of trusting the filler.
 	assert_eq!(
-		filler.into_value_vec().inout(),
 		witness.inout(),
+		inout,
 		"the recursive circuit's public values must be the statement it verifies"
 	);
+}
+
+#[test]
+fn the_recursive_circuit_proves_and_verifies() {
+	// Invariant: the recursive circuit is an ordinary circuit, so it proves like any other.
+	//
+	// This is the step that makes the pipeline recursion rather than verification-in-circuit:
+	// what comes out is a proof, of the same kind that went in, carrying the same statement.
+	let inner = prove_crc64();
+	let recursive = RecursiveCircuit::build(inner.verifier.clone()).unwrap();
+	let witness = recursive
+		.witness(inner.witness.inout(), inner.proof.clone())
+		.unwrap();
+
+	// Proving verifies natively too, so a wrong witness fails here rather than silently.
+	let outer = prove(recursive.circuit(), witness);
+
+	println!("inner proof {} bytes -> outer proof {} bytes", inner.proof.len(), outer.proof.len());
+
+	// The outer statement is the inner one, so whoever checks the outer proof learns what was
+	// verified without ever seeing the inner proof.
+	assert_eq!(
+		outer.witness.inout(),
+		inner.witness.inout(),
+		"the outer proof must carry the inner statement"
+	);
+}
+
+#[test]
+#[ignore = "builds a 50M-gate circuit; run explicitly to re-measure per-level growth"]
+fn one_more_level_costs_far_more_than_the_level_below() {
+	// Invariant: discharging the wiring claim in-circuit is proportional to the inner system.
+	//
+	// A level's cost is dominated by a term proportional to the rows of the level beneath it, so
+	// the tower diverges: `rows(n+1) / rows(n)` sits far above one and does not fall with depth.
+	// That ratio is the whole reason the claim has to be deferred instead.
+	//
+	//     depth 1: verifies the CRC-64 proof
+	//     depth 2: verifies depth 1's proof
+	let inner = prove_crc64();
+
+	let depth1 = RecursiveCircuit::build(inner.verifier.clone()).unwrap();
+	let witness1 = depth1
+		.witness(inner.witness.inout(), inner.proof.clone())
+		.unwrap();
+	let rows1 = rows(&CircuitStat::collect(depth1.circuit()));
+
+	// Depth 2 reads only depth 1's *shape*, so depth 1 need not be proved to measure this.
+	let verifier1 =
+		Verifier::<StdHashSuite>::setup(depth1.circuit().constraint_system().clone(), LOG_INV_RATE)
+			.unwrap();
+	let depth2 = RecursiveCircuit::build(verifier1).unwrap();
+	let rows2 = rows(&CircuitStat::collect(depth2.circuit()));
+
+	let growth = rows2 as f64 / rows1 as f64;
+	println!("rows: depth1 {rows1} -> depth2 {rows2} = {growth:.2}x");
+
+	// A closing tower would sit at or below one. Pinning a floor documents that it does not, and
+	// turns the day this drops into a test failure worth reading.
+	assert!(growth > 5.0, "inline discharge is expected to diverge, measured {growth:.2}x");
+	assert_eq!(witness1.inout(), inner.witness.inout());
 }
 
 /// Flips one bit of the first recorded wire of `kind`, and returns why the circuit then fails.
@@ -271,22 +260,21 @@ fn recursive_circuit_is_satisfied_by_a_real_proof() {
 /// The wire is tampered after an honest replay, so only that bit differs from a good witness.
 fn reject_tampered(kind: &'static str) -> Vec<String> {
 	let proved = prove_crc64();
-	let Recording { recorded, public } = record(&proved);
-	let mut filler = recorded.circuit.new_witness_filler();
-	for (&wire, &word) in iter::zip(&public, proved.witness.inout()) {
-		filler[wire] = word;
-	}
-	replay(&proved, &recorded, &mut filler);
+	let recursive = RecursiveCircuit::build(proved.verifier.clone()).unwrap();
+	let mut filler = recursive
+		.fill(proved.witness.inout(), proved.proof)
+		.unwrap();
 
-	let input = recorded
+	let input = recursive
+		.recorded()
 		.inputs
 		.iter()
 		.find(|input| input.kind == kind)
 		.unwrap_or_else(|| panic!("the verifier must record at least one {kind} wire"));
 	filler[input.wire] = Word(filler[input.wire].0 ^ 1);
 
-	let error = recorded
-		.circuit
+	let error = recursive
+		.circuit()
 		.populate_wire_witness(&mut filler)
 		.expect_err("a tampered witness must leave the circuit unsatisfied");
 
@@ -344,18 +332,17 @@ fn a_public_input_that_disagrees_with_the_statement_is_rejected() {
 	//     before:  public word == the word the replay filled
 	//     after:   public word != it, and the equality the binding emitted breaks
 	let proved = prove_crc64();
-	let Recording { recorded, public } = record(&proved);
-	let mut filler = recorded.circuit.new_witness_filler();
-	for (&wire, &word) in iter::zip(&public, proved.witness.inout()) {
-		filler[wire] = word;
-	}
-	replay(&proved, &recorded, &mut filler);
+	let recursive = RecursiveCircuit::build(proved.verifier.clone()).unwrap();
+	let mut filler = recursive
+		.fill(proved.witness.inout(), proved.proof)
+		.unwrap();
 
 	// Mutation: flip one bit of the first public word, leaving the replay's own wire alone.
-	filler[public[0]] = Word(filler[public[0]].0 ^ 1);
+	let bound = recursive.statement()[0];
+	filler[bound] = Word(filler[bound].0 ^ 1);
 
-	let error = recorded
-		.circuit
+	let error = recursive
+		.circuit()
 		.populate_wire_witness(&mut filler)
 		.expect_err("a public input that disagrees must leave the circuit unsatisfied");
 
@@ -371,4 +358,54 @@ fn a_public_input_that_disagrees_with_the_statement_is_rejected() {
 		failures[0].path
 	);
 	assert!(!failures[0].detail.is_empty(), "a failure must carry a diagnostic");
+}
+
+#[test]
+fn a_statement_of_the_wrong_length_is_rejected() {
+	// Invariant: the statement's length is the inner system's, and nothing else is accepted.
+	//
+	// A short statement would otherwise bind only a prefix, leaving the rest of the public
+	// interface to whoever filled the witness.
+	let proved = prove_crc64();
+	let recursive = RecursiveCircuit::build(proved.verifier.clone()).unwrap();
+	let inout = proved.witness.inout();
+
+	let error = recursive
+		.witness(&inout[..inout.len() - 1], proved.proof)
+		.expect_err("a statement one word short must be rejected");
+
+	assert!(
+		matches!(
+			error,
+			Error::StatementLength { expected, actual }
+				if expected == inout.len() && actual == inout.len() - 1
+		),
+		"expected a length mismatch, got {error}"
+	);
+}
+
+#[test]
+fn a_malformed_proof_is_rejected_rather_than_crashing() {
+	// Invariant: how much a replay reads is fixed by the shape, never by what it reads.
+	//
+	// So a truncated tape runs out of bytes rather than out of recorded wires, and the transcript
+	// reports that as an error. A shape-dependent read would instead walk off the wire cursor and
+	// take the process down, which is why this is worth pinning.
+	let proved = prove_crc64();
+	let recursive = RecursiveCircuit::build(proved.verifier.clone()).unwrap();
+	let inout = proved.witness.inout();
+
+	// Half a tape, then no tape at all.
+	for proof in [proved.proof[..proved.proof.len() / 2].to_vec(), Vec::new()] {
+		let len = proof.len();
+		let error = recursive
+			.witness(inout, proof)
+			.expect_err("a malformed proof must be rejected");
+		// Reaching here at all is the invariant: an error came back, nothing unwound.
+		// The variant still has to name the tape, not the statement, or the wrong check fired.
+		assert!(
+			!matches!(error, Error::StatementLength { .. } | Error::UnsupportedPcs { .. }),
+			"a {len}-byte tape must fail on the tape, got {error}"
+		);
+	}
 }
