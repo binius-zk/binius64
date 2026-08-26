@@ -870,6 +870,55 @@ mod tests {
 		BinaryMerkleTreeScheme::new()
 	}
 
+	/// Security level the shipped verifier targets.
+	///
+	/// Restated rather than imported.
+	/// `binius_verifier::SECURITY_BITS` lives in a crate that depends on this one.
+	const SECURITY_BITS: usize = 96;
+
+	/// Candidate inverse rates, wide enough to bracket where the proof size turns around.
+	const LOG_INV_RATES: [usize; 6] = [1, 2, 3, 4, 5, 6];
+
+	/// Exact proof size per shape and rate, as `(shape, log_inv_rate, n_test_queries, bytes)`.
+	///
+	/// Every shape bottoms out inside the candidate range.
+	/// The smallest oracle bottoms out at rate 1/8, and the larger two at 1/16.
+	const PINNED_PROOF_SIZE_BY_RATE: [(&str, usize, usize, usize); 18] = [
+		("single/17", 1, 232, 205152),
+		("single/17", 2, 142, 160128),
+		("single/17", 3, 116, 154240),
+		("single/17", 4, 106, 161088),
+		("single/17", 5, 101, 172544),
+		("single/17", 6, 99, 186304),
+		("single/24", 1, 232, 472480),
+		("single/24", 2, 142, 340128),
+		("single/24", 3, 116, 307264),
+		("single/24", 4, 106, 307008),
+		("single/24", 5, 101, 318240),
+		("single/24", 6, 99, 336192),
+		("zk/24+21", 1, 232, 730208),
+		("zk/24+21", 2, 142, 513344),
+		("zk/24+21", 3, 116, 458432),
+		("zk/24+21", 4, 106, 452640),
+		("zk/24+21", 5, 101, 463856),
+		("zk/24+21", 6, 99, 485424),
+	];
+
+	/// The exact proof size at one rate, with the arities re-optimized for it.
+	///
+	/// The query count is not a parameter, but the one that rate needs for `SECURITY_BITS`.
+	/// A rate buys proof bytes precisely by changing it, so pairing the two is the point.
+	fn proof_size_at_rate(
+		merkle_scheme: &TestMerkleScheme,
+		oracles: &[OracleSpec],
+		log_inv_rate: usize,
+	) -> usize {
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+		let (params, _) =
+			FRIParams::optimal_for_batch(merkle_scheme, oracles, log_inv_rate, n_test_queries);
+		params.proof_size(merkle_scheme)
+	}
+
 	// Invariant: the size the arity search minimizes is the size a prover actually sends.
 	//
 	//     cost model    what `compute_layer_reduction_size` charges, and the search minimizes
@@ -932,14 +981,104 @@ mod tests {
 		}
 	}
 
+	// Invariant: lowering the rate trades encoding work for proof bytes, and overshoots.
+	//
+	//     queries     fall monotonically as the rate falls, then flatten out
+	//     bytes       fall with the queries, then climb again
+	//
+	// The climb is the terminal codeword and every opened coset growing with the rate.
+	// The candidates bracket the turning point on both sides, and it moves with the oracle size.
+	#[test]
+	fn pinned_proof_size_by_rate() {
+		let merkle_scheme = test_merkle_scheme();
+
+		// A small and a large single oracle, plus a ZK batch.
+		// The ZK oracle pins its batch size at 1, taking the fixed-batch-size branch of selection.
+		// The shorter non-ZK oracle beside it exercises lifting.
+		let batches: [(&str, Vec<OracleSpec>); 3] = [
+			("single/17", vec![OracleSpec::new(17)]),
+			("single/24", vec![OracleSpec::new(24)]),
+			("zk/24+21", vec![OracleSpec::new_zk(24), OracleSpec::new(21)]),
+		];
+
+		let observed = batches
+			.iter()
+			.flat_map(|(label, oracles)| {
+				LOG_INV_RATES.map(|log_inv_rate| {
+					(
+						*label,
+						log_inv_rate,
+						calculate_n_test_queries(SECURITY_BITS, log_inv_rate),
+						proof_size_at_rate(&merkle_scheme, oracles, log_inv_rate),
+					)
+				})
+			})
+			.collect::<Vec<_>>();
+
+		assert_eq!(observed, PINNED_PROOF_SIZE_BY_RATE);
+	}
+
+	// Reports the rate trade-off, rather than asserting it, for picking `log_inv_rate` by hand.
+	//
+	//     cargo test -p binius-iop --lib -- --ignored --nocapture report_rate_trade_off
+	//
+	// The encode column is derived, not measured, and is exact.
+	// `ReedSolomonCode::encode_batch` skips its first `log_inv_rate` NTT layers.
+	// It therefore runs `log_dim` layers over a codeword of `2^(log_dim + log_inv_rate)`:
+	//
+	//     butterflies = log_dim * 2^(log_dim + log_inv_rate - 1)
+	//
+	// The rate enters as a bare factor of `2^log_inv_rate`, with no log term on it.
+	// One step down the rate is exactly twice the encoding work, so the column is a doubling.
+	//
+	// `crates/math/benches/reed_solomon.rs` measures how far memory traffic bends that.
+	#[test]
+	#[ignore = "prints a table instead of asserting; needs --nocapture to be useful"]
+	fn report_rate_trade_off() {
+		let merkle_scheme = test_merkle_scheme();
+
+		for log_msg_len in [17, 20, 24] {
+			let oracles = [OracleSpec::new(log_msg_len)];
+			let priced = LOG_INV_RATES
+				.map(|log_inv_rate| proof_size_at_rate(&merkle_scheme, &oracles, log_inv_rate));
+			let smallest = priced
+				.iter()
+				.copied()
+				.min()
+				.expect("LOG_INV_RATES is non-empty");
+
+			println!();
+			println!(
+				"one non-ZK oracle, log_msg_len = {log_msg_len}, {SECURITY_BITS}-bit security"
+			);
+			println!("  rate  queries        proof  vs best encode");
+			for (log_inv_rate, proof_size) in std::iter::zip(LOG_INV_RATES, priced) {
+				let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+				let kib = proof_size as f64 / 1024.0;
+				let vs_best = proof_size as f64 / smallest as f64;
+				// Encoding work relative to the first candidate, which is the cheapest to encode.
+				let encode = 1usize << (log_inv_rate - LOG_INV_RATES[0]);
+				println!(
+					"  1/{:<3} {n_test_queries:>7}  {kib:>7.2} KiB  {vs_best:>6.2}x  {encode:>4}x",
+					1 << log_inv_rate
+				);
+			}
+		}
+	}
+
+	// Invariant: a lower rate needs fewer queries, but the saving flattens out fast.
+	//
+	//     1/2 -> 232     1/16 -> 106
+	//     1/4 -> 142     1/32 -> 101
+	//     1/8 -> 116     1/64 ->  99
+	//
+	// Past 1/8, halving the rate again buys ten queries while doubling the codeword.
+	// That flattening is why `pinned_proof_size_by_rate` turns around instead of falling forever.
 	#[test]
 	fn test_calculate_n_test_queries() {
-		let security_bits = 96;
-		let n_test_queries = calculate_n_test_queries(security_bits, 1);
-		assert_eq!(n_test_queries, 232);
-
-		let n_test_queries = calculate_n_test_queries(security_bits, 2);
-		assert_eq!(n_test_queries, 142);
+		let observed =
+			LOG_INV_RATES.map(|log_inv_rate| calculate_n_test_queries(SECURITY_BITS, log_inv_rate));
+		assert_eq!(observed, [232, 142, 116, 106, 101, 99]);
 	}
 
 	#[test]
