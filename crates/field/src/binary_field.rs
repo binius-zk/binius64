@@ -7,10 +7,6 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-use binius_utils::{
-	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
-	bytes::{Buf, BufMut},
-};
 use bytemuck::Zeroable;
 
 use super::{UnderlierType, WithUnderlier, extension::ExtensionField};
@@ -72,6 +68,23 @@ macro_rules! binary_field {
 
 		unsafe impl $crate::underlier::WithUnderlier for $name {
 			type Underlier = $typ;
+		}
+
+		// Serialization forwards to the underlier.
+		impl binius_utils::SerializeBytes for $name {
+			fn serialize(&self, write_buf: impl binius_utils::bytes::BufMut) -> Result<(), binius_utils::SerializationError> {
+				self.0.serialize(write_buf)
+			}
+		}
+
+		impl binius_utils::DeserializeBytes for $name {
+			fn deserialize(read_buf: impl binius_utils::bytes::Buf) -> Result<Self, binius_utils::SerializationError> {
+				Ok(Self(binius_utils::DeserializeBytes::deserialize(read_buf)?))
+			}
+		}
+
+		impl binius_utils::FixedSizeSerializeBytes for $name {
+			const BYTE_SIZE: usize = <$typ as binius_utils::FixedSizeSerializeBytes>::BYTE_SIZE;
 		}
 
 		impl Neg for $name {
@@ -585,28 +598,6 @@ pub(crate) use impl_field_extension;
 
 // The trace over the prime field is the identity here, so `ONE` is the only trace-1 element.
 binary_field!(pub BinaryField1b(U1), U1::new(0x1), U1::new(0x1));
-
-macro_rules! serialize_deserialize {
-	($bin_type:ty) => {
-		impl SerializeBytes for $bin_type {
-			fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-				self.0.serialize(write_buf)
-			}
-		}
-
-		impl DeserializeBytes for $bin_type {
-			fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError> {
-				Ok(Self(DeserializeBytes::deserialize(read_buf)?))
-			}
-		}
-	};
-}
-
-serialize_deserialize!(BinaryField1b);
-
-impl FixedSizeSerializeBytes for BinaryField1b {
-	const BYTE_SIZE: usize = 1;
-}
 
 impl BinaryField1b {
 	pub const fn new(value: U1) -> Self {

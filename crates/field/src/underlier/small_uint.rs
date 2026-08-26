@@ -7,7 +7,7 @@ use std::{
 };
 
 use binius_utils::{
-	SerializationError, SerializeBytes,
+	FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 	checked_arithmetics::checked_log_2,
 	serialization::DeserializeBytes,
@@ -257,6 +257,10 @@ impl<const N: usize> DeserializeBytes for SmallU<N> {
 	{
 		Ok(Self::new(DeserializeBytes::deserialize(read_buf)?))
 	}
+}
+
+impl<const N: usize> FixedSizeSerializeBytes for SmallU<N> {
+	const BYTE_SIZE: usize = 1;
 }
 
 #[cfg(test)]

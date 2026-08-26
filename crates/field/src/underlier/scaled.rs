@@ -9,7 +9,7 @@ use std::{
 };
 
 use binius_utils::{
-	DeserializeBytes, SerializationError, SerializeBytes,
+	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 	checked_arithmetics::checked_log_2,
 };
@@ -261,6 +261,10 @@ impl<U: DeserializeBytes, const N: usize> DeserializeBytes for ScaledUnderlier<U
 	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError> {
 		<[U; N]>::deserialize(read_buf).map(Self)
 	}
+}
+
+impl<U: FixedSizeSerializeBytes, const N: usize> FixedSizeSerializeBytes for ScaledUnderlier<U, N> {
+	const BYTE_SIZE: usize = U::BYTE_SIZE * N;
 }
 
 #[cfg(test)]

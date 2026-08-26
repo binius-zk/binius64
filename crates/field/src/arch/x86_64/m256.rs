@@ -8,7 +8,7 @@ use std::{
 };
 
 use binius_utils::{
-	DeserializeBytes, SerializationError, SerializeBytes,
+	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 	serialization::{assert_enough_data_for, assert_enough_space_for},
 };
@@ -170,6 +170,10 @@ impl DeserializeBytes for M256 {
 
 		Ok(Self::from(raw_values))
 	}
+}
+
+impl FixedSizeSerializeBytes for M256 {
+	const BYTE_SIZE: usize = 32;
 }
 
 impl_divisible_bitmask!(M256, 1, 2, 4);

@@ -7,10 +7,6 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-use binius_utils::{
-	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
-	bytes::{Buf, BufMut},
-};
 use bytemuck::{Pod, Zeroable};
 
 use super::{
@@ -101,28 +97,9 @@ impl_field_extension!(BinaryField1b(U1) < @3 => AESTowerField8b(u8));
 
 mul_by_binary_field_1b!(AESTowerField8b);
 
-impl SerializeBytes for AESTowerField8b {
-	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-		self.0.serialize(write_buf)
-	}
-}
-
-impl DeserializeBytes for AESTowerField8b {
-	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>
-	where
-		Self: Sized,
-	{
-		Ok(Self(DeserializeBytes::deserialize(read_buf)?))
-	}
-}
-
-impl FixedSizeSerializeBytes for AESTowerField8b {
-	const BYTE_SIZE: usize = 1;
-}
-
 #[cfg(test)]
 mod tests {
-	use binius_utils::{SerializeBytes, bytes::BytesMut};
+	use binius_utils::{DeserializeBytes, SerializeBytes, bytes::BytesMut};
 	use proptest::{arbitrary::any, proptest};
 	use rand::prelude::*;
 

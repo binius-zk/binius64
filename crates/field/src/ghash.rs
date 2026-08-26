@@ -10,10 +10,6 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-use binius_utils::{
-	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
-	bytes::{Buf, BufMut},
-};
 use bytemuck::{Pod, Zeroable};
 
 use super::{
@@ -94,25 +90,6 @@ impl Ghash128b {
 impl_field_extension!(BinaryField1b(U1) < @7 => Ghash128b(M128));
 
 mul_by_binary_field_1b!(Ghash128b);
-
-impl SerializeBytes for Ghash128b {
-	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-		self.0.serialize(write_buf)
-	}
-}
-
-impl DeserializeBytes for Ghash128b {
-	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>
-	where
-		Self: Sized,
-	{
-		Ok(Self(DeserializeBytes::deserialize(read_buf)?))
-	}
-}
-
-impl FixedSizeSerializeBytes for Ghash128b {
-	const BYTE_SIZE: usize = 16;
-}
 
 impl From<AESTowerField8b> for Ghash128b {
 	#[inline]
