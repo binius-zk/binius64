@@ -22,10 +22,6 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-use binius_utils::{
-	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
-	bytes::{Buf, BufMut},
-};
 use bytemuck::{Pod, Zeroable};
 
 use super::{
@@ -90,27 +86,9 @@ impl Mul<Ghash128b> for GhashSq256b {
 	}
 }
 
-impl SerializeBytes for GhashSq256b {
-	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-		self.0.serialize(write_buf)
-	}
-}
-
-impl DeserializeBytes for GhashSq256b {
-	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>
-	where
-		Self: Sized,
-	{
-		Ok(Self(DeserializeBytes::deserialize(read_buf)?))
-	}
-}
-
-impl FixedSizeSerializeBytes for GhashSq256b {
-	const BYTE_SIZE: usize = 32;
-}
-
 #[cfg(test)]
 mod tests {
+	use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes, SerializeBytes};
 	use proptest::prelude::*;
 
 	use super::*;

@@ -3,7 +3,7 @@
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
 
 use binius_utils::{
-	DeserializeBytes, SerializationError, SerializeBytes,
+	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 	serialization::{assert_enough_data_for, assert_enough_space_for},
 };
@@ -88,6 +88,10 @@ impl DeserializeBytes for M128 {
 		assert_enough_data_for(&read_buf, std::mem::size_of::<Self>())?;
 		Ok(Self(read_buf.get_u128_le()))
 	}
+}
+
+impl FixedSizeSerializeBytes for M128 {
+	const BYTE_SIZE: usize = 16;
 }
 
 unsafe impl Zeroable for M128 {}

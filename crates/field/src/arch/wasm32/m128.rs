@@ -7,7 +7,7 @@ use std::{
 };
 
 use binius_utils::{
-	DeserializeBytes, SerializationError, SerializeBytes,
+	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 	serialization::{assert_enough_data_for, assert_enough_space_for},
 };
@@ -149,6 +149,10 @@ impl DeserializeBytes for M128 {
 
 		Ok(Self::from(read_buf.get_u128_le()))
 	}
+}
+
+impl FixedSizeSerializeBytes for M128 {
+	const BYTE_SIZE: usize = 16;
 }
 
 impl_divisible_memcast!(M128, u128, u64, u32, u16, u8);
