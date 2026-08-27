@@ -19,8 +19,8 @@ use bytemuck::TransparentWrapper;
 use super::super::m128::M128;
 use crate::{
 	Ghash128b as GhashB128, WideMul,
-	arch::PackedPrimitiveType,
 	arithmetic_traits::{MulXWide, Square},
+	packed_fields::primitive::PackedPrimitiveType,
 };
 
 // The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87.

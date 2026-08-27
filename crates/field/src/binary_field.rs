@@ -352,7 +352,7 @@ macro_rules! binary_field {
 			#[inline]
 			fn mul(self, rhs: Self) -> Self {
 				$crate::tracing::trace_multiplication!($name);
-				type P = $crate::arch::PackedPrimitiveType<$typ, $name>;
+				type P = $crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name>;
 				Self((P::from_underlier(self.0) * P::from_underlier(rhs.0)).to_underlier())
 			}
 		}
@@ -360,7 +360,7 @@ macro_rules! binary_field {
 		impl $crate::arithmetic_traits::Square for $name {
 			#[inline]
 			fn square(self) -> Self {
-				type P = $crate::arch::PackedPrimitiveType<$typ, $name>;
+				type P = $crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name>;
 				Self(
 					$crate::arithmetic_traits::Square::square(P::from_underlier(self.0)).to_underlier(),
 				)
@@ -370,7 +370,7 @@ macro_rules! binary_field {
 		impl $crate::arithmetic_traits::InvertOrZero for $name {
 			#[inline]
 			fn invert_or_zero(self) -> Self {
-				type P = $crate::arch::PackedPrimitiveType<$typ, $name>;
+				type P = $crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name>;
 				Self(
 					$crate::arithmetic_traits::InvertOrZero::invert_or_zero(P::from_underlier(self.0))
 						.to_underlier(),
@@ -379,11 +379,11 @@ macro_rules! binary_field {
 		}
 
 		impl $crate::arithmetic_traits::WideMul for $name {
-			type Output = <$crate::arch::PackedPrimitiveType<$typ, $name> as $crate::arithmetic_traits::WideMul>::Output;
+			type Output = <$crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name> as $crate::arithmetic_traits::WideMul>::Output;
 
 			#[inline]
 			fn wide_mul(a: Self, b: Self) -> Self::Output {
-				type P = $crate::arch::PackedPrimitiveType<$typ, $name>;
+				type P = $crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name>;
 				<P as $crate::arithmetic_traits::WideMul>::wide_mul(
 					P::from_underlier(a.0),
 					P::from_underlier(b.0),
@@ -392,7 +392,7 @@ macro_rules! binary_field {
 
 			#[inline]
 			fn reduce(wide: Self::Output) -> Self {
-				type P = $crate::arch::PackedPrimitiveType<$typ, $name>;
+				type P = $crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name>;
 				Self(<P as $crate::arithmetic_traits::WideMul>::reduce(wide).to_underlier())
 			}
 		}
@@ -458,7 +458,8 @@ macro_rules! impl_field_extension {
 			fn mul(self, rhs: $subfield_name) -> Self::Output {
 				$crate::tracing::trace_multiplication!($name, $subfield_name);
 
-				type P = $crate::arch::PackedPrimitiveType<$typ, $subfield_name>;
+				type P =
+					$crate::packed_fields::primitive::PackedPrimitiveType<$typ, $subfield_name>;
 				Self((P::from_underlier(self.0) * P::broadcast(rhs)).to_underlier())
 			}
 		}

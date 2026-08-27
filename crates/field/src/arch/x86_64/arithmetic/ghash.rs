@@ -15,8 +15,8 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	Divisible, Ghash128b as GhashB128, WideMul,
-	arch::PackedPrimitiveType,
 	arithmetic_traits::{MulXWide, Square},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::UnderlierType,
 };
 

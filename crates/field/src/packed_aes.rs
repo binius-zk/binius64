@@ -51,7 +51,7 @@ define_packed_binary_field!(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{WideMul, packed_binary_field::test_utils::packed_field_tests};
+	use crate::{WideMul, packed_fields::test_utils::packed_field_tests};
 
 	packed_field_tests!(aes_1x8b, PackedAESBinaryField1x8b);
 	packed_field_tests!(aes_16x8b, PackedAESBinaryField16x8b);

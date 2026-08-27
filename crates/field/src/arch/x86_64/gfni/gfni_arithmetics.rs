@@ -5,8 +5,9 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	Rijndael8b,
-	arch::{portable::packed::PackedPrimitiveType, x86_64::simd::simd_arithmetic::TowerSimdType},
+	arch::x86_64::simd::simd_arithmetic::TowerSimdType,
 	arithmetic_traits::{InvertOrZero, WideMul},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::UnderlierType,
 };
 

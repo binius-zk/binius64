@@ -1,6 +1,8 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+//! A primitive or SIMD integer reinterpreted as a vector of packed field elements.
+
 // This is because derive(bytemuck::TransparentWrapper) adds some type constraints to
 // PackedPrimitiveType in addition to the type constraints we define. Even more, annoying, the
 // allow attribute has to be added to the module, it doesn't work to add it to the struct

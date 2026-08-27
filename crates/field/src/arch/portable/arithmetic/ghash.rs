@@ -13,8 +13,8 @@ use bytemuck::TransparentWrapper;
 use super::super::univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64};
 use crate::{
 	Ghash128b as GhashB128, WideMul,
-	arch::PackedPrimitiveType,
 	arithmetic_traits::{MulXWide, Square},
+	packed_fields::primitive::PackedPrimitiveType,
 };
 
 /// Multiply two GHASH field elements using software implementation.

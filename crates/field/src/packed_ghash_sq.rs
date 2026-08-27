@@ -34,12 +34,12 @@ use bytemuck::TransparentWrapper;
 use crate::{
 	Divisible, Ghash128b, GhashSq256b, PackedBinaryGhash2x128b, PackedField, WideMul,
 	arch::{
-		Divide, GhashSqWideMul1x, M128, M256, M512, MulFromWideMul, PackedPrimitiveType,
+		Divide, GhashSqWideMul1x, M128, M256, M512, MulFromWideMul,
 		portable::packed_macros::{portable_macros::*, *},
 	},
 	arithmetic_traits::{InvertOrZero, Square},
 	packed_extension,
-	sliced_packed_field::SlicedPackedField,
+	packed_fields::{primitive::PackedPrimitiveType, sliced::SlicedPackedField},
 	underlier::{UnderlierType, WithUnderlier},
 };
 

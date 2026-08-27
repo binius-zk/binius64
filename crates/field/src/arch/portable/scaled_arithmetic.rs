@@ -4,11 +4,11 @@ use std::array;
 
 use bytemuck::{Pod, TransparentWrapper};
 
-use super::packed::PackedPrimitiveType;
 use crate::{
 	BinaryField,
 	arch::LaneWideProduct,
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{ScaledUnderlier, UnderlierType},
 };
 

@@ -21,8 +21,8 @@ use seq_macro::seq;
 
 use crate::{
 	BinaryField,
-	arch::portable::packed::PackedPrimitiveType,
 	divisible::{Divisible, impl_divisible_self, mapget},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 

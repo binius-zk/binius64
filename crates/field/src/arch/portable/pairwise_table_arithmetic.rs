@@ -3,10 +3,10 @@
 
 use bytemuck::TransparentWrapper;
 
-use super::packed::PackedPrimitiveType;
 use crate::{
 	Rijndael8b,
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
+	packed_fields::primitive::PackedPrimitiveType,
 };
 
 /// Multiplies two `Rijndael8b` elements (as raw bytes) via the tower-field log/exp tables.

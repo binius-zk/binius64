@@ -10,7 +10,7 @@ macro_rules! define_packed_binary_field {
 		($($wide_mul:tt)*)
 	) => {
 		// Define packed field types
-		pub type $name = $crate::arch::PackedPrimitiveType<$underlier, $scalar>;
+		pub type $name = $crate::packed_fields::primitive::PackedPrimitiveType<$underlier, $scalar>;
 
 		// Serialization is provided by a single generic impl on `PackedPrimitiveType` (see
 		// `packed.rs`), so no per-type impl is needed here.
