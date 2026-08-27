@@ -15,7 +15,7 @@
 use digest::Output;
 use portable::{PortableBlake3ParallelCompression, PortableBlake3ParallelDigest};
 
-use super::{binary_merkle_tree::HashSuite, compress::CompressionFunction};
+use super::{binary_merkle_tree::HashSuite, compression::CompressionFunction};
 
 pub mod portable;
 

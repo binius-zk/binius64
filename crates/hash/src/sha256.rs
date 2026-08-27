@@ -18,8 +18,7 @@ use sha2::{Sha256, block_api::compress256, digest::Output};
 
 use super::{
 	binary_merkle_tree::HashSuite,
-	compress::CompressionFunction,
-	parallel_compression::ParallelPseudoCompression,
+	compression::{CompressionFunction, ParallelPseudoCompression},
 	parallel_digest::{ParallelDigest, ParallelDigestAdapter},
 	sha256_x4::compress256_x4,
 };
@@ -289,7 +288,7 @@ mod tests {
 	use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::parallel_compression::ParallelCompressionAdaptor;
+	use crate::compression::ParallelCompressionAdaptor;
 
 	#[test]
 	fn test_parallel_sha256_compression_matches_adaptor() {

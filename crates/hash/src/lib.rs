@@ -9,16 +9,14 @@
 
 pub mod binary_merkle_tree;
 pub mod blake3;
-pub mod compress;
-pub mod parallel_compression;
+pub mod compression;
 pub mod parallel_digest;
 mod serialization;
 pub mod sha256;
 pub mod sha256_x4;
 
 pub use blake3::{Blake3Compression, Blake3HashSuite};
-pub use compress::CompressionFunction;
-pub use parallel_compression::{ParallelCompressionAdaptor, ParallelPseudoCompression};
+pub use compression::{CompressionFunction, ParallelCompressionAdaptor, ParallelPseudoCompression};
 pub use parallel_digest::{
 	MultiDigest, ParallelDigest, ParallelDigestAdapter, ParallelMultidigestImpl,
 };

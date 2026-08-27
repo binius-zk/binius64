@@ -45,7 +45,7 @@ use super::avx512;
 use super::neon;
 use super::{Blake3Compression, CHUNK_END, CHUNK_START, IV, MSG_SCHEDULE, ROOT};
 use crate::{
-	parallel_compression::ParallelPseudoCompression,
+	compression::ParallelPseudoCompression,
 	parallel_digest::{
 		MultiDigest, ParallelDigest, ParallelDigestAdapter, ParallelMultidigestImpl,
 	},
@@ -493,7 +493,7 @@ mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::compress::CompressionFunction;
+	use crate::compression::CompressionFunction;
 
 	/// Folds `pairs` through the `N`-lane portable compression.
 	/// Pins every output bit-identical to the scalar [`Blake3Compression`].

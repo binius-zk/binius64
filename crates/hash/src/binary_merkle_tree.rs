@@ -16,7 +16,7 @@ use digest::{
 };
 
 use super::{
-	compress::CompressionFunction, parallel_compression::ParallelPseudoCompression,
+	compression::{CompressionFunction, ParallelPseudoCompression},
 	parallel_digest::ParallelDigest,
 };
 
