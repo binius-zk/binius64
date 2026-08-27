@@ -68,7 +68,7 @@ where
 {
 	// One batching coefficient per operation, drawn from the channel.
 	// SOUNDNESS: `prepare` draws in the order the verifier draws in; do not reorder it.
-	let prepared = claims.prepare(|| channel.sample());
+	let prepared = claims.prepare(channel);
 
 	// Phase 1: accumulate the g rows once per key segment. The public words are constants shared
 	// by every instance, so the single-instance builder folds them directly from their bits; the
@@ -182,7 +182,7 @@ where
 /// rows[key.dense_shift_idx * Word::BITS + bit] += folded_bit * acc(key)
 /// ```
 ///
-/// where `acc(key)` is the key's lambda-weighted partial evaluation tensor.
+/// where `acc(key)` is the key's batching-weighted partial evaluation tensor.
 /// Every word carrying that key accumulates into the same row.
 ///
 /// This scalar implementation ignores the single-instance builder's packing and parallelism.
@@ -202,11 +202,11 @@ pub fn build_g_from_folded_words<F: BinaryField>(
 		for key in keys {
 			let operator_data = &prepared[key.operation];
 
-			// The lambda-weighted partial evaluation tensor for this shifted word.
+			// The batching-weighted partial evaluation tensor for this shifted word.
 			let acc = key.accumulate(
 				&segment.constraint_indices,
-				operator_data.r_x_prime_tensor.as_ref(),
-				&operator_data.lambda_powers,
+				operator_data.weighted_r_x_prime_tensor.as_ref(),
+				&prepared.operand_weights,
 			);
 
 			let base = key.dense_shift_idx as usize * Word::BITS;
@@ -527,7 +527,7 @@ mod tests {
 			intmul: OperatorData::zero_claim(r_z),
 			binmul: OperatorData::zero_claim(r_z),
 		};
-		let prepared = claims.prepare(|| B128::random(&mut rng));
+		let prepared = claims.prepare(&mut ProverTranscript::<StdChallenger>::default());
 
 		// The g rows: the public segment folds from raw constant words via the single-instance
 		// builder, the hidden segment from the instance-folded words. The h multilinear comes

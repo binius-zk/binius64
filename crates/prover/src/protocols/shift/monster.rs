@@ -14,17 +14,6 @@ use super::{phase_1::SHIFT_OPERATOR_LOG_LEN, shift_ind::ShiftChallenge};
 /// The width the half-word (`*32`) shift variants act over.
 const HALF_WORD_BITS: usize = 32;
 
-/// The phase-2 scalar weights of one key segment, one table per operation.
-///
-/// A table holds the `arity` weights of each shift sequence the segment uses, in dense shift index
-/// order, so a key's weights are the chunk at `key.dense_shift_idx * arity`.
-pub(super) struct ScalarTables<F> {
-	pub(super) zero: Vec<F>,
-	pub(super) bitand: Vec<F>,
-	pub(super) intmul: Vec<F>,
-	pub(super) binmul: Vec<F>,
-}
-
 /// The equality-indicator weights of a shift sequence's outer slot.
 ///
 /// The sequence weight factorizes across its two slots, so each slot carries its own two tensors:

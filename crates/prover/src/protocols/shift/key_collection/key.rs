@@ -178,10 +178,8 @@ mod tests {
 	use std::{iter, mem};
 
 	use binius_field::Ghash128b;
-	use binius_math::FieldBuffer;
 
 	use super::*;
-	use crate::protocols::shift::PreparedOperatorData;
 
 	type F = Ghash128b;
 
@@ -231,7 +229,7 @@ mod tests {
 	fn accumulate_by_operand<'a>(
 		key: &'a Key,
 		constraint_indices: &'a [ConstraintIndex],
-		operator_data: &'a PreparedOperatorData<F>,
+		r_x_prime_tensor: &'a [F],
 	) -> impl Iterator<Item = (usize, F)> + 'a {
 		let Range { start, end } = key.range;
 
@@ -241,14 +239,14 @@ mod tests {
 		iter::from_fn(move || {
 			let current = maybe_current?;
 
-			acc += operator_data.r_x_prime_tensor.as_ref()[current.constraint_index as usize];
+			acc += r_x_prime_tensor[current.constraint_index as usize];
 			for next in &mut iter {
 				maybe_current = Some(next);
 				if next.operand_index != current.operand_index {
 					let ret = mem::take(&mut acc);
 					return Some((current.operand_index as usize, ret));
 				}
-				acc += operator_data.r_x_prime_tensor.as_ref()[next.constraint_index as usize];
+				acc += r_x_prime_tensor[next.constraint_index as usize];
 			}
 
 			maybe_current = None;
@@ -285,32 +283,17 @@ mod tests {
 			dense_shift_idx: 0,
 			range: 0..constraint_indices.len() as u32,
 		};
-		let operator_data = PreparedOperatorData {
-			batched_eval: F::ZERO,
-			r_zhat_prime: F::ZERO,
-			r_x_prime_tensor: FieldBuffer::from_values(&[
-				f(2),
-				f(3),
-				f(5),
-				f(7),
-				f(11),
-				f(13),
-				f(17),
-				f(19),
-			]),
-			lambda_powers: vec![f(23), f(29), f(31)],
-		};
+		let r_x_prime_tensor = [f(2), f(3), f(5), f(7), f(11), f(13), f(17), f(19)];
+		// The operand axis is padded to a cube, so it holds more weights than the arity of the
+		// operation the key names. Only the leading ones are ever read.
+		let operand_weights = [f(23), f(29), f(31), f(37), f(41), f(43), f(47), f(53)];
 
-		let expected = accumulate_by_operand(&key, &constraint_indices, &operator_data)
-			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
+		let expected = accumulate_by_operand(&key, &constraint_indices, &r_x_prime_tensor)
+			.map(|(operand_index, acc)| acc * operand_weights[operand_index])
 			.sum::<F>();
 
 		assert_eq!(
-			key.accumulate(
-				&constraint_indices,
-				operator_data.r_x_prime_tensor.as_ref(),
-				&operator_data.lambda_powers
-			),
+			key.accumulate(&constraint_indices, &r_x_prime_tensor, &operand_weights),
 			expected
 		);
 
@@ -344,16 +327,16 @@ mod tests {
 		let non_contiguous_expected = accumulate_by_operand(
 			&non_contiguous_key,
 			&non_contiguous_constraint_indices,
-			&operator_data,
+			&r_x_prime_tensor,
 		)
-		.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
+		.map(|(operand_index, acc)| acc * operand_weights[operand_index])
 		.sum::<F>();
 
 		assert_eq!(
 			non_contiguous_key.accumulate(
 				&non_contiguous_constraint_indices,
-				operator_data.r_x_prime_tensor.as_ref(),
-				&operator_data.lambda_powers
+				&r_x_prime_tensor,
+				&operand_weights
 			),
 			non_contiguous_expected
 		);
@@ -364,11 +347,7 @@ mod tests {
 			range: 0..0,
 		};
 		assert_eq!(
-			empty_key.accumulate(
-				&constraint_indices,
-				operator_data.r_x_prime_tensor.as_ref(),
-				&operator_data.lambda_powers
-			),
+			empty_key.accumulate(&constraint_indices, &r_x_prime_tensor, &operand_weights),
 			F::ZERO
 		);
 	}

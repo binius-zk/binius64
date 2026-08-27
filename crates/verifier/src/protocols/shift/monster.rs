@@ -4,28 +4,29 @@
 use std::iter;
 
 use binius_core::constraint_system::{Operand, ValueIndex};
-use binius_field::{BinaryField, FieldOps, WideMul, util::powers};
+use binius_field::{BinaryField, FieldOps, WideMul};
 use binius_utils::rayon::{
 	prelude::*,
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
 
-use super::SHIFT_COUNT;
+use super::LOG_MAX_ARITY;
 
 /// The evaluation of one operation's monster multilinear polynomial.
 ///
-/// The monster multilinear encodes all `ARITY`-operand constraints of a single operation (BitAnd,
-/// IntMul or BinMul) into one polynomial:
+/// The monster multilinear encodes all `ARITY`-operand constraints of a single operation (Zero,
+/// BitAnd, IntMul or BinMul) into one polynomial:
 ///
 /// $$
 /// \sum_{\text{m_idx} \in \text{enumerate(operands)}}
-///     \lambda^{\text{m_idx}+1}
+///     \text{eq}(r_m, \text{m_idx})
 ///     \sum_{\text{op}} h_{\text{op}}(r_j, r_s) \cdot M_{\text{m}, \text{op}}(r_x', r_y, r_s)
 /// $$
 ///
 /// where `m_idx` indexes the operand position (0 to `ARITY - 1`), `op` ranges over the shift
 /// variants, `h_op` is the shift selector polynomial, and `M_{m,op}` is the multilinear extension
-/// of the operand values.
+/// of the operand values. The operand batching weight is the equality indicator of the operand
+/// axis, which the four operations share.
 ///
 /// Both evaluations read one borrowed weight table per axis, bundled as [`WiringWeights`]. The
 /// tables the four operations share are then built once by the caller and lent to all four, rather
@@ -73,10 +74,14 @@ pub struct WiringEntry {
 pub struct WiringWeights<'a, E> {
 	/// One entry per constraint index, covering the padded constraint count.
 	pub constraint: &'a [E],
-	/// One entry per inner slot spelling paired with an operand position, the operand innermost.
+	/// One entry per inner slot spelling paired with an operand position, the operand innermost:
+	/// `(inner_shift << LOG_MAX_ARITY) | operand`.
+	///
+	/// The operand axis is padded to a cube so that the table is a plain tensor expansion, which
+	/// is why its stride is `1 << LOG_MAX_ARITY` rather than the operation's own arity.
 	pub inner_operand: &'a [E],
-	/// One entry per outer slot spelling.
-	pub outer: &'a [E; SHIFT_COUNT],
+	/// One entry per outer slot spelling, `SHIFT_COUNT` of them.
+	pub outer: &'a [E],
 	/// One entry per value address, in three runs: constants, then inout, then private.
 	pub value: [&'a [E]; 3],
 }
@@ -125,7 +130,8 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 	///
 	/// ```text
 	///     sum over nonzeros of
-	///         constraint[i] * inner_operand[inner * ARITY + a] * outer[o] * value[seg][idx]
+	///         constraint[i] * inner_operand[(inner << LOG_MAX_ARITY) | a] * outer[o]
+	///             * value[seg][idx]
 	/// ```
 	///
 	/// Contract with equality indicators and the result is the tensor's multilinear extension.
@@ -143,7 +149,7 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 		let mut acc = E::zero();
 		for entry in self.entries() {
 			// Two axes share one table: the inner slot's spelling with the operand innermost.
-			let inner_operand = entry.inner_shift * ARITY + entry.operand;
+			let inner_operand = (entry.inner_shift << LOG_MAX_ARITY) | entry.operand;
 			acc += weights.constraint[entry.constraint].clone()
 				* &weights.inner_operand[inner_operand]
 				* &weights.outer[entry.outer_shift]
@@ -168,7 +174,7 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 				for svi in operand {
 					// Two axes share one table: the inner slot's spelling with the operand
 					// innermost.
-					let inner_operand = svi.inner().index() * ARITY + operand_id;
+					let inner_operand = (svi.inner().index() << LOG_MAX_ARITY) | operand_id;
 					constraint_eval += weights.inner_operand[inner_operand].clone()
 						* &weights.outer[svi.outer().index()]
 						* &weights.value[svi.value_index.segment() as usize]
@@ -209,7 +215,7 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 				let mut constraint_eval = F::ZERO;
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
 					for svi in operand {
-						let inner_operand = svi.inner().index() * ARITY + operand_id;
+						let inner_operand = (svi.inner().index() << LOG_MAX_ARITY) | operand_id;
 						constraint_eval += weights.inner_operand[inner_operand]
 							* weights.outer[svi.outer().index()]
 							* weights.value[svi.value_index.segment() as usize]
@@ -221,31 +227,6 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 			.sum::<<F as WideMul>::Output>();
 		F::reduce(eval)
 	}
-}
-
-/// Folds the operand batching coefficients (λ powers) into the inner slot's shift scalars,
-/// producing a table indexed by `(variant, amount, operand_id)` whose entry is
-/// `inner[variant * Word::BITS + amount] · λ^{operand_id + 1}`.
-///
-/// The fan-out stays on this one table.
-/// A term's outer-slot weight multiplies in where the term is read.
-/// So the table is `SHIFT_COUNT * arity` entries rather than `SHIFT_COUNT^2 * arity`.
-pub fn operand_shift_scalar_table<E: FieldOps>(
-	shift_scalars: &[E; SHIFT_COUNT],
-	lambda: &E,
-	arity: usize,
-) -> Vec<E> {
-	let lambda_powers = powers(lambda.clone())
-		.skip(1)
-		.take(arity)
-		.collect::<Vec<_>>();
-	let mut table = Vec::with_capacity(shift_scalars.len() * arity);
-	for shift_scalar in shift_scalars {
-		for lambda_power in &lambda_powers {
-			table.push(shift_scalar.clone() * lambda_power);
-		}
-	}
-	table
 }
 
 #[cfg(test)]
@@ -260,7 +241,10 @@ mod tests {
 	use binius_utils::checked_arithmetics::log2_ceil_usize;
 	use rand::prelude::*;
 
-	use super::{super::SHIFT_VARIANT_COUNT, *};
+	use super::{
+		super::{SHIFT_COUNT, SHIFT_VARIANT_COUNT},
+		*,
+	};
 
 	/// Builds `n_constraints` random arity-3 constraints (like `AndConstraint`), constraint-major:
 	/// one array of operands per constraint.
@@ -312,6 +296,9 @@ mod tests {
 			.collect()
 	}
 
+	/// The width of the inner table, which spans the operand axis as well as the shift axis.
+	const OPERAND_SHIFT_COUNT: usize = SHIFT_COUNT << LOG_MAX_ARITY;
+
 	/// The weight tables a run's own reduction reads, one per axis of the wiring tensor.
 	fn run_weights<'a, F: BinaryField>(
 		r_x_prime_tensor: &'a [F],
@@ -341,14 +328,11 @@ mod tests {
 		let n_words = 40usize;
 		let constraints = random_and_constraints(&mut rng, 32, n_words);
 		let r_x_prime = random_scalars::<F>(&mut rng, 5);
-		let lambda = F::random(&mut rng);
-		let inner: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
 		let hidden_tensor = random_scalars::<F>(&mut rng, n_words);
 		let r_y_tensor = [&[][..], &[][..], &hidden_tensor[..]];
 
 		let r_x_prime_tensor = eq_ind_partial_eval_scalars(&r_x_prime);
-		let inner_operand =
-			operand_shift_scalar_table(&inner, &lambda, constraints[0].as_ref().len());
+		let inner_operand = random_scalars::<F>(&mut rng, OPERAND_SHIFT_COUNT);
 
 		let eval_fn = OperationEvalFn::new(&constraints);
 		let eval_with_outer = |outer: &[F; SHIFT_COUNT]| {
@@ -410,11 +394,8 @@ mod tests {
 		// A power-of-two count, and one whose weight tensor runs past the last constraint.
 		for n_constraints in [64usize, 37] {
 			let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
-			let arity = constraints[0].as_ref().len();
 
 			let r_x_prime = random_scalars::<F>(&mut rng, log2_ceil_usize(n_constraints));
-			let lambda = F::random(&mut rng);
-			let inner: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
 			let outer: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
 			let hidden = random_scalars::<F>(&mut rng, n_words);
 			let value = [&[][..], &[][..], &hidden[..]];
@@ -423,7 +404,7 @@ mod tests {
 
 			// Both paths read the same weights, one table per axis.
 			let r_x_prime_tensor = eq_ind_partial_eval_scalars(&r_x_prime);
-			let inner_operand = operand_shift_scalar_table(&inner, &lambda, arity);
+			let inner_operand = random_scalars::<F>(&mut rng, OPERAND_SHIFT_COUNT);
 			let weights = run_weights(&r_x_prime_tensor, &inner_operand, &outer, value);
 
 			let batched = eval_fn.call::<F>(weights);
@@ -469,8 +450,8 @@ mod tests {
 			// One indicator per axis: one at the target's index, zero everywhere else.
 			let mut constraint = vec![F::ZERO; n_constraints];
 			constraint[target.constraint] = F::ONE;
-			let mut inner_operand = vec![F::ZERO; SHIFT_COUNT * arity];
-			inner_operand[target.inner_shift * arity + target.operand] = F::ONE;
+			let mut inner_operand = vec![F::ZERO; OPERAND_SHIFT_COUNT];
+			inner_operand[(target.inner_shift << LOG_MAX_ARITY) | target.operand] = F::ONE;
 			let mut outer = [F::ZERO; SHIFT_COUNT];
 			outer[target.outer_shift] = F::ONE;
 			let mut hidden = vec![F::ZERO; n_words];
@@ -533,7 +514,7 @@ mod tests {
 		assert_eq!(entries[0], entries[1], "the repeat sits at one position");
 
 		// Weights of one everywhere: the sum is then the nonzero count mod two, which is one.
-		let ones_inner = vec![F::ONE; SHIFT_COUNT * 3];
+		let ones_inner = vec![F::ONE; OPERAND_SHIFT_COUNT];
 		let ones_outer = [F::ONE; SHIFT_COUNT];
 		let ones_value = [F::ONE; 2];
 		let got = eval_fn.contract(run_weights(
@@ -558,17 +539,14 @@ mod tests {
 			let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
 
 			let r_x_prime = random_scalars::<F>(&mut rng, log2_ceil_usize(n_constraints));
-			let lambda = F::random(&mut rng);
 			// Both slots draw random weights, so a path that dropped the outer factor, or read
 			// it from the inner table, would disagree with the other.
-			let inner: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
 			let outer: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
 			let hidden_tensor = random_scalars::<F>(&mut rng, n_words);
 			let r_y_tensor = [&[][..], &[][..], &hidden_tensor[..]];
 
 			let r_x_prime_tensor = eq_ind_partial_eval_scalars(&r_x_prime);
-			let inner_operand =
-				operand_shift_scalar_table(&inner, &lambda, constraints[0].as_ref().len());
+			let inner_operand = random_scalars::<F>(&mut rng, OPERAND_SHIFT_COUNT);
 			let weights = run_weights(&r_x_prime_tensor, &inner_operand, &outer, r_y_tensor);
 
 			let eval_fn = OperationEvalFn::new(&constraints);
@@ -602,15 +580,12 @@ mod tests {
 			.collect::<Vec<_>>();
 
 		let r_x_prime = random_scalars::<F>(&mut rng, log2_ceil_usize(n_constraints));
-		let lambda = F::random(&mut rng);
-		let inner: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
 		let outer: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
 		let hidden_tensor = random_scalars::<F>(&mut rng, n_words);
 		let r_y_tensor = [&[][..], &[][..], &hidden_tensor[..]];
 
 		let r_x_prime_tensor = eq_ind_partial_eval_scalars(&r_x_prime);
-		let inner_operand =
-			operand_shift_scalar_table(&inner, &lambda, constraints[0].as_ref().len());
+		let inner_operand = random_scalars::<F>(&mut rng, OPERAND_SHIFT_COUNT);
 		let weights = run_weights(&r_x_prime_tensor, &inner_operand, &outer, r_y_tensor);
 
 		assert_eq!(

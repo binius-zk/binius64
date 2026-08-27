@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, iter};
+use std::iter;
 
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
@@ -14,6 +14,7 @@ use binius_ip::{
 };
 use binius_math::{
 	BinarySubspace,
+	inner_product::inner_product,
 	line::extrapolate_line,
 	multilinear::{
 		eq::{
@@ -22,13 +23,14 @@ use binius_math::{
 		},
 		evaluate::evaluate_inplace_scalars,
 	},
-	univariate::{EvaluationDomain, evaluate_univariate},
+	univariate::EvaluationDomain,
 };
 use getset::Getters;
+use itertools::chain;
 
 use super::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_COUNT, OperationEvalFn, SHIFT_COUNT,
-	SHIFT_LOG_VARS, WiringWeights, ZERO_ARITY, error::Error, operand_shift_scalar_table,
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_MAX_ARITY, LOG_OPERATION_COUNT, LOG_SHIFT_COUNT,
+	OperationEvalFn, SHIFT_COUNT, SHIFT_LOG_VARS, WiringWeights, ZERO_ARITY, error::Error,
 	shift_ind::evaluate_shift_inds,
 };
 
@@ -87,12 +89,20 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 		Self { r_x_prime, evals }
 	}
 
-	// Batching is scaled by random lambda and therefore this batched
-	// evaluation claim can be added to other batched evaluation claims
-	// without further random scaling.
-	fn batched_eval(&self, lambda: F) -> F {
-		let eval = evaluate_univariate(&self.evals, &lambda);
-		lambda * eval
+	/// The operand claims collapsed into one value by the operand-axis equality tensor.
+	///
+	/// Operand `m` is weighted by `operand_weights[m]`. Combining the four operations is the
+	/// caller's step: their weights are distinct entries of the operation-axis tensor, so the
+	/// four values this returns pair with it as an inner product.
+	///
+	/// ## Preconditions
+	///
+	/// * `operand_weights` has at least `ARITY` entries; the slots above the arity name no claim.
+	fn batched_eval(&self, operand_weights: &[F]) -> F {
+		assert!(operand_weights.len() >= ARITY); // precondition
+		iter::zip(&self.evals, operand_weights)
+			.map(|(eval, weight)| eval.clone() * weight)
+			.sum()
 	}
 }
 
@@ -103,14 +113,12 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 /// verification steps including PCS verification.
 #[derive(Debug, Getters)]
 pub struct VerifyOutput<F> {
-	/// Random coefficient for batching ZERO constraint evaluations.
-	zero_lambda: F,
-	/// Random coefficient for batching AND constraint evaluations.
-	bitand_lambda: F,
-	/// Random coefficient for batching IMUL constraint evaluations.
-	intmul_lambda: F,
-	/// Random coefficient for batching BMUL constraint evaluations.
-	binmul_lambda: F,
+	/// The challenges whose equality indicator weights each operation in the batch (length
+	/// [`LOG_OPERATION_COUNT`]).
+	operation_batch_challenges: Vec<F>,
+	/// The challenges whose equality indicator weights each operand position, shared by the four
+	/// operations (length [`LOG_MAX_ARITY`]).
+	operand_batch_challenges: Vec<F>,
 	/// Challenge point for the witness bit index (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
 	/// Challenge point for the inner shift's amount variables (length `Word::LOG_BITS`).
@@ -161,8 +169,8 @@ impl<F> VerifyOutput<F> {
 /// Verifies the shift protocol with a single sumcheck.
 ///
 /// # Protocol Overview
-/// 1. **Sampling Phase**: Samples random lambda coefficients for batching bitand, intmul and binmul
-///    evaluation claims across operands.
+/// 1. **Sampling Phase**: Samples the two challenge vectors whose equality indicators batch the
+///    four operations' evaluation claims across operands.
 /// 2. **Sumcheck**: Verifies the batched evaluation claim over all `SHIFT_LOG_VARS +
 ///    log_word_count` variables of the claim, degree 2 in each. A shifted value index names two
 ///    shifts applied in sequence, and the rounds peel them from the output end inward: the outer
@@ -204,15 +212,26 @@ where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,
 {
-	let zero_lambda = channel.sample();
-	let bitand_lambda = channel.sample();
-	let intmul_lambda = channel.sample();
-	let binmul_lambda = channel.sample();
+	// SOUNDNESS: the prover draws these in the same order.
+	let operation_batch_challenges = channel.sample_many(LOG_OPERATION_COUNT);
+	let operand_batch_challenges = channel.sample_many(LOG_MAX_ARITY);
 
-	let eval = zero_data.batched_eval(zero_lambda.clone())
-		+ bitand_data.batched_eval(bitand_lambda.clone())
-		+ intmul_data.batched_eval(intmul_lambda.clone())
-		+ binmul_data.batched_eval(binmul_lambda.clone());
+	// A claim's batching weight is the product of the two axes' equality indicators, so the two
+	// expansions factor it: the operand tensor batches one operation's own claims, and the
+	// operation tensor combines the four. The operation weights are indexed in the order the four
+	// operator arguments are declared.
+	let operation_weights = eq_ind_partial_eval_scalars(&operation_batch_challenges);
+	let operand_weights = eq_ind_partial_eval_scalars(&operand_batch_challenges);
+
+	let eval = inner_product(
+		operation_weights,
+		[
+			zero_data.batched_eval(&operand_weights),
+			bitand_data.batched_eval(&operand_weights),
+			intmul_data.batched_eval(&operand_weights),
+			binmul_data.batched_eval(&operand_weights),
+		],
+	);
 
 	// The sumcheck runs over the witness as well: the public segment in the low half-cube and
 	// the hidden segment in the high half-cube, selected by the top word-index variable. Each
@@ -249,10 +268,8 @@ where
 	let witness_eval = channel.recv_one()?;
 
 	Ok(VerifyOutput {
-		zero_lambda,
-		bitand_lambda,
-		intmul_lambda,
-		binmul_lambda,
+		operation_batch_challenges,
+		operand_batch_challenges,
 		r_j,
 		r_y,
 		r_segment,
@@ -324,10 +341,8 @@ where
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	let VerifyOutput {
-		zero_lambda,
-		bitand_lambda,
-		intmul_lambda,
-		binmul_lambda,
+		operation_batch_challenges,
+		operand_batch_challenges,
 		eval,
 		r_j,
 		r_s_inner,
@@ -364,7 +379,7 @@ where
 	let monster_eval = l_tilde_eval * shift_ind_eval * wiring_eval.clone();
 
 	// The function the caller checks the claim with, and the flat input it reads. Every entry is a
-	// public-channel-derived element (`bitand_lambda`, `intmul_lambda`, the operator data's
+	// public-channel-derived element (the two batching challenge vectors, the operator data's
 	// `r_x_prime` vectors, both shift slots' challenges, `r_y`, and `r_segment` last); the
 	// constraint system it sums over is fixed.
 	let claim = {
@@ -376,21 +391,22 @@ where
 		let r_v_len = r_v_inner.len();
 		let r_y_len = r_y.len();
 
-		let inputs: Vec<C::Elem> = iter::once(zero_lambda.clone())
-			.chain(iter::once(bitand_lambda.clone()))
-			.chain(iter::once(intmul_lambda.clone()))
-			.chain(iter::once(binmul_lambda.clone()))
-			.chain(zero_data.r_x_prime.iter().cloned())
-			.chain(bitand_data.r_x_prime.iter().cloned())
-			.chain(intmul_data.r_x_prime.iter().cloned())
-			.chain(binmul_data.r_x_prime.iter().cloned())
-			.chain(r_s_inner.iter().cloned())
-			.chain(r_v_inner.iter().cloned())
-			.chain(r_s_outer.iter().cloned())
-			.chain(r_v_outer.iter().cloned())
-			.chain(r_y.iter().cloned())
-			.chain(iter::once(r_segment.clone()))
-			.collect();
+		let inputs: Vec<C::Elem> = chain!(
+			operation_batch_challenges,
+			operand_batch_challenges,
+			&zero_data.r_x_prime,
+			&bitand_data.r_x_prime,
+			&intmul_data.r_x_prime,
+			&binmul_data.r_x_prime,
+			r_s_inner,
+			r_v_inner,
+			r_s_outer,
+			r_v_outer,
+			r_y,
+			iter::once(r_segment),
+		)
+		.cloned()
+		.collect();
 
 		let eval_fn = WiringEvalFn::new(
 			constraint_system,
@@ -562,7 +578,7 @@ impl<E> WiringEvalClaim<'_, E> {
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y.. | r_segment
+/// operation_batch_challenges.. | operand_batch_challenges.. | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y.. | r_segment
 /// ```
 ///
 /// The stored lengths recover each variable-length section from that flat slice. Both shift slots
@@ -614,13 +630,15 @@ pub struct WiringEvalShape {
 impl WiringEvalShape {
 	/// The number of elements a claim of this shape reads.
 	///
-	/// - Four batching coefficients.
+	/// - The operation and operand batching challenges, both of fixed length.
 	/// - One constraint-index challenge vector per operator.
 	/// - Both shift slots.
 	/// - The column challenges.
 	/// - One trailing word-index coordinate.
 	pub const fn n_inputs(&self) -> usize {
-		4 + self.zero_r_x_prime_len
+		LOG_OPERATION_COUNT
+			+ LOG_MAX_ARITY
+			+ self.zero_r_x_prime_len
 			+ self.bitand_r_x_prime_len
 			+ self.intmul_r_x_prime_len
 			+ self.binmul_r_x_prime_len
@@ -651,48 +669,46 @@ impl<'a> WiringEvalFn<'a> {
 	}
 }
 
-/// One operation's own weight tables, as [`WiringEvalFn::wiring_weights`] builds them.
-///
-/// The tables the four operations share live on [`WiringInputs`] beside these.
-struct OperationWeights<E> {
-	/// The equality indicator of the operation's constraint challenge, one weight per constraint.
-	constraint: Vec<E>,
-	/// The inner shift slot's weights with the operation's batching coefficients fanned in, at
-	/// `inner_shift * ARITY + operand`.
-	inner_operand: Vec<E>,
-}
-
 /// The weight tables [`WiringEvalFn::wiring_weights`] builds from its flat input slice.
 ///
-/// The outer-slot and word-index tables are shared, so each is built once and lent to all four
-/// operations rather than copied per operation.
+/// Only the constraint-index table differs between operations. The other three are built once and
+/// lent to all four, rather than copied per operation.
+///
+/// Each constraint table is the equality indicator of its operation's constraint challenge, scaled
+/// by that operation's own weight on the operation axis. That is where the operation weight rides
+/// for free: it reaches every term of the operation, and seeding the expansion with it costs
+/// nothing beyond the expansion itself. An operation with no constraints sums no terms, so its
+/// table is left empty.
 struct WiringInputs<E> {
-	/// The Zero operation's own tables.
-	zero: OperationWeights<E>,
-	/// The BitAnd operation's own tables.
-	bitand: OperationWeights<E>,
-	/// The IntMul operation's own tables.
-	intmul: OperationWeights<E>,
-	/// The BinMul operation's own tables.
-	binmul: OperationWeights<E>,
+	/// The Zero operation's constraint-index table.
+	zero_constraint: Vec<E>,
+	/// The BitAnd operation's constraint-index table.
+	bitand_constraint: Vec<E>,
+	/// The IntMul operation's constraint-index table.
+	intmul_constraint: Vec<E>,
+	/// The BinMul operation's constraint-index table.
+	binmul_constraint: Vec<E>,
+	/// The weight of each `(inner shift, operand position)` pair, at
+	/// `(inner_shift << LOG_MAX_ARITY) | operand`.
+	operand_inner_shift_scalars: Vec<E>,
 	/// The weight of each spelling the outer shift slot can take.
-	outer_shift_scalars: Box<[E; SHIFT_COUNT]>,
+	outer_shift_scalars: Vec<E>,
 	/// The word-index indicator over the public half of the value vector.
 	public_tensor: Vec<E>,
 	/// The word-index indicator over the hidden half of the value vector.
 	hidden_tensor: Vec<E>,
 }
 
-/// Bundles one operation's own tables with the two every operation shares.
+/// Bundles one operation's constraint table with the three every operation shares.
 fn operation_weights<'a, E>(
-	operation: &'a OperationWeights<E>,
-	outer: &'a [E; SHIFT_COUNT],
+	constraint: &'a [E],
+	inputs: &'a WiringInputs<E>,
 	value: [&'a [E]; 3],
 ) -> WiringWeights<'a, E> {
 	WiringWeights {
-		constraint: &operation.constraint,
-		inner_operand: &operation.inner_operand,
-		outer,
+		constraint,
+		inner_operand: &inputs.operand_inner_shift_scalars,
+		outer: &inputs.outer_shift_scalars,
 		value,
 	}
 }
@@ -759,11 +775,10 @@ impl WiringEvalFn<'_> {
 		);
 
 		// Split the flat input back into its sections, in the order they were concatenated.
-		let zero_lambda_v = vals[0].clone();
-		let bitand_lambda_v = vals[1].clone();
-		let intmul_lambda_v = vals[2].clone();
-		let binmul_lambda_v = vals[3].clone();
-		let mut off = 4;
+		let operation_batch_v = &vals[..LOG_OPERATION_COUNT];
+		let mut off = LOG_OPERATION_COUNT;
+		let operand_batch_v = &vals[off..off + LOG_MAX_ARITY];
+		off += LOG_MAX_ARITY;
 		let zero_r_x_prime_v = &vals[off..off + self.shape.zero_r_x_prime_len];
 		off += self.shape.zero_r_x_prime_len;
 		let bitand_r_x_prime_v = &vals[off..off + self.shape.bitand_r_x_prime_len];
@@ -809,60 +824,52 @@ impl WiringEvalFn<'_> {
 		// The weight factorizes, so this is one table per slot rather than one over the whole
 		// sequence space.
 		//
-		// The outer table is built once, so the Zero, BitAnd, IntMul and BinMul evaluations share
-		// it. It is indexed by `variant * Word::BITS + amount`. The bit-index factors scaling it
-		// are left for `check_eval` to multiply in.
-		let slot_scalars = |r_s: &[E], r_v: &[E]| {
-			let eq_r_v = eq_ind_partial_eval_scalars(r_v);
-			let eq_r_s = eq_ind_partial_eval_scalars(r_s);
-			Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
-				eq_r_v[i / Word::BITS].clone() * &eq_r_s[i % Word::BITS]
-			}))
-		};
-		let inner_shift_scalars = slot_scalars(r_s_inner_v, r_v_inner_v);
-		let outer_shift_scalars = slot_scalars(r_s_outer_v, r_v_outer_v);
+		// A shift is indexed `variant * Word::BITS + amount`, the amount below the variant, so a
+		// slot's table is the expansion of the amount challenges followed by the variant ones.
+		// The operand batching weight rides below the shift in the inner table, since the
+		// expansion puts the first segment of a point in the low index bits.
+		//
+		// Both are built once, so the Zero, BitAnd, IntMul and BinMul evaluations share them. The
+		// bit-index factors scaling them are left for `check_eval` to multiply in.
+		let operand_inner_shift_scalars =
+			eq_ind_partial_eval_scalars(&[operand_batch_v, r_s_inner_v, r_v_inner_v].concat());
+		let outer_shift_scalars = eq_ind_partial_eval_scalars(&[r_s_outer_v, r_v_outer_v].concat());
+		debug_assert_eq!(outer_shift_scalars.len(), SHIFT_COUNT);
 
-		// The inner table carries the operand batching coefficients, which differ per operation,
-		// so it is the one table each operation builds for itself. An operation with no
-		// constraints sums no terms, so it is handed empty tables and evaluates to zero.
-		let operation_weights = |r_x_prime: &[E], lambda: E, arity: usize, n_constraints: usize| {
+		// One weight per operation, indexed in the order the operator arguments are declared,
+		// which is the order `verify` batches its four claims in. It seeds the operation's own
+		// constraint expansion, which is the one table left that differs between operations.
+		let operation_weights = eq_ind_partial_eval_scalars(operation_batch_v);
+		let constraint_table = |r_x_prime: &[E], weight: &E, n_constraints: usize| {
 			if n_constraints == 0 {
-				return OperationWeights {
-					constraint: Vec::new(),
-					inner_operand: Vec::new(),
-				};
-			}
-			OperationWeights {
-				constraint: scaled_expand(r_x_prime, E::one()),
-				inner_operand: operand_shift_scalar_table(&inner_shift_scalars, &lambda, arity),
+				Vec::new()
+			} else {
+				scaled_expand(r_x_prime, weight.clone())
 			}
 		};
 
 		WiringInputs {
-			zero: operation_weights(
+			zero_constraint: constraint_table(
 				zero_r_x_prime_v,
-				zero_lambda_v,
-				ZERO_ARITY,
+				&operation_weights[0],
 				cs.zero_constraints.len(),
 			),
-			bitand: operation_weights(
+			bitand_constraint: constraint_table(
 				bitand_r_x_prime_v,
-				bitand_lambda_v,
-				BITAND_ARITY,
+				&operation_weights[1],
 				cs.and_constraints.len(),
 			),
-			intmul: operation_weights(
+			intmul_constraint: constraint_table(
 				intmul_r_x_prime_v,
-				intmul_lambda_v,
-				INTMUL_ARITY,
+				&operation_weights[2],
 				cs.imul_constraints.len(),
 			),
-			binmul: operation_weights(
+			binmul_constraint: constraint_table(
 				binmul_r_x_prime_v,
-				binmul_lambda_v,
-				BINMUL_ARITY,
+				&operation_weights[3],
 				cs.bmul_constraints.len(),
 			),
+			operand_inner_shift_scalars,
 			outer_shift_scalars,
 			public_tensor,
 			hidden_tensor,
@@ -875,14 +882,18 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 		let inputs = self.wiring_weights(vals, scaled_eq_ind_partial_eval_scalars);
 		let cs = &self.constraint_system;
 		let value = inputs.value_tensor(cs, self.shape.inout);
-		let outer = &inputs.outer_shift_scalars;
-		// The outer and word-index tables are lent to all four; only the first two differ.
-		let weights = |operation| operation_weights(operation, outer, value);
+		// Three of the four tables are lent to all four operations; only the constraint one
+		// differs, and it is what carries the operation's own batching weight.
+		let weights = |constraint| operation_weights(constraint, &inputs, value);
 
-		let zero = OperationEvalFn::new(&cs.zero_constraints).call(weights(&inputs.zero));
-		let bitand = OperationEvalFn::new(&cs.and_constraints).call(weights(&inputs.bitand));
-		let intmul = OperationEvalFn::new(&cs.imul_constraints).call(weights(&inputs.intmul));
-		let binmul = OperationEvalFn::new(&cs.bmul_constraints).call(weights(&inputs.binmul));
+		let zero =
+			OperationEvalFn::new(&cs.zero_constraints).call(weights(&inputs.zero_constraint));
+		let bitand =
+			OperationEvalFn::new(&cs.and_constraints).call(weights(&inputs.bitand_constraint));
+		let intmul =
+			OperationEvalFn::new(&cs.imul_constraints).call(weights(&inputs.intmul_constraint));
+		let binmul =
+			OperationEvalFn::new(&cs.bmul_constraints).call(weights(&inputs.binmul_constraint));
 
 		zero + bitand + intmul + binmul
 	}
@@ -897,15 +908,16 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 		});
 		let cs = &self.constraint_system;
 		let value = inputs.value_tensor(cs, self.shape.inout);
-		let outer = &inputs.outer_shift_scalars;
-		let weights = |operation| operation_weights(operation, outer, value);
+		let weights = |constraint| operation_weights(constraint, &inputs, value);
 
-		let zero = OperationEvalFn::new(&cs.zero_constraints).call_native(weights(&inputs.zero));
-		let bitand = OperationEvalFn::new(&cs.and_constraints).call_native(weights(&inputs.bitand));
-		let intmul =
-			OperationEvalFn::new(&cs.imul_constraints).call_native(weights(&inputs.intmul));
-		let binmul =
-			OperationEvalFn::new(&cs.bmul_constraints).call_native(weights(&inputs.binmul));
+		let zero = OperationEvalFn::new(&cs.zero_constraints)
+			.call_native(weights(&inputs.zero_constraint));
+		let bitand = OperationEvalFn::new(&cs.and_constraints)
+			.call_native(weights(&inputs.bitand_constraint));
+		let intmul = OperationEvalFn::new(&cs.imul_constraints)
+			.call_native(weights(&inputs.intmul_constraint));
+		let binmul = OperationEvalFn::new(&cs.bmul_constraints)
+			.call_native(weights(&inputs.binmul_constraint));
 
 		zero + bitand + intmul + binmul
 	}
