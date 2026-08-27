@@ -351,7 +351,6 @@ macro_rules! binary_field {
 
 			#[inline]
 			fn mul(self, rhs: Self) -> Self {
-				$crate::tracing::trace_multiplication!($name);
 				type P = $crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name>;
 				Self((P::from_underlier(self.0) * P::from_underlier(rhs.0)).to_underlier())
 			}
@@ -456,8 +455,6 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn mul(self, rhs: $subfield_name) -> Self::Output {
-				$crate::tracing::trace_multiplication!($name, $subfield_name);
-
 				type P =
 					$crate::packed_fields::primitive::PackedPrimitiveType<$typ, $subfield_name>;
 				Self((P::from_underlier(self.0) * P::broadcast(rhs)).to_underlier())
