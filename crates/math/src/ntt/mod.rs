@@ -281,7 +281,7 @@ mod tests {
 
 	use super::{AdditiveNTT, NeighborsLastReference, domain_context::GaoMateerPreExpanded};
 	use crate::{
-		inner_product::inner_product_scalars,
+		inner_product::inner_product,
 		test_utils::{B128, Packed128b, random_field_buffer},
 	};
 
@@ -308,8 +308,8 @@ mod tests {
 		ntt.forward_transform(forward.as_mut_view(), skip_early, skip_late);
 
 		assert_eq!(
-			inner_product_scalars(transposed.iter_scalars(), m.iter_scalars()),
-			inner_product_scalars(a.iter_scalars(), forward.iter_scalars()),
+			inner_product(transposed.iter_scalars(), m.iter_scalars()),
+			inner_product(a.iter_scalars(), forward.iter_scalars()),
 			"log_n={log_n} skip_early={skip_early} skip_late={skip_late}"
 		);
 	}

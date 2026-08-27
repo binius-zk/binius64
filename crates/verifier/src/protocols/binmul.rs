@@ -3,7 +3,7 @@
 use binius_core::word::Word;
 use binius_field::{BinaryField, field::FieldOps};
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck::SumcheckOutput};
-use binius_math::inner_product::inner_product_scalars;
+use binius_math::inner_product::inner_product;
 
 use crate::Error;
 
@@ -85,8 +85,8 @@ where
 		.map(|i| C::Elem::from(F::basis(Word::BITS + i)))
 		.collect();
 	let recombine = |lo: &[C::Elem], hi: &[C::Elem]| -> C::Elem {
-		inner_product_scalars(lo.iter().cloned(), basis_lo.iter().cloned())
-			+ inner_product_scalars(hi.iter().cloned(), basis_hi.iter().cloned())
+		inner_product(lo.iter().cloned(), basis_lo.iter().cloned())
+			+ inner_product(hi.iter().cloned(), basis_hi.iter().cloned())
 	};
 	let alpha_a = recombine(&a_lo_evals, &a_hi_evals);
 	let alpha_b = recombine(&b_lo_evals, &b_hi_evals);

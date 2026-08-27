@@ -244,7 +244,7 @@ mod tests {
 	use crate::{
 		FieldBuffer,
 		bit_reverse::reverse_bits,
-		inner_product::inner_product_scalars,
+		inner_product::inner_product,
 		ntt::{NeighborsLastReference, domain_context::GaoMateerPreExpanded},
 		test_utils::random_field_buffer,
 	};
@@ -411,11 +411,11 @@ mod tests {
 			log_batch_size,
 			&GlobalAllocator,
 		);
-		let left = inner_product_scalars(induced.iter_scalars(), m.iter_scalars());
+		let left = inner_product(induced.iter_scalars(), m.iter_scalars());
 
 		// Right side: pair the codeword weight with the encoding itself.
 		let encoded = code.encode_batch(&ntt, m.as_view(), log_batch_size, &GlobalAllocator);
-		let right = inner_product_scalars(a.iter_scalars(), encoded.iter_scalars());
+		let right = inner_product(a.iter_scalars(), encoded.iter_scalars());
 
 		assert_eq!(left, right, "log_dim={log_dim} rate={log_inv_rate} batch={log_batch_size}");
 	}

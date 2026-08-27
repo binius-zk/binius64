@@ -191,7 +191,7 @@ mod tests {
 	use crate::{
 		BinarySubspace, FieldBuffer,
 		bit_reverse::reverse_bits,
-		inner_product::inner_product_scalars,
+		inner_product::inner_product,
 		ntt::{
 			AdditiveNTT, NeighborsLastSingleThread,
 			domain_context::{GaoMateerOnTheFly, GaoMateerPreExpanded, GenericPreExpanded},
@@ -323,7 +323,7 @@ mod tests {
 		for index in 0..1 << log_d {
 			// Row `index` of the transform matrix is the tensor of W_hat_k at that domain point.
 			let row = expand_subset_products(&evals_at_domain_index(ntt.domain_context(), index));
-			let dot = inner_product_scalars(coeffs.as_ref().iter().copied(), row);
+			let dot = inner_product(coeffs.as_ref().iter().copied(), row);
 			assert_eq!(dot, transformed.as_ref()[index], "log_d={log_d} index={index}");
 		}
 	}
@@ -376,7 +376,7 @@ mod tests {
 				let codeword = code.encode_batch(&ntt, msg.as_view(), 0, &GlobalAllocator);
 
 				for (index, row) in generator_rows(&code).into_iter().enumerate() {
-					let dot = inner_product_scalars(msg.as_ref().iter().copied(), row);
+					let dot = inner_product(msg.as_ref().iter().copied(), row);
 					assert_eq!(
 						dot,
 						codeword.as_ref()[index],
@@ -412,7 +412,7 @@ mod tests {
 
 						// And that lane is the plain encoding of exactly those columns.
 						for (index, row) in rows.iter().enumerate() {
-							let dot = inner_product_scalars(
+							let dot = inner_product(
 								lane_msg.as_ref().iter().copied(),
 								row.iter().copied(),
 							);

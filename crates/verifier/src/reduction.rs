@@ -31,7 +31,7 @@ use binius_ip::{
 };
 use binius_math::{
 	BinarySubspace,
-	inner_product::inner_product_scalars,
+	inner_product::inner_product,
 	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
 	univariate::{EvaluationDomain, evaluate_univariate},
 };
@@ -459,8 +459,7 @@ impl<F: FieldOps> OperationClaim<F, INTMUL_ARITY> {
 			c_lo_evals,
 			c_hi_evals,
 		} = intmul_output;
-		let oblong =
-			|evals: [F; Word::BITS]| inner_product_scalars(evals, lagrange.iter().cloned());
+		let oblong = |evals: [F; Word::BITS]| inner_product(evals, lagrange.iter().cloned());
 		let (r_rho, r_x) = r_out_mul.split_at(log_instances);
 		Self::new(
 			[
@@ -491,8 +490,7 @@ impl<F: FieldOps> OperationClaim<F, BINMUL_ARITY> {
 			c_lo_evals,
 			c_hi_evals,
 		} = binmul_output;
-		let oblong =
-			|evals: [F; Word::BITS]| inner_product_scalars(evals, lagrange.iter().cloned());
+		let oblong = |evals: [F; Word::BITS]| inner_product(evals, lagrange.iter().cloned());
 		let (r_rho, r_x) = r_out_binmul.split_at(log_instances);
 		Self::new(
 			[
