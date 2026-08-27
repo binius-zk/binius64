@@ -10,7 +10,7 @@ use binius_ip_prover::{
 	sumcheck::{ProveSingleOutput, prove_single_mlecheck, quadratic_mlecheck_prover},
 };
 use binius_math::{FieldVec, field_buffer::FieldBuffer};
-use binius_utils::checked_arithmetics::log2_ceil_usize;
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 pub use binius_verifier::protocols::binmul::BinMulOutput;
 
 use crate::fold_word::WordAxisFolder;
@@ -131,12 +131,19 @@ where
 	// Six columns cannot fill a machine on their own, so each column divides its own chunk axis
 	// rather than the six being run against each other.
 	let folder = WordAxisFolder::<F>::new(&eval_point);
-	let a_lo_evals = folder.fold_par(a_lo);
-	let a_hi_evals = folder.fold_par(a_hi);
-	let b_lo_evals = folder.fold_par(b_lo);
-	let b_hi_evals = folder.fold_par(b_hi);
-	let c_lo_evals = folder.fold_par(c_lo);
-	let c_hi_evals = folder.fold_par(c_hi);
+	let [
+		a_lo_evals,
+		a_hi_evals,
+		b_lo_evals,
+		b_hi_evals,
+		c_lo_evals,
+		c_hi_evals,
+	] = [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]
+		.into_par_iter()
+		.map(|exponents| folder.fold_par(exponents))
+		.collect::<Vec<_>>()
+		.try_into()
+		.expect("iterator over exact number of elements");
 
 	channel.send_many(&a_lo_evals);
 	channel.send_many(&a_hi_evals);
