@@ -14,7 +14,10 @@ use getset::CopyGetters;
 use super::{
 	FieldBuffer, FieldSlice, FieldSliceMut, binary_subspace::BinarySubspace, ntt::AdditiveNTT,
 };
-use crate::ntt::{DomainContext, domain_context::GaoMateerOnTheFly};
+use crate::{
+	bit_reverse::bit_reverse_packed,
+	ntt::{DomainContext, domain_context::GaoMateerOnTheFly},
+};
 
 /// [Reed–Solomon] codes over binary fields.
 ///
@@ -142,7 +145,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		let mut output = FieldBuffer::from_view_with_capacity_in(alloc, data, log_output_len);
 
 		// Permute the message once, then repeat it, so every copy inherits the permutation.
-		output.as_mut_view().bit_reverse();
+		bit_reverse_packed(output.as_mut_view());
 		output.repeat_extend(log_output_len);
 
 		ntt.forward_transform(output.as_mut_view(), self.log_inv_rate, log_batch_size);
@@ -226,7 +229,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 
 		// The encoder permuted the message before repeating it.
 		// A bit reversal is its own transpose, so the same permutation undoes it here.
-		folded.as_mut_view().bit_reverse();
+		bit_reverse_packed(folded.as_mut_view());
 		folded
 	}
 }

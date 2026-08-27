@@ -7,6 +7,7 @@ use binius_compute::BufferData;
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice,
+	bit_reverse::bit_reverse_packed,
 	multilinear::{MultilinearMut, hypercube::Hypercube},
 };
 use binius_utils::{
@@ -121,9 +122,9 @@ where
 			// Prepend the new variable via bit-reverse + append + bit-reverse. This does not need
 			// to be fast: it runs once per pre-switchover round on a small tensor (see
 			// BINIUS-327).
-			tensor.as_mut_view().bit_reverse();
+			bit_reverse_packed(tensor.as_mut_view());
 			let mut tensor = Hypercube::One.expand(&[challenge]).append_to(tensor);
-			tensor.as_mut_view().bit_reverse();
+			bit_reverse_packed(tensor.as_mut_view());
 			self.tensor = tensor;
 
 			if self.tensor.log_len() == self.switchover {
