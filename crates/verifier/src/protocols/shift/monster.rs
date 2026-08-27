@@ -3,7 +3,7 @@
 
 use std::iter;
 
-use binius_core::constraint_system::Operand;
+use binius_core::constraint_system::{Operand, ValueIndex};
 use binius_field::{
 	BinaryField, FieldOps, WideMul,
 	util::{FieldFn, powers},
@@ -112,6 +112,53 @@ impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 	}
 }
 
+/// One nonzero of the wiring tensor.
+///
+/// The tensor has five axes.
+///
+/// ```text
+///     constraint index  x  operand position  x  inner slot  x  outer slot  x  value address
+/// ```
+///
+/// A constraint names a handful of positions and nothing else, which is what makes it sparse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WiringEntry {
+	/// Which constraint of the operation holds the entry.
+	pub constraint: usize,
+	/// Which of that constraint's operands names it.
+	pub operand: usize,
+	/// The inner shift slot's spelling, as a variant-and-amount index.
+	pub inner_shift: usize,
+	/// The outer shift slot's spelling, as a variant-and-amount index.
+	pub outer_shift: usize,
+	/// The value the entry reads.
+	pub value: ValueIndex,
+}
+
+/// One weight table per axis of the wiring tensor.
+///
+/// Each table is indexed the way its axis is, so contracting is one lookup per axis and a product.
+pub struct WiringWeights<'a, E> {
+	/// One entry per constraint index, covering the padded constraint count.
+	pub constraint: &'a [E],
+	/// One entry per inner slot spelling paired with an operand position, the operand innermost.
+	pub inner_operand: &'a [E],
+	/// One entry per outer slot spelling.
+	pub outer: &'a [E; SHIFT_COUNT],
+	/// One entry per value address, in three runs: constants, then inout, then private.
+	pub value: [&'a [E]; 3],
+}
+
+// Shared slices copy freely whatever `E` is. Deriving these would demand `E: Copy`, which the
+// generic evaluation path does not have.
+impl<E> Clone for WiringWeights<'_, E> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<E> Copy for WiringWeights<'_, E> {}
+
 /// The shift-sequence weight tables, one per slot of the sequence.
 ///
 /// A term's sequence weight factorizes across its two slots:
@@ -144,6 +191,68 @@ impl<E> Clone for ShiftScalars<'_, E> {
 }
 
 impl<E> Copy for ShiftScalars<'_, E> {}
+
+impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARITY> {
+	/// Every nonzero of the wiring tensor, in constraint order.
+	///
+	/// The tensor is what a deferred wiring claim is about.
+	///
+	/// Enumerating it is what lets that claim be folded.
+	/// It is also what lets the extension be evaluated away from the run that raised the claim.
+	pub fn entries(&self) -> impl Iterator<Item = WiringEntry> + '_ {
+		self.constraints
+			.iter()
+			.enumerate()
+			.flat_map(|(constraint, terms)| {
+				terms
+					.as_ref()
+					.iter()
+					.enumerate()
+					.flat_map(move |(operand, operand_terms)| {
+						operand_terms.iter().map(move |svi| WiringEntry {
+							constraint,
+							operand,
+							inner_shift: svi.inner().index(),
+							outer_shift: svi.outer().index(),
+							value: svi.value_index,
+						})
+					})
+			})
+	}
+
+	/// Contracts the wiring tensor against one weight table per axis.
+	///
+	/// This is the tensor's defining sum, one nonzero at a time.
+	///
+	/// ```text
+	///     sum over nonzeros of
+	///         constraint[i] * inner_operand[inner * ARITY + a] * outer[o] * value[seg][idx]
+	/// ```
+	///
+	/// Contract with equality indicators and the result is the tensor's multilinear extension.
+	/// The point is the one those indicators were built from.
+	///
+	/// That extension is what an accumulated claim is about.
+	/// Evaluating it is what settling such a claim comes down to.
+	///
+	/// The batched evaluation computes the same sum.
+	/// It groups terms by constraint, so a constraint's weight multiplies in once per constraint.
+	/// That grouping is why it is the path a circuit runs.
+	///
+	/// This one trades those saved multiplies for a flat walk, which is what a fold needs.
+	pub fn contract<E: FieldOps>(&self, weights: WiringWeights<'_, E>) -> E {
+		let mut acc = E::zero();
+		for entry in self.entries() {
+			// Two axes share one table: the inner slot's spelling with the operand innermost.
+			let inner_operand = entry.inner_shift * ARITY + entry.operand;
+			acc += weights.constraint[entry.constraint].clone()
+				* &weights.inner_operand[inner_operand]
+				* &weights.outer[entry.outer_shift]
+				* &weights.value[entry.value.segment() as usize][entry.value.index() as usize];
+		}
+		acc
+	}
+}
 
 impl<F, C, const ARITY: usize> FieldFn<F> for OperationEvalFn<'_, C, ARITY>
 where
@@ -414,6 +523,182 @@ mod tests {
 			eval_with_outer(&identity_selecting),
 			OperationEvalFn::new(&singly_shifted_only, 0, 0, n_words).call_native(&input)
 		);
+	}
+
+	/// The weight tables a run's own reduction reads, matching the flat input it encodes.
+	fn run_weights<'a, F: BinaryField>(
+		r_x_prime_tensor: &'a [F],
+		inner_operand: &'a [F],
+		outer: &'a [F; SHIFT_COUNT],
+		value: [&'a [F]; 3],
+	) -> WiringWeights<'a, F> {
+		WiringWeights {
+			constraint: r_x_prime_tensor,
+			inner_operand,
+			outer,
+			value,
+		}
+	}
+
+	#[test]
+	fn contracting_the_tensor_matches_the_batched_evaluation() {
+		// Invariant: the flat walk and the constraint-grouped evaluation are one sum, reassociated.
+		//
+		// The grouped path multiplies a constraint's weight in once for the whole constraint.
+		// The flat path multiplies it in per term.
+		// Reassociating is exact, so a disagreement means the two read different nonzeros.
+		//
+		// This pins the enumeration's index conventions against the path already in use.
+		type F = Ghash128b;
+		let mut rng = StdRng::seed_from_u64(11);
+
+		let n_words = 40usize;
+		// A power-of-two count, and one whose weight tensor runs past the last constraint.
+		for n_constraints in [64usize, 37] {
+			let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
+			let arity = constraints[0].as_ref().len();
+
+			let r_x_prime = random_scalars::<F>(&mut rng, log2_ceil_usize(n_constraints));
+			let lambda = F::random(&mut rng);
+			let inner: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
+			let outer: [F; SHIFT_COUNT] = std::array::from_fn(|_| F::random(&mut rng));
+			let hidden = random_scalars::<F>(&mut rng, n_words);
+			let value = [&[][..], &[][..], &hidden[..]];
+
+			let eval_fn = OperationEvalFn::new(&constraints, 0, 0, n_words);
+
+			// The grouped path reads one flat input.
+			let input = encode_operation_input(
+				&r_x_prime,
+				lambda,
+				ShiftScalars {
+					inner: &inner,
+					outer: &outer,
+				},
+				value,
+			);
+			let batched = eval_fn.call::<F>(&input);
+
+			// The flat path reads the same weights, one table per axis.
+			let r_x_prime_tensor = Hypercube::One.expand(&r_x_prime).build_scalars();
+			let inner_operand = operand_shift_scalar_table(&inner, &lambda, arity);
+			let contracted =
+				eval_fn.contract(run_weights(&r_x_prime_tensor, &inner_operand, &outer, value));
+
+			// A vacuous agreement on zero would prove nothing about which nonzeros were read.
+			assert_ne!(batched, F::ZERO, "the fixture must evaluate to something");
+			assert_eq!(contracted, batched, "n_constraints = {n_constraints}");
+		}
+	}
+
+	#[test]
+	fn the_extension_at_a_boolean_point_counts_the_nonzeros_there() {
+		// Invariant: indicators selecting one index per axis return the entry at that position.
+		//
+		// That is the defining property of a multilinear extension.
+		// It is also what the accumulated claim at the root of a tree is about.
+		//
+		// Entries live in characteristic two, so an entry is the nonzero count there, mod two.
+		//
+		//     indicators pick (c, a, inner, outer, v)  ->  contract == count(c,a,inner,outer,v) % 2
+		type F = Ghash128b;
+		let mut rng = StdRng::seed_from_u64(13);
+
+		let n_words = 12usize;
+		let n_constraints = 16usize;
+		let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
+		let arity = constraints[0].as_ref().len();
+		let eval_fn = OperationEvalFn::new(&constraints, 0, 0, n_words);
+
+		// Every occupied position, plus one deliberately empty one to show the test can fail.
+		let occupied = eval_fn.entries().collect::<Vec<_>>();
+		assert!(!occupied.is_empty(), "the fixture must produce nonzeros");
+		let empty = WiringEntry {
+			constraint: n_constraints - 1,
+			operand: arity - 1,
+			inner_shift: SHIFT_COUNT - 1,
+			outer_shift: SHIFT_COUNT - 1,
+			value: ValueIndex::private(n_words as u32 - 1),
+		};
+
+		for target in occupied.iter().copied().take(8).chain([empty]) {
+			// One indicator per axis: one at the target's index, zero everywhere else.
+			let mut constraint = vec![F::ZERO; n_constraints];
+			constraint[target.constraint] = F::ONE;
+			let mut inner_operand = vec![F::ZERO; SHIFT_COUNT * arity];
+			inner_operand[target.inner_shift * arity + target.operand] = F::ONE;
+			let mut outer = [F::ZERO; SHIFT_COUNT];
+			outer[target.outer_shift] = F::ONE;
+			let mut hidden = vec![F::ZERO; n_words];
+			hidden[target.value.index() as usize] = F::ONE;
+
+			let got = eval_fn.contract(run_weights(
+				&constraint,
+				&inner_operand,
+				&outer,
+				[&[][..], &[][..], &hidden[..]],
+			));
+
+			// Count the nonzeros sitting exactly at the target position.
+			let count = eval_fn.entries().filter(|e| *e == target).count();
+			let want = if count % 2 == 1 { F::ONE } else { F::ZERO };
+			assert_eq!(got, want, "at {target:?}, {count} nonzeros");
+		}
+	}
+
+	#[test]
+	fn a_repeated_term_cancels_and_the_slots_keep_their_order() {
+		// Invariant: entries are characteristic-two multiplicities.
+		// And the inner slot is the sequence's first, the outer its second.
+		//
+		// Fixture state: one constraint, whose first operand names one shifted value twice.
+		// Its second operand names a single term with two distinct slots.
+		//
+		//     operand 0:  [ (v0, [s_a, s_b]) , (v0, [s_a, s_b]) ]  -> two entries at one position
+		//     operand 1:  [ (v1, [s_a, s_b]) ]                     -> one entry
+		//
+		// The pair must contribute nothing, since a position's weight is added to itself.
+		type F = Ghash128b;
+
+		let s_a = Shift {
+			variant: ShiftVariant::Slr,
+			amount: 7,
+		};
+		let s_b = Shift {
+			variant: ShiftVariant::Rotr,
+			amount: 3,
+		};
+		let v0 = ValueIndex::private(0);
+		let v1 = ValueIndex::private(1);
+		let repeated = ShiftedValueIndex::new(v0, [s_a, s_b]);
+		let constraints = vec![AndConstraint([
+			vec![repeated, repeated],
+			vec![ShiftedValueIndex::new(v1, [s_a, s_b])],
+			vec![],
+		])];
+		let eval_fn = OperationEvalFn::new(&constraints, 0, 0, 2);
+
+		// The enumeration reports the repeat as two entries: cancellation is the field's doing.
+		let entries = eval_fn.entries().collect::<Vec<_>>();
+		assert_eq!(entries.len(), 3);
+		// The first slot of the sequence is the inner one, the second the outer.
+		assert_eq!(entries[0].inner_shift, s_a.index());
+		assert_eq!(entries[0].outer_shift, s_b.index());
+		assert_eq!(entries[0].operand, 0);
+		assert_eq!(entries[2].operand, 1);
+		assert_eq!(entries[0], entries[1], "the repeat sits at one position");
+
+		// Weights of one everywhere: the sum is then the nonzero count mod two, which is one.
+		let ones_inner = vec![F::ONE; SHIFT_COUNT * 3];
+		let ones_outer = [F::ONE; SHIFT_COUNT];
+		let ones_value = [F::ONE; 2];
+		let got = eval_fn.contract(run_weights(
+			&[F::ONE],
+			&ones_inner,
+			&ones_outer,
+			[&[][..], &[][..], &ones_value[..]],
+		));
+		assert_eq!(got, F::ONE, "two entries cancel and the third survives");
 	}
 
 	/// The native `WideMul` variant must produce exactly the same result as the generic
