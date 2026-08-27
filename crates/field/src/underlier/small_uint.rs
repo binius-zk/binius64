@@ -683,6 +683,8 @@ impl<const N: usize> proptest::arbitrary::Arbitrary for SmallU<N> {
 
 #[cfg(test)]
 mod tests {
+	use proptest::{arbitrary::any, proptest};
+
 	use super::*;
 
 	#[test]
@@ -851,5 +853,45 @@ mod tests {
 	fn test_from_iter_smallu() {
 		let result: u8 = Divisible::<U4>::from_iter([U4::new(0xA), U4::new(0xB)].into_iter());
 		assert_eq!(result, 0xBA);
+	}
+
+	#[test]
+	fn test_divisible_u32_smallu() {
+		let val = 0xab12cd34u32;
+
+		assert_eq!(Divisible::<U1>::get(&val, 0), U1::new(0));
+		assert_eq!(Divisible::<U1>::get(&val, 1), U1::new(0));
+		assert_eq!(Divisible::<U1>::get(&val, 2), U1::new(1));
+		assert_eq!(Divisible::<U1>::get(&val, 31), U1::new(1));
+
+		assert_eq!(Divisible::<U2>::get(&val, 0), U2::new(0));
+		assert_eq!(Divisible::<U2>::get(&val, 1), U2::new(1));
+		assert_eq!(Divisible::<U2>::get(&val, 2), U2::new(3));
+		assert_eq!(Divisible::<U2>::get(&val, 15), U2::new(2));
+
+		assert_eq!(Divisible::<U4>::get(&val, 0), U4::new(4));
+		assert_eq!(Divisible::<U4>::get(&val, 1), U4::new(3));
+		assert_eq!(Divisible::<U4>::get(&val, 2), U4::new(13));
+		assert_eq!(Divisible::<U4>::get(&val, 7), U4::new(10));
+	}
+
+	proptest! {
+		#[test]
+		fn test_set_get_u32_u1(mut val in any::<u32>(), i in 0usize..32, elem in any::<U1>()) {
+			Divisible::<U1>::set(&mut val, i, elem);
+			assert_eq!(Divisible::<U1>::get(&val, i), elem);
+		}
+
+		#[test]
+		fn test_set_get_u32_u2(mut val in any::<u32>(), i in 0usize..16, elem in any::<U2>()) {
+			Divisible::<U2>::set(&mut val, i, elem);
+			assert_eq!(Divisible::<U2>::get(&val, i), elem);
+		}
+
+		#[test]
+		fn test_set_get_u32_u4(mut val in any::<u32>(), i in 0usize..8, elem in any::<U4>()) {
+			Divisible::<U4>::set(&mut val, i, elem);
+			assert_eq!(Divisible::<U4>::get(&val, i), elem);
+		}
 	}
 }

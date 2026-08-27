@@ -467,10 +467,20 @@ impl_divisible_self!(u8, u16, u32, u64, u128);
 
 #[cfg(test)]
 mod tests {
+	use proptest::{arbitrary::any, proptest};
+
 	use super::*;
 
 	#[test]
-	fn test_divisible_u32_u8_slice() {
+	fn test_divisible_u32_u8() {
+		let val = 0xab12cd34u32;
+
+		// Test get - LSB first: bytes
+		assert_eq!(Divisible::<u8>::get(&val, 0), 0x34u8);
+		assert_eq!(Divisible::<u8>::get(&val, 1), 0xcdu8);
+		assert_eq!(Divisible::<u8>::get(&val, 2), 0x12u8);
+		assert_eq!(Divisible::<u8>::get(&val, 3), 0xabu8);
+
 		let vals: [u32; 2] = [0x04030201, 0x08070605];
 
 		// Test slice_iter
@@ -543,5 +553,13 @@ mod tests {
 		let result: u64 = Divisible::<u16>::from_iter([0x1234, 0x5678, 0x9ABC].into_iter());
 		// Only 3 elements provided, 4th should be 0
 		assert_eq!(result, 0x0000_9ABC_5678_1234);
+	}
+
+	proptest! {
+		#[test]
+		fn test_set_get_u32_u8(mut val in any::<u32>(), i in 0usize..4, elem in any::<u8>()) {
+			Divisible::<u8>::set(&mut val, i, elem);
+			assert_eq!(Divisible::<u8>::get(&val, i), elem);
+		}
 	}
 }

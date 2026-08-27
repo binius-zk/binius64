@@ -141,3 +141,33 @@ pub unsafe trait WithUnderlier:
 		Self::from_underlier(f(self.to_underlier()))
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::underlier::{U2, U4};
+
+	#[test]
+	fn test_from_fn() {
+		assert_eq!(u32::from_fn(|_| U1::new(0)), 0);
+		assert_eq!(u32::from_fn(|i| U1::new((i % 2) as u8)), 0xaaaaaaaa);
+		assert_eq!(u32::from_fn(|_| U1::new(1)), u32::MAX);
+
+		assert_eq!(u32::from_fn(|_| U2::new(0)), 0);
+		assert_eq!(u32::from_fn(|_| U2::new(1)), 0x55555555);
+		assert_eq!(u32::from_fn(|_| U2::new(2)), 0xaaaaaaaa);
+		assert_eq!(u32::from_fn(|_| U2::new(3)), u32::MAX);
+		assert_eq!(u32::from_fn(|i| U2::new((i % 4) as u8)), 0xe4e4e4e4);
+
+		assert_eq!(u32::from_fn(|_| U4::new(0)), 0);
+		assert_eq!(u32::from_fn(|_| U4::new(1)), 0x11111111);
+		assert_eq!(u32::from_fn(|_| U4::new(8)), 0x88888888);
+		assert_eq!(u32::from_fn(|_| U4::new(31)), 0xffffffff);
+		assert_eq!(u32::from_fn(|i| U4::new(i as u8)), 0x76543210);
+
+		assert_eq!(u32::from_fn(|_| 0u8), 0);
+		assert_eq!(u32::from_fn(|_| 0xabu8), 0xabababab);
+		assert_eq!(u32::from_fn(|_| 255u8), 0xffffffff);
+		assert_eq!(u32::from_fn(|i| i as u8), 0x03020100);
+	}
+}

@@ -968,7 +968,6 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::underlier::single_element_mask_bits;
 
 	fn check_roundtrip<T>(val: M256)
 	where
@@ -1047,7 +1046,9 @@ mod tests {
 	}
 
 	fn get(value: M256, log_block_len: usize, index: usize) -> M256 {
-		(value >> (index << log_block_len)) & single_element_mask_bits::<M256>(1 << log_block_len)
+		let block_bits = 1 << log_block_len;
+		let mask = !M256::ZERO >> (M256::BITS - block_bits);
+		(value >> (index << log_block_len)) & mask
 	}
 
 	proptest! {
