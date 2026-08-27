@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_field::{ExtensionField, FieldOps};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel},

@@ -3,9 +3,8 @@
 
 use binius_compute::BufferPool;
 use binius_field::{Ghash128b as B128, PackedField, arch::OptimalPackedB128};
-use binius_hash::{
-	binary_merkle_tree::HashSuite, blake3::Blake3HashSuite, sha256::Sha256HashSuite,
-};
+use binius_hash::{blake3::Blake3HashSuite, sha256::Sha256HashSuite};
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
 use binius_math::test_utils::random_field_buffer;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -34,7 +33,7 @@ const LOG_ELEMS_IN_LEAF: usize = 4;
 fn bench_binary_merkle_tree<P, H>(c: &mut Criterion, hash_name: &str, packing_name: impl AsRef<str>)
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	let merkle_prover = BinaryMerkleTreeProver::<B128, H>::new();
 	let mut rng = rand::rng();

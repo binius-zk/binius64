@@ -14,6 +14,7 @@ binius-circuits = { path = "../circuits" }
 binius-core = { path = "../core" }
 binius-frontend = { path = "../frontend" }
 binius-hash = { path = "../hash" }
+binius-hash-prover = { path = "../hash-prover" }
 binius-prover = { path = "../prover", default-features = false }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils", features = ["platform-diagnostics"] }

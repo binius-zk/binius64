@@ -7,7 +7,7 @@ use std::{borrow::BorrowMut, marker::PhantomData};
 use binius_core::word::Word;
 use binius_field::Ghash128b as B128;
 use binius_frontend::WitnessFiller;
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop::{
 	channel::grinding::GrindingVerifierChannel,
 	merkle_channel::{self, MerkleIPVerifierChannel, TranscriptMerkleCommitment},
@@ -43,7 +43,7 @@ use crate::{
 /// The transcript is read directly rather than through a `VerifierMerkleTranscriptChannel`.
 /// That channel consumes the layer and branch digests internally, never handing them back.
 /// A circuit needs them on wires, so they are read here instead.
-pub struct WitnessFillerChannel<'a, 'c, T, Challenger_, H: HashSuite> {
+pub struct WitnessFillerChannel<'a, 'c, T, Challenger_, H: ParallelHashSuite> {
 	transcript: T,
 	/// Reproduces the layer depth and the native checks the builder's scheme also picks.
 	scheme: BinaryMerkleTreeScheme<B128, H>,
@@ -54,7 +54,7 @@ pub struct WitnessFillerChannel<'a, 'c, T, Challenger_, H: HashSuite> {
 
 impl<'a, 'c, T, Challenger_, H> WitnessFillerChannel<'a, 'c, T, Challenger_, H>
 where
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	/// Replays over a transcript, filling `wires` in the order the build recorded them.
 	pub fn new(transcript: T, filler: &'a mut WitnessFiller<'c>, wires: Vec<Input>) -> Self {
@@ -108,7 +108,7 @@ impl<T, Challenger_, H> IPVerifierChannel<B128> for WitnessFillerChannel<'_, '_,
 where
 	T: BorrowMut<VerifierTranscript<Challenger_>>,
 	Challenger_: Challenger,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	type Elem = B128;
 
@@ -143,7 +143,7 @@ impl<T, Challenger_, H> WordIPVerifierChannel<B128>
 where
 	T: BorrowMut<VerifierTranscript<Challenger_>>,
 	Challenger_: Challenger,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	type Word = Word;
 
@@ -180,7 +180,7 @@ impl<T, Challenger_, H> GrindingVerifierChannel for WitnessFillerChannel<'_, '_,
 where
 	T: BorrowMut<VerifierTranscript<Challenger_>>,
 	Challenger_: Challenger,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	/// Reads the nonce the prover ground and fills the wire the build allocated for it.
 	///
@@ -210,7 +210,7 @@ impl<T, Challenger_, H> MerkleIPVerifierChannel<B128>
 where
 	T: BorrowMut<VerifierTranscript<Challenger_>>,
 	Challenger_: Challenger,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: DeserializeBytes,
 	B128: FixedSizeSerializeBytes,
 {

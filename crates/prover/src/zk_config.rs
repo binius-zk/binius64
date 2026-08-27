@@ -11,7 +11,7 @@ use std::{marker::PhantomData, sync::Arc};
 use binius_compute::BufferPool;
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment, ValueVec};
 use binius_field::{Ghash128b as B128, PackedField};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded};
@@ -35,7 +35,7 @@ type ProverNTT<F> = NeighborsLastMultiThread<GaoMateerPreExpanded<F>>;
 pub struct ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	inner_iop_prover: IOPProver,
 	inner_iop_verifier: IOPVerifier,
@@ -56,7 +56,7 @@ where
 impl<P, H> ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Constructs a ZK prover from a [`ZKVerifier`].
@@ -220,7 +220,7 @@ where
 impl<P, H> SerializeBytes for ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
@@ -241,7 +241,7 @@ where
 impl<P, H> DeserializeBytes for ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {

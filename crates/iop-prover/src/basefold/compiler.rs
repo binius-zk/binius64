@@ -6,7 +6,7 @@ use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::FRIParams,
 	merkle_tree::BinaryMerkleTreeScheme,
@@ -67,7 +67,7 @@ where
 		n_test_queries: usize,
 	) -> Self
 	where
-		H: HashSuite,
+		H: ParallelHashSuite,
 	{
 		assert!(
 			!oracle_specs.is_empty(),
@@ -192,7 +192,7 @@ where
 		alloc: A,
 	) -> TranscriptBaseFoldProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
 	where
-		H: HashSuite,
+		H: ParallelHashSuite,
 		Challenger_: Challenger,
 		T: BorrowMut<ProverTranscript<Challenger_>>,
 		Output<H::LeafHash>: SerializeBytes,
@@ -218,7 +218,7 @@ where
 		alloc: A,
 	) -> TranscriptBaseFoldProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
 	where
-		H: HashSuite,
+		H: ParallelHashSuite,
 		Challenger_: Challenger,
 		T: BorrowMut<ProverTranscript<Challenger_>>,
 		Output<H::LeafHash>: SerializeBytes,

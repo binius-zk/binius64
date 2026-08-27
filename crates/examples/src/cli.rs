@@ -5,7 +5,8 @@ use std::{fs, path::Path};
 use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData, ValuesRef};
 use binius_frontend::{CircuitBuilder, CircuitStat};
-use binius_hash::{Blake3HashSuite, StdHashSuite, binary_merkle_tree::HashSuite};
+use binius_hash::{Blake3HashSuite, StdHashSuite};
+use binius_hash_prover::ParallelHashSuite;
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 use digest::Output;
@@ -71,7 +72,7 @@ fn prove_with_hash_suite<H>(
 	output: Option<&str>,
 ) -> Result<()>
 where
-	H: HashSuite + Clone,
+	H: ParallelHashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	if zk {
@@ -99,7 +100,7 @@ fn verify_with_hash_suite<H>(
 	proof_bytes: Vec<u8>,
 ) -> Result<()>
 where
-	H: HashSuite + Clone,
+	H: ParallelHashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	if zk {

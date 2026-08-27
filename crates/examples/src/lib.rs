@@ -14,7 +14,8 @@ pub mod snapshot;
 use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_frontend::{CircuitBuilder, WitnessFiller};
-use binius_hash::{binary_merkle_tree::HashSuite, sha256::Sha256HashSuite};
+use binius_hash::sha256::Sha256HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_prover::{KeyCollection, OptimalPackedB128, Prover, zk_config::ZKProver};
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use binius_verifier::{
@@ -52,7 +53,7 @@ pub fn init_tracing() {
 		.try_init();
 }
 
-/// Selects which Merkle [`HashSuite`] the prover and verifier use.
+/// Selects which Merkle hash suite the prover and verifier use.
 ///
 /// A hash suite fixes both halves of the Merkle tree at once:
 /// - the leaf hash applied to the committed values, and
@@ -152,7 +153,7 @@ pub fn setup<H>(
 	key_collection: Option<KeyCollection>,
 ) -> Result<(Verifier<H>, Prover<OptimalPackedB128, H>)>
 where
-	H: HashSuite + Clone,
+	H: ParallelHashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	setup_with_pcs(cs, log_inv_rate, Pcs::default(), key_collection)
@@ -168,7 +169,7 @@ pub fn setup_with_pcs<H>(
 	key_collection: Option<KeyCollection>,
 ) -> Result<(Verifier<H>, Prover<OptimalPackedB128, H>)>
 where
-	H: HashSuite + Clone,
+	H: ParallelHashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
@@ -188,7 +189,7 @@ pub fn setup_zk<H>(
 	log_inv_rate: usize,
 ) -> Result<(ZKVerifier<H>, ZKProver<OptimalPackedB128, H>)>
 where
-	H: HashSuite + Clone,
+	H: ParallelHashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
@@ -201,7 +202,7 @@ where
 /// hash suite. Cheaper than `setup` when proving is not needed.
 pub fn setup_verifier<H>(cs: ConstraintSystem, log_inv_rate: usize) -> Result<Verifier<H>>
 where
-	H: HashSuite + Clone,
+	H: ParallelHashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	setup_verifier_with_pcs(cs, log_inv_rate, Pcs::default())
@@ -216,7 +217,7 @@ pub fn setup_verifier_with_pcs<H>(
 	scheme: Pcs,
 ) -> Result<Verifier<H>>
 where
-	H: HashSuite + Clone,
+	H: ParallelHashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
@@ -227,7 +228,7 @@ where
 /// Merkle hash suite. Cheaper than `setup_zk` when proving is not needed.
 pub fn setup_zk_verifier<H>(cs: ConstraintSystem, log_inv_rate: usize) -> Result<ZKVerifier<H>>
 where
-	H: HashSuite + Clone,
+	H: ParallelHashSuite + Clone,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
@@ -237,7 +238,7 @@ where
 /// Run the prover and return the raw proof transcript bytes.
 pub fn create_proof<H>(prover: &Prover<OptimalPackedB128, H>, witness: &ValueVec) -> Result<Vec<u8>>
 where
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let challenger = StdChallenger::default();
@@ -253,7 +254,7 @@ pub fn create_proof_zk<H>(
 	message: Option<&[u8]>,
 ) -> Result<Vec<u8>>
 where
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let challenger = StdChallenger::default();
@@ -274,7 +275,7 @@ pub fn check_proof<H>(
 	proof_bytes: Vec<u8>,
 ) -> Result<()>
 where
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let challenger = StdChallenger::default();
@@ -292,7 +293,7 @@ pub fn check_proof_zk<H>(
 	message: Option<&[u8]>,
 ) -> Result<()>
 where
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let challenger = StdChallenger::default();
@@ -312,7 +313,7 @@ pub fn prove_verify<H>(
 	witness: &ValueVec,
 ) -> Result<()>
 where
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let proof_bytes = create_proof(prover, witness)?;
@@ -328,7 +329,7 @@ pub fn prove_verify_zk<H>(
 	message: Option<&[u8]>,
 ) -> Result<()>
 where
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let proof_bytes = create_proof_zk(prover, witness, message)?;

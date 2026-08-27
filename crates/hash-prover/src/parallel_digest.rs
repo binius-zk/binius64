@@ -3,6 +3,7 @@
 
 use std::{array, marker::PhantomData, mem::MaybeUninit};
 
+use binius_hash::HashBuffer;
 use binius_utils::{
 	FixedSizeSerializeBytes, SerializeBytes,
 	rayon::{
@@ -12,8 +13,6 @@ use binius_utils::{
 };
 use bytes::BytesMut;
 use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
-
-use crate::HashBuffer;
 
 /// An object that efficiently computes `N` instances of a cryptographic hash function
 /// in parallel.

@@ -3,7 +3,7 @@
 //! The verifier-side compiler for whichever commitment scheme was selected.
 
 use binius_field::BinaryField;
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::OracleSpec,

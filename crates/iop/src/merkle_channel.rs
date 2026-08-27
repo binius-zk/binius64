@@ -16,7 +16,7 @@ use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};

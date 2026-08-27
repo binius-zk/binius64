@@ -12,10 +12,10 @@
 //!
 //! The Blake3 spec constants live here too, since every kernel reads them.
 
-use digest::Output;
-use portable::{PortableBlake3ParallelCompression, PortableBlake3ParallelDigest};
+use binius_hash::Blake3HashSuite;
+pub use portable::{PortableBlake3ParallelCompression, PortableBlake3ParallelDigest};
 
-use super::{binary_merkle_tree::HashSuite, compress::CompressionFunction};
+use crate::suite::ParallelHashSuite;
 
 pub mod portable;
 
@@ -91,36 +91,13 @@ const MSG_SCHEDULE: [[usize; 16]; N_ROUNDS] = {
 	schedule
 };
 
-/// A two-to-one compression function that hashes the concatenation of its inputs with Blake3.
-#[derive(Debug, Clone, Default)]
-pub struct Blake3Compression;
-
-impl CompressionFunction<Output<blake3::Hasher>, 2> for Blake3Compression {
-	fn compress(&self, input: [Output<blake3::Hasher>; 2]) -> Output<blake3::Hasher> {
-		let mut hasher = blake3::Hasher::new();
-		hasher.update(input[0].as_slice());
-		hasher.update(input[1].as_slice());
-		(*hasher.finalize().as_bytes()).into()
-	}
-}
-
-/// Blake3 [`HashSuite`]: Blake3 leaves and a Blake3 compression function for inner nodes.
+/// Batched Blake3, on top of the sequential pair the verifier side defines.
 ///
-/// Both parallel compute paths use the portable auto-vectorized kernel, not the scalar loop:
-/// - Leaves within one 1024-byte chunk are hashed by the batch kernel.
-/// - Larger leaves fall back to the scalar adapter that walks the tree.
-/// - Every inner-node level folds its node pairs through the batched two-to-one compression.
-///
-/// The batch width is fixed at 16 lanes for both paths:
-/// - The throughput sweet spot on NEON in the portable-kernel benchmark.
-/// - The width the AVX2 / AVX-512 vectorizer fills.
+/// The batch width is 16 lanes for both paths:
+/// - the throughput sweet spot on NEON in the portable-kernel benchmark.
+/// - the width the AVX2 and AVX-512 vectorizers fill.
 /// - 4 and 8 lanes both measure slower.
-#[derive(Debug, Clone, Default)]
-pub struct Blake3HashSuite;
-
-impl HashSuite for Blake3HashSuite {
-	type LeafHash = blake3::Hasher;
-	type Compression = Blake3Compression;
+impl ParallelHashSuite for Blake3HashSuite {
 	type ParLeafHash = PortableBlake3ParallelDigest<16>;
 	type ParCompression = PortableBlake3ParallelCompression<16>;
 }
@@ -129,7 +106,9 @@ impl HashSuite for Blake3HashSuite {
 mod tests {
 	use std::{iter::repeat_with, mem::MaybeUninit};
 
+	use binius_hash::{Blake3Compression, CompressionFunction};
 	use binius_utils::rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+	use digest::Output;
 	use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 	use super::*;
@@ -206,7 +185,7 @@ mod tests {
 			let mut portable = repeat_with(MaybeUninit::<Output<blake3::Hasher>>::uninit)
 				.take(n_leaves)
 				.collect::<Vec<_>>();
-			<Blake3HashSuite as HashSuite>::ParLeafHash::default().digest_with_const_len(
+			<Blake3HashSuite as ParallelHashSuite>::ParLeafHash::default().digest_with_const_len(
 				leaf_len,
 				leaves.par_iter().map(|leaf| leaf.iter().copied()),
 				&mut portable,

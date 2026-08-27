@@ -3,9 +3,8 @@
 
 use std::{array, fmt::Debug, mem::MaybeUninit};
 
+use binius_hash::CompressionFunction;
 use binius_utils::rayon::prelude::*;
-
-use crate::CompressionFunction;
 
 /// A trait for parallel application of N-to-1 compression functions.
 ///

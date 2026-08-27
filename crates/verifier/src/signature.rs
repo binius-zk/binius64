@@ -60,7 +60,7 @@
 //!   an empty message (`Some(&[])`, which binds `H("")`) is distinct from no message at all
 //!   (`None`, which binds nothing).
 
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_transcript::{BufMut, TranscriptWriter};
 use digest::Digest;
 

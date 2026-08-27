@@ -9,7 +9,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{Field, PackedField, Rijndael8b as B8};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::channel::IOPProverChannel;
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::WordIPProverChannel;
@@ -377,7 +377,7 @@ const fn warn_on_software_field_arithmetic() {}
 pub struct Prover<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	/// The constraint system and the reduction that commits it, independent of the commitment.
 	iop_prover: IOPProver,
@@ -393,7 +393,7 @@ where
 impl<P, H> Prover<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Constructs a prover corresponding to a constraint system verifier.

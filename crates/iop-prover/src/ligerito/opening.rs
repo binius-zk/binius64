@@ -342,10 +342,8 @@ mod tests {
 		arithmetic_traits::{InvertOrZero, Square},
 		field::FieldOps,
 	};
-	use binius_hash::{
-		CompressionFunction, ParallelCompressionAdaptor, StdDigest, StdHashSuite,
-		binary_merkle_tree::HashSuite,
-	};
+	use binius_hash::{CompressionFunction, HashSuite, StdDigest, StdHashSuite};
+	use binius_hash_prover::{ParallelCompressionAdaptor, ParallelHashSuite};
 	use binius_iop::{
 		channel::grinding::GrindingVerifierChannel,
 		ligerito::{Error, LigeritoVerifier, VerifierCost},
@@ -1027,7 +1025,10 @@ mod tests {
 	impl HashSuite for CountingHashSuite {
 		type LeafHash = StdLeafHash;
 		type Compression = CountingCompression;
-		type ParLeafHash = <StdHashSuite as HashSuite>::ParLeafHash;
+	}
+
+	impl ParallelHashSuite for CountingHashSuite {
+		type ParLeafHash = <StdHashSuite as ParallelHashSuite>::ParLeafHash;
 		type ParCompression = ParallelCompressionAdaptor<CountingCompression>;
 	}
 

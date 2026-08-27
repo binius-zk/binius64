@@ -20,7 +20,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::Ghash128b as B128;
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::OracleSpec,

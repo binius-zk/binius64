@@ -5,42 +5,20 @@ use std::{fmt, mem::MaybeUninit, slice};
 
 use binius_compute::{Allocator, GlobalAllocator, VecLike};
 use binius_field::Field;
+use binius_hash::CompressionFunction;
 use binius_utils::{
 	checked_arithmetics::checked_log_2,
 	rayon::{self, prelude::*, slice::ParallelSlice},
 };
 use digest::{
-	Digest, FixedOutputReset, Output, OutputSizeUser,
+	OutputSizeUser,
 	array::{Array, ArraySize},
-	block_api::BlockSizeUser,
 };
 
-use super::{
-	compress::CompressionFunction, parallel_compression::ParallelPseudoCompression,
-	parallel_digest::ParallelDigest,
+use crate::{
+	parallel_compression::ParallelPseudoCompression, parallel_digest::ParallelDigest,
+	suite::ParallelHashSuite,
 };
-
-/// A bundle of hash and compression types used to build and verify a binary Merkle tree.
-///
-/// Most callers want to vary the underlying hash family (SHA-256, etc.) as a single unit
-/// rather than independently picking a leaf hash, a compression function, and their parallel
-/// counterparts. `HashSuite` bundles the four related types so that user-facing prover and
-/// verifier APIs can take a single `H: HashSuite` parameter instead of two or three loose hash
-/// trait parameters.
-pub trait HashSuite {
-	/// Sequential hash used to compute leaf digests during verification.
-	type LeafHash: Digest + BlockSizeUser + FixedOutputReset + Send;
-	/// Sequential 2-to-1 compression used to fold inner Merkle nodes during verification.
-	type Compression: CompressionFunction<Output<Self::LeafHash>, 2> + Default;
-	/// Parallel counterpart of [`Self::LeafHash`] used during proving.
-	type ParLeafHash: ParallelDigest<Digest = Self::LeafHash> + Default;
-	/// Parallel counterpart of [`Self::Compression`] used during proving.
-	///
-	/// `Sync` because one instance is shared across threads while folding the tree.
-	type ParCompression: ParallelPseudoCompression<Output<Self::LeafHash>, 2, Compression = Self::Compression>
-		+ Default
-		+ Sync;
-}
 
 /// Reason a Merkle tree operation rejects its arguments.
 ///
@@ -125,7 +103,7 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 	pub fn new<F, H>(elements: &[F], batch_size: usize, alloc: &A) -> Result<Self, Error>
 	where
 		F: Field,
-		H: HashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
+		H: ParallelHashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
 	{
 		// Every leaf holds the same number of values, so the split has to come out even.
 		// An empty leaf divides no value count, so it is rejected here rather than dividing by it.
@@ -178,7 +156,7 @@ impl<N: ArraySize, A: Allocator> BinaryMerkleTree<Array<u8, N>, A> {
 	pub fn from_leaves<F, H, ParIter>(leaves: ParIter, n_items_per_input: usize, alloc: &A) -> Self
 	where
 		F: Field,
-		H: HashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
+		H: ParallelHashSuite<LeafHash: OutputSizeUser<OutputSize = N>>,
 		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 	{
 		// Panics unless the leaf count is a power of two, which the binary layout requires.
@@ -388,9 +366,10 @@ impl<D: Clone + Send, A: Allocator> BinaryMerkleTree<D, A> {
 #[cfg(test)]
 mod tests {
 	use binius_field::Ghash128b as B128;
+	use binius_hash::{Sha256Compression, Sha256HashSuite};
+	use digest::Output;
 
 	use super::*;
-	use crate::sha256::{Sha256Compression, Sha256HashSuite};
 
 	/// Commits `n_values` distinct field elements in leaves of `batch_size` values each.
 	fn commit(

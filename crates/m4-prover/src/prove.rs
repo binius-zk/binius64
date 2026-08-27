@@ -9,7 +9,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{Field, PackedField, Rijndael8b as B8};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::sumcheck::{
 	MleToSumCheckEvaluator,
@@ -368,7 +368,7 @@ impl IOPProver {
 pub struct Prover<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	iop_prover: IOPProver,
 	/// The precomputed BaseFold prover, holding the NTT and the FRI parameters.
@@ -384,7 +384,7 @@ where
 impl<P, H> Prover<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Builds the prover from a verifier, inheriting its constraint system and FRI parameters.

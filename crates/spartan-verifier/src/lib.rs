@@ -36,7 +36,7 @@ pub mod wrapper;
 use std::{marker::PhantomData, rc::Rc};
 
 use binius_field::{BinaryField, Field, field::FieldOps};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_iop::{
 	basefold,
 	basefold::compiler::BaseFoldVerifierCompiler,

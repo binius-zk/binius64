@@ -3,7 +3,8 @@
 use std::hint::black_box;
 
 use binius_field::{Ghash128b as B128, Random};
-use binius_hash::{ParallelDigest, ParallelDigestAdapter, ParallelSha256Digest, StdDigest};
+use binius_hash::StdDigest;
+use binius_hash_prover::{ParallelDigest, ParallelDigestAdapter, ParallelSha256Digest};
 use binius_utils::rayon::{prelude::*, slice::ParallelSlice};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use digest::{Digest, Output};
@@ -142,9 +143,9 @@ fn bench_const_leaves(c: &mut Criterion) {
 fn bench_merkle_compress(c: &mut Criterion) {
 	use std::mem::MaybeUninit;
 
-	use binius_hash::{
+	use binius_hash::Sha256Compression;
+	use binius_hash_prover::{
 		ParallelCompressionAdaptor, ParallelPseudoCompression, ParallelSha256Compression,
-		sha256::Sha256Compression,
 	};
 
 	// One layer of 2^15 parent nodes, fed by 2^16 child digests.
@@ -183,7 +184,9 @@ fn bench_merkle_compress(c: &mut Criterion) {
 /// Single-threaded and cache-resident, so the delta is the kernel alone.
 /// The messages are independent single-block hashes, the shape both Merkle stages produce.
 fn bench_kernel(c: &mut Criterion) {
-	use binius_hash::sha256::portable::{LANES, compress256_multi, compress256_multi_portable};
+	use binius_hash_prover::sha256::portable::{
+		LANES, compress256_multi, compress256_multi_portable,
+	};
 
 	const N_BLOCKS: usize = 4096;
 	const IV: [u32; 8] = [
