@@ -7,7 +7,10 @@ use std::iter;
 
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedBinaryField64x1b};
-use binius_math::{FieldBuffer, multilinear::hypercube::Hypercube};
+use binius_math::{
+	FieldBuffer,
+	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
+};
 use binius_utils::rayon::prelude::*;
 
 use super::{CHUNK_SIZE, FoldedWord, LOG_CHUNK_SIZE};
@@ -68,11 +71,11 @@ impl<F: BinaryField> WordAxisFolder<F> {
 		// build reads the rest as zero.
 		// Those zeros pair with the repeated words a short list is filled with, so they add
 		// nothing.
-		let prefix_expansion = Hypercube::One.expand(prefix).build_scalars();
+		let prefix_expansion = eq_ind_partial_eval_scalars(prefix);
 		let lookups = RowFoldTables::new(&prefix_expansion);
 
 		// One weight per chunk of CHUNK_SIZE words, from the suffix.
-		let suffix_weights = Hypercube::One.expand(suffix).build::<F>();
+		let suffix_weights = eq_ind_partial_eval::<F>(suffix);
 
 		Self {
 			lookups,
@@ -227,7 +230,7 @@ mod tests {
 	fn reference_fold_word_axis<F: BinaryField>(words: &[Word], point: &[F]) -> FoldedWord<F> {
 		assert!(words.len() <= 1 << point.len());
 
-		let eq = Hypercube::One.expand(point).build_scalars();
+		let eq = eq_ind_partial_eval_scalars(point);
 		let mut out = [F::ZERO; Word::BITS];
 		for (word, &weight) in iter::zip(words, &eq) {
 			for (bit, out_bit) in out.iter_mut().enumerate() {

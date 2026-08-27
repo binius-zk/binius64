@@ -19,7 +19,7 @@
 
 use binius_field::{BinaryField1b, ExtensionField, Field};
 use binius_ip::logup_star as reduction;
-use binius_math::multilinear::hypercube::Hypercube;
+use binius_math::multilinear::eq::eq_ind;
 use itertools::izip;
 
 use crate::channel::{Error as ChannelError, IOPVerifierChannel, TransparentEvalFn};
@@ -115,7 +115,7 @@ where
 		let point = output.table_eval_point[..n_vars].to_vec();
 		channel.verify_oracle_relation(
 			oracle,
-			Box::new(move |challenge: &[C::Elem]| Hypercube::One.eq_ind(&point, challenge)),
+			Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
 			table_output.pushforward_claim.clone(),
 		)?;
 	}
@@ -203,7 +203,7 @@ where
 		let point = table.pushforward_eval_point.clone();
 		channel.verify_oracle_relation(
 			oracle.clone(),
-			Box::new(move |challenge: &[C::Elem]| Hypercube::One.eq_ind(&point, challenge)),
+			Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
 			table.pushforward_eval_claim.clone(),
 		)?;
 		channel.verify_oracle_relation(oracle, table_eval, table.product_claim.clone())?;

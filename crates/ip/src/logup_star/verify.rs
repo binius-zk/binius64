@@ -6,7 +6,10 @@ use std::{iter, slice};
 
 use binius_field::{BinaryField1b, ExtensionField, Field, field::FieldOps, util::powers};
 use binius_math::{
-	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
+	multilinear::{
+		eq::{eq_ind, eq_ind_zero},
+		evaluate::evaluate_inplace_scalars,
+	},
 	univariate::evaluate_univariate,
 };
 use itertools::izip;
@@ -319,7 +322,7 @@ where
 	// weight per distinct depth, and this indexes them all in a single pass.
 	let pad_eqs = iter::once(C::Elem::one())
 		.chain(node_point.iter().scan(C::Elem::one(), |acc, coord| {
-			*acc = acc.clone() * Hypercube::One.eq_ind_zero::<C::Elem>(slice::from_ref(coord));
+			*acc = acc.clone() * eq_ind_zero(slice::from_ref(coord));
 			Some(acc.clone())
 		}))
 		.collect::<Vec<_>>();
@@ -343,8 +346,7 @@ where
 			izip!(&table.lookers, &looker_powers, table_evals).map(|(looker, power, index_eval)| {
 				let pad = n_node_vars - looker.eval_point.len();
 				let content = &node_point[pad..];
-				let num =
-					power.clone() * Hypercube::One.eq_ind::<C::Elem>(looker.eval_point, content);
+				let num = power.clone() * eq_ind(looker.eval_point, content);
 				let den = c.clone() - index_eval.clone();
 				fracaddcheck::pad_leaf_fraction((num, den), pad_eqs[pad].clone())
 			})

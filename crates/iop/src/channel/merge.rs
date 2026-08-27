@@ -7,7 +7,7 @@ use std::cmp::Reverse;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
-use binius_math::multilinear::hypercube::Hypercube;
+use binius_math::multilinear::eq::eq_ind;
 
 use crate::channel::{
 	Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn, merged_log_msg_len,
@@ -398,7 +398,7 @@ where
 		// Inside it, the result is the original transparent polynomial.
 		let padded_transparent: TransparentEvalFn<Self::Elem> = Box::new(move |point| {
 			let (low, high) = point.split_at(n_i);
-			Hypercube::One.eq_ind(high, &block_pattern) * transparent(low)
+			eq_ind(high, &block_pattern) * transparent(low)
 		});
 
 		// The claim itself is unchanged.

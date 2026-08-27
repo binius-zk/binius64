@@ -32,7 +32,10 @@ use binius_ip::{
 use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product,
-	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
+	multilinear::{
+		eq::{eq_ind, eq_ind_zero},
+		evaluate::evaluate_inplace_scalars,
+	},
 	univariate::{EvaluationDomain, evaluate_univariate},
 };
 
@@ -394,7 +397,7 @@ where
 
 	// Extend the claim from the segment's own span to the shift's whole word-index space. Every
 	// word above the segment is zero, so each extra coordinate contributes its eq-zero factor.
-	Ok(Hypercube::One.eq_ind_zero(&r_y[log_packed_words..]) * public_eval)
+	Ok(eq_ind_zero(&r_y[log_packed_words..]) * public_eval)
 }
 
 /// An operation's operand data, or a zero claim at an empty point when it is absent.
@@ -579,17 +582,17 @@ impl<F: FieldOps> RerandomizedOperations<F> {
 		// Bind the reduced evals to the sumcheck: each claim's contribution is its
 		// eq(instance_point, r_rho) weight times its reduced eval, batched by `batch_coeff`. The
 		// contributions follow the same push order as `sums`.
-		let eq_and = Hypercube::One.eq_ind(&self.bitand.r_rho, &r_rho);
+		let eq_and = eq_ind(&self.bitand.r_rho, &r_rho);
 		let mut expected: Vec<F> = bitand_evals
 			.iter()
 			.map(|eval| eval.clone() * &eq_and)
 			.collect();
 		if let (Some(intmul), Some(evals)) = (&self.intmul, &intmul_evals) {
-			let eq_mul = Hypercube::One.eq_ind(&intmul.r_rho, &r_rho);
+			let eq_mul = eq_ind(&intmul.r_rho, &r_rho);
 			expected.extend(evals.iter().map(|eval| eval.clone() * &eq_mul));
 		}
 		if let (Some(binmul), Some(evals)) = (&self.binmul, &binmul_evals) {
-			let eq_binmul = Hypercube::One.eq_ind(&binmul.r_rho, &r_rho);
+			let eq_binmul = eq_ind(&binmul.r_rho, &r_rho);
 			expected.extend(evals.iter().map(|eval| eval.clone() * &eq_binmul));
 		}
 		channel.assert_zero(evaluate_univariate(&expected, &batch_coeff) - eval)?;

@@ -16,6 +16,7 @@ pub mod binary_subspace;
 pub mod bit_reverse;
 pub mod field_buffer;
 pub mod inner_product;
+pub mod line;
 pub mod multilinear;
 pub mod ntt;
 pub mod reed_solomon;

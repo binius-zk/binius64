@@ -7,7 +7,7 @@ use binius_field::{BinaryField, Field, PackedField};
 use binius_iop::fri::{FRIParams, fold::fold_chunk};
 use binius_math::{
 	FieldBuffer, FieldSlice, inner_product::inner_product_buffers,
-	multilinear::hypercube::Hypercube, ntt::AdditiveNTT,
+	multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use tracing::instrument;
@@ -505,7 +505,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 		let early_challenges = &challenges[..max_early];
 		let outer_challenges = &challenges[max_early..max_early + log_n_oracles];
 		let later_challenges = &challenges[max_early + log_n_oracles..];
-		let outer_tensor = Hypercube::One.expand(outer_challenges).build::<F>();
+		let outer_tensor = eq_ind_partial_eval::<F>(outer_challenges);
 
 		// The combined codeword is the largest buffer of the fold phase.
 		// It starts uninitialized, and the first oracle writes it rather than adding into it.
@@ -539,7 +539,7 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 			// (lifted) output entry with a single pass over the `2^log_batch_size`-element tensor.
 			// A single oracle carries no outer challenges, so its entry is one.
 			// The pass is then a multiply by one at every element, and is skipped.
-			let mut tensor = Hypercube::One.expand(&fold_challenges).build::<P>();
+			let mut tensor = eq_ind_partial_eval::<P>(&fold_challenges);
 			if scalar != F::ONE {
 				let scalar_broadcast = P::broadcast(scalar);
 				for packed in tensor.as_mut() {
@@ -614,7 +614,7 @@ mod tests {
 		let msg = random_field_buffer(&mut rng, log_dim + arity);
 		let challenges = random_scalars(&mut rng, arity);
 
-		let query = Hypercube::One.expand(&challenges).build::<B128>();
+		let query = eq_ind_partial_eval::<B128>(&challenges);
 
 		// Fold the message using regular folding: combine the low `arity` columns of each row
 		// with the eq tensor of the challenges (a partial evaluation of each row at the point).

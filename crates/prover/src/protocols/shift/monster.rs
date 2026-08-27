@@ -6,7 +6,7 @@ use std::iter;
 use binius_compute::{Allocator, VecLike};
 use binius_core::{ShiftVariant, constraint_system::Shift, word::Word};
 use binius_field::{BinaryField, Field, PackedField};
-use binius_math::{FieldBuffer, FieldVec, multilinear::hypercube::Hypercube};
+use binius_math::{FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval};
 use tracing::instrument;
 
 use super::{phase_1::SHIFT_OPERATOR_LOG_LEN, shift_ind::ShiftChallenge};
@@ -41,8 +41,8 @@ impl<F: Field> OuterSlotWeights<F> {
 	/// The equality indicators of the outer slot's challenge point.
 	pub(super) fn new(outer: &ShiftChallenge<F>) -> Self {
 		Self {
-			variant: Hypercube::One.expand(&outer.variant).build::<F>(),
-			amount: Hypercube::One.expand(&outer.amount).build::<F>(),
+			variant: eq_ind_partial_eval::<F>(&outer.variant),
+			amount: eq_ind_partial_eval::<F>(&outer.amount),
 		}
 	}
 
@@ -217,7 +217,7 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random, Rijndael8b};
 	use binius_math::{
-		BinarySubspace, inner_product::inner_product_buffers, multilinear::hypercube::Hypercube,
+		BinarySubspace, inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
 		test_utils::random_scalars, univariate::EvaluationDomain,
 	};
 	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
@@ -266,7 +266,7 @@ mod tests {
 			// Method 2: evaluate the built multilinear at the whole point.
 			let h = shift_operator_table::<F, P, _>(&GlobalAllocator, l_tilde.as_ref());
 			let evaluation_point = [r_j, r_s, r_v].concat();
-			let tensor = Hypercube::One.expand(&evaluation_point).build::<P>();
+			let tensor = eq_ind_partial_eval::<P>(&evaluation_point);
 			let direct = inner_product_buffers(&h, &tensor);
 
 			assert_eq!(

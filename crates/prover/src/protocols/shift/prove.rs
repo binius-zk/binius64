@@ -6,8 +6,8 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, util::powers};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::hypercube::Hypercube,
-	univariate::EvaluationDomain,
+	BinarySubspace, FieldBuffer, inner_product::inner_product,
+	multilinear::eq::eq_ind_partial_eval, univariate::EvaluationDomain,
 };
 
 use super::{
@@ -104,7 +104,7 @@ impl<F: Field> PreparedOperatorData<F> {
 			r_zhat_prime,
 			r_x_prime,
 		} = operator_data;
-		let r_x_prime_tensor = Hypercube::One.expand(&r_x_prime).build::<F>();
+		let r_x_prime_tensor = eq_ind_partial_eval::<F>(&r_x_prime);
 		let lambda_powers: Vec<F> = powers(lambda).skip(1).take(ARITY).collect();
 		Self {
 			batched_eval: inner_product(evals, lambda_powers.iter().copied()),

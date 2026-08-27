@@ -8,7 +8,7 @@ use binius_field::{
 	BinaryField, FieldOps, WideMul,
 	util::{FieldFn, powers},
 };
-use binius_math::multilinear::hypercube::Hypercube;
+use binius_math::multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars};
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
 	rayon::{
@@ -262,7 +262,7 @@ where
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, input: &[E]) -> E {
 		let (r_x_prime, lambda, shift_scalars, r_y_tensor) = self.split_input(input);
 
-		let r_x_prime_tensor = Hypercube::One.expand(r_x_prime).build_scalars();
+		let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
 		// The batching coefficients fan into the inner table only, holding it to
 		// `SHIFT_COUNT * arity`; the outer weight multiplies in per term.
 		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars.inner, lambda, ARITY);
@@ -304,7 +304,7 @@ where
 
 		// The packed expansion threads the tensor's multiplications.
 		// It applies over the base field, which is its own single-element packing.
-		let r_x_prime_tensor = Hypercube::One.expand(r_x_prime).build::<F>();
+		let r_x_prime_tensor = eq_ind_partial_eval::<F>(r_x_prime);
 		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars.inner, lambda, ARITY);
 
 		// One unreduced wide product per constraint. The constraints partition cleanly across
@@ -402,7 +402,7 @@ mod tests {
 		word::Word,
 	};
 	use binius_field::{Field, Ghash128b, Random};
-	use binius_math::test_utils::random_scalars;
+	use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, test_utils::random_scalars};
 	use rand::prelude::*;
 
 	use super::{super::SHIFT_VARIANT_COUNT, *};
@@ -580,7 +580,7 @@ mod tests {
 			let batched = eval_fn.call::<F>(&input);
 
 			// The flat path reads the same weights, one table per axis.
-			let r_x_prime_tensor = Hypercube::One.expand(&r_x_prime).build_scalars();
+			let r_x_prime_tensor = eq_ind_partial_eval_scalars(&r_x_prime);
 			let inner_operand = operand_shift_scalar_table(&inner, &lambda, arity);
 			let contracted =
 				eval_fn.contract(run_weights(&r_x_prime_tensor, &inner_operand, &outer, value));

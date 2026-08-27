@@ -12,7 +12,7 @@ use binius_utils::rayon::prelude::*;
 use crate::{
 	FieldBuffer,
 	inner_product::inner_product_buffers,
-	multilinear::{fold::fold_highest_var_inplace, hypercube::Hypercube},
+	multilinear::{eq::eq_ind_partial_eval, fold::fold_highest_var_inplace},
 };
 
 /// Evaluates a multilinear polynomial at a point, leaving the coefficients in place.
@@ -40,7 +40,7 @@ where
 	// Expanding only that half costs memory on the order of the square root of the whole.
 	let first_half_len = (point.len() / 2).max(P::LOG_WIDTH).min(point.len());
 	let (first_coords, remaining_coords) = point.split_at(first_half_len);
-	let eq_tensor = Hypercube::One.expand(first_coords).build::<P>();
+	let eq_tensor = eq_ind_partial_eval::<P>(first_coords);
 
 	// With nothing left over the expansion covers every variable, so one pairing finishes.
 	if remaining_coords.is_empty() {
@@ -222,8 +222,7 @@ mod tests {
 			let point = random_scalars::<F>(&mut rng, n_vars);
 
 			// Pairing with the full expansion is the definition, and the cheapest reference.
-			let reference =
-				inner_product_par(&buffer, &Hypercube::One.expand(&point).build::<P>());
+			let reference = inner_product_par(&buffer, &eq_ind_partial_eval::<P>(&point));
 
 			prop_assert_eq!(evaluate(&buffer, &point), reference);
 

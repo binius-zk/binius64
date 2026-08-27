@@ -5,7 +5,7 @@ use std::iter;
 use binius_field::{BinaryField, ExtensionField, FieldOps, PackedField};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
-	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
+	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate_inplace_scalars},
 	tensor_algebra::TensorAlgebra,
 };
 
@@ -70,7 +70,7 @@ where
 
 	// Sample r_double_prime
 	let r_double_prime = channel.sample_many(log_packing);
-	let eq_r_double_prime = Hypercube::One.expand(&r_double_prime).build_scalars();
+	let eq_r_double_prime = eq_ind_partial_eval_scalars(&r_double_prime);
 
 	// Compute sumcheck claim
 	let sumcheck_claim = evaluate_inplace_scalars(s_hat_u.elems, &r_double_prime);

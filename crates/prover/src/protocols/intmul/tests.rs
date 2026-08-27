@@ -6,7 +6,7 @@ use binius_core::word::Word;
 use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random};
 use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
 use binius_iop_prover::channel::naive::NaiveProverChannel;
-use binius_math::{inner_product::inner_product_buffers, multilinear::hypercube::Hypercube};
+use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
@@ -30,8 +30,8 @@ type P = PackedBinaryGhash2x128b;
 
 pub fn evaluate_witness(words: &[Word], eval_point: &[F]) -> F {
 	let (prefix, suffix) = eval_point.split_at(Word::LOG_BITS);
-	let prefix_tensor = Hypercube::One.expand(prefix).build::<F>();
-	let suffix_tensor = Hypercube::One.expand(suffix).build::<F>();
+	let prefix_tensor = eq_ind_partial_eval::<F>(prefix);
+	let suffix_tensor = eq_ind_partial_eval::<F>(suffix);
 
 	let partially_folded_witness =
 		BitAxisFolder::new(prefix_tensor.as_ref()).fold::<F, _>(&GlobalAllocator, words);
@@ -97,7 +97,7 @@ fn prove_and_verify() {
 	// separately, we batch them together with a `z_challenge`
 	// and check consistency by evaluating at a single point `consistency_check_eval_point`.
 	let z_challenge: Vec<F> = (0..Word::LOG_BITS).map(|_| F::random(&mut rng)).collect();
-	let z_tensor = Hypercube::One.expand(&z_challenge).build::<F>();
+	let z_tensor = eq_ind_partial_eval::<F>(&z_challenge);
 	let consistency_check_eval_point = [z_challenge, eval_point].concat();
 	let get_consistency_check_eval =
 		|evals| izip!(evals, z_tensor.as_ref()).map(|(x, y)| x * y).sum();

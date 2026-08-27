@@ -119,7 +119,8 @@ mod tests {
 
 	use binius_field::{Field, Ghash128b as B128, Random, arithmetic_traits::Square};
 	use binius_math::{
-		multilinear::{evaluate::evaluate, hypercube::Hypercube},
+		line::extrapolate_line as extrapolate_line_math,
+		multilinear::evaluate::evaluate,
 		test_utils::{random_field_buffer, random_scalars},
 		univariate,
 	};
@@ -216,7 +217,7 @@ mod tests {
 		let y0_val = B128::random(&mut rng);
 		let y1_val = B128::random(&mut rng);
 		let z_val = B128::random(&mut rng);
-		let expected = Hypercube::One.fold_var(y0_val, y1_val, &z_val);
+		let expected = extrapolate_line_math(y0_val, y1_val, z_val);
 
 		test_helper::<ExtrapolateLineCircuit, 4>([y0_val, y1_val, z_val, expected]).unwrap();
 	}

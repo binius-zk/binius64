@@ -110,7 +110,7 @@ use binius_ip::{
 	sumcheck::{self, RoundCoeffs},
 };
 use binius_math::{
-	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
+	multilinear::{eq::eq_one_var, evaluate::evaluate_inplace_scalars},
 	ntt::domain_context::GaoMateerOnTheFly,
 };
 
@@ -287,7 +287,7 @@ impl<'a, E: FieldOps, C: Clone> LigeritoVerifier<'a, E, C> {
 				sum = coeffs.evaluate(&challenge);
 				// The MLE-check divides its round's equality factor out; a plain round does not.
 				if !is_outermost {
-					eq_scale *= Hypercube::One.eq_one_var(challenge.clone(), z);
+					eq_scale *= eq_one_var(challenge.clone(), z);
 				}
 				challenges.push(challenge);
 			}

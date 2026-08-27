@@ -10,7 +10,8 @@ use std::iter;
 use binius_field::{BinaryField, FieldOps, util::expand_subset_sums};
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::{
-	multilinear::{self, hypercube::Hypercube},
+	line::extrapolate_line,
+	multilinear::{self, eq::eq_ind_partial_eval_scalars},
 	ntt::DomainContext,
 };
 
@@ -148,9 +149,7 @@ impl<F: BinaryField, E: FieldOps<Scalar = F>, C> ProxTestOracle<F, E>
 		// Receive each bundled oracle's openings in commit order (matching the prover), then
 		// combine across oracles by the outer-challenge tensor expansion:
 		// combined[q] = \sum_i values_i[q] * outer_tensor[i].
-		let outer_tensor = Hypercube::One
-			.expand(&self.outer_challenges)
-			.build_scalars();
+		let outer_tensor = eq_ind_partial_eval_scalars(&self.outer_challenges);
 		let mut combined = vec![E::zero(); indices.len()];
 		for (oracle, scalar) in self.oracles.iter().zip(&outer_tensor) {
 			let values = oracle.open_queries(indices, channel)?;
@@ -334,7 +333,7 @@ where
 			let mut u = values[index_offset << 1].clone();
 			let v = values[(index_offset << 1) | 1].clone() + &u;
 			u += v.clone() * twiddle;
-			values[index_offset] = Hypercube::One.fold_var(u, v, challenge);
+			values[index_offset] = extrapolate_line(u, v, challenge.clone());
 		}
 
 		log_len -= 1;

@@ -268,7 +268,7 @@ mod tests {
 	use binius_field::FieldOps;
 	use binius_ip::sumcheck::verify;
 	use binius_math::{
-		multilinear::{evaluate::evaluate, hypercube::Hypercube},
+		multilinear::{eq::eq_ind, evaluate::evaluate},
 		test_utils::{Packed128b, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -391,7 +391,7 @@ mod tests {
 		let expected_eval: F = izip!(selector_evals, &points, &weights)
 			.map(|(&selector_eval, point, &weight)| {
 				let composition = selected_eval * selector_eval + (F::ONE - selector_eval);
-				weight * composition * Hypercube::One.eq_ind(point, &reduced_point)
+				weight * composition * eq_ind(point, &reduced_point)
 			})
 			.sum();
 		assert_eq!(

@@ -18,7 +18,7 @@ use std::{iter, mem};
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldVec, multilinear::hypercube::Hypercube};
+use binius_math::{FieldVec, multilinear::eq::eq_one_var};
 
 use crate::sumcheck::{bivariate_product_mle, common::MleCheckProver};
 
@@ -125,7 +125,7 @@ where
 	// claim's `q` are lookups.
 	let pad_eq_prefixes = iter::once(F::ONE)
 		.chain(eval_point[..pad_len].iter().scan(F::ONE, |acc, &coord| {
-			*acc *= Hypercube::One.eq_one_var(F::ZERO, coord);
+			*acc *= eq_one_var(F::ZERO, coord);
 			Some(*acc)
 		}))
 		.collect::<Vec<_>>();
@@ -236,7 +236,7 @@ impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for OnePadMleCheckPro
 		match &mut self.phase {
 			Phase::Real(inner) => inner.fold(challenge),
 			Phase::Padding { bound_eq, .. } => {
-				*bound_eq *= Hypercube::One.eq_one_var(F::ZERO, challenge);
+				*bound_eq *= eq_one_var(F::ZERO, challenge);
 			}
 		}
 		self.round += 1;

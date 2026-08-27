@@ -4,8 +4,8 @@ use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_math::{
 	inner_product::inner_product_par,
 	multilinear::{
+		eq::eq_ind_partial_eval,
 		evaluate::{evaluate, evaluate_inplace},
-		hypercube::Hypercube,
 	},
 	test_utils::{random_field_buffer, random_scalars},
 };
@@ -50,7 +50,7 @@ fn bench_multilinear_evaluate(c: &mut Criterion) {
 	group.bench_function(
 		BenchmarkId::new("evaluate with tensor", format!("n_vars={n_vars}")),
 		|b| {
-			let eq_tensor = Hypercube::One.expand(&point).build::<P>();
+			let eq_tensor = eq_ind_partial_eval::<P>(&point);
 			b.iter(|| inner_product_par(&buffer, &eq_tensor));
 		},
 	);

@@ -9,7 +9,7 @@ use binius_field::{
 	PackedAESBinaryField64x8b as Packed64xB8, PackedField, Rijndael8b as B8, WideMul,
 	util::expand_subset_sums_array,
 };
-use binius_math::{BinarySubspace, multilinear::hypercube::Hypercube};
+use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::{self, iter::Either, prelude::*};
 use binius_verifier::{
 	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX,
@@ -118,18 +118,17 @@ where
 	let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
 		.in_scope(|| NTTLookup::new(prover_message_domain));
 
-	let eq_ind_small: [_; 1 << N_FIXED_SMALL_CHALLENGES] = Hypercube::One
-		.expand(&PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES)
-		.build::<B8>()
-		.iter_scalars()
-		.map(Packed64xB8::broadcast)
-		.collect::<Vec<_>>()
-		.try_into()
-		.expect("PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() == N_FIXED_SMALL_CHALLENGES");
+	let eq_ind_small: [_; 1 << N_FIXED_SMALL_CHALLENGES] =
+		eq_ind_partial_eval::<B8>(&PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES)
+			.iter_scalars()
+			.map(Packed64xB8::broadcast)
+			.collect::<Vec<_>>()
+			.try_into()
+			.expect("PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() == N_FIXED_SMALL_CHALLENGES");
 
 	let (eq_ind_fixed_large, extra_challenges) = eq_ind_fixed_large(big_field_challenges);
 	let outer_weight_mul_maps = eq_ind_fixed_large.map(B8ToExtMulMap::new);
-	let eq_ind_extra = Hypercube::One.expand(extra_challenges).build::<F>();
+	let eq_ind_extra = eq_ind_partial_eval::<F>(extra_challenges);
 
 	let a_chunks_iter = padded_chunks::<CHUNK_SIZE>(a_words);
 	let b_chunks_iter = padded_chunks::<CHUNK_SIZE>(b_words);
@@ -198,7 +197,7 @@ fn eq_ind_fixed_large<F: Field>(
 	big_field_challenges: &[F],
 ) -> ([F; 1 << N_FIXED_LARGE_CHALLENGES], &[F]) {
 	if big_field_challenges.len() < N_FIXED_LARGE_CHALLENGES {
-		let eq_ind_fixed_large = Hypercube::One.expand(big_field_challenges).build::<F>();
+		let eq_ind_fixed_large = eq_ind_partial_eval::<F>(big_field_challenges);
 		let mut eq_ind_fixed_large_padded = [F::ZERO; 1 << N_FIXED_LARGE_CHALLENGES];
 		eq_ind_fixed_large_padded[..eq_ind_fixed_large.len()]
 			.copy_from_slice(eq_ind_fixed_large.as_ref());
@@ -211,12 +210,11 @@ fn eq_ind_fixed_large<F: Field>(
 			.try_into()
 			.expect("big_field_challenges.len() >= N_FIXED_LARGE_CHALLENGES");
 
-		let eq_ind_fixed_large: [_; 1 << N_FIXED_LARGE_CHALLENGES] = Hypercube::One
-			.expand(&fixed_large_challenges)
-			.build::<F>()
-			.as_ref()
-			.try_into()
-			.expect("fixed_large_challenges.len() == N_FIXED_LARGE_CHALLENGES");
+		let eq_ind_fixed_large: [_; 1 << N_FIXED_LARGE_CHALLENGES] =
+			eq_ind_partial_eval::<F>(&fixed_large_challenges)
+				.as_ref()
+				.try_into()
+				.expect("fixed_large_challenges.len() == N_FIXED_LARGE_CHALLENGES");
 
 		(eq_ind_fixed_large, extra_challenges)
 	}
@@ -462,9 +460,7 @@ mod test {
 			.copied()
 			.collect();
 
-		let verifier_field_eq = Hypercube::One
-			.expand(&verifier_field_zerocheck_challenges)
-			.build();
+		let verifier_field_eq = eq_ind_partial_eval(&verifier_field_zerocheck_challenges);
 		let actual_next_round_sum =
 			sum_claim(&folded_first_mle, &folded_second_mle, &folded_third_mle, &verifier_field_eq);
 

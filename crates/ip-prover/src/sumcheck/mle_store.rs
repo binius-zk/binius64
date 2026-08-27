@@ -25,10 +25,8 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
-	multilinear::{
-		fold::{fold_highest_var, fold_highest_var_inplace},
-		hypercube::Hypercube,
-	},
+	line::extrapolate_line,
+	multilinear::fold::{fold_highest_var, fold_highest_var_inplace},
 };
 use binius_utils::rayon;
 use itertools::izip;
@@ -579,7 +577,7 @@ impl<'a, P: PackedField> PreFoldColumnChunk<'a, P> {
 
 	/// Folds a column half, interpolating its two segments on the round's variable.
 	fn fold(self, challenge_broadcast: &P) -> &'a [P] {
-		self.fold_with(|lo, hi| Hypercube::One.fold_var(lo, hi, challenge_broadcast))
+		self.fold_with(|lo, hi| extrapolate_line(lo, hi, *challenge_broadcast))
 	}
 
 	/// Contracts an eq expansion by summing its two segments.

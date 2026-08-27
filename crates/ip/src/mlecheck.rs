@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::{Field, field::FieldOps, util::powers};
-use binius_math::multilinear::hypercube::Hypercube;
+use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
 
 use crate::{
 	channel::IPVerifierChannel,
@@ -234,8 +234,8 @@ pub fn libra_eval<F: FieldOps>(
 	n_vars: usize,
 	degree: usize,
 ) -> F {
-	let eq_j = Hypercube::One.expand(query_j).build_scalars();
-	let eq_k = Hypercube::One.expand(query_k).build_scalars();
+	let eq_j = eq_ind_partial_eval_scalars(query_j);
+	let eq_k = eq_ind_partial_eval_scalars(query_k);
 
 	eq_j.iter()
 		.take(n_vars)
@@ -253,7 +253,7 @@ pub fn libra_eval<F: FieldOps>(
 #[cfg(test)]
 mod tests {
 	use binius_field::{Random, arch::OptimalB128 as B128};
-	use binius_math::test_utils::random_scalars;
+	use binius_math::{line::extrapolate_line, test_utils::random_scalars};
 	use rand::prelude::*;
 
 	use super::*;
@@ -263,7 +263,7 @@ mod tests {
 
 		let v0 = coeffs.evaluate(&F::ZERO);
 		let v1 = coeffs.evaluate(&F::ONE);
-		let eval = Hypercube::One.fold_var(v0, v1, &alpha);
+		let eval = extrapolate_line(v0, v1, alpha);
 
 		let proof = RoundProof::truncate(coeffs.clone());
 		assert_eq!(proof.recover(eval, alpha), coeffs);

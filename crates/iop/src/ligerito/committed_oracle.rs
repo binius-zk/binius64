@@ -3,7 +3,7 @@
 //! One committed message, as level 0 of a ladder sees it.
 
 use binius_field::{BinaryField, field::FieldOps};
-use binius_math::multilinear::hypercube::Hypercube;
+use binius_math::multilinear::eq::eq_ind_zero;
 
 use crate::{
 	fri::batch::{BrakedownOracle, Error, ProxTestOracle},
@@ -82,7 +82,7 @@ impl<E: FieldOps, C: Clone> CommittedOracle<E, C> {
 
 		// The lane challenges are the trailing ones, and everything before them is padding.
 		let (padding, lanes) = challenges.split_at(challenges.len() - self.log_lanes);
-		let scale = self.coefficient.clone() * Hypercube::One.eq_ind_zero(padding);
+		let scale = self.coefficient.clone() * eq_ind_zero(padding);
 
 		// Every message's codeword has the same length, so the shared positions address this one
 		// directly and no lift is needed.

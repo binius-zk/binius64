@@ -11,7 +11,7 @@ use binius_core::{
 use binius_field::{Field, Ghash128b, Random, Rijndael8b, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_math::{
-	BinarySubspace, multilinear::hypercube::Hypercube, univariate::EvaluationDomain,
+	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::EvaluationDomain,
 };
 use binius_prover::{
 	fold_word::BitAxisFolder,
@@ -338,7 +338,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// The bit-index phases' rounds are not benchmarked; the last phase only needs the scalar they
 	// reduce their factors to, so a stand-in value serves.
 	let shift_ind_eval = F::random(&mut rng);
-	let r_j_tensor = Hypercube::One.expand(&r_j).build::<F>();
+	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let folder = BitAxisFolder::new(r_j_tensor.as_ref());
 	let public_folded = folder.fold::<P, _>(&GlobalAllocator, public_words);
 	let hidden_folded = folder.fold::<P, _>(&GlobalAllocator, hidden_words);

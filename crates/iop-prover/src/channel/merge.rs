@@ -470,7 +470,7 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_buffers,
-		multilinear::hypercube::Hypercube,
+		multilinear::eq::eq_ind_partial_eval,
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -497,7 +497,7 @@ mod tests {
 	{
 		let buffer = random_field_buffer::<P>(&mut *rng, n_vars);
 		let point = random_scalars::<F>(&mut *rng, n_vars);
-		let transparent = Hypercube::One.expand(&point).build::<P>();
+		let transparent = eq_ind_partial_eval::<P>(&point);
 		let claim = inner_product_buffers(&buffer, &transparent);
 		(buffer, transparent, claim)
 	}
@@ -603,7 +603,7 @@ mod tests {
 				.verify_oracle_relation(
 					oracle,
 					Box::new(move |point: &[F]| {
-						let eq = Hypercube::One.expand(point).build::<P>();
+						let eq = eq_ind_partial_eval::<P>(point);
 						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
@@ -679,7 +679,7 @@ mod tests {
 		let relations_1: Vec<(FieldBuffer<P>, F)> = (0..2)
 			.map(|_| {
 				let point = random_scalars::<F>(&mut rng, 4);
-				let transparent = Hypercube::One.expand(&point).build::<P>();
+				let transparent = eq_ind_partial_eval::<P>(&point);
 				let claim = inner_product_buffers(&buffer_1, &transparent);
 				(transparent, claim)
 			})
@@ -687,7 +687,7 @@ mod tests {
 		let relations_2: Vec<(FieldBuffer<P>, F)> = (0..2)
 			.map(|_| {
 				let point = random_scalars::<F>(&mut rng, 3);
-				let transparent = Hypercube::One.expand(&point).build::<P>();
+				let transparent = eq_ind_partial_eval::<P>(&point);
 				let claim = inner_product_buffers(&buffer_2, &transparent);
 				(transparent, claim)
 			})
@@ -733,7 +733,7 @@ mod tests {
 				.verify_oracle_relation(
 					v_oracle_1,
 					Box::new(move |point: &[F]| {
-						let eq = Hypercube::One.expand(point).build::<P>();
+						let eq = eq_ind_partial_eval::<P>(point);
 						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
@@ -745,7 +745,7 @@ mod tests {
 				.verify_oracle_relation(
 					v_oracle_2,
 					Box::new(move |point: &[F]| {
-						let eq = Hypercube::One.expand(point).build::<P>();
+						let eq = eq_ind_partial_eval::<P>(point);
 						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,

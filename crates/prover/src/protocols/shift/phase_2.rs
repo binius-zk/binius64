@@ -13,7 +13,10 @@ use binius_ip_prover::{
 		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals,
 	},
 };
-use binius_math::{FieldVec, multilinear::hypercube::Hypercube};
+use binius_math::{
+	FieldVec,
+	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
+};
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
 	rayon::{
@@ -80,7 +83,7 @@ where
 		g_eval: _,
 	} = phase_1_output;
 
-	let r_j_tensor = Hypercube::One.expand(&r_j).build::<F>();
+	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
 	// Fold each segment separately.
 	// The combined witness is never materialized.
@@ -317,8 +320,7 @@ where
 	// The count itself need not be a power of two, and the missing words are read as zero.
 	let log_public_words = log2_ceil_usize(public_words.len());
 	let public_eval = evaluate_words_mle::<F, F>(public_words, &r_j, &r_y[..log_public_words]);
-	let padded_public_eval =
-		Hypercube::One.eq_ind_zero(&r_y[log_public_words..log_half]) * public_eval;
+	let padded_public_eval = eq_ind_zero(&r_y[log_public_words..log_half]) * public_eval;
 	let witness_eval =
 		(trace_eval - (F::ONE - r_segment) * padded_public_eval) * r_segment.invert_or_zero();
 	channel.send_one(witness_eval);

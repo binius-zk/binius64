@@ -24,7 +24,7 @@ use binius_utils::{
 	},
 };
 
-use crate::{FieldBuffer, FieldVec, multilinear::hypercube::Hypercube};
+use crate::{FieldBuffer, FieldVec, line::extrapolate_line};
 
 /// Fixes the highest variable of a multilinear to a value, in place.
 ///
@@ -54,7 +54,7 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: BufferData<P>>(
 			.into_par_iter()
 			.with_min_task(WorkPerItem::FieldMuls)
 			.for_each(|(lo_i, hi_i)| {
-				*lo_i = Hypercube::One.fold_var(*lo_i, *hi_i, &broadcast_scalar);
+				*lo_i = extrapolate_line(*lo_i, *hi_i, broadcast_scalar);
 			});
 	}
 
@@ -98,7 +98,7 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 		.into_par_iter()
 		.with_min_task(WorkPerItem::FieldMuls)
 		.for_each(|(out, &lo_i, &hi_i)| {
-			out.write(Hypercube::One.fold_var(lo_i, hi_i, &broadcast_scalar));
+			out.write(extrapolate_line(lo_i, hi_i, broadcast_scalar));
 		});
 	// SAFETY: the parallel loop initialized all `len` slots.
 	unsafe { data.set_len(len) };
@@ -173,7 +173,10 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b, random_field_buffer, random_scalars};
+	use crate::{
+		multilinear::eq::eq_ind_partial_eval,
+		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
+	};
 
 	type P = Packed128b;
 	type F = B128;
@@ -204,8 +207,7 @@ mod tests {
 
 		// Scalar reference: each output interpolates one (lo, hi) pair at the challenge.
 		for i in 0..half {
-			let expected =
-				Hypercube::One.fold_var(original.get(i), original.get(i | half), &challenge);
+			let expected = extrapolate_line(original.get(i), original.get(i | half), challenge);
 			assert_eq!(folded.get(i), expected, "mismatch at index {i}");
 		}
 	}
@@ -265,7 +267,7 @@ mod tests {
 		) {
 			let mut rng = StdRng::seed_from_u64(seed);
 			let point = random_scalars::<F>(&mut rng, tensor_vars);
-			let tensor = Hypercube::One.expand(&point).build::<P>();
+			let tensor = eq_ind_partial_eval::<P>(&point);
 
 			// The bit count is the product of the two lengths, as the precondition demands.
 			let bits = repeat_with(|| rng.random())

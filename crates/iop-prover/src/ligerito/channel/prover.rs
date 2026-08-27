@@ -15,7 +15,9 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldVec, multilinear::hypercube::Hypercube, ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, FieldVec,
+	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+	ntt::AdditiveNTT,
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
@@ -244,7 +246,7 @@ where
 		// Every stated evaluation is now bound to the transcript, so the coefficients that combine
 		// the messages into one cannot be anticipated either.
 		let outer_challenges = channel.sample_many(log2_ceil_usize(n_oracles));
-		let coefficients = Hypercube::One.expand(&outer_challenges).build_scalars();
+		let coefficients = eq_ind_partial_eval_scalars(&outer_challenges);
 
 		let mut combined = CombinedMessage::zeros_in(alloc, max_n_vars);
 		let mut combined_claim = F::ZERO;
@@ -252,8 +254,7 @@ where
 			izip!(messages, oracle_specs, &coefficients, &alphas)
 		{
 			combined.add_scaled(message.as_view(), *coefficient);
-			combined_claim +=
-				*coefficient * *alpha * Hypercube::One.eq_ind_zero(&point[spec.log_msg_len..]);
+			combined_claim += *coefficient * *alpha * eq_ind_zero(&point[spec.log_msg_len..]);
 		}
 
 		let combined = combined.into_buffer();
