@@ -3,7 +3,8 @@
 
 use crate::{
 	arch::M128,
-	underlier::{Divisible, ScaledUnderlier, impl_divisible_self},
+	divisible::{Divisible, impl_divisible_self},
+	underlier::ScaledUnderlier,
 };
 
 pub type M256 = ScaledUnderlier<M128, 2>;

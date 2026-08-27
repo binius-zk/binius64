@@ -347,58 +347,58 @@ pub mod mapget {
 macro_rules! impl_divisible_memcast {
 	($big:ty, $($small:ty),+) => {
 		$(
-			impl $crate::underlier::Divisible<$small> for $big {
+			impl $crate::divisible::Divisible<$small> for $big {
 				const LOG_N: usize = (size_of::<$big>() / size_of::<$small>()).ilog2() as usize;
 
 				#[inline]
 				fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $small> + Send + Clone {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::underlier::memcast::value_iter::<$big, $small, N>(value)
+					$crate::divisible::memcast::value_iter::<$big, $small, N>(value)
 				}
 
 				#[inline]
 				fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::underlier::memcast::ref_iter::<$big, $small, N>(value)
+					$crate::divisible::memcast::ref_iter::<$big, $small, N>(value)
 				}
 
 				#[inline]
 				#[cfg(target_endian = "little")]
 				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
-					$crate::underlier::memcast::slice_iter::<$big, $small>(slice)
+					$crate::divisible::memcast::slice_iter::<$big, $small>(slice)
 				}
 
 				#[inline]
 				#[cfg(target_endian = "big")]
 				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
 					const LOG_N: usize = (size_of::<$big>() / size_of::<$small>()).ilog2() as usize;
-					$crate::underlier::memcast::slice_iter::<$big, $small, LOG_N>(slice)
+					$crate::divisible::memcast::slice_iter::<$big, $small, LOG_N>(slice)
 				}
 
 				#[inline]
 				unsafe fn get_unchecked(&self, index: usize) -> $small {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
 					// Safety: the caller guarantees `index < Self::N == N`.
-					unsafe { $crate::underlier::memcast::get::<$big, $small, N>(self, index) }
+					unsafe { $crate::divisible::memcast::get::<$big, $small, N>(self, index) }
 				}
 
 				#[inline]
 				unsafe fn set_unchecked(&mut self, index: usize, val: $small) {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
 					// Safety: the caller guarantees `index < Self::N == N`.
-					*self = unsafe { $crate::underlier::memcast::set::<$big, $small, N>(&*self, index, val) };
+					*self = unsafe { $crate::divisible::memcast::set::<$big, $small, N>(&*self, index, val) };
 				}
 
 				#[inline]
 				fn broadcast(val: $small) -> Self {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::underlier::memcast::broadcast::<$big, $small, N>(val)
+					$crate::divisible::memcast::broadcast::<$big, $small, N>(val)
 				}
 
 				#[inline]
 				fn from_iter(iter: impl Iterator<Item = $small>) -> Self {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::underlier::memcast::from_iter::<$big, $small, N>(iter)
+					$crate::divisible::memcast::from_iter::<$big, $small, N>(iter)
 				}
 			}
 		)+

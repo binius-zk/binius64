@@ -14,7 +14,8 @@ use crate::{
 	BinaryField,
 	arch::PackedPrimitiveType,
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
-	underlier::{Divisible, UnderlierType},
+	divisible::Divisible,
+	underlier::UnderlierType,
 };
 
 /// Strategy that splits the underlier into `SubU`-sized lanes, applies the sub-packing

@@ -21,8 +21,11 @@ use rand::{
 	prelude::*,
 };
 
-use super::{Divisible, UnderlierType, impl_divisible_self, mapget};
-use crate::arch::{interleave_mask_even, interleave_with_mask};
+use super::UnderlierType;
+use crate::{
+	arch::{interleave_mask_even, interleave_with_mask},
+	divisible::{Divisible, impl_divisible_self, mapget},
+};
 
 /// Unsigned type with a size strictly less than 8 bits.
 #[derive(
@@ -385,7 +388,7 @@ macro_rules! impl_divisible_bitmask {
 	// Special case for u8: operates directly on the byte without needing Divisible::<u8>
 	(u8, $($bits:expr),+) => {
 		$(
-			impl $crate::underlier::Divisible<$crate::underlier::SmallU<$bits>> for u8 {
+			impl $crate::divisible::Divisible<$crate::underlier::SmallU<$bits>> for u8 {
 				const LOG_N: usize = (8usize / $bits).ilog2() as usize;
 
 				#[inline]
@@ -438,7 +441,7 @@ macro_rules! impl_divisible_bitmask {
 					const N: usize = 8 / $bits;
 					let mut result: Self = 0;
 					for (i, val) in iter.take(N).enumerate() {
-						$crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::set(&mut result, i, val);
+						$crate::divisible::Divisible::<$crate::underlier::SmallU<$bits>>::set(&mut result, i, val);
 					}
 					result
 				}
@@ -449,27 +452,27 @@ macro_rules! impl_divisible_bitmask {
 	// General case for types larger than u8: wraps byte iteration
 	($big:ty, $($bits:expr),+) => {
 		$(
-			impl $crate::underlier::Divisible<$crate::underlier::SmallU<$bits>> for $big {
+			impl $crate::divisible::Divisible<$crate::underlier::SmallU<$bits>> for $big {
 				const LOG_N: usize = (8 * size_of::<$big>() / $bits).ilog2() as usize;
 
 				#[inline]
 				fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone {
 					$crate::underlier::SmallUDivisIter::new(
-						$crate::underlier::Divisible::<u8>::value_iter(value)
+						$crate::divisible::Divisible::<u8>::value_iter(value)
 					)
 				}
 
 				#[inline]
 				fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
 					$crate::underlier::SmallUDivisIter::new(
-						$crate::underlier::Divisible::<u8>::ref_iter(value)
+						$crate::divisible::Divisible::<u8>::ref_iter(value)
 					)
 				}
 
 				#[inline]
 				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
 					$crate::underlier::SmallUDivisIter::new(
-						$crate::underlier::Divisible::<u8>::slice_iter(slice)
+						$crate::divisible::Divisible::<u8>::slice_iter(slice)
 					)
 				}
 
@@ -488,8 +491,8 @@ macro_rules! impl_divisible_bitmask {
 				#[inline]
 				fn broadcast(val: $crate::underlier::SmallU<$bits>) -> Self {
 					// First splat to u8, then splat the byte to fill Self
-					let byte = $crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::broadcast(val);
-					$crate::underlier::Divisible::<u8>::broadcast(byte)
+					let byte = $crate::divisible::Divisible::<$crate::underlier::SmallU<$bits>>::broadcast(val);
+					$crate::divisible::Divisible::<u8>::broadcast(byte)
 				}
 
 				#[inline]
@@ -497,7 +500,7 @@ macro_rules! impl_divisible_bitmask {
 					const N: usize = 8 * size_of::<$big>() / $bits;
 					let mut result: Self = bytemuck::Zeroable::zeroed();
 					for (i, val) in iter.take(N).enumerate() {
-						$crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::set(&mut result, i, val);
+						$crate::divisible::Divisible::<$crate::underlier::SmallU<$bits>>::set(&mut result, i, val);
 					}
 					result
 				}

@@ -2,7 +2,7 @@
 
 use bytemuck::Zeroable;
 
-use super::divisible::Divisible;
+use crate::divisible::Divisible;
 
 /// Branchless conditional lane selection for fields and packed fields.
 ///

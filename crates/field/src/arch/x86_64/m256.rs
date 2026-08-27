@@ -19,9 +19,8 @@ use super::m128::{M128, m128i_from_u128};
 use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
-	underlier::{
-		Divisible, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_self, mapget,
-	},
+	divisible::{Divisible, impl_divisible_self, mapget},
+	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 
 const fn u128_from_m128i(x: __m128i) -> u128 {
