@@ -385,17 +385,19 @@ where
 			.chain(iter::once(r_segment.clone()))
 			.collect();
 
-		let eval_fn = WiringEvalFn {
+		let eval_fn = WiringEvalFn::new(
 			constraint_system,
-			inout,
-			zero_r_x_prime_len,
-			bitand_r_x_prime_len,
-			intmul_r_x_prime_len,
-			binmul_r_x_prime_len,
-			r_s_len,
-			r_v_len,
-			r_y_len,
-		};
+			WiringEvalShape {
+				inout,
+				zero_r_x_prime_len,
+				bitand_r_x_prime_len,
+				intmul_r_x_prime_len,
+				binmul_r_x_prime_len,
+				r_s_len,
+				r_v_len,
+				r_y_len,
+			},
+		);
 		WiringEvalClaim {
 			eval_fn,
 			inputs,
@@ -455,6 +457,75 @@ impl<F: BinaryField> WiringEvalClaim<'_, F> {
 	}
 }
 
+impl<'a, E> WiringEvalClaim<'a, E> {
+	/// Exports the claim instead of discharging it.
+	///
+	/// Discharging evaluates the wiring multilinear, which walks every constraint of the system.
+	/// Inside a circuit that cost tracks the inner system.
+	/// So a circuit that pays it can never verify a proof of itself.
+	///
+	/// Exporting hands the claim out whole instead.
+	/// It is settled once, natively, where the cost is ordinary.
+	///
+	/// The claim is short.
+	/// Every section of its input is a challenge vector over a padded log-sized index.
+	/// So the input length is logarithmic in the constraint count.
+	///
+	/// # Correctness
+	///
+	/// Nothing is verified here.
+	/// Nothing is verified later either, unless a holder settles the claim.
+	/// A dropped claim is an unchecked constraint.
+	pub fn defer(self) -> DeferredWiringClaim<E> {
+		DeferredWiringClaim {
+			shape: self.eval_fn.shape(),
+			inputs: self.inputs,
+			claimed: self.claimed,
+		}
+	}
+}
+
+/// A wiring claim that was exported rather than discharged.
+///
+/// Holding one is owing a check.
+///
+/// Settling it needs only the constraint system the claim is about, which is public data.
+/// So it can run far from the verifier that raised the claim.
+///
+/// ```text
+///   verify -> claim -> export -> travels as public values -> settled natively at the root
+/// ```
+#[must_use = "a deferred wiring claim that nobody discharges is an unchecked constraint"]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredWiringClaim<E> {
+	/// How the flat input below splits back into its sections.
+	pub shape: WiringEvalShape,
+	/// The point the wiring multilinear is claimed to be evaluated at.
+	pub inputs: Vec<E>,
+	/// The evaluation the prover claims.
+	pub claimed: E,
+}
+
+impl<F: BinaryField> DeferredWiringClaim<F> {
+	/// Settles the claim against the constraint system it is about.
+	///
+	/// The system must be the one the claim was raised over.
+	/// A different one names a different polynomial.
+	/// The check would then be meaningless rather than wrong, so the caller owes that pairing.
+	///
+	/// # Errors
+	///
+	/// Returns an error when the evaluation disagrees with the claim.
+	pub fn check(&self, constraint_system: &ConstraintSystem) -> Result<(), Error> {
+		let eval_fn = WiringEvalFn::new(constraint_system, self.shape);
+		if eval_fn.call_native(&self.inputs) == self.claimed {
+			Ok(())
+		} else {
+			Err(Error::VerificationFailure)
+		}
+	}
+}
+
 impl<E> WiringEvalClaim<'_, E> {
 	/// Discharges the claim over `channel`'s elements: evaluates the wiring multilinear there and
 	/// asserts it equals the claimed value.
@@ -498,6 +569,23 @@ impl<E> WiringEvalClaim<'_, E> {
 pub struct WiringEvalFn<'a> {
 	/// The AND, IMUL and BMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,
+	/// How the flat input splits back into its sections.
+	shape: WiringEvalShape,
+}
+
+/// How a wiring claim's flat input splits back into its sections.
+///
+/// Every length here is fixed by the constraint system and the reduction over it.
+/// None is read off a prover message.
+///
+/// So one shape covers every proof of one shape, at no per-proof cost.
+/// That is what lets a claim be settled away from the run that raised it.
+///
+/// The fields are private on purpose.
+/// A hand-built shape could disagree with the inputs it reads.
+/// The mismatch would surface as a wrong evaluation, not an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WiringEvalShape {
 	/// Which segment holds the inout values, which fixes where the word-index tensor is cut.
 	inout: InoutSegment,
 	/// Length of the Zero operator's `r_x_prime` section.
@@ -514,6 +602,46 @@ pub struct WiringEvalFn<'a> {
 	r_v_len: usize,
 	/// Length of the `r_y` section (the column challenges).
 	r_y_len: usize,
+}
+
+impl WiringEvalShape {
+	/// The number of elements a claim of this shape reads.
+	///
+	/// - Four batching coefficients.
+	/// - One constraint-index challenge vector per operator.
+	/// - Both shift slots.
+	/// - The column challenges.
+	/// - One trailing word-index coordinate.
+	pub const fn n_inputs(&self) -> usize {
+		4 + self.zero_r_x_prime_len
+			+ self.bitand_r_x_prime_len
+			+ self.intmul_r_x_prime_len
+			+ self.binmul_r_x_prime_len
+			+ 2 * self.r_s_len
+			+ 2 * self.r_v_len
+			+ self.r_y_len
+			+ 1
+	}
+}
+
+impl<'a> WiringEvalFn<'a> {
+	/// Rebuilds the evaluation over a constraint system, reading its input with the given shape.
+	///
+	/// This is how an exported claim is settled.
+	/// The shape travels with the claim.
+	/// The system it sums over is public.
+	/// So no part of the original run is needed.
+	pub const fn new(constraint_system: &'a ConstraintSystem, shape: WiringEvalShape) -> Self {
+		Self {
+			constraint_system,
+			shape,
+		}
+	}
+
+	/// How this evaluation reads its flat input.
+	pub const fn shape(&self) -> WiringEvalShape {
+		self.shape
+	}
 }
 
 /// The per-operation [`OperationEvalFn`] inputs [`WiringEvalFn::operation_inputs`] splits out of
@@ -551,19 +679,19 @@ impl WiringEvalFn<'_> {
 		// accessor reports for an empty constraint set; so do the Zero and BitAnd reductions'
 		// single all-zero padding rows.
 		debug_assert_eq!(
-			self.zero_r_x_prime_len,
+			self.shape.zero_r_x_prime_len,
 			self.constraint_system.log_zero_constraints().unwrap_or(0)
 		);
 		debug_assert_eq!(
-			self.bitand_r_x_prime_len,
+			self.shape.bitand_r_x_prime_len,
 			self.constraint_system.log_and_constraints().unwrap_or(0)
 		);
 		debug_assert_eq!(
-			self.intmul_r_x_prime_len,
+			self.shape.intmul_r_x_prime_len,
 			self.constraint_system.log_imul_constraints().unwrap_or(0)
 		);
 		debug_assert_eq!(
-			self.binmul_r_x_prime_len,
+			self.shape.binmul_r_x_prime_len,
 			self.constraint_system.log_bmul_constraints().unwrap_or(0)
 		);
 
@@ -573,24 +701,24 @@ impl WiringEvalFn<'_> {
 		let intmul_lambda_v = vals[2].clone();
 		let binmul_lambda_v = vals[3].clone();
 		let mut off = 4;
-		let zero_r_x_prime_v = &vals[off..off + self.zero_r_x_prime_len];
-		off += self.zero_r_x_prime_len;
-		let bitand_r_x_prime_v = &vals[off..off + self.bitand_r_x_prime_len];
-		off += self.bitand_r_x_prime_len;
-		let intmul_r_x_prime_v = &vals[off..off + self.intmul_r_x_prime_len];
-		off += self.intmul_r_x_prime_len;
-		let binmul_r_x_prime_v = &vals[off..off + self.binmul_r_x_prime_len];
-		off += self.binmul_r_x_prime_len;
-		let r_s_inner_v = &vals[off..off + self.r_s_len];
-		off += self.r_s_len;
-		let r_v_inner_v = &vals[off..off + self.r_v_len];
-		off += self.r_v_len;
-		let r_s_outer_v = &vals[off..off + self.r_s_len];
-		off += self.r_s_len;
-		let r_v_outer_v = &vals[off..off + self.r_v_len];
-		off += self.r_v_len;
-		let r_y_v = &vals[off..off + self.r_y_len];
-		off += self.r_y_len;
+		let zero_r_x_prime_v = &vals[off..off + self.shape.zero_r_x_prime_len];
+		off += self.shape.zero_r_x_prime_len;
+		let bitand_r_x_prime_v = &vals[off..off + self.shape.bitand_r_x_prime_len];
+		off += self.shape.bitand_r_x_prime_len;
+		let intmul_r_x_prime_v = &vals[off..off + self.shape.intmul_r_x_prime_len];
+		off += self.shape.intmul_r_x_prime_len;
+		let binmul_r_x_prime_v = &vals[off..off + self.shape.binmul_r_x_prime_len];
+		off += self.shape.binmul_r_x_prime_len;
+		let r_s_inner_v = &vals[off..off + self.shape.r_s_len];
+		off += self.shape.r_s_len;
+		let r_v_inner_v = &vals[off..off + self.shape.r_v_len];
+		off += self.shape.r_v_len;
+		let r_s_outer_v = &vals[off..off + self.shape.r_s_len];
+		off += self.shape.r_s_len;
+		let r_v_outer_v = &vals[off..off + self.shape.r_v_len];
+		off += self.shape.r_v_len;
+		let r_y_v = &vals[off..off + self.shape.r_y_len];
+		off += self.shape.r_y_len;
 		// `r_segment` is the top word-index coordinate, appended after `r_y`; it selects the public
 		// (0) vs hidden (1) segment.
 		let r_segment = vals[off].clone();
@@ -607,7 +735,7 @@ impl WiringEvalFn<'_> {
 		//     over the unused `r_y` coordinates — the same `padded_public_eval` factor that
 		//     `check_eval` reconstructs the witness evaluation with.
 		let cs = &self.constraint_system;
-		let log_public_words = cs.log_public_words(self.inout);
+		let log_public_words = cs.log_public_words(self.shape.inout);
 
 		let public_scale = Hypercube::One.eq_one_var(r_segment.clone(), E::zero())
 			* Hypercube::One.eq_ind_zero(&r_y_v[log_public_words..]);
@@ -619,7 +747,7 @@ impl WiringEvalFn<'_> {
 		// private values trail the hidden one; the inout values follow whichever indicator they
 		// are placed in. The padding words between the runs are dropped, since no index can name
 		// one.
-		let r_y_tensor = match self.inout {
+		let r_y_tensor = match self.shape.inout {
 			InoutSegment::Public => [
 				&public_tensor[..cs.n_const()],
 				&public_tensor[cs.offset_inout()..cs.offset_inout() + cs.n_inout],

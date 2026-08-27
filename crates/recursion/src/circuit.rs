@@ -23,21 +23,34 @@
 //!   Verifier(inner) -> build -> circuit_1 -> Verifier(circuit_1) -> build -> circuit_2
 //! ```
 //!
-//! Every level pays for the level below it in full, because the wiring claim is discharged
-//! in-circuit rather than deferred. Measured over a CRC-64 inner circuit, a level costs about
-//! fifteen times the constraint rows of the level it verifies, so the tower diverges instead of
-//! closing. Deferring that claim is what makes a fixed point possible; see `RECURSION_PLAN.md`.
+//! What a level costs depends on how it settles the inner wiring claim.
+//!
+//! Evaluating the claim as constraints walks every inner constraint.
+//! A level then costs about fifteen times the level below, and the tower diverges.
+//!
+//! Putting the claim on public wires instead leaves it unchecked.
+//! The claim is logarithmic in the inner system, so the cost proportional to it disappears.
+//! A level then costs under six times the level below.
+//!
+//! Deferring moves work rather than removing it.
+//! Whoever holds the outer proof owes the check.
+//! Nothing anywhere verifies the claim unless that check runs.
 
 use std::iter;
 
 use binius_core::{constraint_system::ValueVec, word::Word};
+use binius_field::Ghash128b as B128;
 use binius_frontend::{Circuit, PopulateError, Wire, WitnessFiller};
 use binius_hash::StdHashSuite;
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::VerifierTranscript;
-use binius_verifier::{Pcs, Verifier, config::StdChallenger};
+use binius_verifier::{
+	Pcs, Verifier,
+	config::StdChallenger,
+	protocols::shift::{DeferredWiringClaim, WiringEvalShape},
+};
 
-use crate::{Binius64BuilderChannel, Recorded, WitnessFillerChannel};
+use crate::{Binius64BuilderChannel, Recorded, WitnessFillerChannel, merkle::element_words};
 
 /// Why a recursive circuit could not be built, or its witness could not be filled.
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +82,31 @@ pub enum Error {
 	/// The replayed values leave the recorded circuit unsatisfied.
 	#[error("the recorded circuit is not satisfied by the replayed witness")]
 	Unsatisfied(PopulateError),
+
+	/// A claim was asked for from a circuit that checks the claim in-circuit.
+	#[error("this circuit discharges the wiring claim in-circuit, so nothing is left to check")]
+	NothingDeferred,
+}
+
+/// What a recursive circuit does with the inner proof's wiring claim.
+///
+/// The claim says the wiring multilinear evaluates to a stated value.
+/// Discharging it means evaluating that multilinear.
+/// That walks every constraint of the inner system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Discharge {
+	/// Evaluate the claim as constraints, inside the circuit.
+	///
+	/// Self-contained: an outer proof needs nothing checked beside it.
+	/// The cost tracks the inner system, so a tower of these cannot close.
+	#[default]
+	InCircuit,
+
+	/// Put the claim on public wires and leave it unchecked.
+	///
+	/// The claim is logarithmic in the inner system, so this is the cheap half of the trade.
+	/// It is only sound if someone settles the claim afterwards.
+	Deferred,
 }
 
 /// A Binius64 circuit that verifies Binius64 proofs of one inner shape.
@@ -92,6 +130,25 @@ pub struct RecursiveCircuit {
 	///
 	/// Each is constrained to equal the word the verifier read, so the two cannot disagree.
 	statement: Vec<Wire>,
+
+	/// The wiring claim this circuit exported, when it exported one.
+	///
+	/// Absent when the circuit checked the claim as constraints instead.
+	deferred: Option<Deferred>,
+}
+
+/// A wiring claim a recursive circuit exported rather than checked.
+struct Deferred {
+	/// How the claim's flat input splits back into its sections.
+	///
+	/// Fixed by the inner system, so it travels with the circuit rather than with each proof.
+	shape: WiringEvalShape,
+
+	/// The inout wires carrying the claim: two per element, low half then high half.
+	///
+	/// The claim's inputs come first, in the order the wiring multilinear reads them.
+	/// The claimed evaluation is the last element.
+	wires: Vec<Wire>,
 }
 
 impl RecursiveCircuit {
@@ -111,6 +168,22 @@ impl RecursiveCircuit {
 	/// Returns [`Error::Verifier`] when the shape itself is unsatisfiable, which a build-time
 	/// constant assertion decides before any proof exists.
 	pub fn build(verifier: Verifier<StdHashSuite>) -> Result<Self, Error> {
+		Self::build_with(verifier, Discharge::InCircuit)
+	}
+
+	/// Records the verifier's run, settling the inner wiring claim the way the caller asks.
+	///
+	/// The two settlements differ in cost and in what they oblige.
+	///
+	/// # Errors
+	///
+	/// Returns an error when the inner trace is not opened with FRI.
+	///
+	/// Returns an error when the shape itself is unsatisfiable.
+	pub fn build_with(
+		verifier: Verifier<StdHashSuite>,
+		discharge: Discharge,
+	) -> Result<Self, Error> {
 		let Some(compiler) = verifier.iop_compiler().as_basefold() else {
 			return Err(Error::UnsupportedPcs {
 				pcs: verifier.pcs(),
@@ -126,21 +199,51 @@ impl RecursiveCircuit {
 		let n_inout = verifier.constraint_system().n_inout;
 		let statement = channel.observe_words(&vec![Word::ZERO; n_inout]);
 
-		// The verifier's own arithmetic becomes constraints, down to every assertion along the
-		// way. Discharging the wiring claim is part of that, and it is the level's largest cost.
-		verifier
-			.iop_verifier()
-			.verify(&statement, &mut channel)?
-			.check_symbolic(&mut channel)
-			.map_err(binius_verifier::Error::from)?;
+		// The verifier's own arithmetic becomes constraints, down to every assertion along the way.
+		let claim = verifier.iop_verifier().verify(&statement, &mut channel)?;
+
+		// Invariant: the wiring claim is the only cost that tracks the inner system's size.
+		//
+		// So it is the only part of the replay worth a choice.
+		let exported = match discharge {
+			Discharge::InCircuit => {
+				claim
+					.check_symbolic(&mut channel)
+					.map_err(binius_verifier::Error::from)?;
+				None
+			}
+			Discharge::Deferred => Some(claim.defer()),
+		};
 
 		let mut builder_channel = channel.finish()?;
+
+		// The inner statement is bound first.
+		//
+		//     outer statement:  [ inner statement | exported claim ]
+		//
+		// Settling the claim later reads that layout back.
 		let statement = builder_channel.bind_public(statement);
+		let deferred = exported.map(|claim| {
+			let DeferredWiringClaim {
+				shape,
+				inputs,
+				claimed,
+			} = claim;
+			let elems = inputs
+				.into_iter()
+				.chain(iter::once(claimed))
+				.collect::<Vec<_>>();
+			Deferred {
+				shape,
+				wires: builder_channel.bind_public_elems(&elems),
+			}
+		});
 
 		Ok(Self {
 			verifier,
 			recorded: builder_channel.build(),
 			statement,
+			deferred,
 		})
 	}
 
@@ -157,6 +260,119 @@ impl RecursiveCircuit {
 	/// The public wires carrying the inner statement, in inout order.
 	pub fn statement(&self) -> &[Wire] {
 		&self.statement
+	}
+
+	/// The inout wires carrying the exported wiring claim.
+	///
+	/// Absent when the circuit checked the claim as constraints instead.
+	///
+	/// Two wires per element, low half then high half.
+	/// The claim's inputs come first and the claimed evaluation is last.
+	pub fn deferred_wires(&self) -> Option<&[Wire]> {
+		self.deferred.as_ref().map(|d| d.wires.as_slice())
+	}
+
+	/// Settles the wiring claim this circuit exported, reading it off the outer statement.
+	///
+	/// This is the check a deferred circuit skipped.
+	/// **Without it the outer proof attests to less than a verification.**
+	/// The inner proof's wiring constraint is then checked nowhere, by nobody.
+	///
+	/// The argument is the outer proof's public values.
+	/// The inner statement occupies its front, and the claim follows.
+	///
+	/// The cost is one native evaluation of the inner wiring multilinear.
+	/// That is ordinary work outside a circuit.
+	/// It is paid once, however many levels deferred into it.
+	///
+	/// # Errors
+	///
+	/// Returns an error when the circuit checked the claim in-circuit.
+	///
+	/// Returns an error when the values are not this circuit's statement.
+	///
+	/// Returns an error when the claim does not hold.
+	pub fn check_deferred(&self, outer_inout: &[Word]) -> Result<(), Error> {
+		let Some(deferred) = &self.deferred else {
+			return Err(Error::NothingDeferred);
+		};
+
+		// The claim sits behind the inner statement, so the two lengths together fix the layout.
+		//
+		// A mismatch means the caller handed over some other circuit's statement.
+		let expected = self.statement.len() + deferred.wires.len();
+		if outer_inout.len() != expected {
+			return Err(Error::StatementLength {
+				expected,
+				actual: outer_inout.len(),
+			});
+		}
+
+		// Each element is the low-half, high-half pair the binding placed.
+		//
+		// They arrive in the order the wiring multilinear reads its input.
+		// The claimed evaluation is the last of them.
+		let elems = outer_inout[self.statement.len()..]
+			.chunks_exact(2)
+			.map(|pair| {
+				B128::new((u128::from(pair[1].as_u64()) << 64) | u128::from(pair[0].as_u64()))
+			})
+			.collect::<Vec<_>>();
+		let (inputs, claimed) = elems
+			.split_last()
+			.map(|(claimed, inputs)| (inputs.to_vec(), *claimed))
+			.expect("a bound claim holds at least its claimed evaluation");
+
+		let claim = DeferredWiringClaim {
+			shape: deferred.shape,
+			inputs,
+			claimed,
+		};
+		claim
+			.check(self.verifier.constraint_system())
+			.map_err(binius_verifier::Error::from)?;
+		Ok(())
+	}
+
+	/// Verifies an outer proof of this circuit, settling everything it defers.
+	///
+	/// This is the safe way to check an outer proof.
+	/// It exists because the unsafe way is otherwise shorter.
+	///
+	/// A deferred claim makes the proof alone attest to less than a verification.
+	/// Nothing about the proof says so.
+	///
+	/// ```text
+	///   the outer proof verifies  +  the claim holds  =  the inner statement really was proved
+	/// ```
+	///
+	/// The verifier passed in must be one for this circuit.
+	/// A different system would check a different proof.
+	///
+	/// # Errors
+	///
+	/// Returns an error when the outer proof does not verify.
+	///
+	/// Returns an error when the deferred claim does not hold.
+	pub fn verify_outer(
+		&self,
+		outer: &Verifier<StdHashSuite>,
+		inout: &[Word],
+		proof: Vec<u8>,
+	) -> Result<(), Error> {
+		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
+		outer.verify(inout, &mut transcript)?;
+		transcript
+			.finalize()
+			.map_err(binius_verifier::Error::from)?;
+
+		// An in-circuit discharge already checked the claim as constraints.
+		//
+		// So there is nothing left to settle, and nothing to complain about.
+		if self.deferred.is_some() {
+			self.check_deferred(inout)?;
+		}
+		Ok(())
 	}
 
 	/// The compiled circuit, and the inventory of wires a witness supplies.
@@ -251,14 +467,41 @@ impl RecursiveCircuit {
 			.create_channel(filler_channel);
 
 		let statement = channel.observe_words(inout);
-		self.verifier
+		let claim = self
+			.verifier
 			.iop_verifier()
-			.verify(&statement, &mut channel)?
-			.check_symbolic(&mut channel)
-			.map_err(binius_verifier::Error::from)?;
+			.verify(&statement, &mut channel)?;
+
+		// This channel carries values, so the same claim comes back concrete here.
+		//
+		// Those values are what the bound public wires need.
+		// The build's equality then pins them against the wires the circuit derived.
+		//
+		// Asserting is a no-op on this channel, so mirroring the in-circuit check costs nothing.
+		let exported = match self.deferred {
+			None => {
+				claim
+					.check_symbolic(&mut channel)
+					.map_err(binius_verifier::Error::from)?;
+				None
+			}
+			Some(_) => Some(claim.defer()),
+		};
 
 		// Checks the replay consumed exactly the wires the build recorded, no more and no fewer.
+		// This also ends the channel's borrow of the filler, so the claim can be written below.
 		channel.finish()?.finish();
+
+		if let (Some(deferred), Some(claim)) = (&self.deferred, exported) {
+			let words = claim
+				.inputs
+				.iter()
+				.chain(iter::once(&claim.claimed))
+				.flat_map(|elem| element_words(u128::from(*elem)));
+			for (&wire, word) in iter::zip(&deferred.wires, words) {
+				filler[wire] = Word(word);
+			}
+		}
 
 		Ok(())
 	}
