@@ -398,10 +398,13 @@ where
 		// All four columns fold against the same point, so the lookup tables and the per-chunk
 		// weights are built once and shared.
 		let folder = WordAxisFolder::<F>::new(r_out);
-		let a_evals = folder.fold_par(a_exponents);
-		let c_lo_evals = folder.fold_par(c_lo_exponents);
-		let c_hi_evals = folder.fold_par(c_hi_exponents);
-		let b_evals = folder.fold_par(b_exponents);
+		let [a_evals, b_evals, c_lo_evals, c_hi_evals] =
+			[a_exponents, b_exponents, c_lo_exponents, c_hi_exponents]
+				.into_par_iter()
+				.map(|exponents| folder.fold_par(exponents))
+				.collect::<Vec<_>>()
+				.try_into()
+				.expect("iterator over exact number of elements");
 		drop(output_guard);
 
 		self.channel.send_many(&a_evals);
