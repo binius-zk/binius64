@@ -11,12 +11,18 @@
 //!
 //! - Each of the 16 compression-state words is held as `[u32; N]`, one lane per message.
 //! - Every step is a fixed-width `0..N` loop of plain scalar `u32` arithmetic.
-//! - No intrinsics, no `unsafe`, no per-target code.
+//! - No intrinsics, no `unsafe`, no per-target code inside the loops.
 //!
 //! Lanes the vectorizer is expected to fill, per target:
 //! - NEON (128-bit) on ARM64 -> 4 lanes per vector.
 //! - AVX2 / AVX-512 on x86 -> 8 / 16 lanes per vector.
 //! - SVE2 on capable ARM64 -> width-agnostic vectors.
+//!
+//! Where a hand-written kernel beats the vectorizer, the loops become the fallback:
+//! - `load_block_words` hands the message transpose to the parent's `avx512` or `neon` module.
+//! - `compress_block` hands the block compression to the parent's `neon` module.
+//!
+//! Each hands over only on the lane counts that kernel claims; every other count runs the loops.
 //!
 //! Output is bit-identical to `blake3::hash`, pinned to the reference in tests.
 //! Scope: any message up to one 1024-byte chunk, including sub-block and partial-block leaves.
@@ -33,90 +39,16 @@ use binius_utils::{
 use blake3::{BLOCK_LEN, CHUNK_LEN, OUT_LEN};
 use digest::Output;
 
-use super::{
-	blake3::Blake3Compression,
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+use super::avx512;
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+use super::neon;
+use super::{Blake3Compression, CHUNK_END, CHUNK_START, IV, MSG_SCHEDULE, ROOT};
+use crate::{
 	parallel_compression::ParallelPseudoCompression,
 	parallel_digest::{
 		MultiDigest, ParallelDigest, ParallelDigestAdapter, ParallelMultidigestImpl,
 	},
-};
-
-/// Hand-written vector kernels for the message load and the block compression.
-///
-/// They stand in for the byte-wise loader and the lane loops below.
-///
-/// Kept private so they stay an implementation detail of this module.
-#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
-#[path = "blake3_neon.rs"]
-mod neon;
-
-/// Hand-written vector transpose for the message load, used in place of the byte-wise loader below.
-///
-/// Kept private so it stays an implementation detail of this module.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-#[path = "blake3_avx512.rs"]
-mod avx512;
-
-/// Blake3 domain-separation flag marking the first block of a chunk.
-const CHUNK_START: u32 = 1 << 0;
-
-/// Blake3 domain-separation flag marking the last block of a chunk.
-const CHUNK_END: u32 = 1 << 1;
-
-/// Blake3 domain-separation flag marking the last block of the whole tree.
-const ROOT: u32 = 1 << 3;
-
-/// Blake3 initial chaining value: the eight IV words, identical to the SHA-256 IV.
-const IV: [u32; 8] = [
-	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-];
-
-/// Blake3 message permutation applied between rounds.
-///
-/// The single fixed schedule from section 2.2 of the Blake3 spec, Table 2.
-const MSG_PERMUTATION: [usize; 16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
-
-/// The 7-round count of the Blake3 keyed permutation.
-const N_ROUNDS: usize = 7;
-
-/// Message word that each of a round's 16 slots reads, one row per round.
-///
-/// Blake3 advances the message between rounds by one fixed permutation.
-/// Applying that permutation `r` times gives the words round `r` reads:
-///
-/// ```text
-///     row 0:   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15    <- the message in order
-///     row 1:   2  6  3 10  7  0  4 13  1 11 12  5  9 14 15  8    <- permuted once
-///     row 2:   3  4 10 12 13  2  7 14  6  5  9  0 11 15  8  1    <- permuted twice
-///     ...
-/// ```
-///
-/// # Why compose it here
-///
-/// Permuting the words a round reads is the same as permuting the words themselves.
-/// Settling that at compile time leaves the 16 message words loaded once and never moved.
-const MSG_SCHEDULE: [[usize; 16]; N_ROUNDS] = {
-	let mut schedule = [[0usize; 16]; N_ROUNDS];
-
-	// Row 0: the first round consumes the message in its natural order.
-	let mut w = 0;
-	while w < 16 {
-		schedule[0][w] = w;
-		w += 1;
-	}
-
-	// Row r: reading the row above through the permutation applies it one more time.
-	let mut r = 1;
-	while r < N_ROUNDS {
-		let mut w = 0;
-		while w < 16 {
-			schedule[r][w] = schedule[r - 1][MSG_PERMUTATION[w]];
-			w += 1;
-		}
-		r += 1;
-	}
-
-	schedule
 };
 
 /// Applies one Blake3 quarter-round across all `N` lanes.
@@ -560,7 +492,8 @@ mod tests {
 	use proptest::prelude::*;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
-	use super::{super::compress::CompressionFunction, *};
+	use super::*;
+	use crate::compress::CompressionFunction;
 
 	/// Folds `pairs` through the `N`-lane portable compression.
 	/// Pins every output bit-identical to the scalar [`Blake3Compression`].
