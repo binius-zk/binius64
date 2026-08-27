@@ -179,12 +179,10 @@ impl HashSuite for Sha256HashSuite {
 
 /// Folds a batch of node pairs with a single block compression.
 ///
-/// Each pair is a 64-byte concatenation `left || right` of two 32-byte digests.
-/// That 64-byte message is exactly one block, so one compression finishes the node.
+/// A pair is `left || right`, two 32-byte digests, so the message is exactly one block.
 ///
-/// The output length sets how many pairs are folded, and must not exceed the batch width.
-/// Two child digests are needed per output node.
-/// A partial batch leaves the unused high lanes zero, and their output is never read.
+/// The output length sets how many pairs are folded and must not exceed the batch width.
+/// A partial batch leaves the unused high lanes zero, and nothing reads their output.
 #[inline]
 fn compress_node_pairs<const N: usize>(
 	initial_state: &[u32; 8],
@@ -245,11 +243,11 @@ impl ParallelPseudoCompression<Output<Sha256>, 2> for ParallelSha256Compression 
 
 /// Hashes leaves that fit, together with their padding, in a single 64-byte block.
 ///
-/// Every leaf is the same length, so the padding suffix is identical across leaves.
-/// Building it once leaves each leaf overwriting only the message prefix.
+/// Every leaf is the same length, so the padding suffix is shared and built once.
+/// Each leaf then overwrites only the message prefix.
 ///
-/// A task keeps its own block buffers and reuses them across the batches it takes,
-/// which keeps the serialize pass off the allocator entirely.
+/// A task reuses its own block buffers across batches, keeping the serialize pass off the
+/// allocator.
 ///
 /// # Panics
 ///

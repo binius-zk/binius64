@@ -49,9 +49,8 @@ unsafe fn round_constants(group: usize) -> __m128i {
 
 /// Runs four rounds of one chain, from its four `W + K` values.
 ///
-/// The extension splits the state into `(a, b, e, f)` and `(c, d, g, h)` halves.
-/// The two instructions advance those halves in turn.
-/// The high pair of the input is moved down for the second.
+/// The extension splits the state into `(a, b, e, f)` and `(c, d, g, h)` halves, advanced in
+/// turn by the two instructions. The high pair of the input is moved down for the second.
 ///
 /// # Safety
 ///
@@ -69,8 +68,8 @@ unsafe fn rounds4(abef: __m128i, cdgh: __m128i, wk: __m128i) -> (__m128i, __m128
 /// Extends one chain's message window by four words, returning the rewritten slot.
 ///
 /// The four inputs are the window in age order, oldest first.
-/// The extension instructions fold in sigma0 and sigma1.
-/// The splice supplies the four words seven positions back, which straddle two slots.
+/// The extension instructions fold in sigma0 and sigma1, and the splice supplies the four
+/// words seven positions back, which straddle two slots.
 ///
 /// # Safety
 ///
@@ -86,8 +85,8 @@ unsafe fn schedule4(oldest: __m128i, w1: __m128i, w2: __m128i, newest: __m128i) 
 
 /// Compresses one 64-byte block into each of a batch of independent SHA-256 states, in place.
 ///
-/// The chains advance together, one interleaved group of four rounds at a time.
-/// Every chain in the batch then occupies the SHA pipeline at once.
+/// The chains advance together, one interleaved group of four rounds at a time, so every
+/// chain in the batch occupies the SHA pipeline at once.
 ///
 /// # Safety
 ///

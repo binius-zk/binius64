@@ -41,9 +41,8 @@ unsafe fn load_be_words(bytes: uint8x16_t) -> uint32x4_t {
 
 /// Runs four rounds across every lane, at the given round-constant offset.
 ///
-/// The extension splits the state into `(a, b, c, d)` and `(e, f, g, h)` halves.
-/// The two instructions advance those halves in turn.
-/// The second reads the first's input, so that input is saved.
+/// The extension splits the state into `(a, b, c, d)` and `(e, f, g, h)` halves, advanced in
+/// turn by the two instructions. The second reads the first's input, so that input is saved.
 ///
 /// # Safety
 ///
@@ -90,11 +89,9 @@ unsafe fn schedule4<const N: usize>(
 
 /// Compresses one 64-byte block into each of four independent SHA-256 states, in place.
 ///
-/// The four states advance together, one interleaved group of four rounds at a time, so four
-/// independent hashes occupy the SHA pipeline at once.
+/// The four states advance together, one interleaved group of four rounds at a time.
 ///
-/// The state words load and store in native word order, matching the portable block function.
-/// Only the message bytes swap to big-endian.
+/// State words load and store in native order; only the message bytes swap to big-endian.
 ///
 /// # Panics
 ///

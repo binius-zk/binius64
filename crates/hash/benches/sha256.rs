@@ -32,11 +32,10 @@ fn bench_sha256(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Measures the raw `compress256` block function with no hasher setup, padding, or finalization.
+/// The raw block function, with no hasher setup, padding, or finalization.
 ///
-/// - `amortized_per_block`: one `compress256` call over many blocks (steady-state per-block cost).
-/// - `single_block`: one `compress256` call over a single block (per-block cost + any per-call
-///   overhead in `compress256` itself).
+/// - many blocks in one call: the steady-state cost of a block.
+/// - one block in one call: that cost plus whatever the call itself adds.
 fn bench_compress(c: &mut Criterion) {
 	const N_BLOCKS: usize = 1 << 14;
 	let blocks: Vec<[u8; 64]> = vec![[0u8; 64]; N_BLOCKS];
@@ -64,10 +63,9 @@ fn bench_compress(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Benchmarks [`ParallelDigestAdapter`] over 1 MiB of `B128` elements, varying the number of
-/// elements folded into each leaf digest (`batch_size`). This isolates the leaf-hashing step that
-/// dominates binary Merkle tree construction. The input data size is fixed at 1 MiB, so a larger
-/// batch size means fewer, larger leaves (fewer SHA-256 init/finalize calls).
+/// Leaf hashing over a fixed 1 MiB, sweeping how many field elements fold into one leaf.
+///
+/// The input size is fixed, so a wider leaf means fewer and larger leaves.
 fn bench_digest(c: &mut Criterion) {
 	let mut rng = rng();
 	let elements: Vec<B128> = (0..N_ELEMS).map(|_| B128::random(&mut rng)).collect();
@@ -94,12 +92,10 @@ fn bench_digest(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Compares the specialized [`ParallelSha256Digest`] against the generic [`ParallelDigestAdapter`]
-/// for the case the BINIUS-75 evaluation targets: leaves of 2 `B128` elements (32 bytes), which fit
-/// in a single SHA-256 block. Both paths are identical except for the hashing call — same input
-/// chunking, same pre-allocated output buffer, same throughput accounting — so the measured
-/// difference isolates the per-leaf padding/`update`/`finalize` bookkeeping the specialization
-/// removes.
+/// Fixed-length leaves against the general path, at 32 bytes per leaf.
+///
+/// A 32-byte leaf fits in one block with its padding, which is what the fixed-length route
+/// exploits. Everything outside the hashing call is identical, so the delta is that route.
 fn bench_const_leaves(c: &mut Criterion) {
 	const BATCH_SIZE: usize = 2;
 
@@ -140,14 +136,9 @@ fn bench_const_leaves(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Compresses one wide Merkle tree layer: pairs of child digests into parent digests.
+/// One wide Merkle layer: pairs of child digests folded into parent digests.
 ///
-/// Compares the per-node scalar path against the batched multi-lane path.
-/// Both run over the same rayon pool.
-/// So the delta isolates how fully each path occupies the SHA pipeline.
-///
-/// The per-node arm spawns a rayon task per node, so at this width it measures scheduling
-/// as much as hashing. `sha256_kernel` is the arm to read for the kernel itself.
+/// The per-node arm spawns a task per node, so it measures scheduling as much as hashing.
 fn bench_merkle_compress(c: &mut Criterion) {
 	use std::mem::MaybeUninit;
 
@@ -187,16 +178,10 @@ fn bench_merkle_compress(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Compares the batched multi-lane kernel against the per-block `sha2` call it replaces.
+/// Batched multi-lane kernel against one scalar block call per message.
 ///
-/// Single-threaded and cache-resident, so the measurement isolates the kernel from rayon
-/// scheduling and memory traffic. Every arm hashes the same 4096 independent single-block
-/// messages, which is the shape both Merkle stages produce: fixed-size leaves and node pairs.
-///
-/// The baseline calls `compress256` once per block, as every call site did before. That is
-/// not a straw man: restarting from the IV each call leaves the blocks independent, so the
-/// out-of-order engine already overlaps them. Handing `sha2` the whole buffer in one call is
-/// slower still, because a single multi-block call is one serial chain.
+/// Single-threaded and cache-resident, so the delta is the kernel alone.
+/// The messages are independent single-block hashes, the shape both Merkle stages produce.
 fn bench_kernel(c: &mut Criterion) {
 	use binius_hash::sha256::portable::{LANES, compress256_multi, compress256_multi_portable};
 

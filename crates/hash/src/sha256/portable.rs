@@ -2,25 +2,16 @@
 
 //! Portable, auto-vectorized SHA-256 multi-lane kernel.
 //!
-//! A round reads the state the round before it wrote.
-//! One chain therefore stalls on its own latency and leaves most of the machine idle.
+//! A round reads the state the round before it wrote, so one chain stalls on its own latency.
 //! Every entry point here advances several independent chains at once instead.
 //!
-//! The lanes are held transposed, one lane per message:
-//!
-//! ```text
-//!     each of the 8 state words    ->  one word per lane
-//!     each of the 16 message words ->  one word per lane
-//!     every step                   ->  a fixed-width loop over the lanes
-//! ```
+//! The lanes are held transposed: each state and message word becomes one word per lane, and
+//! every step is a fixed-width loop over the lanes.
 //!
 //! No intrinsics and no unsafe code, so the vectorizer fills whatever width the target has.
-//!
 //! A hand-written kernel takes over only at the lane counts it claims.
-//! Every other count runs these loops, which are also the reference the kernels are tested
-//! against.
 //!
-//! Output is bit-identical to the scalar block function, pinned by tests.
+//! These loops are also the reference the kernels are tested against.
 //!
 //! Reference: FIPS 180-4, section 6.2.
 
@@ -80,10 +71,7 @@ pub const LANES: usize =
 /// ```
 ///
 /// Only two words are computed.
-/// The other six shift down one slot.
-/// Returning them already shifted is what makes that shift cost nothing.
-///
-/// Every line is an independent map over the lanes, which is what the vectorizer turns into SIMD.
+/// The other six shift down one slot, which returning them already shifted makes free.
 #[inline(always)]
 fn round<const N: usize>(state: [[u32; N]; 8], w: &[u32; N], k: u32) -> [[u32; N]; 8] {
 	let [a, b, c, d, e, f, g, h] = state;
@@ -128,16 +116,15 @@ fn round<const N: usize>(state: [[u32; N]; 8], w: &[u32; N], k: u32) -> [[u32; N
 ///     sigma1(x) = ROTR17 ^ ROTR19 ^ SHR10
 /// ```
 ///
-/// The window holds the last 16 words, oldest at index `t mod 16`, so the four reads sit at
-/// offsets 0, 1, 9, and 14 from that slot.
+/// The window holds the last 16 words, oldest first, so the reads sit at offsets 0, 1, 9, 14.
 ///
-/// A straight sweep is correct because a read below the slot being written already holds its
-/// new value, and a read above it still holds its old one:
+/// A straight sweep is correct: a read below the slot being written already holds its new
+/// value, and a read above it still holds its old one.
 ///
 /// ```text
 ///     writing slot j, reading offset 14:
-///       j < 2  -> index j+14, untouched this sweep -> the old word, which is W[t-2]
-///       j >= 2 -> index j-2,  written at step j-2  -> the new word, which is also W[t-2]
+///       j < 2  -> index j+14, untouched  -> old word = W[t-2]
+///       j >= 2 -> index j-2,  rewritten  -> new word = W[t-2]
 /// ```
 #[inline(always)]
 fn extend_window<const N: usize>(w: &mut [[u32; N]; 16]) {
@@ -199,14 +186,10 @@ fn load_block_words_portable<const N: usize>(blocks: &[[u8; BLOCK_LEN]; N]) -> [
 
 /// Compresses one 64-byte block into each of a batch of independent SHA-256 states, in place.
 ///
-/// The multi-lane analogue of the single-stream block function: each state absorbs its own
-/// block through the 64 rounds plus the Davies-Meyer add.
+/// Each lane absorbs its own block and ends holding what the scalar block function would
+/// leave there, whichever kernel ran.
 ///
-/// No padding or length suffix is involved.
-/// The caller owns the block contents.
-///
-/// Each lane ends holding exactly what the scalar block function would leave there,
-/// whichever kernel ran.
+/// No padding or length suffix is involved; the caller owns the block contents.
 #[inline]
 pub fn compress256_multi<const N: usize>(
 	states: &mut [[u32; 8]; N],

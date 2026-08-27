@@ -2,24 +2,20 @@
 
 //! x86-64 AVX-512 SHA-256 kernel, sixteen messages at a time.
 //!
-//! The sixteen messages are held transposed.
 //! One 512-bit register carries a single state or message word across all sixteen lanes.
 //! A round is then plain 32-bit vector arithmetic, sixteen hashes wide.
 //!
-//! Two instructions carry the round:
+//! Two instructions carry it:
 //!
 //! ```text
 //!     vprold      rotates 32-bit words: a Sigma is 3 rotates, not 6 shifts and 2 ors
 //!     vpternlogd  evaluates any 3-input bit function in one instruction
 //! ```
 //!
-//! Choice, majority, and the 3-way xor inside each Sigma are all 3-input bit functions.
-//! That is what holds a round to seventeen vector operations for all sixteen lanes.
+//! Choice, majority, and the 3-way xor inside each Sigma are all 3-input bit functions, which
+//! holds a round to seventeen vector operations for all sixteen lanes.
 //!
-//! This is also the only wide option on an AVX-512 machine with no SHA extension, such as
-//! Skylake-SP, Cascade Lake, or Cooper Lake.
-//!
-//! Output is bit-identical to the scalar block function, pinned by tests.
+//! This is also the only wide option on an AVX-512 machine with no SHA extension.
 
 use std::{
 	arch::x86_64::{
@@ -90,8 +86,8 @@ unsafe fn bswap32_mask() -> __m512i {
 
 /// Transposes a 16x16 square of 32-bit words in place.
 ///
-/// The network walks the transpose one power of two at a time, each stage swapping blocks of
-/// size `2^k` between rows `2^k` apart:
+/// Each stage swaps blocks of size `2^k` between rows `2^k` apart, so the square never leaves
+/// the registers:
 ///
 /// ```text
 ///     stage 1: 32-bit words,  rows 1 apart
@@ -99,9 +95,6 @@ unsafe fn bswap32_mask() -> __m512i {
 ///     stage 3: 128-bit lanes, rows 4 apart
 ///     stage 4: 128-bit lanes, rows 8 apart
 /// ```
-///
-/// At 16 lanes the square is exactly four registers wide and 16 rows tall, so the network
-/// moves it with no memory round trip.
 ///
 /// # Safety
 ///
@@ -266,9 +259,8 @@ unsafe fn extend_window(w: &mut [__m512i; 16]) {
 
 /// Compresses one 64-byte block into each of 16 independent SHA-256 states, in place.
 ///
-/// The states arrive and leave one per lane, so both directions cross the transpose:
-/// eight rows of 16 lanes on the inside, 16 states of eight words on the outside.
-/// The eight unused rows of each square are zero, and the words they land in are never read.
+/// The states arrive and leave one per lane, so both directions cross the transpose.
+/// The eight unused rows of each square are zero, and nothing reads where they land.
 ///
 /// # Panics
 ///
