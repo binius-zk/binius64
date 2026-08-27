@@ -17,7 +17,7 @@
 //! ; X) \text{eq}(z ; Z) p_{i+1}(z, 0, x) p_{i+1}(z, 1, x) $$
 
 use binius_field::Field;
-use binius_math::multilinear::hypercube::Hypercube;
+use binius_math::line::extrapolate_line;
 use binius_transcript::Error as TranscriptError;
 
 // Re-export MultilinearEvalClaim from crate root for backward compatibility
@@ -55,7 +55,7 @@ where
 	// p_{i+1}(r, \ldots).
 	let r = channel.sample();
 
-	let next_eval = Hypercube::One.fold_var(eval_0, eval_1, &r);
+	let next_eval = extrapolate_line(eval_0, eval_1, r.clone());
 
 	let mut next_point = challenges;
 	next_point.reverse();

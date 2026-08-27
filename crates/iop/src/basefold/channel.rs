@@ -8,7 +8,9 @@ use binius_ip::{
 	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{self, BatchSumcheckOutput},
 };
-use binius_math::{multilinear::hypercube::Hypercube, univariate::evaluate_univariate};
+use binius_math::{
+	line::extrapolate_line, multilinear::hypercube::Hypercube, univariate::evaluate_univariate,
+};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
 
@@ -176,14 +178,18 @@ where
 	let sigmas = channel.recv_many(n_zk)?;
 	let gamma = (!sigmas.is_empty()).then(|| channel.sample());
 
-	// Masked claim per relation: ZK → s_i' folds claim and σ_i on γ; non-ZK → s_i' = claim.
+	// Masked claim per relation.
+	// A ZK oracle folds its claim with σ_i on γ, and a non-ZK one keeps s_i' = claim.
 	let mut sigma_iter = sigmas.into_iter();
 	let sum_primes = izip!(&relations, oracle_specs)
 		.map(|(relation, spec)| {
 			if spec.is_zk {
 				let sigma = sigma_iter.next().expect("one σ per ZK oracle");
-				let gamma = gamma.as_ref().expect("γ sampled when ZK oracles present");
-				Hypercube::One.fold_var(relation.claim.clone(), sigma, gamma)
+				extrapolate_line(
+					relation.claim.clone(),
+					sigma,
+					gamma.clone().expect("γ sampled when ZK oracles present"),
+				)
 			} else {
 				relation.claim.clone()
 			}

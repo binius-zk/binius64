@@ -10,6 +10,7 @@ use std::iter;
 use binius_field::{BinaryField, FieldOps, util::expand_subset_sums};
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::{
+	line::extrapolate_line,
 	multilinear::{self, hypercube::Hypercube},
 	ntt::DomainContext,
 };
@@ -334,7 +335,7 @@ where
 			let mut u = values[index_offset << 1].clone();
 			let v = values[(index_offset << 1) | 1].clone() + &u;
 			u += v.clone() * twiddle;
-			values[index_offset] = Hypercube::One.fold_var(u, v, challenge);
+			values[index_offset] = extrapolate_line(u, v, challenge.clone());
 		}
 
 		log_len -= 1;

@@ -7,7 +7,9 @@ use std::iter;
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
-use binius_math::{FieldBuffer, FieldVec, multilinear::hypercube::Hypercube};
+use binius_math::{
+	FieldBuffer, FieldVec, line::extrapolate_line, multilinear::hypercube::Hypercube,
+};
 use binius_utils::rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use itertools::izip;
 
@@ -290,10 +292,7 @@ fn finalize_layer<F: Field>(
 	let next_fractions = reduced
 		.iter()
 		.map(|&[num_0, num_1, den_0, den_1]| {
-			Fraction::new(
-				Hypercube::One.fold_var(num_0, num_1, &r),
-				Hypercube::One.fold_var(den_0, den_1, &r),
-			)
+			Fraction::new(extrapolate_line(num_0, num_1, r), extrapolate_line(den_0, den_1, r))
 		})
 		.chain(iter::repeat_n(Fraction::ZERO, (1 << k) - reduced.len()))
 		.collect();

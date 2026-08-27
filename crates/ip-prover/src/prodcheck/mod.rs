@@ -5,7 +5,9 @@ use std::iter;
 use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
-use binius_math::{FieldBuffer, FieldVec, multilinear::hypercube::Hypercube};
+use binius_math::{
+	FieldBuffer, FieldVec, line::extrapolate_line, multilinear::hypercube::Hypercube,
+};
 use binius_utils::rayon::{
 	prelude::*,
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
@@ -174,7 +176,7 @@ where
 			channel.send_many(&[eval_0, eval_1]);
 
 			let r = channel.sample();
-			let next_eval = Hypercube::One.fold_var(eval_0, eval_1, &r);
+			let next_eval = extrapolate_line(eval_0, eval_1, r);
 
 			let mut next_point = challenges;
 			next_point.reverse();
@@ -425,7 +427,7 @@ fn prove_layer_rounds<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 
 	// Update claimed products for next iteration, dropping the padded (2^k) selector slots.
 	let next_claimed_products = iter::zip(&vals_0[..n], &vals_1[..n])
-		.map(|(e0, e1)| Hypercube::One.fold_var(*e0, *e1, &r))
+		.map(|(e0, e1)| extrapolate_line(*e0, *e1, r))
 		.collect();
 
 	(next_claimed_products, next_point)

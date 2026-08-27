@@ -7,7 +7,7 @@ use std::iter;
 
 use binius_core::word::Word;
 use binius_field::FieldOps;
-use binius_math::multilinear::hypercube::Hypercube;
+use binius_math::{line::extrapolate_line, multilinear::hypercube::Hypercube};
 
 use super::SHIFT_VARIANT_COUNT;
 
@@ -111,15 +111,15 @@ fn evaluate_sum_inds<E: FieldOps>(r_i: &[E], r_j: &[E], r_s: &[E]) -> (E, E) {
 			// only when `s` absorbs a carry in. With `i = 1` the position carries out whenever `s`
 			// is set or a carry comes in, and sums correctly against the `j` those leave.
 			(
-				Hypercube::One.fold_var(
+				extrapolate_line(
 					agree.clone() * &no_carry + j_only.clone() * &carry,
 					j_only * &no_carry,
-					i,
+					i.clone(),
 				),
-				Hypercube::One.fold_var(
+				extrapolate_line(
 					s_only.clone() * &carry,
 					s_only * &no_carry + agree * &carry,
-					i,
+					i.clone(),
 				),
 			)
 		},
@@ -135,7 +135,7 @@ fn evaluate_overflow_ind<E: FieldOps>(r_i: &[E], r_s: &[E]) -> E {
 	iter::zip(r_i, r_s).fold(E::zero(), |carry, (i, s)| {
 		// With `i = 0` only a carry in that `s` propagates survives; with `i = 1` the position
 		// carries out whenever `s` is set or a carry comes in.
-		Hypercube::One.fold_var(s.clone() * &carry, s.clone() + (E::one() - s) * &carry, i)
+		extrapolate_line(s.clone() * &carry, s.clone() + (E::one() - s) * &carry, i.clone())
 	})
 }
 
@@ -229,7 +229,7 @@ mod tests {
 			{
 				assert_eq!(
 					eval,
-					Hypercube::One.fold_var(at_zero, at_one, &point[coordinate]),
+					extrapolate_line(at_zero, at_one, point[coordinate]),
 					"variant {variant} is not linear in coordinate {coordinate}"
 				);
 			}
