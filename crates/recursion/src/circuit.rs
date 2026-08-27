@@ -23,18 +23,18 @@
 //!   Verifier(inner) -> build -> circuit_1 -> Verifier(circuit_1) -> build -> circuit_2
 //! ```
 //!
-//! How much a level costs depends on what it does with the inner wiring claim, which is what
-//! [`Discharge`] selects.
+//! What a level costs depends on how it settles the inner wiring claim.
 //!
-//! - [`Discharge::InCircuit`] evaluates the claim as constraints. That walks every inner
-//!   constraint, so a level costs about fifteen times the rows of the level it verifies, and the
-//!   tower diverges.
-//! - [`Discharge::Deferred`] puts the claim on public wires instead and leaves it unchecked. The
-//!   claim is logarithmic in the inner system, so the cost proportional to it disappears.
+//! Evaluating the claim as constraints walks every inner constraint.
+//! A level then costs about fifteen times the level below, and the tower diverges.
 //!
-//! Deferring moves work rather than removing it. Whoever holds the outer proof owes the check,
-//! and [`RecursiveCircuit::check_deferred`] is it. Nothing anywhere verifies the claim unless
-//! that runs.
+//! Putting the claim on public wires instead leaves it unchecked.
+//! The claim is logarithmic in the inner system, so the cost proportional to it disappears.
+//! A level then costs under six times the level below.
+//!
+//! Deferring moves work rather than removing it.
+//! Whoever holds the outer proof owes the check.
+//! Nothing anywhere verifies the claim unless that check runs.
 
 use std::iter;
 
@@ -83,28 +83,29 @@ pub enum Error {
 	#[error("the recorded circuit is not satisfied by the replayed witness")]
 	Unsatisfied(PopulateError),
 
-	/// [`RecursiveCircuit::check_deferred`] was called on a circuit that checks in-circuit.
+	/// A claim was asked for from a circuit that checks the claim in-circuit.
 	#[error("this circuit discharges the wiring claim in-circuit, so nothing is left to check")]
 	NothingDeferred,
 }
 
 /// What a recursive circuit does with the inner proof's wiring claim.
 ///
-/// The claim says the wiring multilinear evaluates to a stated value. Discharging it means
-/// evaluating that multilinear, which walks every constraint of the inner system.
+/// The claim says the wiring multilinear evaluates to a stated value.
+/// Discharging it means evaluating that multilinear.
+/// That walks every constraint of the inner system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Discharge {
 	/// Evaluate the claim as constraints, inside the circuit.
 	///
-	/// Self-contained: an outer proof of this circuit needs nothing checked beside it. The cost
-	/// is proportional to the inner system, so a tower of these cannot close.
+	/// Self-contained: an outer proof needs nothing checked beside it.
+	/// The cost tracks the inner system, so a tower of these cannot close.
 	#[default]
 	InCircuit,
 
 	/// Put the claim on public wires and leave it unchecked.
 	///
-	/// The claim is logarithmic in the inner system, so this is the cheap half of the trade. It
-	/// is only sound if someone settles the claim: see [`RecursiveCircuit::check_deferred`].
+	/// The claim is logarithmic in the inner system, so this is the cheap half of the trade.
+	/// It is only sound if someone settles the claim afterwards.
 	Deferred,
 }
 
@@ -132,7 +133,7 @@ pub struct RecursiveCircuit {
 
 	/// The wiring claim this circuit exported, when it exported one.
 	///
-	/// `None` under [`Discharge::InCircuit`], where the claim was checked instead.
+	/// Absent when the circuit checked the claim as constraints instead.
 	deferred: Option<Deferred>,
 }
 
@@ -140,14 +141,13 @@ pub struct RecursiveCircuit {
 struct Deferred {
 	/// How the claim's flat input splits back into its sections.
 	///
-	/// Fixed by the inner system, so it is build-time data and travels with the circuit rather
-	/// than with each proof.
+	/// Fixed by the inner system, so it travels with the circuit rather than with each proof.
 	shape: WiringEvalShape,
 
-	/// The inout wires carrying the claim: two per element, `(lo, hi)`.
+	/// The inout wires carrying the claim: two per element, low half then high half.
 	///
-	/// The claim's inputs come first, in the order the wiring multilinear reads them, and the
-	/// claimed evaluation is the last element.
+	/// The claim's inputs come first, in the order the wiring multilinear reads them.
+	/// The claimed evaluation is the last element.
 	wires: Vec<Wire>,
 }
 
@@ -171,13 +171,15 @@ impl RecursiveCircuit {
 		Self::build_with(verifier, Discharge::InCircuit)
 	}
 
-	/// Records `verifier`'s run, settling the inner wiring claim the way `discharge` says.
+	/// Records the verifier's run, settling the inner wiring claim the way the caller asks.
 	///
-	/// See [`Discharge`] for what the choice costs, and what it obliges.
+	/// The two settlements differ in cost and in what they oblige.
 	///
 	/// # Errors
 	///
-	/// As [`build`](Self::build).
+	/// Returns an error when the inner trace is not opened with FRI.
+	///
+	/// Returns an error when the shape itself is unsatisfiable.
 	pub fn build_with(
 		verifier: Verifier<StdHashSuite>,
 		discharge: Discharge,
@@ -200,8 +202,9 @@ impl RecursiveCircuit {
 		// The verifier's own arithmetic becomes constraints, down to every assertion along the way.
 		let claim = verifier.iop_verifier().verify(&statement, &mut channel)?;
 
-		// The wiring claim is the one piece whose cost tracks the inner system, so it is the one
-		// piece worth a choice.
+		// Invariant: the wiring claim is the only cost that tracks the inner system's size.
+		//
+		// So it is the only part of the replay worth a choice.
 		let exported = match discharge {
 			Discharge::InCircuit => {
 				claim
@@ -214,8 +217,11 @@ impl RecursiveCircuit {
 
 		let mut builder_channel = channel.finish()?;
 
-		// The inner statement is bound first, so it occupies the front of the outer statement and
-		// an exported claim follows it. `check_deferred` reads that layout back.
+		// The inner statement is bound first.
+		//
+		//     outer statement:  [ inner statement | exported claim ]
+		//
+		// Settling the claim later reads that layout back.
 		let statement = builder_channel.bind_public(statement);
 		let deferred = exported.map(|claim| {
 			let DeferredWiringClaim {
@@ -256,39 +262,43 @@ impl RecursiveCircuit {
 		&self.statement
 	}
 
-	/// The inout wires carrying the exported wiring claim, or `None` if it was checked in-circuit.
+	/// The inout wires carrying the exported wiring claim.
 	///
-	/// Two wires per element, `(lo, hi)`, inputs first and the claimed evaluation last.
+	/// Absent when the circuit checked the claim as constraints instead.
+	///
+	/// Two wires per element, low half then high half.
+	/// The claim's inputs come first and the claimed evaluation is last.
 	pub fn deferred_wires(&self) -> Option<&[Wire]> {
 		self.deferred.as_ref().map(|d| d.wires.as_slice())
 	}
 
-	/// Discharges the wiring claim this circuit exported, reading it off the outer statement.
+	/// Settles the wiring claim this circuit exported, reading it off the outer statement.
 	///
-	/// This is the check [`Discharge::Deferred`] skipped. **Without it the outer proof attests to
-	/// strictly less than a verification**: the inner proof's wiring constraint is simply not
-	/// checked, anywhere, by anyone.
+	/// This is the check a deferred circuit skipped.
+	/// **Without it the outer proof attests to less than a verification.**
+	/// The inner proof's wiring constraint is then checked nowhere, by nobody.
 	///
-	/// `outer_inout` is the outer proof's public values, which is what
-	/// [`ValueVec::inout`](binius_core::constraint_system::ValueVec::inout) returns for a witness
-	/// this circuit produced. The inner statement occupies its front and the claim follows.
+	/// The argument is the outer proof's public values.
+	/// The inner statement occupies its front, and the claim follows.
 	///
-	/// The cost is one native evaluation of the inner wiring multilinear. That is ordinary work
-	/// outside a circuit, and it is paid once no matter how many levels deferred to here.
+	/// The cost is one native evaluation of the inner wiring multilinear.
+	/// That is ordinary work outside a circuit.
+	/// It is paid once, however many levels deferred into it.
 	///
 	/// # Errors
 	///
-	/// Returns [`Error::NothingDeferred`] when the circuit checks the claim in-circuit.
+	/// Returns an error when the circuit checked the claim in-circuit.
 	///
-	/// Returns [`Error::StatementLength`] when `outer_inout` is not this circuit's statement.
+	/// Returns an error when the values are not this circuit's statement.
 	///
-	/// Returns [`Error::Verifier`] when the claim does not hold.
+	/// Returns an error when the claim does not hold.
 	pub fn check_deferred(&self, outer_inout: &[Word]) -> Result<(), Error> {
 		let Some(deferred) = &self.deferred else {
 			return Err(Error::NothingDeferred);
 		};
 
 		// The claim sits behind the inner statement, so the two lengths together fix the layout.
+		//
 		// A mismatch means the caller handed over some other circuit's statement.
 		let expected = self.statement.len() + deferred.wires.len();
 		if outer_inout.len() != expected {
@@ -298,8 +308,10 @@ impl RecursiveCircuit {
 			});
 		}
 
-		// Each element is the `(lo, hi)` pair the binding placed, in the order the wiring
-		// multilinear reads its input. The claimed evaluation is the last of them.
+		// Each element is the low-half, high-half pair the binding placed.
+		//
+		// They arrive in the order the wiring multilinear reads its input.
+		// The claimed evaluation is the last of them.
 		let elems = outer_inout[self.statement.len()..]
 			.chunks_exact(2)
 			.map(|pair| {
@@ -324,21 +336,24 @@ impl RecursiveCircuit {
 
 	/// Verifies an outer proof of this circuit, settling everything it defers.
 	///
-	/// This is the safe way to check an outer proof, and the reason it exists is that the unsafe
-	/// way is otherwise shorter. Verifying the proof alone attests to a *verification minus its
-	/// wiring constraint* whenever the claim was deferred, and nothing about the proof says so.
+	/// This is the safe way to check an outer proof.
+	/// It exists because the unsafe way is otherwise shorter.
+	///
+	/// A deferred claim makes the proof alone attest to less than a verification.
+	/// Nothing about the proof says so.
 	///
 	/// ```text
-	///   verify the outer proof  +  check_deferred  =  the inner statement really was proved
+	///   the outer proof verifies  +  the claim holds  =  the inner statement really was proved
 	/// ```
 	///
-	/// `outer` must be a verifier for [`circuit`](Self::circuit); a different system would check a
-	/// different proof.
+	/// The verifier passed in must be one for this circuit.
+	/// A different system would check a different proof.
 	///
 	/// # Errors
 	///
-	/// Returns [`Error::Verifier`] when the outer proof does not verify, or when the deferred
-	/// claim does not hold.
+	/// Returns an error when the outer proof does not verify.
+	///
+	/// Returns an error when the deferred claim does not hold.
 	pub fn verify_outer(
 		&self,
 		outer: &Verifier<StdHashSuite>,
@@ -351,8 +366,9 @@ impl RecursiveCircuit {
 			.finalize()
 			.map_err(binius_verifier::Error::from)?;
 
-		// An in-circuit discharge already checked the claim as constraints, so there is nothing
-		// left to settle and nothing to complain about.
+		// An in-circuit discharge already checked the claim as constraints.
+		//
+		// So there is nothing left to settle, and nothing to complain about.
 		if self.deferred.is_some() {
 			self.check_deferred(inout)?;
 		}
@@ -456,11 +472,12 @@ impl RecursiveCircuit {
 			.iop_verifier()
 			.verify(&statement, &mut channel)?;
 
-		// This channel carries values, so the same claim comes back concrete here. Under
-		// `Discharge::Deferred` those values are what the bound public wires need; the build's
-		// equality then pins them against the wires the circuit derived.
+		// This channel carries values, so the same claim comes back concrete here.
 		//
-		// `assert_zero` is a no-op on this channel, so checking in-circuit costs nothing to mirror.
+		// Those values are what the bound public wires need.
+		// The build's equality then pins them against the wires the circuit derived.
+		//
+		// Asserting is a no-op on this channel, so mirroring the in-circuit check costs nothing.
 		let exported = match self.deferred {
 			None => {
 				claim

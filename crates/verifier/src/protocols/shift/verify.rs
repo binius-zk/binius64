@@ -460,22 +460,22 @@ impl<F: BinaryField> WiringEvalClaim<'_, F> {
 impl<'a, E> WiringEvalClaim<'a, E> {
 	/// Exports the claim instead of discharging it.
 	///
-	/// Discharging costs one evaluation of the wiring multilinear, and that evaluation walks
-	/// every constraint of the system. Inside a circuit that is proportional to the inner
-	/// system, which is why a circuit that pays it can never verify a proof of itself.
+	/// Discharging evaluates the wiring multilinear, which walks every constraint of the system.
+	/// Inside a circuit that cost tracks the inner system.
+	/// So a circuit that pays it can never verify a proof of itself.
 	///
-	/// Exporting hands the claim out whole instead, to be settled somewhere the cost is
-	/// ordinary — natively, once, at the root of an aggregation tree.
+	/// Exporting hands the claim out whole instead.
+	/// It is settled once, natively, where the cost is ordinary.
 	///
-	/// The inputs are short: [`WiringEvalShape::n_inputs`] is logarithmic in the constraint
-	/// count, since every section is a challenge vector over a padded log-sized index. That is
-	/// what makes exporting cheaper than checking.
+	/// The claim is short.
+	/// Every section of its input is a challenge vector over a padded log-sized index.
+	/// So the input length is logarithmic in the constraint count.
 	///
 	/// # Correctness
 	///
-	/// Nothing is verified here, and nothing about the claim is checked later unless a holder
-	/// checks it. A dropped claim is an unchecked constraint, which is why the result is
-	/// `#[must_use]`.
+	/// Nothing is verified here.
+	/// Nothing is verified later either, unless a holder settles the claim.
+	/// A dropped claim is an unchecked constraint.
 	pub fn defer(self) -> DeferredWiringClaim<E> {
 		DeferredWiringClaim {
 			shape: self.eval_fn.shape(),
@@ -487,17 +487,18 @@ impl<'a, E> WiringEvalClaim<'a, E> {
 
 /// A wiring claim that was exported rather than discharged.
 ///
-/// Holding one is owing a check. [`check`](Self::check) is that check, and it needs only the
-/// constraint system the claim is about — public data — so it can run far from the verifier that
-/// raised the claim.
+/// Holding one is owing a check.
+///
+/// Settling it needs only the constraint system the claim is about, which is public data.
+/// So it can run far from the verifier that raised the claim.
 ///
 /// ```text
-///   verify -> claim -> defer -> travels as public values -> check, natively, at the root
+///   verify -> claim -> export -> travels as public values -> settled natively at the root
 /// ```
 #[must_use = "a deferred wiring claim that nobody discharges is an unchecked constraint"]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeferredWiringClaim<E> {
-	/// How [`inputs`](Self::inputs) splits back into its sections.
+	/// How the flat input below splits back into its sections.
 	pub shape: WiringEvalShape,
 	/// The point the wiring multilinear is claimed to be evaluated at.
 	pub inputs: Vec<E>,
@@ -506,15 +507,15 @@ pub struct DeferredWiringClaim<E> {
 }
 
 impl<F: BinaryField> DeferredWiringClaim<F> {
-	/// Discharges the claim against the constraint system it is about.
+	/// Settles the claim against the constraint system it is about.
 	///
-	/// `constraint_system` must be the one the claim was raised over. A different system names a
-	/// different polynomial, so the check would be meaningless rather than merely wrong; the
-	/// caller owes that pairing.
+	/// The system must be the one the claim was raised over.
+	/// A different one names a different polynomial.
+	/// The check would then be meaningless rather than wrong, so the caller owes that pairing.
 	///
 	/// # Errors
 	///
-	/// Returns [`Error::VerificationFailure`] when the evaluation disagrees with the claim.
+	/// Returns an error when the evaluation disagrees with the claim.
 	pub fn check(&self, constraint_system: &ConstraintSystem) -> Result<(), Error> {
 		let eval_fn = WiringEvalFn::new(constraint_system, self.shape);
 		if eval_fn.call_native(&self.inputs) == self.claimed {
@@ -574,16 +575,15 @@ pub struct WiringEvalFn<'a> {
 
 /// How a wiring claim's flat input splits back into its sections.
 ///
-/// Every length here is fixed by the constraint system and the reduction run over it.
-/// None of them is read off a prover message.
-/// So one shape describes every proof of one shape, and carrying it costs nothing per proof.
+/// Every length here is fixed by the constraint system and the reduction over it.
+/// None is read off a prover message.
 ///
-/// That is what lets a claim be discharged later, away from the run that raised it: see
-/// [`DeferredWiringClaim`].
+/// So one shape covers every proof of one shape, at no per-proof cost.
+/// That is what lets a claim be settled away from the run that raised it.
 ///
-/// The fields stay private, and the only way to obtain one is [`WiringEvalFn::shape`]. A
-/// hand-built shape could disagree with the run that produced the inputs, and the mismatch would
-/// surface as a wrong evaluation rather than an error.
+/// The fields are private on purpose.
+/// A hand-built shape could disagree with the inputs it reads.
+/// The mismatch would surface as a wrong evaluation, not an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WiringEvalShape {
 	/// Which segment holds the inout values, which fixes where the word-index tensor is cut.
@@ -607,8 +607,11 @@ pub struct WiringEvalShape {
 impl WiringEvalShape {
 	/// The number of elements a claim of this shape reads.
 	///
-	/// Four batching coefficients, one `r_x_prime` vector per operator, both shift slots, the
-	/// column challenges, then the single `r_segment` coordinate.
+	/// - Four batching coefficients.
+	/// - One constraint-index challenge vector per operator.
+	/// - Both shift slots.
+	/// - The column challenges.
+	/// - One trailing word-index coordinate.
 	pub const fn n_inputs(&self) -> usize {
 		4 + self.zero_r_x_prime_len
 			+ self.bitand_r_x_prime_len
@@ -622,10 +625,12 @@ impl WiringEvalShape {
 }
 
 impl<'a> WiringEvalFn<'a> {
-	/// Rebuilds the evaluation over `constraint_system`, reading its input with `shape`.
+	/// Rebuilds the evaluation over a constraint system, reading its input with the given shape.
 	///
-	/// This is how a [`DeferredWiringClaim`] is discharged: the shape travelled with the claim,
-	/// and the system it sums over is public, so no part of the original run is needed.
+	/// This is how an exported claim is settled.
+	/// The shape travels with the claim.
+	/// The system it sums over is public.
+	/// So no part of the original run is needed.
 	pub const fn new(constraint_system: &'a ConstraintSystem, shape: WiringEvalShape) -> Self {
 		Self {
 			constraint_system,

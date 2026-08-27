@@ -225,9 +225,11 @@ fn the_recursive_circuit_proves_and_verifies() {
 fn deferring_shrinks_a_level_by_the_cost_of_the_level_below() {
 	// Invariant: the wiring claim is the only cost that tracks the inner system's size.
 	//
-	// So the two discharges diverge at different rates, and the gap between them at depth 2 *is*
-	// the term deferral removes. One level below, that term is small; one level up it dominates,
-	// which is why the comparison has to be made here and not at depth 1.
+	// So the two settlements diverge at different rates.
+	// The gap between them at depth 2 *is* the term deferral removes.
+	//
+	// One level below, that term is small.
+	// One level up it dominates, which is why the comparison belongs here and not at depth 1.
 	//
 	//     depth 1: verifies the CRC-64 proof
 	//     depth 2: verifies depth 1's proof
@@ -273,8 +275,9 @@ fn deferring_shrinks_a_level_by_the_cost_of_the_level_below() {
 		100.0 * saved as f64 / inline2 as f64
 	);
 
-	// Both still diverge. The replay itself is sublinear but not yet below one at these sizes, so
-	// a closing tower needs the merge node's own parameters, not just this seam.
+	// Both still diverge.
+	// The replay is sublinear but not yet below one at these sizes.
+	// A closing tower needs the merge node's own parameters, not just this seam.
 	assert!(defer2 > defer1, "the replay term still grows: closure is the merge node's checkpoint");
 }
 
@@ -437,9 +440,9 @@ fn a_malformed_proof_is_rejected_rather_than_crashing() {
 fn deferring_the_wiring_claim_removes_its_cost_and_keeps_it_checkable() {
 	// Invariant: discharging the wiring claim is the one cost proportional to the inner system.
 	//
-	// Deferring it exports the claim on public wires instead. So the BMUL column drops by the
-	// evaluation's whole cost, and the statement grows only by the claim, which is logarithmic in
-	// the inner system.
+	// Deferring exports the claim on public wires instead.
+	// So the BMUL column drops by the evaluation's whole cost.
+	// The statement grows only by the claim, which is logarithmic in the inner system.
 	//
 	//     in-circuit: assert_zero(eval(inputs) - claimed)   -> constraints over every inner row
 	//     deferred:   inputs, claimed -> public wires       -> a check the holder owes
@@ -481,8 +484,8 @@ fn deferring_the_wiring_claim_removes_its_cost_and_keeps_it_checkable() {
 	assert_eq!(outer_inout.len(), deferred.statement().len() + 2 * claim_elems);
 	prove(deferred.circuit(), witness);
 
-	// The exported claim holds against the inner constraint system, which is the check the
-	// circuit skipped. This is the whole obligation deferral creates.
+	// The exported claim holds against the inner constraint system.
+	// That is the check the circuit skipped, and the whole obligation deferral creates.
 	deferred
 		.check_deferred(&outer_inout)
 		.expect("an honest proof must export a claim that holds");
@@ -507,8 +510,10 @@ fn a_tampered_deferred_claim_is_rejected() {
 		.unwrap();
 	let honest = witness.inout().to_vec();
 
-	// Every word of the claim is load-bearing: the inputs are the point it is evaluated at, and
-	// the last element is the value itself. Moving any one of them must break the equality.
+	// Every word of the claim is load-bearing.
+	// The inputs are the point it is evaluated at.
+	// The last element is the value itself.
+	// Moving any one of them must break the equality.
 	for offset in [0, 1, 2 * (deferred.deferred_wires().unwrap().len() / 2) - 1] {
 		let mut tampered = honest.clone();
 		let word = &mut tampered[deferred.statement().len() + offset];
@@ -521,9 +526,10 @@ fn a_tampered_deferred_claim_is_rejected() {
 
 #[test]
 fn an_in_circuit_discharge_leaves_nothing_deferred() {
-	// Invariant: the two discharges are exclusive, so asking one for the other's work is an error
-	// rather than a silent pass. A silent pass is how a caller ends up believing a claim was
-	// settled twice when it was settled once.
+	// Invariant: the two discharges are exclusive.
+	//
+	// So asking one for the other's work is an error rather than a silent pass.
+	// A silent pass is how a caller ends up believing a claim was settled when it was not.
 	let inner = prove_crc64();
 	let inline = RecursiveCircuit::build_with(inner.verifier, Discharge::InCircuit).unwrap();
 
@@ -540,15 +546,15 @@ fn an_in_circuit_discharge_leaves_nothing_deferred() {
 fn a_deferred_claim_that_disagrees_with_the_circuit_is_rejected() {
 	// Invariant: the exported claim is bound, not merely reported.
 	//
-	// `check_deferred` reads the claim off the outer statement, so the statement has to be the
-	// claim the circuit actually derived. The binding is what forces that, and this is the test
-	// that it is a constraint rather than a convention.
+	// Settling reads the claim off the outer statement.
+	// So the statement has to carry the claim the circuit actually derived.
+	// The binding is what forces that, and this pins it as a constraint rather than a convention.
 	//
 	//     before:  public claim word == the word the circuit derived
 	//     after:   public claim word != it, and the equality the binding emitted breaks
 	//
-	// Without this, a prover could publish a claim that holds while verifying a proof that raised
-	// a different one — and `check_deferred` would happily confirm the published one.
+	// Without it a prover could publish a claim that holds while verifying a proof that raised a
+	// different one, and the later check would confirm the published one.
 	let inner = prove_crc64();
 	let deferred =
 		RecursiveCircuit::build_with(inner.verifier.clone(), Discharge::Deferred).unwrap();
@@ -565,7 +571,8 @@ fn a_deferred_claim_that_disagrees_with_the_circuit_is_rejected() {
 		.populate_wire_witness(&mut filler)
 		.expect_err("a claim word that disagrees must leave the circuit unsatisfied");
 
-	// `..` is forced: `PopulateError` is non-exhaustive. Both of its fields are checked here.
+	// The rest pattern is forced: the error type is non-exhaustive.
+	// Both of its fields are checked here.
 	let PopulateError {
 		failures, total, ..
 	} = error;
@@ -582,9 +589,9 @@ fn a_deferred_claim_that_disagrees_with_the_circuit_is_rejected() {
 fn verify_outer_settles_the_deferred_claim() {
 	// Invariant: the one-call path checks strictly more than verifying the proof does.
 	//
-	// The outer proof verifies on its own even when the claim it exported is false, because the
-	// circuit never constrained the claim to hold — only to be reported honestly. So a statement
-	// carrying a broken claim passes `Verifier::verify` and must still fail `verify_outer`.
+	// The outer proof verifies on its own even when the claim it exported is false.
+	// The circuit never constrained the claim to hold, only to be reported honestly.
+	// So a statement carrying a broken claim passes the proof check and must still be rejected.
 	let inner = prove_crc64();
 	let deferred =
 		RecursiveCircuit::build_with(inner.verifier.clone(), Discharge::Deferred).unwrap();
@@ -598,9 +605,11 @@ fn verify_outer_settles_the_deferred_claim() {
 		.verify_outer(&outer.verifier, &honest, outer.proof.clone())
 		.expect("an honest outer proof must verify and its claim must hold");
 
-	// The same proof against a statement whose claim was moved: the transcript no longer matches
-	// the statement, so this fails at the proof. Either rejection is correct; what matters is that
-	// no path accepts it.
+	// The same proof, against a statement whose claim was moved.
+	//
+	// The transcript no longer matches the statement, so this fails at the proof.
+	// Either rejection is correct.
+	// What matters is that no path accepts it.
 	let mut tampered = honest;
 	let at = deferred.statement().len();
 	tampered[at] = Word(tampered[at].0 ^ 1);

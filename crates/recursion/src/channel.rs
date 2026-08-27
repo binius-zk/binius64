@@ -126,13 +126,14 @@ impl Binius64BuilderChannel {
 	/// An element is its low and high half, so each contributes a `(lo, hi)` pair, in that order.
 	/// The returned wires therefore run twice the length of `elems`.
 	///
-	/// As with [`bind_public`](Self::bind_public), each element keeps the wires that derived it
-	/// and gains public wires equal to them. The replay supplies the public half, so the equality
-	/// is also a cross-check: the value the circuit derived and the value the replay computed have
-	/// to agree, and a desync between the two runs fails here rather than silently later.
+	/// Each element keeps the wires that derived it, and gains public wires equal to them.
 	///
-	/// This is how a claim leaves the circuit unchecked but pinned: whoever reads the outer proof
-	/// sees the values the verifier derived, and owes whatever check was skipped inside.
+	/// The replay supplies the public half.
+	/// So the equality is also a cross-check between the two runs.
+	/// A desync fails here rather than silently later.
+	///
+	/// This is how a claim leaves the circuit unchecked but pinned.
+	/// Whoever reads the outer proof sees the values the verifier derived.
 	pub fn bind_public_elems(&mut self, elems: &[SymbolicElem]) -> Vec<Wire> {
 		// Numbered across calls, so a failing binding names which element it was.
 		let first = self.n_public_elems;
