@@ -31,7 +31,6 @@ mod packed_ghash_sq;
 mod random;
 #[cfg(test)]
 mod tests;
-mod tracing;
 pub mod transpose;
 mod underlier;
 pub mod util;

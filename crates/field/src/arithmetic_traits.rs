@@ -80,8 +80,6 @@ macro_rules! impl_mul_with {
 
 			#[inline]
 			fn mul(self, rhs: Self) -> Self {
-				$crate::tracing::trace_multiplication!($name);
-
 				<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::peel(
 					<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(self)
 						* <$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(rhs),
