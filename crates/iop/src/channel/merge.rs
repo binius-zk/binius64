@@ -8,9 +8,10 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::multilinear::hypercube::Hypercube;
-use binius_utils::checked_arithmetics::log2_ceil_usize;
 
-use crate::channel::{Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn};
+use crate::channel::{
+	Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn, merged_log_msg_len,
+};
 
 /// A handle to an oracle received through the merging decorator.
 #[derive(Debug, Clone, Copy)]
@@ -194,11 +195,8 @@ where
 		let is_witness_dependent = order.iter().any(|&i| self.records[i].is_witness_dependent);
 
 		// Size the combined oracle to fit every oracle end to end.
-		let total_len: usize = order
-			.iter()
-			.map(|&i| 1usize << self.records[i].log_msg_len)
-			.sum();
-		let combined_log_len = log2_ceil_usize(total_len);
+		let combined_log_len =
+			merged_log_msg_len(order.iter().map(|&i| self.records[i].log_msg_len));
 
 		// Commit the whole round as one oracle on the underlying channel.
 		let outer = self
@@ -415,9 +413,11 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_field::Ghash128b;
+	use binius_utils::checked_arithmetics::log2_ceil_usize;
+	use proptest::prelude::*;
 
 	use super::*;
-	use crate::channel::oracle_setup::OracleSetupChannel;
+	use crate::channel::{OracleSchedule, oracle_setup::OracleSetupChannel};
 
 	type F = Ghash128b;
 
@@ -455,6 +455,60 @@ mod tests {
 			IPVerifierChannel::<F>::sample(&mut channel);
 		}
 		channel.into_inner().unwrap().into_oracle_specs()
+	}
+
+	/// Replays the same rounds against a bare setup channel, with no decorator in the way.
+	///
+	/// Returns the schedule that run records.
+	fn record_schedule(rounds: &[&[usize]], is_zk: bool) -> OracleSchedule {
+		let mut channel = OracleSetupChannel::new(is_zk);
+		for sizes in rounds {
+			for &n in *sizes {
+				IOPVerifierChannel::<F>::recv_oracle(&mut channel, n, true).unwrap();
+			}
+			IPVerifierChannel::<F>::sample(&mut channel);
+		}
+		channel.into_oracle_schedule()
+	}
+
+	/// Asserts the schedule predicts exactly what the decorator commits, for one set of rounds.
+	fn assert_schedule_predicts_the_decorator(rounds: &[&[usize]]) {
+		for is_zk in [false, true] {
+			assert_eq!(
+				record_schedule(rounds, is_zk).merged_specs(),
+				record_rounds(rounds, is_zk),
+				"rounds={rounds:?} is_zk={is_zk}"
+			);
+		}
+	}
+
+	#[test]
+	fn the_schedule_predicts_what_the_decorator_commits() {
+		// Two independent routes to the same coarse spec list.
+		//
+		//     decorator: merges each round, and its inner channel records what was committed
+		//     schedule : records where the rounds fall, then merges them itself
+		//
+		// They must agree, or the schedule is not a faithful model of the decorator.
+		//
+		// Round shapes below, chosen to hit each case once:
+		//
+		//     [3, 3]    two equal oracles, summing to an exact power of two
+		//     [4, 2, 2] unequal oracles, summing to 24, so one bit of padding
+		//     [5]       a lone oracle, forwarded with no combining at all
+		assert_schedule_predicts_the_decorator(&[&[3, 3], &[4, 2, 2], &[5]]);
+	}
+
+	proptest! {
+		#[test]
+		fn prop_the_schedule_predicts_what_the_decorator_commits(
+			rounds in prop::collection::vec(prop::collection::vec(0usize..6, 1..4), 1..5),
+		) {
+			// Random round shapes reach layouts the fixed case above never does.
+			// Sizes down to 2^0 make the padding and the sort order both non-trivial.
+			let round_refs: Vec<&[usize]> = rounds.iter().map(Vec::as_slice).collect();
+			assert_schedule_predicts_the_decorator(&round_refs);
+		}
 	}
 
 	#[test]

@@ -15,7 +15,7 @@ use binius_field::{
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 
-use crate::channel::{Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn};
+use crate::channel::{Error, IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn};
 
 /// A dummy field element for [`OracleSetupChannel`], generic over the field `F` it stands in for.
 ///
@@ -125,17 +125,30 @@ impl<F: Field> FieldOps for DummyElem<F> {
 
 /// An [`IOPVerifierChannel`] that records the [`OracleSpec`] of each received oracle.
 ///
-/// This performs no verification: `recv_*` methods return dummy values, and sampling, observation,
-/// and `assert_zero` are no-ops. Drive an IOP verifier with this channel and then read the
-/// recorded specs via [`into_oracle_specs`](Self::into_oracle_specs).
+/// This performs no verification.
 ///
-/// The channel is configured with a single `is_zk` flag (the protocol-level zero-knowledge
-/// choice). Each `recv_oracle(log_msg_len, is_witness_dependent)` records
-/// `OracleSpec { log_msg_len, is_zk: self.is_zk && is_witness_dependent }`.
+/// Every receive returns a dummy value, and sampling, observing, and asserting are no-ops.
+///
+/// Drive an IOP verifier with it, then read back what it recorded.
+///
+/// The channel carries one protocol-level zero-knowledge flag.
+///
+/// An oracle is zero-knowledge only if that flag is set and the oracle is witness-dependent.
+///
+/// # What is recorded
+///
+/// Two views of the same dry run, differing only in whether round boundaries survive.
+///
+/// - The flat sequence of oracles, in arrival order.
+/// - That same sequence, grouped into the rounds the oracles are committed in.
+///
+/// A round closes wherever a challenge could be drawn.
+///
+/// That is where a decorator committing a round as one oracle stops taking members.
 #[derive(Debug, Default, Clone)]
 pub struct OracleSetupChannel {
 	is_zk: bool,
-	oracle_specs: Vec<OracleSpec>,
+	schedule: OracleSchedule,
 }
 
 impl OracleSetupChannel {
@@ -143,18 +156,28 @@ impl OracleSetupChannel {
 	pub const fn new(is_zk: bool) -> Self {
 		Self {
 			is_zk,
-			oracle_specs: Vec::new(),
+			schedule: OracleSchedule::new(),
 		}
 	}
 
 	/// Returns the oracle specs recorded so far.
 	pub fn oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs
+		self.schedule.specs()
 	}
 
 	/// Consumes the channel and returns the recorded oracle specs, in the order received.
 	pub fn into_oracle_specs(self) -> Vec<OracleSpec> {
-		self.oracle_specs
+		self.schedule.into_specs()
+	}
+
+	/// Consumes the channel and returns the recorded oracles, grouped by commit round.
+	///
+	/// The round left open at the end of the dry run is closed here.
+	///
+	/// So every recorded oracle belongs to some round.
+	pub fn into_oracle_schedule(mut self) -> OracleSchedule {
+		self.schedule.end_round();
+		self.schedule
 	}
 }
 
@@ -176,6 +199,8 @@ impl<F: Field> IPVerifierChannel<F> for OracleSetupChannel {
 	}
 
 	fn sample(&mut self) -> DummyElem<F> {
+		// A challenge follows the commitments it is derived from, so it ends their round.
+		self.schedule.end_round();
 		DummyElem(PhantomData)
 	}
 
@@ -210,6 +235,8 @@ impl<F: BinaryField> WordIPVerifierChannel<F> for OracleSetupChannel {
 
 	// The recorded oracle shapes do not depend on which leaves a protocol would query.
 	fn sample_bits(&mut self, _bits: usize) -> Word {
+		// A sampled word is a challenge like any other, so it ends the open round too.
+		self.schedule.end_round();
 		Word::ZERO
 	}
 
@@ -233,7 +260,8 @@ impl<F: Field> IOPVerifierChannel<F> for OracleSetupChannel {
 		log_msg_len: usize,
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {
-		self.oracle_specs.push(OracleSpec {
+		// A non-witness-dependent oracle is never masked, whatever the protocol-level flag says.
+		self.schedule.push(OracleSpec {
 			log_msg_len,
 			is_zk: self.is_zk && is_witness_dependent,
 		});
@@ -246,6 +274,139 @@ impl<F: Field> IOPVerifierChannel<F> for OracleSetupChannel {
 		_transparent: TransparentEvalFn<Self::Elem>,
 		_claim: Self::Elem,
 	) -> Result<(), Error> {
+		// Opening an oracle needs every commitment in place, so nothing may still be queued.
+		self.schedule.end_round();
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::Ghash128b;
+
+	use super::*;
+
+	type F = Ghash128b;
+
+	/// Draws a challenge, which is what closes a round.
+	fn sample(channel: &mut OracleSetupChannel) {
+		IPVerifierChannel::<F>::sample(channel);
+	}
+
+	/// Receives one witness-carrying oracle of the given length.
+	fn recv(channel: &mut OracleSetupChannel, log_msg_len: usize) {
+		IOPVerifierChannel::<F>::recv_oracle(channel, log_msg_len, true)
+			.expect("the setup channel never fails");
+	}
+
+	#[test]
+	fn a_challenge_ends_the_open_round() {
+		let mut channel = OracleSetupChannel::new(false);
+
+		// Two oracles, a challenge, then one more.
+		//
+		//     recv 3, recv 3, sample, recv 4, sample
+		//     \____________/          \____/
+		//        round 0              round 1
+		recv(&mut channel, 3);
+		recv(&mut channel, 3);
+		sample(&mut channel);
+		recv(&mut channel, 4);
+		sample(&mut channel);
+
+		let schedule = channel.into_oracle_schedule();
+		assert_eq!(schedule.n_rounds(), 2);
+		assert_eq!(
+			schedule.rounds().collect::<Vec<_>>(),
+			vec![
+				[OracleSpec::new(3), OracleSpec::new(3)].as_slice(),
+				[OracleSpec::new(4)].as_slice(),
+			]
+		);
+	}
+
+	#[test]
+	fn the_final_round_closes_without_a_challenge() {
+		let mut channel = OracleSetupChannel::new(false);
+
+		// The run ends with an oracle, not a challenge.
+		// That trailing oracle is still a round of its own.
+		recv(&mut channel, 2);
+		sample(&mut channel);
+		recv(&mut channel, 5);
+
+		let schedule = channel.into_oracle_schedule();
+		assert_eq!(schedule.n_rounds(), 2);
+		assert_eq!(schedule.rounds().last(), Some([OracleSpec::new(5)].as_slice()));
+	}
+
+	#[test]
+	fn a_sampled_word_ends_the_open_round_too() {
+		let mut channel = OracleSetupChannel::new(false);
+
+		// Query indices are drawn as words rather than as field elements.
+		// That is still a challenge, so it still closes the round before it.
+		recv(&mut channel, 3);
+		WordIPVerifierChannel::<F>::sample_bits(&mut channel, 4);
+		recv(&mut channel, 2);
+
+		assert_eq!(channel.into_oracle_schedule().n_rounds(), 2);
+	}
+
+	#[test]
+	fn back_to_back_challenges_make_no_empty_round() {
+		let mut channel = OracleSetupChannel::new(false);
+
+		// A protocol may draw several challenges in a row with nothing committed between them.
+		// Only the first of those closes anything.
+		recv(&mut channel, 3);
+		sample(&mut channel);
+		sample(&mut channel);
+		sample(&mut channel);
+
+		assert_eq!(channel.into_oracle_schedule().n_rounds(), 1);
+	}
+
+	#[test]
+	fn a_run_with_no_oracles_has_no_rounds() {
+		let mut channel = OracleSetupChannel::new(false);
+
+		// A challenge alone commits nothing, so it closes nothing.
+		sample(&mut channel);
+
+		let schedule = channel.into_oracle_schedule();
+		assert_eq!(schedule.n_rounds(), 0);
+		assert!(schedule.specs().is_empty());
+	}
+
+	#[test]
+	fn dropping_the_boundaries_leaves_the_flat_sequence() {
+		let mut channel = OracleSetupChannel::new(false);
+
+		// Grouping is the only thing the schedule adds.
+		// The oracles themselves, and their order, must survive it untouched.
+		recv(&mut channel, 3);
+		sample(&mut channel);
+		recv(&mut channel, 1);
+		recv(&mut channel, 4);
+
+		let flat = channel.clone().into_oracle_specs();
+		assert_eq!(channel.into_oracle_schedule().into_specs(), flat);
+	}
+
+	#[test]
+	fn a_round_is_masked_if_any_of_its_oracles_is() {
+		// Protocol-level zero-knowledge is on, but not every oracle carries witness data.
+		//
+		//     round 0: [structural 2^3, witness 2^3] -> 2^4, masked because one member is
+		//     round 1: [structural 2^2]              -> 2^2, nothing to hide
+		let mut channel = OracleSetupChannel::new(true);
+		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 3, false).unwrap();
+		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 3, true).unwrap();
+		sample(&mut channel);
+		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 2, false).unwrap();
+
+		let merged = channel.into_oracle_schedule().merged_specs();
+		assert_eq!(merged, vec![OracleSpec::new_zk(4), OracleSpec::new(2)]);
 	}
 }

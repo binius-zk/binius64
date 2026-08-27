@@ -8,8 +8,11 @@ pub mod naive;
 pub mod oracle_setup;
 pub mod size_tracking;
 
+use std::iter;
+
 use binius_field::Field;
 use binius_ip::channel::IPVerifierChannel;
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use crate::{basefold, ligerito};
 
@@ -57,6 +60,106 @@ impl OracleSpec {
 			log_msg_len,
 			is_zk: true,
 		}
+	}
+}
+
+/// The length of the one oracle a round's oracles are committed as.
+///
+/// The oracles lie end to end, so this is the smallest power of two covering their total.
+fn merged_log_msg_len(log_msg_lens: impl IntoIterator<Item = usize>) -> usize {
+	let total_len: usize = log_msg_lens.into_iter().map(|n| 1usize << n).sum();
+	log2_ceil_usize(total_len)
+}
+
+/// Every oracle an IOP commits, grouped into the rounds they are committed in.
+///
+/// A round is the run of oracles sent between two challenge samples.
+///
+/// A challenge can only be derived once the commitments before it are absorbed.
+///
+/// So a round closes the moment its challenge is drawn, and takes no further members.
+///
+/// ```text
+/// recv, recv, sample, recv, sample, recv, recv, recv
+/// \__________/        \__/          \______________/
+///    round 0         round 1           round 2
+/// ```
+///
+/// A flat spec list cannot say where those boundaries fall.
+///
+/// A caller that commits a whole round as one oracle needs them.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OracleSchedule {
+	/// Every oracle, in arrival order, across all rounds.
+	specs: Vec<OracleSpec>,
+
+	/// The exclusive end of each closed round, as an index into `specs`.
+	///
+	/// Round `r` spans `specs[ends[r - 1]..ends[r]]`, and round `0` starts at `0`.
+	///
+	/// Anything past the last entry is in the round still open.
+	ends: Vec<usize>,
+}
+
+impl OracleSchedule {
+	/// Creates an empty schedule.
+	pub const fn new() -> Self {
+		Self {
+			specs: Vec::new(),
+			ends: Vec::new(),
+		}
+	}
+
+	/// Appends one oracle to the round currently open.
+	pub fn push(&mut self, spec: OracleSpec) {
+		self.specs.push(spec);
+	}
+
+	/// Closes the round currently open, so later oracles start a new one.
+	///
+	/// Does nothing when no oracle has arrived since the last close.
+	///
+	/// Calling it wherever a challenge could be drawn is therefore always safe.
+	pub fn end_round(&mut self) {
+		let open_start = self.ends.last().copied().unwrap_or(0);
+		if self.specs.len() > open_start {
+			self.ends.push(self.specs.len());
+		}
+	}
+
+	/// Every oracle in the schedule, in arrival order, with round boundaries dropped.
+	pub fn specs(&self) -> &[OracleSpec] {
+		&self.specs
+	}
+
+	/// Consumes the schedule and returns every oracle, with round boundaries dropped.
+	pub fn into_specs(self) -> Vec<OracleSpec> {
+		self.specs
+	}
+
+	/// The number of closed rounds.
+	pub const fn n_rounds(&self) -> usize {
+		self.ends.len()
+	}
+
+	/// The oracles of each closed round, in commit order.
+	pub fn rounds(&self) -> impl Iterator<Item = &[OracleSpec]> {
+		let starts = iter::once(0).chain(self.ends.iter().copied());
+		iter::zip(starts, self.ends.iter().copied()).map(|(start, end)| &self.specs[start..end])
+	}
+
+	/// One spec per round: the oracle that round's oracles are committed as.
+	///
+	/// This is the coarser list an underlying channel is configured with.
+	///
+	/// A round is masked as a whole, so its oracle is zero-knowledge if any member is.
+	pub fn merged_specs(&self) -> Vec<OracleSpec> {
+		self.rounds()
+			.map(|round| OracleSpec {
+				log_msg_len: merged_log_msg_len(round.iter().map(|spec| spec.log_msg_len)),
+				is_zk: round.iter().any(|spec| spec.is_zk),
+			})
+			.collect()
 	}
 }
 
