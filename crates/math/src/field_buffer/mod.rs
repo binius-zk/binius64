@@ -4,11 +4,13 @@
 //! A power-of-two-sized buffer of packed field elements.
 //!
 //! The buffer type and all of its methods live in this file.
-//! Two sibling modules hold the other types this one hands out:
+//! Sibling modules hold the other types this one hands out:
 //!
 //! ```text
 //! view        the borrowed aliases, and the store that backs a shared one
+//! chunks      the iterators over a buffer's aligned chunks
 //! write_back  the guards that lend out a region narrower than one packed word
+//! sub_word    locating a chunk inside the word it shares with its neighbours
 //! ```
 //!
 //! # Why the backing store is a type parameter
@@ -46,11 +48,12 @@ use binius_utils::{
 use bytemuck::zeroed_vec;
 
 mod chunks;
+mod sub_word;
 mod view;
 mod write_back;
 
-use chunks::SubWordChunk;
 pub use chunks::{Chunks, ChunksMut};
+use sub_word::SubWordChunk;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
 pub use write_back::{ChunkMut, SplitMut};
 
@@ -739,24 +742,9 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 			"precondition: chunk_index must be less than chunk_count"
 		);
 
-		if log_chunk_size >= P::LOG_WIDTH {
-			// Whole words: the chunk is a run of the store, so it is lent out as it lies.
-			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
-			let chunk = &mut self.words[chunk_index * words_per_chunk..][..words_per_chunk];
-			ChunkMut::borrowed(log_chunk_size, chunk)
-		} else {
-			// Sub-word: several chunks share one word.
-			// This one is therefore copied into a word of its own, starting at lane 0.
-			//
-			//     WIDTH = 4, chunks of 2 elements
-			//     word 1 = [ chunk 2 | chunk 3 ]  ->  chunk 3 detaches to [ x y . . ]
-			let location = SubWordChunk::new(log_chunk_size, chunk_index);
-			let chunk = location.repack(&self.words);
-
-			// The guard keeps the word the copy came from, and merges the copy back on drop.
-			let parent = &mut self.words[location.word_index()];
-			ChunkMut::detached(location, chunk, parent)
-		}
+		// The chunk size against the packing width settles which shape the guard takes, and that
+		// is the guard's own business rather than the buffer's.
+		ChunkMut::new(log_chunk_size, chunk_index, &mut self.words)
 	}
 
 	/// Consumes the buffer and halves it, returning a guard that owns the store.
@@ -773,21 +761,9 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	pub fn into_split_half(self) -> SplitMut<P, Data> {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
-		let new_log_len = self.log_len - 1;
-		let singles = if new_log_len < P::LOG_WIDTH {
-			let packed = self.words[0];
-			let zeros = P::default();
-			let (lo_half, hi_half) = packed.interleave(zeros, new_log_len);
-			Some([lo_half, hi_half])
-		} else {
-			None
-		};
-
-		SplitMut {
-			log_len: new_log_len,
-			singles,
-			data: self.words,
-		}
+		// Each half holds one variable fewer than the buffer, and the guard decides from that
+		// alone whether the halves have to be detached from the store.
+		SplitMut::new(self.log_len - 1, self.words)
 	}
 
 	/// Halves the buffer through a mutable borrow, rather than consuming it.

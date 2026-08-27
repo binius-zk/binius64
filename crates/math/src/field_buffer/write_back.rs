@@ -21,19 +21,38 @@ use std::{ops::DerefMut, slice};
 
 use binius_field::PackedField;
 
-use super::{FieldBuffer, FieldSliceMut, chunks::SubWordChunk};
+use super::{FieldBuffer, FieldSliceMut, sub_word::SubWordChunk};
 
 /// Guards the two halves of a buffer that was split along its highest variable.
 ///
 /// Holds the parent store, and lends each half out as a mutable view.
 #[derive(Debug)]
 pub struct SplitMut<P: PackedField, Data: DerefMut<Target = [P]>> {
-	pub(super) log_len: usize,
-	pub(super) singles: Option<[P; 2]>,
-	pub(super) data: Data,
+	/// Element count of each half, as a base-2 logarithm.
+	log_len: usize,
+	/// The detached halves, present only when a half is narrower than a packed word.
+	singles: Option<[P; 2]>,
+	/// The store both halves come from, and the one a detached pair merges back into.
+	data: Data,
 }
 
 impl<P: PackedField, Data: DerefMut<Target = [P]>> SplitMut<P, Data> {
+	/// Guards the two halves of `data`, each holding `2^log_len` elements.
+	pub(super) fn new(log_len: usize, data: Data) -> Self {
+		// Halves this narrow share word 0, so neither can be lent out as a slice of that store.
+		// Interleaving against zero lifts each half into a word of its own, starting at lane 0.
+		let singles = (log_len < P::LOG_WIDTH).then(|| {
+			let (lo_half, hi_half) = data[0].interleave(P::default(), log_len);
+			[lo_half, hi_half]
+		});
+
+		Self {
+			log_len,
+			singles,
+			data,
+		}
+	}
+
 	/// Lends the two halves out as mutable views, the low half first.
 	///
 	/// A half of whole words is a view straight onto the store, so edits land at once.
@@ -112,18 +131,33 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for SplitMut<P, Data> {
 pub struct ChunkMut<'a, P: PackedField>(ChunkMutInner<'a, P>);
 
 impl<'a, P: PackedField> ChunkMut<'a, P> {
-	/// Guards a chunk narrower than a packed word, already copied out of the word holding it.
-	pub(super) const fn detached(location: SubWordChunk<P>, chunk: P, parent: &'a mut P) -> Self {
+	/// Guards chunk `chunk_index` of `2^log_chunk_size` elements, taken out of `words`.
+	pub(super) fn new(log_chunk_size: usize, chunk_index: usize, words: &'a mut [P]) -> Self {
+		if log_chunk_size >= P::LOG_WIDTH {
+			// Whole words: the chunk is a run of the store, so it is lent out as it lies.
+			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
+			let chunk = &mut words[chunk_index * words_per_chunk..][..words_per_chunk];
+			return Self(ChunkMutInner::Borrowed {
+				log_len: log_chunk_size,
+				chunk,
+			});
+		}
+
+		// Sub-word: several chunks share one word.
+		// This one is therefore copied into a word of its own, starting at lane 0.
+		//
+		//     WIDTH = 4, chunks of 2 elements
+		//     word 1 = [ chunk 2 | chunk 3 ]  ->  chunk 3 detaches to [ x y . . ]
+		let location = SubWordChunk::new(log_chunk_size, chunk_index);
+		let chunk = location.repack(words);
+
+		// The guard keeps the word the copy came from, and merges the copy back on drop.
+		let parent = &mut words[location.word_index()];
 		Self(ChunkMutInner::Detached {
 			location,
 			chunk,
 			parent,
 		})
-	}
-
-	/// Guards a chunk of whole words, lent straight from the store.
-	pub(super) const fn borrowed(log_len: usize, chunk: &'a mut [P]) -> Self {
-		Self(ChunkMutInner::Borrowed { log_len, chunk })
 	}
 
 	/// Lends the chunk out as a mutable view, its first element at index 0.
