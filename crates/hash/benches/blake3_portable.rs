@@ -8,7 +8,7 @@ use std::hint::black_box;
 
 use binius_field::{Ghash128b as B128, Random};
 use binius_hash::{
-	ParallelDigest, ParallelDigestAdapter, blake3_portable::PortableBlake3ParallelDigest,
+	ParallelDigest, ParallelDigestAdapter, blake3::portable::PortableBlake3ParallelDigest,
 };
 use binius_utils::rayon::{prelude::*, slice::ParallelSlice};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};

@@ -1,13 +1,94 @@
 // Copyright 2026 The Binius Developers
 
 //! Blake3 hash and compression functions for use in Merkle tree constructions.
+//!
+//! [`portable`] holds the multi-lane kernel both parallel paths run on.
+//! The arch-specific kernels it dispatches to are private submodules here:
+//! - `neon` — hand-written message transpose and block compression for ARM64.
+//! - `avx512` — hand-written message transpose for x86-64.
+//!
+//! Each is compiled in only when the target has the feature, and each is pinned
+//! equal to the portable path in [`portable`]'s tests.
+//!
+//! The Blake3 spec constants live here too, since every kernel reads them.
 
 use digest::Output;
+use portable::{PortableBlake3ParallelCompression, PortableBlake3ParallelDigest};
 
-use super::{
-	binary_merkle_tree::HashSuite,
-	blake3_portable::{PortableBlake3ParallelCompression, PortableBlake3ParallelDigest},
-	compress::CompressionFunction,
+use super::{binary_merkle_tree::HashSuite, compress::CompressionFunction};
+
+pub mod portable;
+
+/// Hand-written vector kernels for the message load and the block compression.
+///
+/// They stand in for the byte-wise loader and the lane loops in [`portable`].
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+mod neon;
+
+/// Hand-written vector transpose for the message load, used in place of the byte-wise loader.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+mod avx512;
+
+/// Blake3 domain-separation flag marking the first block of a chunk.
+const CHUNK_START: u32 = 1 << 0;
+
+/// Blake3 domain-separation flag marking the last block of a chunk.
+const CHUNK_END: u32 = 1 << 1;
+
+/// Blake3 domain-separation flag marking the last block of the whole tree.
+const ROOT: u32 = 1 << 3;
+
+/// Blake3 initial chaining value: the eight IV words, identical to the SHA-256 IV.
+const IV: [u32; 8] = [
+	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+];
+
+/// Blake3 message permutation applied between rounds.
+///
+/// The single fixed schedule from section 2.2 of the Blake3 spec, Table 2.
+const MSG_PERMUTATION: [usize; 16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+
+/// The 7-round count of the Blake3 keyed permutation.
+const N_ROUNDS: usize = 7;
+
+/// Message word that each of a round's 16 slots reads, one row per round.
+///
+/// Blake3 advances the message between rounds by one fixed permutation.
+/// Applying that permutation `r` times gives the words round `r` reads:
+///
+/// ```text
+///     row 0:   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15    <- the message in order
+///     row 1:   2  6  3 10  7  0  4 13  1 11 12  5  9 14 15  8    <- permuted once
+///     row 2:   3  4 10 12 13  2  7 14  6  5  9  0 11 15  8  1    <- permuted twice
+///     ...
+/// ```
+///
+/// # Why compose it here
+///
+/// Permuting the words a round reads is the same as permuting the words themselves.
+/// Settling that at compile time leaves the 16 message words loaded once and never moved.
+const MSG_SCHEDULE: [[usize; 16]; N_ROUNDS] = {
+	let mut schedule = [[0usize; 16]; N_ROUNDS];
+
+	// Row 0: the first round consumes the message in its natural order.
+	let mut w = 0;
+	while w < 16 {
+		schedule[0][w] = w;
+		w += 1;
+	}
+
+	// Row r: reading the row above through the permutation applies it one more time.
+	let mut r = 1;
+	while r < N_ROUNDS {
+		let mut w = 0;
+		while w < 16 {
+			schedule[r][w] = schedule[r - 1][MSG_PERMUTATION[w]];
+			w += 1;
+		}
+		r += 1;
+	}
+
+	schedule
 };
 
 /// A two-to-one compression function that hashes the concatenation of its inputs with Blake3.
