@@ -48,6 +48,13 @@ use super::{
 #[path = "blake3_neon.rs"]
 mod neon;
 
+/// Hand-written vector transpose for the message load, used in place of the byte-wise loader below.
+///
+/// Kept private so it stays an implementation detail of this module.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[path = "blake3_avx512.rs"]
+mod avx512;
+
 /// Blake3 domain-separation flag marking the first block of a chunk.
 const CHUNK_START: u32 = 1 << 0;
 
@@ -123,8 +130,25 @@ fn permute<const N: usize>(m: &mut [[u32; N]; 16]) {
 }
 
 /// Loads one 64-byte block per lane into 16 little-endian message words.
+///
+/// The words arrive one block per lane and are consumed one word per lane, so this is a transpose.
+/// Where a vector kernel covers the lane count it moves the square with shuffles instead of loads.
 #[inline(always)]
 fn load_block_words<const N: usize>(block: &[[u8; BLOCK_LEN]; N]) -> [[u32; N]; 16] {
+	#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+	if avx512::handles_lanes(N) {
+		return avx512::load_block_words(block);
+	}
+
+	load_block_words_portable(block)
+}
+
+/// Loads one 64-byte block per lane into 16 little-endian message words, one word at a time.
+///
+/// Every target without a hand-written transpose runs this, and it is the reference the vector
+/// kernels are tested against.
+#[inline(always)]
+fn load_block_words_portable<const N: usize>(block: &[[u8; BLOCK_LEN]; N]) -> [[u32; N]; 16] {
 	let mut m = [[0u32; N]; 16];
 	for lane in 0..N {
 		for (w, slot) in m.iter_mut().enumerate() {
@@ -550,6 +574,81 @@ mod tests {
 			check_parallel_compression::<4>(&pairs);
 			check_parallel_compression::<8>(&pairs);
 			check_parallel_compression::<16>(&pairs);
+		}
+	}
+
+	/// Transposes one random block through both loaders and pins the vector words to the byte-wise
+	/// words.
+	///
+	/// # Arguments
+	///
+	/// * `rng` - source of the random block bytes.
+	#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+	fn check_avx512_transpose<const N: usize>(rng: &mut StdRng) {
+		use rand::RngExt;
+
+		// Every lane gets its own random bytes.
+		// Sharing bytes across lanes would hide a network that reads the wrong row.
+		let block: [[u8; BLOCK_LEN]; N] = array::from_fn(|_| array::from_fn(|_| rng.random()));
+
+		// Reference: the byte-wise loader every target without a transpose runs.
+		let want = load_block_words_portable(&block);
+
+		// Candidate: the shuffle network, over the same bytes.
+		let got = super::avx512::load_block_words(&block);
+
+		// A transpose only permutes words, so the two must agree on all 16 words of all N lanes.
+		assert_eq!(got, want, "vector transpose diverged from the byte-wise loader at {N} lanes");
+	}
+
+	#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+	#[test]
+	fn test_avx512_transpose_matches_portable() {
+		let mut rng = StdRng::seed_from_u64(13);
+
+		// A misplaced row shows up only when the bytes differ, so repeat over fresh random blocks.
+		for _ in 0..64 {
+			check_avx512_transpose::<16>(&mut rng);
+		}
+	}
+
+	#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+	#[test]
+	fn test_avx512_transpose_places_every_word() {
+		// A counting block makes each word its own (lane, word) coordinate.
+		// Any swapped row or lane then shows up as a wrong coordinate, not just wrong bytes.
+		let block: [[u8; BLOCK_LEN]; 16] = array::from_fn(|lane| {
+			array::from_fn(|byte| {
+				let word = byte / 4;
+				// Word `w` of lane `l` is the value `l * 16 + w`, little-endian.
+				match byte % 4 {
+					0 => (lane * 16 + word) as u8,
+					_ => 0,
+				}
+			})
+		});
+
+		let m = super::avx512::load_block_words(&block);
+
+		// Word `w` of lane `l` must land at `m[w][l]`.
+		for lane in 0..16 {
+			for word in 0..16 {
+				assert_eq!(
+					m[word][lane],
+					(lane * 16 + word) as u32,
+					"word {word} of lane {lane} landed wrongly"
+				);
+			}
+		}
+	}
+
+	#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+	proptest! {
+		#[test]
+		fn avx512_transpose_matches_portable_proptest(seed in any::<u64>()) {
+			// The fixed cases above pin the layout; this sweeps arbitrary bytes.
+			let mut rng = StdRng::seed_from_u64(seed);
+			check_avx512_transpose::<16>(&mut rng);
 		}
 	}
 
