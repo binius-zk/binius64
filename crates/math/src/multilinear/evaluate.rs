@@ -170,6 +170,22 @@ mod tests {
 	}
 
 	#[test]
+	fn evaluating_a_borrowed_view_matches_evaluating_its_owner() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Invariant: a shared view carries no store of its own, only a borrow of one.
+		// Reading it must reach the same coefficients as reading the buffer it came from.
+		//
+		// Fixture state: one 5-variable buffer and the view onto it, evaluated at one point.
+		let buffer = random_field_buffer::<P>(&mut rng, 5);
+		let point = random_scalars::<F>(&mut rng, 5);
+		let view = buffer.as_view();
+
+		assert_eq!(view.log_len(), 5);
+		assert_eq!(evaluate(&view, &point), evaluate(&buffer, &point));
+	}
+
+	#[test]
 	fn evaluate_is_linear_in_every_coordinate() {
 		let mut rng = StdRng::seed_from_u64(0);
 

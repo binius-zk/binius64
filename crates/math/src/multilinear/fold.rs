@@ -210,6 +210,32 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn folding_a_slice_backed_buffer_matches_folding_an_owned_one() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Invariant: a fold shrinks its buffer, which each backing store does its own way.
+		// A vector drops its tail, a mutable slice re-slices itself.
+		// Both must leave the same coefficients behind.
+		//
+		// Fixture state: one 5-variable buffer, folded twice by the same challenge.
+		//
+		//     owned store      [ c_0 ... c_31 ]  -> [ c'_0 ... c'_15 ]
+		//     slice store      [ c_0 ... c_31 ]  -> [ c'_0 ... c'_15 ]
+		let original = random_field_buffer::<P>(&mut rng, 5);
+		let scalar = random_scalars::<F>(&mut rng, 1)[0];
+
+		let mut expected = original.clone();
+		fold_highest_var_inplace(&mut expected, scalar);
+
+		let mut owned = original;
+		let mut slice = owned.as_mut_view();
+		fold_highest_var_inplace(&mut slice, scalar);
+
+		assert_eq!(slice.log_len(), 4);
+		assert_eq!(slice, expected.as_mut_view());
+	}
+
 	proptest! {
 		#[test]
 		fn the_two_folds_agree(
