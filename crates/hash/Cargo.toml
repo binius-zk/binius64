@@ -10,31 +10,15 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-binius-compute = { path = "../compute" }
-binius-field = { path = "../field" }
 binius-utils = { path = "../utils" }
 blake3 = { workspace = true, features = ["traits-preview"] }
 bytemuck.workspace = true
 bytes.workspace = true
 digest.workspace = true
-itertools.workspace = true
-rand.workspace = true
 sha2.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
-proptest.workspace = true
-rand = { workspace = true, features = ["thread_rng"] }
+rand.workspace = true
 
 [features]
 default = []
-
-[[bench]]
-name = "sha256"
-harness = false
-
-[[bench]]
-name = "blake3_portable"
-harness = false

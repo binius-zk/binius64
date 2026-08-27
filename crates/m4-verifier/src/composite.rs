@@ -9,7 +9,7 @@ use binius_core::{
 	constraint_system::{InoutSegment, m4::ConstraintSystemM4},
 };
 use binius_field::FieldOps;
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleSpec},

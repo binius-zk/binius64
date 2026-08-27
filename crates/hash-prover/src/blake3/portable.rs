@@ -29,6 +29,7 @@
 
 use std::{array, mem::MaybeUninit};
 
+use binius_hash::Blake3Compression;
 use binius_utils::{
 	FixedSizeSerializeBytes, SerializeBytes,
 	rayon::{
@@ -43,7 +44,7 @@ use digest::Output;
 use super::avx512;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 use super::neon;
-use super::{Blake3Compression, CHUNK_END, CHUNK_START, IV, MSG_SCHEDULE, ROOT};
+use super::{CHUNK_END, CHUNK_START, IV, MSG_SCHEDULE, ROOT};
 use crate::{
 	parallel_compression::ParallelPseudoCompression,
 	parallel_digest::{
@@ -488,12 +489,12 @@ impl<const LANES: usize> ParallelPseudoCompression<Output<blake3::Hasher>, 2>
 mod tests {
 	use std::iter::repeat_with;
 
+	use binius_hash::CompressionFunction;
 	use binius_utils::rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 	use proptest::prelude::*;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::compress::CompressionFunction;
 
 	/// Folds `pairs` through the `N`-lane portable compression.
 	/// Pins every output bit-identical to the scalar [`Blake3Compression`].

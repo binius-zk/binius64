@@ -3,7 +3,7 @@
 
 use binius_compute::{Allocator, GlobalAllocator};
 use binius_field::Field;
-use binius_hash::binary_merkle_tree::{BinaryMerkleTree, HashSuite};
+use binius_hash_prover::{BinaryMerkleTree, ParallelHashSuite};
 use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::iter::IndexedParallelIterator;
@@ -17,20 +17,20 @@ use super::{MerkleTreeProver, ProverDigest};
 /// The allocator is state rather than a per-call argument because [`MerkleTreeProver::Committed`]
 /// names the tree, and an associated type cannot depend on a method's generic parameter.
 #[derive(Getters)]
-pub struct BinaryMerkleTreeProver<T, H: HashSuite, A: Allocator = GlobalAllocator> {
+pub struct BinaryMerkleTreeProver<T, H: ParallelHashSuite, A: Allocator = GlobalAllocator> {
 	#[getset(get = "pub")]
 	scheme: BinaryMerkleTreeScheme<T, H>,
 	alloc: A,
 }
 
-impl<T, H: HashSuite> BinaryMerkleTreeProver<T, H, GlobalAllocator> {
+impl<T, H: ParallelHashSuite> BinaryMerkleTreeProver<T, H, GlobalAllocator> {
 	/// Commits trees on the global heap.
 	pub fn new() -> Self {
 		Self::with_allocator(GlobalAllocator)
 	}
 }
 
-impl<T, H: HashSuite, A: Allocator> BinaryMerkleTreeProver<T, H, A> {
+impl<T, H: ParallelHashSuite, A: Allocator> BinaryMerkleTreeProver<T, H, A> {
 	/// Commits trees whose nodes are drawn from `alloc`.
 	///
 	/// Pass `&BufferPool` to recycle node buffers across the proofs one prover runs.
@@ -42,7 +42,7 @@ impl<T, H: HashSuite, A: Allocator> BinaryMerkleTreeProver<T, H, A> {
 	}
 }
 
-impl<T, H: HashSuite> Default for BinaryMerkleTreeProver<T, H, GlobalAllocator> {
+impl<T, H: ParallelHashSuite> Default for BinaryMerkleTreeProver<T, H, GlobalAllocator> {
 	fn default() -> Self {
 		Self::new()
 	}
@@ -51,7 +51,7 @@ impl<T, H: HashSuite> Default for BinaryMerkleTreeProver<T, H, GlobalAllocator> 
 impl<F, H, A> MerkleTreeProver<F> for BinaryMerkleTreeProver<F, H, A>
 where
 	F: Field,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	A: Allocator,
 {
 	type Scheme = BinaryMerkleTreeScheme<F, H>;

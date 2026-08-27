@@ -16,7 +16,7 @@ use std::{borrow::BorrowMut, marker::PhantomData};
 use binius_compute::{Allocator, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{Field, PackedField};
-use binius_hash::binary_merkle_tree::{BinaryMerkleTree, HashSuite};
+use binius_hash_prover::{BinaryMerkleTree, ParallelHashSuite};
 use binius_iop::merkle_tree::MerkleTreeScheme;
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::FieldSlice;
@@ -88,7 +88,7 @@ pub struct ProverMerkleTranscriptChannel<
 	T,
 	Challenger_,
 	F,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	A: Allocator = GlobalAllocator,
 > {
 	transcript: T,
@@ -96,14 +96,14 @@ pub struct ProverMerkleTranscriptChannel<
 	_challenger_marker: PhantomData<Challenger_>,
 }
 
-impl<T, Challenger_, F, H: HashSuite> ProverMerkleTranscriptChannel<T, Challenger_, F, H> {
+impl<T, Challenger_, F, H: ParallelHashSuite> ProverMerkleTranscriptChannel<T, Challenger_, F, H> {
 	/// Constructs a channel over the transcript with a default Merkle tree prover.
 	pub fn new(transcript: T) -> Self {
 		Self::with_merkle_prover(transcript, BinaryMerkleTreeProver::new())
 	}
 }
 
-impl<T, Challenger_, F, H: HashSuite, A: Allocator>
+impl<T, Challenger_, F, H: ParallelHashSuite, A: Allocator>
 	ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
 {
 	/// Constructs a channel over the transcript with the given Merkle tree prover.
@@ -140,7 +140,7 @@ where
 	F: Field,
 	T: BorrowMut<ProverTranscript<Challenger_>>,
 	Challenger_: Challenger,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	A: Allocator,
 {
 	fn send_one(&mut self, elem: F) {
@@ -170,7 +170,7 @@ where
 	F: Field,
 	T: BorrowMut<ProverTranscript<Challenger_>>,
 	Challenger_: Challenger,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	A: Allocator,
 {
 	type Word = Word;
@@ -184,7 +184,7 @@ where
 	}
 }
 
-impl<T, Challenger_, F, H: HashSuite, A: Allocator> GrindingProverChannel
+impl<T, Challenger_, F, H: ParallelHashSuite, A: Allocator> GrindingProverChannel
 	for ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
 where
 	T: BorrowMut<ProverTranscript<Challenger_>>,
@@ -205,7 +205,7 @@ where
 	F: Field,
 	T: BorrowMut<ProverTranscript<Challenger_>>,
 	Challenger_: Challenger,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	A: Allocator,
 	Output<H::LeafHash>: SerializeBytes,
 {

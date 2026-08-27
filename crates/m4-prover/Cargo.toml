@@ -14,6 +14,7 @@ binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-frontend = { path = "../frontend" }
 binius-hash = { path = "../hash" }
+binius-hash-prover = { path = "../hash-prover" }
 binius-iop-prover = { path = "../iop-prover" }
 binius-ip = { path = "../ip" }
 binius-compute = { path = "../compute" }

@@ -5,7 +5,7 @@
 use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_field::BinaryField;
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;

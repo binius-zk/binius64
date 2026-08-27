@@ -7,7 +7,7 @@ use std::{borrow::BorrowMut, marker::PhantomData};
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop::{
 	channel::OracleSpec,
 	ligerito::{LigeritoParams, compiler::LigeritoVerifierCompiler},
@@ -167,7 +167,7 @@ where
 		alloc: A,
 	) -> TranscriptLigeritoProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
 	where
-		H: HashSuite,
+		H: ParallelHashSuite,
 		Challenger_: Challenger,
 		T: BorrowMut<ProverTranscript<Challenger_>>,
 		Output<H::LeafHash>: SerializeBytes,

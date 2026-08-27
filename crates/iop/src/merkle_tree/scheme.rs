@@ -6,7 +6,7 @@ use std::{
 	marker::PhantomData,
 };
 
-use binius_hash::{CompressionFunction, binary_merkle_tree::HashSuite, hash_serialize};
+use binius_hash::{CompressionFunction, HashSuite, hash_serialize};
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::{
 	FixedSizeSerializeBytes,

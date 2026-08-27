@@ -1,10 +1,10 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-//! SHA-256 hash and compression functions for use in Merkle tree constructions.
+//! Batched SHA-256 leaf hashing and inner-node compression.
 //!
 //! A round cannot start until the one before it lands, so a single chain stalls on itself.
-//! Both batched paths here hash many independent messages per call, which fills those stalls.
+//! Both paths here hash many independent messages per call, which fills those stalls.
 //!
 //! The portable submodule holds the multi-lane kernel every batched path runs on.
 //! The architecture-specific kernels it dispatches to are private submodules:
@@ -24,6 +24,7 @@
 
 use std::mem::MaybeUninit;
 
+use binius_hash::{Sha256Compression, Sha256HashSuite};
 use binius_utils::{
 	FixedSizeSerializeBytes, SerializeBytes,
 	rayon::{
@@ -32,16 +33,14 @@ use binius_utils::{
 		task_size::{WorkPerItem, min_len_for_work},
 	},
 };
-use bytemuck::{bytes_of_mut, must_cast};
-use digest::Digest;
+use bytemuck::must_cast;
 use portable::LANES;
 use sha2::{Sha256, digest::Output};
 
-use super::{
-	binary_merkle_tree::HashSuite,
-	compress::CompressionFunction,
+use crate::{
 	parallel_compression::ParallelPseudoCompression,
 	parallel_digest::{ParallelDigest, ParallelDigestAdapter},
+	suite::ParallelHashSuite,
 };
 
 pub mod portable;
@@ -130,49 +129,8 @@ fn be_digest(state: &[u32; 8]) -> Output<Sha256> {
 	digest
 }
 
-/// A two-to-one compression function for SHA-256 digests.
-///
-/// One raw block compression of `left || right`, from a domain-separated initial state.
-/// This is not a full hash of the pair: there is no padding block and no length suffix.
-#[derive(Debug, Clone)]
-pub struct Sha256Compression {
-	/// Domain-separating initial state, standing in for the SHA-256 IV.
-	initial_state: [u32; 8],
-}
-
-impl Default for Sha256Compression {
-	fn default() -> Self {
-		let initial_state_bytes = Sha256::digest(b"BINIUS SHA-256 COMPRESS");
-		let mut initial_state = [0u32; 8];
-		bytes_of_mut(&mut initial_state).copy_from_slice(&initial_state_bytes);
-		Self { initial_state }
-	}
-}
-
-impl CompressionFunction<Output<Sha256>, 2> for Sha256Compression {
-	fn compress(&self, input: [Output<Sha256>; 2]) -> Output<Sha256> {
-		let mut block = [0u8; BLOCK_LEN];
-		block[..DIGEST_LEN].copy_from_slice(input[0].as_slice());
-		block[DIGEST_LEN..].copy_from_slice(input[1].as_slice());
-
-		let mut states = [self.initial_state; 1];
-		portable::compress256_multi(&mut states, &[block]);
-
-		// Native word order, not the big-endian digest order.
-		// The output only has to be a fixed 32-byte function of the pair.
-		must_cast::<[u32; 8], [u8; DIGEST_LEN]>(states[0]).into()
-	}
-}
-
-/// SHA-256 leaves and a SHA-256 compression function for inner nodes.
-///
-/// Both parallel paths batch independent messages per kernel call, at this target's width.
-#[derive(Debug, Clone, Default)]
-pub struct Sha256HashSuite;
-
-impl HashSuite for Sha256HashSuite {
-	type LeafHash = Sha256;
-	type Compression = Sha256Compression;
+/// Batched SHA-256, on top of the sequential pair the verifier side defines.
+impl ParallelHashSuite for Sha256HashSuite {
 	type ParLeafHash = ParallelSha256Digest;
 	type ParCompression = ParallelSha256Compression;
 }
@@ -236,7 +194,7 @@ impl ParallelPseudoCompression<Output<Sha256>, 2> for ParallelSha256Compression 
 			.zip(out.par_chunks_mut(LANES))
 			.with_min_len(min_batches_per_task(LANES))
 			.for_each(|(pairs, out_batch)| {
-				compress_node_pairs::<LANES>(&self.compression.initial_state, pairs, out_batch);
+				compress_node_pairs::<LANES>(self.compression.initial_state(), pairs, out_batch);
 			});
 	}
 }
@@ -395,8 +353,8 @@ mod tests {
 	use std::iter::repeat_with;
 
 	use binius_utils::rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+	use digest::Digest;
 	use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
-	use sha2::block_api::compress256;
 
 	use super::*;
 	use crate::parallel_compression::ParallelCompressionAdaptor;
@@ -418,55 +376,6 @@ mod tests {
 				(batches - 1) * batch < per_compression,
 				"batch {batch} overshoots by a whole batch"
 			);
-		}
-	}
-
-	#[test]
-	fn test_compression_matches_known_answer() {
-		// The compression emits its state in native word order, not the big-endian digest order.
-		// A Merkle path committed under one order does not verify under the other, so the
-		// convention is pinned here by a vector computed from FIPS 180-4 directly.
-		//
-		// Left child all zero, right child the bytes 0..32, under the domain-separated state.
-		let left: Output<Sha256> = [0u8; DIGEST_LEN].into();
-		let right: Output<Sha256> = std::array::from_fn::<u8, DIGEST_LEN, _>(|i| i as u8).into();
-
-		let got = Sha256Compression::default().compress([left, right]);
-
-		let want =
-			hex_literal_32("4731c4e3a3190d19dace68db5752af1b4ecf26305e75e85db86217662bbeff74");
-		assert_eq!(got.as_slice(), &want, "the compression byte order changed");
-	}
-
-	/// Parses 64 hex characters into 32 bytes.
-	fn hex_literal_32(hex: &str) -> [u8; DIGEST_LEN] {
-		assert_eq!(hex.len(), 2 * DIGEST_LEN, "a digest is 64 hex characters");
-		std::array::from_fn(|i| {
-			u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("the literal is valid hex")
-		})
-	}
-
-	#[test]
-	fn test_compression_matches_sha2_block_function() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let compression = Sha256Compression::default();
-
-		// Invariant: the compression is one raw block of `left || right` from the fixed state.
-		for _ in 0..64 {
-			let mut left = Output::<Sha256>::default();
-			let mut right = Output::<Sha256>::default();
-			rng.fill_bytes(&mut left);
-			rng.fill_bytes(&mut right);
-
-			let got = compression.compress([left, right]);
-
-			let mut block = [0u8; BLOCK_LEN];
-			block[..DIGEST_LEN].copy_from_slice(&left);
-			block[DIGEST_LEN..].copy_from_slice(&right);
-			let mut want = compression.initial_state;
-			compress256(&mut want, std::slice::from_ref(&block));
-
-			assert_eq!(got.as_slice(), must_cast::<[u32; 8], [u8; DIGEST_LEN]>(want));
 		}
 	}
 

@@ -39,7 +39,7 @@ use std::{
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_field::{BinaryField, Field, PackedField};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
 	channel::IPProverChannel,
@@ -90,7 +90,7 @@ pub struct IOPProver<F: Field> {
 pub struct Prover<P, H>
 where
 	P: PackedField<Scalar: BinaryField>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	iop_prover: IOPProver<P::Scalar>,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>>,
@@ -335,7 +335,7 @@ impl<F, P, H> Prover<P, H>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Constructs a prover corresponding to a constraint system verifier.

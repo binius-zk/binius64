@@ -8,7 +8,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{BinaryField, ExtensionField, FieldOps, Rijndael8b as B8};
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash::HashSuite;
 use binius_iop::channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::BinarySubspace;

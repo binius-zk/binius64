@@ -36,6 +36,10 @@ impl<'a, D: Digest + BlockSizeUser> HashBuffer<'a, D> {
 	}
 }
 
+// The buffer trait is unsafe to implement, so this is the crate's one exception to its ban.
+// The obligation is that the advertised capacity is really writable.
+// That holds because the write cursor never passes the end of the block it is filling.
+#[allow(unsafe_code)]
 unsafe impl<D: Digest + BlockSizeUser> BufMut for HashBuffer<'_, D> {
 	fn remaining_mut(&self) -> usize {
 		usize::MAX

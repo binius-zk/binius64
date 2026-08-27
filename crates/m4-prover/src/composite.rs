@@ -11,7 +11,7 @@ use binius_core::{
 	constraint_system::{InoutSegment, m4::WitnessM4},
 };
 use binius_field::PackedField;
-use binius_hash::binary_merkle_tree::HashSuite;
+use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::channel::WordIPProverChannel;
 use binius_m4_verifier::{IOPVerifierM4, VerifierM4};
@@ -128,7 +128,7 @@ impl IOPProverM4 {
 pub struct ProverM4<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 {
 	iop_prover: IOPProverM4,
 	/// The precomputed BaseFold prover, holding the NTT and the FRI parameters.
@@ -144,7 +144,7 @@ where
 impl<P, H> ProverM4<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	H: HashSuite,
+	H: ParallelHashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Builds the prover from a verifier, inheriting its sub-systems and FRI parameters.
