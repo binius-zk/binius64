@@ -32,11 +32,10 @@ fn bench_sha256(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Measures the raw `compress256` block function with no hasher setup, padding, or finalization.
+/// The raw block function, with no hasher setup, padding, or finalization.
 ///
-/// - `amortized_per_block`: one `compress256` call over many blocks (steady-state per-block cost).
-/// - `single_block`: one `compress256` call over a single block (per-block cost + any per-call
-///   overhead in `compress256` itself).
+/// - many blocks in one call: the steady-state cost of a block.
+/// - one block in one call: that cost plus whatever the call itself adds.
 fn bench_compress(c: &mut Criterion) {
 	const N_BLOCKS: usize = 1 << 14;
 	let blocks: Vec<[u8; 64]> = vec![[0u8; 64]; N_BLOCKS];
@@ -64,10 +63,9 @@ fn bench_compress(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Benchmarks [`ParallelDigestAdapter`] over 1 MiB of `B128` elements, varying the number of
-/// elements folded into each leaf digest (`batch_size`). This isolates the leaf-hashing step that
-/// dominates binary Merkle tree construction. The input data size is fixed at 1 MiB, so a larger
-/// batch size means fewer, larger leaves (fewer SHA-256 init/finalize calls).
+/// Leaf hashing over a fixed 1 MiB, sweeping how many field elements fold into one leaf.
+///
+/// The input size is fixed, so a wider leaf means fewer and larger leaves.
 fn bench_digest(c: &mut Criterion) {
 	let mut rng = rng();
 	let elements: Vec<B128> = (0..N_ELEMS).map(|_| B128::random(&mut rng)).collect();
@@ -94,12 +92,10 @@ fn bench_digest(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Compares the specialized [`ParallelSha256Digest`] against the generic [`ParallelDigestAdapter`]
-/// for the case the BINIUS-75 evaluation targets: leaves of 2 `B128` elements (32 bytes), which fit
-/// in a single SHA-256 block. Both paths are identical except for the hashing call — same input
-/// chunking, same pre-allocated output buffer, same throughput accounting — so the measured
-/// difference isolates the per-leaf padding/`update`/`finalize` bookkeeping the specialization
-/// removes.
+/// Fixed-length leaves against the general path, at 32 bytes per leaf.
+///
+/// A 32-byte leaf fits in one block with its padding, which is what the fixed-length route
+/// exploits. Everything outside the hashing call is identical, so the delta is that route.
 fn bench_const_leaves(c: &mut Criterion) {
 	const BATCH_SIZE: usize = 2;
 
@@ -140,11 +136,9 @@ fn bench_const_leaves(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Compresses one wide Merkle tree layer: pairs of child digests into parent digests.
+/// One wide Merkle layer: pairs of child digests folded into parent digests.
 ///
-/// Compares the per-node scalar path against the interleaved four-way path.
-/// Both run over the same rayon pool.
-/// So the delta isolates how fully each path occupies the SHA pipeline.
+/// The per-node arm spawns a task per node, so it measures scheduling as much as hashing.
 fn bench_merkle_compress(c: &mut Criterion) {
 	use std::mem::MaybeUninit;
 
@@ -176,16 +170,98 @@ fn bench_merkle_compress(c: &mut Criterion) {
 		b.iter(|| per_node.parallel_compress(black_box(&inputs), &mut out));
 	});
 
-	// The interleaved path: four independent compressions in flight per call.
+	// The batched path: `LANES` independent compressions in flight per kernel call.
 	let interleaved = ParallelSha256Compression::default();
-	group.bench_function(BenchmarkId::new("interleaved_x4", N_NODES), |b| {
+	group.bench_function(BenchmarkId::new("batched", N_NODES), |b| {
 		b.iter(|| interleaved.parallel_compress(black_box(&inputs), &mut out));
 	});
 	group.finish();
 }
 
+/// Batched multi-lane kernel against one scalar block call per message.
+///
+/// Single-threaded and cache-resident, so the delta is the kernel alone.
+/// The messages are independent single-block hashes, the shape both Merkle stages produce.
+fn bench_kernel(c: &mut Criterion) {
+	use binius_hash::sha256::portable::{LANES, compress256_multi, compress256_multi_portable};
+
+	const N_BLOCKS: usize = 4096;
+	const IV: [u32; 8] = [
+		0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+		0x5be0cd19,
+	];
+
+	let mut rng = rng();
+	let blocks: Vec<[u8; 64]> = (0..N_BLOCKS)
+		.map(|_| {
+			let mut b = [0u8; 64];
+			rng.fill_bytes(&mut b);
+			b
+		})
+		.collect();
+
+	let mut group = c.benchmark_group("sha256_kernel");
+	group.throughput(Throughput::Elements(N_BLOCKS as u64));
+
+	// The baseline: one `compress256` call per block, from the IV.
+	group.bench_function("sha2_per_block", |b| {
+		b.iter(|| {
+			for block in black_box(&blocks) {
+				let mut state = IV;
+				compress256(&mut state, std::slice::from_ref(block));
+				black_box(state);
+			}
+		});
+	});
+
+	// The portable round loops, at the width this target tunes to. Where a vector transpose
+	// exists this arm still uses it, so the delta to `dispatched` is the rounds alone.
+	group.bench_function(BenchmarkId::new("lane_loops", LANES), |b| {
+		b.iter(|| {
+			for chunk in black_box(&blocks).chunks_exact(LANES) {
+				let mut states = [IV; LANES];
+				let batch: &[[u8; 64]; LANES] =
+					chunk.try_into().expect("chunks_exact yields LANES");
+				compress256_multi_portable(&mut states, batch);
+				black_box(states);
+			}
+		});
+	});
+
+	// The dispatched kernel, which is whichever hand-written path this target compiled in.
+	group.bench_function(BenchmarkId::new("dispatched", LANES), |b| {
+		b.iter(|| {
+			for chunk in black_box(&blocks).chunks_exact(LANES) {
+				let mut states = [IV; LANES];
+				let batch: &[[u8; 64]; LANES] =
+					chunk.try_into().expect("chunks_exact yields LANES");
+				compress256_multi(&mut states, batch);
+				black_box(states);
+			}
+		});
+	});
+
+	// The 16-lane square, the only width the AVX-512 shuffle network covers.
+	// Skipped when it is already the tuned width, since the arm above covers it.
+	if LANES != 16 {
+		group.bench_function(BenchmarkId::new("dispatched", 16), |b| {
+			b.iter(|| {
+				for chunk in black_box(&blocks).chunks_exact(16) {
+					let mut states = [IV; 16];
+					let batch: &[[u8; 64]; 16] = chunk.try_into().expect("chunks_exact yields 16");
+					compress256_multi(&mut states, batch);
+					black_box(states);
+				}
+			});
+		});
+	}
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
+	bench_kernel,
 	bench_sha256,
 	bench_compress,
 	bench_digest,
