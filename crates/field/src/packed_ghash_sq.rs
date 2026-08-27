@@ -40,7 +40,7 @@ use crate::{
 	arithmetic_traits::{InvertOrZero, Square},
 	packed_extension,
 	packed_fields::{primitive::PackedPrimitiveType, sliced::SlicedPackedField},
-	underlier::{UnderlierType, WithUnderlier},
+	underlier::{Underlier, UnderlierView},
 };
 
 /// The packed GHASH coordinate register backing a `SlicedGhashSq256b<U>`.
@@ -74,7 +74,7 @@ fn ghash_mul_x<U: Divisible<M128>>(u: U) -> U {
 
 /// Multiplies every GHASH lane of a packed coordinate by `X`.
 #[inline]
-fn mul_x<U: UnderlierType + Divisible<M128>>(coord: Ghash<U>) -> Ghash<U> {
+fn mul_x<U: Underlier + Divisible<M128>>(coord: Ghash<U>) -> Ghash<U> {
 	Ghash::<U>::from_underlier(ghash_mul_x(coord.to_underlier()))
 }
 
@@ -147,7 +147,7 @@ impl<W: Default + Add<Output = W>> Sum for SlicedGhashSqWide<W> {
 
 impl<U> WideMul for SlicedGhashSq256b<U>
 where
-	U: UnderlierType + Divisible<M128>,
+	U: Underlier + Divisible<M128>,
 	Ghash<U>: PackedField<Scalar = Ghash128b> + WideMul,
 {
 	type Output = SlicedGhashSqWide<GhashWide<U>>;
@@ -180,7 +180,7 @@ where
 
 impl<U> Square for SlicedGhashSq256b<U>
 where
-	U: UnderlierType + Divisible<M128>,
+	U: Underlier + Divisible<M128>,
 	Ghash<U>: PackedField<Scalar = Ghash128b>,
 {
 	/// `(a + b·Y)² = (a² + X·b²) + (X·b²)·Y` — the cross term vanishes in characteristic two, and
@@ -199,7 +199,7 @@ where
 
 impl<U> InvertOrZero for SlicedGhashSq256b<U>
 where
-	U: UnderlierType + Divisible<M128>,
+	U: Underlier + Divisible<M128>,
 	Ghash<U>: PackedField<Scalar = Ghash128b>,
 {
 	/// Inverts through the norm of the degree-two extension. The conjugate of `u = a + b·Y` sends

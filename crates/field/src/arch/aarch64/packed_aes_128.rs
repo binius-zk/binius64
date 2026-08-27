@@ -11,7 +11,7 @@ use crate::{
 	arithmetic_traits::{InvertOrZero, Square},
 	fields::rijndael::Rijndael8b,
 	packed_fields::primitive::PackedPrimitiveType,
-	underlier::WithUnderlier,
+	underlier::UnderlierView,
 };
 
 /// Widening-multiply wrapper used by the AES packing: the `vmull_p8`-backed `VmullWideMul`.

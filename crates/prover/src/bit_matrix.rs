@@ -6,7 +6,7 @@
 use std::{array, iter};
 
 use binius_field::{
-	BinaryField, Divisible, PackedField, WithUnderlier, transpose::transpose_square_blocks_array,
+	BinaryField, Divisible, PackedField, UnderlierView, transpose::transpose_square_blocks_array,
 	util::expand_subset_sums_array,
 };
 use binius_verifier::config::B1;
@@ -74,7 +74,7 @@ impl<F: BinaryField, const N_TABLES: usize> RowFoldTables<F, N_TABLES> {
 		groups: impl IntoIterator<Item = RowGroup<PB>>,
 		sums: &mut ColumnSums<F, N_TABLES>,
 	) where
-		PB: PackedField<Scalar = B1> + WithUnderlier,
+		PB: PackedField<Scalar = B1> + UnderlierView,
 		PB::Underlier: Divisible<u8>,
 	{
 		// One byte of a row per table is what makes the accumulator line up with the columns.
@@ -160,7 +160,7 @@ fn fold_group<F, PB, const N_TABLES: usize>(
 	sums: &mut [[F; WEIGHTS_PER_TABLE]; N_TABLES],
 ) where
 	F: BinaryField,
-	PB: PackedField<Scalar = B1> + WithUnderlier,
+	PB: PackedField<Scalar = B1> + UnderlierView,
 	PB::Underlier: Divisible<u8>,
 {
 	// The transpose rewrites the group in place, and the caller handed over its copy.
@@ -213,7 +213,7 @@ mod tests {
 
 	fn check_matches_naive<PB, const N_TABLES: usize>(seed: u64, n_weights: usize)
 	where
-		PB: PackedField<Scalar = B1> + WithUnderlier + Random,
+		PB: PackedField<Scalar = B1> + UnderlierView + Random,
 		PB::Underlier: Divisible<u8>,
 	{
 		let mut rng = StdRng::seed_from_u64(seed);

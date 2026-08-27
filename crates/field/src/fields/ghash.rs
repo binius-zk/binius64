@@ -17,7 +17,7 @@ use crate::{
 	arch::M128,
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	extension::ExtensionField,
-	underlier::{U1, WithUnderlier},
+	underlier::{U1, UnderlierView},
 };
 
 // `1 << 121` is the lowest single-bit element of trace 1; `1 << 127` is the only other one.

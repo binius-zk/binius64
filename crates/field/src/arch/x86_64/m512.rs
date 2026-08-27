@@ -20,7 +20,7 @@ use crate::{
 	arch::x86_64::{m128::M128, m256::M256},
 	divisible::{Divisible, mapget},
 	packed_fields::primitive::PackedPrimitiveType,
-	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
+	underlier::{SmallU, Underlier, impl_divisible_bitmask},
 };
 
 /// 512-bit value that is used for 512-bit SIMD operations
@@ -356,7 +356,7 @@ macro_rules! m512_from_u128s {
 
 pub(super) use m512_from_u128s;
 
-impl UnderlierType for M512 {
+impl Underlier for M512 {
 	const LOG_BITS: usize = 9;
 	const ZERO: Self = { Self(m512_from_u128s!(0, 0, 0, 0,)) };
 	const ONE: Self = { Self(m512_from_u128s!(1, 0, 0, 0,)) };

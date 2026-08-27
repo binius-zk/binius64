@@ -2,7 +2,7 @@
 
 use std::{marker::PhantomData, ops::BitXor};
 
-use crate::{Divisible, UnderlierType, WithUnderlier, util::expand_subset_xors};
+use crate::{Divisible, Underlier, UnderlierView, util::expand_subset_xors};
 
 /// Generic transformation trait that is used both for scalars and packed fields
 pub trait Transformation<Input, Output>: Sync {
@@ -26,8 +26,8 @@ pub struct BytewiseLookupTransformation<UIn, UOut> {
 
 impl<UIn, UOut> BytewiseLookupTransformation<UIn, UOut>
 where
-	UIn: UnderlierType + Divisible<u8>,
-	UOut: UnderlierType,
+	UIn: Underlier + Divisible<u8>,
+	UOut: Underlier,
 {
 	pub fn new(cols: &[UOut]) -> Self {
 		const {
@@ -58,8 +58,8 @@ where
 
 impl<UIn, UOut> Transformation<UIn, UOut> for BytewiseLookupTransformation<UIn, UOut>
 where
-	UIn: UnderlierType + Divisible<u8>,
-	UOut: UnderlierType,
+	UIn: Underlier + Divisible<u8>,
+	UOut: Underlier,
 {
 	#[inline]
 	fn transform(&self, data: &UIn) -> UOut {
@@ -91,8 +91,8 @@ pub trait LinearTransformationFactory<Input, Output> {
 
 impl<UIn, UOut> LinearTransformationFactory<UIn, UOut> for BytewiseLookupTransformationFactory
 where
-	UIn: UnderlierType + Divisible<u8>,
-	UOut: UnderlierType,
+	UIn: Underlier + Divisible<u8>,
+	UOut: Underlier,
 {
 	type Transform = BytewiseLookupTransformation<UIn, UOut>;
 
@@ -113,7 +113,7 @@ impl<Inner, Input, Output> Transformation<Input, Output>
 where
 	Inner: Transformation<Input, Output::Underlier>,
 	Input: Sync,
-	Output: WithUnderlier,
+	Output: UnderlierView,
 {
 	#[inline]
 	fn transform(&self, data: &Input) -> Output {
@@ -132,7 +132,7 @@ impl<Inner, Input, Output> OutputWrappingTransformationFactory<Inner, Input, Out
 where
 	Inner: LinearTransformationFactory<Input, Output::Underlier>,
 	Input: Sync,
-	Output: WithUnderlier,
+	Output: UnderlierView,
 {
 	pub const fn new(inner: Inner) -> Self {
 		Self {
@@ -147,7 +147,7 @@ impl<Inner, Input, Output> LinearTransformationFactory<Input, Output>
 where
 	Inner: LinearTransformationFactory<Input, Output::Underlier>,
 	Input: Sync,
-	Output: WithUnderlier,
+	Output: UnderlierView,
 {
 	type Transform = OutputWrappingTransformation<Inner::Transform, Input, Output>;
 
@@ -171,7 +171,7 @@ impl<Inner, Input, Output> Transformation<Input, Output>
 	for InputWrappingTransformation<Inner, Input, Output>
 where
 	Inner: Transformation<Input::Underlier, Output>,
-	Input: WithUnderlier,
+	Input: UnderlierView,
 	Output: Sync,
 {
 	#[inline]
@@ -190,7 +190,7 @@ pub struct InputWrappingTransformationFactory<Inner, Input, Output> {
 impl<Inner, Input, Output> InputWrappingTransformationFactory<Inner, Input, Output>
 where
 	Inner: LinearTransformationFactory<Input::Underlier, Output>,
-	Input: WithUnderlier,
+	Input: UnderlierView,
 	Output: Sync,
 {
 	pub const fn new(inner: Inner) -> Self {
@@ -205,7 +205,7 @@ impl<Inner, Input, Output> LinearTransformationFactory<Input, Output>
 	for InputWrappingTransformationFactory<Inner, Input, Output>
 where
 	Inner: LinearTransformationFactory<Input::Underlier, Output>,
-	Input: WithUnderlier,
+	Input: UnderlierView,
 	Output: Sync,
 {
 	type Transform = InputWrappingTransformation<Inner::Transform, Input, Output>;
@@ -221,7 +221,7 @@ where
 
 /// Transformation that wraps both input and output, converting between types with underliers.
 pub type WrappingTransformation<Inner, Input, Output> = OutputWrappingTransformation<
-	InputWrappingTransformation<Inner, Input, <Output as WithUnderlier>::Underlier>,
+	InputWrappingTransformation<Inner, Input, <Output as UnderlierView>::Underlier>,
 	Input,
 	Output,
 >;

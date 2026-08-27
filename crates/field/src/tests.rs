@@ -12,7 +12,7 @@ use crate::{
 	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
 	Rijndael8b, SlicedGhashSq2x256b,
 	field::FieldOps,
-	underlier::{SmallU, WithUnderlier},
+	underlier::{SmallU, UnderlierView},
 };
 
 #[test]

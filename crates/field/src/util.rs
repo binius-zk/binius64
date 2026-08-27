@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use crate::{Field, PackedField, UnderlierType, field::FieldOps};
+use crate::{Field, PackedField, Underlier, field::FieldOps};
 
 /// An arithmetic function over field elements, generic in the field it evaluates in.
 ///
@@ -146,7 +146,7 @@ pub fn expand_subset_products<P: PackedField>(elems: &[P]) -> Vec<P> {
 /// ## Preconditions
 ///
 /// * `N_EXP2` must equal `2^N`
-pub fn expand_subset_xors<U: UnderlierType, const N: usize, const N_EXP2: usize>(
+pub fn expand_subset_xors<U: Underlier, const N: usize, const N_EXP2: usize>(
 	elems: [U; N],
 ) -> [U; N_EXP2] {
 	const {

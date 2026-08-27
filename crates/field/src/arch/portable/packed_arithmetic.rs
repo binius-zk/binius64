@@ -3,12 +3,12 @@
 
 use std::ops::{Shl, Shr};
 
-use crate::underlier::UnderlierType;
+use crate::underlier::Underlier;
 
 /// Interleave using the provided even mask slice.
 ///
 /// See [Hacker's Delight](https://dl.acm.org/doi/10.5555/2462741), Section 7-3.
-pub fn interleave_with_mask<U: UnderlierType + Shr<usize, Output = U> + Shl<usize, Output = U>>(
+pub fn interleave_with_mask<U: Underlier + Shr<usize, Output = U> + Shl<usize, Output = U>>(
 	a: U,
 	b: U,
 	log_block_len: usize,

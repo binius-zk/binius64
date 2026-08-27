@@ -9,13 +9,11 @@ use std::{
 
 use bytemuck::Zeroable;
 
-use super::{UnderlierType, WithUnderlier, extension::ExtensionField};
+use super::{Underlier, UnderlierView, extension::ExtensionField};
 use crate::{Field, underlier::U1};
 
 /// A finite field with characteristic 2.
-pub trait BinaryField:
-	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierType>
-{
+pub trait BinaryField: ExtensionField<BinaryField1b> + UnderlierView<Underlier: Underlier> {
 	const N_BITS: usize = Self::ORDER_EXPONENT;
 
 	/// An element whose absolute trace is 1.
@@ -66,7 +64,7 @@ macro_rules! binary_field {
 			}
 		}
 
-		unsafe impl $crate::underlier::WithUnderlier for $name {
+		unsafe impl $crate::underlier::UnderlierView for $name {
 			type Underlier = $typ;
 		}
 
@@ -201,10 +199,10 @@ macro_rules! binary_field {
 
 
 		impl Field for $name {
-			const ZERO: Self = $name(<$typ as $crate::underlier::UnderlierType>::ZERO);
-			const ONE: Self = $name(<$typ as $crate::underlier::UnderlierType>::ONE);
+			const ZERO: Self = $name(<$typ as $crate::underlier::Underlier>::ZERO);
+			const ONE: Self = $name(<$typ as $crate::underlier::Underlier>::ONE);
 			const CHARACTERISTIC: usize = 2;
-			const ORDER_EXPONENT: usize = <$typ as $crate::underlier::UnderlierType>::BITS;
+			const ORDER_EXPONENT: usize = <$typ as $crate::underlier::Underlier>::BITS;
 			const MULTIPLICATIVE_GENERATOR: $name = $name($gen);
 
 			fn double(&self) -> Self {
@@ -407,13 +405,13 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn try_from(elem: $name) -> Result<Self, Self::Error> {
-				use $crate::{Divisible, underlier::UnderlierType};
+				use $crate::{Divisible, underlier::Underlier};
 
 				// `elem` lies in the subfield iff every subfield-underlier limb above the
 				// least-significant one is zero (equivalent to `elem >> N_BITS == 0`).
 				let in_subfield = Divisible::<$subfield_typ>::ref_iter(&elem.0)
 					.skip(1)
-					.all(|limb| limb == <$subfield_typ as UnderlierType>::ZERO);
+					.all(|limb| limb == <$subfield_typ as Underlier>::ZERO);
 				if in_subfield {
 					Ok($subfield_name(Divisible::<$subfield_typ>::get(&elem.0, 0)))
 				} else {
@@ -515,7 +513,7 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn basis(i: usize) -> Self {
-				use $crate::{Divisible, underlier::UnderlierType};
+				use $crate::{Divisible, underlier::Underlier};
 
 				assert!(
 					i < 1 << $log_degree,
@@ -525,11 +523,11 @@ macro_rules! impl_field_extension {
 				);
 				// The `i`-th basis element sets subfield-underlier limb `i` to one, i.e. bit
 				// `i * N_BITS` (equivalent to `ONE << (i * N_BITS)`).
-				let mut underlier = <$typ as UnderlierType>::ZERO;
+				let mut underlier = <$typ as Underlier>::ZERO;
 				Divisible::<$subfield_typ>::set(
 					&mut underlier,
 					i,
-					<$subfield_typ as UnderlierType>::ONE,
+					<$subfield_typ as Underlier>::ONE,
 				);
 				Self(underlier)
 			}
@@ -539,11 +537,11 @@ macro_rules! impl_field_extension {
 				base_elems: impl IntoIterator<Item = $subfield_name>,
 				log_stride: usize,
 			) -> Self {
-				use $crate::{Divisible, underlier::UnderlierType};
+				use $crate::{Divisible, underlier::Underlier};
 
 				debug_assert!($name::N_BITS.is_power_of_two());
 				let shift_step = ($subfield_name::N_BITS << log_stride) & ($name::N_BITS - 1);
-				let mut underlier = <$typ as UnderlierType>::ZERO;
+				let mut underlier = <$typ as Underlier>::ZERO;
 				let mut shift = 0;
 
 				for elem in base_elems.into_iter() {
@@ -562,19 +560,19 @@ macro_rules! impl_field_extension {
 			#[inline]
 			fn iter_bases(&self) -> impl Iterator<Item = $subfield_name> {
 				use binius_utils::iter::IterExtensions;
-				use $crate::{Divisible, underlier::WithUnderlier};
+				use $crate::{Divisible, underlier::UnderlierView};
 
-				Divisible::<<$subfield_name as WithUnderlier>::Underlier>::ref_iter(&self.0)
+				Divisible::<<$subfield_name as UnderlierView>::Underlier>::ref_iter(&self.0)
 					.map_skippable($subfield_name::from)
 			}
 
 			#[inline]
 			unsafe fn get_base_unchecked(&self, i: usize) -> $subfield_name {
-				use $crate::{Divisible, underlier::WithUnderlier};
+				use $crate::{Divisible, underlier::UnderlierView};
 				// Safety: the caller guarantees `i < Self::N` (over subfield elements).
 				unsafe {
 					$subfield_name::from_underlier(Divisible::<
-						<$subfield_name as WithUnderlier>::Underlier,
+						<$subfield_name as UnderlierView>::Underlier,
 					>::get_unchecked(&self.to_underlier(), i))
 				}
 			}

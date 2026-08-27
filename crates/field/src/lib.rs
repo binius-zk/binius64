@@ -50,4 +50,4 @@ pub use packed_ghash::*;
 pub use packed_ghash_sq::*;
 pub use random::Random;
 pub use transpose::{transpose_square_blocks, transpose_square_blocks_array};
-pub use underlier::{UnderlierType, WithUnderlier};
+pub use underlier::{Underlier, UnderlierView};
