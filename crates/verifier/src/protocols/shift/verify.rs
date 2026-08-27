@@ -28,7 +28,7 @@ use getset::Getters;
 
 use super::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_SHIFT_COUNT, OperationEvalFn, SHIFT_COUNT,
-	SHIFT_LOG_VARS, ShiftScalars, ZERO_ARITY, encode_operation_input, error::Error,
+	SHIFT_LOG_VARS, WiringWeights, ZERO_ARITY, error::Error, operand_shift_scalar_table,
 	shift_ind::evaluate_shift_inds,
 };
 
@@ -651,37 +651,93 @@ impl<'a> WiringEvalFn<'a> {
 	}
 }
 
-/// The per-operation [`OperationEvalFn`] inputs [`WiringEvalFn::operation_inputs`] splits out of
-/// its flat input slice. A `None` marks an operation with no constraints, whose reduction is
-/// skipped.
-struct OperationInputs<E> {
-	zero: Vec<E>,
-	bitand: Vec<E>,
-	intmul: Option<Vec<E>>,
-	binmul: Option<Vec<E>>,
+/// One operation's own weight tables, as [`WiringEvalFn::wiring_weights`] builds them.
+///
+/// The tables the four operations share live on [`WiringInputs`] beside these.
+struct OperationWeights<E> {
+	/// The equality indicator of the operation's constraint challenge, one weight per constraint.
+	constraint: Vec<E>,
+	/// The inner shift slot's weights with the operation's batching coefficients fanned in, at
+	/// `inner_shift * ARITY + operand`.
+	inner_operand: Vec<E>,
+}
+
+/// The weight tables [`WiringEvalFn::wiring_weights`] builds from its flat input slice.
+///
+/// The outer-slot and word-index tables are shared, so each is built once and lent to all four
+/// operations rather than copied per operation.
+struct WiringInputs<E> {
+	/// The Zero operation's own tables.
+	zero: OperationWeights<E>,
+	/// The BitAnd operation's own tables.
+	bitand: OperationWeights<E>,
+	/// The IntMul operation's own tables.
+	intmul: OperationWeights<E>,
+	/// The BinMul operation's own tables.
+	binmul: OperationWeights<E>,
+	/// The weight of each spelling the outer shift slot can take.
+	outer_shift_scalars: Box<[E; SHIFT_COUNT]>,
+	/// The word-index indicator over the public half of the value vector.
+	public_tensor: Vec<E>,
+	/// The word-index indicator over the hidden half of the value vector.
+	hidden_tensor: Vec<E>,
+}
+
+/// Bundles one operation's own tables with the two every operation shares.
+fn operation_weights<'a, E>(
+	operation: &'a OperationWeights<E>,
+	outer: &'a [E; SHIFT_COUNT],
+	value: [&'a [E]; 3],
+) -> WiringWeights<'a, E> {
+	WiringWeights {
+		constraint: &operation.constraint,
+		inner_operand: &operation.inner_operand,
+		outer,
+		value,
+	}
+}
+
+impl<E> WiringInputs<E> {
+	/// The word-index tensor cut into one run per value segment, which is what an operand term's
+	/// `(segment, index)` pair reads against.
+	///
+	/// The constants lead the public indicator and the private values trail the hidden one; the
+	/// inout values follow whichever indicator they are placed in. The padding words between the
+	/// runs are dropped, since no index can name one.
+	fn value_tensor(&self, cs: &ConstraintSystem, inout: InoutSegment) -> [&[E]; 3] {
+		match inout {
+			InoutSegment::Public => [
+				&self.public_tensor[..cs.n_const()],
+				&self.public_tensor[cs.offset_inout()..cs.offset_inout() + cs.n_inout],
+				&self.hidden_tensor[..cs.n_private],
+			],
+			InoutSegment::Hidden => [
+				&self.public_tensor[..cs.n_const()],
+				&self.hidden_tensor[..cs.n_inout],
+				&self.hidden_tensor[cs.n_inout..cs.n_inout + cs.n_private],
+			],
+		}
+	}
 }
 
 impl WiringEvalFn<'_> {
 	/// Shared setup for [`FieldFn::call`] and [`FieldFn::call_native`]: splits the flat `vals`
-	/// slice, builds the shared shift-scalar and word-index tensors, and re-encodes them (with each
-	/// operation's `r_x'` and `lambda`) into the per-operation [`OperationEvalFn`] input via
-	/// [`encode_operation_input`].
+	/// slice and builds one weight table per axis of each operation's wiring tensor.
 	///
-	/// The Zero and BitAnd inputs are always present; the IntMul and BinMul inputs are `None` when
-	/// that operation has no constraints and is skipped.
+	/// The expansion is supplied by the caller:
 	///
-	/// The scaled word-index expansion is supplied by the caller:
-	///
-	/// - That axis spans the whole trace, so it is the expansion worth threading.
+	/// - The word-index axis spans the whole trace, so it is the expansion worth threading.
 	/// - Only a concrete field element can cross threads, so the generic path stays serial.
-	fn operation_inputs<E: FieldOps>(
+	///
+	/// It is handed a scale as well as a point, since the two word-index tables carry one; the
+	/// constraint-index tables ask for a scale of one, which is the identity.
+	fn wiring_weights<E: FieldOps>(
 		&self,
 		vals: &[E],
 		scaled_expand: impl Fn(&[E], E) -> Vec<E>,
-	) -> OperationInputs<E> {
-		// Each operation's `r_x'` section is as long as its reduction has constraint variables, and
-		// [`OperationEvalFn::split_input`] re-derives that length from the constraint count alone.
-		// The two derivations must agree or both sides mis-split the same input. An absent IntMul
+	) -> WiringInputs<E> {
+		// Each operation's `r_x'` section is as long as its reduction has constraint variables, so
+		// its expansion covers the padded constraint count the evaluation walks. An absent IntMul
 		// (resp. BinMul) reduction contributes an empty point, which matches the `None` the
 		// accessor reports for an empty constraint set; so do the Zero and BitAnd reductions'
 		// single all-zero padding rows.
@@ -749,30 +805,13 @@ impl WiringEvalFn<'_> {
 		let public_tensor = scaled_expand(&r_y_v[..log_public_words], public_scale);
 		let hidden_tensor = scaled_expand(r_y_v, r_segment);
 
-		// Cut the two indicators into one run per value segment, which is what an operand term's
-		// `(segment, index)` pair reads against. The constants lead the public indicator and the
-		// private values trail the hidden one; the inout values follow whichever indicator they
-		// are placed in. The padding words between the runs are dropped, since no index can name
-		// one.
-		let r_y_tensor = match self.shape.inout {
-			InoutSegment::Public => [
-				&public_tensor[..cs.n_const()],
-				&public_tensor[cs.offset_inout()..cs.offset_inout() + cs.n_inout],
-				&hidden_tensor[..cs.n_private],
-			],
-			InoutSegment::Hidden => [
-				&public_tensor[..cs.n_const()],
-				&hidden_tensor[..cs.n_inout],
-				&hidden_tensor[cs.n_inout..cs.n_inout + cs.n_private],
-			],
-		};
 		// A term's sequence selects itself through an equality indicator over both slots' axes.
 		// The weight factorizes, so this is one table per slot rather than one over the whole
-		// sequence space — see the two-table split on the scalars type.
+		// sequence space.
 		//
-		// Both are built once, so the Zero, BitAnd, IntMul and BinMul monster evaluations share
-		// them. Each is indexed by `variant * Word::BITS + amount`. The bit-index factors scaling
-		// all of them are left for `check_eval` to multiply in.
+		// The outer table is built once, so the Zero, BitAnd, IntMul and BinMul evaluations share
+		// it. It is indexed by `variant * Word::BITS + amount`. The bit-index factors scaling it
+		// are left for `check_eval` to multiply in.
 		let slot_scalars = |r_s: &[E], r_v: &[E]| {
 			let eq_r_v = eq_ind_partial_eval_scalars(r_v);
 			let eq_r_s = eq_ind_partial_eval_scalars(r_s);
@@ -782,57 +821,68 @@ impl WiringEvalFn<'_> {
 		};
 		let inner_shift_scalars = slot_scalars(r_s_inner_v, r_v_inner_v);
 		let outer_shift_scalars = slot_scalars(r_s_outer_v, r_v_outer_v);
-		let shift_scalars = ShiftScalars {
-			inner: &inner_shift_scalars,
-			outer: &outer_shift_scalars,
+
+		// The inner table carries the operand batching coefficients, which differ per operation,
+		// so it is the one table each operation builds for itself. An operation with no
+		// constraints sums no terms, so it is handed empty tables and evaluates to zero.
+		let operation_weights = |r_x_prime: &[E], lambda: E, arity: usize, n_constraints: usize| {
+			if n_constraints == 0 {
+				return OperationWeights {
+					constraint: Vec::new(),
+					inner_operand: Vec::new(),
+				};
+			}
+			OperationWeights {
+				constraint: scaled_expand(r_x_prime, E::one()),
+				inner_operand: operand_shift_scalar_table(&inner_shift_scalars, &lambda, arity),
+			}
 		};
 
-		// Re-encode the shared tensors with each operation's `r_x'` and `lambda`. IntMul and BinMul
-		// are skipped (no input built) when they have no constraints.
-		let zero_input =
-			encode_operation_input(zero_r_x_prime_v, zero_lambda_v, shift_scalars, r_y_tensor);
-		let bitand_input =
-			encode_operation_input(bitand_r_x_prime_v, bitand_lambda_v, shift_scalars, r_y_tensor);
-		let intmul_input = (!self.constraint_system.imul_constraints.is_empty()).then(|| {
-			encode_operation_input(intmul_r_x_prime_v, intmul_lambda_v, shift_scalars, r_y_tensor)
-		});
-		let binmul_input = (!self.constraint_system.bmul_constraints.is_empty()).then(|| {
-			encode_operation_input(binmul_r_x_prime_v, binmul_lambda_v, shift_scalars, r_y_tensor)
-		});
-
-		OperationInputs {
-			zero: zero_input,
-			bitand: bitand_input,
-			intmul: intmul_input,
-			binmul: binmul_input,
+		WiringInputs {
+			zero: operation_weights(
+				zero_r_x_prime_v,
+				zero_lambda_v,
+				ZERO_ARITY,
+				cs.zero_constraints.len(),
+			),
+			bitand: operation_weights(
+				bitand_r_x_prime_v,
+				bitand_lambda_v,
+				BITAND_ARITY,
+				cs.and_constraints.len(),
+			),
+			intmul: operation_weights(
+				intmul_r_x_prime_v,
+				intmul_lambda_v,
+				INTMUL_ARITY,
+				cs.imul_constraints.len(),
+			),
+			binmul: operation_weights(
+				binmul_r_x_prime_v,
+				binmul_lambda_v,
+				BINMUL_ARITY,
+				cs.bmul_constraints.len(),
+			),
+			outer_shift_scalars,
+			public_tensor,
+			hidden_tensor,
 		}
 	}
 }
 
 impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
-		let OperationInputs {
-			zero: zero_input,
-			bitand: bitand_input,
-			intmul: intmul_input,
-			binmul: binmul_input,
-		} = self.operation_inputs(vals, scaled_eq_ind_partial_eval_scalars);
+		let inputs = self.wiring_weights(vals, scaled_eq_ind_partial_eval_scalars);
 		let cs = &self.constraint_system;
+		let value = inputs.value_tensor(cs, self.shape.inout);
+		let outer = &inputs.outer_shift_scalars;
+		// The outer and word-index tables are lent to all four; only the first two differ.
+		let weights = |operation| operation_weights(operation, outer, value);
 
-		let zero =
-			OperationEvalFn::new(&cs.zero_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-				.call::<E>(&zero_input);
-		let bitand =
-			OperationEvalFn::new(&cs.and_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-				.call::<E>(&bitand_input);
-		let intmul = intmul_input.map_or_else(E::zero, |input| {
-			OperationEvalFn::new(&cs.imul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-				.call::<E>(&input)
-		});
-		let binmul = binmul_input.map_or_else(E::zero, |input| {
-			OperationEvalFn::new(&cs.bmul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-				.call::<E>(&input)
-		});
+		let zero = OperationEvalFn::new(&cs.zero_constraints).call(weights(&inputs.zero));
+		let bitand = OperationEvalFn::new(&cs.and_constraints).call(weights(&inputs.bitand));
+		let intmul = OperationEvalFn::new(&cs.imul_constraints).call(weights(&inputs.intmul));
+		let binmul = OperationEvalFn::new(&cs.bmul_constraints).call(weights(&inputs.binmul));
 
 		zero + bitand + intmul + binmul
 	}
@@ -840,32 +890,22 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 	/// Native fast path: each operation's evaluation defers `WideMul` reductions (see
 	/// [`OperationEvalFn`]'s `call_native`).
 	fn call_native(&self, vals: &[F]) -> F {
-		let OperationInputs {
-			zero: zero_input,
-			bitand: bitand_input,
-			intmul: intmul_input,
-			binmul: binmul_input,
-		} = self.operation_inputs(vals, |point, scale| {
+		let inputs = self.wiring_weights(vals, |point, scale| {
 			// The packed expansion threads the tensor's multiplications.
 			// It applies over the base field, which is its own single-element packing.
 			scaled_eq_ind_partial_eval::<F>(point, scale).into_inner()
 		});
 		let cs = &self.constraint_system;
+		let value = inputs.value_tensor(cs, self.shape.inout);
+		let outer = &inputs.outer_shift_scalars;
+		let weights = |operation| operation_weights(operation, outer, value);
 
-		let zero =
-			OperationEvalFn::new(&cs.zero_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-				.call_native(&zero_input);
-		let bitand =
-			OperationEvalFn::new(&cs.and_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-				.call_native(&bitand_input);
-		let intmul = intmul_input.map_or(F::ZERO, |input| {
-			OperationEvalFn::new(&cs.imul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-				.call_native(&input)
-		});
-		let binmul = binmul_input.map_or(F::ZERO, |input| {
-			OperationEvalFn::new(&cs.bmul_constraints, cs.n_const(), cs.n_inout, cs.n_private)
-				.call_native(&input)
-		});
+		let zero = OperationEvalFn::new(&cs.zero_constraints).call_native(weights(&inputs.zero));
+		let bitand = OperationEvalFn::new(&cs.and_constraints).call_native(weights(&inputs.bitand));
+		let intmul =
+			OperationEvalFn::new(&cs.imul_constraints).call_native(weights(&inputs.intmul));
+		let binmul =
+			OperationEvalFn::new(&cs.bmul_constraints).call_native(weights(&inputs.binmul));
 
 		zero + bitand + intmul + binmul
 	}
