@@ -102,7 +102,7 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::{aes_field::Rijndael8b, arch::M128};
+	use crate::{arch::M128, fields::rijndael::Rijndael8b};
 
 	// A two-lane `ScaledUnderlier` AES packing whose `M128` lanes carry their own `WideMul`.
 	type Inner = PackedPrimitiveType<ScaledUnderlier<M128, 2>, Rijndael8b>;

@@ -12,15 +12,13 @@
 //!
 //! [DP23]: https://eprint.iacr.org/2023/1784
 
-pub mod aes_field;
 pub mod arch;
 pub mod arithmetic_traits;
 pub mod binary_field;
 mod divisible;
 pub mod extension;
 pub mod field;
-pub mod ghash;
-pub mod ghash_sq;
+pub mod fields;
 pub mod linear_transformation;
 mod macros;
 pub mod packed;
@@ -38,14 +36,12 @@ pub mod transpose;
 mod underlier;
 pub mod util;
 
-pub use aes_field::*;
 pub use arithmetic_traits::WideMul;
 pub use binary_field::*;
 pub use divisible::Divisible;
 pub use extension::*;
 pub use field::{Field, FieldOps};
-pub use ghash::*;
-pub use ghash_sq::*;
+pub use fields::{ghash::*, ghash_sq::*, rijndael::*};
 pub use packed::PackedField;
 pub use packed_aes::*;
 pub use packed_binary_field::*;

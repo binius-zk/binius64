@@ -12,13 +12,11 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 
-use super::{
-	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
-	extension::ExtensionField,
-};
 use crate::{
 	Field, Rijndael8b,
 	arch::M128,
+	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
+	extension::ExtensionField,
 	underlier::{U1, WithUnderlier},
 };
 

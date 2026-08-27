@@ -2,13 +2,13 @@
 // Copyright 2026 The Binius Developers
 
 use crate::{
-	aes_field::Rijndael8b,
 	arch::{
 		AesInvert1x, AesInvert16x, AesInvert32x, AesInvert64x, AesSquare1x, AesSquare16x,
 		AesSquare32x, AesSquare64x, AesWideMul1x, AesWideMul16x, AesWideMul32x, AesWideMul64x,
 		M128, M256, M512, MulFromWideMul,
 		portable::packed_macros::{portable_macros::*, *},
 	},
+	fields::rijndael::Rijndael8b,
 };
 
 define_packed_binary_field!(

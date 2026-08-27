@@ -25,7 +25,7 @@ use crate::{
 	BinaryField1b, Divisible, ExtensionField,
 	arch::M128,
 	arithmetic_traits::{InvertOrZero, Square},
-	ghash::Ghash128b as GhashB128,
+	fields::ghash::Ghash128b as GhashB128,
 	linear_transformation::{
 		BytewiseLookupTransformation, BytewiseLookupTransformationFactory,
 		InputWrappingTransformationFactory, LinearTransformationFactory,

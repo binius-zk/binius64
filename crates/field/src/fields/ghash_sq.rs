@@ -25,13 +25,11 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 
-use super::{
-	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
-	extension::ExtensionField,
-};
 use crate::{
 	Field, Ghash128b,
 	arch::{M128, M256, m256_from_u128s},
+	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
+	extension::ExtensionField,
 	underlier::U1,
 };
 
