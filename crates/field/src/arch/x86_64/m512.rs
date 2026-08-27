@@ -21,7 +21,8 @@ use crate::{
 		portable::packed::PackedPrimitiveType,
 		x86_64::{m128::M128, m256::M256},
 	},
-	underlier::{Divisible, SmallU, UnderlierType, impl_divisible_bitmask, mapget},
+	divisible::{Divisible, mapget},
+	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 
 /// 512-bit value that is used for 512-bit SIMD operations

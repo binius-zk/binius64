@@ -1,7 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-pub(crate) mod divisible;
 pub(crate) mod maskable;
 mod scaled;
 mod small_uint;
@@ -9,7 +8,6 @@ mod underlier_impls;
 mod underlier_type;
 mod underlier_with_bit_ops;
 
-pub use divisible::*;
 pub use maskable::*;
 pub use scaled::ScaledUnderlier;
 pub use small_uint::*;

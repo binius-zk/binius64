@@ -20,11 +20,8 @@ use super::super::portable::{
 };
 use crate::{
 	BinaryField,
-	underlier::{
-		SmallU, UnderlierType,
-		divisible::{Divisible, mapget},
-		impl_divisible_bitmask, impl_divisible_self,
-	},
+	divisible::{Divisible, impl_divisible_self, mapget},
+	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 
 /// 128-bit value that is used for 128-bit SIMD operations
@@ -479,7 +476,7 @@ impl Divisible<u8> for M128 {
 
 	#[inline]
 	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
-		crate::underlier::memcast::slice_iter::<Self, u8>(slice)
+		crate::divisible::memcast::slice_iter::<Self, u8>(slice)
 	}
 
 	#[inline]

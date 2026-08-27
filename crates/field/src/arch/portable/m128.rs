@@ -17,10 +17,8 @@ use rand::{
 use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
-	underlier::{
-		Divisible, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_memcast,
-		impl_divisible_self,
-	},
+	divisible::{Divisible, impl_divisible_memcast, impl_divisible_self},
+	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 
 /// 128-bit underlier for the portable build — a transparent wrapper over `u128`.

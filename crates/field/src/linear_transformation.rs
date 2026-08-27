@@ -2,7 +2,7 @@
 
 use std::{marker::PhantomData, ops::BitXor};
 
-use crate::{UnderlierType, WithUnderlier, underlier::Divisible, util::expand_subset_xors};
+use crate::{Divisible, UnderlierType, WithUnderlier, util::expand_subset_xors};
 
 /// Generic transformation trait that is used both for scalars and packed fields
 pub trait Transformation<Input, Output>: Sync {

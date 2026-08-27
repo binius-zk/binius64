@@ -19,8 +19,11 @@ use rand::{
 	distr::{Distribution, StandardUniform},
 };
 
-use super::{Divisible, U1, UnderlierType, mapget};
-use crate::Random;
+use super::{U1, UnderlierType};
+use crate::{
+	Random,
+	divisible::{Divisible, mapget},
+};
 
 /// A type that represents N elements of the same underlier type.
 /// Used as an underlier for 256-bit and 512-bit packed fields in the portable implementation.

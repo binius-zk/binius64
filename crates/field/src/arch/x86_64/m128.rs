@@ -22,9 +22,8 @@ use seq_macro::seq;
 use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
-	underlier::{
-		Divisible, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_self, mapget,
-	},
+	divisible::{Divisible, impl_divisible_self, mapget},
+	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 
 pub const fn m128i_from_u128(x: u128) -> __m128i {

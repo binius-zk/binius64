@@ -408,7 +408,7 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn try_from(elem: $name) -> Result<Self, Self::Error> {
-				use $crate::underlier::{Divisible, UnderlierType};
+				use $crate::{Divisible, underlier::UnderlierType};
 
 				// `elem` lies in the subfield iff every subfield-underlier limb above the
 				// least-significant one is zero (equivalent to `elem >> N_BITS == 0`).
@@ -517,7 +517,7 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn basis(i: usize) -> Self {
-				use $crate::underlier::{Divisible, UnderlierType};
+				use $crate::{Divisible, underlier::UnderlierType};
 
 				assert!(
 					i < 1 << $log_degree,
@@ -541,7 +541,7 @@ macro_rules! impl_field_extension {
 				base_elems: impl IntoIterator<Item = $subfield_name>,
 				log_stride: usize,
 			) -> Self {
-				use $crate::underlier::{Divisible, UnderlierType};
+				use $crate::{Divisible, underlier::UnderlierType};
 
 				debug_assert!($name::N_BITS.is_power_of_two());
 				let shift_step = ($subfield_name::N_BITS << log_stride) & ($name::N_BITS - 1);
@@ -564,7 +564,7 @@ macro_rules! impl_field_extension {
 			#[inline]
 			fn iter_bases(&self) -> impl Iterator<Item = $subfield_name> {
 				use binius_utils::iter::IterExtensions;
-				use $crate::underlier::{Divisible, WithUnderlier};
+				use $crate::{Divisible, underlier::WithUnderlier};
 
 				Divisible::<<$subfield_name as WithUnderlier>::Underlier>::ref_iter(&self.0)
 					.map_skippable($subfield_name::from)
@@ -572,7 +572,7 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			unsafe fn get_base_unchecked(&self, i: usize) -> $subfield_name {
-				use $crate::underlier::{Divisible, WithUnderlier};
+				use $crate::{Divisible, underlier::WithUnderlier};
 				// Safety: the caller guarantees `i < Self::N` (over subfield elements).
 				unsafe {
 					$subfield_name::from_underlier(Divisible::<

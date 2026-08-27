@@ -18,10 +18,8 @@ use rand::prelude::*;
 use crate::{
 	BinaryField, Random,
 	arch::portable::{packed::PackedPrimitiveType, packed_arithmetic::interleave_mask_even},
-	underlier::{
-		SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask,
-		impl_divisible_memcast,
-	},
+	divisible::impl_divisible_memcast,
+	underlier::{SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask},
 };
 
 #[derive(Copy, Clone, From, Into)]
