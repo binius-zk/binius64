@@ -12,9 +12,9 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	BinaryField,
-	arch::PackedPrimitiveType,
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	divisible::Divisible,
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::UnderlierType,
 };
 

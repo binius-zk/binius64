@@ -1,12 +1,18 @@
 // Copyright 2023-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+//! Packed field implementations, and the packings of the tower's base field.
+
+pub mod primitive;
+pub mod sliced;
+
 use std::ops::Mul;
 
 use crate::{
 	BinaryField1b,
-	arch::{M128, M256, M512, PackedPrimitiveType},
+	arch::{M128, M256, M512},
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{U1, U2, U4, UnderlierType},
 };
 
@@ -171,7 +177,7 @@ pub mod test_utils {
 		($mod:ident, $ty:ty) => {
 			mod $mod {
 				use proptest::{prelude::any, proptest};
-				use $crate::packed_binary_field::test_utils::{
+				use $crate::packed_fields::test_utils::{
 					check_invert_or_zero, check_mul, check_square, check_wide_mul,
 					check_wide_mul_linearity,
 				};

@@ -41,8 +41,8 @@
 //! which likewise carries its scalar. The invariant `N == <F as ExtensionField<PSub::Scalar>>::
 //! DEGREE` is upheld by the concrete type aliases.
 //!
-//! [`PackedPrimitiveType`]: crate::arch::PackedPrimitiveType
-//! [`PackedPrimitiveType<U, Scalar>`]: crate::arch::PackedPrimitiveType
+//! [`PackedPrimitiveType`]: crate::packed_fields::primitive::PackedPrimitiveType
+//! [`PackedPrimitiveType<U, Scalar>`]: crate::packed_fields::primitive::PackedPrimitiveType
 
 use std::{
 	array,

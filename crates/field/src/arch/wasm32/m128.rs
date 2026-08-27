@@ -17,8 +17,9 @@ use rand::prelude::*;
 
 use crate::{
 	BinaryField, Random,
-	arch::portable::{packed::PackedPrimitiveType, packed_arithmetic::interleave_mask_even},
+	arch::portable::packed_arithmetic::interleave_mask_even,
 	divisible::impl_divisible_memcast,
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask},
 };
 

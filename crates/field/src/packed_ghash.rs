@@ -46,7 +46,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		Ghash128b, PackedField, packed_binary_field::test_utils::packed_field_tests,
+		Ghash128b, PackedField, packed_fields::test_utils::packed_field_tests,
 		underlier::WithUnderlier,
 	};
 

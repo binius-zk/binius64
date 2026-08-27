@@ -15,12 +15,11 @@ use bytemuck::{Pod, Zeroable};
 use rand::{distr::StandardUniform, prelude::*};
 use seq_macro::seq;
 
-use super::super::portable::{
-	packed::PackedPrimitiveType, packed_arithmetic::interleave_mask_even,
-};
+use super::super::portable::packed_arithmetic::interleave_mask_even;
 use crate::{
 	BinaryField,
 	divisible::{Divisible, impl_divisible_self, mapget},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 

@@ -8,9 +8,9 @@ use super::{
 	simd_arithmetic::{VmullWideMul, packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_square},
 };
 use crate::{
-	arch::PackedPrimitiveType,
 	arithmetic_traits::{InvertOrZero, Square},
 	fields::rijndael::Rijndael8b,
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::WithUnderlier,
 };
 

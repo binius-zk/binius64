@@ -20,7 +20,8 @@
 //! ```
 
 use crate::{
-	BinaryField, ExtensionField, PackedField, arch::PackedPrimitiveType, underlier::WithUnderlier,
+	BinaryField, ExtensionField, PackedField, packed_fields::primitive::PackedPrimitiveType,
+	underlier::WithUnderlier,
 };
 
 /// The packing of `FSub` covering the same bits as the packed extension field type `P`.

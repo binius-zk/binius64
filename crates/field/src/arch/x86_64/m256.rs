@@ -18,8 +18,8 @@ use rand::{distr::StandardUniform, prelude::*};
 use super::m128::{M128, m128i_from_u128};
 use crate::{
 	BinaryField,
-	arch::portable::packed::PackedPrimitiveType,
 	divisible::{Divisible, impl_divisible_self, mapget},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 

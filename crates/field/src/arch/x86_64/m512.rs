@@ -17,11 +17,9 @@ use rand::{distr::StandardUniform, prelude::*};
 
 use crate::{
 	BinaryField,
-	arch::{
-		portable::packed::PackedPrimitiveType,
-		x86_64::{m128::M128, m256::M256},
-	},
+	arch::x86_64::{m128::M128, m256::M256},
 	divisible::{Divisible, mapget},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 

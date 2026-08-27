@@ -16,8 +16,8 @@ use rand::{
 
 use crate::{
 	BinaryField,
-	arch::portable::packed::PackedPrimitiveType,
 	divisible::{Divisible, impl_divisible_memcast, impl_divisible_self},
+	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
 };
 
