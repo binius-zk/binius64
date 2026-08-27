@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! A Ligerito opening proved natively, then verified inside a Binius64 circuit.
+//! A WHIR opening proved natively, then verified inside a Binius64 circuit.
 //!
 //! ```text
 //!   prover:    native, writing one real transcript
@@ -52,12 +52,12 @@ use binius_field::{Ghash128b as B128, PackedBinaryGhash1x128b};
 use binius_frontend::{CircuitStat, MAX_ASSERTION_FAILURES, PopulateError, Wire};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::{
-	ligerito::{LigeritoLevel, LigeritoParams, LigeritoVerifier},
 	merkle_channel::MerkleIPVerifierChannel,
 	merkle_tree::{BinaryMerkleTreeScheme, MerkleTreeScheme},
 	soundness::{Grinding, SoundnessRegime},
+	whir::{WHIRLevel, WHIRParams, WHIRVerifier},
 };
-use binius_iop_prover::{ligerito::LigeritoProver, merkle_channel::ProverMerkleTranscriptChannel};
+use binius_iop_prover::{merkle_channel::ProverMerkleTranscriptChannel, whir::WHIRProver};
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_ip_prover::channel::WordIPProverChannel;
 use binius_math::{
@@ -99,7 +99,7 @@ fn element_words(value: B128) -> [Word; ELEMENT_WORDS] {
 	]
 }
 
-/// The shape of one Ligerito ladder.
+/// The shape of one WHIR ladder.
 ///
 /// Every field is fixed before a proof exists, so a shape is exactly what a circuit is built for.
 #[derive(Clone, Copy, Debug)]
@@ -128,7 +128,7 @@ const NATIVE_SHAPE: Shape = Shape {
 /// What a shape fixes ahead of any proof: the ladder, and the transform its levels encode over.
 struct Setup {
 	/// The ladder, one entry per committed level.
-	params: LigeritoParams,
+	params: WHIRParams,
 	/// The additive NTT the prover encodes every level with.
 	ntt: NeighborsLastSingleThread<GaoMateerOnTheFly<B128>>,
 }
@@ -169,7 +169,7 @@ impl Shape {
 				if i > 0 {
 					log_msg_cols -= log_lanes;
 				}
-				LigeritoLevel {
+				WHIRLevel {
 					log_msg_cols,
 					log_lanes,
 					log_inv_rate: i + 1,
@@ -177,7 +177,7 @@ impl Shape {
 				}
 			})
 			.collect();
-		let params = LigeritoParams::new(levels, SoundnessRegime::UniqueDecoding, SECURITY_BITS)
+		let params = WHIRParams::new(levels, SoundnessRegime::UniqueDecoding, SECURITY_BITS)
 			.with_grinding(self.grinding);
 
 		// One transform serves the whole ladder, sized for its longest codeword.
@@ -215,8 +215,7 @@ impl Shape {
 		WordIPProverChannel::<B128>::observe_words(&mut channel, &point_words);
 
 		// Encodes level 0 lane by lane and sends its Merkle root.
-		let prover =
-			LigeritoProver::commit(&setup.params, &setup.ntt, witness.as_view(), &mut channel);
+		let prover = WHIRProver::commit(&setup.params, &setup.ntt, witness.as_view(), &mut channel);
 		WordIPProverChannel::<B128>::observe_words(&mut channel, &element_words(eval_claim));
 
 		prover.prove(witness.as_view(), &eval_point, eval_claim, &GlobalAllocator, &mut channel);
@@ -256,7 +255,7 @@ impl Shape {
 
 		// Every check the verifier makes becomes a constraint rather than a comparison.
 		// So the call cannot fail while the circuit is being built.
-		LigeritoVerifier::new(&setup.params, commitment)
+		WHIRVerifier::new(&setup.params, commitment)
 			.verify::<B128, _>(&eval_point, eval_claim, &mut channel)
 			.expect("the builder channel records rather than checks, so it cannot fail");
 
@@ -370,7 +369,7 @@ impl VerifierCircuit {
 		let claim = channel.observe_words(&statement[shape.point_words()..]);
 		let eval_claim = channel.pack_words(&claim)[0];
 
-		LigeritoVerifier::new(&setup.params, commitment)
+		WHIRVerifier::new(&setup.params, commitment)
 			.verify::<B128, _>(&eval_point, eval_claim, &mut channel)
 			.expect("the replay generates a witness rather than judging one");
 		channel.finish();
@@ -444,7 +443,7 @@ fn a_native_opening_verifies_in_circuit() {
 	let verifier = shape.record(&setup);
 
 	println!(
-		"ligerito verifier: {} gates, {} AND, {} BMUL, {} ZERO, {} committed words, {} recorded inputs",
+		"whir verifier: {} gates, {} AND, {} BMUL, {} ZERO, {} committed words, {} recorded inputs",
 		verifier.stat.n_gates,
 		verifier.stat.n_and_constraints,
 		verifier.stat.n_bmul_constraints,

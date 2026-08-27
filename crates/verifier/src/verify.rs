@@ -374,7 +374,7 @@ where
 				self.iop_verifier.verify_statement(inout, &mut channel)?;
 				channel.finish()?;
 			}
-			PcsVerifierCompiler::Ligerito(compiler) => {
+			PcsVerifierCompiler::WHIR(compiler) => {
 				let mut channel =
 					compiler.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 				self.iop_verifier.verify_statement(inout, &mut channel)?;

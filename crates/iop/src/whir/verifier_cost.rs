@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! What checking a Ligerito opening costs the verifier, level by level.
+//! What checking a WHIR opening costs the verifier, level by level.
 //!
 //! Proof size prices what crosses the wire.
 //! This prices what the verifier does with it.
@@ -42,7 +42,7 @@
 
 use binius_field::BinaryField;
 
-use super::common::LigeritoParams;
+use super::common::WHIRParams;
 use crate::merkle_tree::MerkleTreeScheme;
 
 /// The verifier work one row of the cost table accounts for.
@@ -80,7 +80,7 @@ impl VerifierCost {
 /// The per-level cost table, with the residual as its last row.
 ///
 /// See the module documentation for the formula behind each entry.
-pub(super) fn verifier_cost<F, VCS>(params: &LigeritoParams, vcs: &VCS) -> Vec<VerifierCost>
+pub(super) fn verifier_cost<F, VCS>(params: &WHIRParams, vcs: &VCS) -> Vec<VerifierCost>
 where
 	F: BinaryField,
 	VCS: MerkleTreeScheme<F>,
@@ -121,9 +121,7 @@ mod tests {
 	use binius_hash::StdHashSuite;
 
 	use super::*;
-	use crate::{
-		ligerito::LigeritoLevel, merkle_tree::BinaryMerkleTreeScheme, soundness::SoundnessRegime,
-	};
+	use crate::{merkle_tree::BinaryMerkleTreeScheme, soundness::SoundnessRegime, whir::WHIRLevel};
 
 	fn scheme() -> BinaryMerkleTreeScheme<B128, StdHashSuite> {
 		BinaryMerkleTreeScheme::new()
@@ -132,7 +130,7 @@ mod tests {
 	/// A ladder whose level `i` commits at inverse rate `2^(i + 1)` and opens `n_queries` rows.
 	///
 	/// `lanes[i]` is level `i`'s fold amount, and `log_msg_cols` is level 0's column count.
-	fn ladder(log_msg_cols: usize, lanes: &[usize], n_queries: usize) -> LigeritoParams {
+	fn ladder(log_msg_cols: usize, lanes: &[usize], n_queries: usize) -> WHIRParams {
 		let mut log_msg_cols = log_msg_cols;
 		let levels = lanes
 			.iter()
@@ -142,7 +140,7 @@ mod tests {
 				if i > 0 {
 					log_msg_cols -= log_lanes;
 				}
-				LigeritoLevel {
+				WHIRLevel {
 					log_msg_cols,
 					log_lanes,
 					log_inv_rate: i + 1,
@@ -150,7 +148,7 @@ mod tests {
 				}
 			})
 			.collect();
-		LigeritoParams::new(levels, SoundnessRegime::UniqueDecoding, 32)
+		WHIRParams::new(levels, SoundnessRegime::UniqueDecoding, 32)
 	}
 
 	#[test]

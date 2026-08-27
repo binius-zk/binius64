@@ -1,8 +1,8 @@
 // Copyright 2026 The Binius Developers
 
-//! The Ligerito opening protocol on the prover side.
+//! The WHIR opening protocol on the prover side.
 //!
-//! The counterpart of [`binius_iop::ligerito::LigeritoVerifier`], which describes the protocol.
+//! The counterpart of [`binius_iop::whir::WHIRVerifier`], which describes the protocol.
 //! Three facts recorded there drive everything here.
 //! The sumcheck challenges of a level are its lane fold.
 //! Whatever a level folds to is committed before that level's queries are drawn.
@@ -17,7 +17,7 @@ use std::iter::zip;
 use binius_compute::{Allocator, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
-use binius_iop::ligerito::{LigeritoLevel, LigeritoParams};
+use binius_iop::whir::{WHIRLevel, WHIRParams};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
 	bivariate_product_evaluator::bivariate_product_prover,
@@ -52,7 +52,7 @@ use crate::{
 ///
 /// as [`binius_math::ntt::subspace_polys`] pins.
 /// The bit reversal is what makes an opened coset fold by the sumcheck challenges in sampling
-/// order, which [`binius_iop::ligerito::LigeritoVerifier`] spells out.
+/// order, which [`binius_iop::whir::WHIRVerifier`] spells out.
 /// So no reshaping happens here, and a caller must not do any either.
 ///
 /// One leaf is one codeword position across every lane, so a leaf is `2^log_lanes` scalars.
@@ -65,7 +65,7 @@ use crate::{
 /// * `message` has `level.log_msg_len()` variables.
 /// * `ntt`'s domain covers the level's codeword domain.
 pub(crate) fn commit_level<F, P, NTT, Channel>(
-	level: &LigeritoLevel,
+	level: &WHIRLevel,
 	ntt: &NTT,
 	message: FieldSlice<'_, P>,
 	channel: &mut Channel,
@@ -97,20 +97,20 @@ where
 	BrakedownOracleProver::new(codeword, commitment, 0)
 }
 
-/// Proves a Ligerito opening against a committed ladder of Reed-Solomon codewords.
+/// Proves a WHIR opening against a committed ladder of Reed-Solomon codewords.
 ///
 /// Holds the ladder's shape, the transform its levels encode over, and level 0's oracles.
 /// Deeper levels only exist once the folds above them have run, so [`Self::prove`] commits those.
-pub struct LigeritoProver<'a, P: PackedField, C, NTT> {
-	/// The ladder's shape, one [`LigeritoLevel`] per committed level.
-	params: &'a LigeritoParams,
+pub struct WHIRProver<'a, P: PackedField, C, NTT> {
+	/// The ladder's shape, one [`WHIRLevel`] per committed level.
+	params: &'a WHIRParams,
 	/// The transform every level encodes over, sized for the largest of them.
 	ntt: &'a NTT,
 	/// Level 0's committed interleaved codewords, in the order their openings are written.
 	oracles: BatchBrakedownOracleProver<P, C>,
 }
 
-impl<'a, F, P, C, NTT> LigeritoProver<'a, P, C, NTT>
+impl<'a, F, P, C, NTT> WHIRProver<'a, P, C, NTT>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -128,7 +128,7 @@ where
 	/// * `message` has `params.log_msg_len()` variables.
 	/// * `ntt`'s domain covers every level's codeword domain.
 	pub fn commit<Channel>(
-		params: &'a LigeritoParams,
+		params: &'a WHIRParams,
 		ntt: &'a NTT,
 		message: FieldSlice<'_, P>,
 		channel: &mut Channel,
@@ -150,7 +150,7 @@ where
 	///
 	/// * Every codeword spans level 0's codeword length, so one query position addresses all.
 	pub const fn new(
-		params: &'a LigeritoParams,
+		params: &'a WHIRParams,
 		ntt: &'a NTT,
 		oracles: BatchBrakedownOracleProver<P, C>,
 	) -> Self {
@@ -162,7 +162,7 @@ where
 	}
 
 	/// The ladder's shape, one level per committed level.
-	pub const fn params(&self) -> &LigeritoParams {
+	pub const fn params(&self) -> &WHIRParams {
 		self.params
 	}
 
@@ -216,7 +216,7 @@ where
 		for (i, level) in levels.iter().enumerate() {
 			let n_vars = level.log_msg_len();
 			let _level_guard =
-				tracing::debug_span!("Ligerito level", level = i, log_msg_len = n_vars).entered();
+				tracing::debug_span!("WHIR level", level = i, log_msg_len = n_vars).entered();
 			let witness = FieldBuffer::from_view_in(alloc, current.as_view());
 
 			let fold_guard =
@@ -344,10 +344,10 @@ mod tests {
 	use binius_hash_prover::{ParallelCompressionAdaptor, ParallelHashSuite};
 	use binius_iop::{
 		channel::grinding::GrindingVerifierChannel,
-		ligerito::{Error, LigeritoVerifier, VerifierCost},
 		merkle_channel::{self, MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
 		merkle_tree::{self, BinaryMerkleTreeScheme},
 		soundness::{Grinding, SoundnessRegime},
+		whir::{Error, VerifierCost, WHIRVerifier},
 	};
 	use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 	use binius_math::{
@@ -372,7 +372,7 @@ mod tests {
 	///
 	/// `lanes[i]` is level `i`'s fold amount, and `log_msg_cols` is level 0's column count.
 	/// Level `i + 1` takes what level `i` folds to, so its columns are `cols_i - lanes_{i+1}`.
-	fn ladder(log_msg_cols: usize, lanes: &[usize], n_queries: usize) -> LigeritoParams {
+	fn ladder(log_msg_cols: usize, lanes: &[usize], n_queries: usize) -> WHIRParams {
 		let mut log_msg_cols = log_msg_cols;
 		let levels = lanes
 			.iter()
@@ -382,7 +382,7 @@ mod tests {
 				if i > 0 {
 					log_msg_cols -= log_lanes;
 				}
-				LigeritoLevel {
+				WHIRLevel {
 					log_msg_cols,
 					log_lanes,
 					log_inv_rate: i + 1,
@@ -390,7 +390,7 @@ mod tests {
 				}
 			})
 			.collect();
-		LigeritoParams::new(levels, SoundnessRegime::default(), 32)
+		WHIRParams::new(levels, SoundnessRegime::default(), 32)
 	}
 
 	/// Commits `committed`, then proves `<opened, eq(z)> = opened(z) + claim_offset`.
@@ -403,7 +403,7 @@ mod tests {
 	/// Returns the finished transcript alongside the point and claim it opens at.
 	/// A verifier can then be pointed at it through whichever channel a test wants to watch.
 	fn write_proof(
-		params: &LigeritoParams,
+		params: &WHIRParams,
 		committed: &FieldBuffer<B128>,
 		opened: &FieldBuffer<B128>,
 		claim_offset: B128,
@@ -425,7 +425,7 @@ mod tests {
 			ProverMerkleTranscriptChannel::<_, StdChallenger, B128, StdHashSuite>::new(
 				&mut transcript,
 			);
-		let prover = LigeritoProver::commit(params, &ntt, committed.as_view(), &mut channel);
+		let prover = WHIRProver::commit(params, &ntt, committed.as_view(), &mut channel);
 		prover.prove(opened.as_view(), &eval_point, eval_claim, &GlobalAllocator, &mut channel);
 		channel.into_transcript();
 
@@ -437,7 +437,7 @@ mod tests {
 	/// The ladder is taken from `params` rather than from the transcript, so a verifier can be
 	/// pointed at a proof written under different parameters.
 	fn verify_proof(
-		params: &LigeritoParams,
+		params: &WHIRParams,
 		proof: Vec<u8>,
 		eval_point: &[B128],
 		eval_claim: B128,
@@ -452,7 +452,7 @@ mod tests {
 		let level = &params.levels()[0];
 		let commitment = verifier_channel
 			.recv_merkle_commitment(1 << level.log_lanes, level.log_codeword_len())?;
-		LigeritoVerifier::new(params, commitment).verify(
+		WHIRVerifier::new(params, commitment).verify(
 			eval_point,
 			eval_claim,
 			&mut verifier_channel,
@@ -465,7 +465,7 @@ mod tests {
 	///
 	/// The byte count is only ever taken from a transcript that convinced the verifier.
 	fn run(
-		params: &LigeritoParams,
+		params: &WHIRParams,
 		committed: &FieldBuffer<B128>,
 		opened: &FieldBuffer<B128>,
 		claim_offset: B128,
@@ -479,8 +479,8 @@ mod tests {
 	/// The two ladders are the same shape and differ only in the proof of work they pay, which is
 	/// how a grind checked in the wrong place is expressed here.
 	fn run_across(
-		prover_params: &LigeritoParams,
-		verifier_params: &LigeritoParams,
+		prover_params: &WHIRParams,
+		verifier_params: &WHIRParams,
 	) -> Result<usize, Error> {
 		let msg = message(prover_params, 0);
 		let (proof, eval_point, eval_claim) = write_proof(prover_params, &msg, &msg, B128::ZERO);
@@ -488,7 +488,7 @@ mod tests {
 	}
 
 	/// A random message of the ladder's shape.
-	fn message(params: &LigeritoParams, seed: u64) -> FieldBuffer<B128> {
+	fn message(params: &WHIRParams, seed: u64) -> FieldBuffer<B128> {
 		random_field_buffer(&mut StdRng::seed_from_u64(seed), params.log_msg_len())
 	}
 
@@ -733,7 +733,7 @@ mod tests {
 
 	/// The proof-size estimate must equal the transcript, not merely approximate it.
 	///
-	/// [`LigeritoParams::proof_size`] calls itself exact, and the ladder search minimizes it.
+	/// [`WHIRParams::proof_size`] calls itself exact, and the ladder search minimizes it.
 	/// An estimate that undercounts therefore picks the shape of a proof nobody produces.
 	///
 	/// The sweep moves all four dimensions of a level independently.
@@ -747,7 +747,7 @@ mod tests {
 			for log_lanes in 0..4 {
 				for log_inv_rate in 1..3 {
 					for n_queries in [1, 3, 5, 12, 31] {
-						let level = LigeritoLevel {
+						let level = WHIRLevel {
 							log_msg_cols,
 							log_lanes,
 							log_inv_rate,
@@ -761,7 +761,7 @@ mod tests {
 						// The query count is pinned on the level, so the security target only has
 						// to be one the constructor's feasibility check accepts.
 						let params =
-							LigeritoParams::new(vec![level], SoundnessRegime::UniqueDecoding, 8);
+							WHIRParams::new(vec![level], SoundnessRegime::UniqueDecoding, 8);
 						let msg = message(&params, 0);
 						let written = run(&params, &msg, &msg, B128::ZERO).unwrap_or_else(|err| {
 							panic!("{level:?}: honest proof rejected: {err}")
@@ -1180,7 +1180,7 @@ mod tests {
 	/// Verifies an honest opening through the counting element type and the counting hash suite.
 	///
 	/// The prover runs first, under the shipped suite, so nothing it does reaches an instrument.
-	fn measure(params: &LigeritoParams) -> Result<Measured, Error> {
+	fn measure(params: &WHIRParams) -> Result<Measured, Error> {
 		let msg = message(params, 0);
 		let (proof, eval_point, eval_claim) = write_proof(params, &msg, &msg, B128::ZERO);
 
@@ -1195,7 +1195,7 @@ mod tests {
 		let commitment =
 			channel.recv_merkle_commitment(1 << level.log_lanes, level.log_codeword_len())?;
 		let point = eval_point.into_iter().map(Counted).collect::<Vec<_>>();
-		let verifier = LigeritoVerifier::new(params, commitment);
+		let verifier = WHIRVerifier::new(params, commitment);
 
 		COMPRESSIONS.with(|count| count.set(0));
 		let (verified, field_muls) = Counted::measure(|| {
@@ -1310,7 +1310,7 @@ mod tests {
 
 		println!();
 		println!(
-			"Ligerito verifier cost, message 2^{}, residual 2^{}",
+			"WHIR verifier cost, message 2^{}, residual 2^{}",
 			params.log_msg_len(),
 			params.log_residual_dim()
 		);

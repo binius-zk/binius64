@@ -10,7 +10,7 @@ use binius_utils::rayon::{
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
 
-/// The single level-0 message a batched Ligerito opening folds.
+/// The single level-0 message a batched WHIR opening folds.
 ///
 /// Each committed message enters scaled by its batching coefficient.
 /// A message shorter than the longest one is zero-extended over the coordinates it lacks.

@@ -485,7 +485,7 @@ where
 					.prove::<_, P, _>(witness, &mut channel, &alloc)?;
 				channel.finish();
 			}
-			PcsProverCompiler::Ligerito(compiler) => {
+			PcsProverCompiler::WHIR(compiler) => {
 				// The ladder commits no mask at all, so it needs no randomness of its own.
 				let mut channel = compiler
 					.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
@@ -734,9 +734,9 @@ mod tests {
 		);
 
 		let basefold = prove_and_verify(cs.clone(), &witness, Pcs::BaseFold);
-		let ligerito = prove_and_verify(cs, &witness, Pcs::Ligerito);
+		let whir = prove_and_verify(cs, &witness, Pcs::WHIR);
 
-		assert!(ligerito < basefold, "the ladder wrote {ligerito} bytes against FRI's {basefold}");
+		assert!(whir < basefold, "the ladder wrote {whir} bytes against FRI's {basefold}");
 	}
 
 	/// The AND constraints of that circuit, and the same witness.

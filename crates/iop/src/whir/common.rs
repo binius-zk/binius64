@@ -10,7 +10,7 @@ use crate::{
 	soundness::{Grinding, SoundnessRegime},
 };
 
-/// One committed level of the Ligerito recursion.
+/// One committed level of the WHIR recursion.
 ///
 /// The level's message is a matrix of `2^log_lanes` interleaved lanes by `2^log_msg_cols` columns.
 /// Every lane is Reed–Solomon encoded to `2^(log_msg_cols + log_inv_rate)` positions.
@@ -21,7 +21,7 @@ use crate::{
 /// The `log_lanes` fold challenges of this level are also its sumcheck rounds.
 /// That is why the lane count and the fold amount are the same number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LigeritoLevel {
+pub struct WHIRLevel {
 	/// log2 the number of message columns this level's matrix has.
 	pub log_msg_cols: usize,
 	/// log2 the number of interleaved lanes, which is also this level's fold amount.
@@ -32,7 +32,7 @@ pub struct LigeritoLevel {
 	pub n_queries: usize,
 }
 
-impl LigeritoLevel {
+impl WHIRLevel {
 	/// A level whose query count is derived from `regime` at this level's own rate.
 	///
 	/// Query grinding closes part of the target before a single row is opened.
@@ -100,7 +100,7 @@ impl LigeritoLevel {
 	}
 }
 
-/// Parameters for the Ligerito recursive matrix-commitment protocol.
+/// Parameters for the WHIR recursive matrix-commitment protocol.
 ///
 /// ## Invariants
 ///
@@ -121,9 +121,9 @@ impl LigeritoLevel {
 /// For an intermediate level that remainder is the next level's message, hence the chaining.
 /// For the last level there is no next level, so it is the residual sent in the clear.
 #[derive(Debug, Clone, CopyGetters)]
-pub struct LigeritoParams {
+pub struct WHIRParams {
 	/// The committed levels, outermost first. Guaranteed non-empty.
-	levels: Vec<LigeritoLevel>,
+	levels: Vec<WHIRLevel>,
 	/// log2 the number of field elements in the residual matrix sent in the clear.
 	#[getset(get_copy = "pub")]
 	log_residual_dim: usize,
@@ -138,13 +138,13 @@ pub struct LigeritoParams {
 	grinding: Grinding,
 }
 
-impl LigeritoParams {
+impl WHIRParams {
 	/// Assembles parameters from an explicit ladder, checking every invariant.
 	///
 	/// ## Preconditions
 	///
-	/// * All the invariants listed on [`LigeritoParams`].
-	pub fn new(levels: Vec<LigeritoLevel>, regime: SoundnessRegime, security_bits: usize) -> Self {
+	/// * All the invariants listed on [`WHIRParams`].
+	pub fn new(levels: Vec<WHIRLevel>, regime: SoundnessRegime, security_bits: usize) -> Self {
 		assert!(!levels.is_empty(), "precondition: levels must be non-empty");
 
 		for (i, pair) in levels.windows(2).enumerate() {
@@ -210,7 +210,7 @@ impl LigeritoParams {
 	}
 
 	/// The committed levels, outermost first. Non-empty.
-	pub fn levels(&self) -> &[LigeritoLevel] {
+	pub fn levels(&self) -> &[WHIRLevel] {
 		&self.levels
 	}
 
@@ -238,14 +238,14 @@ impl LigeritoParams {
 	/// ## Preconditions
 	///
 	/// * `log_msg_len` is at most the ladder's own message length.
-	pub fn level_zero_shape(&self, log_msg_len: usize) -> LigeritoLevel {
+	pub fn level_zero_shape(&self, log_msg_len: usize) -> WHIRLevel {
 		assert!(
 			log_msg_len <= self.log_msg_len(),
 			"precondition: a message of 2^{log_msg_len} elements exceeds the ladder's 2^{}",
 			self.log_msg_len()
 		);
 
-		LigeritoLevel {
+		WHIRLevel {
 			log_lanes: log_msg_len.saturating_sub(self.levels[0].log_msg_cols),
 			..self.levels[0]
 		}
@@ -265,7 +265,7 @@ impl LigeritoParams {
 	pub fn max_log_codeword_len(&self) -> usize {
 		self.levels
 			.iter()
-			.map(LigeritoLevel::log_codeword_len)
+			.map(WHIRLevel::log_codeword_len)
 			.max()
 			.expect("levels is non-empty")
 	}
@@ -367,7 +367,7 @@ impl LigeritoParams {
 		algebra.min(queries)
 	}
 
-	/// The exact byte-size of a Ligerito proof over one committed message, without running it.
+	/// The exact byte-size of a WHIR proof over one committed message, without running it.
 	///
 	/// A ladder opening several messages pays extra per-message level-0 openings on top of this.
 	///
@@ -472,17 +472,17 @@ mod tests {
 
 	// A three-level ladder that satisfies every invariant, used as the base for the rejection
 	// tests below. Message 2^12, lanes 3/2/1, rates 1/2 -> 1/4 -> 1/8, residual 2^6.
-	fn valid_levels() -> Vec<LigeritoLevel> {
+	fn valid_levels() -> Vec<WHIRLevel> {
 		vec![
-			LigeritoLevel::new(9, 3, 1, SoundnessRegime::UniqueDecoding, 100, Grinding::NONE),
-			LigeritoLevel::new(7, 2, 2, SoundnessRegime::UniqueDecoding, 100, Grinding::NONE),
-			LigeritoLevel::new(6, 1, 3, SoundnessRegime::UniqueDecoding, 100, Grinding::NONE),
+			WHIRLevel::new(9, 3, 1, SoundnessRegime::UniqueDecoding, 100, Grinding::NONE),
+			WHIRLevel::new(7, 2, 2, SoundnessRegime::UniqueDecoding, 100, Grinding::NONE),
+			WHIRLevel::new(6, 1, 3, SoundnessRegime::UniqueDecoding, 100, Grinding::NONE),
 		]
 	}
 
 	#[test]
 	fn valid_ladder_is_accepted_and_residual_is_derived() {
-		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		let params = WHIRParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
 		assert_eq!(params.n_levels(), 3);
 		assert_eq!(params.log_msg_len(), 12);
 		// The residual is the last level's remaining columns.
@@ -496,7 +496,7 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "precondition: levels must be non-empty")]
 	fn empty_ladder_is_rejected() {
-		LigeritoParams::new(Vec::new(), SoundnessRegime::UniqueDecoding, 100);
+		WHIRParams::new(Vec::new(), SoundnessRegime::UniqueDecoding, 100);
 	}
 
 	#[test]
@@ -505,7 +505,7 @@ mod tests {
 		let mut levels = valid_levels();
 		// Level 1 should have 7 columns to absorb level 0's 9 minus its own 2 lanes.
 		levels[1].log_msg_cols = 8;
-		LigeritoParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
+		WHIRParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
 	}
 
 	#[test]
@@ -514,7 +514,7 @@ mod tests {
 		let mut levels = valid_levels();
 		// Level 1 recommits at level 0's rate, so the recursion buys nothing.
 		levels[1].log_inv_rate = 1;
-		LigeritoParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
+		WHIRParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
 	}
 
 	#[test]
@@ -523,14 +523,14 @@ mod tests {
 		let mut levels = valid_levels();
 		// 2^(6 + 3) = 512 positions cannot serve 513 distinct queries.
 		levels[2].n_queries = 513;
-		LigeritoParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
+		WHIRParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
 	}
 
 	#[test]
 	fn the_transform_domain_covers_every_level() {
 		// Codeword lengths of the three levels: 9 + 1, 7 + 2, 6 + 3 = 10, 9, 9.
 		// Level 0 is the longest, which is the usual case.
-		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		let params = WHIRParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
 		assert_eq!(params.max_log_codeword_len(), 10);
 
 		// A level that folds no lanes keeps its predecessor's column count and only drops the rate.
@@ -539,10 +539,10 @@ mod tests {
 		//     level 0: 2^4 columns at rate 1/2  -> 2^5 positions
 		//     level 1: 2^4 columns at rate 1/4  -> 2^6 positions
 		let flat = vec![
-			LigeritoLevel::new(4, 0, 1, SoundnessRegime::UniqueDecoding, 8, Grinding::NONE),
-			LigeritoLevel::new(4, 0, 2, SoundnessRegime::UniqueDecoding, 8, Grinding::NONE),
+			WHIRLevel::new(4, 0, 1, SoundnessRegime::UniqueDecoding, 8, Grinding::NONE),
+			WHIRLevel::new(4, 0, 2, SoundnessRegime::UniqueDecoding, 8, Grinding::NONE),
 		];
-		let params = LigeritoParams::new(flat, SoundnessRegime::UniqueDecoding, 8);
+		let params = WHIRParams::new(flat, SoundnessRegime::UniqueDecoding, 8);
 		assert_eq!(params.max_log_codeword_len(), 6);
 	}
 
@@ -552,7 +552,7 @@ mod tests {
 		// and an ungrinding one are different protocols and only the caller knows which it wants.
 		//
 		// Fixture state: the three-level ladder above, built the ordinary way.
-		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		let params = WHIRParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
 		assert_eq!(params.grinding(), Grinding::NONE);
 		for level in params.levels() {
 			assert_eq!(level.n_grind_nonces(Grinding::NONE), 0);
@@ -562,7 +562,7 @@ mod tests {
 	#[test]
 	fn a_shorter_message_commits_fewer_lanes_at_level_zero() {
 		// Fixture state: level 0 is 2^9 columns by 2^3 lanes, so the ladder commits 2^12 elements.
-		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		let params = WHIRParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
 
 		//     2^12 elements -> 2^9 columns * 2^3 lanes   the ladder's own message
 		//     2^11 elements -> 2^9 columns * 2^2 lanes   one lane fewer, same codeword
@@ -593,7 +593,7 @@ mod tests {
 
 		// A level that folds nothing has no fold challenge to stand before, so a challenge grind
 		// writes nothing there while a query grind still writes its one nonce.
-		let flat = LigeritoLevel {
+		let flat = WHIRLevel {
 			log_lanes: 0,
 			..level
 		};
@@ -611,7 +611,7 @@ mod tests {
 		// ceiling sits well above the target and the row term is the binding one. A query grind
 		// therefore shows in the total and a challenge grind does not.
 		let levels = valid_levels();
-		let bare = LigeritoParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
+		let bare = WHIRParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
 		let ceiling = bare.correlated_agreement_bits(128);
 		let base = bare.achieved_security_bits(128);
 		assert!(base < ceiling, "base={base} ceiling={ceiling}");
@@ -639,7 +639,7 @@ mod tests {
 		//
 		// Fixture state: the ladder above, ground as hard as the transcript allows.
 		let grinding = Grinding::new(MAX_GRINDING_BITS, MAX_GRINDING_BITS);
-		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100)
+		let params = WHIRParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100)
 			.with_grinding(grinding);
 		assert_eq!(params.grinding().challenge_bits(), MAX_GRINDING_BITS);
 		assert_eq!(params.grinding().query_bits(), MAX_GRINDING_BITS);
@@ -649,7 +649,7 @@ mod tests {
 
 		// A query grind deeper than the target leaves the rows nothing to cover. That is a
 		// misconfigured budget rather than a protocol, and it saturates rather than wrapping.
-		let level = LigeritoLevel::new(
+		let level = WHIRLevel::new(
 			9,
 			3,
 			1,
@@ -664,14 +664,14 @@ mod tests {
 	#[should_panic(expected = "exceeds the ladder's")]
 	fn a_message_longer_than_the_ladder_has_no_level_zero_shape() {
 		// The ladder commits 2^12 elements, so 2^13 has no lane count that fits its level 0.
-		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		let params = WHIRParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
 		params.level_zero_shape(13);
 	}
 
 	#[test]
 	fn batching_messages_costs_level_zero_a_wider_row_union() {
 		// Fixture state: level 0 folds 2^3 lanes, so alone it already pays a union of 2^2 rows.
-		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		let params = WHIRParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
 		let alone = params.correlated_agreement_bits(128);
 
 		// One message is the unbatched figure, so the two routes must not drift.
@@ -691,13 +691,13 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "precondition: a ladder opens at least one message")]
 	fn a_batch_of_no_messages_has_no_ceiling() {
-		let params = LigeritoParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
+		let params = WHIRParams::new(valid_levels(), SoundnessRegime::UniqueDecoding, 100);
 		params.batched_correlated_agreement_bits(128, 0);
 	}
 
 	#[test]
 	fn feasibility_is_exact_at_the_boundary() {
-		let mut level = LigeritoLevel {
+		let mut level = WHIRLevel {
 			log_msg_cols: 6,
 			log_lanes: 1,
 			log_inv_rate: 3,
@@ -716,7 +716,7 @@ mod tests {
 		let (regime, _) =
 			SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128).expect("reachable");
 		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
+			WHIRParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
 				.expect("feasible");
 		for bits in [0usize, 1, 2, 3] {
 			let g = params.clone().with_grinding(Grinding::new(bits, 0));
@@ -749,7 +749,7 @@ mod tests {
 		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
 			.expect("120 bits is reachable with a constant loss");
 		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
+			WHIRParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
 				.expect("a 120-bit ladder exists for one message");
 
 		for log_k in 0..4 {

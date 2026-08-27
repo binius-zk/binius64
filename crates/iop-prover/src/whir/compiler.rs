@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! Ligerito compiler for IOP provers.
+//! WHIR compiler for IOP provers.
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
@@ -10,9 +10,9 @@ use binius_field::{BinaryField, PackedField};
 use binius_hash_prover::ParallelHashSuite;
 use binius_iop::{
 	channel::OracleSpec,
-	ligerito::{LigeritoParams, compiler::LigeritoVerifierCompiler},
 	merkle_tree::MerkleTreeScheme,
 	soundness::{Grinding, SoundnessRegime},
+	whir::{WHIRParams, compiler::WHIRVerifierCompiler},
 };
 use binius_math::ntt::AdditiveNTT;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
@@ -20,23 +20,23 @@ use binius_utils::SerializeBytes;
 use digest::Output;
 
 use crate::{
-	ligerito::channel::LigeritoProverChannel,
 	merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
 	merkle_tree::prover::BinaryMerkleTreeProver,
+	whir::channel::WHIRProverChannel,
 };
 
 /// The channel the transcript constructor returns.
 ///
-/// A Ligerito channel over a transcript-backed Merkle channel.
+/// A WHIR channel over a transcript-backed Merkle channel.
 /// Its allocator backs the opening's working buffers and every Merkle tree node it commits.
-pub type TranscriptLigeritoProverChannel<'a, F, P, NTT, T, Challenger_, H, A> =
-	LigeritoProverChannel<'a, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>, A>;
+pub type TranscriptWHIRProverChannel<'a, F, P, NTT, T, Challenger_, H, A> =
+	WHIRProverChannel<'a, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>, A>;
 
-/// A compiler that creates Ligerito prover channels from a precomputed ladder.
+/// A compiler that creates WHIR prover channels from a precomputed ladder.
 ///
 /// The mirror of the verifier's compiler, holding the additive transform in addition to the ladder.
 #[derive(Debug)]
-pub struct LigeritoProverCompiler<P, NTT>
+pub struct WHIRProverCompiler<P, NTT>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
@@ -46,12 +46,12 @@ where
 	/// The oracles every channel this compiler makes will commit, in the order they are sent.
 	oracle_specs: Vec<OracleSpec>,
 	/// The ladder each of those openings runs down.
-	params: LigeritoParams,
+	params: WHIRParams,
 	/// Ties the packed field to the compiler without storing a value of it.
 	_marker: PhantomData<P>,
 }
 
-impl<F, P, NTT> LigeritoProverCompiler<P, NTT>
+impl<F, P, NTT> WHIRProverCompiler<P, NTT>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -64,9 +64,9 @@ where
 	/// * `oracle_specs` is non-empty and no spec is zero-knowledge.
 	/// * The longest message is the ladder's message length.
 	/// * `ntt`'s domain covers every level's codeword domain.
-	pub fn new(ntt: NTT, oracle_specs: Vec<OracleSpec>, params: LigeritoParams) -> Self {
+	pub fn new(ntt: NTT, oracle_specs: Vec<OracleSpec>, params: WHIRParams) -> Self {
 		// The two sides must agree on the ladder, so the checks are the verifier's, run here too.
-		let verifier = LigeritoVerifierCompiler::<F>::new(oracle_specs, params);
+		let verifier = WHIRVerifierCompiler::<F>::new(oracle_specs, params);
 		Self::from_verifier_compiler(&verifier, ntt)
 	}
 
@@ -93,7 +93,7 @@ where
 	where
 		MerkleScheme: MerkleTreeScheme<F>,
 	{
-		let verifier = LigeritoVerifierCompiler::<F>::optimal(
+		let verifier = WHIRVerifierCompiler::<F>::optimal(
 			merkle_scheme,
 			oracle_specs,
 			l0_log_inv_rate,
@@ -105,10 +105,7 @@ where
 	}
 
 	/// Creates a prover compiler from a verifier compiler, reusing its ladder and oracle specs.
-	pub fn from_verifier_compiler(
-		verifier_compiler: &LigeritoVerifierCompiler<F>,
-		ntt: NTT,
-	) -> Self {
+	pub fn from_verifier_compiler(verifier_compiler: &WHIRVerifierCompiler<F>, ntt: NTT) -> Self {
 		Self {
 			ntt,
 			oracle_specs: verifier_compiler.oracle_specs().to_vec(),
@@ -128,7 +125,7 @@ where
 	}
 
 	/// Returns a reference to the precomputed ladder.
-	pub const fn params(&self) -> &LigeritoParams {
+	pub const fn params(&self) -> &WHIRParams {
 		&self.params
 	}
 
@@ -140,18 +137,12 @@ where
 		&self,
 		channel: Channel,
 		alloc: A,
-	) -> LigeritoProverChannel<'_, F, P, NTT, Channel, A>
+	) -> WHIRProverChannel<'_, F, P, NTT, Channel, A>
 	where
 		Channel: MerkleIPProverChannel<F, Word = Word>,
 		A: Allocator,
 	{
-		LigeritoProverChannel::new(
-			channel,
-			&self.ntt,
-			self.oracle_specs.clone(),
-			&self.params,
-			alloc,
-		)
+		WHIRProverChannel::new(channel, &self.ntt, self.oracle_specs.clone(), &self.params, alloc)
 	}
 
 	/// Creates a prover channel over a transcript, for the common case.
@@ -165,7 +156,7 @@ where
 		&self,
 		transcript: T,
 		alloc: A,
-	) -> TranscriptLigeritoProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
+	) -> TranscriptWHIRProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
 	where
 		H: ParallelHashSuite,
 		Challenger_: Challenger,

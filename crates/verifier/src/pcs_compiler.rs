@@ -7,8 +7,8 @@ use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::OracleSpec,
-	ligerito::compiler::LigeritoVerifierCompiler,
 	soundness::{Grinding, SoundnessRegime},
+	whir::compiler::WHIRVerifierCompiler,
 };
 
 use crate::{
@@ -30,7 +30,7 @@ where
 	/// A sumcheck interleaved with one FRI over a codeword committed at a single rate.
 	BaseFold(BaseFoldVerifierCompiler<F>),
 	/// A ladder of Reed-Solomon commitments whose rate falls at every level.
-	Ligerito(LigeritoVerifierCompiler<F>),
+	WHIR(WHIRVerifierCompiler<F>),
 }
 
 impl<F> PcsVerifierCompiler<F>
@@ -84,13 +84,13 @@ where
 					&ConstantArityStrategy::new(arity),
 				)))
 			}
-			Pcs::Ligerito => {
+			Pcs::WHIR => {
 				// The query counts come out of the same unique-decoding radius FRI uses, so the
 				// two schemes are priced against one another rather than against two regimes.
 				let log_msg_len = oracle_specs[0].log_msg_len;
 				// No proof of work: the two schemes are compared on the protocol alone, and FRI
 				// grinds nothing either.
-				LigeritoVerifierCompiler::optimal(
+				WHIRVerifierCompiler::optimal(
 					merkle_scheme,
 					oracle_specs,
 					log_inv_rate,
@@ -98,8 +98,8 @@ where
 					security_bits,
 					Grinding::NONE,
 				)
-				.map(Self::Ligerito)
-				.ok_or(Error::NoLigeritoLadder {
+				.map(Self::WHIR)
+				.ok_or(Error::NoWHIRLadder {
 					log_msg_len,
 					log_inv_rate,
 					security_bits,
@@ -112,7 +112,7 @@ where
 	pub const fn scheme(&self) -> Pcs {
 		match self {
 			Self::BaseFold(_) => Pcs::BaseFold,
-			Self::Ligerito(_) => Pcs::Ligerito,
+			Self::WHIR(_) => Pcs::WHIR,
 		}
 	}
 
@@ -120,7 +120,7 @@ where
 	pub fn oracle_specs(&self) -> &[OracleSpec] {
 		match self {
 			Self::BaseFold(compiler) => compiler.oracle_specs(),
-			Self::Ligerito(compiler) => compiler.oracle_specs(),
+			Self::WHIR(compiler) => compiler.oracle_specs(),
 		}
 	}
 
@@ -130,7 +130,7 @@ where
 	pub fn max_log_domain_size(&self) -> usize {
 		match self {
 			Self::BaseFold(compiler) => compiler.max_log_domain_size(),
-			Self::Ligerito(compiler) => compiler.max_log_domain_size(),
+			Self::WHIR(compiler) => compiler.max_log_domain_size(),
 		}
 	}
 
@@ -140,15 +140,15 @@ where
 	pub const fn as_basefold(&self) -> Option<&BaseFoldVerifierCompiler<F>> {
 		match self {
 			Self::BaseFold(compiler) => Some(compiler),
-			Self::Ligerito(_) => None,
+			Self::WHIR(_) => None,
 		}
 	}
 
 	/// The ladder compiler, when that is the scheme in use.
-	pub const fn as_ligerito(&self) -> Option<&LigeritoVerifierCompiler<F>> {
+	pub const fn as_whir(&self) -> Option<&WHIRVerifierCompiler<F>> {
 		match self {
 			Self::BaseFold(_) => None,
-			Self::Ligerito(compiler) => Some(compiler),
+			Self::WHIR(compiler) => Some(compiler),
 		}
 	}
 }
@@ -173,20 +173,20 @@ mod tests {
 
 		let basefold =
 			PcsVerifierCompiler::new(Pcs::BaseFold, &scheme(), specs.clone(), 1, 96).unwrap();
-		let ligerito = PcsVerifierCompiler::new(Pcs::Ligerito, &scheme(), specs.clone(), 1, 96)
+		let whir = PcsVerifierCompiler::new(Pcs::WHIR, &scheme(), specs.clone(), 1, 96)
 			.expect("a 2^20 message at rate 1/2 admits a ladder at 96 bits");
 
 		assert_eq!(basefold.scheme(), Pcs::BaseFold);
-		assert_eq!(ligerito.scheme(), Pcs::Ligerito);
+		assert_eq!(whir.scheme(), Pcs::WHIR);
 		assert_eq!(basefold.oracle_specs(), specs.as_slice());
-		assert_eq!(ligerito.oracle_specs(), specs.as_slice());
+		assert_eq!(whir.oracle_specs(), specs.as_slice());
 
 		// Level 0 encodes at the rate the caller asked for, which is the whole basis of the
 		// comparison: the same message goes through the same encode on both sides.
 		//
 		//     FRI     : 2^20 message at rate 1/2 -> 2^21 codeword positions
 		//     ladder  : level 0 the same, deeper levels shorter and at lower rates
-		let params = ligerito.as_ligerito().unwrap().params();
+		let params = whir.as_whir().unwrap().params();
 		let level_0 = &params.levels()[0];
 		assert_eq!(params.log_msg_len(), 20);
 		assert_eq!(level_0.log_inv_rate, 1);
@@ -201,13 +201,13 @@ mod tests {
 		let specs = vec![OracleSpec::new(20)];
 		let basefold = PcsVerifierCompiler::new(Pcs::BaseFold, &scheme(), specs.clone(), 1, 96)
 			.expect("FRI parameters exist at every size");
-		let ligerito = PcsVerifierCompiler::new(Pcs::Ligerito, &scheme(), specs, 1, 96)
+		let whir = PcsVerifierCompiler::new(Pcs::WHIR, &scheme(), specs, 1, 96)
 			.expect("a 2^20 message at rate 1/2 admits a ladder at 96 bits");
 
 		assert!(basefold.as_basefold().is_some());
-		assert!(basefold.as_ligerito().is_none());
-		assert!(ligerito.as_ligerito().is_some());
-		assert!(ligerito.as_basefold().is_none());
+		assert!(basefold.as_whir().is_none());
+		assert!(whir.as_whir().is_some());
+		assert!(whir.as_basefold().is_none());
 	}
 
 	/// A message too short to hold the query phase has no ladder, and that is reported.
@@ -217,13 +217,13 @@ mod tests {
 	#[test]
 	fn a_message_with_no_ladder_is_an_error_rather_than_a_panic() {
 		let Err(err) =
-			PcsVerifierCompiler::new(Pcs::Ligerito, &scheme(), vec![OracleSpec::new(4)], 1, 96)
+			PcsVerifierCompiler::new(Pcs::WHIR, &scheme(), vec![OracleSpec::new(4)], 1, 96)
 		else {
 			panic!("no ladder over a 2^4 message reaches 96 bits");
 		};
 
 		match err {
-			Error::NoLigeritoLadder {
+			Error::NoWHIRLadder {
 				log_msg_len,
 				log_inv_rate,
 				security_bits,

@@ -7,7 +7,7 @@ use std::iter::zip;
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField, util::powers};
-use binius_iop::ligerito::{InducedBasis, LigeritoLevel};
+use binius_iop::whir::{InducedBasis, WHIRLevel};
 use binius_math::{
 	FieldBuffer, FieldVec, ReedSolomonCode,
 	ntt::{AdditiveNTT, domain_context::GaoMateerOnTheFly},
@@ -25,7 +25,7 @@ use binius_math::{
 /// Holding the inputs together is what lets the choice be a method rather than a parameter.
 pub(super) struct InducedWeight<'a, F, NTT> {
 	/// The level whose rows were opened, whose shape picks the route.
-	level: &'a LigeritoLevel,
+	level: &'a WHIRLevel,
 	/// The transform the adjoint route runs its layers over.
 	ntt: &'a NTT,
 	/// The codeword positions the queries landed on, in the order they were drawn.
@@ -44,7 +44,7 @@ where
 	/// ## Preconditions
 	///
 	/// * `ntt`'s domain covers the level's codeword domain.
-	pub(super) fn new(level: &'a LigeritoLevel, ntt: &'a NTT, indices: &[Word], alpha: F) -> Self {
+	pub(super) fn new(level: &'a WHIRLevel, ntt: &'a NTT, indices: &[Word], alpha: F) -> Self {
 		Self {
 			level,
 			ntt,
@@ -162,7 +162,7 @@ mod tests {
 		alpha: B128,
 	) -> (FieldBuffer<B128>, FieldBuffer<B128>) {
 		// The lane count does not enter either build, so any value serves here.
-		let level = LigeritoLevel {
+		let level = WHIRLevel {
 			log_msg_cols,
 			log_lanes: 1,
 			log_inv_rate,
@@ -256,7 +256,7 @@ mod tests {
 			(24, 2, 142, 2.96),
 		];
 		for &(log_msg_cols, log_inv_rate, n_queries, speedup) in measured {
-			let level = LigeritoLevel {
+			let level = WHIRLevel {
 				log_msg_cols,
 				log_lanes: 1,
 				log_inv_rate,

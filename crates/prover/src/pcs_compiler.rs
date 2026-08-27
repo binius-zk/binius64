@@ -4,7 +4,7 @@
 
 use binius_field::{BinaryField, PackedField};
 use binius_iop_prover::{
-	basefold::compiler::BaseFoldProverCompiler, ligerito::compiler::LigeritoProverCompiler,
+	basefold::compiler::BaseFoldProverCompiler, whir::compiler::WHIRProverCompiler,
 };
 use binius_math::ntt::AdditiveNTT;
 use binius_verifier::PcsVerifierCompiler;
@@ -23,7 +23,7 @@ where
 	/// A sumcheck interleaved with one FRI over a codeword committed at a single rate.
 	BaseFold(BaseFoldProverCompiler<P, NTT>),
 	/// A ladder of Reed-Solomon commitments whose rate falls at every level.
-	Ligerito(LigeritoProverCompiler<P, NTT>),
+	WHIR(WHIRProverCompiler<P, NTT>),
 }
 
 impl<F, P, NTT> PcsProverCompiler<P, NTT>
@@ -41,8 +41,8 @@ where
 			PcsVerifierCompiler::BaseFold(compiler) => {
 				Self::BaseFold(BaseFoldProverCompiler::from_verifier_compiler(compiler, ntt))
 			}
-			PcsVerifierCompiler::Ligerito(compiler) => {
-				Self::Ligerito(LigeritoProverCompiler::from_verifier_compiler(compiler, ntt))
+			PcsVerifierCompiler::WHIR(compiler) => {
+				Self::WHIR(WHIRProverCompiler::from_verifier_compiler(compiler, ntt))
 			}
 		}
 	}

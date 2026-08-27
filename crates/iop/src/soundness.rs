@@ -32,7 +32,7 @@
 //! - *Mutual correlated agreement* (MCA): they agree on *every* set that witnesses closeness.
 //!
 //! FRI needs CA, because it only ever concludes that the folded word is close to the code.
-//! BaseFold, WHIR and Ligerito need MCA, because they conclude things about the *message* the
+//! BaseFold and WHIR need MCA, because they conclude things about the *message* the
 //! nearby codeword encodes.
 //! [`SoundnessRegime::correlated_agreement_bits`] returns the MCA bound, which upper-bounds the CA
 //! one, so a caller that only needs CA is charged conservatively.
@@ -78,7 +78,7 @@
 //! *The fold row union.* These bounds are stated for one fold step.
 //! A level that folds `2^l` interleaved lanes pays the bound once per lane-fold round, and the two
 //! reference implementations disagree on how much: one charges a factor `l`, the other `2^(l-1)`.
-//! [`crate::ligerito::LigeritoParams::correlated_agreement_bits`] charges the pessimistic one.
+//! [`crate::whir::WHIRParams::correlated_agreement_bits`] charges the pessimistic one.
 //!
 //! Proof-of-work grinding *is* counted, through [`Grinding`].
 //! It is the one lever that moves the left-hand term.
@@ -280,7 +280,7 @@ impl SoundnessRegime {
 	/// Use [`Self::plan_queries`] to get a count that clears both.
 	///
 	/// For [`Self::UniqueDecoding`] this delegates to [`calculate_n_test_queries`].
-	/// A Ligerito level in that regime therefore costs exactly as many queries as an FRI round.
+	/// A WHIR level in that regime therefore costs exactly as many queries as an FRI round.
 	///
 	/// # Panics
 	/// Those of [`Self::proximity_parameter`].
@@ -565,7 +565,7 @@ mod tests {
 
 	#[test]
 	fn unique_decoding_query_counts_at_100_bits() {
-		// The table in `LIGERITO_PLAN.md`: rates 1/2 through 1/32 at 100-bit security.
+		// The table in `WHIR_PLAN.md`: rates 1/2 through 1/32 at 100-bit security.
 		let counts = (1..=5)
 			.map(|log_inv_rate| SoundnessRegime::UniqueDecoding.n_queries(100, log_inv_rate))
 			.collect::<Vec<_>>();

@@ -15,13 +15,13 @@ use binius_math::{
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
 
-use super::{LigeritoOracle, relation::QueuedRelation};
+use super::{WHIROracle, relation::QueuedRelation};
 use crate::{
 	channel::{
 		Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn, grinding::GrindingVerifierChannel,
 	},
-	ligerito::{CommittedOracle, LigeritoParams, LigeritoVerifier},
 	merkle_channel::MerkleIPVerifierChannel,
+	whir::{CommittedOracle, WHIRParams, WHIRVerifier},
 };
 
 /// The relation sumcheck sends two coefficients per round.
@@ -31,7 +31,7 @@ use crate::{
 /// The constant one is recovered from the running claim, leaving two on the wire.
 const RELATION_DEGREE: usize = 2;
 
-/// A verifier channel that opens every committed oracle with one Ligerito ladder.
+/// A verifier channel that opens every committed oracle with one WHIR ladder.
 ///
 /// The channel is transparent rather than zero-knowledge.
 /// No committed message is ever masked.
@@ -42,7 +42,7 @@ const RELATION_DEGREE: usize = 2;
 /// - `'a`: the lifetime of the parameters the compiler owns
 /// - `F`: the binary field the ladder is committed over
 /// - `Channel`: the Merkle channel carrying all prover interaction
-pub struct LigeritoVerifierChannel<'a, F, Channel>
+pub struct WHIRVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
@@ -53,7 +53,7 @@ where
 	/// The oracles this channel expects, in the order it will receive them.
 	oracle_specs: &'a [OracleSpec],
 	/// The ladder the opening runs down.
-	params: &'a LigeritoParams,
+	params: &'a WHIRParams,
 	/// The commitments to the level-0 codewords, in the order they were received.
 	commitments: Vec<Channel::Commitment>,
 	/// Relations queued against each oracle, all opened together once the caller finishes.
@@ -61,7 +61,7 @@ where
 	queue: Vec<Vec<QueuedRelation<Channel::Elem>>>,
 }
 
-impl<'a, F, Channel> LigeritoVerifierChannel<'a, F, Channel>
+impl<'a, F, Channel> WHIRVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
@@ -73,18 +73,11 @@ where
 	/// * `oracle_specs` is non-empty.
 	/// * No spec is zero-knowledge.
 	/// * The longest message is the ladder's message length.
-	pub fn new(
-		channel: Channel,
-		oracle_specs: &'a [OracleSpec],
-		params: &'a LigeritoParams,
-	) -> Self {
-		assert!(
-			!oracle_specs.is_empty(),
-			"precondition: a Ligerito channel opens at least one oracle"
-		);
+	pub fn new(channel: Channel, oracle_specs: &'a [OracleSpec], params: &'a WHIRParams) -> Self {
+		assert!(!oracle_specs.is_empty(), "precondition: a WHIR channel opens at least one oracle");
 		assert!(
 			oracle_specs.iter().all(|spec| !spec.is_zk),
-			"precondition: Ligerito commits no mask, so a zero-knowledge oracle cannot be opened"
+			"precondition: WHIR commits no mask, so a zero-knowledge oracle cannot be opened"
 		);
 		// Every oracle shares level 0's column count, so the ladder must fit the longest message.
 		assert_eq!(
@@ -201,7 +194,7 @@ where
 	fn verify(
 		channel: &mut Channel,
 		oracle_specs: &[OracleSpec],
-		params: &LigeritoParams,
+		params: &WHIRParams,
 		commitments: Vec<Channel::Commitment>,
 		queue: Vec<Vec<QueuedRelation<Channel::Elem>>>,
 	) -> Result<(), Error>
@@ -269,13 +262,13 @@ where
 			})
 			.collect();
 
-		LigeritoVerifier::batched(params, oracles).verify(&point, combined_claim, channel)?;
+		WHIRVerifier::batched(params, oracles).verify(&point, combined_claim, channel)?;
 
 		Ok(())
 	}
 }
 
-impl<F, Channel> IPVerifierChannel<F> for LigeritoVerifierChannel<'_, F, Channel>
+impl<F, Channel> IPVerifierChannel<F> for WHIRVerifierChannel<'_, F, Channel>
 where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
@@ -315,7 +308,7 @@ where
 	}
 }
 
-impl<F, Channel> WordIPVerifierChannel<F> for LigeritoVerifierChannel<'_, F, Channel>
+impl<F, Channel> WordIPVerifierChannel<F> for WHIRVerifierChannel<'_, F, Channel>
 where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
@@ -343,12 +336,12 @@ where
 	}
 }
 
-impl<F, Channel> IOPVerifierChannel<F> for LigeritoVerifierChannel<'_, F, Channel>
+impl<F, Channel> IOPVerifierChannel<F> for WHIRVerifierChannel<'_, F, Channel>
 where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
-	type Oracle = LigeritoOracle;
+	type Oracle = WHIROracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.commitments.len()..]
@@ -379,7 +372,7 @@ where
 		self.commitments.push(commitment);
 		self.queue.push(Vec::new());
 
-		Ok(LigeritoOracle { index })
+		Ok(WHIROracle { index })
 	}
 
 	fn verify_oracle_relation(

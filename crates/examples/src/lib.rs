@@ -78,7 +78,7 @@ pub enum PcsType {
 	#[default]
 	Basefold,
 	/// A ladder of Reed-Solomon commitments whose rate falls at every level.
-	Ligerito,
+	WHIR,
 }
 
 impl PcsType {
@@ -128,7 +128,7 @@ impl From<PcsType> for Pcs {
 	fn from(value: PcsType) -> Self {
 		match value {
 			PcsType::Basefold => Self::BaseFold,
-			PcsType::Ligerito => Self::Ligerito,
+			PcsType::WHIR => Self::WHIR,
 		}
 	}
 }
