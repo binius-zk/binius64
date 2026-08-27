@@ -13,7 +13,7 @@ use crate::{
 	arch::{M128, M256, M512},
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	packed_fields::primitive::PackedPrimitiveType,
-	underlier::{U1, U2, U4, UnderlierType},
+	underlier::{U1, U2, U4, Underlier},
 };
 
 // Type aliases for the `BinaryField1b` packings. The underlier determines the width; `M128`/`M256`/
@@ -34,7 +34,7 @@ pub type PackedBinaryField512x1b = PackedPrimitiveType<M512, BinaryField1b>;
 // multiplication is bitwise AND. Squaring and inversion are the identity, since `0` and `1` are
 // each their own square and inverse. A single blanket impl over `U` therefore replaces the
 // per-type definitions that the `define_packed_binary_field` macro used to generate.
-impl<U: UnderlierType> Mul for PackedPrimitiveType<U, BinaryField1b> {
+impl<U: Underlier> Mul for PackedPrimitiveType<U, BinaryField1b> {
 	type Output = Self;
 
 	#[inline]
@@ -44,21 +44,21 @@ impl<U: UnderlierType> Mul for PackedPrimitiveType<U, BinaryField1b> {
 	}
 }
 
-impl<U: UnderlierType> Square for PackedPrimitiveType<U, BinaryField1b> {
+impl<U: Underlier> Square for PackedPrimitiveType<U, BinaryField1b> {
 	#[inline]
 	fn square(self) -> Self {
 		self
 	}
 }
 
-impl<U: UnderlierType> InvertOrZero for PackedPrimitiveType<U, BinaryField1b> {
+impl<U: Underlier> InvertOrZero for PackedPrimitiveType<U, BinaryField1b> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		self
 	}
 }
 
-impl<U: UnderlierType> WideMul for PackedPrimitiveType<U, BinaryField1b> {
+impl<U: Underlier> WideMul for PackedPrimitiveType<U, BinaryField1b> {
 	type Output = Self;
 
 	#[inline]
@@ -83,7 +83,7 @@ pub mod test_utils {
 	use crate::{
 		Field, PackedField,
 		arch::{M128, M256, M512},
-		underlier::WithUnderlier,
+		underlier::UnderlierView,
 	};
 
 	// Proptest generates primitive underliers itself; a SIMD underlier borrows the strategy of the
@@ -116,7 +116,7 @@ pub mod test_utils {
 	}
 
 	/// Every lane of the product is the product of the operands' lanes.
-	pub fn check_mul<P: PackedField + WithUnderlier>(a: P::Underlier, b: P::Underlier) {
+	pub fn check_mul<P: PackedField + UnderlierView>(a: P::Underlier, b: P::Underlier) {
 		let (a, b) = (P::from_underlier(a), P::from_underlier(b));
 
 		let c = a * b;
@@ -126,7 +126,7 @@ pub mod test_utils {
 	}
 
 	/// Every lane of the square is its own lane multiplied by itself.
-	pub fn check_square<P: PackedField + WithUnderlier>(a: P::Underlier) {
+	pub fn check_square<P: PackedField + UnderlierView>(a: P::Underlier) {
 		let a = P::from_underlier(a);
 
 		let c = a.square();
@@ -136,7 +136,7 @@ pub mod test_utils {
 	}
 
 	/// A non-zero lane inverts to its multiplicative inverse, and a zero lane inverts to zero.
-	pub fn check_invert_or_zero<P: PackedField + WithUnderlier>(a: P::Underlier) {
+	pub fn check_invert_or_zero<P: PackedField + UnderlierView>(a: P::Underlier) {
 		let a = P::from_underlier(a);
 
 		let c = a.invert_or_zero();
@@ -150,14 +150,14 @@ pub mod test_utils {
 	}
 
 	/// One deferred product, reduced immediately, equals the plain multiply.
-	pub fn check_wide_mul<P: PackedField + WithUnderlier>(a: P::Underlier, b: P::Underlier) {
+	pub fn check_wide_mul<P: PackedField + UnderlierView>(a: P::Underlier, b: P::Underlier) {
 		let (a, b) = (P::from_underlier(a), P::from_underlier(b));
 
 		assert_eq!(P::reduce(P::wide_mul(a, b)), a * b);
 	}
 
 	/// Two deferred products summed and reduced once equal the sum of the plain multiplies.
-	pub fn check_wide_mul_linearity<P: PackedField + WithUnderlier>(
+	pub fn check_wide_mul_linearity<P: PackedField + UnderlierView>(
 		a1: P::Underlier,
 		b1: P::Underlier,
 		a2: P::Underlier,
@@ -185,7 +185,7 @@ pub mod test_utils {
 				use super::*;
 
 				// The underlier is the packing's raw bit pattern, so one strategy fits every width.
-				type U = <$ty as $crate::underlier::WithUnderlier>::Underlier;
+				type U = <$ty as $crate::underlier::UnderlierView>::Underlier;
 
 				proptest! {
 					#[test]
@@ -222,7 +222,7 @@ pub mod test_utils {
 
 	pub(crate) use packed_field_tests;
 
-	pub fn check_interleave<P: PackedField + WithUnderlier>(
+	pub fn check_interleave<P: PackedField + UnderlierView>(
 		lhs: P::Underlier,
 		rhs: P::Underlier,
 		log_block_len: usize,
@@ -242,7 +242,7 @@ pub mod test_utils {
 		}
 	}
 
-	pub fn check_interleave_all_heights<P: PackedField + WithUnderlier>(
+	pub fn check_interleave_all_heights<P: PackedField + UnderlierView>(
 		lhs: P::Underlier,
 		rhs: P::Underlier,
 	) {
@@ -251,7 +251,7 @@ pub mod test_utils {
 		}
 	}
 
-	pub fn check_unzip<P: PackedField + WithUnderlier>(
+	pub fn check_unzip<P: PackedField + UnderlierView>(
 		lhs: P::Underlier,
 		rhs: P::Underlier,
 		log_block_len: usize,
@@ -299,7 +299,7 @@ pub mod test_utils {
 		}
 	}
 
-	pub fn check_transpose_all_heights<P: PackedField + WithUnderlier>(
+	pub fn check_transpose_all_heights<P: PackedField + UnderlierView>(
 		lhs: P::Underlier,
 		rhs: P::Underlier,
 	) {

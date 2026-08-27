@@ -21,20 +21,20 @@
 
 use crate::{
 	BinaryField, ExtensionField, PackedField, packed_fields::primitive::PackedPrimitiveType,
-	underlier::WithUnderlier,
+	underlier::UnderlierView,
 };
 
 /// The packing of `FSub` covering the same bits as the packed extension field type `P`.
 ///
 /// A transparent wrapper over an underlier holds one contiguous bit string.
 /// Cutting that same string into `FSub` scalars is exactly a [`PackedPrimitiveType`].
-pub type PackedSubfield<P, FSub> = PackedPrimitiveType<<P as WithUnderlier>::Underlier, FSub>;
+pub type PackedSubfield<P, FSub> = PackedPrimitiveType<<P as UnderlierView>::Underlier, FSub>;
 
 /// Reads a packed extension field element as a packed subfield element.
 pub fn cast_base<FSub, P>(ext: P) -> PackedSubfield<P, FSub>
 where
 	FSub: BinaryField,
-	P: PackedField<Scalar: ExtensionField<FSub>> + WithUnderlier,
+	P: PackedField<Scalar: ExtensionField<FSub>> + UnderlierView,
 	PackedSubfield<P, FSub>: PackedField<Scalar = FSub>,
 {
 	PackedSubfield::<P, FSub>::from_underlier(ext.to_underlier())
@@ -44,7 +44,7 @@ where
 pub fn cast_base_mut<FSub, P>(packed: &mut P) -> &mut PackedSubfield<P, FSub>
 where
 	FSub: BinaryField,
-	P: PackedField<Scalar: ExtensionField<FSub>> + WithUnderlier,
+	P: PackedField<Scalar: ExtensionField<FSub>> + UnderlierView,
 	PackedSubfield<P, FSub>: PackedField<Scalar = FSub>,
 {
 	PackedSubfield::<P, FSub>::from_underlier_ref_mut(packed.to_underlier_ref_mut())
@@ -54,7 +54,7 @@ where
 pub fn cast_ext<FSub, P>(base: PackedSubfield<P, FSub>) -> P
 where
 	FSub: BinaryField,
-	P: PackedField<Scalar: ExtensionField<FSub>> + WithUnderlier,
+	P: PackedField<Scalar: ExtensionField<FSub>> + UnderlierView,
 	PackedSubfield<P, FSub>: PackedField<Scalar = FSub>,
 {
 	P::from_underlier(base.to_underlier())
@@ -64,7 +64,7 @@ where
 pub fn cast_bases_mut<FSub, P>(packed: &mut [P]) -> &mut [PackedSubfield<P, FSub>]
 where
 	FSub: BinaryField,
-	P: PackedField<Scalar: ExtensionField<FSub>> + WithUnderlier,
+	P: PackedField<Scalar: ExtensionField<FSub>> + UnderlierView,
 	PackedSubfield<P, FSub>: PackedField<Scalar = FSub>,
 {
 	PackedSubfield::<P, FSub>::from_underliers_ref_mut(P::to_underliers_ref_mut(packed))

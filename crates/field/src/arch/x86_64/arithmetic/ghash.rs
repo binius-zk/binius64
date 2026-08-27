@@ -17,7 +17,7 @@ use crate::{
 	Divisible, Ghash128b as GhashB128, WideMul,
 	arithmetic_traits::{MulXWide, Square},
 	packed_fields::primitive::PackedPrimitiveType,
-	underlier::UnderlierType,
+	underlier::Underlier,
 };
 
 /// Trait for underliers that support CLMUL operations which are needed for the
@@ -25,7 +25,7 @@ use crate::{
 ///
 /// On x86_64 this abstracts over the `M128`/`M256`/`M512` wrappers for `__m128i`/`__m256i`/
 /// `__m512i`, so the same algorithm code drives PCLMULQDQ and VPCLMULQDQ.
-pub trait ClMulUnderlier: UnderlierType + Divisible<u128> {
+pub trait ClMulUnderlier: Underlier + Divisible<u128> {
 	/// Performs CLMUL operation on two 64-bit values that are selected from 128-bit lanes
 	/// by the bytes of the IMM8 parameter.
 	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self;

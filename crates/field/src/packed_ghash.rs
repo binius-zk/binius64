@@ -47,12 +47,12 @@ mod tests {
 	use super::*;
 	use crate::{
 		Ghash128b, PackedField, packed_fields::test_utils::packed_field_tests,
-		underlier::WithUnderlier,
+		underlier::UnderlierView,
 	};
 
 	fn check_get_set<const WIDTH: usize, PT>(a: [u128; WIDTH], b: [u128; WIDTH])
 	where
-		PT: PackedField<Scalar = Ghash128b> + WithUnderlier<Underlier: From<[u128; WIDTH]>>,
+		PT: PackedField<Scalar = Ghash128b> + UnderlierView<Underlier: From<[u128; WIDTH]>>,
 	{
 		let mut val = PT::from_underlier(a.into());
 		for i in 0..WIDTH {

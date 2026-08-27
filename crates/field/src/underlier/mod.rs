@@ -3,9 +3,9 @@
 
 mod scaled;
 mod small_uint;
+mod traits;
 mod underlier_impls;
-mod underlier_type;
 
 pub use scaled::ScaledUnderlier;
 pub use small_uint::*;
-pub use underlier_type::*;
+pub use traits::*;

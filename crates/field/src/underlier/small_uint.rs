@@ -21,7 +21,7 @@ use rand::{
 	prelude::*,
 };
 
-use super::UnderlierType;
+use super::Underlier;
 use crate::{
 	arch::{interleave_mask_even, interleave_with_mask},
 	divisible::{Divisible, impl_divisible_self, mapget},
@@ -129,7 +129,7 @@ impl<const N: usize> Not for SmallU<N> {
 
 unsafe impl<const N: usize> NoUninit for SmallU<N> {}
 
-impl UnderlierType for U1 {
+impl Underlier for U1 {
 	const LOG_BITS: usize = checked_log_2(1);
 
 	const ZERO: Self = Self(0);
@@ -141,7 +141,7 @@ impl UnderlierType for U1 {
 	}
 }
 
-impl UnderlierType for U2 {
+impl Underlier for U2 {
 	const LOG_BITS: usize = checked_log_2(2);
 
 	const ZERO: Self = Self(0);
@@ -154,7 +154,7 @@ impl UnderlierType for U2 {
 	}
 }
 
-impl UnderlierType for U4 {
+impl Underlier for U4 {
 	const LOG_BITS: usize = checked_log_2(4);
 
 	const ZERO: Self = Self(0);

@@ -4,7 +4,7 @@
 use binius_utils::checked_arithmetics::checked_log_2;
 
 use super::packed::PackedField;
-use crate::{BinaryField, ExtensionField, PackedSubfield, WithUnderlier, packed_extension};
+use crate::{BinaryField, ExtensionField, PackedSubfield, UnderlierView, packed_extension};
 
 /// Transpose square blocks of elements within packed field elements in place.
 ///
@@ -111,7 +111,7 @@ pub fn transpose_square_blocks_array<P: PackedField, const LOG_N: usize, const S
 pub fn square_transforms_extension_field<F, FE>(values: &mut [FE])
 where
 	F: BinaryField,
-	FE: PackedField<Scalar: ExtensionField<F>> + WithUnderlier,
+	FE: PackedField<Scalar: ExtensionField<F>> + UnderlierView,
 	PackedSubfield<FE, F>: PackedField<Scalar = F>,
 {
 	transpose_square_blocks(

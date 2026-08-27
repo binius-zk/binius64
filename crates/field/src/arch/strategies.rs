@@ -15,7 +15,7 @@ use crate::{
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	divisible::Divisible,
 	packed_fields::primitive::PackedPrimitiveType,
-	underlier::UnderlierType,
+	underlier::Underlier,
 };
 
 /// Strategy that splits the underlier into `SubU`-sized lanes, applies the sub-packing
@@ -37,8 +37,8 @@ pub struct Divide<SubU, T, const N: usize>(T, PhantomData<SubU>);
 
 impl<U, SubU, F, const N: usize> Square for Divide<SubU, PackedPrimitiveType<U, F>, N>
 where
-	U: UnderlierType + Divisible<SubU>,
-	SubU: UnderlierType,
+	U: Underlier + Divisible<SubU>,
+	SubU: Underlier,
 	F: BinaryField,
 	PackedPrimitiveType<SubU, F>: Square,
 {
@@ -56,8 +56,8 @@ where
 
 impl<U, SubU, F, const N: usize> InvertOrZero for Divide<SubU, PackedPrimitiveType<U, F>, N>
 where
-	U: UnderlierType + Divisible<SubU>,
-	SubU: UnderlierType,
+	U: Underlier + Divisible<SubU>,
+	SubU: Underlier,
 	F: BinaryField,
 	PackedPrimitiveType<SubU, F>: InvertOrZero,
 {
@@ -127,8 +127,8 @@ impl<O: Copy + Default + Add<Output = O>, const N: usize> Sum for LaneWideProduc
 
 impl<U, SubU, F, const N: usize> WideMul for Divide<SubU, PackedPrimitiveType<U, F>, N>
 where
-	U: UnderlierType + Divisible<SubU>,
-	SubU: UnderlierType,
+	U: Underlier + Divisible<SubU>,
+	SubU: Underlier,
 	F: BinaryField,
 	PackedPrimitiveType<SubU, F>: WideMul,
 	<PackedPrimitiveType<SubU, F> as WideMul>::Output: Copy + Default,

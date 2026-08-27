@@ -19,7 +19,7 @@ use rand::{
 	distr::{Distribution, StandardUniform},
 };
 
-use super::{U1, UnderlierType};
+use super::{U1, Underlier};
 use crate::{
 	Random,
 	divisible::{Divisible, mapget},
@@ -120,7 +120,7 @@ impl<U: Not<Output = U>, const N: usize> Not for ScaledUnderlier<U, N> {
 	}
 }
 
-impl<U: UnderlierType + Pod, const N: usize> UnderlierType for ScaledUnderlier<U, N> {
+impl<U: Underlier + Pod, const N: usize> Underlier for ScaledUnderlier<U, N> {
 	const LOG_BITS: usize = U::LOG_BITS + checked_log_2(N);
 
 	const ZERO: Self = Self([U::ZERO; N]);
@@ -172,7 +172,7 @@ where
 /// the AVX2 path).
 impl<const N: usize> From<crate::arch::M128> for ScaledUnderlier<crate::arch::M128, N> {
 	fn from(val: crate::arch::M128) -> Self {
-		let mut limbs = [<crate::arch::M128 as UnderlierType>::ZERO; N];
+		let mut limbs = [<crate::arch::M128 as Underlier>::ZERO; N];
 		limbs[0] = val;
 		Self(limbs)
 	}
@@ -185,7 +185,7 @@ impl<const N: usize> From<U1> for ScaledUnderlier<crate::arch::M128, N> {
 	}
 }
 
-impl<U: UnderlierType + LowerHex, const N: usize> LowerHex for ScaledUnderlier<U, N> {
+impl<U: Underlier + LowerHex, const N: usize> LowerHex for ScaledUnderlier<U, N> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		// Most-significant limb first. Print from the highest non-zero limb so there are no
 		// spurious leading zeros, then zero-pad each remaining limb to its full bit width.

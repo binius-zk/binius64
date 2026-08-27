@@ -23,7 +23,7 @@ use crate::{
 	BinaryField,
 	divisible::{Divisible, impl_divisible_self, mapget},
 	packed_fields::primitive::PackedPrimitiveType,
-	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
+	underlier::{SmallU, Underlier, impl_divisible_bitmask},
 };
 
 pub const fn m128i_from_u128(x: u128) -> __m128i {
@@ -320,7 +320,7 @@ impl std::fmt::Debug for M128 {
 	}
 }
 
-impl UnderlierType for M128 {
+impl Underlier for M128 {
 	const LOG_BITS: usize = 7;
 	const ZERO: Self = { Self::from_u128(0) };
 	const ONE: Self = { Self::from_u128(1) };

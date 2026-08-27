@@ -20,7 +20,7 @@ use crate::{
 	arch::portable::packed_arithmetic::interleave_mask_even,
 	divisible::impl_divisible_memcast,
 	packed_fields::primitive::PackedPrimitiveType,
-	underlier::{SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask},
+	underlier::{SmallU, U1, U2, U4, Underlier, UnderlierView, impl_divisible_bitmask},
 };
 
 #[derive(Copy, Clone, From, Into)]
@@ -265,7 +265,7 @@ impl std::fmt::Debug for M128 {
 	}
 }
 
-impl UnderlierType for M128 {
+impl Underlier for M128 {
 	const LOG_BITS: usize = 7;
 	const ZERO: Self = { Self(u64x2(0, 0)) };
 	const ONE: Self = { Self(u64x2(1, 0)) };

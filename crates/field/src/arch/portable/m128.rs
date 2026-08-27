@@ -18,7 +18,7 @@ use crate::{
 	BinaryField,
 	divisible::{Divisible, impl_divisible_memcast, impl_divisible_self},
 	packed_fields::primitive::PackedPrimitiveType,
-	underlier::{SmallU, UnderlierType, impl_divisible_bitmask},
+	underlier::{SmallU, Underlier, impl_divisible_bitmask},
 };
 
 /// 128-bit underlier for the portable build — a transparent wrapper over `u128`.
@@ -200,7 +200,7 @@ impl std::fmt::LowerHex for M128 {
 	}
 }
 
-impl UnderlierType for M128 {
+impl Underlier for M128 {
 	const LOG_BITS: usize = 7;
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
