@@ -1,13 +1,16 @@
 // Copyright 2026 The Binius Developers
 
+use std::iter::zip;
+
 use binius_field::BinaryField;
+use binius_transcript::fiat_shamir::MAX_SAMPLE_BITS;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::CopyGetters;
 
 use super::{size_estimation, verifier_cost, verifier_cost::VerifierCost};
 use crate::{
 	merkle_tree::MerkleTreeScheme,
-	soundness::{Grinding, SoundnessRegime},
+	soundness::{Grinding, SoundnessRegime, ratio_bits, union_bits},
 };
 
 /// One committed level of the Ligerito recursion.
@@ -81,6 +84,40 @@ impl LigeritoLevel {
 		self.n_queries <= pow2_saturating(self.log_codeword_len())
 	}
 
+	/// Whether every codeword position this level holds can be drawn as a query.
+	///
+	/// A query position takes [`LigeritoLevel::log_codeword_len`] sampled bits to address.
+	/// One draw carries at most [`MAX_SAMPLE_BITS`] of them, and clamps rather than refusing.
+	/// A longer codeword would then have a tail no query reaches, free for a prover to corrupt.
+	pub const fn is_addressable(&self) -> bool {
+		self.log_codeword_len() <= MAX_SAMPLE_BITS
+	}
+
+	/// The Schwartz-Zippel error of this level's fold rounds, in bits.
+	///
+	/// Each of the `log_lanes` rounds sends a round polynomial of degree 2 in its challenge.
+	/// A wrong polynomial passes if the sampled challenge is one of its at most 2 agreements.
+	/// So the rounds together cost `2 * log_lanes / |F|`, which is [NA25] (17)'s `2 k_{i-1}/|F|`.
+	///
+	/// [NA25]: <https://eprint.iacr.org/2025/1187>
+	fn fold_round_bits(&self, log_field_size: usize) -> f64 {
+		ratio_bits(2.0 * self.log_lanes as f64, log_field_size)
+	}
+
+	/// The error of folding this level's row claims into the running sumcheck, in bits.
+	///
+	/// The `n_queries` opened rows are batched by the powers of one challenge.
+	/// One more challenge glues the result to the running claim.
+	/// That is [NA25] (17)'s `(|S_i| + 1)/|F|`.
+	///
+	/// The last level glues nothing, since its row claim is checked against the residual directly.
+	/// Charging it anyway costs a fraction of a bit and keeps one expression for every level.
+	///
+	/// [NA25]: <https://eprint.iacr.org/2025/1187>
+	fn row_batching_bits(&self, log_field_size: usize) -> f64 {
+		ratio_bits(self.n_queries as f64 + 1.0, log_field_size)
+	}
+
 	/// Proof-of-work nonces this level writes, at the given grinding depth.
 	///
 	/// One stands before each of the `log_lanes` fold challenges.
@@ -111,6 +148,7 @@ impl LigeritoLevel {
 /// - Column counts chain: `cols_{i+1} + lanes_{i+1} == cols_i`.
 /// - The rate falls down the ladder: `inv_rate_{i+1} > inv_rate_i`.
 /// - Every level is feasible: `2^(cols_i + inv_rate_i) >= queries_i`.
+/// - Every level is addressable: `cols_i + inv_rate_i <= MAX_SAMPLE_BITS`.
 ///
 /// And derives, rather than taking on faith:
 ///
@@ -181,6 +219,15 @@ impl LigeritoParams {
 				"precondition: level {i} is infeasible, it opens {} queries against a codeword of \
 				 2^{} positions",
 				level.n_queries,
+				level.log_codeword_len(),
+			);
+
+			// Invariant: a query draw wider than this is clamped, leaving the codeword's tail
+			// unreachable and so unchecked.
+			assert!(
+				level.is_addressable(),
+				"precondition: level {i} has 2^{} codeword positions, past the 2^{MAX_SAMPLE_BITS} \
+				 a query draw can address",
 				level.log_codeword_len(),
 			);
 		}
@@ -272,9 +319,9 @@ impl LigeritoParams {
 
 	/// The ceiling the correlated-agreement term puts on this ladder, over a field of that size.
 	///
-	/// Every level is an independent proximity test, so the ladder is only as sound as its worst
-	/// one.
-	/// That is normally level 0, whose codeword is the longest.
+	/// Every level is an independent proximity test, and beating any one of them is enough.
+	/// So the levels' errors add, and the ladder lands below even its weakest level.
+	/// That weakest level is normally level 0, whose codeword is the longest.
 	///
 	/// No number of queries raises this.
 	/// See [`crate::soundness`] for why, and `PROXIMITY_GAPS.md` for where it falls in practice.
@@ -312,59 +359,99 @@ impl LigeritoParams {
 	) -> f64 {
 		assert!(n_oracles > 0, "precondition: a ladder opens at least one message");
 
-		let log_n_oracles = log2_ceil_usize(n_oracles);
-		self.levels
-			.iter()
-			.enumerate()
-			.map(|(i, level)| {
-				let base = self.regime.correlated_agreement_bits(
-					level.log_msg_len(),
-					level.log_inv_rate,
-					log_field_size,
-				);
-				// Level 0 folds the lane index and the message index together.
-				let log_rows = level.log_lanes + if i == 0 { log_n_oracles } else { 0 };
-				// The worst of those fold rounds pays `2^(log_rows - 1)`.
-				base - (log_rows.saturating_sub(1)) as f64
-			})
-			.fold(f64::INFINITY, f64::min)
+		union_bits(self.per_level_correlated_agreement_bits(log_field_size, n_oracles))
 	}
 
-	/// The security this ladder reaches over a field of that size, counting both terms.
+	/// Each level's correlated-agreement term, in ladder order, before any union.
 	///
-	/// This is the worse of [`Self::correlated_agreement_bits`] and the query-phase soundness.
-	/// Each of the two is credited with the half of [`Self::grinding`] that buys it.
-	/// It can fall below [`Self::security_bits`], which is the *target* the queries were sized to.
+	/// ## Preconditions
 	///
-	/// A level grinds before every fold challenge.
-	/// So every level's algebraic term gains the same [`Grinding::challenge_bits`].
-	/// A level grinds once more before its queries are drawn.
-	/// That is where [`Grinding::query_bits`] lands.
+	/// * `n_oracles` is positive.
+	fn per_level_correlated_agreement_bits(
+		&self,
+		log_field_size: usize,
+		n_oracles: usize,
+	) -> impl Iterator<Item = f64> + '_ {
+		let log_n_oracles = log2_ceil_usize(n_oracles);
+		self.levels.iter().enumerate().map(move |(i, level)| {
+			let base = self.regime.correlated_agreement_bits(
+				level.log_msg_len(),
+				level.log_inv_rate,
+				log_field_size,
+			);
+			// Level 0 folds the lane index and the message index together.
+			let log_rows = level.log_lanes + if i == 0 { log_n_oracles } else { 0 };
+			// The worst of those fold rounds pays `2^(log_rows - 1)`.
+			base - (log_rows.saturating_sub(1)) as f64
+		})
+	}
+
+	/// The security this ladder reaches over a field of that size, counting every term.
+	///
+	/// A cheating prover needs only one term of one level to break, so all of them add.
+	/// [`crate::soundness::union_bits`] does the adding, over four terms per level:
+	///
+	/// ```text
+	///     algebra   correlated agreement, per Self::correlated_agreement_bits
+	///     queries   the rows this level opens
+	///     folds     the level's sumcheck rounds, 2 * log_lanes / |F|
+	///     rows      batching the opened rows and gluing them in, (n_queries + 1) / |F|
+	/// ```
+	///
+	/// The last two are [NA25] (17)'s per-level terms.
+	/// Both sit near `|F|` and move the total by a fraction of a bit, but they belong in the sum.
+	///
+	/// Each of the first two is credited with the half of [`Self::grinding`] that buys it.
+	/// A level grinds before each fold challenge, so its algebra gains the challenge half.
+	/// It grinds once more before its queries, which is where the query half lands.
+	///
+	/// The result can fall below [`Self::security_bits`], which is a target rather than a promise.
+	///
+	/// One term of (17) is missing, because it is not a property of the ladder.
+	/// Folding a channel's `k` relations by the powers of one coefficient costs `(k - 1)/|F|`.
+	/// The caller fixes `k` at proving time, so nothing here can see it.
+	///
+	/// [NA25]: <https://eprint.iacr.org/2025/1187>
 	pub fn achieved_security_bits(&self, log_field_size: usize) -> f64 {
 		self.batched_achieved_security_bits(log_field_size, 1)
 	}
 
 	/// The same figure when level 0 opens `n_oracles` separately committed messages at once.
 	///
-	/// Only the correlated-agreement half moves.
-	/// The query counts are per level, and one query position serves every message.
-	/// So opening more messages changes nothing about how many rows are checked.
+	/// Two things move.
+	/// The correlated-agreement half pays level 0's wider row union.
+	/// And combining the messages draws `ceil(log2 n_oracles)` challenges of its own.
+	/// That adds one tensor-batching term to the sum, per [DP24].
+	///
+	/// The query counts do not move.
+	/// They are per level, and one query position serves every message at once.
 	///
 	/// ## Preconditions
 	///
 	/// * `n_oracles` is positive.
+	///
+	/// [DP24]: <https://eprint.iacr.org/2024/504>
 	pub fn batched_achieved_security_bits(&self, log_field_size: usize, n_oracles: usize) -> f64 {
-		let algebra = self.batched_correlated_agreement_bits(log_field_size, n_oracles)
-			+ self.grinding.challenge_bits() as f64;
-		// The same grind stands before every level's queries, so crediting it to the worst level
-		// is crediting it to all of them.
-		let queries = self
-			.levels
-			.iter()
-			.map(|level| level.n_queries as f64 * self.regime.bits_per_query(level.log_inv_rate))
-			.fold(f64::INFINITY, f64::min)
-			+ self.grinding.query_bits() as f64;
-		algebra.min(queries)
+		let per_level =
+			zip(self.per_level_correlated_agreement_bits(log_field_size, n_oracles), &self.levels)
+				.map(|(agreement, level)| {
+					let algebra = agreement + self.grinding.challenge_bits() as f64;
+					// One grind stands before every level's queries, so every level is credited it.
+					let queries = (level.n_queries as f64).mul_add(
+						self.regime.bits_per_query(level.log_inv_rate),
+						self.grinding.query_bits() as f64,
+					);
+					union_bits([
+						algebra,
+						queries,
+						level.fold_round_bits(log_field_size),
+						level.row_batching_bits(log_field_size),
+					])
+				});
+
+		// One tensor over the message index, drawn once for the whole batch rather than per level.
+		let batching = ratio_bits(log2_ceil_usize(n_oracles) as f64, log_field_size);
+		union_bits(per_level.chain([batching]))
 	}
 
 	/// The exact byte-size of a Ligerito proof over one committed message, without running it.
@@ -472,7 +559,7 @@ mod tests {
 
 	// A three-level ladder that satisfies every invariant, used as the base for the rejection
 	// tests below. Message 2^12, lanes 3/2/1, rates 1/2 -> 1/4 -> 1/8, residual 2^6.
-	fn valid_levels() -> Vec<LigeritoLevel> {
+	pub(super) fn valid_levels() -> Vec<LigeritoLevel> {
 		vec![
 			LigeritoLevel::new(9, 3, 1, SoundnessRegime::UniqueDecoding, 100, Grinding::NONE),
 			LigeritoLevel::new(7, 2, 2, SoundnessRegime::UniqueDecoding, 100, Grinding::NONE),
@@ -620,15 +707,17 @@ mod tests {
 		let query_ground = bare.clone().with_grinding(Grinding::new(0, 7));
 		assert!((query_ground.correlated_agreement_bits(128) - ceiling).abs() < 1e-9);
 
-		// What moves is the total, by exactly the bits ground, since the row term binds.
+		// What moves is the total, by very nearly the bits ground, since the row term binds.
+		// It is not the full seven: the slacker term's error stays where it was, and the union
+		// still carries it.
 		let ground_bits = query_ground.achieved_security_bits(128);
-		assert!((ground_bits - base - 7.0).abs() < 1e-9, "{ground_bits} {base}");
+		assert!((6.9..=7.0).contains(&(ground_bits - base)), "{ground_bits} {base}");
 		assert!(ground_bits < ceiling, "the row term still binds after the grind");
 
-		// The same depth on the other side buys nothing here, because it lands on the term that
-		// was already the slacker of the two.
+		// The same depth on the other side buys almost nothing here, because it lands on the term
+		// that was already the slacker of the two.
 		let challenge_ground = bare.with_grinding(Grinding::new(7, 0));
-		assert!((challenge_ground.achieved_security_bits(128) - base).abs() < 1e-9);
+		assert!(challenge_ground.achieved_security_bits(128) - base < 0.01);
 	}
 
 	#[test]
@@ -680,12 +769,19 @@ mod tests {
 		//     1 message  -> 2^3 rows folded -> union 2^2
 		//     4 messages -> 2^5 rows folded -> union 2^4, two bits worse
 		//     5 messages -> 2^6 rows folded -> union 2^5, three bits worse
-		assert_eq!(params.batched_correlated_agreement_bits(128, 4), alone - 2.0);
-		assert_eq!(params.batched_correlated_agreement_bits(128, 5), alone - 3.0);
+		//
+		// The ladder's figure moves by less than level 0 does, and that is the point of summing:
+		// the deeper levels do not pay the batch, and their unmoved errors cushion the total.
+		let four = params.batched_correlated_agreement_bits(128, 4);
+		let five = params.batched_correlated_agreement_bits(128, 5);
+		assert!((alone - 2.0..alone).contains(&four), "{four} against {alone}");
+		assert!((alone - 3.0..four).contains(&five), "{five} against {four}");
 
-		// The queries are unchanged, since one position serves every message.
+		// The queries are unchanged, since one position serves every message. They bind here, so
+		// the total does not move at all.
 		let queries = params.achieved_security_bits(128);
-		assert_eq!(params.batched_achieved_security_bits(128, 4), queries.min(alone - 2.0));
+		assert!(queries < four);
+		assert!((params.batched_achieved_security_bits(128, 4) - queries).abs() < 0.01);
 	}
 
 	#[test]
@@ -707,28 +803,6 @@ mod tests {
 		level.n_queries = 513;
 		assert!(!level.is_feasible());
 	}
-	#[test]
-	fn scratch_grind_offsets_batching() {
-		use binius_field::Ghash128b as B128;
-
-		use crate::merkle_tree::BinaryMerkleTreeScheme;
-		let scheme = BinaryMerkleTreeScheme::<B128, binius_hash::StdHashSuite>::new();
-		let (regime, _) =
-			SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128).expect("reachable");
-		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
-				.expect("feasible");
-		for bits in [0usize, 1, 2, 3] {
-			let g = params.clone().with_grinding(Grinding::new(bits, 0));
-			println!(
-				"INT grind={bits} k=1 {:.2} k=2 {:.2} k=4 {:.2} k=8 {:.2}",
-				g.batched_achieved_security_bits(128, 1),
-				g.batched_achieved_security_bits(128, 2),
-				g.batched_achieved_security_bits(128, 4),
-				g.batched_achieved_security_bits(128, 8),
-			);
-		}
-	}
 
 	/// Challenge grinding buys back exactly what batching costs.
 	///
@@ -738,32 +812,32 @@ mod tests {
 	/// So a caller who wants both can price them against each other.
 	#[test]
 	fn a_challenge_grind_buys_back_what_batching_costs() {
-		use binius_field::Ghash128b as B128;
-		use binius_hash::StdHashSuite;
+		// Fixture state: the ladder above, opening enough rows that the query term cannot bind.
+		// What is left binding is the ceiling, and the ceiling is the only term batching moves.
+		// At a query count where the rows bind instead, neither lever shows at all.
+		let levels = valid_levels()
+			.into_iter()
+			.map(|level| LigeritoLevel {
+				n_queries: 400,
+				..level
+			})
+			.collect();
+		let params = LigeritoParams::new(levels, SoundnessRegime::UniqueDecoding, 100);
+		let alone = params.achieved_security_bits(128);
 
-		use crate::merkle_tree::BinaryMerkleTreeScheme;
-
-		// Fixture state: a 2^24 message at 120 bits over B128, where the ceiling binds. At the
-		// shipped 96-bit target the query term binds instead and neither lever shows at all.
-		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
-		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
-			.expect("120 bits is reachable with a constant loss");
-		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
-				.expect("a 120-bit ladder exists for one message");
-
-		for log_k in 0..4 {
+		for log_k in 1..4 {
 			let k = 1usize << log_k;
-			// Unground, each doubling of the oracle count takes one bit off the target.
+			// Each doubling of the oracle count widens level 0's row union by one more bit.
 			let unground = params.batched_achieved_security_bits(128, k);
-			assert!(unground < 120.0 || k == 1, "k={k} kept {unground:.2}");
+			assert!(unground < alone, "k={k} kept {unground:.2}");
 
-			// Ground by that many bits, the batch reaches the target again.
+			// Grinding the challenge side by that many bits buys the loss back, because both the
+			// loss and the grind land on the same term.
 			let ground = params
 				.clone()
 				.with_grinding(Grinding::new(log_k, 0))
 				.batched_achieved_security_bits(128, k);
-			assert!(ground >= 120.0, "k={k} ground to {ground:.2}");
+			assert!(ground >= alone, "k={k} ground to {ground:.2} against {alone:.2}");
 		}
 	}
 }

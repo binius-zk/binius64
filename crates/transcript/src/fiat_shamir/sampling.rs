@@ -31,8 +31,18 @@ pub trait CanSampleBits<T> {
 	fn sample_bits(&mut self, bits: usize) -> T;
 }
 
+/// The widest index a single [`CanSampleBits`] draw can address.
+///
+/// A draw returns a `u32`, so it addresses at most `2^32` positions.
+/// A wider request is clamped to this rather than refused, which is a deliberate contract.
+///
+/// The clamp is fine for a caller that just wants some bits.
+/// It is not fine for one addressing a domain: the clamped draw never reaches the range's tail.
+/// Such a caller must hold its own log-size to this ceiling before it draws.
+pub const MAX_SAMPLE_BITS: usize = u32::BITS as usize;
+
 pub fn sample_bits_reader<Reader: Buf>(mut reader: Reader, bits: usize) -> u32 {
-	let bits = bits.min(u32::BITS as usize);
+	let bits = bits.min(MAX_SAMPLE_BITS);
 
 	let bytes_to_sample = size_of::<u32>();
 

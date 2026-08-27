@@ -167,6 +167,19 @@ const fn residual_size(log_residual_dim: usize, sizes: &ByteSizes) -> usize {
 	sizes.digest + (1 << log_residual_dim) * sizes.value
 }
 
+/// What one search run aims at.
+///
+/// The two figures differ because a ladder's soundness error is the sum of its levels'.
+/// So each level has to clear more than the ladder is asked for.
+/// How much more depends on how many levels there turn out to be.
+#[derive(Debug, Clone, Copy)]
+struct Targets {
+	/// The soundness the finished ladder must reach, and what it is tagged with.
+	security_bits: usize,
+	/// The raised figure each individual level is sized against.
+	per_level_bits: usize,
+}
+
 /// Everything the ladder search needs that does not vary between subproblems.
 struct Search<'a, F, MerkleScheme> {
 	/// The Merkle scheme whose branch sizes price every level.
@@ -177,8 +190,8 @@ struct Search<'a, F, MerkleScheme> {
 	n_queries: Vec<usize>,
 	/// The regime the query counts and the soundness ceiling are derived in.
 	regime: SoundnessRegime,
-	/// The target every level must reach, in bits.
-	security_bits: usize,
+	/// What this run aims at, per level and overall.
+	targets: Targets,
 	/// The proof of work every level pays, which both terms of the target are credited with.
 	grinding: Grinding,
 	/// Ties `F` to the Merkle scheme without storing a value of it.
@@ -190,10 +203,11 @@ where
 	F: BinaryField,
 	MerkleScheme: MerkleTreeScheme<F>,
 {
-	/// Whether a level can reach [`Self::security_bits`] at all.
+	/// Whether a level can reach [`Targets::per_level_bits`] at all.
 	///
-	/// Two independent ways to fail, and neither is fixable by opening more rows.
-	/// A level cannot sample more distinct positions than its codeword has.
+	/// Three independent ways to fail, and none is fixable by opening more rows.
+	/// A level cannot open more rows than its codeword has positions.
+	/// Nor can it hold more positions than a single query draw can address.
 	/// And its correlated-agreement term is a ceiling set by the codeword length and the field.
 	/// Proof of work raises that ceiling, which is why the challenge grind is credited here.
 	fn reaches_target(&self, level: &LigeritoLevel) -> bool {
@@ -209,7 +223,9 @@ where
 		// adds it, so a level priced here is a level that really reaches the target.
 		let algebra = base - (level.log_lanes.saturating_sub(1)) as f64
 			+ self.grinding.challenge_bits() as f64;
-		level.is_feasible() && algebra >= self.security_bits as f64
+		level.is_feasible()
+			&& level.is_addressable()
+			&& algebra >= self.targets.per_level_bits as f64
 	}
 
 	/// The best level to commit next, given `log_total` message elements left and a rate floor.
@@ -346,18 +362,86 @@ where
 	F: BinaryField,
 	MerkleScheme: MerkleTreeScheme<F>,
 {
-	assert!(
-		(1..=MAX_LOG_INV_RATE).contains(&l0_log_inv_rate),
-		"precondition: l0_log_inv_rate must be in 1..={MAX_LOG_INV_RATE}, got {l0_log_inv_rate}"
-	);
 	assert!(security_bits > 0, "precondition: security_bits must be positive");
+
+	// Two knobs, because the byte-optimal ladder *at* a per-level target is not the byte-optimal
+	// ladder that *reaches* the target once its levels are summed.
+	//
+	// Headroom raises what each level must clear. A rate ceiling bounds how many levels there can
+	// be, since the rate strictly rises down the ladder, and fewer levels means a shorter sum.
+	// Neither alone finds the best ladder: headroom leaves the search picking the deepest shape it
+	// can afford, and a ceiling alone leaves every level sized too thin.
+	let candidates = (0..=MAX_SEARCH_HEADROOM).flat_map(|headroom| {
+		(l0_log_inv_rate..=MAX_LOG_INV_RATE).filter_map(move |max_log_inv_rate| {
+			let (params, size) = ladder_at_target::<F, _>(
+				merkle_scheme,
+				log_n,
+				l0_log_inv_rate,
+				max_log_inv_rate,
+				regime,
+				Targets {
+					security_bits,
+					per_level_bits: security_bits + headroom,
+				},
+				grinding,
+			)?;
+			// The per-level target is a proxy. This is the property that actually has to hold.
+			(params.achieved_security_bits(F::N_BITS) >= security_bits as f64)
+				.then_some((params, size))
+		})
+	});
+	candidates.min_by_key(|&(_, size)| size)
+}
+
+/// Headroom, in bits, past which raising the per-level target cannot help.
+///
+/// The rate strictly rises down a ladder, so it holds at most [`MAX_LOG_INV_RATE`] levels.
+/// Each contributes four error terms, and the batch adds one more.
+/// A union of `4 * MAX_LOG_INV_RATE + 1` terms falls under `log2(45) < 6` bits below its smallest.
+/// So six bits always suffice, and eight leaves margin.
+/// A search still short of the target at eight is short for a reason headroom does not fix.
+const MAX_SEARCH_HEADROOM: usize = 8;
+
+/// The byte-optimal ladder whose every level reaches [`Targets::per_level_bits`].
+///
+/// [`optimal_ladder`] raises that figure until the ladder's own sum clears the real target.
+/// That real target is [`Targets::security_bits`], and it is what the parameters are tagged with.
+///
+/// No level commits at a rate above `max_log_inv_rate`, which is what bounds the ladder's depth.
+/// The rate strictly rises, so a ceiling `r` above the floor admits at most `r + 1` levels.
+///
+/// ## Preconditions
+///
+/// * `l0_log_inv_rate` is in `1..=max_log_inv_rate`.
+/// * `max_log_inv_rate` is at most [`MAX_LOG_INV_RATE`].
+fn ladder_at_target<F, MerkleScheme>(
+	merkle_scheme: &MerkleScheme,
+	log_n: usize,
+	l0_log_inv_rate: usize,
+	max_log_inv_rate: usize,
+	regime: SoundnessRegime,
+	targets: Targets,
+	grinding: Grinding,
+) -> Option<(LigeritoParams, usize)>
+where
+	F: BinaryField,
+	MerkleScheme: MerkleTreeScheme<F>,
+{
+	assert!(
+		(1..=max_log_inv_rate).contains(&l0_log_inv_rate),
+		"precondition: l0_log_inv_rate must be in 1..={max_log_inv_rate}, got {l0_log_inv_rate}"
+	);
+	assert!(
+		max_log_inv_rate <= MAX_LOG_INV_RATE,
+		"precondition: max_log_inv_rate must be at most {MAX_LOG_INV_RATE}"
+	);
 
 	// Query counts depend only on the rate, so derive them once. Index 0 is unused: rate 1 is
 	// not a proximity test at all.
 	//
 	// The query grind closes part of the target before a row is opened, so the rows cover only
 	// what is left of it.
-	let from_queries = security_bits.saturating_sub(grinding.query_bits());
+	let from_queries = targets.per_level_bits.saturating_sub(grinding.query_bits());
 	let search = Search::<F, MerkleScheme> {
 		merkle_scheme,
 		sizes: ByteSizes::new::<F, MerkleScheme>(),
@@ -368,7 +452,7 @@ where
 			})
 			.collect(),
 		regime,
-		security_bits,
+		targets,
 		grinding,
 		_field: PhantomData,
 	};
@@ -378,10 +462,10 @@ where
 	// may follow" without a bounds check.
 	let mut best = vec![vec![None::<Decision>; MAX_LOG_INV_RATE + 2]; log_n + 1];
 	for log_total in 0..=log_n {
-		for rate_floor in 1..=MAX_LOG_INV_RATE {
+		for rate_floor in 1..=max_log_inv_rate {
 			// Every tabulated subproblem is reached by recursing, so it is never level 0.
 			best[log_total][rate_floor] =
-				search.choose_level(&best, log_total, rate_floor, MAX_LOG_INV_RATE, DEEPER_LEVEL);
+				search.choose_level(&best, log_total, rate_floor, max_log_inv_rate, DEEPER_LEVEL);
 		}
 	}
 
@@ -409,13 +493,13 @@ where
 			.expect("a recursing decision was scored against a solved subproblem");
 	}
 
-	let params = LigeritoParams::new(levels, regime, security_bits).with_grinding(grinding);
+	let params = LigeritoParams::new(levels, regime, targets.security_bits).with_grinding(grinding);
 	Some((params, estimated_size))
 }
 
 #[cfg(test)]
 mod tests {
-	use binius_field::Ghash128b as B128;
+	use binius_field::{BinaryField, Ghash128b as B128};
 	use binius_hash::StdHashSuite;
 	use proptest::prelude::*;
 
@@ -453,25 +537,26 @@ mod tests {
 		}
 		for level in levels {
 			assert!(level.is_feasible());
+			assert!(level.is_addressable());
 			assert!(level.log_lanes >= 1);
 			assert!(level.log_lanes <= MAX_LOG_LANES);
 			assert!(level.log_inv_rate <= MAX_LOG_INV_RATE);
-			// Query grinding closes part of the target before a row is opened, so the rows only
-			// cover what is left of it.
+			// Levels are sized against the caller's target raised by headroom, so a level opens at
+			// least what the bare target would ask of it, and generally a little more.
 			let from_queries = params
 				.security_bits()
 				.saturating_sub(params.grinding().query_bits());
-			assert_eq!(
-				level.n_queries,
-				params.regime().n_queries(from_queries, level.log_inv_rate)
-			);
+			assert!(level.n_queries >= params.regime().n_queries(from_queries, level.log_inv_rate));
 		}
 		assert_eq!(params.log_residual_dim(), levels.last().expect("non-empty").log_msg_cols);
+		// The headroom exists for exactly this: the whole ladder reaches the target, not merely
+		// each level of it taken alone.
+		assert!(params.achieved_security_bits(B128::N_BITS) >= params.security_bits() as f64);
 	}
 
 	/// The lossy regime both reference Ligerito implementations ship a conjecture-free profile in.
 	/// Priced here over this repo's own field.
-	fn lossy_regime(log_n: usize) -> SoundnessRegime {
+	pub(super) fn lossy_regime(log_n: usize) -> SoundnessRegime {
 		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, log_n, 1, 128)
 			.expect("120 bits is reachable with a constant loss");
 		regime
@@ -479,33 +564,60 @@ mod tests {
 
 	#[test]
 	fn a_ladder_that_grinds_reaches_a_target_the_algebra_alone_cannot() {
-		// Invariant: the correlated-agreement term is a ceiling no query count raises, and over
-		// B128 it falls short of 128 bits. Proof of work is the only lever that moves it, so a
-		// 128-bit ladder exists exactly when enough of it is paid.
+		// Invariant: the correlated-agreement term is a ceiling no query count raises. Proof of
+		// work is the only lever that moves it, so a target just above the bare ceiling exists
+		// exactly when enough of it is paid.
 		//
-		// Fixture state: a 2^24 message at L0 rate 1/2, in the lossy unique-decoding regime whose
-		// ceiling is a flat 124.5 bits at every size.
+		// Fixture state: a 2^24 message at L0 rate 1/2, in the lossy unique-decoding regime, whose
+		// ceiling at this shape is 120.4 bits.
 		let merkle_scheme = test_merkle_scheme();
 		let regime = lossy_regime(24);
 		let ladder = |grinding| {
-			LigeritoParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, regime, 128, grinding)
+			LigeritoParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, regime, 119, grinding)
 		};
 
 		// A level also pays the fold row union, so the ceiling a real ladder has to clear sits
-		// below the flat 124.5 and the first grind that buys anything is larger than the 3.5 bits
-		// the bare ceiling is short by.
-		for challenge_bits in 0..8 {
-			assert!(ladder(Grinding::new(challenge_bits, 0)).is_none(), "{challenge_bits}");
-		}
+		// below the bare 120.4 and 119 bits is out of reach with no work at all.
+		assert!(ladder(Grinding::NONE).is_none());
 
-		let grinding = Grinding::new(11, 0);
-		let (params, size) = ladder(grinding).expect("eleven bits of work reach 128");
+		let grinding = Grinding::new(2, 0);
+		let (params, size) = ladder(grinding).expect("two bits of work reach 119");
 		assert_invariants(&params);
 		assert_eq!(params.grinding(), grinding);
 		// The bits the ladder reports are the bits its transcript pays for, and they clear the
 		// target rather than merely approaching it.
-		assert!(params.achieved_security_bits(128) >= 128.0);
+		assert!(params.achieved_security_bits(128) >= 119.0);
 		assert_eq!(size, params.proof_size(&merkle_scheme));
+	}
+
+	#[test]
+	fn a_target_the_row_batching_term_caps_is_out_of_reach_at_any_grind() {
+		// Invariant: opening rows is not free of algebra. A level batches its `n_queries` row
+		// claims into the running sumcheck by the powers of one challenge, and that step alone
+		// costs `(n_queries + 1)/|F|` no matter how the rest is configured.
+		//
+		// At ~300 rows over B128 that is `log2(301) = 8.2` bits gone, so no level opening this
+		// many rows exceeds about 119.8 bits. Grinding cannot buy it back: it lifts the two terms
+		// it stands in front of, and this is neither of them.
+		let merkle_scheme = test_merkle_scheme();
+		let regime = lossy_regime(24);
+		let ladder = |target, challenge_bits| {
+			LigeritoParams::optimal_ladder::<B128, _>(
+				&merkle_scheme,
+				24,
+				1,
+				regime,
+				target,
+				Grinding::new(challenge_bits, 0),
+			)
+		};
+
+		// 119 is reachable, and one bit more is not, at any depth of work the transcript allows.
+		assert!(ladder(119, 2).is_some());
+		for challenge_bits in [0, 2, 8, 16, binius_transcript::MAX_GRINDING_BITS] {
+			assert!(ladder(120, challenge_bits).is_none(), "{challenge_bits}");
+			assert!(ladder(128, challenge_bits).is_none(), "{challenge_bits}");
+		}
 	}
 
 	#[test]
@@ -515,39 +627,35 @@ mod tests {
 		// headroom. Query bits close part of the target outright, which lets every level open
 		// fewer rows. Neither does the other's work.
 		//
-		// Fixture state: the same 2^24 message at 128 bits in the lossy regime.
+		// Fixture state: the same 2^24 message at 118 bits in the lossy regime.
 		let merkle_scheme = test_merkle_scheme();
 		let regime = lossy_regime(24);
 		let ladder = |grinding| {
-			LigeritoParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, regime, 128, grinding)
-				.expect("the profiles below all reach 128 bits")
+			LigeritoParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, regime, 118, grinding)
+				.expect("the profiles below all reach 118 bits")
 				.0
 		};
 
-		// More challenge bits, wider lanes, and a smaller proof at every step.
-		let widening = (8..=11)
+		// More challenge bits, a deeper ladder, and a smaller proof at every step. With too few,
+		// the only shape that clears the target is one level over a cleartext residual.
+		let widening = (2..=6)
 			.map(|challenge_bits| ladder(Grinding::new(challenge_bits, 0)))
 			.collect::<Vec<_>>();
 		for pair in widening.windows(2) {
-			assert!(pair[1].levels()[0].log_lanes >= pair[0].levels()[0].log_lanes);
+			assert!(pair[1].n_levels() >= pair[0].n_levels());
 			assert!(pair[1].proof_size(&merkle_scheme) < pair[0].proof_size(&merkle_scheme));
-		}
-		// And the row count never moves, because the query phase was never the binding term.
-		let rows = widening[0].levels()[0].n_queries;
-		for params in &widening {
-			assert_eq!(params.levels()[0].n_queries, rows);
 		}
 
 		// Query bits do the opposite: the same shape, fewer rows, a smaller proof.
-		let bare = ladder(Grinding::new(11, 0));
+		let bare = ladder(Grinding::new(6, 0));
 		// Seventeen bits is what one reference implementation grinds before drawing positions.
-		let ground = ladder(Grinding::new(11, 17));
+		let ground = ladder(Grinding::new(6, 17));
 		assert_eq!(ground.n_levels(), bare.n_levels());
 		assert_eq!(ground.levels()[0].log_lanes, bare.levels()[0].log_lanes);
-		assert_eq!(bare.levels()[0].n_queries, 312);
-		assert_eq!(ground.levels()[0].n_queries, 270);
+		assert_eq!(bare.levels()[0].n_queries, 298);
+		assert_eq!(ground.levels()[0].n_queries, 257);
 		assert!(ground.proof_size(&merkle_scheme) < bare.proof_size(&merkle_scheme));
-		assert!(ground.achieved_security_bits(128) >= 128.0);
+		assert!(ground.achieved_security_bits(128) >= 118.0);
 	}
 
 	#[test]
@@ -574,7 +682,9 @@ mod tests {
 		// slacker of the two.
 		let (bare_bits, ground_bits) =
 			(bare.achieved_security_bits(128), ground.achieved_security_bits(128));
-		assert!((bare_bits - ground_bits).abs() < 1e-9, "{bare_bits} {ground_bits}");
+		// Not to the last bit: the grind does lift the slacker term, and the union still carries
+		// it. What it does not do is move the total by anything like the four bits it cost.
+		assert!((bare_bits - ground_bits).abs() < 0.1, "{bare_bits} {ground_bits}");
 		assert!(bare_bits >= 96.0);
 	}
 
@@ -618,13 +728,9 @@ mod tests {
 		let merkle_scheme = test_merkle_scheme();
 
 		// Level 0's lane count comes out at 3 or 4, matching the arity `fri`'s own optimizer picks.
-		let expected = [
-			(17, 161_488),
-			(20, 236_944),
-			(24, 348_272),
-			(28, 472_928),
-			(30, 542_800),
-		];
+		// The list stops at 2^28. Past it the only ladders that reach 96 bits are degenerate, which
+		// the ceiling test below pins instead.
+		let expected = [(17, 162_672), (20, 241_104), (24, 354_608), (28, 521_136)];
 		for (log_n, bytes) in expected {
 			let (_, size) = LigeritoParams::optimal_ladder::<B128, _>(
 				&merkle_scheme,
@@ -673,7 +779,9 @@ mod tests {
 		// Unique decoding only: the Johnson regime has no feasible ladder over this field, which
 		// the test above pins.
 		for regime in [UDR] {
-			for log_n in [17, 20, 24, 28] {
+			// The trend needs a shape where every L0 rate still has a real ladder. Past 2^24 the
+			// lower rates run out of ceiling, which the assertion after this loop pins.
+			for log_n in [17, 20, 24] {
 				// The trend holds while the ladder still has rate room below L0 to recurse into.
 				let sizes = (1..=4)
 					.map(|l0_log_inv_rate| {
@@ -715,6 +823,28 @@ mod tests {
 				};
 				assert_eq!(capped.n_levels(), 1);
 				assert!(capped_size > sizes[3], "regime={regime:?} log_n={log_n}");
+			}
+
+			// At 2^28 the trend inverts outright. A lower L0 rate is a longer codeword, and a
+			// longer codeword has a worse correlated-agreement ceiling. By this size that ceiling
+			// is what binds, so every step down in rate costs headroom the extra rate step cannot
+			// repay, and only 1/2 leaves room for a ladder at all.
+			let sizes = (1..=4)
+				.map(|l0_log_inv_rate| {
+					LigeritoParams::optimal_ladder::<B128, _>(
+						&merkle_scheme,
+						28,
+						l0_log_inv_rate,
+						regime,
+						SECURITY_BITS,
+						Grinding::NONE,
+					)
+					.expect("feasible")
+					.1
+				})
+				.collect::<Vec<_>>();
+			for pair in sizes.windows(2) {
+				assert!(pair[1] > pair[0], "regime={regime:?} sizes={sizes:?}");
 			}
 		}
 	}
@@ -841,36 +971,32 @@ mod tests {
 			)
 			.is_some()
 		};
-		assert!(ladder(32, 96));
-		assert!(!ladder(33, 96));
+		assert!(ladder(30, 96));
+		assert!(!ladder(32, 96));
 
-		// And the cutoff is not a cliff: the shape degenerates well before it. At log_n = 32 the
+		// And the cutoff is not a cliff: the shape degenerates well before it. At log_n = 30 the
 		// only levels that still clear the target fold one lane at a time, so the search is forced
 		// into a huge cleartext residual rather than a ladder. Pinning that keeps a caller from
 		// reading the returned size as a usable configuration.
-		let (_, degenerate) = LigeritoParams::optimal_ladder::<B128, _>(
-			&merkle_scheme,
-			32,
-			1,
-			UDR,
-			SECURITY_BITS,
-			Grinding::NONE,
-		)
-		.expect("log_n = 32 still has a ladder, of a sort");
-		let (_, sane) = LigeritoParams::optimal_ladder::<B128, _>(
-			&merkle_scheme,
-			30,
-			1,
-			UDR,
-			SECURITY_BITS,
-			Grinding::NONE,
-		)
-		.expect("log_n = 30 has a real ladder");
+		let size = |log_n, target| {
+			LigeritoParams::optimal_ladder::<B128, _>(
+				&merkle_scheme,
+				log_n,
+				1,
+				UDR,
+				target,
+				Grinding::NONE,
+			)
+			.expect("a ladder exists at these shapes")
+			.1
+		};
+		let degenerate = size(30, SECURITY_BITS);
+		let sane = size(28, SECURITY_BITS);
 		assert!(degenerate > 100 * sane, "degenerate={degenerate} sane={sane}");
 
 		// Raising the target lowers that boundary, which is the whole point of tracking the term.
-		assert!(ladder(28, 100));
-		assert!(!ladder(29, 100));
+		assert!(ladder(27, 100));
+		assert!(!ladder(28, 100));
 
 		// And 128 bits is out of reach at every size, as `crate::soundness` documents.
 		for log_n in [12, 20, 28] {
@@ -976,9 +1102,18 @@ mod tests {
 
 			let lig_udr = ladder(UDR).expect("a unique-decoding ladder is feasible at these sizes");
 
-			// A ladder beats FRI at the same L0 rate, in the same regime. This is the honest
-			// comparison, since equal L0 rate means equal L0 encoding cost.
-			assert!(lig_udr < baseline, "log_n={log_n} lig={lig_udr} fri={baseline}");
+			// A ladder beats FRI at the same L0 rate, in the same regime, while a ladder that
+			// reaches the target is still a ladder. This is the honest comparison, since equal L0
+			// rate means equal L0 encoding cost.
+			//
+			// Past 2^28 it stops beating FRI, and by a wide margin: level 0's ceiling no longer
+			// leaves room for a ladder's worth of levels, so the only shape that reaches 96 bits
+			// is one level over a cleartext residual.
+			if log_n <= 28 {
+				assert!(lig_udr < baseline, "log_n={log_n} lig={lig_udr} fri={baseline}");
+			} else {
+				assert!(lig_udr > 100 * baseline, "log_n={log_n} lig={lig_udr} fri={baseline}");
+			}
 			// Rows (3), (4) and (6) price a regime this field cannot support. They are printed
 			// because the plan document tabulates them, and asserted only on their query counts.
 			assert!(fri_size(log_n, 1, JOHNSON) < baseline, "log_n={log_n}");
