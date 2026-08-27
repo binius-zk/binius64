@@ -3,11 +3,15 @@
 //! AArch64 NEON block compression for the multi-lane Blake3 kernel.
 
 use std::arch::aarch64::{
-	uint32x4_t, vaddq_u32, vdupq_n_u32, veorq_u32, vld1q_u32, vreinterpretq_u16_u32,
-	vreinterpretq_u32_u16, vrev32q_u16, vshlq_n_u32, vsriq_n_u32, vst1q_u32,
+	uint32x4_t, vaddq_u32, vdupq_n_u32, veorq_u32, vld1q_u8, vld1q_u32, vreinterpretq_u16_u32,
+	vreinterpretq_u32_u8, vreinterpretq_u32_u16, vreinterpretq_u32_u64, vreinterpretq_u64_u32,
+	vrev32q_u16, vshlq_n_u32, vsriq_n_u32, vst1q_u32, vtrn1q_u32, vtrn1q_u64, vtrn2q_u32,
+	vtrn2q_u64,
 };
 
-use super::{IV, MSG_PERMUTATION, N_ROUNDS};
+use blake3::BLOCK_LEN;
+
+use super::{IV, MSG_SCHEDULE};
 
 /// Widest interleave this module implements, counted in four-lane groups.
 ///
@@ -17,15 +21,16 @@ use super::{IV, MSG_PERMUTATION, N_ROUNDS};
 /// - Interleaving groups hides the latency of each one's add, xor, rotate chain.
 /// - Past four groups the spills cost more than the added parallelism returns.
 ///
-/// Throughput hashing 256-byte leaves on an Apple M1 Pro:
+/// Throughput hashing 256-byte leaves on an Apple M1 Pro, single-threaded:
 ///
 /// ```text
-///      4 lanes (1 group):  1.16 GiB/s
-///      8 lanes (2 groups): 1.77 GiB/s
-///     12 lanes (3 groups): 1.95 GiB/s   <- peak
-///     16 lanes (4 groups): 1.93 GiB/s
-///     20 lanes (5 groups): 1.53 GiB/s
+///      4 lanes (1 group):  1.02 GiB/s
+///      8 lanes (2 groups): 1.41 GiB/s
+///     12 lanes (3 groups): 1.45 GiB/s
+///     16 lanes (4 groups): 1.47 GiB/s   <- peak
 /// ```
+///
+/// A wider batch has no kernel and falls to the lane loops, which reach 1.30 GiB/s at 20 lanes.
 const MAX_GROUPS: usize = 4;
 
 /// Rotates every 32-bit lane right by 16 bits.
@@ -143,7 +148,7 @@ fn quarter_round<const S: usize>(
 	}
 }
 
-/// Applies one full Blake3 round to every four-lane group.
+/// Applies round `R` to every four-lane group.
 ///
 /// # Algorithm
 ///
@@ -156,19 +161,25 @@ fn quarter_round<const S: usize>(
 /// ```
 ///
 /// Every state word is touched exactly twice, so after one round each word depends on all others.
+///
+/// Message positions come from row `R` of the schedule table.
+/// The schedule advances by changing which register a round reads, never by moving one.
 #[inline(always)]
-fn round<const S: usize>(v: &mut [[uint32x4_t; 16]; S], m: &[[uint32x4_t; 16]; S]) {
+fn round<const R: usize, const S: usize>(v: &mut [[uint32x4_t; 16]; S], m: &[[uint32x4_t; 16]; S]) {
+	// The 16 message positions this round reads, in slot order.
+	let s = MSG_SCHEDULE[R];
+
 	// Column step: the four disjoint columns of the 4x4 state matrix.
-	quarter_round(v, m, 0, 4, 8, 12, 0, 1);
-	quarter_round(v, m, 1, 5, 9, 13, 2, 3);
-	quarter_round(v, m, 2, 6, 10, 14, 4, 5);
-	quarter_round(v, m, 3, 7, 11, 15, 6, 7);
+	quarter_round(v, m, 0, 4, 8, 12, s[0], s[1]);
+	quarter_round(v, m, 1, 5, 9, 13, s[2], s[3]);
+	quarter_round(v, m, 2, 6, 10, 14, s[4], s[5]);
+	quarter_round(v, m, 3, 7, 11, 15, s[6], s[7]);
 
 	// Diagonal step: the four disjoint diagonals, which is what couples the columns together.
-	quarter_round(v, m, 0, 5, 10, 15, 8, 9);
-	quarter_round(v, m, 1, 6, 11, 12, 10, 11);
-	quarter_round(v, m, 2, 7, 8, 13, 12, 13);
-	quarter_round(v, m, 3, 4, 9, 14, 14, 15);
+	quarter_round(v, m, 0, 5, 10, 15, s[8], s[9]);
+	quarter_round(v, m, 1, 6, 11, 12, s[10], s[11]);
+	quarter_round(v, m, 2, 7, 8, 13, s[12], s[13]);
+	quarter_round(v, m, 3, 4, 9, 14, s[14], s[15]);
 }
 
 /// Compresses one 64-byte block into each of `4 * S` chaining values.
@@ -242,21 +253,15 @@ unsafe fn compress_groups<const S: usize>(
 			v[s][15] = vdupq_n_u32(flags);
 		}
 
-		// Phase 3: seven rounds, with the message schedule permuted between consecutive rounds.
-		for r in 0..N_ROUNDS {
-			round(&mut v, &m);
-
-			// The last round is followed by no further round, so its permutation is dead work.
-			if r < N_ROUNDS - 1 {
-				for s in 0..S {
-					// Each slot reads from its source in the old schedule, so copy before writing.
-					let prev = m[s];
-					for w in 0..16 {
-						m[s][w] = prev[MSG_PERMUTATION[w]];
-					}
-				}
-			}
-		}
+		// Phase 3: seven rounds, each reading the message through its own schedule row.
+		// The 16 message vectors stay in the registers Phase 1 loaded them into.
+		round::<0, S>(&mut v, &m);
+		round::<1, S>(&mut v, &m);
+		round::<2, S>(&mut v, &m);
+		round::<3, S>(&mut v, &m);
+		round::<4, S>(&mut v, &m);
+		round::<5, S>(&mut v, &m);
+		round::<6, S>(&mut v, &m);
 
 		// Phase 4: truncated output, folding the two halves of the final state together.
 		//
@@ -269,6 +274,121 @@ unsafe fn compress_groups<const S: usize>(
 			}
 		}
 	}
+}
+
+/// Transposes a 4x4 square of 32-bit words held in four vector registers.
+///
+/// # Memory layout
+///
+/// Each input row is four consecutive words of one lane:
+///
+/// ```text
+///     rows[0]:  [ a_00, a_01, a_02, a_03 ]    lane 0
+///     rows[1]:  [ a_10, a_11, a_12, a_13 ]    lane 1
+///     rows[2]:  [ a_20, a_21, a_22, a_23 ]    lane 2
+///     rows[3]:  [ a_30, a_31, a_32, a_33 ]    lane 3
+/// ```
+///
+/// Each output row is one word of all four lanes:
+///
+/// ```text
+///     out[0]:   [ a_00, a_10, a_20, a_30 ]    word 0
+///     out[1]:   [ a_01, a_11, a_21, a_31 ]    word 1
+///     out[2]:   [ a_02, a_12, a_22, a_32 ]    word 2
+///     out[3]:   [ a_03, a_13, a_23, a_33 ]    word 3
+/// ```
+///
+/// # Algorithm
+///
+/// A two-stage butterfly, each stage swapping elements twice as far apart as the one before:
+///
+/// ```text
+///     stage 1:  TRN1 / TRN2 over 32-bit lanes    swaps elements 1 apart
+///     stage 2:  TRN1 / TRN2 over 64-bit lanes    swaps elements 2 apart
+/// ```
+///
+/// Both stages stay in registers, so the square never touches memory.
+#[inline(always)]
+fn transpose4x4(rows: [uint32x4_t; 4]) -> [uint32x4_t; 4] {
+	// SAFETY: this module is only reachable on aarch64 with `neon` statically enabled.
+	unsafe {
+		// Stage 1: the first form keeps the even-indexed words of a row pair, the second the odd.
+		let a = vtrn1q_u32(rows[0], rows[1]); // [ a_00, a_10, a_02, a_12 ]
+		let b = vtrn2q_u32(rows[0], rows[1]); // [ a_01, a_11, a_03, a_13 ]
+		let c = vtrn1q_u32(rows[2], rows[3]); // [ a_20, a_30, a_22, a_32 ]
+		let d = vtrn2q_u32(rows[2], rows[3]); // [ a_21, a_31, a_23, a_33 ]
+
+		// Stage 2: the same interleave one level up pairs the 64-bit halves into finished rows.
+		let (a, b) = (vreinterpretq_u64_u32(a), vreinterpretq_u64_u32(b));
+		let (c, d) = (vreinterpretq_u64_u32(c), vreinterpretq_u64_u32(d));
+		[
+			vreinterpretq_u32_u64(vtrn1q_u64(a, c)),
+			vreinterpretq_u32_u64(vtrn1q_u64(b, d)),
+			vreinterpretq_u32_u64(vtrn2q_u64(a, c)),
+			vreinterpretq_u32_u64(vtrn2q_u64(b, d)),
+		]
+	}
+}
+
+/// Reports whether this module can transpose the message for the given lane count.
+///
+/// The square the butterfly moves is four lanes wide, so the lane count must fill it.
+#[inline(always)]
+pub const fn transposes_lanes(n: usize) -> bool {
+	n > 0 && n.is_multiple_of(4)
+}
+
+/// Loads one 64-byte block per lane and transposes it into 16 rows of `N` lanes.
+///
+/// Produces the same words as the byte-wise loader, for every input.
+///
+/// # Algorithm
+///
+/// The kernel wants the message as 16 words of `N` lanes.
+/// The input arrives as `N` blocks of 16 words, which is that square transposed.
+///
+/// The square splits into a grid of independent 4x4 blocks, four lanes by four words:
+///
+/// ```text
+///     lanes 0..4, words 0..4    lanes 0..4, words 4..8    ...
+///     lanes 4..8, words 0..4    lanes 4..8, words 4..8    ...
+///     ...
+/// ```
+///
+/// # Performance
+///
+/// Each 4x4 block costs 4 vector loads, 8 shuffles, and 4 vector stores.
+/// The byte-wise loader instead moves each of the `16 * N` words on its own.
+///
+/// # Panics
+///
+/// Panics if the lane count does not fill the square.
+#[inline(always)]
+pub fn load_block_words<const N: usize>(block: &[[u8; BLOCK_LEN]; N]) -> [[u32; N]; 16] {
+	assert!(transposes_lanes(N), "precondition: the lane count must fill the 4x4 square");
+
+	let mut m = [[0u32; N]; 16];
+	// SAFETY:
+	// - Each load reads 16 bytes at `w * 16` inside a 64-byte block, so `w < 4` stays in bounds.
+	// - Byte pointers carry no alignment requirement beyond the block's own.
+	// - Each store writes 4 words at lane `g * 4` of a row of `N` words, and `g * 4 + 4 <= N`.
+	unsafe {
+		for g in 0..N / 4 {
+			for w in 0..4 {
+				// Gather four lanes of the same four words, one lane per vector.
+				// A raw 16-byte load is already four little-endian words on this target.
+				let rows = std::array::from_fn(|lane| {
+					vreinterpretq_u32_u8(vld1q_u8(block[g * 4 + lane].as_ptr().add(w * 16)))
+				});
+
+				// Scatter them back as four words of the same four lanes, one word per vector.
+				for (j, col) in transpose4x4(rows).into_iter().enumerate() {
+					vst1q_u32(m[w * 4 + j].as_mut_ptr().add(g * 4), col);
+				}
+			}
+		}
+	}
+	m
 }
 
 /// Reports whether this module has a kernel for the given lane count.

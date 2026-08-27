@@ -41,9 +41,11 @@ use super::{
 	},
 };
 
-/// Hand-written vector kernel for the block compression, used in place of the lane loops below.
+/// Hand-written vector kernels for the message load and the block compression.
 ///
-/// Kept private so it stays an implementation detail of this module.
+/// They stand in for the byte-wise loader and the lane loops below.
+///
+/// Kept private so they stay an implementation detail of this module.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 #[path = "blake3_neon.rs"]
 mod neon;
@@ -77,6 +79,46 @@ const MSG_PERMUTATION: [usize; 16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9,
 /// The 7-round count of the Blake3 keyed permutation.
 const N_ROUNDS: usize = 7;
 
+/// Message word that each of a round's 16 slots reads, one row per round.
+///
+/// Blake3 advances the message between rounds by one fixed permutation.
+/// Applying that permutation `r` times gives the words round `r` reads:
+///
+/// ```text
+///     row 0:   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15    <- the message in order
+///     row 1:   2  6  3 10  7  0  4 13  1 11 12  5  9 14 15  8    <- permuted once
+///     row 2:   3  4 10 12 13  2  7 14  6  5  9  0 11 15  8  1    <- permuted twice
+///     ...
+/// ```
+///
+/// # Why compose it here
+///
+/// Permuting the words a round reads is the same as permuting the words themselves.
+/// Settling that at compile time leaves the 16 message words loaded once and never moved.
+const MSG_SCHEDULE: [[usize; 16]; N_ROUNDS] = {
+	let mut schedule = [[0usize; 16]; N_ROUNDS];
+
+	// Row 0: the first round consumes the message in its natural order.
+	let mut w = 0;
+	while w < 16 {
+		schedule[0][w] = w;
+		w += 1;
+	}
+
+	// Row r: reading the row above through the permutation applies it one more time.
+	let mut r = 1;
+	while r < N_ROUNDS {
+		let mut w = 0;
+		while w < 16 {
+			schedule[r][w] = schedule[r - 1][MSG_PERMUTATION[w]];
+			w += 1;
+		}
+		r += 1;
+	}
+
+	schedule
+};
+
 /// Applies one Blake3 quarter-round across all `N` lanes.
 ///
 /// The state words at positions `a, b, c, d` are mixed with two message words per lane.
@@ -104,29 +146,24 @@ fn quarter_round<const N: usize>(
 	}
 }
 
-/// Applies one full Blake3 round: four column mixes, then four diagonal mixes.
+/// Applies round `R`: four column mixes, then four diagonal mixes.
 ///
-/// Message words are consumed in order `m[0..16]`, two per quarter-round.
+/// The two message words each quarter-round folds in come from row `R` of the schedule table.
 #[inline(always)]
-fn round<const N: usize>(v: &mut [[u32; N]; 16], m: &[[u32; N]; 16]) {
-	// Columns.
-	quarter_round(v, 0, 4, 8, 12, &m[0], &m[1]);
-	quarter_round(v, 1, 5, 9, 13, &m[2], &m[3]);
-	quarter_round(v, 2, 6, 10, 14, &m[4], &m[5]);
-	quarter_round(v, 3, 7, 11, 15, &m[6], &m[7]);
-	// Diagonals.
-	quarter_round(v, 0, 5, 10, 15, &m[8], &m[9]);
-	quarter_round(v, 1, 6, 11, 12, &m[10], &m[11]);
-	quarter_round(v, 2, 7, 8, 13, &m[12], &m[13]);
-	quarter_round(v, 3, 4, 9, 14, &m[14], &m[15]);
-}
+fn round<const R: usize, const N: usize>(v: &mut [[u32; N]; 16], m: &[[u32; N]; 16]) {
+	// The 16 message words this round reads, in slot order.
+	let s = MSG_SCHEDULE[R];
 
-/// Permutes the message words in place for the next round.
-#[inline(always)]
-fn permute<const N: usize>(m: &mut [[u32; N]; 16]) {
-	// The permutation reads each slot from its source, so build into a fresh array.
-	let permuted: [[u32; N]; 16] = array::from_fn(|i| m[MSG_PERMUTATION[i]]);
-	*m = permuted;
+	// Columns.
+	quarter_round(v, 0, 4, 8, 12, &m[s[0]], &m[s[1]]);
+	quarter_round(v, 1, 5, 9, 13, &m[s[2]], &m[s[3]]);
+	quarter_round(v, 2, 6, 10, 14, &m[s[4]], &m[s[5]]);
+	quarter_round(v, 3, 7, 11, 15, &m[s[6]], &m[s[7]]);
+	// Diagonals.
+	quarter_round(v, 0, 5, 10, 15, &m[s[8]], &m[s[9]]);
+	quarter_round(v, 1, 6, 11, 12, &m[s[10]], &m[s[11]]);
+	quarter_round(v, 2, 7, 8, 13, &m[s[12]], &m[s[13]]);
+	quarter_round(v, 3, 4, 9, 14, &m[s[14]], &m[s[15]]);
 }
 
 /// Loads one 64-byte block per lane into 16 little-endian message words.
@@ -140,13 +177,19 @@ fn load_block_words<const N: usize>(block: &[[u8; BLOCK_LEN]; N]) -> [[u32; N]; 
 		return avx512::load_block_words(block);
 	}
 
+	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+	if neon::transposes_lanes(N) {
+		return neon::load_block_words(block);
+	}
+
 	load_block_words_portable(block)
 }
 
 /// Loads one 64-byte block per lane into 16 little-endian message words, one word at a time.
 ///
-/// Every target without a hand-written transpose runs this, and it is the reference the vector
-/// kernels are tested against.
+/// Every target without a hand-written transpose runs this.
+///
+/// It is also the reference the vector kernels are tested against.
 #[inline(always)]
 fn load_block_words_portable<const N: usize>(block: &[[u8; BLOCK_LEN]; N]) -> [[u32; N]; 16] {
 	let mut m = [[0u32; N]; 16];
@@ -223,14 +266,15 @@ fn compress_block_portable<const N: usize>(
 		[flags; N],
 	];
 
-	// Run 7 rounds; permute the message between all but the last.
-	let mut m = *block;
-	for r in 0..N_ROUNDS {
-		round(&mut v, &m);
-		if r < N_ROUNDS - 1 {
-			permute(&mut m);
-		}
-	}
+	// Run 7 rounds, each reading the message through its own schedule row.
+	// Nothing rewrites the message, so it stays exactly where the caller built it.
+	round::<0, N>(&mut v, block);
+	round::<1, N>(&mut v, block);
+	round::<2, N>(&mut v, block);
+	round::<3, N>(&mut v, block);
+	round::<4, N>(&mut v, block);
+	round::<5, N>(&mut v, block);
+	round::<6, N>(&mut v, block);
 
 	// Truncated output: h_i = v_i XOR v_{i+8}, feeding the next block or the final digest.
 	for i in 0..8 {
@@ -679,6 +723,73 @@ mod tests {
 
 		// Compression is bit-exact, so the two must agree on all 8 words of all N lanes.
 		assert_eq!(got, want, "vector kernel diverged from the lane loops at {N} lanes");
+	}
+
+	/// Transposes one random block set through both loaders and pins the words together.
+	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+	fn check_neon_transpose<const N: usize>(rng: &mut StdRng) {
+		// Fresh random bytes per lane, so no two lanes hold the same word by accident.
+		let mut blocks = [[0u8; BLOCK_LEN]; N];
+		for block in blocks.iter_mut() {
+			rng.fill_bytes(block);
+		}
+
+		// A transpose only permutes words, so the two loaders must agree on all 16 rows.
+		assert_eq!(
+			super::neon::load_block_words(&blocks),
+			load_block_words_portable(&blocks),
+			"the shuffle network diverged from the byte-wise loader at {N} lanes"
+		);
+	}
+
+	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+	#[test]
+	fn test_neon_transpose_matches_portable() {
+		// Invariant: a word's output row is its word index, and its output lane is its block index.
+		//
+		// Fixture: word `w` of lane `l` carries the value `l * 16 + w`, so all 16 * N are distinct.
+		//
+		//     lane 0 block:  [  0,  1,  2, ...,  15 ]
+		//     lane 1 block:  [ 16, 17, 18, ...,  31 ]
+		//     ...
+		//     output row w:  [  w, 16 + w, 32 + w, ... ]
+		//
+		// Distinct values are what makes a swapped row or lane show up as a wrong value.
+		let mut blocks = [[0u8; BLOCK_LEN]; 16];
+		for (lane, block) in blocks.iter_mut().enumerate() {
+			for (w, word) in block.chunks_exact_mut(4).enumerate() {
+				word.copy_from_slice(&((lane * 16 + w) as u32).to_le_bytes());
+			}
+		}
+
+		// Every one of the 16 rows must read back its own coordinate, at every lane.
+		let m = super::neon::load_block_words(&blocks);
+		for (w, row) in m.iter().enumerate() {
+			for (lane, got) in row.iter().enumerate() {
+				assert_eq!(*got, (lane * 16 + w) as u32, "row {w}, lane {lane}");
+			}
+		}
+
+		// Random blocks at every width the network claims, from one square up to four.
+		let mut rng = StdRng::seed_from_u64(23);
+		check_neon_transpose::<4>(&mut rng);
+		check_neon_transpose::<8>(&mut rng);
+		check_neon_transpose::<12>(&mut rng);
+		check_neon_transpose::<16>(&mut rng);
+	}
+
+	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+	proptest! {
+		#[test]
+		fn neon_transpose_matches_portable_proptest(seed in any::<u64>()) {
+			// The fixed block above pins the coordinates.
+			// This sweeps arbitrary bytes at every width instead.
+			let mut rng = StdRng::seed_from_u64(seed);
+			check_neon_transpose::<4>(&mut rng);
+			check_neon_transpose::<8>(&mut rng);
+			check_neon_transpose::<12>(&mut rng);
+			check_neon_transpose::<16>(&mut rng);
+		}
 	}
 
 	#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
