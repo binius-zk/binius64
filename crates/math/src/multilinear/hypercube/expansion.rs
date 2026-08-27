@@ -21,10 +21,12 @@
 //! ```
 //!
 //! The two halves sit one after the other, so the appended variable is the highest indexed one.
+//!
+//! Once built, an expansion can also be truncated back down to its low indexed variables.
 
 use std::{iter, slice};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::{Allocator, BufferData, VecLike};
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::{
 	prelude::*,
@@ -254,6 +256,47 @@ impl<'a, F: Field> Expansion<'a, F> {
 		}
 
 		FieldBuffer::new(final_log_len, data)
+	}
+}
+
+/// Truncates a built equality indicator expansion to its low indexed variables.
+///
+/// Each step contracts the two halves of the buffer, stripping the highest variable.
+/// That removes the highest variable's basis factor, whatever its coordinate was.
+/// Truncating to `n'` variables therefore leaves the indicator over `r_0, ..., r_{n'-1}`.
+///
+/// The expansion occupies a prefix of the buffer.
+/// Scalars after the truncated length are dropped.
+///
+/// ## Preconditions
+///
+/// * the truncated length must be at most the buffer's current length
+pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: BufferData<P>>(
+	cube: Hypercube,
+	values: &mut FieldBuffer<P, Data>,
+	truncated_log_len: usize,
+) {
+	assert!(
+		truncated_log_len <= values.log_len(),
+		"precondition: truncated_log_len must be at most values.log_len()"
+	);
+
+	// One round per variable stripped, highest first, so the survivors stay in a prefix.
+	for log_len in (truncated_log_len..values.log_len()).rev() {
+		{
+			let mut split = values.split_half_mut();
+			let (mut lo, hi) = split.halves();
+			// Contracting a variable costs additions only.
+			// So the cost of one step is the two words it reads, not its arithmetic.
+			(lo.as_mut(), hi.as_ref())
+				.into_par_iter()
+				.with_min_task_bytes::<[P; 2]>()
+				.for_each(|(zero, one)| {
+					cube.contract_var(zero, one);
+				});
+		}
+
+		values.truncate(log_len);
 	}
 }
 
