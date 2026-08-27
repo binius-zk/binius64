@@ -26,7 +26,7 @@ use binius_frontend::{
 };
 use binius_hash::StdHashSuite;
 use binius_prover::Prover;
-use binius_recursion::{Error, RecursiveCircuit};
+use binius_recursion::{Discharge, Error, RecursiveCircuit};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_verifier::{Verifier, config::StdChallenger};
 
@@ -221,38 +221,61 @@ fn the_recursive_circuit_proves_and_verifies() {
 }
 
 #[test]
-#[ignore = "builds a 50M-gate circuit; run explicitly to re-measure per-level growth"]
-fn one_more_level_costs_far_more_than_the_level_below() {
-	// Invariant: discharging the wiring claim in-circuit is proportional to the inner system.
+#[ignore = "builds two multi-million-row circuits; run explicitly to re-measure per-level growth"]
+fn deferring_shrinks_a_level_by_the_cost_of_the_level_below() {
+	// Invariant: the wiring claim is the only cost that tracks the inner system's size.
 	//
-	// A level's cost is dominated by a term proportional to the rows of the level beneath it, so
-	// the tower diverges: `rows(n+1) / rows(n)` sits far above one and does not fall with depth.
-	// That ratio is the whole reason the claim has to be deferred instead.
+	// So the two discharges diverge at different rates, and the gap between them at depth 2 *is*
+	// the term deferral removes. One level below, that term is small; one level up it dominates,
+	// which is why the comparison has to be made here and not at depth 1.
 	//
 	//     depth 1: verifies the CRC-64 proof
 	//     depth 2: verifies depth 1's proof
 	let inner = prove_crc64();
 
-	let depth1 = RecursiveCircuit::build(inner.verifier.clone()).unwrap();
-	let witness1 = depth1
-		.witness(inner.witness.inout(), inner.proof.clone())
+	let mut report = Vec::new();
+	for discharge in [Discharge::InCircuit, Discharge::Deferred] {
+		let depth1 = RecursiveCircuit::build_with(inner.verifier.clone(), discharge).unwrap();
+		let rows1 = rows(&CircuitStat::collect(depth1.circuit()));
+
+		// Depth 2 reads only depth 1's *shape*, so depth 1 need not be proved to measure this.
+		let verifier1 = Verifier::<StdHashSuite>::setup(
+			depth1.circuit().constraint_system().clone(),
+			LOG_INV_RATE,
+		)
 		.unwrap();
-	let rows1 = rows(&CircuitStat::collect(depth1.circuit()));
+		let depth2 = RecursiveCircuit::build_with(verifier1, discharge).unwrap();
+		let rows2 = rows(&CircuitStat::collect(depth2.circuit()));
 
-	// Depth 2 reads only depth 1's *shape*, so depth 1 need not be proved to measure this.
-	let verifier1 =
-		Verifier::<StdHashSuite>::setup(depth1.circuit().constraint_system().clone(), LOG_INV_RATE)
-			.unwrap();
-	let depth2 = RecursiveCircuit::build(verifier1).unwrap();
-	let rows2 = rows(&CircuitStat::collect(depth2.circuit()));
+		println!(
+			"{discharge:?}: depth1 {rows1} -> depth2 {rows2} = {:.2}x",
+			rows2 as f64 / rows1 as f64
+		);
+		report.push((rows1, rows2));
+	}
 
-	let growth = rows2 as f64 / rows1 as f64;
-	println!("rows: depth1 {rows1} -> depth2 {rows2} = {growth:.2}x");
+	let [(inline1, inline2), (defer1, defer2)] = report[..] else {
+		unreachable!()
+	};
 
-	// A closing tower would sit at or below one. Pinning a floor documents that it does not, and
-	// turns the day this drops into a test failure worth reading.
-	assert!(growth > 5.0, "inline discharge is expected to diverge, measured {growth:.2}x");
-	assert_eq!(witness1.inout(), inner.witness.inout());
+	// Deferring costs a little at depth 1, where the claim it exports is nearly free either way.
+	assert!(defer1 < inline1, "deferring cannot add rows");
+
+	// It pays at depth 2, where the claim it dropped was proportional to depth 1's whole size.
+	// This gap is the entire reason the seam exists.
+	assert!(
+		defer2 < inline2,
+		"deferring must remove the term proportional to the level below: {defer2} vs {inline2}"
+	);
+	let saved = inline2 - defer2;
+	println!(
+		"deferral saved {saved} rows at depth 2, {:.1}% of the inline level",
+		100.0 * saved as f64 / inline2 as f64
+	);
+
+	// Both still diverge. The replay itself is sublinear but not yet below one at these sizes, so
+	// a closing tower needs the merge node's own parameters, not just this seam.
+	assert!(defer2 > defer1, "the replay term still grows: closure is the merge node's checkpoint");
 }
 
 /// Flips one bit of the first recorded wire of `kind`, and returns why the circuit then fails.
@@ -408,4 +431,180 @@ fn a_malformed_proof_is_rejected_rather_than_crashing() {
 			"a {len}-byte tape must fail on the tape, got {error}"
 		);
 	}
+}
+
+#[test]
+fn deferring_the_wiring_claim_removes_its_cost_and_keeps_it_checkable() {
+	// Invariant: discharging the wiring claim is the one cost proportional to the inner system.
+	//
+	// Deferring it exports the claim on public wires instead. So the BMUL column drops by the
+	// evaluation's whole cost, and the statement grows only by the claim, which is logarithmic in
+	// the inner system.
+	//
+	//     in-circuit: assert_zero(eval(inputs) - claimed)   -> constraints over every inner row
+	//     deferred:   inputs, claimed -> public wires       -> a check the holder owes
+	let inner = prove_crc64();
+
+	let inline =
+		RecursiveCircuit::build_with(inner.verifier.clone(), Discharge::InCircuit).unwrap();
+	let deferred =
+		RecursiveCircuit::build_with(inner.verifier.clone(), Discharge::Deferred).unwrap();
+
+	let a = CircuitStat::collect(inline.circuit());
+	let b = CircuitStat::collect(deferred.circuit());
+	let claim_elems = deferred.deferred_wires().unwrap().len() / 2;
+	println!(
+		"in-circuit {} BMUL / {} rows  ->  deferred {} BMUL / {} rows, claim {} elements",
+		a.n_bmul_constraints,
+		rows(&a),
+		b.n_bmul_constraints,
+		rows(&b),
+		claim_elems,
+	);
+
+	// The evaluation is pure field arithmetic, so deferring can only take BMUL away.
+	assert!(
+		b.n_bmul_constraints < a.n_bmul_constraints,
+		"deferring must drop the evaluation's BMUL cost"
+	);
+	// And the claim it exports has to stay small, or deferral trades one cost for another.
+	assert!(
+		claim_elems < 512,
+		"the exported claim must be logarithmic in the inner system, got {claim_elems} elements"
+	);
+
+	// The deferred circuit still proves and verifies, and its statement carries the claim.
+	let witness = deferred
+		.witness(inner.witness.inout(), inner.proof.clone())
+		.unwrap();
+	let outer_inout = witness.inout().to_vec();
+	assert_eq!(outer_inout.len(), deferred.statement().len() + 2 * claim_elems);
+	prove(deferred.circuit(), witness);
+
+	// The exported claim holds against the inner constraint system, which is the check the
+	// circuit skipped. This is the whole obligation deferral creates.
+	deferred
+		.check_deferred(&outer_inout)
+		.expect("an honest proof must export a claim that holds");
+}
+
+#[test]
+fn a_tampered_deferred_claim_is_rejected() {
+	// Invariant: the deferred check is a real evaluation, not a formality.
+	//
+	// Fixture state: one honest proof, its exported claim read off the outer statement, with one
+	// word of that claim then flipped.
+	//
+	//     before:  eval(inputs) == claimed
+	//     after:   one coordinate moved, so the two sides disagree
+	//
+	// If this passed, deferral would be exporting an unchecked constraint and calling it checked.
+	let inner = prove_crc64();
+	let deferred =
+		RecursiveCircuit::build_with(inner.verifier.clone(), Discharge::Deferred).unwrap();
+	let witness = deferred
+		.witness(inner.witness.inout(), inner.proof.clone())
+		.unwrap();
+	let honest = witness.inout().to_vec();
+
+	// Every word of the claim is load-bearing: the inputs are the point it is evaluated at, and
+	// the last element is the value itself. Moving any one of them must break the equality.
+	for offset in [0, 1, 2 * (deferred.deferred_wires().unwrap().len() / 2) - 1] {
+		let mut tampered = honest.clone();
+		let word = &mut tampered[deferred.statement().len() + offset];
+		*word = Word(word.0 ^ 1);
+		deferred
+			.check_deferred(&tampered)
+			.expect_err("a moved claim word must fail the deferred check");
+	}
+}
+
+#[test]
+fn an_in_circuit_discharge_leaves_nothing_deferred() {
+	// Invariant: the two discharges are exclusive, so asking one for the other's work is an error
+	// rather than a silent pass. A silent pass is how a caller ends up believing a claim was
+	// settled twice when it was settled once.
+	let inner = prove_crc64();
+	let inline = RecursiveCircuit::build_with(inner.verifier, Discharge::InCircuit).unwrap();
+
+	assert!(inline.deferred_wires().is_none());
+	assert!(matches!(
+		inline
+			.check_deferred(&[])
+			.expect_err("there is no claim to check"),
+		Error::NothingDeferred
+	));
+}
+
+#[test]
+fn a_deferred_claim_that_disagrees_with_the_circuit_is_rejected() {
+	// Invariant: the exported claim is bound, not merely reported.
+	//
+	// `check_deferred` reads the claim off the outer statement, so the statement has to be the
+	// claim the circuit actually derived. The binding is what forces that, and this is the test
+	// that it is a constraint rather than a convention.
+	//
+	//     before:  public claim word == the word the circuit derived
+	//     after:   public claim word != it, and the equality the binding emitted breaks
+	//
+	// Without this, a prover could publish a claim that holds while verifying a proof that raised
+	// a different one — and `check_deferred` would happily confirm the published one.
+	let inner = prove_crc64();
+	let deferred =
+		RecursiveCircuit::build_with(inner.verifier.clone(), Discharge::Deferred).unwrap();
+	let mut filler = deferred
+		.fill(inner.witness.inout(), inner.proof.clone())
+		.unwrap();
+
+	// Mutation: flip one bit of the first claim word, leaving every derived wire alone.
+	let bound = deferred.deferred_wires().unwrap()[0];
+	filler[bound] = Word(filler[bound].0 ^ 1);
+
+	let error = deferred
+		.circuit()
+		.populate_wire_witness(&mut filler)
+		.expect_err("a claim word that disagrees must leave the circuit unsatisfied");
+
+	// `..` is forced: `PopulateError` is non-exhaustive. Both of its fields are checked here.
+	let PopulateError {
+		failures, total, ..
+	} = error;
+	assert_eq!(total, 1, "only the binding may fail");
+	assert!(
+		failures[0].path.contains("bind_public_elem"),
+		"the failure must come from the claim binding: {}",
+		failures[0].path
+	);
+	assert!(!failures[0].detail.is_empty(), "a failure must carry a diagnostic");
+}
+
+#[test]
+fn verify_outer_settles_the_deferred_claim() {
+	// Invariant: the one-call path checks strictly more than verifying the proof does.
+	//
+	// The outer proof verifies on its own even when the claim it exported is false, because the
+	// circuit never constrained the claim to hold — only to be reported honestly. So a statement
+	// carrying a broken claim passes `Verifier::verify` and must still fail `verify_outer`.
+	let inner = prove_crc64();
+	let deferred =
+		RecursiveCircuit::build_with(inner.verifier.clone(), Discharge::Deferred).unwrap();
+	let witness = deferred
+		.witness(inner.witness.inout(), inner.proof.clone())
+		.unwrap();
+	let honest = witness.inout().to_vec();
+	let outer = prove(deferred.circuit(), witness);
+
+	deferred
+		.verify_outer(&outer.verifier, &honest, outer.proof.clone())
+		.expect("an honest outer proof must verify and its claim must hold");
+
+	// The same proof against a statement whose claim was moved: the transcript no longer matches
+	// the statement, so this fails at the proof. Either rejection is correct; what matters is that
+	// no path accepts it.
+	let mut tampered = honest;
+	let at = deferred.statement().len();
+	tampered[at] = Word(tampered[at].0 ^ 1);
+	deferred
+		.verify_outer(&outer.verifier, &tampered, outer.proof)
+		.expect_err("a moved claim must not be accepted");
 }

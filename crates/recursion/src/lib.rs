@@ -67,6 +67,6 @@ mod shared;
 pub mod symbolic;
 
 pub use channel::{Binius64BuilderChannel, Commitment, Recorded};
-pub use circuit::{Error, RecursiveCircuit};
+pub use circuit::{Discharge, Error, RecursiveCircuit};
 pub use filler::WitnessFillerChannel;
 pub use symbolic::{SymbolicElem, SymbolicWord};

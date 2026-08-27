@@ -73,6 +73,8 @@ pub struct Binius64BuilderChannel {
 	n_merkle_checks: usize,
 	/// Words bound to public inputs so far, so each binding gets a distinct name.
 	n_public: usize,
+	/// Elements bound to public inputs so far, so each binding gets a distinct name.
+	n_public_elems: usize,
 	/// Proofs of work checked so far, so each gets a distinct name.
 	n_grinds: usize,
 }
@@ -90,6 +92,7 @@ impl Binius64BuilderChannel {
 			scheme: BinaryMerkleTreeScheme::new(),
 			n_merkle_checks: 0,
 			n_public: 0,
+			n_public_elems: 0,
 			n_grinds: 0,
 		}
 	}
@@ -113,6 +116,37 @@ impl Binius64BuilderChannel {
 			.map(|(i, word)| {
 				let public = builder.add_inout();
 				builder.assert_eq(format!("{}", first + i), word.to_wire(&builder), public);
+				public
+			})
+			.collect()
+	}
+
+	/// Binds elements to fresh public inputs, returning the two inout wires each occupies.
+	///
+	/// An element is its low and high half, so each contributes a `(lo, hi)` pair, in that order.
+	/// The returned wires therefore run twice the length of `elems`.
+	///
+	/// As with [`bind_public`](Self::bind_public), each element keeps the wires that derived it
+	/// and gains public wires equal to them. The replay supplies the public half, so the equality
+	/// is also a cross-check: the value the circuit derived and the value the replay computed have
+	/// to agree, and a desync between the two runs fails here rather than silently later.
+	///
+	/// This is how a claim leaves the circuit unchecked but pinned: whoever reads the outer proof
+	/// sees the values the verifier derived, and owes whatever check was skipped inside.
+	pub fn bind_public_elems(&mut self, elems: &[SymbolicElem]) -> Vec<Wire> {
+		// Numbered across calls, so a failing binding names which element it was.
+		let first = self.n_public_elems;
+		self.n_public_elems += elems.len();
+
+		// One named subcircuit, so a broken binding is traceable to this gadget.
+		let builder = self.shared.builder().subcircuit("bind_public_elem");
+		elems
+			.iter()
+			.enumerate()
+			.flat_map(|(i, elem)| {
+				let (lo, hi) = elem.to_wires(&builder);
+				let public = [builder.add_inout(), builder.add_inout()];
+				builder.assert_eq_v(format!("{}", first + i), [lo, hi], public);
 				public
 			})
 			.collect()
