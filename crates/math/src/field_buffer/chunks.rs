@@ -74,6 +74,12 @@ impl<P: PackedField> SubWordChunk<P> {
 		self.word_index
 	}
 
+	/// Element count of the chunk, as a base-2 logarithm.
+	#[inline]
+	pub(super) const fn log_len(self) -> usize {
+		self.log_len
+	}
+
 	/// Reads the chunk's elements out of the word holding it.
 	#[inline]
 	pub(super) fn scalars(self, word: P) -> impl Iterator<Item = P::Scalar> + Send + Clone {
@@ -86,6 +92,29 @@ impl<P: PackedField> SubWordChunk<P> {
 	#[inline]
 	pub(super) fn repack(self, words: &[P]) -> P {
 		P::from_scalars(self.scalars(words[self.word_index]))
+	}
+
+	/// Copies an edited chunk back into the lanes it came from.
+	///
+	/// The inverse of copying the chunk out.
+	/// Lane `i` of the chunk lands back at the lane it was read from.
+	///
+	/// ```text
+	/// WIDTH = 4, log_len = 1, lane_offset = 2
+	///
+	/// chunk  [ y z . . ]
+	/// word   [ a b y z ]   lanes 0 and 1 keep whatever they held
+	/// ```
+	///
+	/// Lanes of the word outside the chunk are left untouched, since neighbouring chunks own them.
+	#[inline]
+	pub(super) fn merge_into(self, word: &mut P, chunk: &P) {
+		// The chunk's elements sit at lanes 0..2^log_len, so the loop walks exactly those.
+		for i in 0..1 << self.log_len {
+			// The lane offset is a multiple of the chunk length, so the bits below it are free.
+			// Setting them with an OR therefore addresses lane i of this chunk and no other.
+			word.set(self.lane_offset | i, chunk.get(i));
+		}
 	}
 }
 
