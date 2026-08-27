@@ -46,13 +46,11 @@ use binius_utils::{
 use bytemuck::zeroed_vec;
 
 mod chunks;
-mod scalars;
 mod view;
 mod write_back;
 
 use chunks::SubWordChunk;
 pub use chunks::{Chunks, ChunksMut};
-pub use scalars::Scalars;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
 pub use write_back::SplitMut;
 
@@ -806,32 +804,35 @@ impl<P: PackedField> FromIterator<P::Scalar> for FieldBuffer<P> {
 	/// The count is known only once the iterator runs dry, so a bad one can only panic.
 	#[track_caller]
 	fn from_iter<I: IntoIterator<Item = P::Scalar>>(iter: I) -> Self {
-		let iter = iter.into_iter();
+		let mut iter = iter.into_iter();
 		// The lower bound is the whole count whenever the iterator knows its own length.
-		let mut words = Vec::with_capacity(iter.size_hint().0 >> P::LOG_WIDTH);
+		let mut words = Vec::with_capacity(iter.size_hint().0.div_ceil(P::WIDTH));
 
-		let mut word = P::default();
+		// The length check needs the total, which only the elements themselves can give.
 		let mut len = 0usize;
-		for scalar in iter {
-			let lane = len % P::WIDTH;
-			word.set(lane, scalar);
-			len += 1;
+		loop {
+			// Fill one word from at most one packing width of elements.
+			// That bound is a constant, so the lanes are written at constant indices rather
+			// than at a running offset into the stream.
+			let mut filled = 0usize;
+			let word = P::from_scalars(iter.by_ref().take(P::WIDTH).inspect(|_| filled += 1));
 
-			// A word fills up at its last lane, and a zeroed one takes over from there.
-			if lane == P::WIDTH - 1 {
-				words.push(word);
-				word = P::default();
+			// A dry iterator yields an all-zero word belonging to no element.
+			if filled == 0 {
+				break;
+			}
+			words.push(word);
+			len += filled;
+
+			// A short group can only be the last, and its unwritten lanes are already zero,
+			// which is what the invariant on lanes past the logical length asks for.
+			if filled < P::WIDTH {
+				break;
 			}
 		}
 
 		let log_len =
 			strict_log_2(len).expect("precondition: element count must be a power of two");
-
-		// A count below the packing width never reaches a last lane.
-		// So the one word it filled is still in hand, its lanes past the count still zero.
-		if log_len < P::LOG_WIDTH {
-			words.push(word);
-		}
 
 		Self { log_len, words }
 	}
@@ -1796,7 +1797,6 @@ mod tests {
 
 			// Round trip: iterating the collected buffer hands the scalars back, in order.
 			prop_assert_eq!(&collected.iter_scalars().collect::<Vec<_>>(), &values);
-			prop_assert_eq!(&IntoIterator::into_iter(&collected).collect::<Vec<_>>(), &values);
 		}
 
 		#[test]
