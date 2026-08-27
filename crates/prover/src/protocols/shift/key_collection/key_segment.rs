@@ -104,12 +104,13 @@ impl KeySegment {
 					for key in keys {
 						let operator_data = &prepared[key.operation];
 
-						// Fold this key's accumulator value: the constraint-index tensor
-						// weighted by the batching powers for this operand position.
+						// Fold this key's accumulator value: the constraint-index tensor,
+						// already carrying the operation's weight, against the operand
+						// weight of each position the key names.
 						let acc = key.accumulate(
 							&self.constraint_indices,
-							operator_data.r_x_prime_tensor.as_ref(),
-							&operator_data.lambda_powers,
+							operator_data.weighted_r_x_prime_tensor.as_ref(),
+							&prepared.operand_weights,
 						);
 						let acc_packed = P::broadcast(acc);
 

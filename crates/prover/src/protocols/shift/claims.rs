@@ -19,7 +19,11 @@
 use std::ops::Index;
 
 use binius_field::Field;
-use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY};
+use binius_ip_prover::channel::IPProverChannel;
+use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
+use binius_verifier::protocols::shift::{
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_MAX_ARITY, LOG_OPERATION_COUNT, ZERO_ARITY,
+};
 
 use super::{Operation, OperatorData, PreparedOperatorData};
 
@@ -39,34 +43,50 @@ pub struct OperatorClaims<F: Field> {
 }
 
 impl<F: Field> OperatorClaims<F> {
-	/// Draws one batching coefficient per operation and folds it into that operation's claim.
+	/// Draws the two batching challenge vectors and folds their weights into the claims.
 	///
 	/// An operation holds one claim per operand, and the reduction proves them all at once.
-	/// Batching weights operand `i` by the `i`-th power of the operation's own coefficient.
+	/// The claim of operand `m` of operation `op` is weighted by the product of two equality
+	/// indicators, one per axis:
 	///
-	/// The powers start at the first, never the zeroth.
-	/// So each operation's batched value already carries a random factor of its own.
-	/// The four can then be summed directly, with no further scaling to separate them.
+	/// ```text
+	/// eq(operation_batch_challenges, op) * eq(operand_batch_challenges, m)
+	/// ```
 	///
-	/// The coefficients are drawn in the order `[Zero, BitwiseAnd, IntegerMul, BinMul]`.
-	/// The verifier draws in that same order, so this sequence is protocol, not detail.
+	/// Two operations' weights are distinct entries of one equality tensor, so their batched
+	/// values sum directly, with no further scaling to separate them.
+	///
+	/// The operand axis is shared by the four operations, and padded to a cube: an operation of
+	/// arity below `1 << LOG_MAX_ARITY` reads a prefix of the same weights, and the slots above
+	/// its arity name no claim.
+	///
+	/// The challenges are drawn operation axis first, and the operation weights are indexed in
+	/// the order `[Zero, BitwiseAnd, IntegerMul, BinMul]`. The verifier does both the same way, so
+	/// these orders are protocol, not detail.
 	///
 	/// The arities are erased on the way out, since both proving phases dispatch on a shift key.
 	///
 	/// # Arguments
 	///
-	/// - `sample`: draws the next batching coefficient from the transcript.
-	pub fn prepare(self, mut sample: impl FnMut() -> F) -> PreparedOperatorClaims<F> {
+	/// - `channel`: the transcript the batching challenges are drawn from.
+	pub fn prepare(self, channel: &mut impl IPProverChannel<F>) -> PreparedOperatorClaims<F> {
+		let operation_batch_challenges = channel.sample_many(LOG_OPERATION_COUNT);
+		let operand_batch_challenges = channel.sample_many(LOG_MAX_ARITY);
+
+		let operation_weights = eq_ind_partial_eval_scalars(&operation_batch_challenges);
+		let operand_weights = eq_ind_partial_eval_scalars(&operand_batch_challenges);
+
 		PreparedOperatorClaims {
-			zero: PreparedOperatorData::new(self.zero, sample()),
-			bitand: PreparedOperatorData::new(self.bitand, sample()),
-			intmul: PreparedOperatorData::new(self.intmul, sample()),
-			binmul: PreparedOperatorData::new(self.binmul, sample()),
+			zero: PreparedOperatorData::new(self.zero, operation_weights[0], &operand_weights),
+			bitand: PreparedOperatorData::new(self.bitand, operation_weights[1], &operand_weights),
+			intmul: PreparedOperatorData::new(self.intmul, operation_weights[2], &operand_weights),
+			binmul: PreparedOperatorData::new(self.binmul, operation_weights[3], &operand_weights),
+			operand_weights,
 		}
 	}
 }
 
-/// The claims with their batching coefficients folded in, as both proving phases read them.
+/// The claims with their batching weights folded in, as both proving phases read them.
 ///
 /// Each entry also carries the tensor expansion of its constraint point.
 /// That expansion is shared by every key of the operation, so it is built once here.
@@ -80,13 +100,18 @@ pub struct PreparedOperatorClaims<F: Field> {
 	pub intmul: PreparedOperatorData<F>,
 	/// The prepared claim for the BMUL constraints.
 	pub binmul: PreparedOperatorData<F>,
+	/// The weight of each operand position, `1 << LOG_MAX_ARITY` entries.
+	///
+	/// The operand axis is shared by the four operations, so this table is too: a key reads it at
+	/// the operand position its constraint index names, whatever operation the key belongs to.
+	pub operand_weights: Vec<F>,
 }
 
 impl<F: Field> PreparedOperatorClaims<F> {
 	/// The four operations' claims collapsed into the single value the reduction proves.
 	///
-	/// Each operation's batched evaluation already carries a random factor of its own, drawn for
-	/// it alone, so the four sum directly with no further scaling.
+	/// Each operation's batched evaluation already carries its own weight on the operation axis,
+	/// so the four sum directly with no further scaling.
 	///
 	/// This is the claim phase 1 hands its sumcheck, and it is the same value the verifier
 	/// computes from the operand evaluation claims before running its own.
@@ -113,7 +138,8 @@ impl<F: Field> Index<Operation> for PreparedOperatorClaims<F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_verifier::config::B128;
+	use binius_transcript::ProverTranscript;
+	use binius_verifier::config::{B128, StdChallenger};
 
 	use super::*;
 
@@ -128,37 +154,56 @@ mod tests {
 	}
 
 	#[test]
-	fn prepare_carries_each_operations_arity_into_the_erased_form() {
-		// Invariant: erasing the arity keeps it as a length, one lambda power per operand.
+	fn prepare_shares_one_operand_axis_across_the_four_operations() {
+		// Invariant: the operand axis is a cube wide enough for every arity, and the four
+		// operations read the same one.
 		//
-		// The four arities are 1, 3, 4 and 6, all distinct.
-		// So a claim reached through the wrong index arm shows up as the wrong count.
-		let prepared = zero_claims().prepare(|| B128::ONE);
+		// The widest arity is BMUL's six, so a cube narrower than that would leave two of its
+		// operand claims unweighted.
+		let prepared = zero_claims().prepare(&mut ProverTranscript::<StdChallenger>::default());
 
-		assert_eq!(prepared[Operation::Zero].lambda_powers.len(), ZERO_ARITY);
-		assert_eq!(prepared[Operation::BitwiseAnd].lambda_powers.len(), BITAND_ARITY);
-		assert_eq!(prepared[Operation::IntegerMul].lambda_powers.len(), INTMUL_ARITY);
-		assert_eq!(prepared[Operation::BinMul].lambda_powers.len(), BINMUL_ARITY);
+		assert_eq!(prepared.operand_weights.len(), 1 << LOG_MAX_ARITY);
+		for arity in [ZERO_ARITY, BITAND_ARITY, INTMUL_ARITY, BINMUL_ARITY] {
+			assert!(arity <= prepared.operand_weights.len());
+		}
 	}
 
 	#[test]
-	fn prepare_draws_one_coefficient_per_operation_in_transcript_order() {
-		// Invariant: the coefficients are drawn in the order [Zero, AND, IMUL, BMUL].
-		// The verifier draws in that order; any other batches a claim by the wrong coefficient.
+	fn prepare_draws_the_two_axes_in_transcript_order() {
+		// Invariant: the operation axis is drawn before the operand axis, and each axis takes as
+		// many challenges as its width.
 		//
-		// This stand-in transcript hands out 1, 2, 3, 4, so a coefficient names its draw position.
-		let mut draws = 0u128;
-		let prepared = zero_claims().prepare(|| {
-			draws += 1;
-			B128::new(draws)
-		});
+		// The verifier draws in that order; any other weights the claims by a different tensor.
+		//
+		// Two transcripts from the same seed hand out the same sequence, so drawing the axes by
+		// hand from one pins what `prepare` must have drawn from the other. The axes have
+		// different widths, so drawing them in the other order splits that sequence differently
+		// and the expansions below disagree.
+		let mut expected = ProverTranscript::<StdChallenger>::default();
+		let operation_weights =
+			eq_ind_partial_eval_scalars(&expected.sample_many(LOG_OPERATION_COUNT));
+		let operand_weights = eq_ind_partial_eval_scalars(&expected.sample_many(LOG_MAX_ARITY));
 
-		assert_eq!(draws, 4, "one draw per operation");
+		let mut channel = ProverTranscript::<StdChallenger>::default();
+		let prepared = zero_claims().prepare(&mut channel);
 
-		// Powers start at the first, so a claim's leading power is the coefficient it was given.
-		assert_eq!(prepared[Operation::Zero].lambda_powers[0], B128::new(1));
-		assert_eq!(prepared[Operation::BitwiseAnd].lambda_powers[0], B128::new(2));
-		assert_eq!(prepared[Operation::IntegerMul].lambda_powers[0], B128::new(3));
-		assert_eq!(prepared[Operation::BinMul].lambda_powers[0], B128::new(4));
+		assert_eq!(prepared.operand_weights, operand_weights);
+
+		// The two stay in lockstep only if `prepare` drew exactly those five and no more.
+		assert_eq!(
+			IPProverChannel::<B128>::sample(&mut channel),
+			IPProverChannel::<B128>::sample(&mut expected)
+		);
+
+		// A claim scaled by its operation's weight reproduces that weight, since the operand
+		// claims here are all zero and the constraint point is empty.
+		for (operation, weight) in [
+			(Operation::Zero, operation_weights[0]),
+			(Operation::BitwiseAnd, operation_weights[1]),
+			(Operation::IntegerMul, operation_weights[2]),
+			(Operation::BinMul, operation_weights[3]),
+		] {
+			assert_eq!(prepared[operation].weighted_r_x_prime_tensor.as_ref(), &[weight]);
+		}
 	}
 }

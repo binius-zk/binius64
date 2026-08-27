@@ -38,6 +38,30 @@ pub const BITAND_ARITY: usize = 3;
 pub const INTMUL_ARITY: usize = 4;
 pub const BINMUL_ARITY: usize = 6;
 
+/// The number of operations the shift reduction batches: ZERO, AND, IMUL and BMUL.
+pub const OPERATION_COUNT: usize = 4;
+
+/// The base-2 logarithm of the operation axis the reduction batches over.
+///
+/// An operation's claims are weighted by the equality indicator of this many challenges, evaluated
+/// at the operation's own index in the order above.
+pub const LOG_OPERATION_COUNT: usize = 2;
+
+/// The base-2 logarithm of the operand axis the reduction batches over.
+///
+/// An operand's claim is weighted by the equality indicator of this many challenges, evaluated at
+/// the operand's position. The four operations share one such axis, padded to a cube: an operation
+/// of lower arity reads a prefix of the same weights, and the slots above its arity name no claim
+/// and contribute nothing.
+pub const LOG_MAX_ARITY: usize = 3;
+
+// The two axes above are cubes, so each has to cover what it indexes.
+const _: () = assert!(OPERATION_COUNT <= 1 << LOG_OPERATION_COUNT);
+const _: () = assert!(ZERO_ARITY <= 1 << LOG_MAX_ARITY);
+const _: () = assert!(BITAND_ARITY <= 1 << LOG_MAX_ARITY);
+const _: () = assert!(INTMUL_ARITY <= 1 << LOG_MAX_ARITY);
+const _: () = assert!(BINMUL_ARITY <= 1 << LOG_MAX_ARITY);
+
 mod monster;
 mod shift_ind;
 

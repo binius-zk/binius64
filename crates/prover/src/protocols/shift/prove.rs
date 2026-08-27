@@ -3,11 +3,11 @@
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, PackedField, util::powers};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, inner_product::inner_product,
-	multilinear::eq::eq_ind_partial_eval, univariate::EvaluationDomain,
+	multilinear::eq::scaled_eq_ind_partial_eval, univariate::EvaluationDomain,
 };
 
 use super::{
@@ -60,57 +60,61 @@ impl<F: Field, const ARITY: usize> OperatorData<F, ARITY> {
 	}
 }
 
-/// One operation's claims, with the expansions every proving phase needs precomputed.
+/// One operation's claims, with the expansion every proving phase needs precomputed.
 ///
-/// Every shift key of the operation reads the same two expansions, built once here:
-///
-/// - the constraint point, expanded into its equality-indicator tensor;
-/// - the batching coefficient, expanded into its powers, one per operand.
+/// Every shift key of the operation reads the same constraint-point expansion, built once here.
+/// The operation's own batching weight is folded into it: that weight reaches every term of the
+/// operation, and the expansion's seed is where it costs nothing to carry.
 ///
 /// The arity is erased, since every phase picks an operation at run time and all four have to
 /// share one type.
 /// Only the batched combination survives that erasure, as a single scalar.
 #[derive(Debug, Clone)]
 pub struct PreparedOperatorData<F: Field> {
-	/// The operand claims collapsed into one value by the batching coefficient, starting at
-	/// the first power:
+	/// The operand claims collapsed into one value by the batching weights:
 	///
 	/// ```text
-	/// batched_eval = sum_i evals[i] * lambda^(i + 1)
+	/// batched_eval = operation_weight * sum_i evals[i] * operand_weights[i]
 	/// ```
 	///
-	/// Two operations' batched values can be summed directly, with no further scaling.
+	/// Two operations' batched values can be summed directly, with no further scaling, since
+	/// their operation weights are distinct entries of one equality tensor.
 	pub batched_eval: F,
 	/// The univariate challenge folding the bit axis, shared by every operation.
 	pub r_zhat_prime: F,
-	/// The equality-indicator tensor of the constraint point, one weight per constraint.
-	pub r_x_prime_tensor: FieldBuffer<F>,
-	/// The batching coefficient's powers, one per operand, starting at the first power.
-	///
-	/// Indexable at run time by the operand a shift key names.
-	pub lambda_powers: Vec<F>,
+	/// The equality-indicator tensor of the constraint point, one weight per constraint, scaled by
+	/// this operation's own batching weight.
+	pub weighted_r_x_prime_tensor: FieldBuffer<F>,
 }
 
 impl<F: Field> PreparedOperatorData<F> {
-	/// Expands one operation's claims against the batching coefficient drawn for it.
+	/// Expands one operation's claims against the batching weights drawn for it.
 	///
 	/// # Arguments
 	///
 	/// - `operator_data`: the operand claims, and the point they are claimed at.
-	/// - `lambda`: the batching coefficient for this operation.
-	pub fn new<const ARITY: usize>(operator_data: OperatorData<F, ARITY>, lambda: F) -> Self {
+	/// - `operation_weight`: this operation's entry in the operation-axis equality tensor.
+	/// - `operand_weights`: the operand-axis equality tensor, shared by the four operations. Only
+	///   its leading `ARITY` entries name a claim of this operation.
+	pub fn new<const ARITY: usize>(
+		operator_data: OperatorData<F, ARITY>,
+		operation_weight: F,
+		operand_weights: &[F],
+	) -> Self {
 		let OperatorData {
 			evals,
 			r_zhat_prime,
 			r_x_prime,
 		} = operator_data;
-		let r_x_prime_tensor = eq_ind_partial_eval::<F>(&r_x_prime);
-		let lambda_powers: Vec<F> = powers(lambda).skip(1).take(ARITY).collect();
+		let weighted_r_x_prime_tensor =
+			scaled_eq_ind_partial_eval::<F>(&r_x_prime, operation_weight);
 		Self {
-			batched_eval: inner_product(evals, lambda_powers.iter().copied()),
+			// Only the leading `ARITY` weights name a claim; `inner_product` pairs the two
+			// sequences exactly, so the shared tail is cut here.
+			batched_eval: operation_weight
+				* inner_product(evals, operand_weights[..ARITY].iter().copied()),
 			r_zhat_prime,
-			r_x_prime_tensor,
-			lambda_powers,
+			weighted_r_x_prime_tensor,
 		}
 	}
 }
@@ -167,7 +171,7 @@ where
 	// SOUNDNESS: this must draw in the same order the verifier draws in.
 	let prepared = {
 		let _scope = tracing::debug_span!("Expand tensor queries").entered();
-		claims.prepare(|| channel.sample())
+		claims.prepare(channel)
 	};
 
 	// The weights the reduction's first factor carries, one per bit position.

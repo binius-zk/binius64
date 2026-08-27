@@ -269,8 +269,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let hidden_words = value_vec.non_public();
 	let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 
-	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
-	// random lambda (rather than one drawn from a transcript) yields realistic-magnitude data.
+	// Prepare the operator data. Sampling is cheap and not part of any benched phase, so a
+	// throwaway transcript stands in for the proving one and yields realistic-magnitude data.
 	// SHA256 has no BMUL constraints, so that one is a zero claim at an empty point, matching the
 	// real prover (`prove.rs` `None` branch).
 	let prepared = OperatorClaims {
@@ -291,7 +291,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		},
 		binmul: OperatorData::zero_claim(r_zhat_prime),
 	}
-	.prepare(|| F::random(&mut rng));
+	.prepare(&mut ProverTranscript::<StdChallenger>::default());
 
 	// The phases are sequential and stateful: each one consumes the previous phase's outputs.
 	//
