@@ -17,7 +17,9 @@ binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
+binius-verifier = { path = "../verifier" }
 digest.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 binius-compute = { path = "../compute" }
@@ -25,7 +27,6 @@ binius-iop-prover = { path = "../iop-prover" }
 binius-ip-prover = { path = "../ip-prover" }
 binius-math = { path = "../math", features = ["test-utils"] }
 binius-prover = { path = "../prover" }
-binius-verifier = { path = "../verifier" }
 proptest.workspace = true
 rand.workspace = true
 sha2.workspace = true

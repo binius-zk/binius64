@@ -22,6 +22,20 @@
 //! [`bind_public`](Binius64BuilderChannel::bind_public) ties chosen ones to public inputs.
 //! That is what lets whoever checks an outer proof see which statement was verified.
 //!
+//! # Where to start
+//!
+//! [`RecursiveCircuit`] is the whole pipeline behind one type.
+//! It builds the circuit from an inner shape, and fills its witness from an inner proof.
+//!
+//! ```text
+//!   RecursiveCircuit::build(verifier)  ->  the circuit
+//!   RecursiveCircuit::witness(..)      ->  values that satisfy it
+//! ```
+//!
+//! What it returns is an ordinary circuit, so it proves and verifies like any other.
+//! Reach for the channels below it only to choose what a statement exposes, or to record a
+//! verifier this crate does not drive.
+//!
 //! # Status: nothing the channel hands out is free
 //!
 //! Every value a verifier reads here is derived in-circuit, or bound to something that is:
@@ -45,6 +59,7 @@
 
 pub mod challenger;
 mod channel;
+mod circuit;
 mod filler;
 mod hints;
 pub mod merkle;
@@ -52,5 +67,6 @@ mod shared;
 pub mod symbolic;
 
 pub use channel::{Binius64BuilderChannel, Commitment, Recorded};
+pub use circuit::{Error, RecursiveCircuit};
 pub use filler::WitnessFillerChannel;
 pub use symbolic::{SymbolicElem, SymbolicWord};
