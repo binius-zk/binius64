@@ -5,7 +5,7 @@ use std::mem::size_of;
 use binius_compute::BufferPool;
 use binius_field::{ExtensionField, arch::OptimalPackedB128};
 use binius_math::{
-	multilinear::hypercube::Hypercube,
+	multilinear::eq::eq_ind_partial_eval,
 	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_prover::ring_switch::{
@@ -32,8 +32,8 @@ fn bench_fold_1b_rows_split(c: &mut Criterion) {
 		let suffix: Vec<B128> = random_scalars(&mut rng, log_len);
 
 		let (suffix_lo, suffix_hi) = suffix.split_at(LOG_SPLIT_BLOCK.min(log_len));
-		let eq_lo = Hypercube::One.expand(suffix_lo).build::<B128>();
-		let eq_hi = Hypercube::One.expand(suffix_hi).build::<B128>();
+		let eq_lo = eq_ind_partial_eval::<B128>(suffix_lo);
+		let eq_hi = eq_ind_partial_eval::<B128>(suffix_hi);
 
 		group.bench_function(format!("log_len={log_len}"), |b| {
 			b.iter(|| fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi));
@@ -60,7 +60,7 @@ fn bench_suffix_tensor_pipeline(c: &mut Criterion) {
 		let suffix: Vec<B128> = random_scalars(&mut rng, log_len);
 		let row_batching: Vec<B128> =
 			random_scalars(&mut rng, <B128 as ExtensionField<B1>>::LOG_DEGREE);
-		let row_batch_query = Hypercube::One.expand(&row_batching).build::<B128>();
+		let row_batch_query = eq_ind_partial_eval::<B128>(&row_batching);
 
 		// The prover caps the low factor here so its fold tables stay cache-resident.
 		let (suffix_lo, suffix_hi) = suffix.split_at(LOG_SPLIT_BLOCK.min(log_len));
@@ -73,8 +73,8 @@ fn bench_suffix_tensor_pipeline(c: &mut Criterion) {
 
 		group.bench_function(format!("log_len={log_len}"), |b| {
 			b.iter(|| {
-				let eq_lo = Hypercube::One.expand(suffix_lo).build::<B128>();
-				let eq_hi = Hypercube::One.expand(suffix_hi).build::<B128>();
+				let eq_lo = eq_ind_partial_eval::<B128>(suffix_lo);
+				let eq_hi = eq_ind_partial_eval::<B128>(suffix_hi);
 				let s_hat_v = fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi);
 				let rs_eq_ind =
 					rs_eq_ind_from_factors::<_, P>(&alloc, &eq_lo, &eq_hi, &row_batch_query);

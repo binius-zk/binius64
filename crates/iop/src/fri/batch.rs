@@ -11,7 +11,7 @@ use binius_field::{BinaryField, FieldOps, util::expand_subset_sums};
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::{
 	line::extrapolate_line,
-	multilinear::{self, hypercube::Hypercube},
+	multilinear::{self, eq::eq_ind_partial_eval_scalars},
 	ntt::DomainContext,
 };
 
@@ -149,9 +149,7 @@ impl<F: BinaryField, E: FieldOps<Scalar = F>, C> ProxTestOracle<F, E>
 		// Receive each bundled oracle's openings in commit order (matching the prover), then
 		// combine across oracles by the outer-challenge tensor expansion:
 		// combined[q] = \sum_i values_i[q] * outer_tensor[i].
-		let outer_tensor = Hypercube::One
-			.expand(&self.outer_challenges)
-			.build_scalars();
+		let outer_tensor = eq_ind_partial_eval_scalars(&self.outer_challenges);
 		let mut combined = vec![E::zero(); indices.len()];
 		for (oracle, scalar) in self.oracles.iter().zip(&outer_tensor) {
 			let values = oracle.open_queries(indices, channel)?;

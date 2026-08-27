@@ -11,8 +11,8 @@ use binius_math::{
 	FieldBuffer, FieldSlice,
 	bit_reverse::bit_reverse_packed,
 	multilinear::{
+		eq::tensor_prod_eq_ind,
 		fold::{binary_fold_high, fold_highest_var_inplace},
-		hypercube::Hypercube,
 	},
 };
 use binius_utils::{
@@ -128,7 +128,7 @@ where
 			// to be fast: it runs once per pre-switchover round on a small tensor (see
 			// BINIUS-327).
 			bit_reverse_packed(tensor.as_mut_view());
-			let mut tensor = Hypercube::One.expand(&[challenge]).append_to(tensor);
+			let mut tensor = tensor_prod_eq_ind(tensor, &[challenge]);
 			bit_reverse_packed(tensor.as_mut_view());
 			self.tensor = tensor;
 

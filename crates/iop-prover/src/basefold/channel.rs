@@ -16,8 +16,11 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec, inner_product::inner_product_par,
-	line::extrapolate_line, multilinear::hypercube::Hypercube, ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
+	inner_product::inner_product_par,
+	line::extrapolate_line,
+	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+	ntt::AdditiveNTT,
 };
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
@@ -345,7 +348,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	let (combined, s_prime) = {
 		let _scope = tracing::debug_span!("Compute batched witness").entered();
 
-		let eq_tensor = Hypercube::One.expand(&outer_challenges).build_scalars();
+		let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
 
 		let mut combined = FieldBuffer::zeros_in(alloc, max_n);
 		let mut s_prime = F::ZERO;
@@ -365,7 +368,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 			place_repeated(combined.as_mut_view(), witness_prime.as_view(), eq_i, n_i + log_lift);
 
 			// Repeat dims contribute 1; only the lift dims contribute an eq-to-zero factor.
-			s_prime += eq_i * alpha_i * Hypercube::One.eq_ind_zero(&point[n_i..][..log_lift]);
+			s_prime += eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift]);
 		}
 
 		(combined, s_prime)
@@ -700,7 +703,7 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_buffers,
-		multilinear::hypercube::Hypercube,
+		multilinear::eq::eq_ind_partial_eval,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -738,7 +741,7 @@ mod tests {
 	{
 		let buffer = random_field_buffer::<P>(&mut *rng, n_vars);
 		let evaluation_point = random_scalars::<F>(&mut *rng, n_vars);
-		let transparent_poly = Hypercube::One.expand(&evaluation_point).build::<P>();
+		let transparent_poly = eq_ind_partial_eval::<P>(&evaluation_point);
 		let evaluation_claim = inner_product_buffers(&buffer, &transparent_poly);
 		(buffer, transparent_poly, evaluation_claim)
 	}
@@ -800,7 +803,7 @@ mod tests {
 			.verify_oracle_relation(
 				v_oracle,
 				Box::new(move |point: &[F]| {
-					let eq = Hypercube::One.expand(point).build::<P>();
+					let eq = eq_ind_partial_eval::<P>(point);
 					inner_product_buffers(&transparent_poly, &eq)
 				}),
 				eval_claim,
@@ -875,7 +878,7 @@ mod tests {
 			.verify_oracle_relation(
 				v_oracle_1,
 				Box::new(move |point: &[F]| {
-					let eq = Hypercube::One.expand(point).build::<P>();
+					let eq = eq_ind_partial_eval::<P>(point);
 					inner_product_buffers(&tp1, &eq)
 				}),
 				eval_claim_1,
@@ -885,7 +888,7 @@ mod tests {
 			.verify_oracle_relation(
 				v_oracle_2,
 				Box::new(move |point: &[F]| {
-					let eq = Hypercube::One.expand(point).build::<P>();
+					let eq = eq_ind_partial_eval::<P>(point);
 					inner_product_buffers(&tp2, &eq)
 				}),
 				eval_claim_2,
@@ -967,7 +970,7 @@ mod tests {
 				.verify_oracle_relation(
 					oracle,
 					Box::new(move |point: &[F]| {
-						let eq = Hypercube::One.expand(point).build::<P>();
+						let eq = eq_ind_partial_eval::<P>(point);
 						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
@@ -1055,7 +1058,7 @@ mod tests {
 				.verify_oracle_relation(
 					oracle,
 					Box::new(move |point: &[F]| {
-						let eq = Hypercube::One.expand(point).build::<P>();
+						let eq = eq_ind_partial_eval::<P>(point);
 						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
@@ -1200,7 +1203,7 @@ mod tests {
 		let relations = (0..n_relations)
 			.map(|_| {
 				let point = random_scalars::<F>(&mut *rng, n_vars);
-				let transparent = Hypercube::One.expand(&point).build::<P>();
+				let transparent = eq_ind_partial_eval::<P>(&point);
 				let claim = inner_product_buffers(&buffer, &transparent);
 				(transparent, claim)
 			})
@@ -1312,7 +1315,7 @@ mod tests {
 				.verify_oracle_relation(
 					v_oracles[index],
 					Box::new(move |point: &[F]| {
-						let eq = Hypercube::One.expand(point).build::<P>();
+						let eq = eq_ind_partial_eval::<P>(point);
 						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,

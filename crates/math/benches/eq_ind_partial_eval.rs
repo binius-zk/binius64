@@ -1,12 +1,26 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
-use binius_math::{multilinear::hypercube::Hypercube, test_utils::random_scalars};
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use binius_math::{
+	multilinear::hypercube::{Hypercube, InfCube, OneCube, eq_ind_partial_eval},
+	test_utils::random_scalars,
+};
+use criterion::{
+	BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
+	measurement::WallTime,
+};
 use rand::{SeedableRng, rngs::StdRng};
 
 type F = OptimalB128;
 type P = OptimalPackedB128;
+
+fn bench_cube<Cube: Hypercube>(group: &mut BenchmarkGroup<'_, WallTime>, cube: &str, point: &[F]) {
+	// One instantiation per basis, since the basis is a type parameter.
+	let id = BenchmarkId::new(cube, format!("n_vars={}", point.len()));
+	group.bench_function(id, |b| {
+		b.iter(|| eq_ind_partial_eval::<Cube, P>(point));
+	});
+}
 
 fn bench_eq_ind_partial_eval(c: &mut Criterion) {
 	let mut group = c.benchmark_group("eq_ind_partial_eval");
@@ -20,14 +34,8 @@ fn bench_eq_ind_partial_eval(c: &mut Criterion) {
 		group.throughput(Throughput::Elements(n_output_elems));
 
 		let point = random_scalars::<F>(&mut rng, n_vars);
-
-		// The cube is a value, so both bases are one loop rather than two instantiations.
-		for (cube, name) in [(Hypercube::One, "one_cube"), (Hypercube::Inf, "inf_cube")] {
-			let id = BenchmarkId::new(name, format!("n_vars={n_vars}"));
-			group.bench_function(id, |b| {
-				b.iter(|| cube.expand(&point).build::<P>());
-			});
-		}
+		bench_cube::<OneCube>(&mut group, "one_cube", &point);
+		bench_cube::<InfCube>(&mut group, "inf_cube", &point);
 	}
 
 	group.finish();

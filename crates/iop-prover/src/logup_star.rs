@@ -21,7 +21,7 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, PackedField};
 use binius_ip_prover::logup_star::{self as reduction, LogupTableOutput, witness};
 pub use binius_ip_prover::logup_star::{Looker, TableLookup};
-use binius_math::{FieldBuffer, multilinear::hypercube::Hypercube};
+use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval_in};
 use itertools::izip;
 
 use crate::channel::IOPProverChannel;
@@ -119,9 +119,7 @@ where
 		izip!(oracles, pushforwards, &tables, &output.tables)
 	{
 		let m = table.table.log_len();
-		let transparent = Hypercube::One
-			.expand(&output.table_eval_point[..m])
-			.build_in::<P, A>(alloc);
+		let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point[..m]);
 		channel.prove_oracle_relation(oracle.clone(), transparent, table_output.pushforward_claim);
 		channel.finalize_oracle(oracle, pushforward);
 	}
@@ -213,9 +211,7 @@ where
 	let _open_guard = tracing::debug_span!("Open pushforward relations").entered();
 	for (oracle, pushforward, table, open) in izip!(oracles, pushforwards, &tables, &output.tables)
 	{
-		let leaf_eq = Hypercube::One
-			.expand(&open.pushforward_eval_point)
-			.build_in::<P, A>(alloc);
+		let leaf_eq = eq_ind_partial_eval_in::<A, P>(alloc, &open.pushforward_eval_point);
 		channel.prove_oracle_relation(oracle.clone(), leaf_eq, open.pushforward_eval_claim);
 		channel.prove_oracle_relation(
 			oracle.clone(),
@@ -256,8 +252,8 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{
+			eq::eq_ind_partial_eval_scalars,
 			evaluate::{evaluate, evaluate_inplace_scalars},
-			hypercube::Hypercube,
 		},
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
@@ -315,7 +311,7 @@ mod tests {
 		let eval_point = random_scalars::<E>(&mut *rng, n);
 
 		// The looked-up evaluation: e = (I^* T)(r) = sum_i eq_r(i) * T[index[i]].
-		let eq_r = Hypercube::One.expand(&eval_point).build_scalars();
+		let eq_r = eq_ind_partial_eval_scalars(&eval_point);
 		let eval_claim = index
 			.iter()
 			.zip(&eq_r)

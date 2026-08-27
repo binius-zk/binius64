@@ -14,8 +14,8 @@ use binius_field::field::FieldOps;
 /// x_0 + (x_1 - x_0) * z
 /// ```
 ///
-/// Reading the two points as the halves a variable splits a multilinear into,
-/// this binds that variable to `z`.
+/// The two points are also the halves a variable splits a multilinear into.
+/// Read that way, this binds that variable to `z`.
 #[inline]
 pub fn extrapolate_line<F: FieldOps>(x0: F, x1: F, z: F) -> F {
 	// The line is affine in `z`, so one multiplication and two additions suffice.

@@ -1,7 +1,7 @@
 // Copyright 2026 Irreducible Inc.
 use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::multilinear::hypercube::Hypercube;
+use binius_math::multilinear::eq::eq_one_var;
 
 use crate::sumcheck::common::SumcheckProver;
 
@@ -97,7 +97,7 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 	fn fold(&mut self, challenge: F) {
 		if self.in_padding_phase() {
 			// eq(0, challenge) = 1 - challenge.
-			self.eq_prefix *= Hypercube::One.eq_one_var(F::ZERO, challenge);
+			self.eq_prefix *= eq_one_var(F::ZERO, challenge);
 		} else {
 			self.inner.fold(challenge);
 		}
@@ -124,7 +124,7 @@ mod tests {
 	};
 	use binius_math::{
 		inner_product::inner_product_par,
-		multilinear::{evaluate::evaluate, hypercube::Hypercube},
+		multilinear::{eq::eq_one_var, evaluate::evaluate},
 		test_utils::random_field_buffer,
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -193,7 +193,7 @@ mod tests {
 
 			padded.fold(challenge);
 			if i < n_extra_vars {
-				eq_prefix *= Hypercube::One.eq_one_var(F::ZERO, challenge);
+				eq_prefix *= eq_one_var(F::ZERO, challenge);
 			}
 		}
 
@@ -272,7 +272,7 @@ mod tests {
 		// The padding challenges (bound first) define the eq factor.
 		let eq_pad: F = challenges[..n_extra_vars]
 			.iter()
-			.map(|&r| Hypercube::One.eq_one_var(F::ZERO, r))
+			.map(|&r| eq_one_var(F::ZERO, r))
 			.product();
 
 		// Reduced eval = A(r_inner) * B(r_inner) * prod eq(0, r_pad).

@@ -13,7 +13,9 @@ use std::iter;
 
 use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
-use binius_math::{FieldBuffer, FieldSlice, FieldVec, multilinear::hypercube::Hypercube};
+use binius_math::{
+	FieldBuffer, FieldSlice, FieldVec, multilinear::eq::scaled_eq_ind_partial_eval_into,
+};
 use binius_utils::rayon::{current_num_threads, prelude::*};
 
 use super::prove::TableLookup;
@@ -122,10 +124,7 @@ where
 			);
 			// Seeding the expansion with the scale folds it into the tensor product.
 			// That keeps it to one pass over one 2^n buffer.
-			Hypercube::One
-				.expand(looker.eval_point)
-				.scaled_by(scale)
-				.build_into(buffer)
+			scaled_eq_ind_partial_eval_into(looker.eval_point, scale, buffer)
 		})
 		.collect::<Vec<_>>();
 

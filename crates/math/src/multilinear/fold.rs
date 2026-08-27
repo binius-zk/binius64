@@ -174,7 +174,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		multilinear::hypercube::Hypercube,
+		multilinear::eq::eq_ind_partial_eval,
 		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
 	};
 
@@ -267,7 +267,7 @@ mod tests {
 		) {
 			let mut rng = StdRng::seed_from_u64(seed);
 			let point = random_scalars::<F>(&mut rng, tensor_vars);
-			let tensor = Hypercube::One.expand(&point).build::<P>();
+			let tensor = eq_ind_partial_eval::<P>(&point);
 
 			// The bit count is the product of the two lengths, as the precondition demands.
 			let bits = repeat_with(|| rng.random())

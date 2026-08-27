@@ -12,7 +12,9 @@ use binius_ip_prover::{
 	sumcheck::{ProveSingleOutput, bivariate_product_prover, prove_single},
 };
 use binius_math::{
-	FieldBuffer, FieldVec, inner_product::inner_product, multilinear::hypercube::Hypercube,
+	FieldBuffer, FieldVec,
+	inner_product::inner_product,
+	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
 };
 use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 
@@ -78,11 +80,9 @@ impl<'a, F: BinaryField> ShiftChallengePoint<'a, F> {
 		);
 		let phi32 = partial_eval_phi(&amount[..HALF_WORD_LOG_BITS]);
 		let sign_position32: F = bit[..HALF_WORD_LOG_BITS].iter().copied().product();
-		let same_half = Hypercube::One
-			.expand(&bit[HALF_WORD_LOG_BITS..])
-			.build::<F>();
+		let same_half = eq_ind_partial_eval::<F>(&bit[HALF_WORD_LOG_BITS..]);
 
-		let variant_tensor = Hypercube::One.expand(variant).build::<F>();
+		let variant_tensor = eq_ind_partial_eval::<F>(variant);
 		(0..Word::BITS)
 			.map(|index| {
 				let (half, low) = (index >> HALF_WORD_LOG_BITS, index % (1 << HALF_WORD_LOG_BITS));
@@ -223,8 +223,7 @@ impl<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator> ShiftIndSumcheck<
 
 		// The carried constant rides in the first evaluation, so the unscaled weights are evaluated
 		// at the challenge point separately — the same 64-term inner product the verifier runs.
-		let weights_eval =
-			inner_product(weights, Hypercube::One.expand(&challenges).build_scalars());
+		let weights_eval = inner_product(weights, eq_ind_partial_eval_scalars(&challenges));
 
 		ShiftIndOutput {
 			weights_eval,
@@ -346,7 +345,7 @@ mod tests {
 
 	use binius_field::{Field, Ghash128b as B128};
 	use binius_math::{
-		BinarySubspace, multilinear::hypercube::Hypercube, test_utils::random_scalars,
+		BinarySubspace, multilinear::eq::eq_ind_partial_eval_scalars, test_utils::random_scalars,
 		univariate::EvaluationDomain,
 	};
 	use binius_verifier::protocols::shift::evaluate_shift_inds;
@@ -369,8 +368,8 @@ mod tests {
 		// eq_bit[j] = eq(bit, j), eq_amount[s] = eq(amount, s).
 		//
 		// Both index little-endian, matching the recurrence's bit order.
-		let eq_bit = Hypercube::One.expand(bit).build_scalars();
-		let eq_amount = Hypercube::One.expand(amount).build_scalars();
+		let eq_bit = eq_ind_partial_eval_scalars(bit);
+		let eq_amount = eq_ind_partial_eval_scalars(amount);
 
 		(0..1 << n)
 			.map(|i| {
@@ -453,7 +452,7 @@ mod tests {
 		let shift = ShiftChallenge::new(amount.clone(), variant.clone());
 		let point = ShiftChallengePoint::new(&bit, &shift);
 		let shift_ind = point.indicator();
-		let variant_tensor = Hypercube::One.expand(&variant).build_scalars();
+		let variant_tensor = eq_ind_partial_eval_scalars(&variant);
 
 		for (index, &value) in shift_ind.iter().enumerate() {
 			// The bit-index hypercube vertex at `index`.

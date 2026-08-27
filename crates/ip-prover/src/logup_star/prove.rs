@@ -468,7 +468,7 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_buffers,
-		multilinear::{evaluate::evaluate, hypercube::Hypercube},
+		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -513,7 +513,7 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut *rng, n);
 
 		// The looked-up evaluation: e = (I^* T)(r) = sum_i eq_r(i) * T[index[i]].
-		let eq_r = Hypercube::One.expand(&eval_point).build_scalars();
+		let eq_r = eq_ind_partial_eval_scalars(&eval_point);
 		let eval_claim = index
 			.iter()
 			.zip(&eq_r)

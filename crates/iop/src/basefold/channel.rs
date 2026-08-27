@@ -9,7 +9,9 @@ use binius_ip::{
 	sumcheck::{self, BatchSumcheckOutput},
 };
 use binius_math::{
-	line::extrapolate_line, multilinear::hypercube::Hypercube, univariate::evaluate_univariate,
+	line::extrapolate_line,
+	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+	univariate::evaluate_univariate,
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
@@ -214,7 +216,7 @@ where
 	let contributions = izip!(relations, oracle_specs, &alphas)
 		.map(|(relation, spec, alpha_i)| {
 			let (eval_coords, padding_coords) = point.split_at(spec.log_msg_len);
-			let pad_eq = Hypercube::One.eq_ind_zero(padding_coords);
+			let pad_eq = eq_ind_zero(padding_coords);
 			let transparent_eval = (relation.transparent)(eval_coords);
 			alpha_i.clone() * transparent_eval * pad_eq
 		})
@@ -228,7 +230,7 @@ where
 	// is s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
 	let log_n_oracles = log2_ceil_usize(n_committed);
 	let outer_challenges = channel.sample_many(log_n_oracles);
-	let eq_tensor = Hypercube::One.expand(&outer_challenges).build_scalars();
+	let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
 	// In the combined buffer each oracle is zero-padded over its `log_lift` dims and *repeated*
 	// over the remaining `log_repeat = max_n - n_i - log_lift` high dims, so its evaluation at
 	// `point` picks up the eq-to-zero factor over the lift dims only (the repeat dims contribute
@@ -237,7 +239,7 @@ where
 		.map(|(fri_oracle, spec, eq_i, alpha_i)| {
 			let n_i = spec.log_msg_len;
 			let log_lift = fri_oracle.log_lift;
-			eq_i * alpha_i * Hypercube::One.eq_ind_zero(&point[n_i..][..log_lift])
+			eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift])
 		})
 		.sum::<Channel::Elem>();
 

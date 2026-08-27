@@ -27,7 +27,7 @@ use binius_ip_prover::sumcheck::{
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
 	inner_product::inner_product_packed,
-	multilinear::{fold::fold_highest_var_inplace, hypercube::Hypercube},
+	multilinear::{eq::eq_ind_partial_eval_in, fold::fold_highest_var_inplace},
 	ntt::AdditiveNTT,
 	reed_solomon::ReedSolomonCode,
 };
@@ -314,9 +314,7 @@ where
 				// Level 0 leaves no running weight, having carried its equality indicator inside
 				// the MLE-check, so it is materialized here at the unbound coordinates.
 				let running = weight.take().unwrap_or_else(|| {
-					Hypercube::One
-						.expand(&eval_point[..level.log_msg_cols])
-						.build_in(alloc)
+					eq_ind_partial_eval_in(alloc, &eval_point[..level.log_msg_cols])
 				});
 				let beta = P::broadcast(beta);
 				for (entry, &carried) in zip(glued.as_mut(), running.as_ref()) {

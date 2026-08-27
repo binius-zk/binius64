@@ -27,7 +27,7 @@ use auto_impl::auto_impl;
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldSlice, multilinear::hypercube::Hypercube};
+use binius_math::{FieldSlice, multilinear::eq::eq_ind_partial_eval};
 
 use super::{
 	MleToSumCheckEvaluator,
@@ -523,9 +523,7 @@ where
 		// and evaluator; the suffix coordinates are folded in below through `reduce`. The highest
 		// remaining coordinate is this round's `alpha`, folded into the interpolation, not the sum.
 		let alpha = self.eval_point[n_vars_remaining - 1];
-		let eq_chunk = Hypercube::One
-			.expand(&self.eval_point[..chunk_vars])
-			.build::<P>();
+		let eq_chunk = eq_ind_partial_eval::<P>(&self.eval_point[..chunk_vars]);
 
 		let eval_point = &self.eval_point;
 		let group = &mut self.group;
@@ -591,7 +589,7 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_par,
-		multilinear::{evaluate::evaluate, hypercube::Hypercube},
+		multilinear::{eq::eq_ind, evaluate::evaluate},
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 		univariate::evaluate_univariate,
 	};
@@ -825,7 +823,7 @@ mod tests {
 			// not.
 			let [y0, y1, d0, d1, t0, t1] =
 				<[F; 6]>::try_from(verified_evals).expect("six column evaluations");
-			let eq = Hypercube::One.eq_ind(&z, &point);
+			let eq = eq_ind(&z, &point);
 			let reduced = [(y0 * d1 + y1 * d0) * eq, (d0 * d1) * eq, y0 * t0, y1 * t1];
 			let expected = evaluate_univariate(&reduced, &sumcheck_output.batch_coeff);
 			assert_eq!(expected, sumcheck_output.eval, "reduced evaluation must match the batch");

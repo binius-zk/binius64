@@ -8,7 +8,7 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
-	FieldBuffer, FieldVec, line::extrapolate_line, multilinear::hypercube::Hypercube,
+	FieldBuffer, FieldVec, line::extrapolate_line, multilinear::eq::eq_ind_partial_eval,
 };
 use binius_utils::rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use itertools::izip;
@@ -67,7 +67,7 @@ where
 	let (outer_coords, inner_coords) = eval_point.split_at(k);
 
 	// eq weights for batching over instances: eq(i, outer_coords) for all i in B_k.
-	let eq_weights = Hypercube::One.expand(outer_coords).build::<F>();
+	let eq_weights = eq_ind_partial_eval::<F>(outer_coords);
 
 	let batch_coeff = channel.sample();
 
@@ -430,7 +430,7 @@ mod tests {
 		selector_point: &[P::Scalar],
 	) -> (P::Scalar, P::Scalar) {
 		let n_slots = 1 << selector_point.len();
-		let eq_weights = Hypercube::One.expand(selector_point).build::<P>();
+		let eq_weights = eq_ind_partial_eval::<P>(selector_point);
 		let num_eval = inner_product(
 			fractions.iter().map(|f| f.num),
 			(0..fractions.len()).map(|i| eq_weights.get(i)),

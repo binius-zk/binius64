@@ -8,7 +8,10 @@ use binius_ip::{
 	channel::{IPVerifierChannel, WordIPVerifierChannel},
 	sumcheck::{self, BatchSumcheckOutput},
 };
-use binius_math::{multilinear::hypercube::Hypercube, univariate::evaluate_univariate};
+use binius_math::{
+	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+	univariate::evaluate_univariate,
+};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
 
@@ -241,9 +244,7 @@ where
 		let contributions = izip!(relations, oracle_specs, &alphas)
 			.map(|(relation, spec, alpha)| {
 				let (eval_point, padding) = point.split_at(spec.log_msg_len);
-				alpha.clone()
-					* (relation.transparent)(eval_point)
-					* Hypercube::One.eq_ind_zero(padding)
+				alpha.clone() * (relation.transparent)(eval_point) * eq_ind_zero(padding)
 			})
 			.collect::<Vec<_>>();
 		channel.assert_zero(eval - evaluate_univariate(&contributions, &batch_coeff))?;
@@ -251,14 +252,13 @@ where
 		// Every stated evaluation is now bound to the transcript, so the coefficients that combine
 		// them into one message cannot be anticipated either.
 		let outer_challenges = channel.sample_many(log2_ceil_usize(n_oracles));
-		let coefficients = Hypercube::One.expand(&outer_challenges).build_scalars();
+		let coefficients = eq_ind_partial_eval_scalars(&outer_challenges);
 
 		// The combined message is the zero-extended messages summed at those coefficients, so its
 		// evaluation is the same combination of the stated ones.
 		let combined_claim = izip!(oracle_specs, &coefficients, &alphas)
 			.map(|(spec, coefficient, alpha)| {
-				coefficient.clone()
-					* alpha.clone() * Hypercube::One.eq_ind_zero(&point[spec.log_msg_len..])
+				coefficient.clone() * alpha.clone() * eq_ind_zero(&point[spec.log_msg_len..])
 			})
 			.sum::<Channel::Elem>();
 

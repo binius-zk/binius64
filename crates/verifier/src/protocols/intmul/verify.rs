@@ -16,7 +16,7 @@ use binius_ip::{
 	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
 use binius_math::{
-	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
+	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
 	univariate::evaluate_univariate,
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -135,7 +135,7 @@ where
 		.map(|(twisted_eval_point, b_eval)| {
 			let one = C::Elem::one();
 			(b_eval.clone() * (gpow_a_eval.clone() - one.clone()) + one)
-				* Hypercube::One.eq_ind(&twisted_eval_point, &eval_point)
+				* eq_ind(&twisted_eval_point, &eval_point)
 		})
 		.collect::<Vec<_>>();
 	// Combine the 2^k selector terms with eq_k(γ, i) — the multilinear evaluation at γ — mirroring
@@ -143,9 +143,8 @@ where
 	let expected_selected_agg = evaluate_inplace_scalars(expected_selected_terms, &gamma);
 
 	// - c_lo(r) * c_hi(r) * eq(c_eval_point ; r)
-	let expected_c_prod_eval = gpow_c_lo_eval.clone()
-		* gpow_c_hi_eval.clone()
-		* Hypercube::One.eq_ind(c_eval_point, &eval_point);
+	let expected_c_prod_eval =
+		gpow_c_lo_eval.clone() * gpow_c_hi_eval.clone() * eq_ind(c_eval_point, &eval_point);
 
 	let expected_terms = [expected_selected_agg, expected_c_prod_eval];
 	let expected_batched_eval = evaluate_univariate(&expected_terms, &batch_coeff);
@@ -351,9 +350,9 @@ where
 		.collect::<Vec<_>>();
 	column_evals.resize(1 << log_cols, C::Elem::zero());
 	let folded_index_eval = evaluate_inplace_scalars(column_evals, &rho);
-	let expected_index_eval = Hypercube::One.eq_ind(index_content_point, r_out) * folded_index_eval;
+	let expected_index_eval = eq_ind(index_content_point, r_out) * folded_index_eval;
 
-	let b_eq_eval = Hypercube::One.eq_ind(b_eval_point, r_out);
+	let b_eq_eval = eq_ind(b_eval_point, r_out);
 
 	// We must check that `a_0 * b_0 = c_lo_0` across all rows, where these represent the least
 	// significant bits of `a_exponents`, `b_exponents`, and `c_lo_exponents` respectively.

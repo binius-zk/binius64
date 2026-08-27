@@ -15,7 +15,13 @@ use binius_ip::{
 use binius_math::{
 	BinarySubspace,
 	line::extrapolate_line,
-	multilinear::{evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
+	multilinear::{
+		eq::{
+			eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var, scaled_eq_ind_partial_eval,
+			scaled_eq_ind_partial_eval_scalars,
+		},
+		evaluate::evaluate_inplace_scalars,
+	},
 	univariate::{EvaluationDomain, evaluate_univariate},
 };
 use getset::Getters;
@@ -44,8 +50,8 @@ where
 	assert_eq!(r_j.len(), Word::LOG_BITS); // precondition
 	assert!(words.len() <= 1 << r_y.len()); // precondition
 
-	let r_j_tensor = Hypercube::One.expand(r_j).build_scalars();
-	let r_y_tensor = Hypercube::One.expand(r_y).build_scalars();
+	let r_j_tensor = eq_ind_partial_eval_scalars(r_j);
+	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
 	iter::zip(words, r_y_tensor)
 		.map(|(word, weight)| {
 			let word_eval = (0..Word::BITS)
@@ -738,8 +744,8 @@ impl WiringEvalFn<'_> {
 		let cs = &self.constraint_system;
 		let log_public_words = cs.log_public_words(self.shape.inout);
 
-		let public_scale = Hypercube::One.eq_one_var(r_segment.clone(), E::zero())
-			* Hypercube::One.eq_ind_zero(&r_y_v[log_public_words..]);
+		let public_scale =
+			eq_one_var(r_segment.clone(), E::zero()) * eq_ind_zero(&r_y_v[log_public_words..]);
 		let public_tensor = scaled_expand(&r_y_v[..log_public_words], public_scale);
 		let hidden_tensor = scaled_expand(r_y_v, r_segment);
 
@@ -768,8 +774,8 @@ impl WiringEvalFn<'_> {
 		// them. Each is indexed by `variant * Word::BITS + amount`. The bit-index factors scaling
 		// all of them are left for `check_eval` to multiply in.
 		let slot_scalars = |r_s: &[E], r_v: &[E]| {
-			let eq_r_v = Hypercube::One.expand(r_v).build_scalars();
-			let eq_r_s = Hypercube::One.expand(r_s).build_scalars();
+			let eq_r_v = eq_ind_partial_eval_scalars(r_v);
+			let eq_r_s = eq_ind_partial_eval_scalars(r_s);
 			Box::new(array::from_fn::<_, SHIFT_COUNT, _>(|i| {
 				eq_r_v[i / Word::BITS].clone() * &eq_r_s[i % Word::BITS]
 			}))
@@ -810,12 +816,7 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 			bitand: bitand_input,
 			intmul: intmul_input,
 			binmul: binmul_input,
-		} = self.operation_inputs(vals, |point, scale| {
-			Hypercube::One
-				.expand(point)
-				.scaled_by(scale)
-				.build_scalars()
-		});
+		} = self.operation_inputs(vals, scaled_eq_ind_partial_eval_scalars);
 		let cs = &self.constraint_system;
 
 		let zero =
@@ -847,11 +848,7 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 		} = self.operation_inputs(vals, |point, scale| {
 			// The packed expansion threads the tensor's multiplications.
 			// It applies over the base field, which is its own single-element packing.
-			Hypercube::One
-				.expand(point)
-				.scaled_by(scale)
-				.build::<F>()
-				.into_inner()
+			scaled_eq_ind_partial_eval::<F>(point, scale).into_inner()
 		});
 		let cs = &self.constraint_system;
 
@@ -896,7 +893,7 @@ mod tests {
 
 		// Naive reference: sum the full bit-level eq tensor over every set bit.
 		let full_point = [r_j.clone(), r_y.clone()].concat();
-		let full_tensor = Hypercube::One.expand(&full_point).build_scalars();
+		let full_tensor = eq_ind_partial_eval_scalars(&full_point);
 		let mut expected = B128::ZERO;
 		for (word_index, word) in words.iter().enumerate() {
 			for bit in 0..Word::BITS {

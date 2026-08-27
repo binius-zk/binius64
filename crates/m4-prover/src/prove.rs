@@ -22,7 +22,7 @@ use binius_m4_verifier::{IOPVerifier, Verifier};
 use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product,
-	multilinear::hypercube::Hypercube,
+	multilinear::eq::eq_ind_partial_eval_scalars,
 	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
 	univariate::EvaluationDomain,
 };
@@ -503,7 +503,7 @@ impl<'a, A: Allocator, const ARITY: usize> Operation<'a, A, ARITY> {
 		// tracker; register it once.
 		let eq_tracker = store.register_eq_tracker(&self.r_rho);
 		// The constraint tensor is the same for every operand of this operation, so expand it once.
-		let r_x_tensor = Hypercube::One.expand(&self.r_x).build_scalars();
+		let r_x_tensor = eq_ind_partial_eval_scalars(&self.r_x);
 		for (operand, &claim) in self.operand_claims.iter().enumerate() {
 			let col = store.push_owned(self.columns.rho_multilinear::<P>(
 				operand,

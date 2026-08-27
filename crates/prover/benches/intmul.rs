@@ -17,7 +17,7 @@ use binius_ip_prover::{
 };
 use binius_math::{
 	FieldBuffer,
-	multilinear::{evaluate::evaluate, hypercube::Hypercube},
+	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerPreExpanded},
 	test_utils::random_scalars,
 };
@@ -390,7 +390,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 					})
 					.collect();
 				let gamma = random_scalars::<F>(&mut rng, Word::LOG_BITS);
-				let eq_weights = Hypercube::One.expand(&gamma).build_scalars();
+				let eq_weights = eq_ind_partial_eval_scalars(&gamma);
 				(witness.a_root.clone(), claims, eq_weights)
 			},
 			|(a_root, claims, eq_weights)| {
