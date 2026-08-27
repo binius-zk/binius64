@@ -389,7 +389,7 @@ mod tests {
 	use binius_ip::fracaddcheck;
 	use binius_math::{
 		inner_product::inner_product,
-		multilinear::Multilinear,
+		multilinear::evaluate::evaluate,
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -493,8 +493,8 @@ mod tests {
 		for (i, (&depth, witness)) in iter::zip(depths, &witnesses).enumerate() {
 			let leaf = unpad_leaf_claim(fractions[i], &eval_point[k..], n_layers - depth);
 			assert_eq!(leaf.point.len(), depth);
-			assert_eq!(leaf.num_eval, witness.num.evaluate(&leaf.point), "tree {i} numerator");
-			assert_eq!(leaf.den_eval, witness.den.evaluate(&leaf.point), "tree {i} denominator");
+			assert_eq!(leaf.num_eval, evaluate(&witness.num, &leaf.point), "tree {i} numerator");
+			assert_eq!(leaf.den_eval, evaluate(&witness.den, &leaf.point), "tree {i} denominator");
 		}
 	}
 

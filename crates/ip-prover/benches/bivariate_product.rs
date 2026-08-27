@@ -16,7 +16,8 @@ use binius_ip_prover::sumcheck::{
 };
 use binius_math::{
 	FieldBuffer,
-	multilinear::{Multilinear, MultilinearMut},
+	inner_product::inner_product_par,
+	multilinear::evaluate::evaluate_inplace,
 	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -49,7 +50,7 @@ where
 	let product_vals: Vec<P> = (0..packed_len)
 		.map(|i| a.as_ref()[i] * b.as_ref()[i])
 		.collect();
-	FieldBuffer::new(n_vars, product_vals).evaluate_inplace(eval_point)
+	evaluate_inplace(FieldBuffer::new(n_vars, product_vals), eval_point)
 }
 
 // Proves one bivariate product `a * b` as a plain sum claim: a `SharedSumcheckProver` with a single
@@ -65,7 +66,7 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 			let b_buffer = random_field_buffer::<P>(&mut rng, n_vars);
 
 			// The plain sum claim is the sum of `a * b` over the hypercube.
-			let sum_claim = a_buffer.par_inner_product(&b_buffer);
+			let sum_claim = inner_product_par(&a_buffer, &b_buffer);
 			let transcript = ProverTranscript::new(StdChallenger::default());
 
 			let pool = BufferPool::new();

@@ -5,7 +5,7 @@
 use binius_compute::BufferData;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, multilinear::MultilinearMut};
+use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::{
 	prelude::*,
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
@@ -174,7 +174,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: BufferData<P> + Sync> SumcheckP
 				}
 			});
 
-		self.dense.fold_highest_var(challenge);
+		fold_highest_var_inplace(&mut self.dense, challenge);
 		self.state = RoundState::Claim(claim);
 	}
 
@@ -195,7 +195,7 @@ mod tests {
 		arch::{OptimalB128, OptimalPackedB128},
 	};
 	use binius_ip::sumcheck::verify;
-	use binius_math::{multilinear::Multilinear, test_utils::random_field_buffer};
+	use binius_math::{multilinear::evaluate::evaluate, test_utils::random_field_buffer};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use proptest::prelude::*;
 	use rand::prelude::*;
@@ -247,8 +247,8 @@ mod tests {
 		// The prover binds variables high-to-low; `evaluate` expects them low-to-high.
 		let mut eval_point = sumcheck_output.challenges.clone();
 		eval_point.reverse();
-		assert_eq!(sparse_dense.evaluate(&eval_point), multilinear_evals[0]);
-		assert_eq!(dense.evaluate(&eval_point), multilinear_evals[1]);
+		assert_eq!(evaluate(&sparse_dense, &eval_point), multilinear_evals[0]);
+		assert_eq!(evaluate(dense, &eval_point), multilinear_evals[1]);
 		assert_eq!(output.challenges, sumcheck_output.challenges);
 	}
 

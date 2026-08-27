@@ -121,7 +121,8 @@ mod test {
 	use binius_ip_prover::channel::IPProverChannel;
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{Multilinear, hypercube::Hypercube},
+		inner_product::inner_product_buffers,
+		multilinear::hypercube::Hypercube,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -204,7 +205,7 @@ mod test {
 			});
 
 		let eval_point_eq = Hypercube::One.expand(evaluation_point).build::<P>();
-		let mut eval_claim = witness_prime.inner_product(&eval_point_eq);
+		let mut eval_claim = inner_product_buffers(&witness_prime, &eval_point_eq);
 		if tamper {
 			eval_claim += F::ONE;
 		}

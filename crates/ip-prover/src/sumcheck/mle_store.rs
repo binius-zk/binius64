@@ -25,7 +25,10 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
-	multilinear::{Multilinear, MultilinearMut, hypercube::Hypercube},
+	multilinear::{
+		fold::{fold_highest_var, fold_highest_var_inplace},
+		hypercube::Hypercube,
+	},
 };
 use binius_utils::rayon;
 use itertools::izip;
@@ -220,11 +223,11 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 		let alloc = self.alloc;
 		for column in &mut self.columns {
 			match column {
-				Column::Owned(buffer) => buffer.fold_highest_var(challenge),
+				Column::Owned(buffer) => fold_highest_var_inplace(buffer, challenge),
 				Column::Borrowed(slice) => {
 					// The first fold of a borrowed column writes into a fresh half-size owned
 					// buffer, avoiding an up-front copy of the full column.
-					*column = Column::Owned(slice.fold_highest_var_in(alloc, challenge));
+					*column = Column::Owned(fold_highest_var(alloc, slice, challenge));
 				}
 				Column::SplitHalf(buffer) => {
 					// Fold each half on its own highest variable in place. The two halves are the
@@ -236,8 +239,8 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 					let (mut low, mut high) = split.halves();
 					low.truncate(n_vars);
 					high.truncate(n_vars);
-					low.fold_highest_var(challenge);
-					high.fold_highest_var(challenge);
+					fold_highest_var_inplace(&mut low, challenge);
+					fold_highest_var_inplace(&mut high, challenge);
 				}
 			}
 		}

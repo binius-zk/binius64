@@ -255,7 +255,10 @@ mod tests {
 	use binius_ip::logup_star::LookerClaim;
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{Multilinear, evaluate::evaluate_inplace_scalars, hypercube::Hypercube},
+		multilinear::{
+			evaluate::{evaluate, evaluate_inplace_scalars},
+			hypercube::Hypercube,
+		},
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -372,7 +375,7 @@ mod tests {
 			let m = table.values.log_len();
 			assert_eq!(
 				prover_proof.tables[table_index].eval_claim,
-				table.values.evaluate(&table_point[..m]),
+				evaluate(&table.values, &table_point[..m]),
 				"table claim wrong for table {table_index} ({shape})"
 			);
 		}
@@ -409,7 +412,7 @@ mod tests {
 				let own_point = &index_point[index_point.len() - looker.eval_point.len()..];
 				assert_eq!(
 					*claim,
-					embedded.evaluate(own_point),
+					evaluate(&embedded, own_point),
 					"index claim wrong for table {table_index}, n={} ({shape})",
 					looker.eval_point.len()
 				);

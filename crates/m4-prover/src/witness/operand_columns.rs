@@ -526,7 +526,7 @@ mod tests {
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
 	use binius_math::{
-		BinarySubspace, FieldBuffer, multilinear::Multilinear, univariate::EvaluationDomain,
+		BinarySubspace, FieldBuffer, multilinear::evaluate::evaluate, univariate::EvaluationDomain,
 	};
 	use binius_prover::{and_reduction, fold_word::BitAxisFolder};
 	use binius_transcript::{ProverTranscript, VerifierTranscript};
@@ -683,7 +683,7 @@ mod tests {
 			.reduce_dim(SKIPPED_VARS);
 		let lagrange = univariate_domain.lagrange_evals(&z_challenge);
 		let folded: FieldBuffer<B128> = BitAxisFolder::new(&lagrange).fold(&GlobalAllocator, col);
-		folded.evaluate(eval_point)
+		evaluate(&folded, eval_point)
 	}
 
 	// The per-instance AND constraints, at their true (unpadded) count.

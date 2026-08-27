@@ -2,7 +2,11 @@
 
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_math::{
-	multilinear::{Multilinear, MultilinearMut, hypercube::Hypercube},
+	inner_product::inner_product_par,
+	multilinear::{
+		evaluate::{evaluate, evaluate_inplace},
+		hypercube::Hypercube,
+	},
 	test_utils::{random_field_buffer, random_scalars},
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -30,14 +34,14 @@ fn bench_multilinear_evaluate(c: &mut Criterion) {
 
 	// Benchmark evaluate function (sqrt memory)
 	group.bench_function(BenchmarkId::new("evaluate", format!("n_vars={n_vars}")), |b| {
-		b.iter(|| buffer.evaluate(&point));
+		b.iter(|| evaluate(&buffer, &point));
 	});
 
 	// Benchmark evaluate_inplace function
 	group.bench_function(BenchmarkId::new("evaluate_inplace", format!("n_vars={n_vars}")), |b| {
 		b.iter_batched(
 			|| buffer.clone(),
-			|buffer| buffer.evaluate_inplace(&point),
+			|buffer| evaluate_inplace(buffer, &point),
 			BatchSize::SmallInput,
 		);
 	});
@@ -47,7 +51,7 @@ fn bench_multilinear_evaluate(c: &mut Criterion) {
 		BenchmarkId::new("evaluate with tensor", format!("n_vars={n_vars}")),
 		|b| {
 			let eq_tensor = Hypercube::One.expand(&point).build::<P>();
-			b.iter(|| buffer.par_inner_product(&eq_tensor));
+			b.iter(|| inner_product_par(&buffer, &eq_tensor));
 		},
 	);
 

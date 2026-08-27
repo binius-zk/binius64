@@ -270,7 +270,7 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_ip::fracaddcheck;
 	use binius_math::{
-		multilinear::Multilinear,
+		multilinear::evaluate::evaluate,
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -300,8 +300,8 @@ mod tests {
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
 		// 4. Evaluate sums at challenge point to create claims
-		let sum_num_eval = sums.num.evaluate(&eval_point);
-		let sum_den_eval = sums.den.evaluate(&eval_point);
+		let sum_num_eval = evaluate(&sums.num, &eval_point);
+		let sum_den_eval = evaluate(&sums.den, &eval_point);
 		// The prover and the verifier take the same claim type, so one claim serves both.
 		let claim = FracAddEvalClaim {
 			num_eval: sum_num_eval,
@@ -321,8 +321,8 @@ mod tests {
 		assert_eq!(prover_output, verifier_output);
 
 		// 8. Verify multilinear evaluation of original witness
-		let expected_num = witness_num.evaluate(&verifier_output.point);
-		let expected_den = witness_den.evaluate(&verifier_output.point);
+		let expected_num = evaluate(&witness_num, &verifier_output.point);
+		let expected_den = evaluate(&witness_den, &verifier_output.point);
 		assert_eq!(verifier_output.num_eval, expected_num);
 		assert_eq!(verifier_output.den_eval, expected_den);
 	}

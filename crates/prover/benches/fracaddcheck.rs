@@ -6,7 +6,7 @@ use binius_ip::fracaddcheck::FracAddEvalClaim;
 use binius_ip_prover::fracaddcheck::{FracAddCircuit, fraction::Fraction};
 use binius_math::{
 	FieldBuffer,
-	multilinear::Multilinear,
+	multilinear::evaluate::evaluate,
 	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_transcript::ProverTranscript;
@@ -80,8 +80,8 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 					FieldBuffer::<P, _>::from_values_in(&alloc, &den_scalars),
 				),
 			);
-			let sum_num_eval = sums.num.evaluate(&[]);
-			let sum_den_eval = sums.den.evaluate(&[]);
+			let sum_num_eval = evaluate(&sums.num, &[]);
+			let sum_den_eval = evaluate(&sums.den, &[]);
 			let claim = FracAddEvalClaim {
 				num_eval: sum_num_eval,
 				den_eval: sum_den_eval,

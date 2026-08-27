@@ -469,7 +469,8 @@ mod tests {
 	use binius_ip_prover::channel::IPProverChannel;
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{Multilinear, hypercube::Hypercube},
+		inner_product::inner_product_buffers,
+		multilinear::hypercube::Hypercube,
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -497,7 +498,7 @@ mod tests {
 		let buffer = random_field_buffer::<P>(&mut *rng, n_vars);
 		let point = random_scalars::<F>(&mut *rng, n_vars);
 		let transparent = Hypercube::One.expand(&point).build::<P>();
-		let claim = buffer.inner_product(&transparent);
+		let claim = inner_product_buffers(&buffer, &transparent);
 		(buffer, transparent, claim)
 	}
 
@@ -603,7 +604,7 @@ mod tests {
 					oracle,
 					Box::new(move |point: &[F]| {
 						let eq = Hypercube::One.expand(point).build::<P>();
-						transparent.inner_product(&eq)
+						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
 				)
@@ -679,7 +680,7 @@ mod tests {
 			.map(|_| {
 				let point = random_scalars::<F>(&mut rng, 4);
 				let transparent = Hypercube::One.expand(&point).build::<P>();
-				let claim = buffer_1.inner_product(&transparent);
+				let claim = inner_product_buffers(&buffer_1, &transparent);
 				(transparent, claim)
 			})
 			.collect();
@@ -687,7 +688,7 @@ mod tests {
 			.map(|_| {
 				let point = random_scalars::<F>(&mut rng, 3);
 				let transparent = Hypercube::One.expand(&point).build::<P>();
-				let claim = buffer_2.inner_product(&transparent);
+				let claim = inner_product_buffers(&buffer_2, &transparent);
 				(transparent, claim)
 			})
 			.collect();
@@ -733,7 +734,7 @@ mod tests {
 					v_oracle_1,
 					Box::new(move |point: &[F]| {
 						let eq = Hypercube::One.expand(point).build::<P>();
-						transparent.inner_product(&eq)
+						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
 				)
@@ -745,7 +746,7 @@ mod tests {
 					v_oracle_2,
 					Box::new(move |point: &[F]| {
 						let eq = Hypercube::One.expand(point).build::<P>();
-						transparent.inner_product(&eq)
+						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
 				)

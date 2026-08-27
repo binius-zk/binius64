@@ -119,7 +119,7 @@ mod tests {
 
 	use binius_field::{Field, Ghash128b as B128, Random, arithmetic_traits::Square};
 	use binius_math::{
-		multilinear::{Multilinear, hypercube::Hypercube},
+		multilinear::{evaluate::evaluate, hypercube::Hypercube},
 		test_utils::{random_field_buffer, random_scalars},
 		univariate,
 	};
@@ -271,7 +271,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 		let coeffs_vals = random_field_buffer::<B128>(&mut rng, 2);
 		let coords_vals = random_scalars(&mut rng, 2);
-		let expected = coeffs_vals.evaluate(&coords_vals);
+		let expected = evaluate(&coeffs_vals, &coords_vals);
 
 		test_helper::<MultilinearCircuit, 7>([
 			coeffs_vals.get(0),
