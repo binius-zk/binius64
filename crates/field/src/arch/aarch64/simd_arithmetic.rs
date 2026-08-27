@@ -11,7 +11,8 @@ use bytemuck::TransparentWrapper;
 
 use super::m128::M128;
 use crate::{
-	aes_field::Rijndael8b, arch::portable::packed::PackedPrimitiveType, arithmetic_traits::WideMul,
+	arch::portable::packed::PackedPrimitiveType, arithmetic_traits::WideMul,
+	fields::rijndael::Rijndael8b,
 };
 
 #[inline]

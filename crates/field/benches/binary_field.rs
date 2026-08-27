@@ -2,7 +2,7 @@
 
 use std::array;
 
-use binius_field::{Field, Ghash128b, aes_field::Rijndael8b};
+use binius_field::{Field, Ghash128b, fields::rijndael::Rijndael8b};
 use criterion::{
 	BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::Measurement,
 };

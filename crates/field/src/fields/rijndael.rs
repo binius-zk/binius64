@@ -9,8 +9,11 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 
-use super::binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension};
-use crate::{ExtensionField, Field, underlier::U1};
+use crate::{
+	ExtensionField, Field,
+	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
+	underlier::U1,
+};
 
 // These fields represent a tower based on AES GF(2^8) field (GF(256)/x^8+x^4+x^3+x+1)
 // that is isomorphically included into binary tower, i.e.:
