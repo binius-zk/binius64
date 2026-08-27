@@ -3,15 +3,32 @@
 
 //! A power-of-two-sized buffer of packed field elements.
 //!
-//! The buffer type and all of its methods live in this file.
-//! Sibling modules hold the other types this one hands out:
+//! The buffer, its methods, and everything it hands out live in this file.
+//! A type here exists only to be returned by one of those methods, so each is built in exactly
+//! one place and none of them needs to be visible beyond this module:
 //!
 //! ```text
-//! view        the borrowed aliases, and the store that backs a shared one
-//! chunks      the iterators over a buffer's aligned chunks
-//! write_back  the guards that lend out a region narrower than one packed word
-//! sub_word    locating a chunk inside the word it shares with its neighbours
+//! Chunks, ChunksMut   iterators over the buffer's aligned chunks
+//! SplitMut, ChunkMut  guards over a region narrower than one packed word
+//! SubWordChunk        locating such a region inside the word it shares with its neighbours
 //! ```
+//!
+//! The borrowed aliases are the exception, and sit in a module of their own.
+//! They name the buffer rather than being produced by it, and callers spell them out directly.
+//!
+//! # How a chunk is shaped
+//!
+//! A chunk of `2^k` elements starts at a multiple of its own size, so chunks of one size tile the
+//! buffer exactly, with none left over.
+//! Its size against the packing width decides which of two shapes it takes:
+//!
+//! ```text
+//! chunk >= one packed word  ->  a run of whole words, borrowed from the store
+//! chunk <  one packed word  ->  some lanes of one word, shared with its neighbours
+//! ```
+//!
+//! The second shape is why a chunk cannot always be lent out as a mutable slice of words.
+//! Lending one means copying its lanes out and merging them back when the borrow ends.
 //!
 //! # Why the backing store is a type parameter
 //!
@@ -31,8 +48,10 @@
 //! With it goes the deref-coercion design a vector and its two slice types enjoy.
 
 use std::{
+	iter,
+	marker::PhantomData,
 	mem::MaybeUninit,
-	ops::{Deref, DerefMut},
+	ops::{Deref, DerefMut, Range},
 	slice,
 };
 
@@ -47,15 +66,9 @@ use binius_utils::{
 };
 use bytemuck::zeroed_vec;
 
-mod chunks;
-mod sub_word;
 mod view;
-mod write_back;
 
-pub use chunks::{Chunks, ChunksMut};
-use sub_word::SubWordChunk;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
-pub use write_back::{ChunkMut, SplitMut};
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
@@ -888,6 +901,427 @@ fn repeat_words<P: PackedField>(head: &[P], tail: &mut [MaybeUninit<P>], run: us
 		let source = (i * run) & (head.len() - 1);
 		dst.write_copy_of_slice(&head[source..source + dst.len()]);
 	});
+}
+
+/// The location of one chunk that is smaller than a packed word.
+///
+/// A chunk this small does not get a word to itself.
+/// Several of them share one word, so a chunk is a run of lanes inside it:
+///
+/// ```text
+/// WIDTH = 4, log_chunk_size = 1, so 2 chunks per word
+///
+/// chunk 0 -> word 0, lane 0     chunk 2 -> word 1, lane 0
+/// chunk 1 -> word 0, lane 2     chunk 3 -> word 1, lane 2
+/// ```
+///
+/// The chunk index splits in two to get there.
+/// High bits pick the word, low bits pick the lanes within it.
+///
+/// The packing width is part of the type.
+/// So a location can only ever be read against the packing it was computed for.
+#[derive(Debug, Clone, Copy)]
+struct SubWordChunk<P> {
+	/// Which word of the backing store holds the chunk.
+	word_index: usize,
+	/// Which lane of that word the chunk's first element sits at.
+	lane_offset: usize,
+	/// Element count of the chunk, as a base-2 logarithm.
+	log_len: usize,
+	/// Ties the arithmetic above to one packing width.
+	packing: PhantomData<P>,
+}
+
+impl<P: PackedField> SubWordChunk<P> {
+	/// Locates the chunk at `chunk_index` among chunks of `2^log_chunk_size` elements.
+	///
+	/// The size must be below the packing width, which is what makes several chunks share a word.
+	#[inline]
+	const fn new(log_chunk_size: usize, chunk_index: usize) -> Self {
+		let log_chunks_per_word = P::LOG_WIDTH - log_chunk_size;
+		let chunk_subindex = chunk_index & ((1 << log_chunks_per_word) - 1);
+		Self {
+			word_index: chunk_index >> log_chunks_per_word,
+			lane_offset: chunk_subindex << log_chunk_size,
+			log_len: log_chunk_size,
+			packing: PhantomData,
+		}
+	}
+
+	/// Which word of the backing store holds the chunk.
+	#[inline]
+	const fn word_index(self) -> usize {
+		self.word_index
+	}
+
+	/// Element count of the chunk, as a base-2 logarithm.
+	#[inline]
+	const fn log_len(self) -> usize {
+		self.log_len
+	}
+
+	/// Reads the chunk's elements out of the word holding it.
+	#[inline]
+	fn scalars(self, word: P) -> impl Iterator<Item = P::Scalar> + Send + Clone {
+		(0..1 << self.log_len).map(move |i| word.get(self.lane_offset | i))
+	}
+
+	/// Copies the chunk into a word of its own, elements starting at lane 0.
+	///
+	/// Lanes past the chunk come out zero, since packing from scalars starts from a zeroed word.
+	#[inline]
+	fn repack(self, words: &[P]) -> P {
+		P::from_scalars(self.scalars(words[self.word_index]))
+	}
+
+	/// Copies an edited chunk back into the lanes it came from.
+	///
+	/// The inverse of copying the chunk out.
+	/// Lane `i` of the chunk lands back at the lane it was read from.
+	///
+	/// ```text
+	/// WIDTH = 4, log_len = 1, lane_offset = 2
+	///
+	/// chunk  [ y z . . ]
+	/// word   [ a b y z ]   lanes 0 and 1 keep whatever they held
+	/// ```
+	///
+	/// Lanes of the word outside the chunk are left untouched, since neighbouring chunks own them.
+	#[inline]
+	fn merge_into(self, word: &mut P, chunk: &P) {
+		// The chunk's elements sit at lanes 0..2^log_len, so the loop walks exactly those.
+		for i in 0..1 << self.log_len {
+			// The lane offset is a multiple of the chunk length, so the bits below it are free.
+			// Setting them with an OR therefore addresses lane i of this chunk and no other.
+			word.set(self.lane_offset | i, chunk.get(i));
+		}
+	}
+}
+
+/// How a shared chunk iterator walks the store, settled by the chunk size before the first step.
+///
+/// ```text
+/// chunk >= one packed word  ->  Words, stepping runs of the store
+/// chunk <  one packed word  ->  Lanes, stepping chunk indices into one word each
+/// ```
+#[derive(Clone)]
+enum ChunkSource<'a, P: PackedField> {
+	/// Runs of words, one per chunk, cut off at the buffer's logical chunk count.
+	Words(iter::Take<slice::Chunks<'a, P>>),
+	/// Chunk indices to locate lanes with, alongside the store those lanes are repacked from.
+	Lanes {
+		words: &'a [P],
+		indices: Range<usize>,
+	},
+}
+
+/// Iterator over a buffer's chunks of a fixed size, each borrowed as a shared view.
+///
+/// Yielded by asking a buffer for its chunks.
+/// A chunk of at least one packed word is a borrowed run of words.
+/// A smaller one is a copy of its lanes, repacked to start at lane 0.
+pub struct Chunks<'a, P: PackedField> {
+	/// Where the next chunk comes from, one shape or the other for the whole iteration.
+	source: ChunkSource<'a, P>,
+	/// Element count of each chunk, as a base-2 logarithm.
+	log_chunk_size: usize,
+}
+
+impl<'a, P: PackedField> Chunks<'a, P> {
+	/// Builds the iterator over `words`, whose length must be the buffer's live word count.
+	#[inline]
+	fn new(words: &'a [P], log_chunk_size: usize, chunk_count: usize) -> Self {
+		let source = if log_chunk_size >= P::LOG_WIDTH {
+			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
+			ChunkSource::Words(words.chunks(words_per_chunk).take(chunk_count))
+		} else {
+			ChunkSource::Lanes {
+				words,
+				indices: 0..chunk_count,
+			}
+		};
+		Self {
+			source,
+			log_chunk_size,
+		}
+	}
+}
+
+impl<'a, P: PackedField> Iterator for Chunks<'a, P> {
+	type Item = FieldSlice<'a, P>;
+
+	#[inline]
+	fn next(&mut self) -> Option<Self::Item> {
+		let words = match &mut self.source {
+			ChunkSource::Words(runs) => FieldSliceData::Slice(runs.next()?),
+			ChunkSource::Lanes { words, indices } => FieldSliceData::Single(
+				SubWordChunk::<P>::new(self.log_chunk_size, indices.next()?).repack(words),
+			),
+		};
+		Some(FieldBuffer {
+			log_len: self.log_chunk_size,
+			words,
+		})
+	}
+
+	#[inline]
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		match &self.source {
+			ChunkSource::Words(runs) => runs.size_hint(),
+			ChunkSource::Lanes { indices, .. } => indices.size_hint(),
+		}
+	}
+}
+
+impl<P: PackedField> ExactSizeIterator for Chunks<'_, P> {}
+
+impl<P: PackedField> Clone for Chunks<'_, P> {
+	fn clone(&self) -> Self {
+		Self {
+			source: self.source.clone(),
+			log_chunk_size: self.log_chunk_size,
+		}
+	}
+}
+
+/// Iterator over a buffer's chunks of a fixed size, each borrowed as a mutable view.
+///
+/// The mutable counterpart of the shared chunk iterator, restricted to chunks of whole words.
+/// The chunks are disjoint, so each is lent out for the whole iteration rather than one at a time.
+pub struct ChunksMut<'a, P: PackedField> {
+	/// Runs of words, one per chunk, cut off at the buffer's logical chunk count.
+	runs: iter::Take<slice::ChunksMut<'a, P>>,
+	/// Element count of each chunk, as a base-2 logarithm.
+	log_chunk_size: usize,
+}
+
+impl<'a, P: PackedField> ChunksMut<'a, P> {
+	/// Builds the iterator over `words`, whose length must be the buffer's live word count.
+	#[inline]
+	fn new(words: &'a mut [P], log_chunk_size: usize, chunk_count: usize) -> Self {
+		let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
+		Self {
+			runs: words.chunks_mut(words_per_chunk).take(chunk_count),
+			log_chunk_size,
+		}
+	}
+}
+
+impl<'a, P: PackedField> Iterator for ChunksMut<'a, P> {
+	type Item = FieldSliceMut<'a, P>;
+
+	#[inline]
+	fn next(&mut self) -> Option<Self::Item> {
+		self.runs.next().map(|run| FieldBuffer {
+			log_len: self.log_chunk_size,
+			words: run,
+		})
+	}
+
+	#[inline]
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		self.runs.size_hint()
+	}
+}
+
+impl<P: PackedField> ExactSizeIterator for ChunksMut<'_, P> {}
+
+/// Guards the two halves of a buffer that was split along its highest variable.
+///
+/// Holds the parent store, and lends each half out as a mutable view.
+#[derive(Debug)]
+pub struct SplitMut<P: PackedField, Data: DerefMut<Target = [P]>> {
+	/// Element count of each half, as a base-2 logarithm.
+	log_len: usize,
+	/// The detached halves, present only when a half is narrower than a packed word.
+	singles: Option<[P; 2]>,
+	/// The store both halves come from, and the one a detached pair merges back into.
+	data: Data,
+}
+
+impl<P: PackedField, Data: DerefMut<Target = [P]>> SplitMut<P, Data> {
+	/// Guards the two halves of `data`, each holding `2^log_len` elements.
+	fn new(log_len: usize, data: Data) -> Self {
+		// Halves this narrow share word 0, so neither can be lent out as a slice of that store.
+		// Interleaving against zero lifts each half into a word of its own, starting at lane 0.
+		let singles = (log_len < P::LOG_WIDTH).then(|| {
+			let (lo_half, hi_half) = data[0].interleave(P::default(), log_len);
+			[lo_half, hi_half]
+		});
+
+		Self {
+			log_len,
+			singles,
+			data,
+		}
+	}
+
+	/// Lends the two halves out as mutable views, the low half first.
+	///
+	/// A half of whole words is a view straight onto the store, so edits land at once.
+	/// A narrower half is a view onto a detached word, so edits land when this guard drops.
+	pub fn halves(&mut self) -> (FieldSliceMut<'_, P>, FieldSliceMut<'_, P>) {
+		match &mut self.singles {
+			Some([lo_half, hi_half]) => (
+				FieldBuffer {
+					log_len: self.log_len,
+					words: slice::from_mut(lo_half),
+				},
+				FieldBuffer {
+					log_len: self.log_len,
+					words: slice::from_mut(hi_half),
+				},
+			),
+			None => {
+				let half_len = 1 << (self.log_len - P::LOG_WIDTH);
+				let (lo_half, hi_half) = self.data.split_at_mut(half_len);
+				(
+					FieldBuffer {
+						log_len: self.log_len,
+						words: lo_half,
+					},
+					FieldBuffer {
+						log_len: self.log_len,
+						words: hi_half,
+					},
+				)
+			}
+		}
+	}
+}
+
+impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for SplitMut<P, Data> {
+	fn drop(&mut self) {
+		// Detached halves are the only shape with anything to write back.
+		if let Some([lo_half, hi_half]) = self.singles {
+			(self.data[0], _) = lo_half.interleave(hi_half, self.log_len);
+		}
+	}
+}
+
+/// Guards one mutably borrowed chunk of a buffer.
+///
+/// The chunk size against the packing width decides which of two shapes the guard takes:
+///
+/// ```text
+/// chunk >= one packed word  ->  a run of whole words, lent straight from the store
+/// chunk <  one packed word  ->  the chunk's lanes copied into a word of their own
+/// ```
+///
+/// The first shape edits the store itself.
+/// Every edit is therefore already in place, and dropping the guard does nothing.
+///
+/// The second shape edits a copy taken when the guard is built.
+/// That copy holds the chunk's lanes shifted down to start at lane 0.
+/// Dropping the guard writes them back to the lanes they came from, and nothing else.
+///
+/// ```text
+/// WIDTH = 4, chunks of 2 elements, chunk 1 of word 0
+///
+/// word before   [ a b c d ]
+/// detached      [ c d . . ]   lanes 2..4 copied down to lanes 0..2
+/// after edits   [ y z . . ]
+/// word on drop  [ a b y z ]   lanes 0..2 written back to lanes 2..4
+/// ```
+///
+/// So an edit to a sub-word chunk reaches the buffer when the guard drops, and not before.
+/// Neighbouring chunks sharing the word keep their elements, since the merge skips their lanes.
+///
+/// Only one such guard can exist at a time, since it borrows the buffer mutably.
+/// Two live guards over chunks of one word would each merge a stale copy.
+/// The later merge would then undo the earlier one.
+#[derive(Debug)]
+pub struct ChunkMut<'a, P: PackedField>(ChunkMutInner<'a, P>);
+
+impl<'a, P: PackedField> ChunkMut<'a, P> {
+	/// Guards chunk `chunk_index` of `2^log_chunk_size` elements, taken out of `words`.
+	fn new(log_chunk_size: usize, chunk_index: usize, words: &'a mut [P]) -> Self {
+		if log_chunk_size >= P::LOG_WIDTH {
+			// Whole words: the chunk is a run of the store, so it is lent out as it lies.
+			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
+			let chunk = &mut words[chunk_index * words_per_chunk..][..words_per_chunk];
+			return Self(ChunkMutInner::Borrowed {
+				log_len: log_chunk_size,
+				chunk,
+			});
+		}
+
+		// Sub-word: several chunks share one word.
+		// This one is therefore copied into a word of its own, starting at lane 0.
+		//
+		//     WIDTH = 4, chunks of 2 elements
+		//     word 1 = [ chunk 2 | chunk 3 ]  ->  chunk 3 detaches to [ x y . . ]
+		let location = SubWordChunk::new(log_chunk_size, chunk_index);
+		let chunk = location.repack(words);
+
+		// The guard keeps the word the copy came from, and merges the copy back on drop.
+		let parent = &mut words[location.word_index()];
+		Self(ChunkMutInner::Detached {
+			location,
+			chunk,
+			parent,
+		})
+	}
+
+	/// Lends the chunk out as a mutable view, its first element at index 0.
+	///
+	/// A chunk of whole words is a view straight onto the store, so edits land at once.
+	/// A narrower chunk is a view onto the detached copy, so edits land when this guard drops.
+	pub const fn chunk(&mut self) -> FieldSliceMut<'_, P> {
+		match &mut self.0 {
+			// The copy is one word wide.
+			// So the view is that single word, cut down to the chunk's element count.
+			ChunkMutInner::Detached {
+				location,
+				chunk,
+				parent: _,
+			} => FieldBuffer {
+				log_len: location.log_len(),
+				words: slice::from_mut(chunk),
+			},
+			// The run of words is already the chunk, so the view spans all of it.
+			ChunkMutInner::Borrowed { log_len, chunk } => FieldBuffer {
+				log_len: *log_len,
+				words: chunk,
+			},
+		}
+	}
+}
+
+impl<P: PackedField> Drop for ChunkMut<'_, P> {
+	fn drop(&mut self) {
+		match &mut self.0 {
+			// A detached copy is the only shape with anything to write back.
+			ChunkMutInner::Detached {
+				location,
+				chunk,
+				parent,
+			} => location.merge_into(parent, chunk),
+			// A chunk lent from the store was edited in place, so there is nothing to merge.
+			ChunkMutInner::Borrowed { .. } => {}
+		}
+	}
+}
+
+/// The two shapes a mutably borrowed chunk takes, decided by its size against the packing width.
+#[derive(Debug)]
+enum ChunkMutInner<'a, P: PackedField> {
+	/// A chunk below one packed word, lifted out of the lanes it shares with its neighbours.
+	Detached {
+		/// Which lanes of the parent word the chunk occupies.
+		location: SubWordChunk<P>,
+		/// The detached copy the caller edits.
+		chunk: P,
+		/// The word the copy is merged back into.
+		parent: &'a mut P,
+	},
+	/// A chunk of one or more whole words, borrowed from the store and edited there.
+	Borrowed {
+		/// Element count of the chunk, as a base-2 logarithm.
+		log_len: usize,
+		/// The run of words the chunk occupies.
+		chunk: &'a mut [P],
+	},
 }
 
 #[cfg(test)]
