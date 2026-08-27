@@ -26,6 +26,7 @@
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
+pub mod batch_eval;
 pub mod channel;
 pub mod fracaddcheck;
 pub mod logup_star;
