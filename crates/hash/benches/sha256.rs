@@ -142,9 +142,12 @@ fn bench_const_leaves(c: &mut Criterion) {
 
 /// Compresses one wide Merkle tree layer: pairs of child digests into parent digests.
 ///
-/// Compares the per-node scalar path against the interleaved four-way path.
+/// Compares the per-node scalar path against the batched multi-lane path.
 /// Both run over the same rayon pool.
 /// So the delta isolates how fully each path occupies the SHA pipeline.
+///
+/// The per-node arm spawns a rayon task per node, so at this width it measures scheduling
+/// as much as hashing. `sha256_kernel` is the arm to read for the kernel itself.
 fn bench_merkle_compress(c: &mut Criterion) {
 	use std::mem::MaybeUninit;
 
@@ -176,16 +179,104 @@ fn bench_merkle_compress(c: &mut Criterion) {
 		b.iter(|| per_node.parallel_compress(black_box(&inputs), &mut out));
 	});
 
-	// The interleaved path: four independent compressions in flight per call.
+	// The batched path: `LANES` independent compressions in flight per kernel call.
 	let interleaved = ParallelSha256Compression::default();
-	group.bench_function(BenchmarkId::new("interleaved_x4", N_NODES), |b| {
+	group.bench_function(BenchmarkId::new("batched", N_NODES), |b| {
 		b.iter(|| interleaved.parallel_compress(black_box(&inputs), &mut out));
 	});
 	group.finish();
 }
 
+/// Compares the batched multi-lane kernel against the per-block `sha2` call it replaces.
+///
+/// Single-threaded and cache-resident, so the measurement isolates the kernel from rayon
+/// scheduling and memory traffic. Every arm hashes the same 4096 independent single-block
+/// messages, which is the shape both Merkle stages produce: fixed-size leaves and node pairs.
+///
+/// The baseline calls `compress256` once per block, as every call site did before. That is
+/// not a straw man: restarting from the IV each call leaves the blocks independent, so the
+/// out-of-order engine already overlaps them. Handing `sha2` the whole buffer in one call is
+/// slower still, because a single multi-block call is one serial chain.
+fn bench_kernel(c: &mut Criterion) {
+	use binius_hash::sha256::portable::{LANES, compress256_multi, compress256_multi_portable};
+
+	const N_BLOCKS: usize = 4096;
+	const IV: [u32; 8] = [
+		0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+		0x5be0cd19,
+	];
+
+	let mut rng = rng();
+	let blocks: Vec<[u8; 64]> = (0..N_BLOCKS)
+		.map(|_| {
+			let mut b = [0u8; 64];
+			rng.fill_bytes(&mut b);
+			b
+		})
+		.collect();
+
+	let mut group = c.benchmark_group("sha256_kernel");
+	group.throughput(Throughput::Elements(N_BLOCKS as u64));
+
+	// The baseline: one `compress256` call per block, from the IV.
+	group.bench_function("sha2_per_block", |b| {
+		b.iter(|| {
+			for block in black_box(&blocks) {
+				let mut state = IV;
+				compress256(&mut state, std::slice::from_ref(block));
+				black_box(state);
+			}
+		});
+	});
+
+	// The portable round loops, at the width this target tunes to. Where a vector transpose
+	// exists this arm still uses it, so the delta to `dispatched` is the rounds alone.
+	group.bench_function(BenchmarkId::new("lane_loops", LANES), |b| {
+		b.iter(|| {
+			for chunk in black_box(&blocks).chunks_exact(LANES) {
+				let mut states = [IV; LANES];
+				let batch: &[[u8; 64]; LANES] =
+					chunk.try_into().expect("chunks_exact yields LANES");
+				compress256_multi_portable(&mut states, batch);
+				black_box(states);
+			}
+		});
+	});
+
+	// The dispatched kernel, which is whichever hand-written path this target compiled in.
+	group.bench_function(BenchmarkId::new("dispatched", LANES), |b| {
+		b.iter(|| {
+			for chunk in black_box(&blocks).chunks_exact(LANES) {
+				let mut states = [IV; LANES];
+				let batch: &[[u8; 64]; LANES] =
+					chunk.try_into().expect("chunks_exact yields LANES");
+				compress256_multi(&mut states, batch);
+				black_box(states);
+			}
+		});
+	});
+
+	// The 16-lane square, the only width the AVX-512 shuffle network covers.
+	// Skipped when it is already the tuned width, since the arm above covers it.
+	if LANES != 16 {
+		group.bench_function(BenchmarkId::new("dispatched", 16), |b| {
+			b.iter(|| {
+				for chunk in black_box(&blocks).chunks_exact(16) {
+					let mut states = [IV; 16];
+					let batch: &[[u8; 64]; 16] = chunk.try_into().expect("chunks_exact yields 16");
+					compress256_multi(&mut states, batch);
+					black_box(states);
+				}
+			});
+		});
+	}
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
+	bench_kernel,
 	bench_sha256,
 	bench_compress,
 	bench_digest,
