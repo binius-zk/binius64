@@ -308,7 +308,10 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars};
+	use crate::{
+		bit_reverse::bit_reverse_packed,
+		test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars},
+	};
 
 	type P = Packed128b;
 	type F = B128;
@@ -507,9 +510,9 @@ mod tests {
 
 		let mut tensor = FieldBuffer::<P>::from_values(&[F::ONE]);
 		for &r in point.iter().rev() {
-			tensor.as_mut_view().bit_reverse();
+			bit_reverse_packed(tensor.as_mut_view());
 			tensor = Hypercube::One.expand(&[r]).append_to::<P>(tensor);
-			tensor.as_mut_view().bit_reverse();
+			bit_reverse_packed(tensor.as_mut_view());
 		}
 
 		assert_eq!(tensor, Hypercube::One.expand(&point).build::<P>());
