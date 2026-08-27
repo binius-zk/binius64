@@ -22,5 +22,5 @@ pub enum Pcs {
 	/// The first level encodes at the caller's rate.
 	/// So it does the same encoding work the incumbent does.
 	/// Every deeper level holds a shorter message, which is where a lower rate is affordable.
-	Ligerito,
+	WHIR,
 }

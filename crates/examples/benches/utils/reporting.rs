@@ -74,7 +74,7 @@ pub fn print_env_help() {
 		);
 		println!(
 			"  PCS                    - Commitment scheme opening the trace: basefold (default) \
-			 or ligerito"
+			 or whir"
 		);
 		println!("  BENCH_HELP             - Show this help message");
 		println!("\nHash benchmarks:");

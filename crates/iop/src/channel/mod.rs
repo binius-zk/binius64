@@ -14,7 +14,7 @@ use binius_field::Field;
 use binius_ip::channel::IPVerifierChannel;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
-use crate::{basefold, ligerito};
+use crate::{basefold, whir};
 
 /// Error type for IOP verifier channel operations.
 #[derive(Debug, thiserror::Error)]
@@ -23,8 +23,8 @@ pub enum Error {
 	ProofEmpty,
 	#[error("BaseFold verification failed: {0}")]
 	BaseFold(#[from] basefold::Error),
-	#[error("Ligerito verification failed: {0}")]
-	Ligerito(#[from] ligerito::Error),
+	#[error("WHIR verification failed: {0}")]
+	WHIR(#[from] whir::Error),
 	#[error("IP channel error: {0}")]
 	IPChannel(#[from] binius_ip::channel::Error),
 	#[error("sumcheck error: {0}")]

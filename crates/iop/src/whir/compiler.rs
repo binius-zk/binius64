@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! Ligerito compiler for IOP verifiers.
+//! WHIR compiler for IOP verifiers.
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
@@ -10,7 +10,7 @@ use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
-use super::{LigeritoParams, channel::LigeritoVerifierChannel};
+use super::{WHIRParams, channel::WHIRVerifierChannel};
 use crate::{
 	channel::OracleSpec,
 	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
@@ -18,24 +18,24 @@ use crate::{
 	soundness::{Grinding, SoundnessRegime},
 };
 
-/// A compiler that creates Ligerito verifier channels from a precomputed ladder.
+/// A compiler that creates WHIR verifier channels from a precomputed ladder.
 ///
 /// The ladder is chosen once, for the longest oracle the channel opens.
 /// Every channel the compiler creates reuses it, and every oracle shares its column count.
 ///
-/// Ligerito commits no mask, so the oracles it opens are never zero-knowledge.
+/// WHIR commits no mask, so the oracles it opens are never zero-knowledge.
 #[derive(Debug, Clone)]
-pub struct LigeritoVerifierCompiler<F> {
+pub struct WHIRVerifierCompiler<F> {
 	/// The oracles every channel this compiler makes will open, in the order they arrive.
 	oracle_specs: Vec<OracleSpec>,
 	/// The ladder each of those openings runs down.
-	params: LigeritoParams,
+	params: WHIRParams,
 	/// Pins the field the created channels open over, which the ladder itself does not name.
 	/// Ties the field to the compiler without storing a value of it.
 	_marker: PhantomData<F>,
 }
 
-impl<F> LigeritoVerifierCompiler<F>
+impl<F> WHIRVerifierCompiler<F>
 where
 	F: BinaryField,
 {
@@ -46,14 +46,14 @@ where
 	/// * `oracle_specs` is non-empty.
 	/// * No spec is zero-knowledge.
 	/// * The longest message is the ladder's message length.
-	pub fn new(oracle_specs: Vec<OracleSpec>, params: LigeritoParams) -> Self {
+	pub fn new(oracle_specs: Vec<OracleSpec>, params: WHIRParams) -> Self {
 		assert!(
 			!oracle_specs.is_empty(),
-			"precondition: a Ligerito compiler serves at least one oracle"
+			"precondition: a WHIR compiler serves at least one oracle"
 		);
 		assert!(
 			oracle_specs.iter().all(|spec| !spec.is_zk),
-			"precondition: Ligerito commits no mask, so a zero-knowledge oracle cannot be opened"
+			"precondition: WHIR commits no mask, so a zero-knowledge oracle cannot be opened"
 		);
 		assert_eq!(
 			oracle_specs
@@ -67,7 +67,7 @@ where
 		// Batching widens level 0's row union, which lowers a ceiling no query count can raise.
 		// A ladder sized for one message can therefore miss a target it otherwise clears, and the
 		// miss is silent: the unbatched figure keeps reporting the number the batch does not pay.
-		// Whether the ladder clears its target on its own is `LigeritoParams`'s business, so this
+		// Whether the ladder clears its target on its own is `WHIRParams`'s business, so this
 		// refuses only the batches that cause the shortfall.
 		let target = params.security_bits() as f64;
 		let batched = params.batched_achieved_security_bits(F::N_BITS, oracle_specs.len());
@@ -117,11 +117,11 @@ where
 	{
 		assert!(
 			!oracle_specs.is_empty(),
-			"precondition: a Ligerito compiler serves at least one oracle"
+			"precondition: a WHIR compiler serves at least one oracle"
 		);
 
 		// Level 0's shape is shared, so the longest message is what the ladder is searched over.
-		let (params, _proof_size) = LigeritoParams::optimal_ladder::<F, _>(
+		let (params, _proof_size) = WHIRParams::optimal_ladder::<F, _>(
 			merkle_scheme,
 			oracle_specs
 				.iter()
@@ -143,7 +143,7 @@ where
 	}
 
 	/// Returns a reference to the precomputed ladder.
-	pub const fn params(&self) -> &LigeritoParams {
+	pub const fn params(&self) -> &WHIRParams {
 		&self.params
 	}
 
@@ -160,14 +160,11 @@ where
 	///
 	/// The returned channel drives all prover interaction through the one it is given.
 	/// So the caller decides how commitments are received and verified.
-	pub fn create_channel<Channel>(
-		&self,
-		channel: Channel,
-	) -> LigeritoVerifierChannel<'_, F, Channel>
+	pub fn create_channel<Channel>(&self, channel: Channel) -> WHIRVerifierChannel<'_, F, Channel>
 	where
 		Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 	{
-		LigeritoVerifierChannel::new(channel, &self.oracle_specs, &self.params)
+		WHIRVerifierChannel::new(channel, &self.oracle_specs, &self.params)
 	}
 
 	/// Creates a verifier channel over a transcript, for the common case.
@@ -178,7 +175,7 @@ where
 	pub fn create_channel_from_transcript<H, Challenger_, T>(
 		&self,
 		transcript: T,
-	) -> LigeritoVerifierChannel<'_, F, VerifierMerkleTranscriptChannel<T, Challenger_, F, H>>
+	) -> WHIRVerifierChannel<'_, F, VerifierMerkleTranscriptChannel<T, Challenger_, F, H>>
 	where
 		F: FixedSizeSerializeBytes,
 		H: HashSuite,
@@ -196,19 +193,19 @@ mod tests {
 	use binius_hash::StdHashSuite;
 
 	use super::*;
-	use crate::{ligerito::LigeritoLevel, merkle_tree::BinaryMerkleTreeScheme};
+	use crate::{merkle_tree::BinaryMerkleTreeScheme, whir::WHIRLevel};
 
 	/// A two-level ladder over a 2^8 message: 2^6 columns and 4 lanes, then 2^5 columns and 2.
-	fn params() -> LigeritoParams {
-		LigeritoParams::new(
+	fn params() -> WHIRParams {
+		WHIRParams::new(
 			vec![
-				LigeritoLevel {
+				WHIRLevel {
 					log_msg_cols: 6,
 					log_lanes: 2,
 					log_inv_rate: 1,
 					n_queries: 5,
 				},
-				LigeritoLevel {
+				WHIRLevel {
 					log_msg_cols: 5,
 					log_lanes: 1,
 					log_inv_rate: 2,
@@ -222,7 +219,7 @@ mod tests {
 
 	#[test]
 	fn an_explicit_ladder_is_kept_as_given() {
-		let compiler = LigeritoVerifierCompiler::<B128>::new(vec![OracleSpec::new(8)], params());
+		let compiler = WHIRVerifierCompiler::<B128>::new(vec![OracleSpec::new(8)], params());
 
 		// Fixture state: the ladder is 2^6 columns then 2^5, at inverse rates 2 and 4.
 		//
@@ -238,7 +235,7 @@ mod tests {
 	#[test]
 	fn the_searched_ladder_commits_the_oracle_it_was_given() {
 		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
-		let compiler = LigeritoVerifierCompiler::<B128>::optimal(
+		let compiler = WHIRVerifierCompiler::<B128>::optimal(
 			&scheme,
 			vec![OracleSpec::new(20)],
 			1,
@@ -260,7 +257,7 @@ mod tests {
 		let scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
 		// A 2^4 message at rate 1/2 has 2^5 codeword positions at level 0.
 		// That is far fewer than a 96-bit target needs, so no ladder over it is coherent.
-		let compiler = LigeritoVerifierCompiler::<B128>::optimal(
+		let compiler = WHIRVerifierCompiler::<B128>::optimal(
 			&scheme,
 			vec![OracleSpec::new(4)],
 			1,
@@ -279,7 +276,7 @@ mod tests {
 		//     2^7 elements -> 2^1 lanes   one lane fewer over the same codeword
 		//     2^5 elements -> 2^0 lanes   a single lane, zero-padded out to 2^6 columns
 		let specs = vec![OracleSpec::new(8), OracleSpec::new(7), OracleSpec::new(5)];
-		let compiler = LigeritoVerifierCompiler::<B128>::new(specs.clone(), params());
+		let compiler = WHIRVerifierCompiler::<B128>::new(specs.clone(), params());
 
 		assert_eq!(compiler.oracle_specs(), &specs);
 		for (spec, log_lanes) in std::iter::zip(&specs, [2, 1, 0]) {
@@ -291,18 +288,18 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "precondition: a Ligerito compiler serves at least one oracle")]
+	#[should_panic(expected = "precondition: a WHIR compiler serves at least one oracle")]
 	fn no_oracle_at_all_is_refused() {
 		// A ladder with nothing to open is a mis-specified channel rather than a trivial one.
-		LigeritoVerifierCompiler::<B128>::new(Vec::new(), params());
+		WHIRVerifierCompiler::<B128>::new(Vec::new(), params());
 	}
 
 	#[test]
-	#[should_panic(expected = "precondition: Ligerito commits no mask")]
+	#[should_panic(expected = "precondition: WHIR commits no mask")]
 	fn a_zero_knowledge_oracle_is_refused() {
 		// A masked oracle interleaves its message with a mask, which the ladder has no place for.
 		// Its residual would reach the verifier in the clear regardless.
-		LigeritoVerifierCompiler::<B128>::new(vec![OracleSpec::new_zk(8)], params());
+		WHIRVerifierCompiler::<B128>::new(vec![OracleSpec::new_zk(8)], params());
 	}
 
 	#[test]
@@ -310,7 +307,7 @@ mod tests {
 	fn a_ladder_over_a_different_message_length_is_refused() {
 		// The ladder commits 2^8 elements and the longest oracle claims 2^9.
 		// So level 0's codeword would not encode the buffer the channel is handed.
-		LigeritoVerifierCompiler::<B128>::new(vec![OracleSpec::new(9)], params());
+		WHIRVerifierCompiler::<B128>::new(vec![OracleSpec::new(9)], params());
 	}
 
 	#[test]
@@ -318,10 +315,7 @@ mod tests {
 	fn a_ladder_wider_than_every_oracle_is_refused() {
 		// The ladder commits 2^8 elements and no oracle reaches that.
 		// Level 0 would then fold lanes that none of them has, wasting a round on nothing.
-		LigeritoVerifierCompiler::<B128>::new(
-			vec![OracleSpec::new(7), OracleSpec::new(6)],
-			params(),
-		);
+		WHIRVerifierCompiler::<B128>::new(vec![OracleSpec::new(7), OracleSpec::new(6)], params());
 	}
 
 	/// A batch that would miss the target the ladder was sized for must be refused.
@@ -337,13 +331,13 @@ mod tests {
 		let (regime, _) = SoundnessRegime::optimal_unique_decoding(120, 24, 1, 128)
 			.expect("120 bits is reachable with a constant loss");
 		let (params, _) =
-			LigeritoParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
+			WHIRParams::optimal_ladder::<B128, _>(&scheme, 24, 1, regime, 120, Grinding::NONE)
 				.expect("a 120-bit ladder exists for one message");
 
 		// One oracle clears 120, so the shortfall below is caused by the batch and nothing else.
 		assert!(params.achieved_security_bits(128) >= 120.0);
 
 		let spec = OracleSpec::new(params.log_msg_len());
-		LigeritoVerifierCompiler::<B128>::new(vec![spec, spec], params);
+		WHIRVerifierCompiler::<B128>::new(vec![spec, spec], params);
 	}
 }

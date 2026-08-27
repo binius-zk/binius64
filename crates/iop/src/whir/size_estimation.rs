@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use binius_field::BinaryField;
 
 use super::{
-	common::{LigeritoLevel, LigeritoParams},
+	common::{WHIRLevel, WHIRParams},
 	opening,
 };
 use crate::{
@@ -84,7 +84,7 @@ const fn round_degree(level_index: usize) -> usize {
 ///     rows        n_queries * 2^log_lanes field elements
 ///     branches    one Merkle multi-proof over 2^(log_msg_cols + log_inv_rate) leaves
 ///     sumcheck    round_degree(level_index) field elements per fold round, log_lanes of them
-///     nonces      one u64 per proof of work, which `LigeritoLevel::n_grind_nonces` counts
+///     nonces      one u64 per proof of work, which `WHIRLevel::n_grind_nonces` counts
 /// ```
 ///
 /// The index is carried only for that last line; see [`round_degree`] for why it matters.
@@ -96,7 +96,7 @@ const fn round_degree(level_index: usize) -> usize {
 ///
 /// [NA25]: <https://eprint.iacr.org/2025/1187>
 fn level_size<F, VCS>(
-	level: &LigeritoLevel,
+	level: &WHIRLevel,
 	level_index: usize,
 	vcs: &VCS,
 	sizes: &ByteSizes,
@@ -117,7 +117,7 @@ where
 	sizes.digest + rows_size + merkle_size + sumcheck_size + grinding_size
 }
 
-/// Computes the exact byte-size of a Ligerito proof without running the prover.
+/// Computes the exact byte-size of a WHIR proof without running the prover.
 ///
 /// This accounts for:
 ///
@@ -129,7 +129,7 @@ where
 ///
 /// Exact is meant literally.
 /// `the_estimate_equals_the_proof_the_prover_writes` proves real openings and compares this.
-pub(super) fn proof_size<F, VCS>(params: &LigeritoParams, vcs: &VCS) -> usize
+pub(super) fn proof_size<F, VCS>(params: &WHIRParams, vcs: &VCS) -> usize
 where
 	F: BinaryField,
 	VCS: MerkleTreeScheme<F>,
@@ -196,16 +196,16 @@ where
 	/// A level cannot sample more distinct positions than its codeword has.
 	/// And its correlated-agreement term is a ceiling set by the codeword length and the field.
 	/// Proof of work raises that ceiling, which is why the challenge grind is credited here.
-	fn reaches_target(&self, level: &LigeritoLevel) -> bool {
+	fn reaches_target(&self, level: &WHIRLevel) -> bool {
 		let base = self.regime.correlated_agreement_bits(
 			level.log_msg_len(),
 			level.log_inv_rate,
 			F::N_BITS,
 		);
-		// Same row union `LigeritoParams::correlated_agreement_bits` charges, so the search and
+		// Same row union `WHIRParams::correlated_agreement_bits` charges, so the search and
 		// the reported ceiling cannot disagree about which levels clear the target.
 		//
-		// The challenge grind is added on the same side `LigeritoParams::achieved_security_bits`
+		// The challenge grind is added on the same side `WHIRParams::achieved_security_bits`
 		// adds it, so a level priced here is a level that really reaches the target.
 		let algebra = base - (level.log_lanes.saturating_sub(1)) as f64
 			+ self.grinding.challenge_bits() as f64;
@@ -242,7 +242,7 @@ where
 		for log_lanes in 1..=MAX_LOG_LANES.min(log_total) {
 			let log_msg_cols = log_total - log_lanes;
 			for log_inv_rate in min_log_inv_rate..=max_log_inv_rate {
-				let level = LigeritoLevel {
+				let level = WHIRLevel {
 					log_msg_cols,
 					log_lanes,
 					log_inv_rate,
@@ -286,7 +286,7 @@ where
 /// The deep levels are small, so they are free to drop the rate as far as the search likes.
 ///
 /// Returns the parameters together with the estimated proof size in bytes.
-/// That size is exactly [`LigeritoParams::proof_size`] of the returned parameters.
+/// That size is exactly [`WHIRParams::proof_size`] of the returned parameters.
 ///
 /// `grinding` enters on both sides.
 /// Its challenge half raises the ceiling a level must clear.
@@ -301,7 +301,7 @@ where
 /// differences.
 ///
 /// The first difference is that the state carries a rate floor at all.
-/// A Ligerito level chooses its own rate, where an FRI round cannot.
+/// A WHIR level chooses its own rate, where an FRI round cannot.
 /// So an FRI round minimizes over arity alone.
 /// Each state here minimizes over a two-dimensional grid of `(log_lanes, log_inv_rate)`.
 ///
@@ -341,7 +341,7 @@ pub(super) fn optimal_ladder<F, MerkleScheme>(
 	regime: SoundnessRegime,
 	security_bits: usize,
 	grinding: Grinding,
-) -> Option<(LigeritoParams, usize)>
+) -> Option<(WHIRParams, usize)>
 where
 	F: BinaryField,
 	MerkleScheme: MerkleTreeScheme<F>,
@@ -395,7 +395,7 @@ where
 	let mut log_total = log_n;
 	loop {
 		let log_msg_cols = log_total - decision.log_lanes;
-		levels.push(LigeritoLevel {
+		levels.push(WHIRLevel {
 			log_msg_cols,
 			log_lanes: decision.log_lanes,
 			log_inv_rate: decision.log_inv_rate,
@@ -409,7 +409,7 @@ where
 			.expect("a recursing decision was scored against a solved subproblem");
 	}
 
-	let params = LigeritoParams::new(levels, regime, security_bits).with_grinding(grinding);
+	let params = WHIRParams::new(levels, regime, security_bits).with_grinding(grinding);
 	Some((params, estimated_size))
 }
 
@@ -443,7 +443,7 @@ mod tests {
 
 	// Re-checks the constructor's invariants from the outside, so a ladder the search produced is
 	// held to the same standard as one a caller wrote by hand.
-	fn assert_invariants(params: &LigeritoParams) {
+	fn assert_invariants(params: &WHIRParams) {
 		let levels = params.levels();
 		assert!(!levels.is_empty());
 		for pair in levels.windows(2) {
@@ -488,7 +488,7 @@ mod tests {
 		let merkle_scheme = test_merkle_scheme();
 		let regime = lossy_regime(24);
 		let ladder = |grinding| {
-			LigeritoParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, regime, 128, grinding)
+			WHIRParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, regime, 128, grinding)
 		};
 
 		// A level also pays the fold row union, so the ceiling a real ladder has to clear sits
@@ -519,7 +519,7 @@ mod tests {
 		let merkle_scheme = test_merkle_scheme();
 		let regime = lossy_regime(24);
 		let ladder = |grinding| {
-			LigeritoParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, regime, 128, grinding)
+			WHIRParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, regime, 128, grinding)
 				.expect("the profiles below all reach 128 bits")
 				.0
 		};
@@ -560,7 +560,7 @@ mod tests {
 		// Fixture state: the shipped 96-bit target, unique decoding, a 2^24 message at rate 1/2.
 		let merkle_scheme = test_merkle_scheme();
 		let ladder = |grinding| {
-			LigeritoParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, UDR, 96, grinding)
+			WHIRParams::optimal_ladder::<B128, _>(&merkle_scheme, 24, 1, UDR, 96, grinding)
 				.expect("96 bits is reachable over a 2^24 message")
 				.0
 		};
@@ -587,7 +587,7 @@ mod tests {
 			for regime in [SoundnessRegime::UniqueDecoding, JOHNSON] {
 				for log_n in [12, 17, 20, 24, 28, 30] {
 					for l0_log_inv_rate in [1, 2, 4] {
-						let Some((params, estimate)) = LigeritoParams::optimal_ladder::<B128, _>(
+						let Some((params, estimate)) = WHIRParams::optimal_ladder::<B128, _>(
 							&merkle_scheme,
 							log_n,
 							l0_log_inv_rate,
@@ -626,7 +626,7 @@ mod tests {
 			(30, 542_800),
 		];
 		for (log_n, bytes) in expected {
-			let (_, size) = LigeritoParams::optimal_ladder::<B128, _>(
+			let (_, size) = WHIRParams::optimal_ladder::<B128, _>(
 				&merkle_scheme,
 				log_n,
 				1,
@@ -646,7 +646,7 @@ mod tests {
 		// The reference implementation's `eta = 0.02` puts `m = ceil(sqrt(rho)/eta)` at 36 at rate
 		// 1/2, and `m^5 * n / |F|` is then nowhere near the target. So there is no ladder at all.
 		for log_n in [17, 20, 24, 28, 30] {
-			let ladder = LigeritoParams::optimal_ladder::<B128, _>(
+			let ladder = WHIRParams::optimal_ladder::<B128, _>(
 				&merkle_scheme,
 				log_n,
 				1,
@@ -677,7 +677,7 @@ mod tests {
 				// The trend holds while the ladder still has rate room below L0 to recurse into.
 				let sizes = (1..=4)
 					.map(|l0_log_inv_rate| {
-						LigeritoParams::optimal_ladder::<B128, _>(
+						WHIRParams::optimal_ladder::<B128, _>(
 							&merkle_scheme,
 							log_n,
 							l0_log_inv_rate,
@@ -703,7 +703,7 @@ mod tests {
 				// It reverses at the far end, and the reason is the rate cap rather than the rate.
 				// Pinning L0 at MAX_LOG_INV_RATE leaves no strictly lower rate for a second level,
 				// so the ladder is forced to one level and a huge cleartext residual.
-				let Some((capped, capped_size)) = LigeritoParams::optimal_ladder::<B128, _>(
+				let Some((capped, capped_size)) = WHIRParams::optimal_ladder::<B128, _>(
 					&merkle_scheme,
 					log_n,
 					MAX_LOG_INV_RATE,
@@ -723,8 +723,8 @@ mod tests {
 	fn single_level_ladder_prices_the_residual_in_the_clear() {
 		let merkle_scheme = test_merkle_scheme();
 		// One level, 2^9 columns by 2^3 lanes, rate 1/2, residual 2^9 elements in the clear.
-		let level = LigeritoLevel::new(9, 3, 1, UDR, SECURITY_BITS, Grinding::NONE);
-		let params = LigeritoParams::new(vec![level], UDR, SECURITY_BITS);
+		let level = WHIRLevel::new(9, 3, 1, UDR, SECURITY_BITS, Grinding::NONE);
+		let params = WHIRParams::new(vec![level], UDR, SECURITY_BITS);
 		assert_eq!(params.log_residual_dim(), 9);
 
 		let value_size = size_of::<B128>();
@@ -751,11 +751,11 @@ mod tests {
 		let value_size = size_of::<B128>();
 
 		// The same shape, once as the only level and once as the second of two.
-		let deep = LigeritoLevel::new(10, 3, 2, UDR, SECURITY_BITS, Grinding::NONE);
-		let alone = LigeritoParams::new(vec![deep], UDR, SECURITY_BITS);
-		let below = LigeritoParams::new(
+		let deep = WHIRLevel::new(10, 3, 2, UDR, SECURITY_BITS, Grinding::NONE);
+		let alone = WHIRParams::new(vec![deep], UDR, SECURITY_BITS);
+		let below = WHIRParams::new(
 			vec![
-				LigeritoLevel::new(13, 3, 1, UDR, SECURITY_BITS, Grinding::NONE),
+				WHIRLevel::new(13, 3, 1, UDR, SECURITY_BITS, Grinding::NONE),
 				deep,
 			],
 			UDR,
@@ -764,15 +764,8 @@ mod tests {
 
 		// Level 0 of the two-level ladder, priced on its own, plus the extra element per fold
 		// round the deeper copy pays.
-		let level_zero = LigeritoParams::new(
-			vec![LigeritoLevel::new(
-				13,
-				3,
-				1,
-				UDR,
-				SECURITY_BITS,
-				Grinding::NONE,
-			)],
+		let level_zero = WHIRParams::new(
+			vec![WHIRLevel::new(13, 3, 1, UDR, SECURITY_BITS, Grinding::NONE)],
 			UDR,
 			SECURITY_BITS,
 		);
@@ -792,7 +785,7 @@ mod tests {
 		let merkle_scheme = test_merkle_scheme();
 		// At 96 bits and rate 1/2 the unique-decoding regime opens 232 queries, so a level needs
 		// 2^8 codeword positions. With one lane folded away that puts the floor at log_n = 8.
-		let (params, size) = LigeritoParams::optimal_ladder::<B128, _>(
+		let (params, size) = WHIRParams::optimal_ladder::<B128, _>(
 			&merkle_scheme,
 			8,
 			1,
@@ -813,7 +806,7 @@ mod tests {
 	#[test]
 	fn log_n_below_the_feasibility_floor_has_no_ladder() {
 		// Every candidate level would open more rows than its codeword has positions.
-		let ladder = LigeritoParams::optimal_ladder::<B128, _>(
+		let ladder = WHIRParams::optimal_ladder::<B128, _>(
 			&test_merkle_scheme(),
 			7,
 			1,
@@ -831,7 +824,7 @@ mod tests {
 		// Over B128 the ceiling falls one bit per doubling, so a target picks out a largest shape.
 		// At 96 bits and L0 rate 1/2 nothing past log_n = 32 has a ladder at all.
 		let ladder = |log_n, target| {
-			LigeritoParams::optimal_ladder::<B128, _>(
+			WHIRParams::optimal_ladder::<B128, _>(
 				&merkle_scheme,
 				log_n,
 				1,
@@ -848,7 +841,7 @@ mod tests {
 		// only levels that still clear the target fold one lane at a time, so the search is forced
 		// into a huge cleartext residual rather than a ladder. Pinning that keeps a caller from
 		// reading the returned size as a usable configuration.
-		let (_, degenerate) = LigeritoParams::optimal_ladder::<B128, _>(
+		let (_, degenerate) = WHIRParams::optimal_ladder::<B128, _>(
 			&merkle_scheme,
 			32,
 			1,
@@ -857,7 +850,7 @@ mod tests {
 			Grinding::NONE,
 		)
 		.expect("log_n = 32 still has a ladder, of a sort");
-		let (_, sane) = LigeritoParams::optimal_ladder::<B128, _>(
+		let (_, sane) = WHIRParams::optimal_ladder::<B128, _>(
 			&merkle_scheme,
 			30,
 			1,
@@ -878,11 +871,11 @@ mod tests {
 		}
 	}
 
-	// The full 2x2 of {FRI, Ligerito} x {unique decoding, Johnson}, all priced by this repo's own
+	// The full 2x2 of {FRI, WHIR} x {unique decoding, Johnson}, all priced by this repo's own
 	// estimators. Run with `--nocapture` to read the table.
 	//
 	// The Johnson rows price the *query phase only*, which is what the plan document tabulates.
-	// Over this field that regime has no correlated-agreement headroom at all, so its Ligerito
+	// Over this field that regime has no correlated-agreement headroom at all, so its WHIR
 	// cell reads infeasible and its FRI cells are a lower bound on bytes rather than a shippable
 	// configuration. `crate::soundness` and `PROXIMITY_GAPS.md` carry the reason.
 	//
@@ -898,7 +891,7 @@ mod tests {
 	// literals to maintain, and each one would break on any retuning of either search. Only the
 	// orderings are asserted, and only the ones that hold at every size measured.
 	#[test]
-	fn fri_versus_ligerito_table() {
+	fn fri_versus_whir_table() {
 		let merkle_scheme = test_merkle_scheme();
 
 		// FRI at one fixed rate, a single non-ZK oracle, its own proof-size-minimizing arities.
@@ -925,8 +918,7 @@ mod tests {
 		// Checking it here keeps an infeasible cell a printed row rather than a panic.
 		let ladder_feasible = |log_n: usize, l0: usize, regime: SoundnessRegime| {
 			(1..=MAX_LOG_LANES.min(log_n)).any(|lanes| {
-				LigeritoLevel::new(log_n - lanes, lanes, l0, regime, 100, Grinding::NONE)
-					.is_feasible()
+				WHIRLevel::new(log_n - lanes, lanes, l0, regime, 100, Grinding::NONE).is_feasible()
 			})
 		};
 
@@ -942,7 +934,7 @@ mod tests {
 			let ladder = |regime| {
 				ladder_feasible(log_n, 1, regime)
 					.then(|| {
-						LigeritoParams::optimal_ladder::<B128, _>(
+						WHIRParams::optimal_ladder::<B128, _>(
 							&merkle_scheme,
 							log_n,
 							1,
@@ -960,8 +952,8 @@ mod tests {
 				(format!("(2) FRI       UDR      rate 1/{}", 1 << best_udr_rate), Some(best_udr)),
 				("(3) FRI       Johnson  rate 1/2".to_owned(), Some(fri_size(log_n, 1, JOHNSON))),
 				(format!("(4) FRI       Johnson  rate 1/{}", 1 << best_john_rate), Some(best_john)),
-				("(5) Ligerito  UDR      L0 1/2".to_owned(), ladder(UDR)),
-				("(6) Ligerito  Johnson  L0 1/2".to_owned(), ladder(JOHNSON)),
+				("(5) WHIR  UDR      L0 1/2".to_owned(), ladder(UDR)),
+				("(6) WHIR  Johnson  L0 1/2".to_owned(), ladder(JOHNSON)),
 			];
 			for (label, size) in &rows {
 				match size {
@@ -1006,7 +998,7 @@ mod tests {
 				SoundnessRegime::UniqueDecoding
 			};
 			let merkle_scheme = test_merkle_scheme();
-			let Some((params, estimate)) = LigeritoParams::optimal_ladder::<B128, _>(
+			let Some((params, estimate)) = WHIRParams::optimal_ladder::<B128, _>(
 				&merkle_scheme,
 				log_n,
 				l0_log_inv_rate,
@@ -1029,7 +1021,7 @@ mod tests {
 			extra_queries in 1usize..=64,
 		) {
 			let merkle_scheme = test_merkle_scheme();
-			let base = LigeritoLevel {
+			let base = WHIRLevel {
 				log_msg_cols,
 				log_lanes,
 				log_inv_rate,
@@ -1040,12 +1032,12 @@ mod tests {
 			// Both levels must fit their codeword, which 2^(8 + 1) positions comfortably do.
 			prop_assert!(more.is_feasible());
 
-			let small = LigeritoParams::new(
+			let small = WHIRParams::new(
 				vec![base],
 				SoundnessRegime::UniqueDecoding,
 				SECURITY_BITS,
 			);
-			let large = LigeritoParams::new(
+			let large = WHIRParams::new(
 				vec![more],
 				SoundnessRegime::UniqueDecoding,
 				SECURITY_BITS,

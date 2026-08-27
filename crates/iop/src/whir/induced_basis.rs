@@ -2,7 +2,7 @@
 
 //! The weight vector a level's opened rows induce on its message.
 //!
-//! A Ligerito level opens `t` rows of a committed Reed-Solomon codeword.
+//! A WHIR level opens `t` rows of a committed Reed-Solomon codeword.
 //! Row `q` is one row of the generator matrix, so opening it asserts
 //!
 //! ```text

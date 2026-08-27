@@ -5,7 +5,7 @@
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
-use binius_iop::{channel::OracleSpec, ligerito::LigeritoParams};
+use binius_iop::{channel::OracleSpec, whir::WHIRParams};
 use binius_ip_prover::{
 	channel::{IPProverChannel, WordIPProverChannel},
 	sumcheck::{
@@ -22,17 +22,17 @@ use binius_math::{
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
 
-use super::{LigeritoOracle, combined_message::CombinedMessage, relation::QueuedRelation};
+use super::{WHIROracle, combined_message::CombinedMessage, relation::QueuedRelation};
 use crate::{
 	channel::{IOPProverChannel, grinding::GrindingProverChannel},
 	fri::{BatchBrakedownOracleProver, BrakedownOracleProver},
-	ligerito::{LigeritoProver, opening::commit_level},
 	merkle_channel::MerkleIPProverChannel,
+	whir::{WHIRProver, opening::commit_level},
 };
 
-/// A prover channel that opens every committed oracle with one Ligerito ladder.
+/// A prover channel that opens every committed oracle with one WHIR ladder.
 ///
-/// The counterpart of the Ligerito verifier channel, where the three reductions are described.
+/// The counterpart of the WHIR verifier channel, where the three reductions are described.
 ///
 /// The channel is transparent rather than zero-knowledge.
 /// No mask is drawn, so it needs no randomness of its own.
@@ -45,7 +45,7 @@ use crate::{
 /// - `NTT`: the additive transform every level encodes over
 /// - `Channel`: the Merkle channel carrying all prover interaction
 /// - `A`: the allocator the queued transparents and the opening's working buffers are drawn from
-pub struct LigeritoProverChannel<'a, F, P, NTT, Channel, A>
+pub struct WHIRProverChannel<'a, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -59,7 +59,7 @@ where
 	/// The transform every level encodes over, sized for the longest of them.
 	ntt: &'a NTT,
 	/// The ladder the opening runs down.
-	params: &'a LigeritoParams,
+	params: &'a WHIRParams,
 	/// The oracles this channel expects, in the order it will commit them.
 	oracle_specs: Vec<OracleSpec>,
 	/// The committed level-0 codewords, in the order their commitments were sent.
@@ -74,7 +74,7 @@ where
 	alloc: A,
 }
 
-impl<'a, F, P, NTT, Channel, A> LigeritoProverChannel<'a, F, P, NTT, Channel, A>
+impl<'a, F, P, NTT, Channel, A> WHIRProverChannel<'a, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -94,16 +94,13 @@ where
 		channel: Channel,
 		ntt: &'a NTT,
 		oracle_specs: Vec<OracleSpec>,
-		params: &'a LigeritoParams,
+		params: &'a WHIRParams,
 		alloc: A,
 	) -> Self {
-		assert!(
-			!oracle_specs.is_empty(),
-			"precondition: a Ligerito channel opens at least one oracle"
-		);
+		assert!(!oracle_specs.is_empty(), "precondition: a WHIR channel opens at least one oracle");
 		assert!(
 			oracle_specs.iter().all(|spec| !spec.is_zk),
-			"precondition: Ligerito commits no mask, so a zero-knowledge oracle cannot be opened"
+			"precondition: WHIR commits no mask, so a zero-knowledge oracle cannot be opened"
 		);
 		assert_eq!(
 			oracle_specs
@@ -170,7 +167,7 @@ where
 			.into_iter()
 			.map(|message| message.expect("the oracle was committed but never finalized"))
 			.collect::<Vec<_>>();
-		let prover = LigeritoProver::new(params, ntt, BatchBrakedownOracleProver::new(oracles));
+		let prover = WHIRProver::new(params, ntt, BatchBrakedownOracleProver::new(oracles));
 
 		Self::prove(&mut channel, &prover, &oracle_specs, &messages, queue, &alloc);
 	}
@@ -192,7 +189,7 @@ where
 	/// Only the committed ones have to be sent, since the verifier builds the transparents itself.
 	fn prove(
 		channel: &mut Channel,
-		prover: &LigeritoProver<'_, P, Channel::Commitment, NTT>,
+		prover: &WHIRProver<'_, P, Channel::Commitment, NTT>,
 		oracle_specs: &[OracleSpec],
 		messages: &[FieldVec<P, A>],
 		queue: Vec<Vec<QueuedRelation<P, A>>>,
@@ -262,7 +259,7 @@ where
 	}
 }
 
-impl<F, P, NTT, Channel, A> IPProverChannel<F> for LigeritoProverChannel<'_, F, P, NTT, Channel, A>
+impl<F, P, NTT, Channel, A> IPProverChannel<F> for WHIRProverChannel<'_, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -295,8 +292,7 @@ where
 	}
 }
 
-impl<F, P, NTT, Channel, A> WordIPProverChannel<F>
-	for LigeritoProverChannel<'_, F, P, NTT, Channel, A>
+impl<F, P, NTT, Channel, A> WordIPProverChannel<F> for WHIRProverChannel<'_, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -316,7 +312,7 @@ where
 }
 
 impl<'a, F, P, NTT, Channel, A> IOPProverChannel<P, A>
-	for LigeritoProverChannel<'a, F, P, NTT, Channel, A>
+	for WHIRProverChannel<'a, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -324,7 +320,7 @@ where
 	Channel: MerkleIPProverChannel<F>,
 	A: Allocator,
 {
-	type Oracle = LigeritoOracle;
+	type Oracle = WHIROracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.oracles.len()..]
@@ -361,7 +357,7 @@ where
 		self.messages.push(None);
 		self.queue.push(Vec::new());
 
-		LigeritoOracle { index }
+		WHIROracle { index }
 	}
 
 	fn prove_oracle_relation(
@@ -397,8 +393,8 @@ mod tests {
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
 		channel::{Error, IOPVerifierChannel},
-		ligerito::{LigeritoLevel, compiler::LigeritoVerifierCompiler},
 		soundness::{Grinding, SoundnessRegime},
+		whir::{WHIRLevel, compiler::WHIRVerifierCompiler},
 	};
 	use binius_math::{
 		inner_product::inner_product_buffers,
@@ -410,7 +406,7 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::ligerito::compiler::LigeritoProverCompiler;
+	use crate::whir::compiler::WHIRProverCompiler;
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 
@@ -460,7 +456,7 @@ mod tests {
 	///
 	/// `lanes[i]` is level `i`'s fold amount, and `log_msg_cols` is level 0's column count.
 	/// Level `i + 1` takes what level `i` folds to, so its columns are `cols_i - lanes_{i+1}`.
-	fn ladder(log_msg_cols: usize, lanes: &[usize]) -> LigeritoParams {
+	fn ladder(log_msg_cols: usize, lanes: &[usize]) -> WHIRParams {
 		let mut log_msg_cols = log_msg_cols;
 		let levels = lanes
 			.iter()
@@ -470,7 +466,7 @@ mod tests {
 				if i > 0 {
 					log_msg_cols -= log_lanes;
 				}
-				LigeritoLevel {
+				WHIRLevel {
 					log_msg_cols,
 					log_lanes,
 					log_inv_rate: i + 1,
@@ -478,11 +474,11 @@ mod tests {
 				}
 			})
 			.collect();
-		LigeritoParams::new(levels, SoundnessRegime::default(), 32)
+		WHIRParams::new(levels, SoundnessRegime::default(), 32)
 	}
 
 	/// One honest oracle filling the ladder, carrying one relation.
-	fn one_oracle(params: &LigeritoParams, seed: u64) -> Vec<Oracle> {
+	fn one_oracle(params: &WHIRParams, seed: u64) -> Vec<Oracle> {
 		let mut rng = StdRng::seed_from_u64(seed);
 		vec![Oracle::honest(&mut rng, params.log_msg_len(), 1)]
 	}
@@ -491,13 +487,13 @@ mod tests {
 	///
 	/// Returns the finished proof's length in bytes.
 	/// So a byte count is only ever taken from a transcript that convinced the verifier.
-	fn run(params: &LigeritoParams, oracles: &[Oracle]) -> Result<usize, Error> {
+	fn run(params: &WHIRParams, oracles: &[Oracle]) -> Result<usize, Error> {
 		let specs = oracles.iter().map(Oracle::spec).collect::<Vec<_>>();
-		let verifier_compiler = LigeritoVerifierCompiler::<B128>::new(specs, params.clone());
+		let verifier_compiler = WHIRVerifierCompiler::<B128>::new(specs, params.clone());
 
 		// One transform for the whole ladder, sized by the compiler rather than by hand.
 		let domain = GaoMateerOnTheFly::generate(verifier_compiler.max_log_domain_size());
-		let prover_compiler = LigeritoProverCompiler::<B128, _>::from_verifier_compiler(
+		let prover_compiler = WHIRProverCompiler::<B128, _>::from_verifier_compiler(
 			&verifier_compiler,
 			NeighborsLastSingleThread::new(domain),
 		);
@@ -710,7 +706,7 @@ mod tests {
 
 		// The ladder's own assertion, so the error arrives wrapped rather than raised here.
 		match err {
-			Error::Ligerito(binius_iop::ligerito::Error::IPChannel(
+			Error::WHIR(binius_iop::whir::Error::IPChannel(
 				binius_ip::channel::Error::InvalidAssert,
 			)) => {}
 			other => panic!("wrong error variant: {other:?}"),
@@ -783,10 +779,9 @@ mod tests {
 		let oracles = one_oracle(&params, 10);
 		let (transparent, claim) = oracles[0].relations[0].clone();
 
-		let verifier_compiler =
-			LigeritoVerifierCompiler::<B128>::new(vec![oracles[0].spec()], params);
+		let verifier_compiler = WHIRVerifierCompiler::<B128>::new(vec![oracles[0].spec()], params);
 		let domain = GaoMateerOnTheFly::generate(verifier_compiler.max_log_domain_size());
-		let prover_compiler = LigeritoProverCompiler::<B128, _>::from_verifier_compiler(
+		let prover_compiler = WHIRProverCompiler::<B128, _>::from_verifier_compiler(
 			&verifier_compiler,
 			NeighborsLastSingleThread::new(domain),
 		);

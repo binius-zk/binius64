@@ -33,10 +33,10 @@ pub enum Error {
 	#[error("shift reduction error: {0}")]
 	ShiftReduction(#[from] shift::Error),
 	#[error(
-		"no Ligerito rate ladder over a 2^{log_msg_len} message at inverse rate 2^{log_inv_rate} \
+		"no WHIR rate ladder over a 2^{log_msg_len} message at inverse rate 2^{log_inv_rate} \
 		 reaches {security_bits} bits"
 	)]
-	NoLigeritoLadder {
+	NoWHIRLadder {
 		log_msg_len: usize,
 		log_inv_rate: usize,
 		security_bits: usize,

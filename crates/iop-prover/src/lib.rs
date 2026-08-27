@@ -15,7 +15,7 @@
 //!
 //! - [`basefold`] - BaseFold polynomial commitment scheme proving
 //! - [`fri`] - FRI (Fast Reed-Solomon Interactive Oracle Proof) proving
-//! - [`ligerito`] - Ligerito polynomial commitment scheme proving
+//! - [`whir`] - WHIR polynomial commitment scheme proving
 //! - [`merkle_tree`] - Merkle tree commitment construction
 //! - [`channel`] - IOP prover channel traits for abstracting oracle interactions
 //!
@@ -29,7 +29,7 @@
 pub mod basefold;
 pub mod channel;
 pub mod fri;
-pub mod ligerito;
 pub mod logup_star;
 pub mod merkle_channel;
 pub mod merkle_tree;
+pub mod whir;

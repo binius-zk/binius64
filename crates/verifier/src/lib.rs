@@ -46,7 +46,7 @@ mod verify;
 pub mod zk_config;
 
 pub use binius_hash as hash;
-pub use binius_iop::{fri, ligerito, merkle_tree};
+pub use binius_iop::{fri, merkle_tree, whir};
 pub use binius_transcript as transcript;
 pub use error::*;
 pub use pcs::*;

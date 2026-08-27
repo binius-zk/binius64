@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! The Ligerito opening protocol on the verifier side.
+//! The WHIR opening protocol on the verifier side.
 //!
 //! The ladder proves an evaluation claim `<X_0, eq(z)> = y` about the multilinear level 0
 //! committed. `X_0` is held as `2^log_lanes` interleaved lanes of `2^log_msg_cols` columns, and
@@ -61,13 +61,13 @@
 //! This is not how the FRI-based scheme in this repository batches, and the reason is structural.
 //! FRI folds one codeword, so every oracle is reconciled in the codeword domain before that fold.
 //! A short one is stretched by duplication to reach the common length.
-//! A Ligerito level never folds a codeword: it folds the message and re-encodes it.
+//! A WHIR level never folds a codeword: it folds the message and re-encodes it.
 //! So level `i + 1` is a fresh commitment rather than a fold of level `i`'s.
 //! Equalizing the *column* count is therefore enough, and no duplication is needed.
 //!
 //! # Where the proof of work stands
 //!
-//! [`LigeritoParams::grinding`](super::LigeritoParams::grinding) fixes two difficulties.
+//! [`WHIRParams::grinding`](super::WHIRParams::grinding) fixes two difficulties.
 //! Each of them has exactly one place in the transcript where it belongs.
 //!
 //! ```text
@@ -114,7 +114,7 @@ use binius_math::{
 	ntt::domain_context::GaoMateerOnTheFly,
 };
 
-use super::{CommittedOracle, InducedBasis, LigeritoParams, error::Error};
+use super::{CommittedOracle, InducedBasis, WHIRParams, error::Error};
 use crate::{
 	channel::grinding::GrindingVerifierChannel,
 	fri::batch::{BrakedownOracle, ProxTestOracle},
@@ -133,25 +133,25 @@ pub(super) const MLECHECK_DEGREE: usize = 1;
 /// It has to be sent, and that is the extra element per fold round a deeper level pays.
 pub(super) const PRODUCT_DEGREE: usize = 2;
 
-/// Verifies a Ligerito opening against a committed ladder of Reed-Solomon codewords.
+/// Verifies a WHIR opening against a committed ladder of Reed-Solomon codewords.
 ///
 /// Holds the parameters and the commitments level 0 opens.
 /// The caller receives those commitments, so it stays in charge of when the first oracles arrive.
 /// Every deeper commitment arrives at a point the protocol fixes, so this reads those itself.
 #[derive(Debug, Clone)]
-pub struct LigeritoVerifier<'a, E, C> {
-	/// The ladder's shape, one [`super::LigeritoLevel`] per committed level.
-	params: &'a LigeritoParams,
+pub struct WHIRVerifier<'a, E, C> {
+	/// The ladder's shape, one [`super::WHIRLevel`] per committed level.
+	params: &'a WHIRParams,
 	/// The messages level 0 opens together, in the order their openings are read.
 	oracles: Vec<CommittedOracle<E, C>>,
 }
 
-impl<'a, E: FieldOps, C: Clone> LigeritoVerifier<'a, E, C> {
+impl<'a, E: FieldOps, C: Clone> WHIRVerifier<'a, E, C> {
 	/// Binds a verifier to a ladder and the commitment to its one outermost codeword.
 	///
 	/// The message fills level 0, so it carries every lane the ladder folds there.
 	/// A batch of one weighs its only member by one.
-	pub fn new(params: &'a LigeritoParams, commitment: C) -> Self {
+	pub fn new(params: &'a WHIRParams, commitment: C) -> Self {
 		let log_lanes = params.levels()[0].log_lanes;
 		Self::batched(params, vec![CommittedOracle::new(commitment, log_lanes, E::one())])
 	}
@@ -166,7 +166,7 @@ impl<'a, E: FieldOps, C: Clone> LigeritoVerifier<'a, E, C> {
 	/// * `oracles` is non-empty.
 	/// * No message carries more lanes than level 0 folds.
 	/// * At least one message carries exactly that many, so no fold round is wasted.
-	pub fn batched(params: &'a LigeritoParams, oracles: Vec<CommittedOracle<E, C>>) -> Self {
+	pub fn batched(params: &'a WHIRParams, oracles: Vec<CommittedOracle<E, C>>) -> Self {
 		assert!(!oracles.is_empty(), "precondition: a ladder opens at least one message");
 
 		let log_lanes = params.levels()[0].log_lanes;
@@ -376,19 +376,19 @@ mod tests {
 	use binius_field::{Field, Ghash128b as B128};
 
 	use super::*;
-	use crate::{ligerito::LigeritoLevel, soundness::SoundnessRegime};
+	use crate::{soundness::SoundnessRegime, whir::WHIRLevel};
 
 	/// A two-level ladder over a 2^8 message: 2^6 columns and 4 lanes, then 2^5 columns and 2.
-	fn params() -> LigeritoParams {
-		LigeritoParams::new(
+	fn params() -> WHIRParams {
+		WHIRParams::new(
 			vec![
-				LigeritoLevel {
+				WHIRLevel {
 					log_msg_cols: 6,
 					log_lanes: 2,
 					log_inv_rate: 1,
 					n_queries: 5,
 				},
-				LigeritoLevel {
+				WHIRLevel {
 					log_msg_cols: 5,
 					log_lanes: 1,
 					log_inv_rate: 2,
@@ -410,7 +410,7 @@ mod tests {
 	fn one_message_fills_level_zero_by_itself() {
 		// Fixture state: level 0 folds 2^2 lanes, and the ladder's own message has exactly that.
 		let params = params();
-		let verifier = LigeritoVerifier::<B128, ()>::new(&params, ());
+		let verifier = WHIRVerifier::<B128, ()>::new(&params, ());
 		assert_eq!(verifier.oracles.len(), 1);
 		assert_eq!(verifier.oracles[0].log_lanes(), 2);
 	}
@@ -424,7 +424,7 @@ mod tests {
 		//     2^4 elements -> 2^0 lanes, zero-padded out to 2^6 columns
 		let params = params();
 		let oracles = vec![oracle(8), oracle(7), oracle(4)];
-		let verifier = LigeritoVerifier::<B128, ()>::batched(&params, oracles);
+		let verifier = WHIRVerifier::<B128, ()>::batched(&params, oracles);
 
 		let lanes = verifier
 			.oracles
@@ -439,7 +439,7 @@ mod tests {
 	fn a_ladder_with_nothing_to_open_is_refused() {
 		// A ladder whose level 0 has no codeword has no rows to fold and no claim to reduce.
 		let params = params();
-		LigeritoVerifier::<B128, ()>::batched(&params, Vec::new());
+		WHIRVerifier::<B128, ()>::batched(&params, Vec::new());
 	}
 
 	#[test]
@@ -448,7 +448,7 @@ mod tests {
 		// Level 0 folds 2^2 lanes and the longest message here carries 2^1.
 		// The extra round would bind a variable no message has, so the ladder is mis-sized.
 		let params = params();
-		LigeritoVerifier::<B128, ()>::batched(&params, vec![oracle(7), oracle(6)]);
+		WHIRVerifier::<B128, ()>::batched(&params, vec![oracle(7), oracle(6)]);
 	}
 
 	#[test]
@@ -457,9 +457,6 @@ mod tests {
 		// Level 0 folds 2^2 lanes and this message claims 2^3.
 		// One of its lanes would never be folded, so its rows would go unchecked.
 		let params = params();
-		LigeritoVerifier::<B128, ()>::batched(
-			&params,
-			vec![CommittedOracle::new((), 3, B128::ONE)],
-		);
+		WHIRVerifier::<B128, ()>::batched(&params, vec![CommittedOracle::new((), 3, B128::ONE)]);
 	}
 }

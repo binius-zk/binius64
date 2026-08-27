@@ -2,7 +2,7 @@
 
 use crate::{fri, merkle_channel};
 
-/// Anything that can go wrong verifying a Ligerito opening.
+/// Anything that can go wrong verifying a WHIR opening.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
 	/// The Merkle channel could not deliver a commitment or an opening.
