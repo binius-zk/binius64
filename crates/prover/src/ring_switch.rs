@@ -399,8 +399,8 @@ mod test {
 	};
 	use binius_math::{
 		FieldBuffer,
-		inner_product::inner_product_subfield,
-		multilinear::{Multilinear, MultilinearMut, hypercube::Hypercube},
+		inner_product::{inner_product_buffers, inner_product_subfield},
+		multilinear::{evaluate::evaluate_inplace, hypercube::Hypercube},
 		test_utils::{index_to_hypercube_point, random_field_buffer, random_scalars},
 	};
 	use binius_verifier::{config::B1, ring_switch::eval_rs_eq};
@@ -551,7 +551,7 @@ mod test {
 		// compare eval against inner product w/ eq ind mle of eval point
 
 		let tensor_expanded_eval_point = Hypercube::One.expand(&eval_point).build::<F>();
-		let expected_eval = rs_eq.inner_product(&tensor_expanded_eval_point);
+		let expected_eval = inner_product_buffers(&rs_eq, &tensor_expanded_eval_point);
 
 		let actual_eval =
 			eval_rs_eq::<F>(&z_vals, &eval_point, row_batching_expanded_query.as_ref());
@@ -600,6 +600,6 @@ mod test {
 		let (eq_lo, eq_hi) = expand_tensor_factors(suffix);
 		let s_hat_v = fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi);
 
-		assert_eq!(s_hat_v.evaluate_inplace(prefix), expected);
+		assert_eq!(evaluate_inplace(s_hat_v, prefix), expected);
 	}
 }

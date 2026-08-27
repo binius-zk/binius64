@@ -384,7 +384,7 @@ mod tests {
 	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{MultilinearMut, evaluate::evaluate_inplace_scalars},
+		multilinear::{evaluate::evaluate_inplace_scalars, fold::fold_highest_var_inplace},
 		ntt::{
 			NeighborsLastSingleThread,
 			domain_context::{GaoMateerOnTheFly, GaoMateerPreExpanded},
@@ -566,7 +566,7 @@ mod tests {
 			let challenges = (0..n_folded).map(|_| B128::random(&mut rng)).collect::<Vec<_>>();
 			let mut reference = FieldBuffer::<B128>::from_values(&basis.to_dense());
 			for challenge in &challenges {
-				reference.fold_highest_var(*challenge);
+				fold_highest_var_inplace(&mut reference, *challenge);
 			}
 
 			let folded = basis.fold_high(&challenges);

@@ -26,7 +26,11 @@ use binius_ip_prover::{
 use binius_math::{
 	FieldSlice, FieldVec,
 	field_buffer::FieldBuffer,
-	multilinear::{Multilinear, MultilinearMut, hypercube::Hypercube},
+	inner_product::inner_product_buffers,
+	multilinear::{
+		evaluate::{evaluate, evaluate_inplace},
+		hypercube::Hypercube,
+	},
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::intmul::common::{
@@ -162,7 +166,7 @@ where
 
 		// `b_root` is not needed after this, so fold it in place rather than allocating a copy.
 		let exp_eval = tracing::debug_span!("Evaluate exponent root")
-			.in_scope(|| b_root.evaluate_inplace(&initial_eval_point));
+			.in_scope(|| evaluate_inplace(b_root, &initial_eval_point));
 
 		self.channel.send_one(exp_eval);
 
@@ -319,7 +323,8 @@ where
 		let rho = self.channel.sample_many(log_cols);
 		let mut padded_column_evals = column_index_evals.clone();
 		padded_column_evals.resize(1 << log_cols, F::ZERO);
-		let folded_index_claim = FieldBuffer::<P>::from_values(&padded_column_evals).evaluate(&rho);
+		let folded_index_claim =
+			evaluate(&FieldBuffer::<P>::from_values(&padded_column_evals), &rho);
 		let rho_tensor = Hypercube::One.expand(&rho).build_scalars();
 		let fold_guard = tracing::debug_span!("Fold index columns by rho").entered();
 		// Each row folds through the embedding table directly, in parallel:
@@ -462,7 +467,7 @@ where
 		let x_tensor = Hypercube::One.expand(x_point).build();
 		let b_leaves_evals = b_leaves
 			.par_chunks(n_vars)
-			.map(|b_leaf| b_leaf.inner_product(&x_tensor))
+			.map(|b_leaf| inner_product_buffers(&b_leaf, &x_tensor))
 			.collect::<Vec<_>>();
 		drop(leaf_guard);
 
@@ -565,7 +570,7 @@ where
 		// recombination point r_I^b in K^k, matching the verifier. This carries one exponent claim
 		// (rather than 2^k) into Phases 4 and 5.
 		let r_ib = self.channel.sample_many(Word::LOG_BITS);
-		let b_recomb = FieldBuffer::<P>::from_values(&b_evals).evaluate(&r_ib);
+		let b_recomb = evaluate(&FieldBuffer::<P>::from_values(&b_evals), &r_ib);
 
 		Phase3Output {
 			eval_point: challenges,
@@ -639,7 +644,7 @@ where
 						.chain(iter::repeat_n(table.get(0), n_padding))
 						.collect::<Vec<_>>();
 					let column = FieldBuffer::<P>::from_values(&column_scalars);
-					column.inner_product(&x_tensor)
+					inner_product_buffers(&column, &x_tensor)
 				})
 				.collect::<Vec<_>>()
 		};

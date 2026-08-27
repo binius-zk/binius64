@@ -234,7 +234,7 @@ mod tests {
 	};
 	use binius_field::{Field, PackedBinaryGhash1x128b, Random, Rijndael8b};
 	use binius_math::{
-		multilinear::{Multilinear, hypercube::Hypercube},
+		multilinear::{evaluate::evaluate, hypercube::Hypercube},
 		test_utils::random_scalars,
 	};
 	use binius_prover::protocols::shift::{
@@ -279,7 +279,7 @@ mod tests {
 		let operand_eval = |column: &[Word]| {
 			let folded_column =
 				BitAxisFolder::new(&lagrange).fold::<P, _>(&GlobalAllocator, column);
-			folded_column.evaluate(&row_point)
+			evaluate(&folded_column, &row_point)
 		};
 		// The batch witness stores only the `A` and `B` columns.
 		// The reduction reads `C` as the word-by-word AND of the two.

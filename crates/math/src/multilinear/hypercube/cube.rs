@@ -186,7 +186,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		multilinear::MultilinearMut,
+		multilinear::hypercube::eq_ind_truncate_low_inplace,
 		test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars},
 	};
 
@@ -474,7 +474,7 @@ mod tests {
 
 		for reduction in (0..=reductions).rev() {
 			let truncated_log_n_values = log_n_values - reduction;
-			eq_ind.eq_ind_truncate_low(Hypercube::One, truncated_log_n_values);
+			eq_ind_truncate_low_inplace(Hypercube::One, &mut eq_ind, truncated_log_n_values);
 
 			// Each step must match a direct expansion of the surviving prefix of the point.
 			let eq_ind_ref = Hypercube::One
@@ -509,7 +509,7 @@ mod tests {
 
 		// Strip the top variable and compare against a direct expansion of the prefix.
 		let mut truncated = Hypercube::One.expand(&point).build::<P>();
-		truncated.eq_ind_truncate_low(Hypercube::One, n_vars - 1);
+		eq_ind_truncate_low_inplace(Hypercube::One, &mut truncated, n_vars - 1);
 		assert_eq!(truncated, Hypercube::One.expand(&point[..n_vars - 1]).build::<P>());
 	}
 
@@ -528,7 +528,7 @@ mod tests {
 			for truncated_log_len in 0..=log_n {
 				for cube in CUBES {
 					let mut truncated = cube.expand(&point).build::<P>();
-					truncated.eq_ind_truncate_low(cube, truncated_log_len);
+					eq_ind_truncate_low_inplace(cube, &mut truncated, truncated_log_len);
 					prop_assert_eq!(
 						truncated,
 						cube.expand(&point[..truncated_log_len]).build::<P>()

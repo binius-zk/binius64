@@ -400,7 +400,8 @@ mod tests {
 		soundness::{Grinding, SoundnessRegime},
 	};
 	use binius_math::{
-		multilinear::Multilinear,
+		inner_product::inner_product_buffers,
+		multilinear::evaluate::evaluate,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::random_field_buffer,
 	};
@@ -437,7 +438,7 @@ mod tests {
 			let relations = (0..n_relations)
 				.map(|_| {
 					let transparent = random_field_buffer::<B128>(&mut *rng, log_msg_len);
-					let claim = message.inner_product(&transparent);
+					let claim = inner_product_buffers(&message, &transparent);
 					(transparent, claim)
 				})
 				.collect();
@@ -540,7 +541,7 @@ mod tests {
 				let transparent = transparent.clone();
 				verifier_channel.verify_oracle_relation(
 					*handle,
-					Box::new(move |point: &[B128]| transparent.evaluate(point)),
+					Box::new(move |point: &[B128]| evaluate(&transparent, point)),
 					*claim,
 				)?;
 			}

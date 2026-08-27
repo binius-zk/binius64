@@ -467,7 +467,8 @@ mod tests {
 	use binius_ip::{channel::IPVerifierChannel, logup_star};
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{Multilinear, hypercube::Hypercube},
+		inner_product::inner_product_buffers,
+		multilinear::{evaluate::evaluate, hypercube::Hypercube},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -611,7 +612,7 @@ mod tests {
 				let own_point = &index_point[index_point.len() - looker.eval_point.len()..];
 				assert_eq!(
 					*claim,
-					embedded.evaluate(own_point),
+					evaluate(&embedded, own_point),
 					"index claim wrong for table {table_index}, n={} ({shape})",
 					looker.eval_point.len()
 				);
@@ -660,12 +661,12 @@ mod tests {
 
 			assert_eq!(
 				prover_out.tables[table_index].eval_claim,
-				table.values.evaluate(own_point),
+				evaluate(&table.values, own_point),
 				"table claim wrong for table {table_index} ({shape})"
 			);
 			assert_eq!(
 				prover_out.tables[table_index].pushforward_claim,
-				honest_pushforward(table, gamma).evaluate(own_point),
+				evaluate(&honest_pushforward(table, gamma), own_point),
 				"pushforward claim wrong for table {table_index} ({shape})"
 			);
 		}
@@ -709,12 +710,12 @@ mod tests {
 			let pushforward = honest_pushforward(table, gamma);
 			assert_eq!(
 				out.pushforward_eval_claim,
-				pushforward.evaluate(&out.pushforward_eval_point),
+				evaluate(&pushforward, &out.pushforward_eval_point),
 				"leaf claim wrong for table {table_index} ({shape})"
 			);
 			assert_eq!(
 				out.product_claim,
-				table.values.inner_product(pushforward.as_view()),
+				inner_product_buffers(&table.values, &pushforward),
 				"product claim wrong for table {table_index} ({shape})"
 			);
 		}
@@ -865,9 +866,7 @@ mod tests {
 		assert_eq!(out.tables[0].product_claim, wrong_claim);
 		assert_ne!(
 			out.tables[0].product_claim,
-			table
-				.values
-				.inner_product(honest_pushforward(table, gamma).as_view())
+			inner_product_buffers(&table.values, &honest_pushforward(table, gamma))
 		);
 	}
 

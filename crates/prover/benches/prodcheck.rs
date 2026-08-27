@@ -6,7 +6,7 @@ use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::prodcheck::ProdcheckProver;
 use binius_math::{
 	FieldBuffer,
-	multilinear::Multilinear,
+	multilinear::evaluate::evaluate,
 	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_transcript::ProverTranscript;
@@ -64,7 +64,7 @@ fn bench_prodcheck_prove(c: &mut Criterion) {
 				&alloc,
 				FieldBuffer::<P, _>::from_values_in(&alloc, &witness_scalars),
 			);
-			let products_eval = products.evaluate(&[]);
+			let products_eval = evaluate(&products, &[]);
 			let claim = MultilinearEvalClaim {
 				eval: products_eval,
 				point: vec![],

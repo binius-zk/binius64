@@ -27,7 +27,7 @@ use binius_ip_prover::sumcheck::{
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
 	inner_product::inner_product_packed,
-	multilinear::{MultilinearMut, hypercube::Hypercube},
+	multilinear::{fold::fold_highest_var_inplace, hypercube::Hypercube},
 	ntt::AdditiveNTT,
 	reed_solomon::ReedSolomonCode,
 };
@@ -236,7 +236,7 @@ where
 						// The full round polynomial at the challenge is the reduced claim, which
 						// is what the verifier recovers from the truncated one.
 						sum = coeffs.evaluate(&challenge);
-						current.fold_highest_var(challenge);
+						fold_highest_var_inplace(&mut current, challenge);
 					}
 				}
 				Some(mut running) => {
@@ -254,8 +254,8 @@ where
 						let challenge = channel.sample();
 						prover.fold(challenge);
 						sum = coeffs.evaluate(&challenge);
-						current.fold_highest_var(challenge);
-						running.fold_highest_var(challenge);
+						fold_highest_var_inplace(&mut current, challenge);
+						fold_highest_var_inplace(&mut running, challenge);
 					}
 					weight = Some(running);
 				}
@@ -353,7 +353,7 @@ mod tests {
 	};
 	use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 	use binius_math::{
-		multilinear::Multilinear,
+		multilinear::evaluate::evaluate,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::random_field_buffer,
 	};
@@ -415,7 +415,7 @@ mod tests {
 		let eval_point = (0..n_vars)
 			.map(|_| B128::random(&mut rng))
 			.collect::<Vec<_>>();
-		let eval_claim = opened.evaluate(&eval_point) + claim_offset;
+		let eval_claim = evaluate(opened, &eval_point) + claim_offset;
 
 		// One transform for the whole ladder, sized for its longest codeword.
 		let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(

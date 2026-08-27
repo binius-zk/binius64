@@ -4,7 +4,7 @@
 use binius_compute::BufferData;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, multilinear::MultilinearMut};
+use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
 use itertools::izip;
 
@@ -238,7 +238,7 @@ where
 			.for_each(|eq_tracker| eq_tracker.fold(challenge));
 
 		self.switchover.fold(challenge);
-		self.selected.fold_highest_var(challenge);
+		fold_highest_var_inplace(&mut self.selected, challenge);
 
 		self.last_coeffs_or_sums = RoundState::Claim(sums);
 	}
@@ -268,7 +268,7 @@ mod tests {
 	use binius_field::FieldOps;
 	use binius_ip::sumcheck::verify;
 	use binius_math::{
-		multilinear::{Multilinear, hypercube::Hypercube},
+		multilinear::{evaluate::evaluate, hypercube::Hypercube},
 		test_utils::{Packed128b, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -322,7 +322,7 @@ mod tests {
 				let masked = izip!(&selected_scalars, selector_scalars)
 					.map(|(&selected, &selector)| selected * selector + (F::ONE - selector))
 					.collect_vec();
-				let value = FieldBuffer::<P>::from_values(&masked).evaluate(point);
+				let value = evaluate(&FieldBuffer::<P>::from_values(&masked), point);
 				Claim {
 					point: point.clone(),
 					value,
@@ -375,13 +375,13 @@ mod tests {
 
 		// The claimed evaluations must match direct evaluation of the multilinears at the challenge
 		// point.
-		assert_eq!(selected_eval, selected.evaluate(&reduced_point), "selected evaluation");
+		assert_eq!(selected_eval, evaluate(&selected, &reduced_point), "selected evaluation");
 		for (i, (&selector_eval, selector_scalars)) in
 			izip!(selector_evals, &selector_columns).enumerate()
 		{
 			assert_eq!(
 				selector_eval,
-				FieldBuffer::<P>::from_values(selector_scalars).evaluate(&reduced_point),
+				evaluate(&FieldBuffer::<P>::from_values(selector_scalars), &reduced_point),
 				"selector {i} evaluation"
 			);
 		}

@@ -12,7 +12,7 @@ use binius_core::{ShiftVariant, word::Word};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_ip_prover::sumcheck::round_evals::RoundEvals;
-use binius_math::{FieldVec, multilinear::MultilinearMut};
+use binius_math::{FieldVec, multilinear::fold::fold_highest_var_inplace};
 use binius_verifier::protocols::shift::{LOG_SHIFT_COUNT, SHIFT_COUNT};
 
 use super::{
@@ -117,7 +117,7 @@ impl<F: BinaryField, A: Allocator> OuterShiftStage<F, A> {
 	/// * `self.n_vars_remaining() >= 1`
 	pub fn fold(&mut self, challenge: F) {
 		assert!(self.n_vars_remaining() > 0, "precondition: an outer variable remains to bind");
-		self.eta.fold_highest_var(challenge);
+		fold_highest_var_inplace(&mut self.eta, challenge);
 	}
 
 	/// Computes one round message: the degree-2 round polynomial binding the next outer variable.

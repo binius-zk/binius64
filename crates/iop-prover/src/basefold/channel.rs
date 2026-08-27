@@ -16,9 +16,8 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
-	multilinear::{Multilinear, hypercube::Hypercube},
-	ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec, inner_product::inner_product_par,
+	multilinear::hypercube::Hypercube, ntt::AdditiveNTT,
 };
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
@@ -254,7 +253,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 			.filter(|(_, spec, _)| spec.is_zk)
 			.map(|(relation, _, committed)| {
 				let mask = committed.mask.as_ref().expect("ZK oracle carries a mask");
-				mask.par_inner_product(&relation.transparent)
+				inner_product_par(mask, &relation.transparent)
 			})
 			.collect::<Vec<_>>();
 		channel.send_many(&sigmas);
@@ -700,7 +699,8 @@ mod tests {
 	};
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{Multilinear, hypercube::Hypercube},
+		inner_product::inner_product_buffers,
+		multilinear::hypercube::Hypercube,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -739,7 +739,7 @@ mod tests {
 		let buffer = random_field_buffer::<P>(&mut *rng, n_vars);
 		let evaluation_point = random_scalars::<F>(&mut *rng, n_vars);
 		let transparent_poly = Hypercube::One.expand(&evaluation_point).build::<P>();
-		let evaluation_claim = buffer.inner_product(&transparent_poly);
+		let evaluation_claim = inner_product_buffers(&buffer, &transparent_poly);
 		(buffer, transparent_poly, evaluation_claim)
 	}
 
@@ -801,7 +801,7 @@ mod tests {
 				v_oracle,
 				Box::new(move |point: &[F]| {
 					let eq = Hypercube::One.expand(point).build::<P>();
-					transparent_poly.inner_product(&eq)
+					inner_product_buffers(&transparent_poly, &eq)
 				}),
 				eval_claim,
 			)
@@ -876,7 +876,7 @@ mod tests {
 				v_oracle_1,
 				Box::new(move |point: &[F]| {
 					let eq = Hypercube::One.expand(point).build::<P>();
-					tp1.inner_product(&eq)
+					inner_product_buffers(&tp1, &eq)
 				}),
 				eval_claim_1,
 			)
@@ -886,7 +886,7 @@ mod tests {
 				v_oracle_2,
 				Box::new(move |point: &[F]| {
 					let eq = Hypercube::One.expand(point).build::<P>();
-					tp2.inner_product(&eq)
+					inner_product_buffers(&tp2, &eq)
 				}),
 				eval_claim_2,
 			)
@@ -968,7 +968,7 @@ mod tests {
 					oracle,
 					Box::new(move |point: &[F]| {
 						let eq = Hypercube::One.expand(point).build::<P>();
-						transparent.inner_product(&eq)
+						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
 				)
@@ -1056,7 +1056,7 @@ mod tests {
 					oracle,
 					Box::new(move |point: &[F]| {
 						let eq = Hypercube::One.expand(point).build::<P>();
-						transparent.inner_product(&eq)
+						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
 				)
@@ -1201,7 +1201,7 @@ mod tests {
 			.map(|_| {
 				let point = random_scalars::<F>(&mut *rng, n_vars);
 				let transparent = Hypercube::One.expand(&point).build::<P>();
-				let claim = buffer.inner_product(&transparent);
+				let claim = inner_product_buffers(&buffer, &transparent);
 				(transparent, claim)
 			})
 			.collect();
@@ -1313,7 +1313,7 @@ mod tests {
 					v_oracles[index],
 					Box::new(move |point: &[F]| {
 						let eq = Hypercube::One.expand(point).build::<P>();
-						transparent.inner_product(&eq)
+						inner_product_buffers(&transparent, &eq)
 					}),
 					claim,
 				)

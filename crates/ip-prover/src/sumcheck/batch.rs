@@ -129,7 +129,7 @@ mod tests {
 	use binius_ip::sumcheck::batch_verify_mle;
 	use binius_math::{
 		FieldBuffer,
-		multilinear::Multilinear,
+		multilinear::evaluate::evaluate,
 		test_utils::{random_field_buffer, random_scalars},
 		univariate::evaluate_univariate,
 	};
@@ -159,7 +159,7 @@ mod tests {
 			.map(|(&l, &r)| l * r)
 			.collect::<Vec<_>>();
 		let product_buffer = FieldBuffer::new(n_vars, product);
-		product_buffer.evaluate(eval_point)
+		evaluate(&product_buffer, eval_point)
 	}
 
 	#[test]
@@ -225,10 +225,10 @@ mod tests {
 			"Multilinear evaluations should round-trip through the transcript"
 		);
 
-		let eval_a_0 = multilinear_a_0.evaluate(&reduced_eval_point);
-		let eval_b_0 = multilinear_b_0.evaluate(&reduced_eval_point);
-		let eval_a_1 = multilinear_a_1.evaluate(&reduced_eval_point);
-		let eval_b_1 = multilinear_b_1.evaluate(&reduced_eval_point);
+		let eval_a_0 = evaluate(&multilinear_a_0, &reduced_eval_point);
+		let eval_b_0 = evaluate(&multilinear_b_0, &reduced_eval_point);
+		let eval_a_1 = evaluate(&multilinear_a_1, &reduced_eval_point);
+		let eval_b_1 = evaluate(&multilinear_b_1, &reduced_eval_point);
 
 		assert_eq!(eval_a_0, output.multilinear_evals[0][0]);
 		assert_eq!(eval_b_0, output.multilinear_evals[0][1]);

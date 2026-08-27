@@ -14,7 +14,7 @@ use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	ReedSolomonCode,
-	multilinear::{Multilinear, hypercube::Hypercube},
+	multilinear::{evaluate::evaluate, hypercube::Hypercube},
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{Packed128b, random_field_buffer},
 };
@@ -123,7 +123,7 @@ fn test_commit_prove_verify_success<F, P>(
 	// note that the prover is claiming that the final_message is [c]
 	let mut eval_point = verifier_challenges.clone();
 	eval_point.reverse();
-	let computed_eval = msg.evaluate(&eval_point);
+	let computed_eval = evaluate(&msg, &eval_point);
 
 	let final_fri_value = verifier.verify(&mut channel).unwrap();
 	assert_eq!(computed_eval, final_fri_value);
@@ -329,7 +329,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 		let later_i = &later[max_later - log_batch_size..];
 		let mut eval_point = later_i.iter().chain(tail).copied().collect::<Vec<_>>();
 		eval_point.reverse();
-		expected += outer_tensor[i] * msg.evaluate(&eval_point);
+		expected += outer_tensor[i] * evaluate(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
 }
@@ -485,7 +485,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 			.copied()
 			.collect::<Vec<_>>();
 		eval_point.reverse();
-		expected += outer_tensor[i] * msg.evaluate(&eval_point);
+		expected += outer_tensor[i] * evaluate(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
 }
@@ -636,7 +636,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 			.copied()
 			.collect::<Vec<_>>();
 		eval_point.reverse();
-		expected += outer_tensor[i] * pad_factor * msg.evaluate(&eval_point);
+		expected += outer_tensor[i] * pad_factor * evaluate(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
 }

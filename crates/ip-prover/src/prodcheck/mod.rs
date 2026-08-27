@@ -629,7 +629,7 @@ mod tests {
 	use binius_ip::prodcheck;
 	use binius_math::{
 		inner_product::inner_product,
-		multilinear::{Multilinear, hypercube::Hypercube},
+		multilinear::{evaluate::evaluate, hypercube::Hypercube},
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -673,7 +673,7 @@ mod tests {
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
 		// 4. Evaluate products layer at challenge point to create claim
-		let products_eval = products.evaluate(&eval_point);
+		let products_eval = evaluate(&products, &eval_point);
 		let claim = MultilinearEvalClaim {
 			eval: products_eval,
 			point: eval_point,
@@ -691,7 +691,7 @@ mod tests {
 		assert_eq!(prover_output, verifier_output);
 
 		// 8. Verify multilinear evaluation of original witness
-		let expected_eval = witness.evaluate(&verifier_output.point);
+		let expected_eval = evaluate(&witness, &verifier_output.point);
 		assert_eq!(verifier_output.eval, expected_eval);
 	}
 
@@ -815,7 +815,7 @@ mod tests {
 		let selector_weights = Hypercube::One.expand(selector_challenges).build::<P>();
 
 		let expected_eval: P::Scalar = inner_product(
-			(0..n_provers).map(|i| witnesses[i].evaluate(content_challenges)),
+			(0..n_provers).map(|i| evaluate(&witnesses[i], content_challenges)),
 			(0..n_provers).map(|i| selector_weights.get(i)),
 		);
 
@@ -884,7 +884,7 @@ mod tests {
 			.iter()
 			.map(|products| {
 				assert_eq!(products.log_len(), content_len);
-				products.evaluate(&content_point)
+				evaluate(products, &content_point)
 			})
 			.collect();
 
@@ -933,7 +933,7 @@ mod tests {
 		let selector_weights = Hypercube::One.expand(selector_challenges).build::<P>();
 
 		let expected_eval: P::Scalar = inner_product(
-			(0..n_provers).map(|i| witnesses[i].evaluate(witness_challenges)),
+			(0..n_provers).map(|i| evaluate(&witnesses[i], witness_challenges)),
 			(0..n_provers).map(|i| selector_weights.get(i)),
 		);
 
@@ -1023,7 +1023,7 @@ mod tests {
 		for (i, (&depth, witness)) in iter::zip(depths, &witnesses).enumerate() {
 			let leaf = unpad_leaf_claim(evals[i], &eval_point[k..], n_layers - depth);
 			assert_eq!(leaf.point.len(), depth);
-			assert_eq!(leaf.eval, witness.evaluate(&leaf.point), "tree {i}");
+			assert_eq!(leaf.eval, evaluate(witness, &leaf.point), "tree {i}");
 		}
 	}
 

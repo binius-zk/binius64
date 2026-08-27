@@ -106,7 +106,7 @@ mod tests {
 	use binius_ip::sumcheck::batch_verify;
 	use binius_math::{
 		FieldBuffer,
-		multilinear::{Multilinear, hypercube::Hypercube},
+		multilinear::{evaluate::evaluate, hypercube::Hypercube},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -168,10 +168,10 @@ mod tests {
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
-		let eval_num_a = num_a.evaluate(&reduced_eval_point);
-		let eval_den_a = den_a.evaluate(&reduced_eval_point);
-		let eval_num_b = num_b.evaluate(&reduced_eval_point);
-		let eval_den_b = den_b.evaluate(&reduced_eval_point);
+		let eval_num_a = evaluate(num_a, &reduced_eval_point);
+		let eval_den_a = evaluate(den_a, &reduced_eval_point);
+		let eval_num_b = evaluate(num_b, &reduced_eval_point);
+		let eval_den_b = evaluate(den_b, &reduced_eval_point);
 
 		assert_eq!(
 			eval_num_a, multilinear_evals[0],
@@ -238,8 +238,8 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		// Claims are at the original eval_point; verifier handles challenge ordering separately.
 		let eval_claims = [
-			numerator_buffer.evaluate(&eval_point),
-			denominator_buffer.evaluate(&eval_point),
+			evaluate(&numerator_buffer, &eval_point),
+			evaluate(&denominator_buffer, &eval_point),
 		];
 
 		let mut store = MleStore::new(n_vars, &alloc);

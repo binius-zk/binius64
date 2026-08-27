@@ -6,7 +6,7 @@ use binius_core::word::Word;
 use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random};
 use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
 use binius_iop_prover::channel::naive::NaiveProverChannel;
-use binius_math::multilinear::{Multilinear, hypercube::Hypercube};
+use binius_math::{inner_product::inner_product_buffers, multilinear::hypercube::Hypercube};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
@@ -36,7 +36,7 @@ pub fn evaluate_witness(words: &[Word], eval_point: &[F]) -> F {
 	let partially_folded_witness =
 		BitAxisFolder::new(prefix_tensor.as_ref()).fold::<F, _>(&GlobalAllocator, words);
 
-	partially_folded_witness.inner_product(&suffix_tensor)
+	inner_product_buffers(&partially_folded_witness, &suffix_tensor)
 }
 
 /// The four operand columns `(a, b, c_lo, c_hi)` of an IntMul witness.

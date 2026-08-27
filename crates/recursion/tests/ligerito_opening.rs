@@ -61,7 +61,7 @@ use binius_iop_prover::{ligerito::LigeritoProver, merkle_channel::ProverMerkleTr
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_ip_prover::channel::WordIPProverChannel;
 use binius_math::{
-	multilinear::Multilinear,
+	multilinear::evaluate::evaluate,
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{random_field_buffer, random_scalars},
 };
@@ -200,7 +200,7 @@ impl Shape {
 		let mut rng = StdRng::seed_from_u64(seed);
 		let witness = random_field_buffer::<P>(&mut rng, self.log_msg_len());
 		let eval_point: Vec<B128> = random_scalars(&mut rng, self.log_msg_len());
-		let eval_claim = witness.evaluate(&eval_point);
+		let eval_claim = evaluate(&witness, &eval_point);
 
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut channel =

@@ -217,10 +217,8 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random, Rijndael8b};
 	use binius_math::{
-		BinarySubspace,
-		multilinear::{Multilinear, hypercube::Hypercube},
-		test_utils::random_scalars,
-		univariate::EvaluationDomain,
+		BinarySubspace, inner_product::inner_product_buffers, multilinear::hypercube::Hypercube,
+		test_utils::random_scalars, univariate::EvaluationDomain,
 	};
 	use binius_verifier::protocols::shift::LOG_SHIFT_VARIANT_COUNT;
 	use proptest::prelude::*;
@@ -269,7 +267,7 @@ mod tests {
 			let h = shift_operator_table::<F, P, _>(&GlobalAllocator, l_tilde.as_ref());
 			let evaluation_point = [r_j, r_s, r_v].concat();
 			let tensor = Hypercube::One.expand(&evaluation_point).build::<P>();
-			let direct = h.inner_product(&tensor);
+			let direct = inner_product_buffers(&h, &tensor);
 
 			assert_eq!(
 				claimed, direct,

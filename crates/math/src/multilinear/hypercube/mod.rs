@@ -28,4 +28,4 @@ mod cube;
 mod expansion;
 
 pub use cube::Hypercube;
-pub use expansion::Expansion;
+pub use expansion::{Expansion, eq_ind_truncate_low_inplace};
