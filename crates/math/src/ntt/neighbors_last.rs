@@ -96,11 +96,10 @@ fn forward_depth_first<P: PackedField>(
 			}
 		} else {
 			let twiddle = domain_context.twiddle(layer, block);
-			let packed_twiddle = P::broadcast(twiddle);
+			// One twiddle drives the whole block, so preparing it once pays for every butterfly.
+			let packed_twiddle = P::broadcast(twiddle).prepare();
 			for (u, v) in iter::zip(block0, block1) {
-				// perform butterfly
-				*u += *v * packed_twiddle;
-				*v += *u;
+				butterfly(u, v, &packed_twiddle);
 			}
 		}
 
@@ -185,12 +184,11 @@ fn forward_breadth_first<P: PackedField>(
 		}
 
 		for (block, twiddle) in iter::zip(blocks, layer_twiddles) {
-			let packed_twiddle = P::broadcast(twiddle);
+			// One twiddle drives the whole block, so preparing it once pays for every butterfly.
+			let packed_twiddle = P::broadcast(twiddle).prepare();
 			let (block0, block1) = block.split_at_mut(1 << log_half_block_size);
 			for (u, v) in iter::zip(block0, block1) {
-				// perform butterfly
-				*u += *v * packed_twiddle;
-				*v += *u;
+				butterfly(u, v, &packed_twiddle);
 			}
 		}
 	}
@@ -286,7 +284,8 @@ fn forward_shared_layer<P: PackedField>(
 			};
 			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
 			// `None` signals a task whose butterfly collapses to an add, no multiply.
-			let twiddle = (block != 0).then(|| P::broadcast(domain_context.twiddle(layer, block)));
+			let twiddle =
+				(block != 0).then(|| P::broadcast(domain_context.twiddle(layer, block)).prepare());
 			(chunk0, chunk1, twiddle)
 		})
 		.collect();
@@ -296,7 +295,7 @@ fn forward_shared_layer<P: PackedField>(
 		.for_each(|(chunk0, chunk1, twiddle)| match twiddle {
 			Some(twiddle) => {
 				for (u, v) in iter::zip(chunk0, chunk1) {
-					butterfly(u, v, twiddle);
+					butterfly(u, v, &twiddle);
 				}
 			}
 			None => {
@@ -308,9 +307,11 @@ fn forward_shared_layer<P: PackedField>(
 }
 
 /// Applies one butterfly of the network: `u += v * twiddle`, then `v += u`.
+///
+/// The twiddle comes prepared, since a block's butterflies all share one.
 #[inline(always)]
-fn butterfly<P: PackedField>(u: &mut P, v: &mut P, twiddle: P) {
-	*u += *v * twiddle;
+fn butterfly<P: PackedField>(u: &mut P, v: &mut P, twiddle: &P::Prepared) {
+	*u += v.mul_prepared(twiddle);
 	*v += *u;
 }
 
@@ -323,9 +324,9 @@ fn butterfly<P: PackedField>(u: &mut P, v: &mut P, twiddle: P) {
 /// Each element is loaded once, takes part in both layers, and is stored once.
 fn fused_pair<P: PackedField>(
 	planes: [&mut [P]; 4],
-	twiddle_0: P,
-	twiddle_1_even: P,
-	twiddle_1_odd: P,
+	twiddle_0: &P::Prepared,
+	twiddle_1_even: &P::Prepared,
+	twiddle_1_odd: &P::Prepared,
 ) {
 	let [plane_0, plane_1, plane_2, plane_3] = planes;
 
@@ -342,7 +343,7 @@ fn fused_pair<P: PackedField>(
 /// There `twiddle_0` and `twiddle_1_even` are both the layer's block-0 twiddle, which is zero.
 /// Each of their butterflies collapses to `v += u`, leaving `u` untouched.
 /// So plane 0 is never written, and its cache lines stay clean.
-fn fused_pair_zero_block<P: PackedField>(planes: [&mut [P]; 4], twiddle_1_odd: P) {
+fn fused_pair_zero_block<P: PackedField>(planes: [&mut [P]; 4], twiddle_1_odd: &P::Prepared) {
 	let [plane_0, plane_1, plane_2, plane_3] = planes;
 
 	for (x_0, x_1, x_2, x_3) in izip!(plane_0, plane_1, plane_2, plane_3) {
@@ -409,7 +410,9 @@ fn forward_shared_layer_pair<P: PackedField>(
 		.chunks_exact_mut(plane_len << 2)
 		.enumerate()
 		.flat_map(|(h, super_block)| {
-			let twiddle = |layer, block| P::broadcast(domain_context.twiddle(layer, block));
+			// Every butterfly in the super-block reuses these three, so prepare them once.
+			let twiddle =
+				|layer, block| P::broadcast(domain_context.twiddle(layer, block)).prepare();
 			let twiddles = (
 				twiddle(first_layer, h),
 				twiddle(first_layer + 1, h << 1),
@@ -436,9 +439,9 @@ fn forward_shared_layer_pair<P: PackedField>(
 			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
 			// Only super-block 0 reads block 0, and it does so in both of its layers.
 			if h == 0 {
-				fused_pair_zero_block(planes, twiddle_1_odd);
+				fused_pair_zero_block(planes, &twiddle_1_odd);
 			} else {
-				fused_pair(planes, twiddle_0, twiddle_1_even, twiddle_1_odd);
+				fused_pair(planes, &twiddle_0, &twiddle_1_even, &twiddle_1_odd);
 			}
 		});
 }

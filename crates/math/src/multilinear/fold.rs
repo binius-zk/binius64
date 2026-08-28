@@ -24,7 +24,7 @@ use binius_utils::{
 	},
 };
 
-use crate::{FieldBuffer, FieldVec, line::extrapolate_line};
+use crate::{FieldBuffer, FieldVec, line::extrapolate_line_prepared};
 
 /// Fixes the highest variable of a multilinear to a value, in place.
 ///
@@ -43,8 +43,9 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: BufferData<P>>(
 	scalar: P::Scalar,
 ) {
 	// Each scalar of the result costs one multiplication.
-	// Broadcasting the challenge once lets every packed word reuse the same multiplier.
-	let broadcast_scalar = P::broadcast(scalar);
+	// Broadcasting and preparing the challenge once lets every packed word reuse the same
+	// multiplier.
+	let broadcast_scalar = P::broadcast(scalar).prepare();
 	{
 		// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
 		let mut split = values.split_half_mut();
@@ -54,7 +55,7 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: BufferData<P>>(
 			.into_par_iter()
 			.with_min_task(WorkPerItem::FieldMuls)
 			.for_each(|(lo_i, hi_i)| {
-				*lo_i = extrapolate_line(*lo_i, *hi_i, broadcast_scalar);
+				*lo_i = extrapolate_line_prepared(*lo_i, *hi_i, &broadcast_scalar);
 			});
 	}
 
@@ -85,7 +86,7 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 	assert!(values.log_len() > 0, "precondition: buffer must have at least one variable");
 
 	// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
-	let broadcast_scalar = P::broadcast(scalar);
+	let broadcast_scalar = P::broadcast(scalar).prepare();
 	let (lo, hi) = values.split_half();
 
 	// Interpolate the line through each pair at the challenge directly into a fresh buffer
@@ -98,7 +99,7 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 		.into_par_iter()
 		.with_min_task(WorkPerItem::FieldMuls)
 		.for_each(|(out, &lo_i, &hi_i)| {
-			out.write(extrapolate_line(lo_i, hi_i, broadcast_scalar));
+			out.write(extrapolate_line_prepared(lo_i, hi_i, &broadcast_scalar));
 		});
 	// SAFETY: the parallel loop initialized all `len` slots.
 	unsafe { data.set_len(len) };
@@ -174,6 +175,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
+		line::extrapolate_line,
 		multilinear::eq::eq_ind_partial_eval,
 		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
 	};

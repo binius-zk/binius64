@@ -29,7 +29,7 @@ use rand::{
 };
 
 use crate::{
-	BinaryField, Divisible, ExtensionField, Field, Maskable, PackedField, WideMul,
+	BinaryField, Divisible, ExtensionField, Field, Maskable, PackedField, PreparedMul, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
 	underlier::{U1, Underlier, UnderlierView},
@@ -524,8 +524,11 @@ where
 
 impl<U, Scalar> PackedField for PackedPrimitiveType<U, Scalar>
 where
-	Self:
-		Square + InvertOrZero + Mul<Output = Self> + WideMul<Output: Debug + Send + Sync + 'static>,
+	Self: Square
+		+ InvertOrZero
+		+ Mul<Output = Self>
+		+ WideMul<Output: Debug + Send + Sync + 'static>
+		+ PreparedMul,
 	U: Underlier + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {

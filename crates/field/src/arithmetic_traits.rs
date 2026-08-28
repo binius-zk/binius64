@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use std::{
+	fmt::Debug,
 	iter::Sum,
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
@@ -37,6 +38,36 @@ pub trait WideMul: Sized {
 
 	fn wide_mul(a: Self, b: Self) -> Self::Output;
 	fn reduce(wide: Self::Output) -> Self;
+}
+
+/// A field whose multiplier can be preprocessed once and then applied to many values.
+///
+/// Every hot loop in the prover multiplies by a loop constant.
+///
+/// A broadcast NTT twiddle and a broadcast sumcheck challenge are both that shape.
+///
+/// Work spent once on the multiplier then buys a cheaper multiply for every value it reaches.
+///
+/// This is a parent trait of both the scalar and the packed field traits, so every field has it.
+///
+/// Most fields use the trivial form: the prepared multiplier is the multiplier, and applying it is
+/// ordinary multiplication.
+///
+/// The `GF(2^128)` field and its carry-less-multiply packings instead precompute the multiplier
+/// scaled by `X^64`.
+///
+/// # Invariant
+///
+/// Preparing a multiplier and applying it must equal multiplying by it directly.
+pub trait PreparedMul: Sized {
+	/// The preprocessed form of a multiplier.
+	type Prepared: Copy + Send + Sync + Debug;
+
+	/// Preprocesses a multiplier for repeated use.
+	fn prepare(self) -> Self::Prepared;
+
+	/// Multiplies `self` by a preprocessed multiplier.
+	fn mul_prepared(self, rhs: &Self::Prepared) -> Self;
 }
 
 /// An unreduced widening product (a [`WideMul::Output`]) that can be scaled by the field element
@@ -87,6 +118,36 @@ macro_rules! impl_square_with {
 }
 
 pub(crate) use impl_square_with;
+
+// Wires the prepared multiply to a strategy wrapper, as squaring and inversion are wired.
+// The wrapper's `Prepared` type is reused verbatim, so the strategy owns the representation.
+macro_rules! impl_prepared_mul_with {
+	($name:ident @ $($strategy:tt)*) => {
+		impl $crate::arithmetic_traits::PreparedMul for $name {
+			type Prepared =
+				<$($strategy)* <$name> as $crate::arithmetic_traits::PreparedMul>::Prepared;
+
+			#[inline]
+			fn prepare(self) -> Self::Prepared {
+				$crate::arithmetic_traits::PreparedMul::prepare(
+					<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(self),
+				)
+			}
+
+			#[inline]
+			fn mul_prepared(self, rhs: &Self::Prepared) -> Self {
+				<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::peel(
+					$crate::arithmetic_traits::PreparedMul::mul_prepared(
+						<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(self),
+						rhs,
+					),
+				)
+			}
+		}
+	};
+}
+
+pub(crate) use impl_prepared_mul_with;
 
 macro_rules! impl_invert_with {
 	($name:ident @ $($strategy:tt)*) => {

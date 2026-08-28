@@ -15,7 +15,7 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	Divisible, Ghash128b as GhashB128, WideMul,
-	arithmetic_traits::{MulXWide, Square},
+	arithmetic_traits::{MulXWide, PreparedMul, Square},
 	packed_fields::primitive::PackedPrimitiveType,
 	underlier::Underlier,
 };
@@ -97,6 +97,7 @@ fn gf2_128_reduce<U: ClMulUnderlier>(mut t0: U, t1: U) -> U {
 }
 
 /// Returns a `x^64 * t` after reduction.
+#[inline]
 fn gf2_128_shift_reduce<U: ClMulUnderlier>(t: U) -> U {
 	let poly = <U as Divisible<u128>>::broadcast(POLY);
 	let mut result = U::move_64_to_hi(t);
@@ -218,6 +219,83 @@ impl<U: ClMulUnderlier> SubAssign for WideGhashProduct<U> {
 		self.lo ^= rhs.lo;
 		self.hi ^= rhs.hi;
 		self.mid ^= rhs.mid;
+	}
+}
+
+/// A `GF(2^128)` multiplier preprocessed for repeated use, in every 128-bit lane.
+///
+/// The multiplier is held beside its companion, itself scaled by `X^64` and reduced.
+///
+/// Reduction is a ring homomorphism, so the variable operand can be split into its two 64-bit
+/// limbs and multiplied limb by limb:
+///
+/// ```text
+///     v = v_lo + X^64 * v_hi
+///     t * v == t * v_lo + (t * X^64) * v_hi   (mod p)
+/// ```
+///
+/// Each term is a 128-by-64 product of degree at most 190.
+///
+/// So their sum spans three 64-bit limbs instead of the schoolbook product's four, and one
+/// reduction stage finishes it.
+///
+/// # Performance
+///
+/// Four carry-less multiplies for the product and one for the reduction.
+///
+/// The schoolbook form spends four and two.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedGhash<U> {
+	/// The multiplier `t`.
+	t: U,
+	/// The multiplier scaled by `X^64` and reduced.
+	u: U,
+}
+
+impl<U: ClMulUnderlier> PreparedGhash<U> {
+	/// Preprocesses a multiplier, one CLMUL and one lane-shift.
+	#[inline]
+	pub fn new(t: U) -> Self {
+		Self {
+			t,
+			u: gf2_128_shift_reduce(t),
+		}
+	}
+
+	/// Multiplies `v` by the prepared multiplier.
+	#[inline]
+	pub fn mul(self, v: U) -> U {
+		// The limbs of weight `X^0` and `X^64` of `t * v_lo`, then those of `u * v_hi`.
+		let lo = U::clmulepi64::<0x00>(v, self.t) ^ U::clmulepi64::<0x01>(v, self.u);
+		let hi = U::clmulepi64::<0x10>(v, self.t) ^ U::clmulepi64::<0x11>(v, self.u);
+
+		// The sum is `lo + X^64 * hi`, and `hi` has degree at most 126, so its high qword has
+		// degree at most 62.
+		// Folding that qword in multiplies it by `0x87`, reaching degree at most 69, which cannot
+		// spill past `X^128`.
+		// So one reduction stage is exact.
+		gf2_128_reduce(lo, hi)
+	}
+}
+
+/// Prepared-multiplier wrapper for the full-width GHASH multiply.
+///
+/// One implementation covers every register width whose carry-less-multiply feature is present.
+#[repr(transparent)]
+#[derive(bytemuck::TransparentWrapper)]
+pub struct GhashClMulPreparedMul<T>(T);
+
+impl<U: ClMulUnderlier> PreparedMul for GhashClMulPreparedMul<PackedPrimitiveType<U, GhashB128>> {
+	type Prepared = PreparedGhash<U>;
+
+	#[inline]
+	fn prepare(self) -> Self::Prepared {
+		PreparedGhash::new(PackedPrimitiveType::peel(Self::peel(self)))
+	}
+
+	#[inline]
+	fn mul_prepared(self, rhs: &Self::Prepared) -> Self {
+		Self::wrap(PackedPrimitiveType::wrap(rhs.mul(PackedPrimitiveType::peel(Self::peel(self)))))
 	}
 }
 

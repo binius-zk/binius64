@@ -17,6 +17,10 @@ use crate::arch::portable::univariate_mul_utils_128::{Underlier128bLanes, spread
 /// implements [`Underlier128bLanes`], so the portable schoolbook widening multiply applies.
 pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
+/// Prepared-multiplier wrapper for the `PackedBinaryGhash1x128b` packing: the trivial one, since
+/// the software multiply has no cheaper prepared form.
+pub type GhashPreparedMul1x<T> = crate::arch::PreparedMulFromMul<T>;
+
 /// Square wrapper for the `PackedBinaryGhash1x128b` packing: the shared software square (the WASM
 /// SIMD `M128` implements [`Underlier128bLanes`], so the portable bit-spread square applies).
 pub type GhashSquare1x<T> = crate::arch::portable::arithmetic::ghash::GhashSoftMul<T>;

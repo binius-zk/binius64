@@ -11,6 +11,10 @@ use super::{
 /// Widening-multiply wrapper used by the `PackedBinaryGhash1x128b` packing.
 pub type GhashWideMul1x<T> = super::arithmetic::ghash::GhashWideMul<T>;
 
+/// Prepared-multiplier wrapper for the `PackedBinaryGhash1x128b` packing: the trivial one, since
+/// the software multiply has no cheaper prepared form.
+pub type GhashPreparedMul1x<T> = crate::arch::PreparedMulFromMul<T>;
+
 /// Square wrapper for the `PackedBinaryGhash1x128b` packing: the shared software square.
 pub type GhashSquare1x<T> = super::arithmetic::ghash::GhashSoftMul<T>;
 

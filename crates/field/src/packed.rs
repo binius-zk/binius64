@@ -14,7 +14,7 @@ use std::{
 use bytemuck::Zeroable;
 
 use super::{Random, arithmetic_traits::Square};
-use crate::{BinaryField, Divisible, Maskable, WideMul, field::FieldOps};
+use crate::{BinaryField, Divisible, Maskable, PreparedMul, WideMul, field::FieldOps};
 
 /// A packed field represents a vector of underlying field elements.
 ///
@@ -40,6 +40,7 @@ pub trait PackedField:
 	+ Zeroable
 	+ Random
 	+ WideMul<Output: Debug + Send + Sync + 'static>
+	+ PreparedMul
 	+ 'static
 	// A packed field divides into its `WIDTH` scalars. Scalar element access (`get`/`set` and
 	// their `_unchecked` variants), broadcast, and the scalar iterators are all provided by this

@@ -57,7 +57,7 @@ use bytemuck::Zeroable;
 use rand::distr::{Distribution, StandardUniform};
 
 use crate::{
-	Divisible, ExtensionField, Field, Maskable, PackedField, WideMul,
+	Divisible, ExtensionField, Field, Maskable, PackedField, PreparedMul, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
 };
@@ -236,6 +236,25 @@ where
 	#[inline]
 	fn mul(self, rhs: Self) -> Self {
 		Self::reduce(Self::wide_mul(self, rhs))
+	}
+}
+
+// The coordinate multiply is a Karatsuba over the extension, not a single packed multiply, so
+// preparing a multiplier buys nothing here: the prepared form is the multiplier itself.
+impl<F: Field, PSub: PackedField, const N: usize> PreparedMul for SlicedPackedField<F, PSub, N>
+where
+	Self: Mul<Output = Self>,
+{
+	type Prepared = Self;
+
+	#[inline]
+	fn prepare(self) -> Self {
+		self
+	}
+
+	#[inline]
+	fn mul_prepared(self, rhs: &Self) -> Self {
+		self * *rhs
 	}
 }
 
@@ -504,8 +523,11 @@ impl<F, PSub, const N: usize> PackedField for SlicedPackedField<F, PSub, N>
 where
 	F: ExtensionField<PSub::Scalar>,
 	PSub: PackedField,
-	Self:
-		Square + InvertOrZero + Mul<Output = Self> + WideMul<Output: Debug + Send + Sync + 'static>,
+	Self: Square
+		+ InvertOrZero
+		+ Mul<Output = Self>
+		+ WideMul<Output: Debug + Send + Sync + 'static>
+		+ PreparedMul,
 {
 	// LOG_WIDTH defaults to `Self::LOG_N == PSub::LOG_WIDTH`; scalar access is
 	// provided by the `Divisible<F>` impl above.

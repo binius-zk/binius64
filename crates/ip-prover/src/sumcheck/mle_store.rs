@@ -25,7 +25,7 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
-	line::extrapolate_line,
+	line::extrapolate_line_prepared,
 	multilinear::fold::{fold_highest_var, fold_highest_var_inplace},
 };
 use binius_utils::rayon;
@@ -387,7 +387,8 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			return self.map_reduce(chunk_vars, map, reduce);
 		}
 
-		let challenge_broadcast = P::broadcast(challenge);
+		// Every folded word shares this challenge, so prepare the multiplier once.
+		let challenge_broadcast = P::broadcast(challenge).prepare();
 
 		// Fresh destination buffers for the borrowed columns, held outside the column borrow so
 		// they can be moved into the store once the fold has written them.
@@ -576,8 +577,8 @@ impl<'a, P: PackedField> PreFoldColumnChunk<'a, P> {
 	}
 
 	/// Folds a column half, interpolating its two segments on the round's variable.
-	fn fold(self, challenge_broadcast: &P) -> &'a [P] {
-		self.fold_with(|lo, hi| extrapolate_line(lo, hi, *challenge_broadcast))
+	fn fold(self, challenge_broadcast: &P::Prepared) -> &'a [P] {
+		self.fold_with(|lo, hi| extrapolate_line_prepared(lo, hi, challenge_broadcast))
 	}
 
 	/// Contracts an eq expansion by summing its two segments.
@@ -596,7 +597,7 @@ impl<'a, P: PackedField> PreFoldColumnChunk<'a, P> {
 /// [`EvaluationChunk`] at a leaf.
 struct PreFoldEvaluationChunk<'a, P: PackedField> {
 	n_vars: usize,
-	challenge_broadcast: &'a P,
+	challenge_broadcast: &'a P::Prepared,
 	cols: Vec<[PreFoldColumnChunk<'a, P>; 2]>,
 	eqs: Vec<PreFoldColumnChunk<'a, P>>,
 }

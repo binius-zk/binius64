@@ -3,7 +3,8 @@
 
 /// Defines a packed binary field over an underlier, with the scalar it packs and its arithmetic.
 ///
-/// Squaring, inversion and the widening multiply are supplied per target as strategies.
+/// Squaring, inversion, the prepared multiply and the widening multiply are supplied per target
+/// as strategies.
 /// Multiplication is always the widening multiply followed by its reduction, so the two cannot
 /// disagree.
 macro_rules! define_packed_binary_field {
@@ -11,7 +12,8 @@ macro_rules! define_packed_binary_field {
 		$name:ident, $scalar:path, $underlier:ident,
 		($($square:tt)*),
 		($($invert:tt)*),
-		($($wide_mul:tt)*)
+		($($wide_mul:tt)*),
+		($($prepared_mul:tt)*)
 	) => {
 		pub type $name = $crate::packed_fields::primitive::PackedPrimitiveType<$underlier, $scalar>;
 
@@ -29,6 +31,8 @@ macro_rules! define_packed_binary_field {
 		impl_square_with!($name @ $($square)*);
 
 		impl_invert_with!($name @ $($invert)*);
+
+		impl_prepared_mul_with!($name @ $($prepared_mul)*);
 
 		impl $crate::arithmetic_traits::WideMul for $name {
 			type Output =
@@ -54,4 +58,6 @@ macro_rules! define_packed_binary_field {
 
 pub(crate) use define_packed_binary_field;
 
-pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_square_with};
+pub(crate) use crate::arithmetic_traits::{
+	impl_invert_with, impl_prepared_mul_with, impl_square_with,
+};

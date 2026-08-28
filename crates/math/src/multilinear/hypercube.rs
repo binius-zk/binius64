@@ -49,6 +49,14 @@ pub trait Hypercube {
 	/// So an implementor beats the two multiplications that scaling the basis directly costs.
 	fn expand_var<F: FieldOps>(value: &F, coord: &F) -> [F; 2];
 
+	/// Scales the basis of one variable by a value, at a preprocessed coordinate.
+	///
+	/// The result is the same pair the unprepared form gives.
+	///
+	/// One coordinate drives a whole round of an expansion, so preparing it once pays for every
+	/// value that round touches.
+	fn expand_var_prepared<P: PackedField>(value: &P, coord: &P::Prepared) -> [P; 2];
+
 	/// Strips one variable's basis factor from the two halves of an expansion.
 	///
 	/// The halves hold `v * b_0(r)` and `v * b_1(r)` for the stripped variable's coordinate `r`.
@@ -99,6 +107,12 @@ impl Hypercube for OneCube {
 	}
 
 	#[inline(always)]
+	fn expand_var_prepared<P: PackedField>(value: &P, coord: &P::Prepared) -> [P; 2] {
+		let prod = value.mul_prepared(coord);
+		[*value - prod, prod]
+	}
+
+	#[inline(always)]
 	fn contract_var<F: FieldOps>(lo: &mut F, hi: &F) {
 		// The two basis polynomials sum to one, so both recovery weights are one.
 		*lo += hi;
@@ -141,6 +155,11 @@ impl Hypercube for InfCube {
 	fn expand_var<F: FieldOps>(value: &F, coord: &F) -> [F; 2] {
 		// The constant basis polynomial is one, so the low half is the value untouched.
 		[value.clone(), value.clone() * coord]
+	}
+
+	#[inline(always)]
+	fn expand_var_prepared<P: PackedField>(value: &P, coord: &P::Prepared) -> [P; 2] {
+		[*value, value.mul_prepared(coord)]
 	}
 
 	#[inline(always)]
@@ -254,7 +273,8 @@ fn tensor_prod_eq_ind_reserved<Cube: Hypercube, P: PackedField, Data: VecLike<P>
 	//     low half    the initialized prefix, expanded in place
 	//     high half   reserved spare capacity, written once
 	for &r_i in packed_coords {
-		let packed_r_i = P::broadcast(r_i);
+		// Every word of the round shares this coordinate, so prepare it once.
+		let packed_r_i = P::broadcast(r_i).prepare();
 		let old_packed = data.len();
 
 		// The safe two-slice split of a Vec into its initialized prefix and its spare capacity
@@ -271,7 +291,7 @@ fn tensor_prod_eq_ind_reserved<Cube: Hypercube, P: PackedField, Data: VecLike<P>
 			.into_par_iter()
 			.with_min_task(WorkPerItem::FieldMuls)
 			.for_each(|(low_i, high_i)| {
-				let [new_low, new_high] = Cube::expand_var(low_i, &packed_r_i);
+				let [new_low, new_high] = Cube::expand_var_prepared(low_i, &packed_r_i);
 				*low_i = new_low;
 				high_i.write(new_high);
 			});
@@ -470,6 +490,7 @@ pub fn scaled_eq_ind_partial_eval_scalars<Cube: Hypercube, F: FieldOps>(
 
 #[cfg(test)]
 mod tests {
+	use binius_field::{PreparedMul, Random};
 	use binius_utils::rayon::task_size::{min_len_for_bytes, min_len_for_work};
 	use proptest::prelude::*;
 	use rand::prelude::*;
@@ -495,6 +516,26 @@ mod tests {
 			InfCube::expand_var(&value, &coord),
 			InfCube::basis(&coord).map(|b_i| b_i * value)
 		);
+	}
+
+	#[test]
+	fn expand_var_prepared_matches_expand_var() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Preparing the coordinate changes its representation, not the pair it expands to.
+		for _ in 0..16 {
+			let [value, coord] = [(); 2].map(|_| P::random(&mut rng));
+			let prepared = coord.prepare();
+
+			assert_eq!(
+				OneCube::expand_var_prepared(&value, &prepared),
+				OneCube::expand_var(&value, &coord)
+			);
+			assert_eq!(
+				InfCube::expand_var_prepared(&value, &prepared),
+				InfCube::expand_var(&value, &coord)
+			);
+		}
 	}
 
 	#[test]

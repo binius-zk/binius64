@@ -11,7 +11,7 @@ use std::ops::Mul;
 use crate::{
 	BinaryField1b,
 	arch::{M128, M256, M512},
-	arithmetic_traits::{InvertOrZero, Square, WideMul},
+	arithmetic_traits::{InvertOrZero, PreparedMul, Square, WideMul},
 	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{U1, U2, U4, Underlier},
 };
@@ -55,6 +55,21 @@ impl<U: Underlier> InvertOrZero for PackedPrimitiveType<U, BinaryField1b> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		self
+	}
+}
+
+// Multiplication is a bitwise AND, so there is nothing to preprocess.
+impl<U: Underlier> PreparedMul for PackedPrimitiveType<U, BinaryField1b> {
+	type Prepared = Self;
+
+	#[inline]
+	fn prepare(self) -> Self {
+		self
+	}
+
+	#[inline]
+	fn mul_prepared(self, rhs: &Self) -> Self {
+		self * *rhs
 	}
 }
 
@@ -149,6 +164,15 @@ pub mod test_utils {
 		}
 	}
 
+	/// A prepared multiplier applied to a value equals the plain multiply of the two.
+	pub fn check_mul_prepared<P: PackedField + UnderlierView>(a: P::Underlier, b: P::Underlier) {
+		let (a, b) = (P::from_underlier(a), P::from_underlier(b));
+
+		assert_eq!(a.mul_prepared(&b.prepare()), a * b);
+		// Preparing the other operand must land on the same product, since multiplication commutes.
+		assert_eq!(b.mul_prepared(&a.prepare()), a * b);
+	}
+
 	/// One deferred product, reduced immediately, equals the plain multiply.
 	pub fn check_wide_mul<P: PackedField + UnderlierView>(a: P::Underlier, b: P::Underlier) {
 		let (a, b) = (P::from_underlier(a), P::from_underlier(b));
@@ -178,8 +202,8 @@ pub mod test_utils {
 			mod $mod {
 				use proptest::{prelude::any, proptest};
 				use $crate::packed_fields::test_utils::{
-					check_invert_or_zero, check_mul, check_square, check_wide_mul,
-					check_wide_mul_linearity,
+					check_invert_or_zero, check_mul, check_mul_prepared, check_square,
+					check_wide_mul, check_wide_mul_linearity,
 				};
 
 				use super::*;
@@ -201,6 +225,11 @@ pub mod test_utils {
 					#[test]
 					fn invert_or_zero(a in any::<U>()) {
 						check_invert_or_zero::<$ty>(a);
+					}
+
+					#[test]
+					fn mul_prepared(a in any::<U>(), b in any::<U>()) {
+						check_mul_prepared::<$ty>(a, b);
 					}
 
 					#[test]

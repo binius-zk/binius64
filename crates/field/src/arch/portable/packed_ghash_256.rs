@@ -8,6 +8,9 @@ use crate::arch::{Divide, M128};
 /// `M128` lanes and apply the width-1 GHASH `WideMul` to each, deferring reduction per lane.
 pub type GhashWideMul2x<T> = Divide<M128, T, 2>;
 
+/// Prepared-multiplier wrapper for the `PackedBinaryGhash2x128b` packing: the trivial one.
+pub type GhashPreparedMul2x<T> = crate::arch::PreparedMulFromMul<T>;
+
 /// Square wrapper for the `PackedBinaryGhash2x128b` packing.
 pub type GhashSquare2x<T> = Scaled<T>;
 

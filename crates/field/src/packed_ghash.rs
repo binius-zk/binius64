@@ -4,9 +4,9 @@
 use crate::{
 	Ghash128b,
 	arch::{
-		GhashInvert1x, GhashInvert2x, GhashInvert4x, GhashSquare1x, GhashSquare2x, GhashSquare4x,
-		GhashWideMul1x, GhashWideMul2x, GhashWideMul4x, M128, M256, M512,
-		portable::packed_macros::*,
+		GhashInvert1x, GhashInvert2x, GhashInvert4x, GhashPreparedMul1x, GhashPreparedMul2x,
+		GhashPreparedMul4x, GhashSquare1x, GhashSquare2x, GhashSquare4x, GhashWideMul1x,
+		GhashWideMul2x, GhashWideMul4x, M128, M256, M512, portable::packed_macros::*,
 	},
 };
 
@@ -16,7 +16,8 @@ define_packed_binary_field!(
 	M128,
 	(GhashSquare1x),
 	(GhashInvert1x),
-	(GhashWideMul1x)
+	(GhashWideMul1x),
+	(GhashPreparedMul1x)
 );
 
 define_packed_binary_field!(
@@ -25,7 +26,8 @@ define_packed_binary_field!(
 	M256,
 	(GhashSquare2x),
 	(GhashInvert2x),
-	(GhashWideMul2x)
+	(GhashWideMul2x),
+	(GhashPreparedMul2x)
 );
 
 define_packed_binary_field!(
@@ -34,7 +36,8 @@ define_packed_binary_field!(
 	M512,
 	(GhashSquare4x),
 	(GhashInvert4x),
-	(GhashWideMul4x)
+	(GhashWideMul4x),
+	(GhashPreparedMul4x)
 );
 
 #[cfg(test)]
@@ -43,9 +46,36 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		Ghash128b, PackedField, packed_fields::test_utils::packed_field_tests,
+		Ghash128b, PackedField, PreparedMul, packed_fields::test_utils::packed_field_tests,
 		underlier::UnderlierView,
 	};
+
+	/// The bit patterns a random proptest is unlikely to reach.
+	///
+	/// `2` is the field element `X`, `0x87` the modulus' low part, and the two top-bit patterns are
+	/// the operands whose product reaches the highest degree.
+	const BOUNDARY_SCALARS: [u128; 7] = [0, 1, 2, 0x87, u128::MAX, 1 << 127, (1 << 127) | 1];
+
+	/// Every pairing of the boundary patterns multiplies the same prepared as unprepared.
+	///
+	/// A rotation of the pattern list fills the lanes with distinct patterns, so the pairs cover a
+	/// lane-dependent bug as well: a packing wider than one lane sees a different pattern in each.
+	fn check_mul_prepared_boundaries<P: PackedField<Scalar = Ghash128b>>() {
+		let rotation = |first: usize| {
+			P::from_scalars((0..P::WIDTH).map(|lane| {
+				Ghash128b::from(BOUNDARY_SCALARS[(first + lane) % BOUNDARY_SCALARS.len()])
+			}))
+		};
+
+		for i in 0..BOUNDARY_SCALARS.len() {
+			for j in 0..BOUNDARY_SCALARS.len() {
+				let (x, y) = (rotation(i), rotation(j));
+
+				assert_eq!(x.mul_prepared(&y.prepare()), x * y, "rotations {i} and {j}");
+				assert_eq!(y.mul_prepared(&x.prepare()), x * y, "rotations {j} and {i}");
+			}
+		}
+	}
 
 	fn check_get_set<const WIDTH: usize, PT>(a: [u128; WIDTH], b: [u128; WIDTH])
 	where
@@ -74,6 +104,45 @@ mod tests {
 	packed_field_tests!(ghash_1x128b, PackedBinaryGhash1x128b);
 	packed_field_tests!(ghash_2x128b, PackedBinaryGhash2x128b);
 	packed_field_tests!(ghash_4x128b, PackedBinaryGhash4x128b);
+
+	#[test]
+	fn mul_prepared_on_boundary_patterns() {
+		check_mul_prepared_boundaries::<PackedBinaryGhash1x128b>();
+		check_mul_prepared_boundaries::<PackedBinaryGhash2x128b>();
+		check_mul_prepared_boundaries::<PackedBinaryGhash4x128b>();
+	}
+
+	/// Preparing a broadcast scalar must agree with preparing the scalar itself.
+	///
+	/// The scalar field derives its arithmetic from the width-one packing, so this pins the two
+	/// entry points to the same field element — lane by lane, at every packing width.
+	#[test]
+	fn prepared_broadcast_agrees_with_the_scalar_path() {
+		use rand::{SeedableRng, rngs::StdRng};
+
+		use crate::Random;
+
+		fn check<P: PackedField<Scalar = Ghash128b>>(rng: &mut impl rand::Rng) {
+			for _ in 0..64 {
+				let value = P::random(&mut *rng);
+				let multiplier = Ghash128b::random(&mut *rng);
+
+				let prepared = P::broadcast(multiplier).prepare();
+				let scalar_prepared = multiplier.prepare();
+
+				let product = value.mul_prepared(&prepared);
+				assert_eq!(product, value * P::broadcast(multiplier));
+				for i in 0..P::WIDTH {
+					assert_eq!(product.get(i), value.get(i).mul_prepared(&scalar_prepared));
+				}
+			}
+		}
+
+		let mut rng = StdRng::seed_from_u64(1234);
+		check::<PackedBinaryGhash1x128b>(&mut rng);
+		check::<PackedBinaryGhash2x128b>(&mut rng);
+		check::<PackedBinaryGhash4x128b>(&mut rng);
+	}
 
 	#[test]
 	fn test_wide_mul_zero_inputs() {

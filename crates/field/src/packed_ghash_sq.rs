@@ -33,7 +33,9 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	Divisible, Ghash128b, GhashSq256b, PackedBinaryGhash2x128b, PackedField, WideMul,
-	arch::{Divide, GhashSqWideMul1x, M128, M256, M512, portable::packed_macros::*},
+	arch::{
+		Divide, GhashSqWideMul1x, M128, M256, M512, PreparedMulFromMul, portable::packed_macros::*,
+	},
 	arithmetic_traits::{InvertOrZero, Square},
 	packed_extension,
 	packed_fields::{primitive::PackedPrimitiveType, sliced::SlicedPackedField},
@@ -287,7 +289,8 @@ define_packed_binary_field!(
 	M256,
 	(GhashSqSquare),
 	(GhashSqInvert),
-	(GhashSqWideMul1x)
+	(GhashSqWideMul1x),
+	(PreparedMulFromMul)
 );
 
 define_packed_binary_field!(
@@ -296,7 +299,8 @@ define_packed_binary_field!(
 	M512,
 	(GhashSqDivide2x),
 	(GhashSqDivide2x),
-	(GhashSqDivide2x)
+	(GhashSqDivide2x),
+	(PreparedMulFromMul)
 );
 
 #[cfg(test)]

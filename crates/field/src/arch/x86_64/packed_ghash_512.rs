@@ -26,6 +26,15 @@ pub type GhashWideMul4x<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 pub type GhashWideMul4x<T> = Divide<M128, T, 4>;
 
+/// Prepared-multiplier wrapper used by the GHASH packing: the vectorized
+/// [`GhashClMulPreparedMul`](ghash::GhashClMulPreparedMul), which trades one-time preprocessing of
+/// the multiplier for a multiply of 5 CLMULs instead of 6, when VPCLMULQDQ + AVX-512 are available,
+/// otherwise the trivial `PreparedMulFromMul`.
+#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+pub type GhashPreparedMul4x<T> = ghash::GhashClMulPreparedMul<T>;
+#[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+pub type GhashPreparedMul4x<T> = crate::arch::PreparedMulFromMul<T>;
+
 /// Square wrapper for the GHASH packing: a full-width CLMUL square
 /// ([`GhashClMul`](ghash::GhashClMul)) when VPCLMULQDQ + AVX-512 are available, otherwise divide
 /// into 128-bit lanes and square each (the 1×128b GHASH square uses PCLMULQDQ).

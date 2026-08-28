@@ -23,6 +23,14 @@ pub type GhashWideMul1x<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "pclmulqdq"))]
 pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
+/// Prepared-multiplier wrapper used by the GHASH packing: the CLMUL
+/// `GhashClMulPreparedMul`, which trades one-time preprocessing of the multiplier for a multiply of
+/// 5 CLMULs instead of 6, when PCLMULQDQ is available, otherwise the trivial `PreparedMulFromMul`.
+#[cfg(target_feature = "pclmulqdq")]
+pub type GhashPreparedMul1x<T> = ghash::GhashClMulPreparedMul<T>;
+#[cfg(not(target_feature = "pclmulqdq"))]
+pub type GhashPreparedMul1x<T> = crate::arch::PreparedMulFromMul<T>;
+
 /// Square wrapper for the `PackedBinaryGhash1x128b` packing: the CLMUL square `GhashClMul` when
 /// PCLMULQDQ is available, otherwise the shared software square `GhashSoftMul`.
 #[cfg(target_feature = "pclmulqdq")]

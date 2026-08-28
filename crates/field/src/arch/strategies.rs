@@ -3,16 +3,17 @@
 
 use std::{
 	array,
+	fmt::Debug,
 	iter::Sum,
 	marker::PhantomData,
-	ops::{Add, AddAssign, Sub, SubAssign},
+	ops::{Add, AddAssign, Mul, Sub, SubAssign},
 };
 
 use bytemuck::TransparentWrapper;
 
 use crate::{
 	BinaryField,
-	arithmetic_traits::{InvertOrZero, Square, WideMul},
+	arithmetic_traits::{InvertOrZero, PreparedMul, Square, WideMul},
 	divisible::Divisible,
 	packed_fields::primitive::PackedPrimitiveType,
 	underlier::Underlier,
@@ -161,5 +162,28 @@ where
 			<PackedPrimitiveType<SubU, F> as WideMul>::reduce(product).to_underlier()
 		});
 		Self::wrap(PackedPrimitiveType::from_underlier(Divisible::<SubU>::from_iter(lanes)))
+	}
+}
+
+/// Wrapper giving the trivial prepared multiply.
+///
+/// The prepared multiplier is the multiplier itself, and applying it is ordinary multiplication.
+///
+/// Every packing with no cheaper prepared form uses this.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct PreparedMulFromMul<T>(T);
+
+impl<P: Copy + Debug + Send + Sync + Mul<Output = P>> PreparedMul for PreparedMulFromMul<P> {
+	type Prepared = P;
+
+	#[inline]
+	fn prepare(self) -> P {
+		Self::peel(self)
+	}
+
+	#[inline]
+	fn mul_prepared(self, rhs: &P) -> Self {
+		Self::wrap(Self::peel(self) * *rhs)
 	}
 }

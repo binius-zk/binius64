@@ -11,6 +11,10 @@
 /// `GhashClMulWideMul`.
 pub type GhashWideMul1x<T> = super::arithmetic::ghash::GhashClMulWideMul<T>;
 
+/// Prepared-multiplier wrapper for the `PackedBinaryGhash1x128b` packing: the trivial one for now.
+/// The x86_64 split-multiplier form ports to PMULL unchanged, and this is where it would land.
+pub type GhashPreparedMul1x<T> = crate::arch::PreparedMulFromMul<T>;
+
 /// Square wrapper for the `PackedBinaryGhash1x128b` packing: the PMULL carryless-multiply square.
 pub type GhashSquare1x<T> = super::arithmetic::ghash::GhashClMul<T>;
 
