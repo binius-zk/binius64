@@ -2,6 +2,7 @@
 
 //! A dense multilinear held as a product of factors over disjoint runs of variables.
 
+use binius_compute::BufferData;
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 
@@ -42,12 +43,18 @@ use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 /// let at_index = weight.get(index);
 /// weight.fold_highest_var(challenge);
 /// ```
+/// Where the factors' packed words live.
+///
+/// Defaults to the heap, and the point of the parameter is that it need not be.
+///
+/// A caller proving out of an arena hands over arena-backed factors.
+/// This holds them as they are, rather than forcing a copy onto the heap.
 #[derive(Debug, Clone)]
-pub struct FactoredMultilinear<P: PackedField> {
+pub struct FactoredMultilinear<P: PackedField, Data: BufferData<P> = Vec<P>> {
 	/// The factors still holding variables, lowest run first.
 	///
 	/// A factor is dropped once folding has bound every one of its variables.
-	factors: Vec<FieldBuffer<P>>,
+	factors: Vec<FieldBuffer<P, Data>>,
 
 	/// The product of every factor already bound away.
 	///
@@ -56,12 +63,12 @@ pub struct FactoredMultilinear<P: PackedField> {
 	bound: P::Scalar,
 }
 
-impl<P: PackedField> FactoredMultilinear<P> {
+impl<P: PackedField, Data: BufferData<P>> FactoredMultilinear<P, Data> {
 	/// Builds a multilinear from its factors, lowest variable run first.
 	///
 	/// A factor with no variables is folded straight into the bound product rather than kept,
 	/// since it holds a value and no axis.
-	pub fn new(factors: impl IntoIterator<Item = FieldBuffer<P>>) -> Self {
+	pub fn new(factors: impl IntoIterator<Item = FieldBuffer<P, Data>>) -> Self {
 		let mut bound = P::Scalar::ONE;
 		let factors = factors
 			.into_iter()
@@ -133,6 +140,7 @@ impl<P: PackedField> FactoredMultilinear<P> {
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{Ghash128b, PackedBinaryGhash1x128b, Random, arch::OptimalPackedB128};
 	use proptest::prelude::*;
 	use rand::{SeedableRng, prelude::StdRng};
@@ -220,6 +228,60 @@ mod tests {
 		for index in 0..8 {
 			assert_eq!(factored.get(index), reference.get(index), "index {index}");
 		}
+	}
+
+	#[test]
+	fn factors_may_live_in_an_arena_rather_than_the_heap() {
+		// Invariant: where a factor's words live is the caller's choice, not this type's.
+		//
+		// A prover working out of an arena builds its weights there.
+		// Forcing them onto the heap would mean a copy per factor.
+		//
+		// The arena exists to avoid exactly that.
+		//
+		// Fixture state: the same two factors twice, one pair on the heap and one in an arena.
+		//
+		//     heap-backed  -> value at each vertex
+		//     arena-backed -> the same value at each vertex
+		//
+		// Folding both and comparing at every step is what shows the storage is invisible.
+		type P = PackedBinaryGhash1x128b;
+		let mut rng = StdRng::seed_from_u64(23);
+		let alloc = GlobalAllocator;
+
+		let shape = [2usize, 1];
+		let scalars = shape
+			.iter()
+			.map(|&log_len| {
+				(0..1usize << log_len)
+					.map(|_| Ghash128b::random(&mut rng))
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+
+		let mut heap = FactoredMultilinear::<P>::new(
+			scalars
+				.iter()
+				.map(|values| FieldBuffer::<P>::from_values(values)),
+		);
+		let mut arena = FactoredMultilinear::new(
+			scalars
+				.iter()
+				.map(|values| FieldBuffer::<P>::from_values_in(&alloc, values)),
+		);
+
+		assert_eq!(arena.n_vars(), heap.n_vars());
+
+		// Bind every variable, comparing the whole table after each one.
+		while heap.n_vars() > 0 {
+			for index in 0..1usize << heap.n_vars() {
+				assert_eq!(arena.get(index), heap.get(index), "index {index}");
+			}
+			let challenge = Ghash128b::random(&mut rng);
+			heap.fold_highest_var(challenge);
+			arena.fold_highest_var(challenge);
+		}
+		assert_eq!(arena.get(0), heap.get(0));
 	}
 
 	proptest! {
