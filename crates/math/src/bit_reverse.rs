@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::ptr;
 
@@ -25,8 +26,13 @@ pub const fn reverse_bits(x: usize, bits: u32) -> usize {
 	x.reverse_bits().unbounded_shr(usize::BITS - bits)
 }
 
-/// Bytes a cache miss fetches, on every target this runs on.
-const CACHE_LINE_BYTES: usize = 64;
+/// Bytes one row of a tile should span.
+///
+/// Rows sit far apart in the buffer, so each one costs a memory stream of its own.
+/// Four cache lines is where a stream is wide enough to reach peak bandwidth.
+///
+/// Going wider costs more than it returns: two squares have to fit in the first cache level.
+const TILE_ROW_BYTES: usize = 256;
 
 /// Base-2 log of the widest tile a permutation instance moves, counted in packed elements.
 ///
@@ -34,9 +40,9 @@ const CACHE_LINE_BYTES: usize = 64;
 ///
 /// - Every tile-sized loop takes its bound from this parameter.
 /// - Each step it may take therefore doubles the number of instances compiled.
-/// - Eight elements already reach a cache line for any scalar of eight bytes or wider.
-/// - That covers every field permuted here.
-/// - A narrower scalar keeps the capped tile rather than paying for further instances.
+/// - Eight elements already reach the row width above once an element is 32 bytes or wider.
+/// - A narrower element would prefer one step more, and one packing here is narrower.
+/// - Measured, that step gains past the last cache level and loses below it.
 const MAX_LOG_TILE_PACKED: usize = 3;
 
 /// Permutes the elements of a buffer by reversing the bits of every index, in place.
@@ -52,74 +58,86 @@ const MAX_LOG_TILE_PACKED: usize = 3;
 ///
 /// * `buffer` - the mutable view of packed field elements to permute
 pub fn bit_reverse_packed<P: PackedField>(buffer: FieldSliceMut<'_, P>) {
-	// A buffer shorter than a square of packed elements leaves the two passes below no room.
+	// A buffer shorter than a square of packed elements leaves the tiled path no room.
 	let log_len = buffer.log_len();
 	if log_len < 2 * P::LOG_WIDTH {
 		return bit_reverse_packed_naive(buffer);
 	}
 
-	// Scalars covering one cache line, which is the granularity a permutation is charged at.
+	// Scalars filling one tile row, which is what every gather and scatter moves at a time.
 	let log_scalar_bytes = size_of::<P::Scalar>().next_power_of_two().ilog2() as usize;
-	let log_line = checked_log_2(CACHE_LINE_BYTES).saturating_sub(log_scalar_bytes);
+	let log_row = checked_log_2(TILE_ROW_BYTES).saturating_sub(log_scalar_bytes);
 
-	// Why: a tile under a line wastes bandwidth, and widening one costs sub-block work.
-	// Measured, that trade only wins for a packing under half a line.
-	// From half a line up the added work costs more than the bandwidth it recovers.
-	let log_tile = if P::LOG_WIDTH + 1 < log_line {
-		log_line
-	} else {
-		P::LOG_WIDTH
-	};
-
-	// A short buffer takes the widest tile its own length allows.
-	// The length check above leaves half the length at or above the packing width.
-	// So neither clamp can cut a tile below one packed element.
-	let log_tile = log_tile
+	// A tile holds at least one packed element, since a narrower one cannot be addressed.
+	// It stops at the widest instance compiled, and at half the length of a short buffer.
+	//
+	// The check above leaves half the length at or above the packing width.
+	// So neither clamp can cut a tile below one element.
+	let log_tile = log_row
+		.max(P::LOG_WIDTH)
 		.min(P::LOG_WIDTH + MAX_LOG_TILE_PACKED)
 		.min(log_len / 2);
 
-	// Why: a constant tile bound is what keeps each pass's gather and scatter unrolled.
+	// Why: a constant tile bound is what keeps the gather and scatter unrolled.
 	// A run-time bound lowers the moves of a one-element tile to a call.
 	// That call is most of the work at that width.
 	match log_tile - P::LOG_WIDTH {
-		0 => bit_reverse_tiled::<P, 0>(buffer),
-		1 => bit_reverse_tiled::<P, 1>(buffer),
-		2 => bit_reverse_tiled::<P, 2>(buffer),
+		0 => bit_reverse_paired::<P, 0>(buffer),
+		1 => bit_reverse_paired::<P, 1>(buffer),
+		2 => bit_reverse_paired::<P, 2>(buffer),
 		// The clamp caps the tile at the widest instance, which answers every larger value.
-		_ => bit_reverse_tiled::<P, MAX_LOG_TILE_PACKED>(buffer),
+		_ => bit_reverse_paired::<P, MAX_LOG_TILE_PACKED>(buffer),
 	}
 }
 
-/// Applies a bit-reversal permutation by moving whole tiles of consecutive scalars.
+/// Applies a bit-reversal permutation in a single pass over memory.
 ///
 /// # Overview
 ///
-/// A tile is `2^log_tile` consecutive scalars, for `log_tile = P::LOG_WIDTH + LOG_TILE_PACKED`.
-/// Both passes below move whole tiles.
-/// So the tile width, not the scalar width, is the granularity of every memory access made.
-///
-/// # Algorithm
-///
-/// Split the scalar index into three fields, of equal width at both ends:
+/// Split the scalar index into three fields, with equal width at both ends:
 ///
 /// ```text
 ///     i = (h, m, l)        |h| = |l| = log_tile
 /// ```
 ///
-/// Reversing every bit of the index maps `(h, m, l)` to `(rev l, rev m, rev h)`.
-/// That factors into two passes over disjoint index fields:
+/// A tile is `2^log_tile` consecutive scalars.
+/// So `l` picks a scalar inside a tile, and `h` picks a tile.
+///
+/// Reversing every bit sends `(h, m, l)` to `(rev l, rev m, rev h)`.
+/// Reading that destination-first is what lets one pass do the whole job:
 ///
 /// ```text
-///     phase 1:  (h, m, l) -> (rev l, m, rev h)      transpose the tiles of one middle index
-///     phase 2:  (h, m, l) -> (h, rev m, l)          permute the tiles of one high index
+///     new(H, M, L) = old(rev L, rev M, rev H)
 /// ```
 ///
-/// Composing the two reverses every bit.
+/// # Algorithm
+///
+/// The middle field alone decides where a scalar goes.
+/// Everything under middle index `rev M` lands under `M`, and nothing else does.
+///
+/// The scalars sharing a middle index form a square of `2^log_tile` tiles.
+/// So squares pair up, and a pair is the whole unit of work:
+///
+/// ```text
+///     square(M)      <-  transpose of square(rev M)
+///     square(rev M)  <-  transpose of square(M)
+/// ```
+///
+/// Both are read into scratch, transposed there, and written back crossed.
+/// A middle index equal to its own reversal is a fixed point, and needs one square.
+///
+/// # Why one pass
+///
+/// Two passes would transpose each square where it sits, then permute the squares.
+/// Each pass reads and writes the whole buffer, so the permutation costs four traversals.
+///
+/// Pairing the squares fuses those passes into one.
+/// Every scalar is then read once and written once, which halves the memory traffic.
 ///
 /// # Preconditions
 ///
 /// * `buffer.log_len() >= 2 * (P::LOG_WIDTH + LOG_TILE_PACKED)`
-fn bit_reverse_tiled<P: PackedField, const LOG_TILE_PACKED: usize>(
+fn bit_reverse_paired<P: PackedField, const LOG_TILE_PACKED: usize>(
 	mut buffer: FieldSliceMut<'_, P>,
 ) {
 	// Tile width in scalars, and the middle index field the two ends leave over.
@@ -128,69 +146,91 @@ fn bit_reverse_tiled<P: PackedField, const LOG_TILE_PACKED: usize>(
 	debug_assert!(log_len >= 2 * log_tile);
 	let log_mid = log_len - 2 * log_tile;
 
+	// Words in one square: `2^log_tile` rows, each `2^LOG_TILE_PACKED` words wide.
+	let log_square = log_tile + LOG_TILE_PACKED;
+
 	let data = buffer.as_mut();
 	// Holding an address rather than the slice is what lets disjoint tasks write one buffer.
 	let data_ptr = data.as_mut_ptr() as usize;
 
-	// Phase 1: transpose the square of tiles sitting at each middle index.
-	//
-	// One iteration reads and writes `2^log_tile` rows of `2^LOG_TILE_PACKED` words each.
-	// The byte budget counts single words, so divide it by that factor.
-	let min_len = (min_len_for_bytes::<P>() >> (log_tile + LOG_TILE_PACKED + 1)).max(1);
+	// One iteration moves two squares, and half of them return at once.
+	// The byte budget counts single words, so divide it by the words a square holds.
+	let min_len = (min_len_for_bytes::<P>() >> log_square).max(1);
+
 	(0..1 << log_mid)
 		.into_par_iter()
 		.with_min_len(min_len)
 		.for_each_init(
-			|| (zeroed_vec::<P>(1 << (log_tile + LOG_TILE_PACKED)), zeroed_vec::<P>(P::WIDTH)),
-			|(tile, block), m| {
-				// First element of the row at high index `h`, for the middle index of this task.
-				// The three index fields hold disjoint bit ranges, so shifting places them.
-				let row = |h: usize| (h << (log_mid + LOG_TILE_PACKED)) | (m << LOG_TILE_PACKED);
+			|| {
+				(
+					zeroed_vec::<P>(1 << log_square),
+					zeroed_vec::<P>(1 << log_square),
+					zeroed_vec::<P>(P::WIDTH),
+				)
+			},
+			|(square, mirror, block), m| {
+				let m_rev = reverse_bits(m, log_mid as u32);
 
-				// Invariant: rows are visited at their high index reversed, on both passes.
-				// A plain transpose over that visiting order is the map this phase needs:
-				//
-				//     new(h, m, l) = old(rev l, m, rev h)
-				//
+				// A pair is claimed by its lower middle index, so the higher one returns.
+				// A fixed point claims itself, and takes the single-square path below.
+				if m_rev < m {
+					return;
+				}
+
+				// First word of the tile at high index `h` under middle index `mm`.
+				// The three index fields hold disjoint bit ranges, so shifting places them.
+				let row = |h: usize, mm: usize| {
+					(h << (log_mid + LOG_TILE_PACKED)) | (mm << LOG_TILE_PACKED)
+				};
+
 				// SAFETY:
-				// - Every element addressed here carries `m` in the middle field of its index.
-				// - No other iteration uses that value, so the tasks write disjoint ranges.
+				// - Every word addressed here carries `m` or its reversal in the middle field.
+				// - A pair is claimed once, so no two iterations name the same middle index.
+				// - Tasks therefore write disjoint ranges.
 				// - The widest address reached is `2^(log_len - P::LOG_WIDTH) - 1`, the last one.
 				// - The address stays live because the buffer outlives this loop.
 				unsafe {
 					let data = data_ptr as *mut P;
 
-					// Gather the square of tiles into scratch, one contiguous row at a time.
-					for j in 0..1 << log_tile {
-						let src = data.add(row(reverse_bits(j, log_tile as u32)));
-						let dst = tile.as_mut_ptr().add(j << LOG_TILE_PACKED);
-						for k in 0..1 << LOG_TILE_PACKED {
-							*dst.add(k) = *src.add(k);
+					// Rows are visited at their high index reversed.
+					// That is what turns a plain transpose into a reversal of both end fields.
+					let gather = |dst: &mut [P], mm: usize| {
+						for j in 0..1 << log_tile {
+							let src = data.add(row(reverse_bits(j, log_tile as u32), mm));
+							let dst = dst.as_mut_ptr().add(j << LOG_TILE_PACKED);
+							for k in 0..1 << LOG_TILE_PACKED {
+								*dst.add(k) = *src.add(k);
+							}
 						}
-					}
+					};
+					let scatter = |src: &[P], mm: usize| {
+						for j in 0..1 << log_tile {
+							let src = src.as_ptr().add(j << LOG_TILE_PACKED);
+							let dst = data.add(row(reverse_bits(j, log_tile as u32), mm));
+							for k in 0..1 << LOG_TILE_PACKED {
+								*dst.add(k) = *src.add(k);
+							}
+						}
+					};
 
 					// Transposing in scratch keeps every exchange inside the first cache level.
-					transpose_tile::<P, LOG_TILE_PACKED>(tile, block);
+					gather(square, m);
+					transpose_tile::<P, LOG_TILE_PACKED>(square, block);
 
-					// Scatter the rows back to the places they came from.
-					for j in 0..1 << log_tile {
-						let src = tile.as_ptr().add(j << LOG_TILE_PACKED);
-						let dst = data.add(row(reverse_bits(j, log_tile as u32)));
-						for k in 0..1 << LOG_TILE_PACKED {
-							*dst.add(k) = *src.add(k);
-						}
+					// A middle index that reverses to itself keeps its own square.
+					if m_rev == m {
+						scatter(square, m);
+						return;
 					}
+
+					// Otherwise the two squares trade places, each transposed on the way.
+					gather(mirror, m_rev);
+					transpose_tile::<P, LOG_TILE_PACKED>(mirror, block);
+					scatter(square, m_rev);
+					scatter(mirror, m);
 				}
 			},
 		);
-
-	// Phase 2: reverse the middle index within each high index, one tile at a time.
-	// A high index owns `2^log_mid` consecutive tiles.
-	// Different high indices own disjoint runs, so each run permutes on its own.
-	data.par_chunks_mut(1 << (log_mid + LOG_TILE_PACKED))
-		.for_each(|chunk| {
-			bit_reverse_groups::<P, LOG_TILE_PACKED>(chunk);
-		});
 }
 
 /// Transposes in place the square matrix of scalars a tile buffer holds.
