@@ -30,8 +30,8 @@ use itertools::chain;
 
 use super::{
 	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_MAX_ARITY, LOG_OPERATION_COUNT, LOG_SHIFT_COUNT,
-	OperationEvalFn, SHIFT_COUNT, SHIFT_LOG_VARS, WiringWeights, ZERO_ARITY, error::Error,
-	shift_ind::evaluate_shift_inds,
+	OPERATION_COUNT, OperationEvalFn, SHIFT_COUNT, SHIFT_LOG_VARS, WiringWeights, ZERO_ARITY,
+	error::Error, shift_ind::evaluate_shift_inds,
 };
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
@@ -317,6 +317,10 @@ where
 /// from the prover and reduces it onto the packed public segment, so a prover that used different
 /// public values fails there rather than here.
 ///
+/// `r_x_primes` holds the four operations' sumcheck challenge points, ordered as the operators are
+/// declared: zero, bitand, intmul, binmul. Only the points enter here; the evaluation claims they
+/// carry are [`verify`]'s to batch.
+///
 /// # Errors
 ///
 /// - `Error::VerificationFailure` if the evaluation equation doesn't hold
@@ -326,10 +330,7 @@ pub fn check_eval<'a, F, C>(
 	constraint_system: &'a ConstraintSystem,
 	inout: InoutSegment,
 	public_eval: C::Elem,
-	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
-	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
-	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
-	binmul_data: &OperatorData<C::Elem, BINMUL_ARITY>,
+	r_x_primes: [&[C::Elem]; OPERATION_COUNT],
 	subspace: &BinarySubspace<F>,
 	r_zhat_prime: &C::Elem,
 	output: &VerifyOutput<C::Elem>,
@@ -379,14 +380,16 @@ where
 	let monster_eval = l_tilde_eval * shift_ind_eval * wiring_eval.clone();
 
 	// The function the caller checks the claim with, and the flat input it reads. Every entry is a
-	// public-channel-derived element (the two batching challenge vectors, the operator data's
+	// public-channel-derived element (the two batching challenge vectors, the four operations'
 	// `r_x_prime` vectors, both shift slots' challenges, `r_y`, and `r_segment` last); the
 	// constraint system it sums over is fixed.
 	let claim = {
-		let zero_r_x_prime_len = zero_data.r_x_prime.len();
-		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
-		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
-		let binmul_r_x_prime_len = binmul_data.r_x_prime.len();
+		let [
+			zero_r_x_prime_len,
+			bitand_r_x_prime_len,
+			intmul_r_x_prime_len,
+			binmul_r_x_prime_len,
+		] = r_x_primes.map(<[_]>::len);
 		let r_s_len = r_s_inner.len();
 		let r_v_len = r_v_inner.len();
 		let r_y_len = r_y.len();
@@ -394,10 +397,7 @@ where
 		let inputs: Vec<C::Elem> = chain!(
 			operation_batch_challenges,
 			operand_batch_challenges,
-			&zero_data.r_x_prime,
-			&bitand_data.r_x_prime,
-			&intmul_data.r_x_prime,
-			&binmul_data.r_x_prime,
+			r_x_primes.into_iter().flatten(),
 			r_s_inner,
 			r_v_inner,
 			r_s_outer,
