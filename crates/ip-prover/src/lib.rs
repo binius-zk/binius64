@@ -27,6 +27,7 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod channel;
+pub mod claim_fold;
 pub mod fracaddcheck;
 pub mod logup_star;
 pub mod prodcheck;

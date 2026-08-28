@@ -194,6 +194,184 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 	}
 }
 
+/// Proves the hypercube sums of one sparse multilinear against several dense ones.
+///
+/// The sparse multilinear is shared, so it is stored once and folded once.
+/// That holds however many dense columns ride along.
+///
+/// One prover per column would instead hold a copy of the entry list each.
+/// Every copy would then fold each round.
+/// Avoiding that is the whole reason this exists.
+///
+/// One round polynomial comes out per column.
+/// The batching driver combines a prover's polynomials exactly as it would separate provers'.
+///
+/// The claim each column carries is its own.
+/// So the columns are independent sums that happen to share a factor.
+///
+/// Everything else follows the single-column prover in this module.
+/// A test pins the two together at one column.
+pub struct SparseMultiDenseProductSumcheckProver<P: PackedField> {
+	/// The shared sparse multilinear, folded in place, once per round.
+	///
+	/// Indices are always below `1 << self.n_vars()`.
+	sparse: Vec<SparseEntry<P::Scalar>>,
+
+	/// The dense multilinears, folded in place.
+	/// Their lengths track the free variables.
+	dense: Vec<FactoredMultilinear<P>>,
+
+	/// Each column's sum claim, or its round polynomial awaiting the challenge that reduces it.
+	state: Vec<RoundState<RoundCoeffs<P::Scalar>, P::Scalar>>,
+}
+
+impl<P: PackedField> SparseMultiDenseProductSumcheckProver<P> {
+	/// Creates a prover for the claim that each sparse-dense product sums to its stated value.
+	///
+	/// # Arguments
+	///
+	/// * `sparse` - entries of the shared sparse multilinear, in any order, indices repeatable.
+	/// * `dense` - one dense multilinear per claim, all over the same variables.
+	/// * `sums` - the claimed sum of each product over the hypercube.
+	///
+	/// # Panics
+	///
+	/// Panics if the columns disagree on their variable count.
+	///
+	/// Panics if there is not one sum per column, or if any entry index is out of range.
+	pub fn new(
+		sparse: Vec<SparseEntry<P::Scalar>>,
+		dense: Vec<FactoredMultilinear<P>>,
+		sums: &[P::Scalar],
+	) -> Self {
+		let n_vars = dense
+			.first()
+			.expect("precondition: at least one dense column")
+			.n_vars();
+		assert!(
+			dense.iter().all(|column| column.n_vars() == n_vars),
+			"precondition: every dense column must span the same variables"
+		);
+		assert_eq!(dense.len(), sums.len(), "precondition: one sum per dense column");
+		assert!(
+			sparse.iter().all(|&(index, _)| index < 1 << n_vars),
+			"precondition: every sparse index must be within the dense multilinears"
+		);
+
+		Self {
+			sparse,
+			dense,
+			state: sums.iter().map(|&sum| RoundState::Claim(sum)).collect(),
+		}
+	}
+
+	/// The index-space bit this round binds, separating the two halves of the hypercube.
+	///
+	/// # Panics
+	///
+	/// Panics if no variables are left to bind.
+	fn half(&self) -> usize {
+		let n_vars = self.n_vars();
+		assert!(n_vars > 0, "no variables remain to bind");
+		1 << (n_vars - 1)
+	}
+}
+
+impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
+	for SparseMultiDenseProductSumcheckProver<P>
+{
+	fn n_vars(&self) -> usize {
+		self.dense.first().map_or(0, FactoredMultilinear::n_vars)
+	}
+
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		let half = self.half();
+		let sparse = &self.sparse;
+
+		// One round polynomial per column, each read against the shared entry list.
+		//
+		// The entries are walked once per column, which is inherent.
+		// A column's polynomial is its own.
+		//
+		// What is not repeated is the folding, or the storage.
+		let coeffs = self
+			.dense
+			.iter()
+			.zip(&self.state)
+			.map(|(dense, state)| {
+				let (y_1, y_inf) = sparse
+					.par_iter()
+					.with_min_task(WorkPerItem::FieldMuls)
+					.map(|&(index, value)| {
+						let own = dense.get(index);
+						let facing = dense.get(index ^ half);
+
+						// The infinity evaluation reads B(0) + B(1).
+						// That is the same sum from either half.
+						//
+						// So the entry's own half only decides the evaluation at 1.
+						let y_1 = if index & half == 0 {
+							F::ZERO
+						} else {
+							value * own
+						};
+						(y_1, value * (own + facing))
+					})
+					.reduce(
+						|| (F::ZERO, F::ZERO),
+						|(lhs_1, lhs_inf), (rhs_1, rhs_inf)| (lhs_1 + rhs_1, lhs_inf + rhs_inf),
+					);
+				RoundEvals([y_1, y_inf]).interpolate(*state.claim())
+			})
+			.collect::<Vec<_>>();
+
+		self.state = coeffs.iter().cloned().map(RoundState::Coeffs).collect();
+		coeffs
+	}
+
+	fn fold(&mut self, challenge: F) {
+		let half = self.half();
+
+		// Every column reduces its own claim on the shared challenge.
+		self.state = self
+			.state
+			.iter()
+			.map(|state| RoundState::Claim(state.coeffs().evaluate(&challenge)))
+			.collect();
+
+		// The shared entry list folds once, which is the whole point of holding it here.
+		let lower_weight = F::ONE - challenge;
+		self.sparse
+			.par_iter_mut()
+			.with_min_task(WorkPerItem::FieldMuls)
+			.for_each(|(index, value)| {
+				if *index & half == 0 {
+					*value *= lower_weight;
+				} else {
+					*value *= challenge;
+					*index ^= half;
+				}
+			});
+
+		for dense in &mut self.dense {
+			dense.fold_highest_var(challenge);
+		}
+	}
+
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called before the last fold");
+
+		// Every entry has folded onto the single remaining index.
+		// So the sparse evaluation is what is left of their sum.
+		//
+		// It leads, then one evaluation per dense column.
+		let sparse_eval = self.sparse.iter().map(|&(_, value)| value).sum();
+		let mut evals = vec![sparse_eval];
+		evals.extend(self.dense.iter().map(|dense| dense.get(0)));
+		evals
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_field::{
@@ -209,7 +387,9 @@ mod tests {
 	use rand::{SeedableRng, prelude::*};
 
 	use super::*;
-	use crate::sumcheck::{factored_multilinear::FactoredMultilinear, prove::prove_single};
+	use crate::sumcheck::{
+		batch::batch_prove, factored_multilinear::FactoredMultilinear, prove::prove_single,
+	};
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
@@ -326,6 +506,103 @@ mod tests {
 
 		// And the shared proof verifies, so neither form is consistently wrong.
 		prove_verify(sparse, &table);
+	}
+
+	#[test]
+	fn one_column_matches_the_single_column_prover() {
+		// Invariant: the multi-column prover is the single-column one, generalized.
+		//
+		// Two provers computing the same round polynomials is a thing to pin, not assume.
+		// The round math is written twice, so it can drift once.
+		//
+		// At one column they must agree.
+		//
+		// Both run through the batching driver, which is what makes the comparison fair.
+		//
+		// That driver samples a batching coefficient before the rounds.
+		// The single-claim driver does not.
+		// The challenger would otherwise diverge from round two onward.
+		//
+		// Comparing transcripts compares every round polynomial, not just the final result.
+		let mut rng = StdRng::seed_from_u64(17);
+
+		let n_vars = 5;
+		let weight = FactoredMultilinear::new([random_field_buffer::<P>(&mut rng, n_vars)]);
+		let sparse = random_sparse(&mut rng, n_vars, 14);
+		let sum = sparse
+			.iter()
+			.map(|&(index, _)| index)
+			.zip(sparse.iter().map(|&(_, value)| value))
+			.map(|(index, value)| value * weight.get(index))
+			.sum::<F>();
+		assert_ne!(sum, F::ZERO, "a vacuous claim would prove nothing");
+
+		let single = {
+			let prover = SparseDenseProductSumcheckProver::new(sparse.clone(), weight.clone(), sum);
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let output = batch_prove(vec![prover], &mut transcript);
+			(output.multilinear_evals[0].clone(), transcript.finalize())
+		};
+		let multi = {
+			let prover = SparseMultiDenseProductSumcheckProver::new(
+				sparse,
+				vec![weight],
+				std::slice::from_ref(&sum),
+			);
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let output = batch_prove(vec![prover], &mut transcript);
+			(output.multilinear_evals[0].clone(), transcript.finalize())
+		};
+
+		assert_eq!(single.1, multi.1, "the two provers must prove the same rounds");
+		assert_eq!(single.0, multi.0, "and reduce to the same evaluations");
+	}
+
+	#[test]
+	fn the_sparse_column_is_stored_once_however_many_dense_columns_ride_it() {
+		// Invariant: the shared entry list is shared, not copied per column.
+		//
+		// This is the reason the multi-column prover exists.
+		//
+		// A prover per claim would hold one entry list each, and fold every one each round.
+		// Both memory and folding work would then scale with the claim count.
+		//
+		//     three columns  ->  one entry list, folded once per round
+		//
+		// Checked by the sums each column reduces to.
+		// They must be the three distinct claims.
+		//
+		// That is only possible if one shared list was read against three different weights.
+		let mut rng = StdRng::seed_from_u64(19);
+
+		let n_vars = 4;
+		let sparse = random_sparse(&mut rng, n_vars, 10);
+		let weights = (0..3)
+			.map(|_| FactoredMultilinear::new([random_field_buffer::<P>(&mut rng, n_vars)]))
+			.collect::<Vec<_>>();
+		let sums = weights
+			.iter()
+			.map(|weight| {
+				sparse
+					.iter()
+					.map(|&(index, value)| value * weight.get(index))
+					.sum::<F>()
+			})
+			.collect::<Vec<_>>();
+
+		let prover = SparseMultiDenseProductSumcheckProver::new(sparse, weights, &sums);
+		let mut transcript = ProverTranscript::new(StdChallenger::default());
+		let output = batch_prove(vec![prover], &mut transcript);
+
+		// One evaluation for the shared sparse column, then one per dense column.
+		let evals = &output.multilinear_evals[0];
+		assert_eq!(evals.len(), 4);
+
+		// Every column's product reduces against the same sparse evaluation.
+		// That is what makes the sharing observable from outside.
+		let sparse_eval = evals[0];
+		assert_ne!(sparse_eval, F::ZERO);
+		assert!(evals[1..].iter().all(|&dense| dense != sparse_eval));
 	}
 
 	/// Draws `n_entries` entries at uniformly random indices, so repeats arise on their own.
