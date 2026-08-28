@@ -52,6 +52,7 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
+use binius_utils::iter::IterExtensions;
 use bytemuck::Zeroable;
 use rand::distr::{Distribution, StandardUniform};
 
@@ -378,23 +379,28 @@ where
 	// One extension scalar per subfield lane: the packing width is `PSub::WIDTH`.
 	const LOG_N: usize = PSub::LOG_WIDTH;
 
+	// A lane's scalar is assembled from the coordinate registers, so iteration walks lane indices
+	// and skipping ahead must not assemble the lanes it jumps over.
 	#[inline]
 	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = F> + Send + Clone {
-		(0..Self::N).map(move |i| unsafe { value.get_unchecked(i) })
+		// Safety: `i` ranges over `0..Self::N`.
+		(0..Self::N).map_skippable(move |i| unsafe { value.get_unchecked(i) })
 	}
 
 	#[inline]
 	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = F> + Send + Clone + '_ {
 		let value = *value;
-		(0..Self::N).map(move |i| unsafe { value.get_unchecked(i) })
+		// Safety: `i` ranges over `0..Self::N`.
+		(0..Self::N).map_skippable(move |i| unsafe { value.get_unchecked(i) })
 	}
 
 	#[inline]
 	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = F> + Send + Clone + '_ {
-		(0..slice.len() * Self::N).map(move |global| {
-			let (elem, lane) = (global / Self::N, global % Self::N);
-			// SAFETY: `lane < Self::N` by construction.
-			unsafe { slice[elem].get_unchecked(lane) }
+		(0..slice.len() * Self::N).map_skippable(move |global| {
+			let (elem, lane) = (global >> Self::LOG_N, global & (Self::N - 1));
+			// Safety: `global` ranges over `0..slice.len() * Self::N`, so `elem < slice.len()`
+			// and `lane < Self::N`.
+			unsafe { slice.get_unchecked(elem).get_unchecked(lane) }
 		})
 	}
 

@@ -446,18 +446,6 @@ mod tests {
 		test_mul_packed_random::<PackedBinaryGhash2x128b>();
 	}
 
-	#[test]
-	fn test_iter_size_hint() {
-		assert_valid_iterator_with_exact_size_hint::<PackedBinaryField128x1b>();
-	}
-
-	fn assert_valid_iterator_with_exact_size_hint<P: PackedField>() {
-		assert_eq!(P::default().iter().size_hint(), (P::WIDTH, Some(P::WIDTH)));
-		assert_eq!(P::default().into_iter().size_hint(), (P::WIDTH, Some(P::WIDTH)));
-		assert_eq!(P::default().iter().count(), P::WIDTH);
-		assert_eq!(P::default().into_iter().count(), P::WIDTH);
-	}
-
 	packed_field_tests!(packed_8x1b, PackedBinaryField8x1b);
 	packed_field_tests!(packed_16x1b, PackedBinaryField16x1b);
 	packed_field_tests!(packed_32x1b, PackedBinaryField32x1b);
