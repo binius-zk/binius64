@@ -488,8 +488,13 @@ where
 		// Transpose the `degree × degree` matrix of `FSub` coordinates independently in each lane.
 		// Reading a whole column before writing keeps the in-place update free of read-after-write
 		// hazards within the lane.
+		//
+		// The buffer holds one lane's column and is reused across lanes, so the whole transpose
+		// allocates once rather than once per lane.
+		let mut column = Vec::with_capacity(degree);
 		for lane in 0..PSub::WIDTH {
-			let column = (0..degree).map(|j| elems[j].get(lane)).collect::<Vec<F>>();
+			column.clear();
+			column.extend((0..degree).map(|j| elems[j].get(lane)));
 			for (i, elem) in elems.iter_mut().enumerate() {
 				let transposed = <F as ExtensionField<FSub>>::from_bases(
 					(0..degree).map(|j| F::get_base(&column[j], i)),

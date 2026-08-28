@@ -30,7 +30,7 @@ pub mod transpose;
 mod underlier;
 pub mod util;
 
-pub use arithmetic_traits::WideMul;
+pub use arithmetic_traits::{MulX, WideMul};
 pub use binary_field::*;
 pub use divisible::Divisible;
 pub use field::{ExtensionField, Field, FieldOps};

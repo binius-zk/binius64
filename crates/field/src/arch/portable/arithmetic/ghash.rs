@@ -17,6 +17,20 @@ use crate::{
 	packed_fields::primitive::PackedPrimitiveType,
 };
 
+/// The reduction polynomial `X^128 + X^7 + X^2 + X + 1`, with its `X^128` term left implicit.
+pub const POLY: u128 = 0x87;
+
+/// Scales one GHASH element by `X`, over `u128`. The scalar reference.
+#[inline]
+pub const fn ghash_mul_x(x: u128) -> u128 {
+	// Why: shifting up one degree can push a term to X^128, which the modulus rewrites. Negating
+	// bit 127, read as 0 or 1, gives a mask of all zeros or all ones, so one exclusive or covers
+	// both cases.
+	let mask = (x >> 127).wrapping_neg();
+
+	(x << 1) ^ (POLY & mask)
+}
+
 /// Multiply two GHASH field elements using software implementation.
 ///
 /// Method described at:

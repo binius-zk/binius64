@@ -19,12 +19,42 @@ use bytemuck::TransparentWrapper;
 use super::super::m128::M128;
 use crate::{
 	Ghash128b as GhashB128, WideMul,
-	arithmetic_traits::{MulXWide, Square},
+	arch::portable::arithmetic::ghash::POLY,
+	arithmetic_traits::{GhashMulX, MulXWide, Square},
 	packed_fields::primitive::PackedPrimitiveType,
 };
 
-// The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87.
-const POLY: u128 = 0x87;
+/// Scales the single 128-bit GHASH lane by `X`.
+#[inline]
+pub fn mul_x(x: M128) -> M128 {
+	let x_u64x2: uint64x2_t = x.into();
+
+	// Safety: the module is compiled only under `target_feature = "neon"`, which every intrinsic
+	// below requires.
+	unsafe {
+		// No instruction shifts a whole 128-bit lane by one bit, so build the shift from the two
+		// 64-bit halves. The bit leaving the low half belongs at position 64, which is where
+		// moving it up a half-lane puts it. The bit leaving the high half is the coefficient of
+		// X^128 and falls off the top.
+		let shifted = M128::from(vshlq_n_u64::<1>(x_u64x2))
+			^ move_64_to_hi(vshrq_n_u64::<63>(x_u64x2).into());
+
+		// That term is what the modulus rewrites as `0x87`. Bit 127 is the sign bit of the high
+		// half, so shifting that half right by 63 as a signed value fills it with copies of the
+		// bit, and duplicating it over both halves spreads the mask across the lane.
+		let sign = vshrq_n_s64::<63>(vreinterpretq_s64_u64(x_u64x2));
+		let mask = M128::from(vreinterpretq_u64_s64(vdupq_laneq_s64::<1>(sign)));
+
+		shifted ^ (mask & M128::from_u128(POLY))
+	}
+}
+
+impl GhashMulX for M128 {
+	#[inline]
+	fn ghash_mul_x(self) -> Self {
+		mul_x(self)
+	}
+}
 
 /// Carryless multiply of two 64-bit lanes selected from the 128-bit inputs by the bytes of
 /// `IMM8`, matching the semantics of x86_64's `clmulepi64`.

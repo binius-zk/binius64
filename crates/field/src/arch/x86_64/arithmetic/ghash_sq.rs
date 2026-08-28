@@ -14,8 +14,8 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	Divisible, Ghash128b, PackedGhash2x128b, PackedGhashSq1x256b, WideMul, packed_extension,
-	packed_fields::ghash_sq::ghash_sq_from_coords,
+	Divisible, Ghash128b, PackedGhash2x128b, PackedGhashSq1x256b, WideMul, arithmetic_traits::MulX,
+	packed_extension, packed_fields::ghash_sq::ghash_sq_from_coords,
 };
 
 /// The two unreduced GHASH products `[a·e, b·f]` batched into one packed widening multiply.

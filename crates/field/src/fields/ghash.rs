@@ -15,6 +15,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::{
 	Field, Rijndael8b,
 	arch::M128,
+	arithmetic_traits::{GhashMulX, MulX},
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	field::ExtensionField,
 	underlier::{U1, UnderlierView},
@@ -52,21 +53,6 @@ impl Ghash128b {
 	}
 
 	#[inline]
-	pub fn mul_x(self) -> Self {
-		// These scalar bit manipulations are simplest over `u128`; the underlier is `M128`.
-		let val: u128 = self.to_underlier().into();
-		let shifted = val << 1;
-
-		// GHASH irreducible polynomial: x^128 + x^7 + x^2 + x + 1
-		// When the high bit is set, we need to XOR with the reduction polynomial 0x87
-		// All 1s if the top bit is set, all 0s otherwise
-		let mask = (val >> 127).wrapping_neg();
-		let result = shifted ^ (0x87 & mask);
-
-		Self::new(result)
-	}
-
-	#[inline]
 	pub fn mul_inv_x(self) -> Self {
 		// These scalar bit manipulations are simplest over `u128`; the underlier is `M128`.
 		let val: u128 = self.to_underlier().into();
@@ -81,6 +67,13 @@ impl Ghash128b {
 		let result = shifted ^ (((1u128 << 127) | 0x43) & mask);
 
 		Self::new(result)
+	}
+}
+
+impl MulX for Ghash128b {
+	#[inline]
+	fn mul_x(self) -> Self {
+		Self::from_underlier(self.to_underlier().ghash_mul_x())
 	}
 }
 

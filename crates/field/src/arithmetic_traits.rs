@@ -6,10 +6,31 @@ use std::{
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
+use crate::underlier::Underlier;
+
 /// Value that can be multiplied by itself
 pub trait Square {
 	/// Returns the value multiplied by itself
 	fn square(self) -> Self;
+}
+
+/// Scales a field element by `X`, the generator of its polynomial basis.
+///
+/// A one-bit shift plus a masked exclusive or, not a field multiply.
+/// The scaling is `GF(2)`-linear, so it applies equally to an unreduced product.
+pub trait MulX {
+	/// Returns the element scaled by `X`.
+	#[must_use]
+	fn mul_x(self) -> Self;
+}
+
+/// An underlier whose 128-bit lanes each hold a GHASH element that can be scaled by `X`.
+///
+/// The per-architecture dispatch point behind [`MulX`] for GHASH.
+pub trait GhashMulX: Underlier {
+	/// Returns the value with every 128-bit lane scaled by `X`.
+	#[must_use]
+	fn ghash_mul_x(self) -> Self;
 }
 
 /// A field type that supports widening (unreduced) multiplication.

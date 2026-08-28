@@ -15,21 +15,18 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	Divisible, Ghash128b as GhashB128, WideMul,
+	arch::portable::arithmetic::ghash::POLY,
 	arithmetic_traits::{MulXWide, Square},
 	packed_fields::primitive::PackedPrimitiveType,
 	underlier::Underlier,
 };
 
-/// Trait for underliers that support CLMUL operations which are needed for the
-/// GHASH multiplication algorithm.
+/// Trait for underliers whose 128-bit lanes each hold a GHASH element, carrying the per-lane bit
+/// operations the GHASH arithmetic needs.
 ///
-/// On x86_64 this abstracts over the `M128`/`M256`/`M512` wrappers for `__m128i`/`__m256i`/
-/// `__m512i`, so the same algorithm code drives PCLMULQDQ and VPCLMULQDQ.
-pub trait ClMulUnderlier: Underlier + Divisible<u128> {
-	/// Performs CLMUL operation on two 64-bit values that are selected from 128-bit lanes
-	/// by the bytes of the IMM8 parameter.
-	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self;
-
+/// None of these is a multiply, so an implementation needs only the base SIMD instruction set for
+/// its width.
+pub trait GhashLanes: Underlier + Divisible<u128> {
 	/// For each 128-bit lane, shifts the lower 64 bits to the upper 64 bits and zeroes the lower
 	/// 64-bit.
 	fn move_64_to_hi(a: Self) -> Self;
@@ -40,6 +37,35 @@ pub trait ClMulUnderlier: Underlier + Divisible<u128> {
 	/// For each 64-bit lane, shifts the value right by 63 bits, leaving the lane's top bit as its
 	/// low bit.
 	fn shr_63_epi64(a: Self) -> Self;
+
+	/// For each 128-bit lane, returns all ones when bit 127 is set and all zeros otherwise.
+	fn broadcast_bit_127(a: Self) -> Self;
+}
+
+/// Trait for underliers that support CLMUL operations which are needed for the
+/// GHASH multiplication algorithm.
+///
+/// On x86_64 this abstracts over the `M128`/`M256`/`M512` wrappers for `__m128i`/`__m256i`/
+/// `__m512i`, so the same algorithm code drives PCLMULQDQ and VPCLMULQDQ.
+pub trait ClMulUnderlier: GhashLanes {
+	/// Performs CLMUL operation on two 64-bit values that are selected from 128-bit lanes
+	/// by the bytes of the IMM8 parameter.
+	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self;
+}
+
+/// Scales every 128-bit GHASH lane by `X`.
+#[inline]
+pub fn mul_x<U: GhashLanes>(x: U) -> U {
+	// No instruction shifts a whole 128-bit lane by one bit, so build the shift from the two
+	// 64-bit halves. The bit leaving the low half belongs at position 64, which is where moving it
+	// up a half-lane puts it. The bit leaving the high half is the coefficient of X^128 and falls
+	// off the top.
+	let shifted = U::shl_1_epi64(x) ^ U::move_64_to_hi(U::shr_63_epi64(x));
+
+	// That is the term the modulus rewrites: X^128 = 0x87, folded back in where bit 127 was set.
+	let overflow = U::broadcast_bit_127(x) & <U as Divisible<u128>>::broadcast(POLY);
+
+	shifted ^ overflow
 }
 
 /// The version of the multiplication for optimized suqare operation.
@@ -76,9 +102,6 @@ impl<U: ClMulUnderlier> Square for GhashClMul<PackedPrimitiveType<U, GhashB128>>
 		)))
 	}
 }
-
-// The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87
-const POLY: u128 = 0x87;
 
 /// Performs reduction step: returns t0 + x^64 * t1
 #[inline]
@@ -244,8 +267,12 @@ impl<U: ClMulUnderlier> WideMul for GhashClMulWideMul<PackedPrimitiveType<U, Gha
 mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
-	use super::{ClMulUnderlier, WideGhashProduct};
-	use crate::{Random, WideMul, arch::OptimalPackedB128, arithmetic_traits::MulXWide};
+	use super::{ClMulUnderlier, GhashLanes, POLY, WideGhashProduct, mul_x};
+	use crate::{
+		Divisible, Random, WideMul,
+		arch::{OptimalPackedB128, portable::arithmetic::ghash::ghash_mul_x},
+		arithmetic_traits::MulXWide,
+	};
 
 	/// Scaling by X commutes with the reduction: scaling the unreduced product matches multiplying
 	/// the reduced product by X (the field element 2) in every 128-bit lane.
@@ -275,6 +302,55 @@ mod tests {
 		check_mul_x_wide::<crate::arch::x86_64::m256::M256>(&mut rng);
 		#[cfg(all(target_feature = "avx512f", target_feature = "vpclmulqdq"))]
 		check_mul_x_wide::<crate::arch::x86_64::m512::M512>(&mut rng);
+	}
+
+	/// The vector sequence agrees with the scalar reference in every 128-bit lane.
+	#[allow(dead_code)]
+	fn check_mul_x<U: GhashLanes>(mut rng: impl Rng) {
+		// Values that exercise the carry between the 64-bit halves and the fold of the modulus.
+		const BOUNDARY: [u128; 8] = [
+			0,
+			1,
+			2,
+			POLY,
+			1 << 127,
+			(1 << 127) | 1,
+			(1 << 127) | (1 << 63),
+			u128::MAX,
+		];
+
+		// Give neighbouring lanes different boundary values, so a sequence that let one lane's
+		// carry leak into the next would fail here and not only on random input.
+		let mut cases = (0..BOUNDARY.len())
+			.map(|i| Divisible::<u128>::from_iter(BOUNDARY.iter().copied().cycle().skip(i)))
+			.collect::<Vec<U>>();
+		cases.extend((0..64).map(|_| U::random(&mut rng)));
+
+		for u in cases {
+			let scaled = mul_x(u);
+			let expected = Divisible::<u128>::value_iter(u).map(ghash_mul_x);
+
+			for (i, (lane, want)) in Divisible::<u128>::value_iter(scaled)
+				.zip(expected)
+				.enumerate()
+			{
+				assert_eq!(lane, want, "lane {i} of {u:?}");
+			}
+		}
+	}
+
+	// Covers every width whose lane operations the target provides, since the algorithm is shared
+	// but the shifts and the bit-127 mask underneath it are written per width.
+	#[cfg(target_feature = "sse2")]
+	#[test]
+	fn mul_x_matches_the_scalar_reference() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		check_mul_x::<crate::arch::x86_64::m128::M128>(&mut rng);
+		#[cfg(target_feature = "avx2")]
+		check_mul_x::<crate::arch::x86_64::m256::M256>(&mut rng);
+		#[cfg(target_feature = "avx512f")]
+		check_mul_x::<crate::arch::x86_64::m512::M512>(&mut rng);
 	}
 
 	/// Stress-test accumulation of many widening products. Correctness / linearity for each
