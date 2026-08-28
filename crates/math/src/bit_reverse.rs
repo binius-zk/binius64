@@ -224,6 +224,8 @@ fn bit_reverse_paired<P: PackedField, const LOG_TILE_PACKED: usize>(
 					}
 
 					// Otherwise the two squares trade places, each transposed on the way.
+					// Otherwise the two squares trade places, each transposed on the way.
+					// The mirror is read before the scatter that overwrites where it sat.
 					gather(mirror, m_rev);
 					transpose_tile::<P, LOG_TILE_PACKED>(mirror, block);
 					scatter(square, m_rev);
