@@ -70,7 +70,6 @@ pub fn verify<F, C>(
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
-	C::Elem: FieldOps<Scalar = F>,
 {
 	let claims = claims.into_iter().collect::<Vec<_>>();
 	let n_vars = claims
