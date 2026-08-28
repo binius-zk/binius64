@@ -69,28 +69,8 @@ pub trait InvertOrZero {
 	}
 }
 
-// The `@ strategy` arm wires `$name`'s `Mul` to a strategy wrapper: a `TransparentWrapper` struct
-// (e.g. `Gfni`, `MulFromWideMul`) that carries the actual algorithm. We wrap the inputs, run
-// the wrapper's `Mul`, and peel the result. `$strategy` is captured as raw token-trees (not
-// `:ty`/`:path`) because a matched type fragment is opaque and can't have `<$name>` appended to it.
-macro_rules! impl_mul_with {
-	($name:ident @ $($strategy:tt)*) => {
-		impl std::ops::Mul for $name {
-			type Output = Self;
-
-			#[inline]
-			fn mul(self, rhs: Self) -> Self {
-				<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::peel(
-					<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(self)
-						* <$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(rhs),
-				)
-			}
-		}
-	};
-}
-
-pub(crate) use impl_mul_with;
-
+// A strategy is captured as raw token-trees rather than a type fragment.
+// A matched type fragment is opaque, so it cannot take the packed type as a generic argument.
 macro_rules! impl_square_with {
 	($name:ident @ $($strategy:tt)*) => {
 		impl $crate::arithmetic_traits::Square for $name {

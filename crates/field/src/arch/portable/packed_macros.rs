@@ -1,33 +1,35 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+/// Defines a packed binary field over an underlier, with the scalar it packs and its arithmetic.
+///
+/// Squaring, inversion and the widening multiply are supplied per target as strategies.
+/// Multiplication is always the widening multiply followed by its reduction, so the two cannot
+/// disagree.
 macro_rules! define_packed_binary_field {
 	(
 		$name:ident, $scalar:path, $underlier:ident,
-		($($mul:tt)*),
 		($($square:tt)*),
 		($($invert:tt)*),
 		($($wide_mul:tt)*)
 	) => {
-		// Define packed field types
 		pub type $name = $crate::packed_fields::primitive::PackedPrimitiveType<$underlier, $scalar>;
 
-		// Serialization is provided by a single generic impl on `PackedPrimitiveType` (see
-		// `packed.rs`), so no per-type impl is needed here.
+		impl std::ops::Mul for $name {
+			type Output = Self;
 
-		// Define multiplication
-		impl_strategy!(impl_mul_with       $name, ($($mul)*));
+			#[inline]
+			fn mul(self, rhs: Self) -> Self {
+				<Self as $crate::arithmetic_traits::WideMul>::reduce(
+					<Self as $crate::arithmetic_traits::WideMul>::wide_mul(self, rhs),
+				)
+			}
+		}
 
-		// Define square
-		impl_strategy!(impl_square_with    $name, ($($square)*));
+		impl_square_with!($name @ $($square)*);
 
-		// Define invert
-		impl_strategy!(impl_invert_with    $name, ($($invert)*));
+		impl_invert_with!($name @ $($invert)*);
 
-		// Define widening multiplication. Every packed field is a `WideMul` (it's a parent trait
-		// of `PackedField`). The caller passes a wrapper struct (a `TransparentWrapper` around this
-		// packed field) that carries the actual `WideMul` impl; here we forward to it by wrapping
-		// the inputs and peeling the reduced result.
 		impl $crate::arithmetic_traits::WideMul for $name {
 			type Output =
 				<$($wide_mul)* <$name> as $crate::arithmetic_traits::WideMul>::Output;
@@ -52,26 +54,4 @@ macro_rules! define_packed_binary_field {
 
 pub(crate) use define_packed_binary_field;
 
-pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with};
-
-pub(crate) mod portable_macros {
-	macro_rules! impl_strategy {
-		($impl_macro:ident $name:ident, (None)) => {};
-		// gfni condition: strategy types are in $crate::arch
-		($impl_macro:ident $name:ident, (if gfni $strategy:tt else $fallback:tt)) => {
-			cfg_if! {
-				if #[cfg(all(target_arch = "x86_64", target_feature = "sse2", target_feature = "gfni"))] {
-					$impl_macro!($name @ $crate::arch::$strategy);
-				} else {
-					$impl_macro!($name @ $crate::arch::$fallback);
-				}
-			}
-		};
-		// Path to strategy in caller's scope
-		($impl_macro:ident $name:ident, ($($strategy:tt)*)) => {
-			$impl_macro!($name @ $($strategy)*);
-		};
-	}
-
-	pub(crate) use impl_strategy;
-}
+pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_square_with};

@@ -53,20 +53,12 @@ pub(super) trait GfniType: Underlier {
 	fn gf2p8affineinv_epi64_epi8(x: Self, a: Self) -> Self;
 }
 
-/// GFNI multiplication wrapper for AES packings: `gf2p8mul` produces the reduced byte directly.
+/// Supplies inversion for the AES-field packings.
+///
+/// `gf2p8affineinv` inverts each byte in `GF(2^8)`, then applies a `GF(2)`-affine map.
 #[repr(transparent)]
 #[derive(TransparentWrapper)]
 pub struct Gfni<T>(T);
-
-impl<U: GfniType> std::ops::Mul for Gfni<PackedPrimitiveType<U, Rijndael8b>> {
-	type Output = Self;
-
-	#[inline(always)]
-	fn mul(self, rhs: Self) -> Self {
-		let (a, b) = (Self::peel(self), Self::peel(rhs));
-		Self::wrap(U::gf2p8mul_epi8(a.0, b.0).into())
-	}
-}
 
 /// GFNI widening multiply for AES packings: `gf2p8mul` already produces the reduced byte, so the
 /// wide product is `Self` and `reduce` is the identity. The single-instruction multiply covers
