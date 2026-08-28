@@ -8,8 +8,6 @@ pub mod packed_ghash_sq_256;
 #[cfg(target_feature = "gfni")]
 mod gfni;
 
-mod simd;
-
 cfg_if! {
 	if #[cfg(target_feature = "sse2")] {
 		mod m128;

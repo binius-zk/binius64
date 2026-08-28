@@ -4,15 +4,39 @@
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	Rijndael8b,
-	arch::x86_64::simd::simd_arithmetic::TowerSimdType,
+	Divisible, Rijndael8b,
 	arithmetic_traits::{InvertOrZero, WideMul},
 	packed_fields::primitive::PackedPrimitiveType,
 	underlier::Underlier,
 };
 
+/// The 8x8 identity matrix over `GF(2)`, in the byte encoding `vgf2p8affineinvqb` expects.
+///
+/// The instruction inverts each byte `b` of its input and then applies a `GF(2)`-affine map:
+///
+/// ```text
+/// out.bit[i] = parity(matrix.byte[7 - i] AND inv(b)) XOR imm8.bit[i]
+/// ```
+///
+/// Here `inv` is the multiplicative inverse in `GF(2^8)` under `x^8 + x^4 + x^3 + x + 1`.
+/// That is the Rijndael polynomial, so the field is exactly [`Rijndael8b`].
+/// Passing the identity matrix with `imm8 = 0` leaves `inv(b)` untransformed.
+///
+/// The formula feeds `matrix.byte[k]` into output bit `7 - k`.
+/// Selecting one input bit means that byte holds one set bit.
+/// So the identity is `matrix.byte[k] = 1 << (7 - k)`, descending, not `0x01, 0x02, 0x04, ...`:
+///
+/// ```text
+/// byte 0 = 0b10000000  ->  out.bit[7] = inv(b).bit[7]
+/// byte 1 = 0b01000000  ->  out.bit[6] = inv(b).bit[6]
+/// ...
+/// byte 7 = 0b00000001  ->  out.bit[0] = inv(b).bit[0]
+/// ```
+///
+/// The instruction defines `inv(0) = 0`.
+/// That is exactly the [`InvertOrZero`] contract, so a zero byte needs no special case.
 #[rustfmt::skip]
-pub const IDENTITY_MAP: i64 = u64::from_le_bytes([
+const IDENTITY_MAP: u64 = u64::from_le_bytes([
 	0b10000000,
 	0b01000000,
 	0b00100000,
@@ -21,9 +45,10 @@ pub const IDENTITY_MAP: i64 = u64::from_le_bytes([
 	0b00000100,
 	0b00000010,
 	0b00000001,
-]) as i64;
+]);
 
-pub(super) trait GfniType: Copy + TowerSimdType {
+/// SIMD underlier exposing the two GFNI byte instructions the AES packings need.
+pub(super) trait GfniType: Underlier {
 	fn gf2p8mul_epi8(a: Self, b: Self) -> Self;
 	fn gf2p8affineinv_epi64_epi8(x: Self, a: Self) -> Self;
 }
@@ -66,15 +91,14 @@ impl<U: GfniType + Underlier> WideMul for GfniWideMul<PackedPrimitiveType<U, Rij
 	}
 }
 
-impl<U: GfniType + Underlier> InvertOrZero for Gfni<PackedPrimitiveType<U, Rijndael8b>> {
+impl<U: GfniType + Divisible<u64>> InvertOrZero for Gfni<PackedPrimitiveType<U, Rijndael8b>> {
 	#[inline(always)]
 	fn invert_or_zero(self) -> Self {
 		let val_gfni = Self::peel(self).to_underlier();
 
-		// Calculate inversion and linear transformation to the original field with a single
-		// instruction
-		let transform_after = U::set_epi_64(IDENTITY_MAP);
-		let inv_gfni = U::gf2p8affineinv_epi64_epi8(val_gfni, transform_after);
+		// One instruction inverts every byte: the identity matrix leaves `inv(b)` untransformed.
+		let identity_map = <U as Divisible<u64>>::broadcast(IDENTITY_MAP);
+		let inv_gfni = U::gf2p8affineinv_epi64_epi8(val_gfni, identity_map);
 
 		Self::wrap(inv_gfni.into())
 	}
