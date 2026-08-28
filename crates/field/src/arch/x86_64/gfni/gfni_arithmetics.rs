@@ -58,7 +58,7 @@ pub(super) trait GfniType: Underlier {
 #[derive(TransparentWrapper)]
 pub struct Gfni<T>(T);
 
-impl<U: GfniType + Underlier> std::ops::Mul for Gfni<PackedPrimitiveType<U, Rijndael8b>> {
+impl<U: GfniType> std::ops::Mul for Gfni<PackedPrimitiveType<U, Rijndael8b>> {
 	type Output = Self;
 
 	#[inline(always)]
@@ -75,7 +75,7 @@ impl<U: GfniType + Underlier> std::ops::Mul for Gfni<PackedPrimitiveType<U, Rijn
 #[derive(TransparentWrapper)]
 pub struct GfniWideMul<T>(T);
 
-impl<U: GfniType + Underlier> WideMul for GfniWideMul<PackedPrimitiveType<U, Rijndael8b>> {
+impl<U: GfniType> WideMul for GfniWideMul<PackedPrimitiveType<U, Rijndael8b>> {
 	type Output = PackedPrimitiveType<U, Rijndael8b>;
 
 	#[inline(always)]
