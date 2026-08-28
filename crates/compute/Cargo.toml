@@ -8,3 +8,8 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+
+# `madvise(MADV_HUGEPAGE)` for the pool's large blocks; Linux ships transparent huge pages in
+# `madvise` mode, so a mapping that never asks gets 4 KiB pages.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

@@ -103,7 +103,13 @@ impl BufferPool {
 			.get_mut(&n_chunks)
 			.and_then(Vec::pop);
 
-		let mut block = reused.unwrap_or_else(|| Vec::with_capacity(n_chunks));
+		// A fresh block is the only one whose backing pages are new.
+		// The advice applies to the mapping, so a recycled block already carries it.
+		let mut block = reused.unwrap_or_else(|| {
+			let mut fresh: Vec<AlignedChunk> = Vec::with_capacity(n_chunks);
+			advise_huge_pages(fresh.as_mut_ptr().cast::<u8>(), byte_len);
+			fresh
+		});
 		let ptr = block.as_mut_ptr().cast::<T>();
 		// The block owns the allocation; forget it so its `Drop` does not free the memory we are
 		// about to hand to the `Vec`.
@@ -125,6 +131,72 @@ impl BufferPool {
 			.push(block);
 	}
 }
+
+/// Asks the kernel to back a freshly allocated range with transparent huge pages.
+///
+/// The prover sweeps buffers of tens to hundreds of megabytes with large strides.
+///
+/// On 4 KiB pages such a sweep walks thousands of page-table entries and thrashes the TLB.
+///
+/// A 2 MiB page covers 512 times as much of the buffer per entry.
+///
+/// Linux commonly ships transparent huge pages in advisory mode.
+///
+/// A mapping then gets huge pages only if it asks, so a caller that never asks stays on 4 KiB.
+///
+/// The request changes no value the pool hands out.
+///
+/// A kernel that declines it leaves the buffer working exactly as before.
+#[cfg(target_os = "linux")]
+fn advise_huge_pages(ptr: *mut u8, len: usize) {
+	/// A transparent huge page is 2 MiB, and a smaller request can never be honoured.
+	const HUGE_PAGE_LEN: usize = 2 << 20;
+
+	// Below one huge page there is nothing the kernel could promote.
+	if len < HUGE_PAGE_LEN {
+		return;
+	}
+
+	// SAFETY: the queried name is valid and the call only reads kernel state.
+	let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+	let Ok(page) = usize::try_from(page) else {
+		return;
+	};
+	if page == 0 {
+		return;
+	}
+
+	// The kernel accepts only a page-aligned start, and a large allocation carries a small
+	// allocator header, so the range usually begins mid-page.
+	//
+	//     block:   |--h--|=================================|
+	//     advised:       |============================|
+	//                    ^ next page boundary         ^ trimmed to whole pages
+	let addr = ptr as usize;
+	let aligned = addr.next_multiple_of(page);
+	let Some(len) = len.checked_sub(aligned - addr) else {
+		return;
+	};
+	let len = len & !(page - 1);
+
+	// Trimming can drop the range below one huge page, which leaves nothing to promote.
+	if len < HUGE_PAGE_LEN {
+		return;
+	}
+
+	// SAFETY: the range lies inside the block just allocated, starts on a page boundary and
+	// spans whole pages, which is what the kernel requires.
+	//
+	// The request only changes how those pages are backed, never their contents, so a refusal
+	// needs no handling.
+	unsafe {
+		libc::madvise(aligned as *mut libc::c_void, len, libc::MADV_HUGEPAGE);
+	}
+}
+
+/// Leaves the mapping to the allocator on platforms whose page hints this does not use.
+#[cfg(not(target_os = "linux"))]
+fn advise_huge_pages(_ptr: *mut u8, _len: usize) {}
 
 impl fmt::Debug for BufferPool {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
