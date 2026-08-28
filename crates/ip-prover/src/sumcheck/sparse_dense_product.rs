@@ -2,16 +2,17 @@
 
 //! Sumcheck prover for the product of a sparse and a dense multilinear.
 
-use binius_compute::BufferData;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::{
 	prelude::*,
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
 
-use super::{common::SumcheckProver, round_evals::RoundEvals, round_state::RoundState};
+use super::{
+	common::SumcheckProver, factored_multilinear::FactoredMultilinear, round_evals::RoundEvals,
+	round_state::RoundState,
+};
 
 /// One entry of a sparse multilinear: a hypercube index and the value carried there.
 ///
@@ -62,18 +63,23 @@ pub type SparseEntry<F> = (usize, F);
 /// Entries thus stay a flat list of the same length for the whole protocol, and collapse to the
 /// evaluation of $A$ at the challenge point only in [`SumcheckProver::finish`], which emits the
 /// sparse multilinear's evaluation before the dense one's.
-pub struct SparseDenseProductSumcheckProver<P: PackedField, Data: BufferData<P>> {
+pub struct SparseDenseProductSumcheckProver<P: PackedField> {
 	/// The sparse multilinear, folded in place.
 	///
 	/// Indices are always below `1 << self.n_vars()`.
 	sparse: Vec<SparseEntry<P::Scalar>>,
 	/// The dense multilinear, folded in place. Its length tracks the free variables.
-	dense: FieldBuffer<P, Data>,
+	///
+	/// Held as a product of factors rather than one table.
+	/// So a weight whose table is too large to materialize can drive this prover too.
+	///
+	/// A weight that really is one table is one factor, so nothing is given up by taking this.
+	dense: FactoredMultilinear<P>,
 	/// This round's sum claim, or the round polynomial awaiting the challenge that reduces it.
 	state: RoundState<RoundCoeffs<P::Scalar>, P::Scalar>,
 }
 
-impl<P: PackedField, Data: BufferData<P>> SparseDenseProductSumcheckProver<P, Data> {
+impl<P: PackedField> SparseDenseProductSumcheckProver<P> {
 	/// Creates a prover for the claim that the sparse-dense product sums to `sum`.
 	///
 	/// # Arguments
@@ -87,11 +93,11 @@ impl<P: PackedField, Data: BufferData<P>> SparseDenseProductSumcheckProver<P, Da
 	/// Panics if any entry index is out of range for `dense`.
 	pub fn new(
 		sparse: Vec<SparseEntry<P::Scalar>>,
-		dense: FieldBuffer<P, Data>,
+		dense: FactoredMultilinear<P>,
 		sum: P::Scalar,
 	) -> Self {
 		assert!(
-			sparse.iter().all(|&(index, _)| index < dense.len()),
+			sparse.iter().all(|&(index, _)| index < 1 << dense.n_vars()),
 			"precondition: every sparse index must be within the dense multilinear"
 		);
 
@@ -108,17 +114,17 @@ impl<P: PackedField, Data: BufferData<P>> SparseDenseProductSumcheckProver<P, Da
 	///
 	/// Panics if no variables are left to bind.
 	fn half(&self) -> usize {
-		let n_vars = self.dense.log_len();
+		let n_vars = self.dense.n_vars();
 		assert!(n_vars > 0, "no variables remain to bind");
 		1 << (n_vars - 1)
 	}
 }
 
-impl<F: Field, P: PackedField<Scalar = F>, Data: BufferData<P> + Sync> SumcheckProver<F>
-	for SparseDenseProductSumcheckProver<P, Data>
+impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
+	for SparseDenseProductSumcheckProver<P>
 {
 	fn n_vars(&self) -> usize {
-		self.dense.log_len()
+		self.dense.n_vars()
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
@@ -174,7 +180,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: BufferData<P> + Sync> SumcheckP
 				}
 			});
 
-		fold_highest_var_inplace(&mut self.dense, challenge);
+		self.dense.fold_highest_var(challenge);
 		self.state = RoundState::Claim(claim);
 	}
 
@@ -195,13 +201,15 @@ mod tests {
 		arch::{OptimalB128, OptimalPackedB128},
 	};
 	use binius_ip::sumcheck::verify;
-	use binius_math::{multilinear::evaluate::evaluate, test_utils::random_field_buffer};
+	use binius_math::{
+		FieldBuffer, multilinear::evaluate::evaluate, test_utils::random_field_buffer,
+	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use proptest::prelude::*;
-	use rand::prelude::*;
+	use rand::{SeedableRng, prelude::*};
 
 	use super::*;
-	use crate::sumcheck::prove::prove_single;
+	use crate::sumcheck::{factored_multilinear::FactoredMultilinear, prove::prove_single};
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
@@ -226,7 +234,9 @@ mod tests {
 			.map(|&(index, value)| value * dense.get(index))
 			.sum::<F>();
 
-		let prover = SparseDenseProductSumcheckProver::new(sparse, dense.clone(), sum);
+		// One factor over every variable is exactly the table it holds.
+		let weight = FactoredMultilinear::new([dense.clone()]);
+		let prover = SparseDenseProductSumcheckProver::new(sparse, weight, sum);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove_single(prover, &mut prover_transcript);
@@ -250,6 +260,72 @@ mod tests {
 		assert_eq!(evaluate(&sparse_dense, &eval_point), multilinear_evals[0]);
 		assert_eq!(evaluate(dense, &eval_point), multilinear_evals[1]);
 		assert_eq!(output.challenges, sumcheck_output.challenges);
+	}
+
+	#[test]
+	fn a_factored_weight_proves_the_same_sum_as_the_table_it_stands_for() {
+		// Invariant: the dense side's storage is invisible to the protocol.
+		//
+		// A weight held as factors and the table it stands for are the same multilinear.
+		// So the same claim must prove, verify, and reduce to the same evaluations.
+		//
+		// This is the whole point of the generalization.
+		// A weight too large to materialize can then drive this prover.
+		//
+		// Fixture state: three factors over 2, 1 and 2 variables, so five in total.
+		//
+		//     index bits:  [ f0 : 2 | f1 : 1 | f2 : 2 ]
+		//                    low                  high
+		let mut rng = StdRng::seed_from_u64(7);
+
+		let factors = [2usize, 1, 2]
+			.iter()
+			.map(|&log_len| random_field_buffer::<P>(&mut rng, log_len))
+			.collect::<Vec<_>>();
+		let n_vars = 5;
+
+		// The same weight, twice: once as factors, once as the table they multiply out to.
+		let factored = FactoredMultilinear::new(factors);
+		let table = FieldBuffer::<P>::from_values(
+			&(0..1usize << n_vars)
+				.map(|index| factored.get(index))
+				.collect::<Vec<_>>(),
+		);
+
+		let sparse = random_sparse(&mut rng, n_vars, 12);
+		let sum = sparse
+			.iter()
+			.map(|&(index, value)| value * table.get(index))
+			.sum::<F>();
+		// A vacuous sum would let a broken weight pass unnoticed.
+		assert_ne!(sum, F::ZERO);
+
+		// Prove the same claim twice, once over each storage form.
+		let transcripts = [
+			{
+				let prover = SparseDenseProductSumcheckProver::new(sparse.clone(), factored, sum);
+				let mut transcript = ProverTranscript::new(StdChallenger::default());
+				let output = prove_single(prover, &mut transcript);
+				(output.multilinear_evals, transcript.finalize())
+			},
+			{
+				let prover = SparseDenseProductSumcheckProver::new(
+					sparse.clone(),
+					FactoredMultilinear::new([table.clone()]),
+					sum,
+				);
+				let mut transcript = ProverTranscript::new(StdChallenger::default());
+				let output = prove_single(prover, &mut transcript);
+				(output.multilinear_evals, transcript.finalize())
+			},
+		];
+
+		// Identical transcripts mean identical round polynomials, every round.
+		assert_eq!(transcripts[0].1, transcripts[1].1, "the two forms must prove the same rounds");
+		assert_eq!(transcripts[0].0, transcripts[1].0, "and reduce to the same evaluations");
+
+		// And the shared proof verifies, so neither form is consistently wrong.
+		prove_verify(sparse, &table);
 	}
 
 	/// Draws `n_entries` entries at uniformly random indices, so repeats arise on their own.
