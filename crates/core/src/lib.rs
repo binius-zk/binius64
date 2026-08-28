@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 //! Core datatypes common to prover and verifier of Binius64.
 //!
-//! Most imporantly it hosts the definition of a [`ConstraintSystem`].
+//! Most importantly it hosts the definition of a [`ConstraintSystem`].
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
