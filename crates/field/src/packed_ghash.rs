@@ -5,8 +5,8 @@ use crate::{
 	Ghash128b,
 	arch::{
 		GhashInvert1x, GhashInvert2x, GhashInvert4x, GhashSquare1x, GhashSquare2x, GhashSquare4x,
-		GhashWideMul1x, GhashWideMul2x, GhashWideMul4x, M128, M256, M512, MulFromWideMul,
-		portable::packed_macros::{portable_macros::*, *},
+		GhashWideMul1x, GhashWideMul2x, GhashWideMul4x, M128, M256, M512,
+		portable::packed_macros::*,
 	},
 };
 
@@ -14,7 +14,6 @@ define_packed_binary_field!(
 	PackedBinaryGhash1x128b,
 	Ghash128b,
 	M128,
-	(MulFromWideMul),
 	(GhashSquare1x),
 	(GhashInvert1x),
 	(GhashWideMul1x)
@@ -24,7 +23,6 @@ define_packed_binary_field!(
 	PackedBinaryGhash2x128b,
 	Ghash128b,
 	M256,
-	(MulFromWideMul),
 	(GhashSquare2x),
 	(GhashInvert2x),
 	(GhashWideMul2x)
@@ -34,7 +32,6 @@ define_packed_binary_field!(
 	PackedBinaryGhash4x128b,
 	Ghash128b,
 	M512,
-	(MulFromWideMul),
 	(GhashSquare4x),
 	(GhashInvert4x),
 	(GhashWideMul4x)

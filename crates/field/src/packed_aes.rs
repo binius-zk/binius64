@@ -5,8 +5,7 @@ use crate::{
 	arch::{
 		AesInvert1x, AesInvert16x, AesInvert32x, AesInvert64x, AesSquare1x, AesSquare16x,
 		AesSquare32x, AesSquare64x, AesWideMul1x, AesWideMul16x, AesWideMul32x, AesWideMul64x,
-		M128, M256, M512, MulFromWideMul,
-		portable::packed_macros::{portable_macros::*, *},
+		M128, M256, M512, portable::packed_macros::*,
 	},
 	fields::rijndael::Rijndael8b,
 };
@@ -15,7 +14,6 @@ define_packed_binary_field!(
 	PackedAESBinaryField1x8b,
 	Rijndael8b,
 	u8,
-	(MulFromWideMul),
 	(AesSquare1x),
 	(AesInvert1x),
 	(AesWideMul1x)
@@ -24,7 +22,6 @@ define_packed_binary_field!(
 	PackedAESBinaryField16x8b,
 	Rijndael8b,
 	M128,
-	(MulFromWideMul),
 	(AesSquare16x),
 	(AesInvert16x),
 	(AesWideMul16x)
@@ -33,7 +30,6 @@ define_packed_binary_field!(
 	PackedAESBinaryField32x8b,
 	Rijndael8b,
 	M256,
-	(MulFromWideMul),
 	(AesSquare32x),
 	(AesInvert32x),
 	(AesWideMul32x)
@@ -42,7 +38,6 @@ define_packed_binary_field!(
 	PackedAESBinaryField64x8b,
 	Rijndael8b,
 	M512,
-	(MulFromWideMul),
 	(AesSquare64x),
 	(AesInvert64x),
 	(AesWideMul64x)

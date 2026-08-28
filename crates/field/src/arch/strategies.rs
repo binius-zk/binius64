@@ -163,19 +163,3 @@ where
 		Self::wrap(PackedPrimitiveType::from_underlier(Divisible::<SubU>::from_iter(lanes)))
 	}
 }
-
-/// Wrapper that defines multiplication as `reduce(wide_mul(a, b))`, deferring to the type's own
-/// [`WideMul`] impl, making the widening multiply the single source of truth for both `Mul` and
-/// `WideMul`. Used by every GHASH and AES packing.
-#[repr(transparent)]
-#[derive(TransparentWrapper)]
-pub struct MulFromWideMul<T>(T);
-
-impl<P: WideMul> std::ops::Mul for MulFromWideMul<P> {
-	type Output = Self;
-
-	#[inline]
-	fn mul(self, rhs: Self) -> Self {
-		Self::wrap(P::reduce(P::wide_mul(Self::peel(self), Self::peel(rhs))))
-	}
-}
