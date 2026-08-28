@@ -297,7 +297,7 @@ impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 		transcript
 	}
 
-	/// Returns a writeable buffer that only observes the data written, without writing it to the
+	/// Returns a writable buffer that only observes the data written, without writing it to the
 	/// proof tape.
 	///
 	/// This method should be used to observe the input statement.
@@ -311,7 +311,7 @@ impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 		}
 	}
 
-	/// Returns a writeable buffer that only writes the data to the proof tape, without observing
+	/// Returns a writable buffer that only writes the data to the proof tape, without observing
 	/// it.
 	///
 	/// This method should only be used to write openings of commitments that were already written
@@ -326,7 +326,7 @@ impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 		}
 	}
 
-	/// Returns a writeable buffer that observes the data written and writes it to the proof tape.
+	/// Returns a writable buffer that observes the data written and writes it to the proof tape.
 	///
 	/// This method should be used by default to write prover messages in an interactive protocol.
 	pub fn message<'a, 'b>(&'a mut self) -> TranscriptWriter<'b, impl BufMut>
