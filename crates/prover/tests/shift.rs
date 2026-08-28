@@ -28,9 +28,7 @@ use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{
-		OperatorData as VerifierOperatorData, check_eval, evaluate_words_mle, verify,
-	},
+	protocols::shift::{OperationClaim, check_eval, evaluate_words_mle, verify},
 };
 use itertools::Itertools;
 use rand::{SeedableRng, rngs::StdRng};
@@ -470,21 +468,19 @@ fn test_shift_prove_and_verify() {
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		let verifier_zero_data = VerifierOperatorData::new(r_x_prime_zero, [F::ZERO]);
-		let verifier_bitand_data = VerifierOperatorData::new(r_x_prime_bitand, bitand_evals);
-		let verifier_intmul_data = VerifierOperatorData::new(r_x_prime_intmul, intmul_evals);
-		let verifier_binmul_data = VerifierOperatorData::new(r_x_prime_binmul, binmul_evals);
-
-		let verifier_output = verify(
-			&cs,
-			InoutSegment::Public,
+		let verifier_zero_data = OperationClaim::new(r_x_prime_zero, vec![F::ZERO]);
+		let verifier_bitand_data = OperationClaim::new(r_x_prime_bitand, bitand_evals.to_vec());
+		let verifier_intmul_data = OperationClaim::new(r_x_prime_intmul, intmul_evals.to_vec());
+		let verifier_binmul_data = OperationClaim::new(r_x_prime_binmul, binmul_evals.to_vec());
+		let verifier_claims = [
 			&verifier_zero_data,
 			&verifier_bitand_data,
 			&verifier_intmul_data,
 			&verifier_binmul_data,
-			&mut verifier_transcript,
-		)
-		.unwrap();
+		];
+
+		let verifier_output =
+			verify(&cs, InoutSegment::Public, verifier_claims, &mut verifier_transcript).unwrap();
 
 		// The public segment over the shift's whole index space. The full reduction reads this
 		// from the prover and ties it to the public words with a ring-switch; driving the shift
@@ -500,12 +496,7 @@ fn test_shift_prove_and_verify() {
 			&cs,
 			InoutSegment::Public,
 			public_eval,
-			[
-				&verifier_zero_data.r_x_prime,
-				&verifier_bitand_data.r_x_prime,
-				&verifier_intmul_data.r_x_prime,
-				&verifier_binmul_data.r_x_prime,
-			],
+			verifier_claims.map(|claim| claim.r_x_prime.as_slice()),
 			&subspace,
 			&r_zhat_prime,
 			&verifier_output,
