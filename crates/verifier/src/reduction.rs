@@ -17,7 +17,7 @@
 //! A batch of one instance still runs that sumcheck, over no rounds.
 //! It is the batched protocol either way, because its prover folds a batched witness.
 
-use std::{array, iter};
+use std::iter;
 
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
@@ -46,7 +46,7 @@ use crate::{
 		binmul::{BinMulOutput, verify as verify_binmul_reduction},
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
-		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData, WiringEvalClaim},
+		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, WiringEvalClaim},
 		zero,
 	},
 	ring_switch::{self, RingSwitchVerifyOutput, eval_rs_eq},
@@ -242,7 +242,7 @@ where
 	// instance point is still zero.
 	let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
 	let zero_point = zero::reduction_point(r_x_and, log_n_zero, || channel.sample());
-	let zero = OperatorData::new(zero_point, [Channel::Elem::zero()]);
+	let zero = shift::OperationClaim::new(zero_point, vec![Channel::Elem::zero()]);
 
 	// Collapse the multiplications' per-bit operand claims to the oblong form BitAnd already has.
 	// The Lagrange weights fold them at the univariate challenge BitAnd just drew.
@@ -268,11 +268,14 @@ where
 	} else {
 		(
 			bitand_claim.r_rho,
-			OperatorData::new(bitand_claim.r_x, bitand_claim.operand_claims),
+			shift::OperationClaim::new(bitand_claim.r_x, bitand_claim.operand_claims.to_vec()),
 			absent_or_claimed(intmul_claim),
 			absent_or_claimed(binmul_claim),
 		)
 	};
+
+	// The four operations' claims, in the order the shift reduction batches them.
+	let claims = [&zero, &bitand, &intmul, &binmul];
 
 	// Reduce the operand claims to one witness evaluation.
 	let shift = {
@@ -282,7 +285,7 @@ where
 			perfetto_category = "phase"
 		)
 		.entered();
-		shift::verify::<B128, _>(cs, inout, &zero, &bitand, &intmul, &binmul, channel)?
+		shift::verify::<B128, _>(cs, inout, claims, channel)?
 	};
 
 	// Tie in the public values through the public-input consistency check.
@@ -300,12 +303,7 @@ where
 			cs,
 			inout,
 			public_eval,
-			[
-				&zero.r_x_prime,
-				&bitand.r_x_prime,
-				&intmul.r_x_prime,
-				&binmul.r_x_prime,
-			],
+			claims.map(|claim| claim.r_x_prime.as_slice()),
 			&shift_domain,
 			&z_challenge,
 			&shift,
@@ -408,20 +406,16 @@ where
 /// Its zero claim therefore contributes nothing.
 fn absent_or_claimed<F: FieldOps, const ARITY: usize>(
 	claim: Option<OperationClaim<F, ARITY>>,
-) -> OperatorData<F, ARITY> {
+) -> shift::OperationClaim<F> {
 	match claim {
-		Some(claim) => OperatorData::new(claim.r_x, claim.operand_claims),
-		None => OperatorData::new(Vec::new(), array::from_fn(|_| F::zero())),
+		Some(claim) => shift::OperationClaim::new(claim.r_x, claim.operand_claims.to_vec()),
+		None => shift::OperationClaim::new(Vec::new(), vec![F::zero(); ARITY]),
 	}
 }
 
 /// The shared instance point together with every operation's operand data at that point.
-type RerandOutput<F> = (
-	Vec<F>,
-	OperatorData<F, BITAND_ARITY>,
-	OperatorData<F, INTMUL_ARITY>,
-	OperatorData<F, BINMUL_ARITY>,
-);
+type RerandOutput<F> =
+	(Vec<F>, shift::OperationClaim<F>, shift::OperationClaim<F>, shift::OperationClaim<F>);
 
 /// One operation's oblong operand claims and the points they are claimed at.
 ///
@@ -599,14 +593,14 @@ impl<F: FieldOps> RerandomizedOperations<F> {
 		}
 		channel.assert_zero(evaluate_univariate(&expected, &batch_coeff) - eval)?;
 
-		let bitand_data = OperatorData::new(self.bitand.r_x, bitand_evals);
+		let bitand_data = shift::OperationClaim::new(self.bitand.r_x, bitand_evals.to_vec());
 		let intmul_data = match (self.intmul, intmul_evals) {
-			(Some(intmul), Some(evals)) => OperatorData::new(intmul.r_x, evals),
-			_ => OperatorData::new(Vec::new(), array::from_fn(|_| F::zero())),
+			(Some(intmul), Some(evals)) => shift::OperationClaim::new(intmul.r_x, evals.to_vec()),
+			_ => shift::OperationClaim::new(Vec::new(), vec![F::zero(); INTMUL_ARITY]),
 		};
 		let binmul_data = match (self.binmul, binmul_evals) {
-			(Some(binmul), Some(evals)) => OperatorData::new(binmul.r_x, evals),
-			_ => OperatorData::new(Vec::new(), array::from_fn(|_| F::zero())),
+			(Some(binmul), Some(evals)) => shift::OperationClaim::new(binmul.r_x, evals.to_vec()),
+			_ => shift::OperationClaim::new(Vec::new(), vec![F::zero(); BINMUL_ARITY]),
 		};
 		Ok((r_rho, bitand_data, intmul_data, binmul_data))
 	}

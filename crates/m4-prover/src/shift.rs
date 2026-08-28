@@ -245,8 +245,7 @@ mod tests {
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{
-			LOG_SHIFT_COUNT, OperatorData as VerifierOperatorData, SHIFT_COUNT, check_eval,
-			evaluate_words_mle, verify,
+			LOG_SHIFT_COUNT, OperationClaim, SHIFT_COUNT, check_eval, evaluate_words_mle, verify,
 		},
 	};
 	use rand::prelude::*;
@@ -396,20 +395,18 @@ mod tests {
 
 		// Verify against the single-instance shift verifier.
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_zero = VerifierOperatorData::new(r_x_zero, [B128::ZERO]);
-		let verifier_bitand = VerifierOperatorData::new(r_x, bitand_evals);
-		let verifier_intmul = VerifierOperatorData::new(Vec::new(), intmul_evals);
-		let verifier_bmul = VerifierOperatorData::new(Vec::new(), [B128::ZERO; 6]);
-		let verifier_output = verify(
-			&cs,
-			InoutSegment::Hidden,
+		let verifier_zero = OperationClaim::new(r_x_zero, vec![B128::ZERO]);
+		let verifier_bitand = OperationClaim::new(r_x, bitand_evals.to_vec());
+		let verifier_intmul = OperationClaim::new(Vec::new(), intmul_evals.to_vec());
+		let verifier_bmul = OperationClaim::new(Vec::new(), vec![B128::ZERO; 6]);
+		let verifier_claims = [
 			&verifier_zero,
 			&verifier_bitand,
 			&verifier_intmul,
 			&verifier_bmul,
-			&mut verifier_transcript,
-		)
-		.unwrap();
+		];
+		let verifier_output =
+			verify(&cs, InoutSegment::Hidden, verifier_claims, &mut verifier_transcript).unwrap();
 		// The public segment over the shift's whole index space. The full reduction reads this
 		// from the prover and ties it to the constants with a ring-switch; driving the shift
 		// alone, evaluate it here.
@@ -423,12 +420,7 @@ mod tests {
 			&cs,
 			InoutSegment::Hidden,
 			public_eval,
-			[
-				&verifier_zero.r_x_prime,
-				&verifier_bitand.r_x_prime,
-				&verifier_intmul.r_x_prime,
-				&verifier_bmul.r_x_prime,
-			],
+			verifier_claims.map(|claim| claim.r_x_prime.as_slice()),
 			&domain_subspace,
 			&r_z,
 			&verifier_output,

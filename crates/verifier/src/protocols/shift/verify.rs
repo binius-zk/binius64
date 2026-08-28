@@ -29,9 +29,8 @@ use getset::Getters;
 use itertools::chain;
 
 use super::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_MAX_ARITY, LOG_OPERATION_COUNT, LOG_SHIFT_COUNT,
-	OPERATION_COUNT, OperationEvalFn, SHIFT_COUNT, SHIFT_LOG_VARS, WiringWeights, ZERO_ARITY,
-	error::Error, shift_ind::evaluate_shift_inds,
+	LOG_MAX_ARITY, LOG_OPERATION_COUNT, LOG_SHIFT_COUNT, OPERATION_COUNT, OperationEvalFn,
+	SHIFT_COUNT, SHIFT_LOG_VARS, WiringWeights, error::Error, shift_ind::evaluate_shift_inds,
 };
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
@@ -65,27 +64,21 @@ where
 		.sum()
 }
 
-/// Verifier data for an operation with the specified arity.
+/// One operation's evaluation claims entering the shift reduction.
 ///
-/// Contains the challenge points and evaluation claims needed by the verifier.
-/// The verifier receives these values during the protocol and uses them to
-/// verify the monster multilinear evaluations.
-///
-/// # Fields
-///
-/// - `r_x_prime`: multilinear challenge point from the protocol
-/// - `evals`: array of evaluation claims, one per operand position
+/// The reduction takes one claim per operation and batches the four into the single claim its
+/// sumcheck runs on.
 #[derive(Debug, Clone)]
-pub struct OperatorData<F, const ARITY: usize> {
+pub struct OperationClaim<F> {
+	/// The constraint-index point the operands are claimed at.
 	pub r_x_prime: Vec<F>,
-	pub evals: [F; ARITY],
+	/// One evaluation per operand position, so as many as the operation's arity.
+	pub evals: Vec<F>,
 }
 
-impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
-	// Constructs a new operator data instance encoding
-	// evaluation claim with multilinear challenge `r_x_prime` and evaluations `evals`
-	// (one eval for each operand of the operation).
-	pub const fn new(r_x_prime: Vec<F>, evals: [F; ARITY]) -> Self {
+impl<F: FieldOps> OperationClaim<F> {
+	/// The operand evaluations `evals`, claimed at the constraint-index point `r_x_prime`.
+	pub const fn new(r_x_prime: Vec<F>, evals: Vec<F>) -> Self {
 		Self { r_x_prime, evals }
 	}
 
@@ -97,9 +90,10 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 	///
 	/// ## Preconditions
 	///
-	/// * `operand_weights` has at least `ARITY` entries; the slots above the arity name no claim.
+	/// * `operand_weights` has at least one entry per eval; the slots above the arity name no
+	///   claim.
 	fn batched_eval(&self, operand_weights: &[F]) -> F {
-		assert!(operand_weights.len() >= ARITY); // precondition
+		assert!(operand_weights.len() >= self.evals.len()); // precondition
 		iter::zip(&self.evals, operand_weights)
 			.map(|(eval, weight)| eval.clone() * weight)
 			.sum()
@@ -186,10 +180,9 @@ impl<F> VerifyOutput<F> {
 /// # Parameters
 /// - `constraint_system`: The constraint system containing AND, IMUL and BMUL constraints
 /// - `inout`: Which segment holds the inout values, which fixes where the two segments split
-/// - `bitand_data`: Operator data for bit multiplication operations
-/// - `intmul_data`: Operator data for integer multiplication operations
-/// - `binmul_data`: Operator data for GHASH-field multiplication operations
-/// - `transcript`: Interactive transcript for challenge sampling and message reading
+/// - `claims`: Each operation's evaluation claims, ordered as the operators are declared: zero,
+///   bitand, intmul, binmul
+/// - `channel`: Interactive channel for challenge sampling and message reading
 ///
 /// # Returns
 /// Returns [`VerifyOutput`] containing the final challenges and witness evaluation,
@@ -202,10 +195,7 @@ impl<F> VerifyOutput<F> {
 pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
 	inout: InoutSegment,
-	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
-	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
-	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
-	binmul_data: &OperatorData<C::Elem, BINMUL_ARITY>,
+	claims: [&OperationClaim<C::Elem>; OPERATION_COUNT],
 	channel: &mut C,
 ) -> Result<VerifyOutput<C::Elem>, Error>
 where
@@ -223,15 +213,8 @@ where
 	let operation_weights = eq_ind_partial_eval_scalars(&operation_batch_challenges);
 	let operand_weights = eq_ind_partial_eval_scalars(&operand_batch_challenges);
 
-	let eval = inner_product(
-		operation_weights,
-		[
-			zero_data.batched_eval(&operand_weights),
-			bitand_data.batched_eval(&operand_weights),
-			intmul_data.batched_eval(&operand_weights),
-			binmul_data.batched_eval(&operand_weights),
-		],
-	);
+	let eval =
+		inner_product(operation_weights, claims.map(|claim| claim.batched_eval(&operand_weights)));
 
 	// The sumcheck runs over the witness as well: the public segment in the low half-cube and
 	// the hidden segment in the high half-cube, selected by the top word-index variable. Each

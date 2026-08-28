@@ -25,7 +25,7 @@ use binius_prover::{
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{OperatorData as VerifierOperatorData, verify},
+	protocols::shift::{OperationClaim, verify},
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sha2::{Digest, Sha256 as Sha256Hasher};
@@ -208,19 +208,23 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			b.iter(|| {
 				let mut verifier_transcript = setup_verifier_transcript.clone();
 
+				let verifier_zero_data =
+					OperationClaim::new(r_x_prime_zero.clone(), zero_evals.to_vec());
 				let verifier_bitand_data =
-					VerifierOperatorData::new(r_x_prime_bitand.clone(), bitand_evals);
+					OperationClaim::new(r_x_prime_bitand.clone(), bitand_evals.to_vec());
 				let verifier_intmul_data =
-					VerifierOperatorData::new(r_x_prime_intmul.clone(), intmul_evals);
-				let verifier_binmul_data = VerifierOperatorData::new(Vec::new(), [F::ZERO; 6]);
+					OperationClaim::new(r_x_prime_intmul.clone(), intmul_evals.to_vec());
+				let verifier_binmul_data = OperationClaim::new(Vec::new(), vec![F::ZERO; 6]);
 
 				verify(
 					&cs,
 					InoutSegment::Public,
-					&VerifierOperatorData::new(r_x_prime_zero.clone(), zero_evals),
-					&verifier_bitand_data,
-					&verifier_intmul_data,
-					&verifier_binmul_data,
+					[
+						&verifier_zero_data,
+						&verifier_bitand_data,
+						&verifier_intmul_data,
+						&verifier_binmul_data,
+					],
 					&mut verifier_transcript,
 				)
 				.unwrap();
