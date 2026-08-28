@@ -271,21 +271,6 @@ macro_rules! binary_field {
 		}
 
 		impl $crate::PackedField for $name {
-			#[inline]
-			fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-				std::iter::once(*self)
-			}
-
-			#[inline]
-			fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
-				std::iter::once(self)
-			}
-
-			#[inline]
-			fn iter_slice(slice: &[Self]) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-				slice.iter().copied()
-			}
-
 			fn interleave(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
 				panic!("cannot interleave when WIDTH = 1");
 			}

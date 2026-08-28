@@ -455,20 +455,21 @@ where
 {
 	const LOG_N: usize = (U::BITS / Scalar::N_BITS).ilog2() as usize;
 
+	// Skipping ahead must not convert the lanes it jumps over.
 	#[inline]
 	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = Scalar> + Send + Clone {
-		Divisible::<Scalar::Underlier>::value_iter(value.0).map(Scalar::from_underlier)
+		Divisible::<Scalar::Underlier>::value_iter(value.0).map_skippable(Scalar::from_underlier)
 	}
 
 	#[inline]
 	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = Scalar> + Send + Clone + '_ {
-		Divisible::<Scalar::Underlier>::ref_iter(&value.0).map(Scalar::from_underlier)
+		Divisible::<Scalar::Underlier>::ref_iter(&value.0).map_skippable(Scalar::from_underlier)
 	}
 
 	#[inline]
 	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = Scalar> + Send + Clone + '_ {
 		Divisible::<Scalar::Underlier>::slice_iter(Self::to_underliers_ref(slice))
-			.map(Scalar::from_underlier)
+			.map_skippable(Scalar::from_underlier)
 	}
 
 	#[inline]
@@ -528,29 +529,6 @@ where
 	U: Underlier + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
-	// LOG_WIDTH defaults to `Self::LOG_N`, the same `(U::BITS /
-	// Scalar::N_BITS).ilog2()` count. Scalar element access (`get_unchecked`/`set_unchecked`) is
-	// provided by the `Divisible<Scalar>` impl, which routes through `U:
-	// Divisible<Scalar::Underlier>`.
-
-	#[inline]
-	fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-		Divisible::<Scalar::Underlier>::ref_iter(&self.0)
-			.map(|underlier| Scalar::from_underlier(underlier))
-	}
-
-	#[inline]
-	fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
-		Divisible::<Scalar::Underlier>::value_iter(self.0)
-			.map(|underlier| Scalar::from_underlier(underlier))
-	}
-
-	#[inline]
-	fn iter_slice(slice: &[Self]) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-		Divisible::<Scalar::Underlier>::slice_iter(Self::to_underliers_ref(slice))
-			.map_skippable(|underlier| Scalar::from_underlier(underlier))
-	}
-
 	#[inline]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		assert!(log_block_len < Self::LOG_WIDTH);
