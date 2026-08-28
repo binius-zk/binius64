@@ -3,12 +3,14 @@
 
 //! A power-of-two-sized buffer of packed field elements.
 //!
-//! The buffer type and all of its methods live in this file.
-//! Two sibling modules hold the other types this one hands out:
+//! The buffer lives in this file, with its methods and the guard its halving methods hand out.
+//! `SplitMut` is built in exactly one place, so it needs no visibility beyond this module.
+//!
+//! Two groups sit in modules of their own:
 //!
 //! ```text
-//! view        the borrowed aliases, and the store that backs a shared one
-//! write_back  the guards that lend out a region narrower than one packed word
+//! chunks  the buffer's chunk methods, and the iterators and guard they hand out
+//! view    the borrowed aliases, which name the buffer rather than being produced by it
 //! ```
 //!
 //! # Why the backing store is a type parameter
@@ -41,18 +43,15 @@ use binius_field::{
 };
 use binius_utils::{
 	checked_arithmetics::strict_log_2,
-	rayon::{iter::Either, prelude::*, slice::ParallelSlice, task_size::task_chunk_len},
+	rayon::{prelude::*, slice::ParallelSlice, task_size::task_chunk_len},
 };
 use bytemuck::zeroed_vec;
 
 mod chunks;
 mod view;
-mod write_back;
 
-use chunks::SubWordChunk;
-pub use chunks::{Chunks, ChunksMut};
+pub use chunks::{ChunkMut, Chunks, ChunksMut};
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
-pub use write_back::{ChunkMut, SplitMut};
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
@@ -77,6 +76,9 @@ pub use write_back::{ChunkMut, SplitMut};
 ///
 /// Truncation additionally zeros the dead lanes it creates.
 /// Other constructors may leave whatever the caller's store held there.
+// The buffer's methods are grouped by topic, one module per group, so its inherent impls span
+// more than one file.
+#[allow(clippy::multiple_inherent_impl)]
 #[derive(Debug, Clone, Eq)]
 pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	/// log2 the number over elements in the buffer.
@@ -437,170 +439,6 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 		self.as_ref().iter()
 	}
 
-	/// Get an aligned chunk of size `2^log_chunk_size`.
-	///
-	/// A chunk's start offset is a multiple of its size.
-	/// So this yields the same chunk that stepping the shared iterator to that index would.
-	///
-	/// # Preconditions
-	///
-	/// * `log_chunk_size` must be at most `log_len`.
-	/// * `chunk_index` must be less than the chunk count.
-	#[inline]
-	#[track_caller]
-	pub fn chunk(&self, log_chunk_size: usize, chunk_index: usize) -> FieldSlice<'_, P> {
-		assert!(
-			log_chunk_size <= self.log_len,
-			"precondition: log_chunk_size must be at most log_len"
-		);
-
-		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		assert!(
-			chunk_index < chunk_count,
-			"precondition: chunk_index must be less than chunk_count"
-		);
-
-		let words = if log_chunk_size >= P::LOG_WIDTH {
-			// A whole run of words, borrowed straight from the store.
-			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
-			FieldSliceData::Slice(&self.words[chunk_index * words_per_chunk..][..words_per_chunk])
-		} else {
-			// Lanes inside one word, copied out so the chunk starts at lane 0.
-			FieldSliceData::Single(
-				SubWordChunk::new(log_chunk_size, chunk_index).repack(&self.words),
-			)
-		};
-
-		FieldBuffer {
-			log_len: log_chunk_size,
-			words,
-		}
-	}
-
-	/// Split the buffer into chunks of size `2^log_chunk_size`.
-	///
-	/// Any size up to the buffer's length works, matching what the parallel iterator accepts.
-	/// A chunk of at least one packed word borrows a run of the store.
-	/// A smaller one arrives as a copy of its lanes, repacked to start at lane 0.
-	///
-	/// # Preconditions
-	///
-	/// * `log_chunk_size` must be at most `log_len`.
-	#[track_caller]
-	pub fn chunks(&self, log_chunk_size: usize) -> Chunks<'_, P> {
-		assert!(
-			log_chunk_size <= self.log_len,
-			"precondition: log_chunk_size must be at most log_len"
-		);
-
-		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		Chunks::new(self.as_ref(), log_chunk_size, chunk_count)
-	}
-
-	/// Creates an iterator over chunks of size `2^log_chunk_size` in parallel.
-	///
-	/// # Preconditions
-	///
-	/// * `log_chunk_size` must be at most `log_len`.
-	#[track_caller]
-	pub fn par_chunks(
-		&self,
-		log_chunk_size: usize,
-	) -> impl IndexedParallelIterator<Item = FieldSlice<'_, P>> {
-		assert!(
-			log_chunk_size <= self.log_len,
-			"precondition: log_chunk_size must be at most log_len"
-		);
-
-		if log_chunk_size >= P::LOG_WIDTH {
-			// Each chunk spans one or more packed elements
-			let packed_chunk_size = 1 << (log_chunk_size - P::LOG_WIDTH);
-			Either::Left(
-				self.as_ref()
-					.par_chunks(packed_chunk_size)
-					.map(move |chunk| FieldBuffer {
-						log_len: log_chunk_size,
-						words: FieldSliceData::Slice(chunk),
-					}),
-			)
-		} else {
-			// Multiple chunks fit within a single packed element
-			let chunk_count = 1 << (self.log_len - log_chunk_size);
-			let words = self.as_ref();
-			Either::Right(
-				(0..chunk_count)
-					.into_par_iter()
-					.map(move |chunk_index| FieldBuffer {
-						log_len: log_chunk_size,
-						words: FieldSliceData::Single(
-							SubWordChunk::new(log_chunk_size, chunk_index).repack(words),
-						),
-					}),
-			)
-		}
-	}
-
-	/// Creates a parallel iterator over the scalars of each chunk of `2^log_chunk_size` elements.
-	///
-	/// The scalar-yielding counterpart to the parallel chunk iterator:
-	///
-	/// ```text
-	/// chunk i  ->  scalars [i * 2^log_chunk_size, (i+1) * 2^log_chunk_size)
-	/// ```
-	///
-	/// A chunk takes one of two shapes, chosen once before any scalar is read:
-	///
-	/// ```text
-	/// chunk >= one packed word  ->  a run of whole words
-	/// chunk <  one packed word  ->  a lane range inside a single word
-	/// ```
-	///
-	/// The buffer-yielding iterator instead repacks a sub-word chunk into an owned word.
-	/// Prefer this method when the consumer only reads scalars, since it copies nothing.
-	///
-	/// # Preconditions
-	///
-	/// * `log_chunk_size` must be at most `log_len`.
-	#[track_caller]
-	pub fn par_chunk_scalars(
-		&self,
-		log_chunk_size: usize,
-	) -> impl IndexedParallelIterator<Item: Iterator<Item = P::Scalar> + Send + Clone + '_> {
-		assert!(
-			log_chunk_size <= self.log_len,
-			"precondition: log_chunk_size must be at most log_len"
-		);
-
-		let words = self.as_ref();
-		if log_chunk_size >= P::LOG_WIDTH {
-			// A chunk is a run of whole words:
-			//
-			//     store = 2^(log_len - LOG_WIDTH) words
-			//     chunk = 2^(log_chunk_size - LOG_WIDTH) words
-			//
-			// Both counts are powers of two, so the runs tile the store with none left over.
-			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
-			Either::Left(
-				words
-					.par_chunks(words_per_chunk)
-					.map(|chunk| Either::Left(P::iter_slice(chunk))),
-			)
-		} else {
-			// Several chunks share one word, so the count comes from the logical length:
-			//
-			//     log_len = 1, LOG_WIDTH = 2, log_chunk_size = 0
-			//     word = [s_0, s_1, dead, dead]  ->  chunks [s_0], [s_1]
-			//
-			// A buffer narrower than one word never turns its dead lanes into a chunk.
-			let chunk_count = 1 << (self.log_len - log_chunk_size);
-
-			Either::Right((0..chunk_count).into_par_iter().map(move |chunk_index| {
-				let chunk = SubWordChunk::new(log_chunk_size, chunk_index);
-				Either::Right(chunk.scalars(words[chunk.word_index()]))
-			}))
-		}
-	}
-
 	/// Splits the buffer in half and returns a pair of borrowed slices.
 	///
 	/// # Preconditions
@@ -684,81 +522,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		self.as_mut().iter_mut()
 	}
 
-	/// Split the buffer into mutable chunks of size `2^log_chunk_size`.
-	///
-	/// A chunk must span whole words, unlike the shared iterator, which takes any size.
-	/// Chunks below the packing width share a word, so lending them out means lending copies.
-	/// Each copy live at once would need its own write-back into that word.
-	///
-	/// ```text
-	/// WIDTH = 4, log_chunk_size = 1  ->  word 0 = [chunk 0 | chunk 1]
-	/// ```
-	///
-	/// Reach for the single-chunk mutable accessor at such a size, which guards one copy.
-	///
-	/// # Preconditions
-	///
-	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
-	#[track_caller]
-	pub fn chunks_mut(&mut self, log_chunk_size: usize) -> ChunksMut<'_, P> {
-		assert!(
-			log_chunk_size >= P::LOG_WIDTH && log_chunk_size <= self.log_len,
-			"precondition: log_chunk_size must be in range [P::LOG_WIDTH, log_len]"
-		);
-
-		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		ChunksMut::new(self.as_mut(), log_chunk_size, chunk_count)
-	}
-
-	/// Get a mutable aligned chunk of size `2^log_chunk_size`.
-	///
-	/// Addresses the same chunk as the shared accessor, and lends it mutably.
-	///
-	/// A chunk of at least one packed word is lent straight from the store, so edits land at once.
-	/// A smaller one shares a word with its neighbours, so it comes back behind a write-back guard.
-	/// The guard hands out a copy of the chunk's lanes and merges the edits back when it drops.
-	///
-	/// Unlike the mutable chunk iterator, this takes any chunk size up to the buffer's length.
-	/// Lending exactly one chunk is what makes a sub-word size safe.
-	/// A second live copy of the same word would merge over the first.
-	///
-	/// # Preconditions
-	///
-	/// * `log_chunk_size` must be at most `log_len`.
-	/// * `chunk_index` must be less than the chunk count.
-	#[track_caller]
-	pub fn chunk_mut(&mut self, log_chunk_size: usize, chunk_index: usize) -> ChunkMut<'_, P> {
-		assert!(
-			log_chunk_size <= self.log_len,
-			"precondition: log_chunk_size must be at most log_len"
-		);
-
-		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		assert!(
-			chunk_index < chunk_count,
-			"precondition: chunk_index must be less than chunk_count"
-		);
-
-		if log_chunk_size >= P::LOG_WIDTH {
-			// Whole words: the chunk is a run of the store, so it is lent out as it lies.
-			let words_per_chunk = 1 << (log_chunk_size - P::LOG_WIDTH);
-			let chunk = &mut self.words[chunk_index * words_per_chunk..][..words_per_chunk];
-			ChunkMut::borrowed(log_chunk_size, chunk)
-		} else {
-			// Sub-word: several chunks share one word.
-			// This one is therefore copied into a word of its own, starting at lane 0.
-			//
-			//     WIDTH = 4, chunks of 2 elements
-			//     word 1 = [ chunk 2 | chunk 3 ]  ->  chunk 3 detaches to [ x y . . ]
-			let location = SubWordChunk::new(log_chunk_size, chunk_index);
-			let chunk = location.repack(&self.words);
-
-			// The guard keeps the word the copy came from, and merges the copy back on drop.
-			let parent = &mut self.words[location.word_index()];
-			ChunkMut::detached(location, chunk, parent)
-		}
-	}
-
 	/// Consumes the buffer and halves it, returning a guard that owns the store.
 	///
 	/// The guard lends out the two halves mutably.
@@ -773,21 +536,9 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	pub fn into_split_half(self) -> SplitMut<P, Data> {
 		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
-		let new_log_len = self.log_len - 1;
-		let singles = if new_log_len < P::LOG_WIDTH {
-			let packed = self.words[0];
-			let zeros = P::default();
-			let (lo_half, hi_half) = packed.interleave(zeros, new_log_len);
-			Some([lo_half, hi_half])
-		} else {
-			None
-		};
-
-		SplitMut {
-			log_len: new_log_len,
-			singles,
-			data: self.words,
-		}
+		// Each half holds one variable fewer than the buffer, and the guard decides from that
+		// alone whether the halves have to be detached from the store.
+		SplitMut::new(self.log_len - 1, self.words)
 	}
 
 	/// Halves the buffer through a mutable borrow, rather than consuming it.
@@ -912,6 +663,79 @@ fn repeat_words<P: PackedField>(head: &[P], tail: &mut [MaybeUninit<P>], run: us
 		let source = (i * run) & (head.len() - 1);
 		dst.write_copy_of_slice(&head[source..source + dst.len()]);
 	});
+}
+
+/// Guards the two halves of a buffer that was split along its highest variable.
+///
+/// Holds the parent store, and lends each half out as a mutable view.
+#[derive(Debug)]
+pub struct SplitMut<P: PackedField, Data: DerefMut<Target = [P]>> {
+	/// Element count of each half, as a base-2 logarithm.
+	log_len: usize,
+	/// The detached halves, present only when a half is narrower than a packed word.
+	singles: Option<[P; 2]>,
+	/// The store both halves come from, and the one a detached pair merges back into.
+	data: Data,
+}
+
+impl<P: PackedField, Data: DerefMut<Target = [P]>> SplitMut<P, Data> {
+	/// Guards the two halves of `data`, each holding `2^log_len` elements.
+	fn new(log_len: usize, data: Data) -> Self {
+		// Halves this narrow share word 0, so neither can be lent out as a slice of that store.
+		// Interleaving against zero lifts each half into a word of its own, starting at lane 0.
+		let singles = (log_len < P::LOG_WIDTH).then(|| {
+			let (lo_half, hi_half) = data[0].interleave(P::default(), log_len);
+			[lo_half, hi_half]
+		});
+
+		Self {
+			log_len,
+			singles,
+			data,
+		}
+	}
+
+	/// Lends the two halves out as mutable views, the low half first.
+	///
+	/// A half of whole words is a view straight onto the store, so edits land at once.
+	/// A narrower half is a view onto a detached word, so edits land when this guard drops.
+	pub fn halves(&mut self) -> (FieldSliceMut<'_, P>, FieldSliceMut<'_, P>) {
+		match &mut self.singles {
+			Some([lo_half, hi_half]) => (
+				FieldBuffer {
+					log_len: self.log_len,
+					words: slice::from_mut(lo_half),
+				},
+				FieldBuffer {
+					log_len: self.log_len,
+					words: slice::from_mut(hi_half),
+				},
+			),
+			None => {
+				let half_len = 1 << (self.log_len - P::LOG_WIDTH);
+				let (lo_half, hi_half) = self.data.split_at_mut(half_len);
+				(
+					FieldBuffer {
+						log_len: self.log_len,
+						words: lo_half,
+					},
+					FieldBuffer {
+						log_len: self.log_len,
+						words: hi_half,
+					},
+				)
+			}
+		}
+	}
+}
+
+impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for SplitMut<P, Data> {
+	fn drop(&mut self) {
+		// Detached halves are the only shape with anything to write back.
+		if let Some([lo_half, hi_half]) = self.singles {
+			(self.data[0], _) = lo_half.interleave(hi_half, self.log_len);
+		}
+	}
 }
 
 #[cfg(test)]
@@ -1468,294 +1292,6 @@ mod tests {
 	}
 
 	#[test]
-	fn chunk() {
-		let log_len = 8;
-		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		for log_chunk_size in 0..=log_len {
-			let chunk_count = 1 << (log_len - log_chunk_size);
-
-			for chunk_index in 0..chunk_count {
-				let chunk = buffer.chunk(log_chunk_size, chunk_index);
-				for i in 0..1 << log_chunk_size {
-					assert_eq!(chunk.get(i), buffer.get(chunk_index << log_chunk_size | i));
-				}
-			}
-		}
-	}
-
-	#[test]
-	#[should_panic(expected = "precondition")]
-	fn chunk_invalid_size() {
-		let log_len = 8;
-		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-		let _ = buffer.chunk(log_len + 1, 0);
-	}
-
-	#[test]
-	#[should_panic(expected = "precondition")]
-	fn chunk_invalid_index() {
-		let log_len = 8;
-		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-		let _ = buffer.chunk(4, 1 << (log_len - 4)); // out of range
-	}
-
-	#[test]
-	fn chunk_mut() {
-		// A packed word holds 4 lanes, so log_len 4 fills exactly 4 words.
-		// The sweep below therefore straddles the word boundary:
-		//
-		//     log_chunk_size 0  ->  1 element    ->  4 chunks share one word
-		//     log_chunk_size 1  ->  2 elements   ->  2 chunks share one word
-		//     log_chunk_size 2  ->  4 elements   ->  one whole word each
-		//     log_chunk_size 3  ->  8 elements   ->  two whole words each
-		//     log_chunk_size 4  ->  16 elements  ->  the whole 4-word store
-		let log_len = 4;
-		let values: Vec<F> = (0..1u128 << log_len).map(F::new).collect();
-
-		for log_chunk_size in 0..=log_len {
-			let mut buffer = FieldBuffer::<P>::from_values(&values);
-			let chunk_count = 1 << (log_len - log_chunk_size);
-
-			// Rewrite every element through its own chunk, one guard at a time.
-			// Each guard merges before the next detaches, so chunks sharing a word chain safely.
-			for chunk_index in 0..chunk_count {
-				let mut guard = buffer.chunk_mut(log_chunk_size, chunk_index);
-				let mut chunk = guard.chunk();
-
-				// The view is the chunk alone, so its indices run from 0 whatever the shape.
-				assert_eq!(chunk.len(), 1 << log_chunk_size);
-				for i in 0..1 << log_chunk_size {
-					let old = u128::from(chunk.get(i).val());
-					chunk.set(i, F::new(old * 10));
-				}
-			}
-
-			// Every element comes back scaled, including those sharing a word with a neighbour.
-			for index in 0..1 << log_len {
-				assert_eq!(
-					buffer.get(index),
-					F::new(index as u128 * 10),
-					"log_chunk_size={log_chunk_size}, index={index}"
-				);
-			}
-		}
-
-		// A sub-word guard must write back its own lanes and leave the rest of the word alone.
-		//
-		//     word 0 = [ 0 1 2 3 ], chunks of 2 elements
-		//     chunk 1 = elements 2..4, so lanes 0..2 must survive untouched
-		let mut buffer = FieldBuffer::<P>::from_values(&values);
-		{
-			let mut guard = buffer.chunk_mut(1, 1);
-			let mut chunk = guard.chunk();
-			chunk.set(0, F::new(70));
-			chunk.set(1, F::new(80));
-		}
-		assert_eq!(buffer.get(0), F::new(0));
-		assert_eq!(buffer.get(1), F::new(1));
-		assert_eq!(buffer.get(2), F::new(70));
-		assert_eq!(buffer.get(3), F::new(80));
-
-		// The words past the edited one are untouched as well.
-		for index in 4..16 {
-			assert_eq!(buffer.get(index), F::new(index as u128));
-		}
-
-		// A buffer shorter than one packed word still splits into sub-word chunks.
-		// 2 elements live in a 4-lane word, so the 2 dead lanes must not become elements.
-		let mut small = FieldBuffer::<P>::from_values(&[F::new(10), F::new(20)]);
-		{
-			let mut guard = small.chunk_mut(0, 1);
-			guard.chunk().set(0, F::new(21));
-		}
-		assert_eq!(small.len(), 2);
-		assert_eq!(small.iter_scalars().collect::<Vec<_>>(), vec![F::new(10), F::new(21)]);
-
-		// A whole-word guard writes into the store directly, and touches no neighbouring word.
-		let mut buffer = FieldBuffer::<P>::from_values(&values);
-		{
-			let mut guard = buffer.chunk_mut(3, 1); // elements 8..16, words 2 and 3
-			let mut chunk = guard.chunk();
-			for i in 0..8 {
-				chunk.set(i, F::new(100 + i as u128));
-			}
-		}
-		for index in 0..8 {
-			assert_eq!(buffer.get(index), F::new(index as u128));
-		}
-		for index in 8..16 {
-			assert_eq!(buffer.get(index), F::new(100 + (index - 8) as u128));
-		}
-	}
-
-	#[test]
-	#[should_panic(expected = "precondition")]
-	fn chunk_mut_invalid_size() {
-		let mut buffer = FieldBuffer::<P>::zeros(4);
-		// 5 > 4: no chunk that size exists in a 16-element buffer.
-		let _ = buffer.chunk_mut(5, 0);
-	}
-
-	#[test]
-	#[should_panic(expected = "precondition")]
-	fn chunk_mut_invalid_index() {
-		let mut buffer = FieldBuffer::<P>::zeros(4);
-		// 16 elements in chunks of 4 gives 4 chunks, indexed 0..4.
-		let _ = buffer.chunk_mut(2, 4);
-	}
-
-	#[test]
-	fn chunks() {
-		let values: Vec<F> = (0..16).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		// Split into 4 chunks of size 4
-		let chunks: Vec<_> = buffer.chunks(2).collect();
-		assert_eq!(chunks.len(), 4);
-
-		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
-			assert_eq!(chunk.len(), 4);
-			for i in 0..4 {
-				let expected = F::new((chunk_idx * 4 + i) as u128);
-				assert_eq!(chunk.get(i), expected);
-			}
-		}
-	}
-
-	#[test]
-	#[should_panic(expected = "precondition")]
-	fn chunks_invalid_size_too_large() {
-		let values: Vec<F> = (0..16).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-		let _ = buffer.chunks(5).collect::<Vec<_>>();
-	}
-
-	#[test]
-	fn chunks_below_packing_width() {
-		// A word holds 4 lanes, so pairs of elements share one:
-		//
-		//     word 0 = [s_0, s_1, s_2, s_3]  ->  chunks [s_0, s_1], [s_2, s_3]
-		let values: Vec<F> = (0..16).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		let chunks: Vec<_> = buffer.chunks(1).collect();
-		assert_eq!(chunks.len(), 8);
-
-		// Each chunk owns a repacked word, so its two elements sit at lanes 0 and 1.
-		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
-			assert_eq!(chunk.len(), 2);
-			assert_eq!(chunk.get(0), F::new((chunk_idx * 2) as u128));
-			assert_eq!(chunk.get(1), F::new((chunk_idx * 2 + 1) as u128));
-		}
-
-		// A single-element chunk is the narrowest shape, one lane copied out on its own.
-		let singles: Vec<_> = buffer.chunks(0).collect();
-		assert_eq!(singles.len(), 16);
-		for (index, chunk) in singles.into_iter().enumerate() {
-			assert_eq!(chunk.len(), 1);
-			assert_eq!(chunk.get(0), F::new(index as u128));
-		}
-	}
-
-	#[test]
-	fn par_chunks() {
-		let values: Vec<F> = (0..16).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		// Split into 4 chunks of size 4
-		let chunks: Vec<_> = buffer.par_chunks(2).collect();
-		assert_eq!(chunks.len(), 4);
-
-		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
-			assert_eq!(chunk.len(), 4);
-			for i in 0..4 {
-				let expected = F::new((chunk_idx * 4 + i) as u128);
-				assert_eq!(chunk.get(i), expected);
-			}
-		}
-
-		// Test small chunk sizes (below P::LOG_WIDTH)
-		// P::LOG_WIDTH = 2, so par_chunks(0) and par_chunks(1) should work
-		// Split into 8 chunks of size 2 (log_chunk_size = 1)
-		let chunks: Vec<_> = buffer.par_chunks(1).collect();
-		assert_eq!(chunks.len(), 8);
-		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
-			assert_eq!(chunk.len(), 2);
-			for i in 0..2 {
-				let expected = F::new((chunk_idx * 2 + i) as u128);
-				assert_eq!(chunk.get(i), expected);
-			}
-		}
-
-		// Split into 16 chunks of size 1 (log_chunk_size = 0)
-		let chunks: Vec<_> = buffer.par_chunks(0).collect();
-		assert_eq!(chunks.len(), 16);
-		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
-			assert_eq!(chunk.len(), 1);
-			let expected = F::new(chunk_idx as u128);
-			assert_eq!(chunk.get(0), expected);
-		}
-	}
-
-	#[test]
-	fn par_chunk_scalars_ignores_dead_lanes() {
-		// Fixture state: 2 scalars occupy one 4-lane word, leaving two lanes dead.
-		//
-		//     word = [s_0, s_1, dead, dead]
-		let values: Vec<F> = (0..2).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-
-		// One scalar per chunk: 2 live scalars give 2 chunks, not the word's 4 lanes.
-		let chunks: Vec<Vec<F>> = buffer
-			.par_chunk_scalars(0)
-			.map(|chunk| chunk.collect())
-			.collect();
-		assert_eq!(chunks, vec![vec![values[0]], vec![values[1]]]);
-	}
-
-	#[test]
-	#[should_panic(expected = "precondition")]
-	fn par_chunks_invalid_size() {
-		let values: Vec<F> = (0..16).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values);
-		let _ = buffer.par_chunks(5).collect::<Vec<_>>();
-	}
-
-	#[test]
-	fn chunks_mut() {
-		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
-
-		// Modify via chunks
-		let mut chunks: Vec<_> = buffer.chunks_mut(2).collect();
-		assert_eq!(chunks.len(), 4);
-
-		for (chunk_idx, chunk) in chunks.iter_mut().enumerate() {
-			for i in 0..chunk.len() {
-				chunk.set(i, F::new((chunk_idx * 10 + i) as u128));
-			}
-		}
-
-		// Verify modifications
-		for chunk_idx in 0..4 {
-			for i in 0..4 {
-				let expected = F::new((chunk_idx * 10 + i) as u128);
-				assert_eq!(buffer.get(chunk_idx * 4 + i), expected);
-			}
-		}
-	}
-
-	#[test]
-	#[should_panic(expected = "precondition")]
-	fn chunks_mut_invalid_size() {
-		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
-		let _ = buffer.chunks_mut(0).collect::<Vec<_>>();
-	}
-
-	#[test]
 	fn split_half() {
 		// Test with buffer size > P::WIDTH (multiple packed elements)
 		let values: Vec<F> = (0..16).map(F::new).collect();
@@ -1951,101 +1487,6 @@ mod tests {
 
 			// Round trip: iterating the collected buffer hands the scalars back, in order.
 			prop_assert_eq!(&collected.iter_scalars().collect::<Vec<_>>(), &values);
-		}
-
-		#[test]
-		fn par_chunk_scalars_partitions_the_buffer(
-			(log_len, log_chunk_size) in (0usize..=6).prop_flat_map(|n| (Just(n), 0usize..=n)),
-		) {
-			// Invariant: the chunks tile the buffer exactly.
-			// The sweep reaches chunk sizes on both sides of the packing width.
-			let values: Vec<F> = (0..1u128 << log_len).map(F::new).collect();
-			let buffer = FieldBuffer::<P>::from_values(&values);
-
-			let chunks: Vec<Vec<F>> = buffer
-				.par_chunk_scalars(log_chunk_size)
-				.map(|chunk| chunk.collect())
-				.collect();
-
-			// The count follows the logical length, not the backing word count.
-			prop_assert_eq!(chunks.len(), 1 << (log_len - log_chunk_size));
-
-			// Cross-check: each chunk matches what the serial accessor returns at the same index.
-			for (index, scalars) in chunks.iter().enumerate() {
-				let expected: Vec<F> = buffer.chunk(log_chunk_size, index).iter_scalars().collect();
-				prop_assert_eq!(scalars, &expected);
-			}
-
-			// Concatenating the chunks reproduces the buffer, in order and without gaps.
-			prop_assert_eq!(chunks.concat(), values);
-		}
-
-		#[test]
-		fn chunk_mut_merges_like_direct_writes(
-			(log_len, log_chunk_size, chunk_index) in (0usize..=6)
-				.prop_flat_map(|log_len| (Just(log_len), 0usize..=log_len))
-				.prop_flat_map(|(log_len, log_chunk_size)| {
-					(Just(log_len), Just(log_chunk_size), 0usize..1 << (log_len - log_chunk_size))
-				}),
-			seed in any::<u64>(),
-		) {
-			// Invariant: a chunk edited through its guard equals the same scalars written by index.
-			//
-			// A packed word holds 4 lanes, so the sweep covers chunk sizes on both sides of it.
-			// Exactly one chunk is edited here.
-			// The elements left alone then pin that the merge stays inside the chunk's lanes.
-			let mut rng = StdRng::seed_from_u64(seed);
-			let original = random_field_buffer::<P>(&mut rng, log_len);
-
-			// Fresh scalars, one per element of the chosen chunk, distinct from a random fill.
-			let replacements: Vec<F> = (0..1u128 << log_chunk_size)
-				.map(|i| F::new(i * 7 + 1))
-				.collect();
-
-			// Path under test: one guard over one chunk, merged when it drops.
-			let mut guarded = original.clone();
-			{
-				let mut guard = guarded.chunk_mut(log_chunk_size, chunk_index);
-				let mut chunk = guard.chunk();
-				for (i, &value) in replacements.iter().enumerate() {
-					chunk.set(i, value);
-				}
-			}
-
-			// Reference path: the same scalars written straight in, at the indices the chunk spans.
-			let mut direct = original;
-			for (i, &value) in replacements.iter().enumerate() {
-				direct.set(chunk_index << log_chunk_size | i, value);
-			}
-
-			// Equality compares every live scalar, so this covers the edited and untouched alike.
-			prop_assert_eq!(guarded, direct);
-		}
-
-		#[test]
-		fn serial_and_parallel_chunks_agree(
-			(log_len, log_chunk_size) in (0usize..=8).prop_flat_map(|n| (Just(n), 0usize..=n)),
-		) {
-			// Invariant: both chunk iterators yield the same chunks, scalar for scalar.
-			// A packed word holds 4 lanes, so the sweep reaches sizes on both sides of it.
-			let values: Vec<F> = (0..1u128 << log_len).map(F::new).collect();
-			let buffer = FieldBuffer::<P>::from_values(&values);
-
-			let serial: Vec<Vec<F>> = buffer
-				.chunks(log_chunk_size)
-				.map(|chunk| chunk.iter_scalars().collect())
-				.collect();
-			let parallel: Vec<Vec<F>> = buffer
-				.par_chunks(log_chunk_size)
-				.map(|chunk| chunk.iter_scalars().collect())
-				.collect();
-
-			// The count follows the logical length, not the backing word count.
-			prop_assert_eq!(serial.len(), 1 << (log_len - log_chunk_size));
-			prop_assert_eq!(&serial, &parallel);
-
-			// Concatenating the chunks reproduces the buffer, in order and without gaps.
-			prop_assert_eq!(serial.concat(), values);
 		}
 	}
 }
