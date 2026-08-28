@@ -1,8 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::mem::size_of;
-
 /// Divides an underlier type into smaller underliers in memory and iterates over them.
 ///
 /// [`Divisible`] provides iteration over the subdivisions of an underlier type, guaranteeing that
@@ -220,46 +218,45 @@ pub mod memcast {
 		unsafe { *bytemuck::must_cast_ref::<Big, [Small; N]>(value).get_unchecked(N - 1 - index) }
 	}
 
-	/// Set element at index (LSB-first ordering), returning modified value, without bounds
-	/// checking.
+	/// Set element at index (LSB-first ordering) in place, without bounds checking.
+	///
+	/// A single-element write stays a single-element store.
 	///
 	/// # Safety
 	///
 	/// The caller must ensure that `index < N`.
 	#[cfg(target_endian = "little")]
 	#[inline]
-	pub unsafe fn set<Big, Small, const N: usize>(value: &Big, index: usize, val: Small) -> Big
+	pub unsafe fn set<Big, Small, const N: usize>(value: &mut Big, index: usize, val: Small)
 	where
 		Big: Pod,
 		Small: Pod,
 	{
-		let mut arr = *bytemuck::must_cast_ref::<Big, [Small; N]>(value);
 		// Safety: the caller guarantees `index < N`.
 		unsafe {
-			*arr.get_unchecked_mut(index) = val;
+			*bytemuck::must_cast_mut::<Big, [Small; N]>(value).get_unchecked_mut(index) = val;
 		}
-		bytemuck::must_cast(arr)
 	}
 
-	/// Set element at index (LSB-first ordering), returning modified value, without bounds
-	/// checking.
+	/// Set element at index (LSB-first ordering) in place, without bounds checking.
+	///
+	/// A single-element write stays a single-element store.
 	///
 	/// # Safety
 	///
 	/// The caller must ensure that `index < N`.
 	#[cfg(target_endian = "big")]
 	#[inline]
-	pub unsafe fn set<Big, Small, const N: usize>(value: &Big, index: usize, val: Small) -> Big
+	pub unsafe fn set<Big, Small, const N: usize>(value: &mut Big, index: usize, val: Small)
 	where
 		Big: Pod,
 		Small: Pod,
 	{
-		let mut arr = *bytemuck::must_cast_ref::<Big, [Small; N]>(value);
 		// Safety: the caller guarantees `index < N`, so `N - 1 - index < N`.
 		unsafe {
-			*arr.get_unchecked_mut(N - 1 - index) = val;
+			*bytemuck::must_cast_mut::<Big, [Small; N]>(value).get_unchecked_mut(N - 1 - index) =
+				val;
 		}
-		bytemuck::must_cast(arr)
 	}
 
 	/// Broadcast a value to all positions.
@@ -303,10 +300,10 @@ pub mod memcast {
 	}
 }
 
-/// Helper functions for Divisible implementations using the get method.
+/// Helper functions for iterating a subdivision by mapping over its indices.
 ///
-/// These functions create iterators by mapping indices through `Divisible::get`,
-/// useful for SIMD types where extract intrinsics provide efficient element access.
+/// Suits a subdivision whose element access is index arithmetic. Wrong for one whose access is a
+/// lane extract, since at a run-time index that becomes an unpredictable branch per element.
 pub mod mapget {
 	use binius_utils::iter::IterExtensions;
 
@@ -340,68 +337,95 @@ pub mod mapget {
 	}
 }
 
-/// Implements `Divisible` trait using bytemuck memory casting.
+/// Implements [`Divisible`] over each named subdivision by reinterpreting memory.
 ///
-/// This macro generates `Divisible` implementations for a big type over smaller types.
-/// The implementations use the helper functions in the `memcast` module.
+/// The plain form broadcasts through memory:
+///
+/// ```text
+/// impl_divisible_memcast!(u128, u64, u32, u16, u8);
+/// ```
+///
+/// The arrow form takes a broadcast instruction per subdivision:
+///
+/// ```text
+/// impl_divisible_memcast!(M512, u64 => |val| unsafe { M512(_mm512_set1_epi64(val as i64)) });
+/// ```
 macro_rules! impl_divisible_memcast {
-	($big:ty, $($small:ty),+) => {
+	// Each subdivision names the instruction that broadcasts it.
+	($big:ty, $($small:ty => |$v:ident| $broadcast:expr),+ $(,)?) => {
 		$(
-			impl $crate::divisible::Divisible<$small> for $big {
-				const LOG_N: usize = (size_of::<$big>() / size_of::<$small>()).ilog2() as usize;
-
-				#[inline]
-				fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $small> + Send + Clone {
-					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::divisible::memcast::value_iter::<$big, $small, N>(value)
-				}
-
-				#[inline]
-				fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
-					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::divisible::memcast::ref_iter::<$big, $small, N>(value)
-				}
-
-				#[inline]
-				#[cfg(target_endian = "little")]
-				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
-					$crate::divisible::memcast::slice_iter::<$big, $small>(slice)
-				}
-
-				#[inline]
-				#[cfg(target_endian = "big")]
-				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
-					const LOG_N: usize = (size_of::<$big>() / size_of::<$small>()).ilog2() as usize;
-					$crate::divisible::memcast::slice_iter::<$big, $small, LOG_N>(slice)
-				}
-
-				#[inline]
-				unsafe fn get_unchecked(&self, index: usize) -> $small {
-					const N: usize = size_of::<$big>() / size_of::<$small>();
-					// Safety: the caller guarantees `index < Self::N == N`.
-					unsafe { $crate::divisible::memcast::get::<$big, $small, N>(self, index) }
-				}
-
-				#[inline]
-				unsafe fn set_unchecked(&mut self, index: usize, val: $small) {
-					const N: usize = size_of::<$big>() / size_of::<$small>();
-					// Safety: the caller guarantees `index < Self::N == N`.
-					*self = unsafe { $crate::divisible::memcast::set::<$big, $small, N>(&*self, index, val) };
-				}
-
-				#[inline]
-				fn broadcast(val: $small) -> Self {
-					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::divisible::memcast::broadcast::<$big, $small, N>(val)
-				}
-
-				#[inline]
-				fn from_iter(iter: impl Iterator<Item = $small>) -> Self {
-					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::divisible::memcast::from_iter::<$big, $small, N>(iter)
-				}
-			}
+			$crate::divisible::impl_divisible_memcast!(@impl $big, $small, |$v| $broadcast);
 		)+
+	};
+	// Every subdivision broadcasts by a memory splat.
+	($big:ty, $($small:ty),+ $(,)?) => {
+		$(
+			$crate::divisible::impl_divisible_memcast!(
+				@impl $big, $small,
+				|val| $crate::divisible::memcast::broadcast::<
+					$big,
+					$small,
+					{ ::std::mem::size_of::<$big>() / ::std::mem::size_of::<$small>() },
+				>(val)
+			);
+		)+
+	};
+	(@impl $big:ty, $small:ty, |$v:ident| $broadcast:expr) => {
+		impl $crate::divisible::Divisible<$small> for $big {
+			const LOG_N: usize =
+				(::std::mem::size_of::<$big>() / ::std::mem::size_of::<$small>()).ilog2() as usize;
+
+			#[inline]
+			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $small> + Send + Clone {
+				const N: usize = ::std::mem::size_of::<$big>() / ::std::mem::size_of::<$small>();
+				$crate::divisible::memcast::value_iter::<$big, $small, N>(value)
+			}
+
+			#[inline]
+			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
+				const N: usize = ::std::mem::size_of::<$big>() / ::std::mem::size_of::<$small>();
+				$crate::divisible::memcast::ref_iter::<$big, $small, N>(value)
+			}
+
+			#[inline]
+			#[cfg(target_endian = "little")]
+			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
+				$crate::divisible::memcast::slice_iter::<$big, $small>(slice)
+			}
+
+			#[inline]
+			#[cfg(target_endian = "big")]
+			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
+				const LOG_N: usize =
+					(::std::mem::size_of::<$big>() / ::std::mem::size_of::<$small>()).ilog2() as usize;
+				$crate::divisible::memcast::slice_iter::<$big, $small, LOG_N>(slice)
+			}
+
+			#[inline]
+			unsafe fn get_unchecked(&self, index: usize) -> $small {
+				const N: usize = ::std::mem::size_of::<$big>() / ::std::mem::size_of::<$small>();
+				// Safety: the caller guarantees `index < Self::N == N`.
+				unsafe { $crate::divisible::memcast::get::<$big, $small, N>(self, index) }
+			}
+
+			#[inline]
+			unsafe fn set_unchecked(&mut self, index: usize, val: $small) {
+				const N: usize = ::std::mem::size_of::<$big>() / ::std::mem::size_of::<$small>();
+				// Safety: the caller guarantees `index < Self::N == N`.
+				unsafe { $crate::divisible::memcast::set::<$big, $small, N>(self, index, val) };
+			}
+
+			#[inline]
+			fn broadcast($v: $small) -> Self {
+				$broadcast
+			}
+
+			#[inline]
+			fn from_iter(iter: impl Iterator<Item = $small>) -> Self {
+				const N: usize = ::std::mem::size_of::<$big>() / ::std::mem::size_of::<$small>();
+				$crate::divisible::memcast::from_iter::<$big, $small, N>(iter)
+			}
+		}
 	};
 }
 
@@ -560,6 +584,169 @@ mod tests {
 		fn test_set_get_u32_u8(mut val in any::<u32>(), i in 0usize..4, elem in any::<u8>()) {
 			Divisible::<u8>::set(&mut val, i, elem);
 			assert_eq!(Divisible::<u8>::get(&val, i), elem);
+		}
+	}
+}
+
+#[cfg(test)]
+mod arch_tests {
+	use std::fmt::Debug;
+
+	use binius_utils::{SerializeBytes, bytes::BytesMut};
+	use proptest::{arbitrary::any, proptest};
+
+	use super::Divisible;
+	use crate::arch::{M128, M256, M512};
+
+	/// The byte subdivision is the value's little-endian byte string, which serialization states
+	/// independently.
+	fn check_byte_anchor<Big>(value: Big)
+	where
+		Big: Divisible<u8> + SerializeBytes + Copy,
+	{
+		let mut buf = BytesMut::new();
+		value
+			.serialize(&mut buf)
+			.expect("BytesMut grows to fit the value");
+
+		assert!(Big::value_iter(value).eq(buf));
+	}
+
+	/// Cutting one lane into bytes gives the same bytes as the whole value's matching window.
+	fn check_refines<Big, Small>(value: Big)
+	where
+		Big: Divisible<u8> + Divisible<Small> + Copy,
+		Small: Divisible<u8> + Copy,
+	{
+		let bytes_per_lane = <Small as Divisible<u8>>::N;
+
+		for i in 0..<Big as Divisible<Small>>::N {
+			let lane = Divisible::<Small>::get(&value, i);
+			let window =
+				(0..bytes_per_lane).map(|j| Divisible::<u8>::get(&value, i * bytes_per_lane + j));
+
+			assert!(<Small as Divisible<u8>>::value_iter(lane).eq(window), "lane {i}");
+		}
+	}
+
+	/// The iterators agree with element access, and rebuilding from them restores the value.
+	fn check_iters<Big, Small>(value: Big, other: Big)
+	where
+		Big: Divisible<Small> + Copy + Eq + Debug,
+		Small: Copy + Eq + Debug,
+	{
+		let by_index = (0..<Big as Divisible<Small>>::N)
+			.map(|i| Divisible::<Small>::get(&value, i))
+			.collect::<Vec<_>>();
+
+		assert!(Big::value_iter(value).eq(by_index.iter().copied()));
+		assert!(Big::ref_iter(&value).eq(by_index.iter().copied()));
+
+		// Over a slice the subdivisions run element by element, in order.
+		let slice = [value, other];
+		assert!(Big::slice_iter(&slice).eq(Big::value_iter(value).chain(Big::value_iter(other))));
+
+		assert_eq!(Big::from_iter(by_index.iter().copied()), value);
+	}
+
+	/// A broadcast lane reads back at every index.
+	fn check_broadcast<Big, Small>(source: Big)
+	where
+		Big: Divisible<Small> + Copy,
+		Small: Copy + Eq + Debug,
+	{
+		// Take the lane from a generated value, so no subdivision needs its own strategy.
+		let lane = Divisible::<Small>::get(&source, 0);
+		let value = <Big as Divisible<Small>>::broadcast(lane);
+
+		for i in 0..<Big as Divisible<Small>>::N {
+			assert_eq!(Divisible::<Small>::get(&value, i), lane, "index {i}");
+		}
+	}
+
+	/// Writing one index leaves every other index alone.
+	fn check_set<Big, Small>(value: Big, source: Big, index: usize)
+	where
+		Big: Divisible<Small> + Copy,
+		Small: Copy + Eq + Debug,
+	{
+		let index = index % <Big as Divisible<Small>>::N;
+		let lane = Divisible::<Small>::get(&source, 0);
+
+		let mut updated = value;
+		Divisible::<Small>::set(&mut updated, index, lane);
+
+		assert_eq!(Divisible::<Small>::get(&updated, index), lane);
+		for i in (0..<Big as Divisible<Small>>::N).filter(|&i| i != index) {
+			assert_eq!(
+				Divisible::<Small>::get(&updated, i),
+				Divisible::<Small>::get(&value, i),
+				"index {i}"
+			);
+		}
+	}
+
+	/// Runs every property at one subdivision width.
+	fn check_width<Big, Small>(a: Big, b: Big, index: usize)
+	where
+		Big: Divisible<u8> + Divisible<Small> + Copy + Eq + Debug,
+		Small: Divisible<u8> + Copy + Eq + Debug,
+	{
+		check_refines::<Big, Small>(a);
+		check_iters::<Big, Small>(a, b);
+		check_broadcast::<Big, Small>(b);
+		check_set::<Big, Small>(a, b, index);
+	}
+
+	proptest! {
+		// These resolve to the target's SIMD registers where it has them, the scaled fallbacks
+		// otherwise.
+
+		#[test]
+		fn m128_subdivisions(a in any::<u128>(), b in any::<u128>(), index in any::<usize>()) {
+			let (a, b) = (M128::from(a), M128::from(b));
+
+			check_byte_anchor(a);
+			check_width::<M128, u128>(a, b, index);
+			check_width::<M128, u64>(a, b, index);
+			check_width::<M128, u32>(a, b, index);
+			check_width::<M128, u16>(a, b, index);
+			check_width::<M128, u8>(a, b, index);
+		}
+
+		#[test]
+		fn m256_subdivisions(
+			a in any::<[u128; 2]>(),
+			b in any::<[u128; 2]>(),
+			index in any::<usize>(),
+		) {
+			let (a, b) = (M256::from(a), M256::from(b));
+
+			check_byte_anchor(a);
+			check_width::<M256, M128>(a, b, index);
+			check_width::<M256, u128>(a, b, index);
+			check_width::<M256, u64>(a, b, index);
+			check_width::<M256, u32>(a, b, index);
+			check_width::<M256, u16>(a, b, index);
+			check_width::<M256, u8>(a, b, index);
+		}
+
+		#[test]
+		fn m512_subdivisions(
+			a in any::<[u128; 4]>(),
+			b in any::<[u128; 4]>(),
+			index in any::<usize>(),
+		) {
+			let (a, b) = (M512::from(a), M512::from(b));
+
+			check_byte_anchor(a);
+			check_width::<M512, M256>(a, b, index);
+			check_width::<M512, M128>(a, b, index);
+			check_width::<M512, u128>(a, b, index);
+			check_width::<M512, u64>(a, b, index);
+			check_width::<M512, u32>(a, b, index);
+			check_width::<M512, u16>(a, b, index);
+			check_width::<M512, u8>(a, b, index);
 		}
 	}
 }
