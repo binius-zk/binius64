@@ -350,12 +350,35 @@ impl<F: Field> ConstraintSystem<F> {
 	}
 }
 
+/// Random padding appended to a committed segment.
+///
+/// The padding is what keeps the segment's openings independent of its real wires.
+/// Every committed segment carries the same amount, so each is padded on its own.
 #[derive(Debug, Clone, Copy)]
 pub struct BlindingInfo {
-	/// The number of random dummy wires that must be added.
+	/// The number of random dummy wires appended after the segment's real wires.
 	pub n_dummy_wires: usize,
 	/// The number of random dummy multiplication constraints that must be added.
 	pub n_dummy_constraints: usize,
+}
+
+impl BlindingInfo {
+	/// The blinding a committed segment needs when FRI opens it at `n_test_queries` positions.
+	///
+	/// Each query opens one Merkle leaf, revealing one codeword symbol of the segment.
+	/// A symbol is a fixed linear function of the segment.
+	/// So `n_test_queries` random wires make every opened symbol uniform and independent.
+	///
+	/// One further wire covers the leaves that are never opened.
+	/// Their hashes still travel in the authentication paths, and the leaves carry no salt.
+	/// The spare degree of randomness keeps an unopened leaf unguessable, as a salt would.
+	pub const fn for_fri_queries(n_test_queries: usize) -> Self {
+		Self {
+			n_dummy_wires: n_test_queries + 1,
+			// TODO: Document why these are necessary
+			n_dummy_constraints: 2,
+		}
+	}
 }
 
 #[derive(Debug, Clone)]
