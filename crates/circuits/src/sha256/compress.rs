@@ -211,13 +211,37 @@ pub fn sha256_compress(builder: &CircuitBuilder, state_in: State, m: [Wire; 16])
 		builder.assert_eq("sha256_compress.round_state", hinted, expected);
 	}
 
-	// Feed-forward, then drop the high lane.
+	// Feed-forward, two output words per gate.
 	//
-	// It carries the round-31 state the split already consumed.
-	// A caller reads one compression's output, in the low 32 bits.
+	// The rounds have consumed the split, so both lanes are free again.
+	// Pairing the words refills them, and 8 additions become 4:
+	//
+	//     low lane  <- H[2j]
+	//     high lane <- H[2j + 1]
+	//
+	// Each summand is cleared before it enters the low lane.
+	//
+	// - A state word's high half holds the round-31 state the split already spent.
+	// - A caller's high half is not required to be empty.
+	//
+	// The shift into the high lane clears its own operand, so only the low one needs it.
+	let pair =
+		|lo: Wire, hi: Wire| builder.bxor(clear_high_bits(builder, lo, 32), builder.shl(hi, 32));
+	let sums: [Wire; 4] = array::from_fn(|j| {
+		builder.iadd_32(
+			pair(state_in.0[2 * j], state_in.0[2 * j + 1]),
+			pair(state.0[2 * j], state.0[2 * j + 1]),
+		)
+	});
+
+	// A caller reads one compression's output, in the low 32 bits with the high 32 zero.
 	State(array::from_fn(|i| {
-		let sum = builder.iadd_32(state_in.0[i], state.0[i]);
-		clear_high_bits(builder, sum, 32)
+		let sum = sums[i / 2];
+		if i % 2 == 0 {
+			clear_high_bits(builder, sum, 32)
+		} else {
+			builder.shr(sum, 32)
+		}
 	}))
 }
 
@@ -676,13 +700,82 @@ fn small_sigma_1(b: &CircuitBuilder, x: Wire) -> Wire {
 #[cfg(test)]
 mod tests {
 	use binius_core::word::Word;
-	use binius_frontend::{CircuitBuilder, Hint, Wire};
+	use binius_frontend::{CircuitBuilder, CircuitStat, Hint, Wire};
 	use proptest::prelude::*;
 
 	use super::{
 		IV, Sha256Compress2x, State, compress_2x_gates, populate_message_block, ref_compress,
 		sha256_compress, sha256_compress_2x, sha256_compress_2x_seq,
 	};
+
+	/// AND constraints one 32-bit SHA-256 compression cannot go below.
+	///
+	/// XOR, rotation and shift are affine, so they cost nothing.
+	/// Only the AND of two affine forms is witnessed, and each one eliminates exactly one summand:
+	///
+	/// ```text
+	///     n-summand modular sum          n - 1
+	///     Ch, Maj                            1  each
+	/// ```
+	///
+	/// A compression's nonlinear work is therefore fixed:
+	///
+	/// ```text
+	///     schedule    48 words x 3 sums                      144
+	///     rounds      64 x (Ch + Maj + 7 sums)               576
+	///     feedforward 8 sums                                   8
+	///                                                       ----
+	///                                                        728
+	/// ```
+	///
+	/// A gate constrains both 32-bit halves of its word at once, so two lanes share that total.
+	const AND_PER_COMPRESSION: usize = 364;
+
+	/// AND constraints a circuit spends on the state `f` returns.
+	///
+	/// The output is bound to public wires, since dead code elimination would drop it otherwise.
+	/// Binding is affine, so it lands on ZERO constraints and leaves the AND count alone.
+	fn and_cost(f: impl FnOnce(&CircuitBuilder) -> State) -> usize {
+		let builder = CircuitBuilder::new();
+		let out = f(&builder);
+		for wire in out.0 {
+			let public = builder.add_inout();
+			builder.assert_eq("out", wire, public);
+		}
+		CircuitStat::collect(&builder.build()).n_and_constraints
+	}
+
+	#[test]
+	fn a_compression_spends_only_its_nonlinear_work() {
+		let inputs = |b: &CircuitBuilder| {
+			let state = State::public(b);
+			let m: [Wire; 16] = std::array::from_fn(|_| b.add_inout());
+			(state, m)
+		};
+
+		// One compression across two lanes: 32 rounds each, and paired feed-forward words.
+		let single = and_cost(|b| {
+			let (state, m) = inputs(b);
+			sha256_compress(b, state, m)
+		});
+		assert_eq!(single, AND_PER_COMPRESSION);
+
+		// Two compressions across two lanes: one lane each, all 64 rounds.
+		let paired = and_cost(|b| {
+			let (state, m) = inputs(b);
+			sha256_compress_2x(b, state, m)
+		});
+		assert_eq!(paired, 2 * AND_PER_COMPRESSION);
+
+		// Chaining the pair costs no more: the hint that breaks the dependency is affine to bind.
+		let chained = and_cost(|b| {
+			let (state, _) = inputs(b);
+			let blocks: [[Wire; 16]; 2] =
+				std::array::from_fn(|_| std::array::from_fn(|_| b.add_inout()));
+			sha256_compress_2x_seq(b, state, blocks)
+		});
+		assert_eq!(chained, 2 * AND_PER_COMPRESSION);
+	}
 
 	/// A test circuit that proves a knowledge of preimage for a given state vector S in
 	///
