@@ -19,6 +19,8 @@
 //!         ...
 //! ```
 
+use std::array;
+
 use binius_core::Word;
 use binius_utils::strided_array::StridedArray2DViewMut;
 
@@ -132,6 +134,63 @@ impl EvalContext for BatchExecutionContext<'_, '_> {
 		self.values[(reg as usize, instance)] = value;
 	}
 
+	/// Runs `op` over whole rows, one contiguous run of instances per register.
+	fn map<const D: usize, const S: usize, F>(&mut self, dsts: [u32; D], srcs: [u32; S], op: F)
+	where
+		F: Fn([Word; S]) -> [Word; D],
+	{
+		let n_instances = self.values.width();
+		let (mut dst_rows, src_rows) = self
+			.values
+			.rows_mut(dsts.map(|reg| reg as usize), srcs.map(|reg| reg as usize));
+		for i in 0..n_instances {
+			let out = op(array::from_fn(|k| src_rows[k][i]));
+			for (row, value) in dst_rows.iter_mut().zip(out) {
+				row[i] = value;
+			}
+		}
+	}
+
+	/// Folds one whole row into another.
+	fn update<F>(&mut self, dst: u32, src: u32, op: F)
+	where
+		F: Fn(Word, Word) -> Word,
+	{
+		let ([dst_row], [src_row]) = self.values.rows_mut([dst as usize], [src as usize]);
+		for (acc, &word) in dst_row.iter_mut().zip(src_row) {
+			*acc = op(*acc, word);
+		}
+	}
+
+	/// Scans whole rows for a violation before walking instances to record any.
+	///
+	/// A satisfied circuit never leaves the scan.
+	fn check<const S: usize, P, M>(
+		&mut self,
+		srcs: [u32; S],
+		path_spec: PathSpec,
+		fails: P,
+		message: M,
+	) where
+		P: Fn([Word; S]) -> bool,
+		M: Fn([Word; S]) -> String,
+	{
+		let n_instances = self.values.width();
+		let any = {
+			let rows = srcs.map(|reg| self.values.row(reg as usize));
+			(0..n_instances).any(|i| fails(array::from_fn(|k| rows[k][i])))
+		};
+		if !any {
+			return;
+		}
+		for i in 0..n_instances {
+			let words = srcs.map(|reg| self.load(reg, i));
+			if fails(words) {
+				self.note_assertion_failure(i, path_spec, message(words));
+			}
+		}
+	}
+
 	/// Record an assertion failure for one local instance.
 	///
 	/// A failure for a higher instance than the current lowest-failing one is dropped.
@@ -174,21 +233,57 @@ mod tests {
 	// interpreter produces for the same inputs. This is the core equivalence guarantee.
 	#[test]
 	fn batched_matches_scalar_per_instance() {
-		// A circuit that exercises a spread of opcodes plus a constant, with only witness inputs
-		// and force-committed outputs (no inout wires — the M4 setting).
+		// A circuit that exercises every row-wise opcode plus a constant, with only witness
+		// inputs and force-committed outputs (no inout wires — the M4 setting).
 		let builder = CircuitBuilder::new();
 		let a = builder.add_witness();
 		let b = builder.add_witness();
+		// Two inputs the caller pins, so every assertion below holds for every instance.
+		let zero = builder.add_witness();
+		let msb = builder.add_witness();
 		let k = builder.add_constant_64(0x0123_4567_89ab_cdef);
 		let c = builder.band(a, b);
 		let d = builder.bxor(a, k);
-		let (sum, _cout) = builder.iadd(a, b);
+		let (sum, cout) = builder.iadd(a, b);
 		let e = builder.rotr(b, 7);
 		let f = builder.bor(c, e);
-		builder.force_commit(c);
-		builder.force_commit(d);
-		builder.force_commit(sum);
-		builder.force_commit(f);
+		let g = builder.fax(a, b, k);
+		let xs = builder.bxor_multi(&[a, b, k, e, f]);
+		// A condition that differs between instances, so both arms of the select are taken.
+		let lt = builder.icmp_ult(a, b);
+		let sel = builder.select(lt, d, e);
+		let (diff, bout) = builder.isub_bin_bout(a, b, lt);
+		let (mul_hi, mul_lo) = builder.imul(a, b);
+		let (gmul_lo, gmul_hi) = builder.bmul(a, b, k, e);
+		let lanes = builder.iadd_32(a, b);
+		let (lanes_sum, lanes_cout) = builder.iadd32_cin_cout(a, b, lt);
+		// One shift per variant.
+		let shifts = [
+			builder.shl(a, 13),
+			builder.shr(a, 13),
+			builder.sar(a, 13),
+			builder.rotr(a, 13),
+			builder.sll32(a, 13),
+			builder.srl32(a, 13),
+			builder.sra32(a, 13),
+			builder.rotr32(a, 13),
+		];
+		// Assertions that hold for every instance, so each scan runs but records nothing.
+		builder.assert_eq("xor_roundtrip", builder.bxor(d, k), a);
+		builder.assert_eq_cond("xor_roundtrip_cond", builder.bxor(d, k), a, lt);
+		builder.assert_zero("zero_is_zero", zero);
+		builder.assert_false("zero_msb_false", zero);
+		builder.assert_non_zero("msb_is_non_zero", msb);
+		builder.assert_true("msb_is_true", msb);
+		for wire in [
+			c, d, sum, cout, e, f, g, xs, lt, sel, diff, bout, mul_hi, mul_lo, gmul_lo, gmul_hi,
+			lanes, lanes_sum, lanes_cout,
+		]
+		.into_iter()
+		.chain(shifts)
+		{
+			builder.force_commit(wire);
+		}
 		let circuit = builder.build();
 
 		let layout = circuit.value_vec_layout().clone();
@@ -214,6 +309,8 @@ mod tests {
 				let mut filler = circuit.new_witness_filler();
 				filler[a] = Word(x);
 				filler[b] = Word(y);
+				filler[zero] = Word::ZERO;
+				filler[msb] = Word::MSB_ONE;
 				circuit.populate_wire_witness(&mut filler).unwrap();
 				filler.value_vec().combined_witness().to_vec()
 			})
@@ -222,11 +319,15 @@ mod tests {
 		// Batched: fill the input rows for every instance, then evaluate all at once.
 		let a_row = circuit.witness_row(a);
 		let b_row = circuit.witness_row(b);
+		let zero_row = circuit.witness_row(zero);
+		let msb_row = circuit.witness_row(msb);
 		let mut data = vec![Word::ZERO; full_len * n];
 		let mut view = StridedArray2DViewMut::without_stride(&mut data, full_len, n).unwrap();
 		for (instance, &(x, y)) in inputs.iter().enumerate() {
 			view[(a_row, instance)] = Word(x);
 			view[(b_row, instance)] = Word(y);
+			view[(zero_row, instance)] = Word::ZERO;
+			view[(msb_row, instance)] = Word::MSB_ONE;
 		}
 		circuit.populate_wire_witness_batched(&mut view).unwrap();
 
