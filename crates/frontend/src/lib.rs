@@ -54,9 +54,10 @@ pub use artifact::{
 	stat::{self, CircuitStat},
 	witness::{AssertionFailure, BatchWitnessFiller, PopulateError, WitnessFiller},
 };
-pub use builder::{CircuitBuilder, Options};
+pub use builder::{CircuitBuilder, CompileCacheError, Options};
 pub use eval_form::{BatchPopulateError, MAX_ASSERTION_FAILURES};
 pub use ir::{
 	Wire,
 	hints::{self, Hint},
 };
+pub use pass::AlwaysFailingGateError;

@@ -12,6 +12,7 @@ binius-compute = { path = "../compute" }
 binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-utils = { path = "../utils" }
+bytes = { workspace = true }
 cranelift-entity = { workspace = true }
 itertools.workspace = true
 petgraph.workspace = true
