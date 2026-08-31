@@ -33,7 +33,7 @@ use binius_spartan_frontend::{
 	constraint_system::{BlindingInfo, WitnessLayout},
 };
 use binius_spartan_verifier::{
-	IOPVerifier as IronSpartanIOPVerifier, OPENINGS_PER_ORACLE,
+	IOPVerifier as IronSpartanIOPVerifier,
 	constraint_system::ConstraintSystemPadded,
 	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
@@ -105,7 +105,7 @@ where
 
 		// Pad the outer constraint system for zero-knowledge.
 		let n_test_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
-		let blinding_info = BlindingInfo::for_fri_queries(n_test_queries, OPENINGS_PER_ORACLE);
+		let blinding_info = BlindingInfo::for_fri_queries(n_test_queries);
 		let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
 		let outer_layout = Arc::new(outer_layout.with_blinding(*outer_cs.blinding_info()));
 		let outer_iop_verifier = IronSpartanIOPVerifier::new(outer_cs);

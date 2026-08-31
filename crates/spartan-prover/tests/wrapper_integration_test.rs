@@ -26,7 +26,7 @@ use binius_spartan_prover::{
 	wrapper::{ReplayChannel, ZKWrappedProverChannel},
 };
 use binius_spartan_verifier::{
-	IOPVerifier, OPENINGS_PER_ORACLE, SECURITY_BITS,
+	IOPVerifier, SECURITY_BITS,
 	config::StdChallenger,
 	constraint_system::ConstraintSystemPadded,
 	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
@@ -83,7 +83,7 @@ fn test_zk_wrapped_prove_verify() {
 	// === Step 4: Build outer padded constraint system ===
 	let log_inv_rate = 1;
 	let n_test_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
-	let blinding_info = BlindingInfo::for_fri_queries(n_test_queries, OPENINGS_PER_ORACLE);
+	let blinding_info = BlindingInfo::for_fri_queries(n_test_queries);
 	let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
 	let outer_layout = Arc::new(outer_layout.with_blinding(*outer_cs.blinding_info()));
 

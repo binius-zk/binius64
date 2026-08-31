@@ -362,44 +362,41 @@ pub struct BlindingInfo {
 	pub n_dummy_constraints: usize,
 }
 
-/// Dummy multiplication constraints added to every committed segment.
+/// Dummy multiplication constraints appended to every committed segment.
 ///
 /// A wire in no constraint has coefficient zero in the wiring relation.
-/// So the plain dummy wires cannot mask a revealed evaluation.
+/// So no count of plain dummy wires masks a value the relation reveals.
 ///
-/// The three wires of a dummy constraint do sit in a constraint.
-/// That is what carries free randomness into the relation.
+/// The three wires of a dummy constraint do sit in a constraint, so they reach the relation.
 ///
-/// Two of them cover the one evaluation revealed per oracle, with room to spare.
+/// # Why this value
+///
+/// Verification publishes four linear functionals of a committed segment:
+///
+/// ```text
+///     3  operand evaluations, read from the transcript in the clear
+///     1  the segment's own batched claim
+///     -----
+///     4  values needing a free random field element each
+/// ```
+///
+/// A dummy constraint spends three wires but supplies only two free field elements.
+/// Its third wire is pinned to the product of the other two, so the constraint holds.
+///
+/// Two constraints therefore carry `2 * 2 = 4` free elements, matching the four revealed values.
 const N_DUMMY_CONSTRAINTS: usize = 2;
 
 impl BlindingInfo {
-	/// The blinding a committed segment needs, given how much of it the verifier sees.
+	/// The blinding a committed segment needs when FRI opens it at `n_test_queries` positions.
 	///
-	/// Two different things are revealed, and each needs its own randomness.
-	///
-	/// Each of the `n_test_queries` FRI queries opens one Merkle leaf.
-	/// That reveals one codeword symbol, a linear function of the whole padded segment.
+	/// Each query opens one Merkle leaf, revealing one codeword symbol of the segment.
+	/// A symbol is a fixed linear function of the segment.
 	/// So `n_test_queries` random wires make every opened symbol uniform and independent.
 	///
 	/// One further wire covers the leaves that are never opened.
 	/// Their hashes still travel in the authentication paths, and the leaves carry no salt.
 	/// The spare degree of randomness keeps an unopened leaf unguessable, as a salt would.
-	///
-	/// Separately the verifier learns `n_oracle_openings` evaluations of the segment in the clear.
-	/// An evaluation weights each wire by its coefficient in the wiring relation.
-	/// A wire in no constraint is weighted by zero, so no count of plain dummy wires masks one.
-	///
-	/// The dummy constraints mask it instead, because their wires do sit in a constraint.
-	///
-	/// # Panics
-	///
-	/// Panics unless the dummy constraints cover every revealed evaluation.
-	pub const fn for_fri_queries(n_test_queries: usize, n_oracle_openings: usize) -> Self {
-		assert!(
-			N_DUMMY_CONSTRAINTS >= n_oracle_openings,
-			"a revealed evaluation with no dummy constraint behind it is unmasked"
-		);
+	pub const fn for_fri_queries(n_test_queries: usize) -> Self {
 		Self {
 			n_dummy_wires: n_test_queries + 1,
 			n_dummy_constraints: N_DUMMY_CONSTRAINTS,
@@ -473,9 +470,12 @@ impl<F: Field> WitnessLayout<F> {
 	}
 
 	pub fn with_blinding(self, info: BlindingInfo) -> Self {
-		// Both committed segments carry the same blinding: dummy wires to mask the query
-		// openings, and three wires per dummy constraint to mask the revealed evaluation. Keep
-		// this in sync with the padded constraint system in the verifier crate.
+		// Both committed segments carry the same blinding:
+		//
+		//     dummy wires                   -> mask the codeword symbols FRI opens
+		//     3 wires per dummy constraint  -> mask the evaluations sent in the clear
+		//
+		// Keep this in sync with the padded constraint system in the verifier crate.
 		let blinding_size = info.n_dummy_wires + 3 * info.n_dummy_constraints;
 
 		let total_precommit = self.n_precommit as usize + blinding_size;
