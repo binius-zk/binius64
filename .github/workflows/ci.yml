@@ -103,7 +103,7 @@ jobs:
           components: clippy
       - name: Install cargo-nextest
         if: github.event_name != 'push'
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.0
         with:
           tool: cargo-nextest
       - name: Install lld
@@ -140,7 +140,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Install cargo-machete
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.0
         with:
           tool: cargo-machete@0.8.0
       # No toolchain setup and no build: machete only parses the manifests and greps the sources,
