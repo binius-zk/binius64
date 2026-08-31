@@ -562,8 +562,15 @@ impl<F: Field, P: PackedField<Scalar = F>, C, Data: Deref<Target = [P]>>
 							acc.write(value);
 						}
 					});
+				// Pairing two chunk iterators stops at the shorter one.
+				// So every slot is written only when the two sides hold equally many chunks.
+				debug_assert_eq!(
+					code_len >> log_lift,
+					1 << (codeword.log_len() - log_batch_size),
+					"the folded codeword must hold one entry per lifted output chunk"
+				);
 				// SAFETY: the chunks partition the slots, and each writes all of its own.
-				// So the loop above wrote every one of the `code_len` slots.
+				// The counts above are equal, so the loop wrote every one of them.
 				unsafe { values.set_len(code_len) };
 			} else {
 				values
