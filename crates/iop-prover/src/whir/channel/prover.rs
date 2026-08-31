@@ -63,7 +63,7 @@ where
 	/// The oracles this channel expects, in the order it will commit them.
 	oracle_specs: Vec<OracleSpec>,
 	/// The committed level-0 codewords, in the order their commitments were sent.
-	oracles: Vec<BrakedownOracleProver<P, Channel::Commitment>>,
+	oracles: Vec<BrakedownOracleProver<P, Channel::Commitment, A::Vec<P>>>,
 	/// The committed messages, each handed over when the caller finalizes its oracle.
 	/// One entry per committed oracle, absent until that oracle is finalized.
 	messages: Vec<Option<FieldVec<P, A>>>,
@@ -189,7 +189,7 @@ where
 	/// Only the committed ones have to be sent, since the verifier builds the transparents itself.
 	fn prove(
 		channel: &mut Channel,
-		prover: &WHIRProver<'_, P, Channel::Commitment, NTT>,
+		prover: &WHIRProver<'_, P, Channel::Commitment, NTT, A::Vec<P>>,
 		oracle_specs: &[OracleSpec],
 		messages: &[FieldVec<P, A>],
 		queue: Vec<Vec<QueuedRelation<P, A>>>,
@@ -353,7 +353,7 @@ where
 		// The deeper levels only exist once the folds above them have run.
 		let index = self.oracles.len();
 		self.oracles
-			.push(commit_level(&level, self.ntt, message, &mut self.channel));
+			.push(commit_level(&level, self.ntt, message, &self.alloc, &mut self.channel));
 		self.messages.push(None);
 		self.queue.push(Vec::new());
 
