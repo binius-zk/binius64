@@ -85,9 +85,9 @@ mod tests {
 
 	use crate::{CircuitBuilder, Options};
 
-	/// A shift by zero is the identity in every variant, and the constraint system carries
-	/// only the canonical spelling of it. Gate fusion used to hide a non-canonical one by
-	/// rebuilding the operand at the consumer, so this builds with fusion off.
+	/// A shift by zero is the identity in every variant.
+	/// The constraint system carries only the canonical spelling of it.
+	/// Fusion and algebraic folding are off so every gate reaches the lowering.
 	#[test]
 	fn a_zero_amount_shift_lowers_to_the_canonical_identity() {
 		for variant in [
@@ -102,6 +102,7 @@ mod tests {
 		] {
 			let opts = Options {
 				enable_gate_fusion: false,
+				enable_algebraic_folding: false,
 				..Options::default()
 			};
 			let b = CircuitBuilder::with_opts(opts);

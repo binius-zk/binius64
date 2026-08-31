@@ -68,7 +68,10 @@ pub struct Options {
 	pub enable_common_subexpression_elimination: bool,
 	/// Drop gates that cannot affect the constraint system.
 	pub enable_dead_code_elimination: bool,
-	/// Apply algebraic identities that let a gate return one of its operands.
+	/// Apply the identities that make an operation return a wire it already has.
+	///
+	/// - Covers a repeated operand, an absorbing or neutral constant operand, and a zero shift.
+	/// - Off means every operation emits its gate.
 	pub enable_algebraic_folding: bool,
 	/// Share scratch slots between values whose lifetimes do not overlap.
 	///
@@ -941,22 +944,24 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint, or none when both operands are the same wire.
+	/// 1 AND constraint, or none when an algebraic identity resolves it.
 	pub fn band(&self, x: Wire, y: Wire) -> Wire {
 		let mut shared = self.shared.borrow_mut();
-		// Idempotent: x & x = x, bit for bit, so return x and emit no gate.
-		if shared.opts.enable_algebraic_folding && x == y {
-			return x;
-		}
 		// Identities that hold bit for bit, so they need no AND constraint:
-		//   c & d  -> fold        0 & y -> 0        all-1 & y -> y
-		match (const_of(&shared.graph, x), const_of(&shared.graph, y)) {
-			(Some(a), Some(b)) => return shared.graph.add_constant(Word(a.0 & b.0)),
-			(Some(a), _) if a == Word::ZERO => return x,
-			(Some(a), _) if a == Word::ALL_ONE => return y,
-			(_, Some(b)) if b == Word::ZERO => return y,
-			(_, Some(b)) if b == Word::ALL_ONE => return x,
-			_ => {}
+		//   x & x  -> x           c & d  -> fold
+		//   0 & y  -> 0           all-1 & y -> y
+		if shared.opts.enable_algebraic_folding {
+			if x == y {
+				return x;
+			}
+			match (const_of(&shared.graph, x), const_of(&shared.graph, y)) {
+				(Some(a), Some(b)) => return shared.graph.add_constant(Word(a.0 & b.0)),
+				(Some(a), _) if a == Word::ZERO => return x,
+				(Some(a), _) if a == Word::ALL_ONE => return y,
+				(_, Some(b)) if b == Word::ZERO => return y,
+				(_, Some(b)) if b == Word::ALL_ONE => return x,
+				_ => {}
+			}
 		}
 		let z = shared.graph.add_internal();
 		shared
@@ -971,20 +976,22 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 linear constraint, or none when both operands are the same wire.
+	/// 1 linear constraint, or none when an algebraic identity resolves it.
 	pub fn bxor(&self, a: Wire, b: Wire) -> Wire {
 		let mut shared = self.shared.borrow_mut();
-		// Self-inverse: x ^ x = 0, so return the zero constant and emit no gate.
-		if shared.opts.enable_algebraic_folding && a == b {
-			return shared.graph.add_constant(Word::ZERO);
-		}
 		// Identities that hold bit for bit, so they need no linear constraint:
-		//   c ^ d  -> fold        0 ^ b -> b        a ^ 0 -> a
-		match (const_of(&shared.graph, a), const_of(&shared.graph, b)) {
-			(Some(x), Some(y)) => return shared.graph.add_constant(Word(x.0 ^ y.0)),
-			(Some(x), _) if x == Word::ZERO => return b,
-			(_, Some(y)) if y == Word::ZERO => return a,
-			_ => {}
+		//   x ^ x  -> 0           c ^ d  -> fold
+		//   0 ^ b  -> b           a ^ 0  -> a
+		if shared.opts.enable_algebraic_folding {
+			if a == b {
+				return shared.graph.add_constant(Word::ZERO);
+			}
+			match (const_of(&shared.graph, a), const_of(&shared.graph, b)) {
+				(Some(x), Some(y)) => return shared.graph.add_constant(Word(x.0 ^ y.0)),
+				(Some(x), _) if x == Word::ZERO => return b,
+				(_, Some(y)) if y == Word::ZERO => return a,
+				_ => {}
+			}
 		}
 		let z = shared.graph.add_internal();
 		shared
@@ -1044,22 +1051,24 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint, or none when both operands are the same wire.
+	/// 1 AND constraint, or none when an algebraic identity resolves it.
 	pub fn bor(&self, a: Wire, b: Wire) -> Wire {
 		let mut shared = self.shared.borrow_mut();
-		// Idempotent: x | x = x, bit for bit, so return x and emit no gate.
-		if shared.opts.enable_algebraic_folding && a == b {
-			return a;
-		}
 		// Identities that hold bit for bit, so they need no AND constraint:
-		//   c | d  -> fold        0 | b -> b        all-1 | b -> all-1
-		match (const_of(&shared.graph, a), const_of(&shared.graph, b)) {
-			(Some(x), Some(y)) => return shared.graph.add_constant(Word(x.0 | y.0)),
-			(Some(x), _) if x == Word::ZERO => return b,
-			(Some(x), _) if x == Word::ALL_ONE => return a,
-			(_, Some(y)) if y == Word::ZERO => return a,
-			(_, Some(y)) if y == Word::ALL_ONE => return b,
-			_ => {}
+		//   x | x  -> x           c | d  -> fold
+		//   0 | b  -> b           all-1 | b -> all-1
+		if shared.opts.enable_algebraic_folding {
+			if a == b {
+				return a;
+			}
+			match (const_of(&shared.graph, a), const_of(&shared.graph, b)) {
+				(Some(x), Some(y)) => return shared.graph.add_constant(Word(x.0 | y.0)),
+				(Some(x), _) if x == Word::ZERO => return b,
+				(Some(x), _) if x == Word::ALL_ONE => return a,
+				(_, Some(y)) if y == Word::ZERO => return a,
+				(_, Some(y)) if y == Word::ALL_ONE => return b,
+				_ => {}
+			}
 		}
 		let z = shared.graph.add_internal();
 		shared
@@ -1176,9 +1185,14 @@ impl CircuitBuilder {
 	/// Emits one shift/rotate gate for the given variant and amount.
 	///
 	/// The variant and amount are carried as the gate's two immediates.
-	/// The caller enforces the amount range and any identity fast-paths.
+	/// The caller enforces the amount range.
 	fn emit_shift(&self, variant: ShiftVariant, x: Wire, n: u32) -> Wire {
 		let mut shared = self.shared.borrow_mut();
+		// Identity in every variant:
+		//   shift(x, 0) -> x
+		if shared.opts.enable_algebraic_folding && n == 0 {
+			return x;
+		}
 		let z = shared.graph.add_internal();
 		shared.graph.emit_gate_generic(
 			self.current_path,
@@ -1207,10 +1221,7 @@ impl CircuitBuilder {
 	/// 1 AND constraint (0 if n = 0).
 	pub fn rotl32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "rotate amount n={n} out of range");
-		if n == 0 {
-			return x;
-		}
-		self.emit_shift(ShiftVariant::Rotr32, x, 32 - n)
+		self.emit_shift(ShiftVariant::Rotr32, x, (32 - n) % 32)
 	}
 
 	/// 32-bit half-wise rotate right.
@@ -1229,9 +1240,6 @@ impl CircuitBuilder {
 	/// 1 AND constraint (0 if n = 0).
 	pub fn rotr32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "rotate amount n={n} out of range");
-		if n == 0 {
-			return x;
-		}
 		self.emit_shift(ShiftVariant::Rotr32, x, n)
 	}
 
@@ -1251,10 +1259,7 @@ impl CircuitBuilder {
 	/// 1 AND constraint (0 if n = 0).
 	pub fn rotl(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 64, "rotate amount n={n} out of range");
-		if n == 0 {
-			return x;
-		}
-		self.emit_shift(ShiftVariant::Rotr, x, 64 - n)
+		self.emit_shift(ShiftVariant::Rotr, x, (64 - n) % 64)
 	}
 
 	/// 64-bit rotate right.
@@ -1273,9 +1278,6 @@ impl CircuitBuilder {
 	/// 1 AND constraint (0 if n = 0).
 	pub fn rotr(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 64, "rotate amount n={n} out of range");
-		if n == 0 {
-			return x;
-		}
 		self.emit_shift(ShiftVariant::Rotr, x, n)
 	}
 
@@ -1292,7 +1294,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint (0 if n = 0).
 	pub fn srl32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "shift amount n={n} out of range");
 		self.emit_shift(ShiftVariant::Srl32, x, n)
@@ -1311,7 +1313,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint (0 if n = 0).
 	pub fn sll32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "shift amount n={n} out of range for 32-bit half shift");
 		self.emit_shift(ShiftVariant::Sll32, x, n)
@@ -1325,7 +1327,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint (0 if n = 0).
 	pub fn shl(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
 		self.emit_shift(ShiftVariant::Sll, a, n)
@@ -1339,7 +1341,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint (0 if n = 0).
 	pub fn shr(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
 		self.emit_shift(ShiftVariant::Slr, a, n)
@@ -1353,7 +1355,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint (0 if n = 0).
 	pub fn sar(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
 		self.emit_shift(ShiftVariant::Sar, a, n)
@@ -1372,7 +1374,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint (0 if n = 0).
 	pub fn sra32(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 32, "shift amount n={n} out of range for 32-bit half shift");
 		self.emit_shift(ShiftVariant::Sra32, a, n)
@@ -1691,18 +1693,18 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 BMUL constraint, or none when both arms are the same wire.
+	/// 1 BMUL constraint, or none when an algebraic identity resolves it.
 	pub fn select(&self, cond: Wire, t: Wire, f: Wire) -> Wire {
 		let mut shared = self.shared.borrow_mut();
-		// Both arms identical: the result is that wire regardless of the condition.
-		// This reads no bit of `cond`, so it is independent of the MSB-boolean convention.
-		if shared.opts.enable_algebraic_folding && t == f {
-			return t;
-		}
-		// A constant condition resolves the branch at compile time.
-		// The selector reads only the most significant bit (bit 63), the MSB-bool.
-		if let Some(c) = const_of(&shared.graph, cond) {
-			return if (c.0 >> 63) == 1 { t } else { f };
+		// Identities that need no BMUL constraint, with the condition read at bit 63:
+		//   select(c, t, t) -> t        msb-set -> t        msb-clear -> f
+		if shared.opts.enable_algebraic_folding {
+			if t == f {
+				return t;
+			}
+			if let Some(c) = const_of(&shared.graph, cond) {
+				return if (c.0 >> 63) == 1 { t } else { f };
+			}
 		}
 		let out = shared.graph.add_internal();
 		shared
