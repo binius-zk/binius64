@@ -372,23 +372,6 @@ pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField, Data: Ve
 /// Halving it measurably loses at the largest sizes, and quadrupling it gains nothing.
 const BLOCK_BYTES: usize = 1 << 16;
 
-/// Blocks the result must span before the split earns its keep, as a base-2 logarithm.
-///
-/// # Why this value
-///
-/// The split trades the rounds' repeated rewrites for two sub-expansions and one extra pass.
-/// That trade only pays once the result stops fitting in the last cache level, since below it
-/// the traffic the split saves was never memory traffic.
-///
-/// Measured over 128-bit scalars, the two paths cross where the result reaches a few megabytes,
-/// which this puts at 64 blocks:
-///
-/// ```text
-///     coefficients   2^15   2^16   2^17   2^18   2^20   2^22   2^24
-///     split / rounds 0.89x  0.94x  0.98x  1.64x  1.83x  1.65x  1.39x
-/// ```
-const LOG_MIN_BLOCKS: usize = 6;
-
 /// Coordinates the low half of a split takes, or nothing when the point is too short to split.
 ///
 /// A block spans whole packed words, so it never falls below one.
@@ -397,7 +380,8 @@ fn split_low_len<P: PackedField>(n_vars: usize) -> Option<usize> {
 	let low_len = BLOCK_BYTES.ilog2().saturating_sub(log_scalar_bytes) as usize;
 	let low_len = low_len.max(P::LOG_WIDTH);
 
-	(n_vars >= low_len + LOG_MIN_BLOCKS).then_some(low_len)
+	// A point no longer than one block leaves no high half to take the outer product against.
+	(n_vars > low_len).then_some(low_len)
 }
 
 /// Expands a point by cutting it in two and taking the outer product of the two expansions.
@@ -426,9 +410,9 @@ fn split_expand<Cube: Hypercube, P: PackedField, Data: VecLike<P>>(
 	// precondition
 	debug_assert!(P::LOG_WIDTH <= low_len && low_len < point.len());
 
-	// A block is `2^low_len` scalars, which is a whole number of packed words exactly because
-	// the cut sits at or above the packing width. That is what makes a block's position in the
-	// store equal its index into the high expansion.
+	// A block is `2^low_len` scalars, a whole number of packed words exactly because the cut sits
+	// at or above the packing width.
+	// That is what makes a block's position in the store equal its index into the high expansion.
 	let (low_coords, high_coords) = point.split_at(low_len);
 
 	// The low expansion is built straight into the store's first block, which is where the result
@@ -933,10 +917,12 @@ mod tests {
 	fn the_split_path_agrees_with_the_scalar_engine() {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// The public entry point picks the cut itself, and only past a crossover.
-		// So this runs at sizes that actually reach it, against the scalar engine, which shares
-		// no code with either packed path.
-		for n_vars in [18, 19] {
+		// The public entry point picks the cut itself, so this runs at sizes that reach it,
+		// against the scalar engine, which shares no code with either packed path.
+		//
+		// 13 is one coordinate past the cut, where the result spans two blocks and the parallel
+		// loop has a single item. 19 is far enough past it to split many ways.
+		for n_vars in [13, 14, 18, 19] {
 			assert!(split_low_len::<P>(n_vars).is_some(), "expected the split at {n_vars} vars");
 
 			let point = random_scalars::<F>(&mut rng, n_vars);
