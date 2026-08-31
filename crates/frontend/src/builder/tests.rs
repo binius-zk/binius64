@@ -997,27 +997,100 @@ fn constant_propagation_flag_is_honoured() {
 	assert_eq!(and_count(false), 1, "left as a gate, so its AND constraint stands");
 }
 
+/// The two words the algebraic identities are checked at.
+const IDENTITY_P: Word = Word(0xa5a5_5a5a_c3c3_3c3c);
+const IDENTITY_Q: Word = Word(0x0f0f_f0f0_1234_5678);
+
+/// One use of every identity the algebraic-folding option gates.
+///
+/// Each result wire is paired with the word it must hold.
+fn algebraic_identities(b: &CircuitBuilder, p: Wire, q: Wire) -> Vec<(Wire, Word)> {
+	let (pw, qw) = (IDENTITY_P, IDENTITY_Q);
+	let zero = b.add_constant(Word::ZERO);
+	let all_one = b.add_constant(Word::ALL_ONE);
+	let c3 = b.add_constant(Word(3));
+	let c5 = b.add_constant(Word(5));
+
+	vec![
+		(b.band(p, p), pw),
+		(b.band(c3, c5), Word(3 & 5)),
+		(b.band(zero, q), Word::ZERO),
+		(b.band(all_one, q), qw),
+		(b.band(q, zero), Word::ZERO),
+		(b.band(q, all_one), qw),
+		(b.bxor(p, p), Word::ZERO),
+		(b.bxor(c3, c5), Word(3 ^ 5)),
+		(b.bxor(zero, q), qw),
+		(b.bxor(p, zero), pw),
+		(b.bor(p, p), pw),
+		(b.bor(c3, c5), Word(3 | 5)),
+		(b.bor(zero, q), qw),
+		(b.bor(all_one, q), Word::ALL_ONE),
+		(b.bor(q, zero), qw),
+		(b.bor(q, all_one), Word::ALL_ONE),
+		(b.select(p, q, q), qw),
+		(b.select(all_one, p, q), pw),
+		(b.select(zero, p, q), qw),
+		(b.shl(p, 0), pw),
+		(b.shr(p, 0), pw),
+		(b.sar(p, 0), pw),
+		(b.sll32(p, 0), pw),
+		(b.srl32(p, 0), pw),
+		(b.sra32(p, 0), pw),
+		(b.rotl(p, 0), pw),
+		(b.rotr(p, 0), pw),
+		(b.rotl32(p, 0), pw),
+		(b.rotr32(p, 0), pw),
+	]
+}
+
 #[test]
 fn algebraic_folding_flag_is_honoured() {
-	// Invariant: `x & x = x` bit for bit, so the flag decides whether that identity is applied
-	// at build time instead of spending an AND constraint on it.
-	let and_count = |enable| {
-		stat_with(
-			Options {
-				enable_algebraic_folding: enable,
-				..Options::default()
-			},
-			|b| {
-				let x = b.add_inout();
-				let z = b.band(x, x);
-				let out = b.add_inout();
-				b.assert_eq("self_and", z, out);
-			},
-		)
-		.n_and_constraints
+	// Every other pass is off, so the gate count is exactly what the builder emitted.
+	let opts = |enable| Options {
+		enable_gate_fusion: false,
+		enable_common_subexpression_elimination: false,
+		enable_dead_code_elimination: false,
+		enable_zero_propagation: false,
+		enable_algebraic_folding: enable,
+		..Options::default()
 	};
-	assert_eq!(and_count(true), 0, "the identity fires, so no gate is emitted");
-	assert_eq!(and_count(false), 1, "the identity is skipped, so a real AND gate remains");
+
+	let counts = |enable| {
+		let b = CircuitBuilder::with_opts(opts(enable));
+		let (p, q) = (b.add_witness(), b.add_witness());
+		let n_identities = algebraic_identities(&b, p, q).len();
+		(n_identities, crate::CircuitStat::collect(&b.build()).n_gates)
+	};
+	let (n_identities, folded) = counts(true);
+	let (_, unfolded) = counts(false);
+	assert_eq!(folded, 0, "every identity fires, so no gate is emitted");
+	assert_eq!(unfolded, n_identities, "every identity is skipped, so each emits its gate");
+
+	// A folded and an unfolded circuit compute the same words, and both verify.
+	for enable in [true, false] {
+		let b = CircuitBuilder::with_opts(opts(enable));
+		let (p, q) = (b.add_inout(), b.add_inout());
+		let results = algebraic_identities(&b, p, q);
+		let outs = results
+			.iter()
+			.map(|&(wire, _)| {
+				let out = b.add_inout();
+				b.assert_eq("identity", wire, out);
+				out
+			})
+			.collect::<Vec<_>>();
+
+		let circuit = b.build();
+		let mut w = circuit.new_witness_filler();
+		w[p] = IDENTITY_P;
+		w[q] = IDENTITY_Q;
+		for (&out, &(_, expected)) in outs.iter().zip(&results) {
+			w[out] = expected;
+		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+		circuit.constraint_system().verify(&w.value_vec).unwrap();
+	}
 }
 
 #[test]
