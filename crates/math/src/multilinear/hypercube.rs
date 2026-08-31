@@ -26,7 +26,7 @@ use binius_compute::{Allocator, BufferData, VecLike};
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::{
 	prelude::*,
-	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	task_size::{IndexedParallelIteratorExt, WorkPerItem, min_len_for_bytes},
 };
 
 use crate::{FieldBuffer, FieldVec};
@@ -353,8 +353,121 @@ pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField, Data: Ve
 	// Appending the coordinates multiplies it through, so every coefficient ends up scaled.
 	buffer.clear();
 	buffer.push(P::from_scalars(iter::once(scale)));
+	let seed = FieldBuffer::new(0, buffer);
 
-	tensor_prod_eq_ind_reserved::<Cube, P, Data>(FieldBuffer::new(0, buffer), point)
+	match split_low_len::<P>(point.len()) {
+		Some(low_len) => split_expand::<Cube, P, Data>(seed, point, low_len),
+		None => tensor_prod_eq_ind_reserved::<Cube, P, Data>(seed, point),
+	}
+}
+
+/// Bytes one block of a split expansion spans.
+///
+/// # Why this value
+///
+/// A block is read once per block of the result and written once in total.
+/// Sizing it for the second cache level keeps those repeated reads off memory, while leaving room
+/// beside them for the writes they feed.
+///
+/// Halving it measurably loses at the largest sizes, and quadrupling it gains nothing.
+const BLOCK_BYTES: usize = 1 << 16;
+
+/// Blocks the result must span before the split earns its keep, as a base-2 logarithm.
+///
+/// # Why this value
+///
+/// The split trades the rounds' repeated rewrites for two sub-expansions and one extra pass.
+/// That trade only pays once the result stops fitting in the last cache level, since below it
+/// the traffic the split saves was never memory traffic.
+///
+/// Measured over 128-bit scalars, the two paths cross where the result reaches a few megabytes,
+/// which this puts at 64 blocks:
+///
+/// ```text
+///     coefficients   2^15   2^16   2^17   2^18   2^20   2^22   2^24
+///     split / rounds 0.89x  0.94x  0.98x  1.64x  1.83x  1.65x  1.39x
+/// ```
+const LOG_MIN_BLOCKS: usize = 6;
+
+/// Coordinates the low half of a split takes, or nothing when the point is too short to split.
+///
+/// A block spans whole packed words, so it never falls below one.
+fn split_low_len<P: PackedField>(n_vars: usize) -> Option<usize> {
+	let log_scalar_bytes = size_of::<P::Scalar>().next_power_of_two().ilog2() as usize;
+	let low_len = BLOCK_BYTES.ilog2().saturating_sub(log_scalar_bytes as u32) as usize;
+	let low_len = low_len.max(P::LOG_WIDTH);
+
+	(n_vars >= low_len + LOG_MIN_BLOCKS).then_some(low_len)
+}
+
+/// Expands a point by cutting it in two and taking the outer product of the two expansions.
+///
+/// A coefficient is a product over the coordinates, so cutting the index cuts the product:
+///
+/// ```text
+///     index = high * 2^k + low
+///     coeff = high_expansion[high] * low_expansion[low]
+/// ```
+///
+/// The low expansion is therefore one block of the result, and every other block is that block
+/// scaled by one coefficient of the high expansion.
+/// Each coefficient is written once, where appending a coordinate rewrites everything already
+/// expanded.
+///
+/// # Preconditions
+///
+/// * the seed holds one coefficient, and its store has room for the whole expansion
+/// * the cut leaves at least one packed word below it, and at least one block above it
+fn split_expand<Cube: Hypercube, P: PackedField, Data: VecLike<P>>(
+	seed: FieldBuffer<P, Data>,
+	point: &[P::Scalar],
+	low_len: usize,
+) -> FieldBuffer<P, Data> {
+	let (low_coords, high_coords) = point.split_at(low_len);
+
+	// The low expansion is built straight into the store's first block, which is where the result
+	// wants it anyway. Nothing else is expanded over the result's own length.
+	let low = tensor_prod_eq_ind_reserved::<Cube, P, Data>(seed, low_coords);
+	let block = low.as_ref().len();
+	let mut data = low.into_inner();
+
+	// One scalar per block of the result, so the high expansion stays far smaller than it.
+	let high = eq_ind_partial_eval_scalars::<Cube, P::Scalar>(high_coords);
+	let total = block * high.len();
+	debug_assert_eq!(total, packed_words::<P>(point.len()));
+
+	// The safe two-slice split of a Vec into its initialized prefix and its spare capacity is
+	// still unstable (rust-lang/rust#81944).
+	// So the spare blocks come from the safe accessor and the first block from a raw part.
+	let first_ptr = data.as_mut_ptr();
+	let spare = &mut data.spare_capacity_mut()[..total - block];
+	// SAFETY: `[0, block)` is the initialized first block, disjoint from the spare blocks past
+	// it; the two slices never overlap.
+	let first = unsafe { slice::from_raw_parts(first_ptr, block) };
+
+	// One item here is a whole block, so the byte floor is divided down by what a block holds.
+	let min_len = (min_len_for_bytes::<P>() / block).max(1);
+	spare
+		.par_chunks_mut(block)
+		.zip(high[1..].par_iter())
+		.with_min_len(min_len)
+		.for_each(|(dst, &coeff)| {
+			let coeff = P::broadcast(coeff);
+			for (dst_i, &src_i) in iter::zip(dst, first) {
+				dst_i.write(src_i * coeff);
+			}
+		});
+	// SAFETY: the loop above initialized every spare word up to the total.
+	unsafe { data.set_len(total) };
+
+	// The first block still holds the low expansion unscaled, since every other block read it.
+	// Its own coefficient therefore lands last.
+	let coeff = P::broadcast(high[0]);
+	for word in &mut data[..block] {
+		*word *= coeff;
+	}
+
+	FieldBuffer::new(point.len(), data)
 }
 
 /// Truncates a built equality indicator expansion to its low indexed variables.
@@ -770,6 +883,80 @@ mod tests {
 					eq_ind_partial_eval::<InfCube, P>(&point[..truncated_log_len])
 				);
 			}
+		}
+
+		#[test]
+		fn the_split_agrees_with_the_doubling_rounds(
+			seed in any::<u64>(),
+			n_vars in 3usize..=10,
+			low_len in 2usize..=8,
+		) {
+			// Property: cutting the point and multiplying the two expansions together is the same
+			// map as appending its coordinates one at a time.
+			//
+			// The production cut is far above these sizes, so it is passed in directly here.
+			// That covers every cut shape, including the ones a tuning change could start picking.
+			//
+			//     n_vars = 5, low_len = 2  ->  4 blocks of 4 coefficients
+			prop_assume!(low_len >= P::LOG_WIDTH);
+			prop_assume!(low_len < n_vars);
+
+			let mut rng = StdRng::seed_from_u64(seed);
+			let point = random_scalars::<F>(&mut rng, n_vars);
+			let scale = random_scalars::<F>(&mut rng, 1)[0];
+
+			// A seed is one coefficient carrying the scale, over a store sized for the result.
+			let seeded = || {
+				let mut buffer = Vec::with_capacity(1 << n_vars.saturating_sub(P::LOG_WIDTH));
+				buffer.push(P::from_scalars(iter::once(scale)));
+				FieldBuffer::new(0, buffer)
+			};
+
+			prop_assert_eq!(
+				split_expand::<OneCube, P, _>(seeded(), &point, low_len),
+				tensor_prod_eq_ind_reserved::<OneCube, P, _>(seeded(), &point)
+			);
+			prop_assert_eq!(
+				split_expand::<InfCube, P, _>(seeded(), &point, low_len),
+				tensor_prod_eq_ind_reserved::<InfCube, P, _>(seeded(), &point)
+			);
+		}
+	}
+
+	#[test]
+	fn the_split_path_agrees_with_the_scalar_engine() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// The public entry point picks the cut itself, and only past a crossover.
+		// So this runs at sizes that actually reach it, against the scalar engine, which shares
+		// no code with either packed path.
+		for n_vars in [18, 19] {
+			assert!(split_low_len::<P>(n_vars).is_some(), "expected the split at {n_vars} vars");
+
+			let point = random_scalars::<F>(&mut rng, n_vars);
+			let scale = random_scalars::<F>(&mut rng, 1)[0];
+
+			let packed = scaled_eq_ind_partial_eval::<OneCube, P>(&point, scale);
+			let scalars = scaled_eq_ind_partial_eval_scalars::<OneCube, F>(&point, scale);
+			assert!(packed.iter_scalars().eq(scalars), "one cube at {n_vars} vars");
+
+			let packed = scaled_eq_ind_partial_eval::<InfCube, P>(&point, scale);
+			let scalars = scaled_eq_ind_partial_eval_scalars::<InfCube, F>(&point, scale);
+			assert!(packed.iter_scalars().eq(scalars), "inf cube at {n_vars} vars");
+		}
+	}
+
+	#[test]
+	fn the_crossover_leaves_a_whole_block_below_the_cut() {
+		// Invariant: a block spans whole packed words, and the result spans whole blocks.
+		//
+		// Both are what let the outer product address a block as a run of the store.
+		for n_vars in 0..24 {
+			let Some(low_len) = split_low_len::<P>(n_vars) else {
+				continue;
+			};
+			assert!(low_len >= P::LOG_WIDTH, "block below one packed word at {n_vars} vars");
+			assert!(low_len < n_vars, "no block above the cut at {n_vars} vars");
 		}
 	}
 }
