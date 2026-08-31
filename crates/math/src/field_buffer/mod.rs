@@ -50,7 +50,7 @@ use bytemuck::zeroed_vec;
 mod chunks;
 mod view;
 
-pub use chunks::{ChunkMut, Chunks, ChunksMut};
+pub use chunks::Chunks;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
