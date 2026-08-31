@@ -7,12 +7,10 @@
 //! They can be used for operations that require many constraints to compute but few constraints
 //! to verify.
 
-use std::{
-	collections::HashMap,
-	hash::{DefaultHasher, Hash, Hasher},
-};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use binius_core::Word;
+use rustc_hash::FxHashMap;
 
 pub type HintId = u32;
 
@@ -77,7 +75,7 @@ pub fn hint_id_of(name: &str) -> HintId {
 ///
 /// `Hint` itself is not dyn-compatible because it carries an associated `const NAME`.
 /// A blanket impl adapts any `Hint` to this trait.
-trait ErasedHint: Send + Sync {
+pub(crate) trait ErasedHint: Send + Sync {
 	fn shape(&self, dimensions: &[usize]) -> (usize, usize);
 	fn execute(&self, dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]);
 }
@@ -97,13 +95,13 @@ impl<T: Hint> ErasedHint for T {
 /// Registration is idempotent: the same hint type always hashes to the same id, so a second
 /// call to [`HintRegistry::register`] with the same concrete type is a no-op.
 pub struct HintRegistry {
-	handlers: HashMap<HintId, Box<dyn ErasedHint>>,
+	handlers: FxHashMap<HintId, Box<dyn ErasedHint>>,
 }
 
 impl HintRegistry {
 	pub fn new() -> Self {
 		Self {
-			handlers: HashMap::new(),
+			handlers: FxHashMap::default(),
 		}
 	}
 
@@ -127,7 +125,14 @@ impl HintRegistry {
 		inputs: &[Word],
 		outputs: &mut [Word],
 	) {
-		self.handlers[&hint_id].execute(dimensions, inputs, outputs);
+		self.handler(hint_id).execute(dimensions, inputs, outputs);
+	}
+
+	/// Resolve the handler registered under `hint_id`.
+	///
+	/// Lets a caller invoking one hint many times pay for the lookup once.
+	pub(crate) fn handler(&self, hint_id: HintId) -> &dyn ErasedHint {
+		&*self.handlers[&hint_id]
 	}
 }
 
