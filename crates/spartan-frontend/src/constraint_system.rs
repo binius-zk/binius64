@@ -371,19 +371,18 @@ pub struct BlindingInfo {
 ///
 /// # Why this value
 ///
-/// Verification publishes four linear functionals of a committed segment:
+/// Everything verification publishes touches a committed segment only through that segment's
+/// three operand contributions `(A_S, B_S, C_S)`. The operand evaluations are those plus the
+/// other segments' shares, and the segment's own batched claim is `A_S + lambda * B_S +
+/// lambda^2 * C_S`, already in their span. So three values need masking, not four.
 ///
-/// ```text
-///     3  operand evaluations, read from the transcript in the clear
-///     1  the segment's own batched claim
-///     -----
-///     4  values needing a free random field element each
-/// ```
+/// One dummy constraint cannot mask them. Its wires contribute `(alpha * a, alpha * b,
+/// alpha * a * b)`, because the prover pins the third wire to the product of the other two.
+/// Its share of `C_S` is therefore fixed by its shares of `A_S` and `B_S`, and a verifier
+/// holding all three recovers a relation among the real wires.
 ///
-/// A dummy constraint spends three wires but supplies only two free field elements.
-/// Its third wire is pinned to the product of the other two, so the constraint holds.
-///
-/// Two constraints therefore carry `2 * 2 = 4` free elements, matching the four revealed values.
+/// Two constraints break that: `a` and `b` of each are free, and the distribution they induce
+/// on `(A_S, B_S, C_S)` is statistically close to uniform.
 const N_DUMMY_CONSTRAINTS: usize = 2;
 
 impl BlindingInfo {
