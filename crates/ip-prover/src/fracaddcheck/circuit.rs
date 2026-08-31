@@ -115,12 +115,12 @@ where
 			//
 			//     spare capacity:  >= out_len   allocated for at least that many
 			//     sibling halves:  == out_len   halves of two equal-length buffers
-			debug_assert!(
+			assert!(
 				num_data.capacity() - num_data.len() >= out_len
 					&& den_data.capacity() - den_data.len() >= out_len,
 				"allocated buffers must hold every claimed slot"
 			);
-			debug_assert!(
+			assert!(
 				[den_0.as_ref(), num_1.as_ref(), den_1.as_ref()]
 					.iter()
 					.all(|half| half.len() == out_len),
