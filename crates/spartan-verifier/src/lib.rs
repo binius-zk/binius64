@@ -58,6 +58,15 @@ use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};
 
 pub const SECURITY_BITS: usize = 96;
 
+/// Evaluations of each committed oracle that verification publishes in the clear.
+///
+/// The precommit, private and mask oracles are each opened once.
+/// Every opening hands the verifier one evaluation of that oracle.
+///
+/// A revealed evaluation needs its own randomness inside the wiring relation.
+/// So this count bounds how much blinding a committed segment must carry.
+pub const OPENINGS_PER_ORACLE: usize = 1;
+
 /// Output of the multiplication constraint check verification.
 #[derive(Debug, Clone)]
 pub struct MulcheckOutput<F> {
@@ -252,7 +261,7 @@ where
 	) -> Result<Self, Error> {
 		// Modify the constraint system for zero-knowledge.
 		let n_test_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
-		let blinding_info = BlindingInfo::for_fri_queries(n_test_queries);
+		let blinding_info = BlindingInfo::for_fri_queries(n_test_queries, OPENINGS_PER_ORACLE);
 		let constraint_system = ConstraintSystemPadded::new(constraint_system, blinding_info);
 
 		let iop_verifier = IOPVerifier::new(constraint_system);

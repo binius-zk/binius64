@@ -72,5 +72,10 @@ fn test_ip_proof_size() {
 	// `Derived` and emit no mul constraints — only `assert_eq(x^7, y)` survives.
 	//
 	// This circuit commits three oracles; FRI opens each against its own commitment.
-	assert_eq!(proof_size, 73936, "proof size regression");
+	//
+	// Both committed segments carry dummy constraints, so this one-constraint circuit pads to
+	// eight multiplication constraints rather than four. That extra variable costs one mulcheck
+	// round. A circuit with real constraints absorbs the two extra ones without moving the
+	// power-of-two rounding at all.
+	assert_eq!(proof_size, 73968, "proof size regression");
 }

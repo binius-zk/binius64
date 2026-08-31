@@ -60,13 +60,14 @@ impl<F: Field> ConstraintSystemPadded<F> {
 			log2_ceil_usize(n_circuit_wires + blinding_size) as u32
 		}
 
+		// Both committed segments have an evaluation revealed in the clear, so both need dummy
+		// constraints to carry randomness into the wiring relation that masks it.
 		let log_precommit = add_blinding_constraints(
 			&mut mul_constraints,
 			WitnessIndex::precommit,
 			cs.n_precommit() as usize,
 			blinding_info.n_dummy_wires,
-			// Precommit segment doesn't need dummy constraints, only the private segment does.
-			0,
+			blinding_info.n_dummy_constraints,
 		);
 		let log_private = add_blinding_constraints(
 			&mut mul_constraints,
@@ -177,10 +178,13 @@ impl<F: Field> ConstraintSystemPadded<F> {
 
 #[cfg(test)]
 mod tests {
+	use std::collections::BTreeSet;
+
 	use binius_field::Ghash128b as B128;
 	use binius_spartan_frontend::{
 		circuit_builder::{CircuitBuilder, ConstraintBuilder},
 		compiler::compile,
+		constraint_system::WitnessSegment,
 	};
 
 	use super::*;
@@ -200,7 +204,7 @@ mod tests {
 		let n_precommit = cs.n_precommit() as usize;
 		let n_private = cs.n_private() as usize;
 
-		let info = BlindingInfo::for_fri_queries(N_TEST_QUERIES);
+		let info = BlindingInfo::for_fri_queries(N_TEST_QUERIES, crate::OPENINGS_PER_ORACLE);
 		let padded = ConstraintSystemPadded::new(cs, info);
 
 		// Invariant: the dummy wires must outnumber the queries.
@@ -209,13 +213,76 @@ mod tests {
 		assert!(info.n_dummy_wires > N_TEST_QUERIES);
 
 		// Each segment is rounded up to a power of two, so its reserved size must still cover
-		// every real wire plus the whole blinding allowance:
+		// every real wire plus the whole blinding allowance, which is the same for both:
 		//
-		//     precommit: n_precommit + n_dummy_wires
-		//     private  : n_private   + n_dummy_wires + 3 * n_dummy_constraints
-		assert!(padded.precommit_size() >= n_precommit + info.n_dummy_wires);
-		assert!(
-			padded.private_size() >= n_private + info.n_dummy_wires + 3 * info.n_dummy_constraints
-		);
+		//     n_dummy_wires + 3 * n_dummy_constraints
+		let blinding = info.n_dummy_wires + 3 * info.n_dummy_constraints;
+		assert!(padded.precommit_size() >= n_precommit + blinding);
+		assert!(padded.private_size() >= n_private + blinding);
+	}
+
+	#[test]
+	fn every_committed_segment_masks_its_revealed_evaluation() {
+		// A revealed evaluation weights each wire by its coefficient in the wiring relation.
+		//
+		// That relation only ever sums over wires that appear in a multiplication constraint, so
+		// a wire in no constraint is weighted by zero and can mask nothing.
+		//
+		// This pins where each segment's blinding lands:
+		//
+		//     dummy wires        in no constraint -> mask the query openings only
+		//     dummy constraints  in a constraint -> mask the revealed evaluation
+		const N_TEST_QUERIES: usize = 8;
+
+		let mut builder = ConstraintBuilder::<B128>::new();
+		let x = builder.alloc_inout();
+		let y = builder.alloc_inout();
+		builder.assert_eq(x, y);
+		let (cs, _layout) = compile(builder);
+
+		let n_circuit = [cs.n_precommit() as usize, cs.n_private() as usize];
+		let info = BlindingInfo::for_fri_queries(N_TEST_QUERIES, crate::OPENINGS_PER_ORACLE);
+		let padded = ConstraintSystemPadded::new(cs, info);
+
+		// Collect, per segment, the wire indices the constraints actually touch.
+		let mut in_support = [BTreeSet::new(), BTreeSet::new()];
+		for constraint in padded.mul_constraints() {
+			for operand in [&constraint.a, &constraint.b, &constraint.c] {
+				for wire in operand.wires() {
+					let slot = match wire.segment {
+						WitnessSegment::Precommit => Some(0),
+						WitnessSegment::Private => Some(1),
+						WitnessSegment::Public => None,
+					};
+					if let Some(slot) = slot {
+						in_support[slot].insert(wire.index as usize);
+					}
+				}
+			}
+		}
+
+		for (segment, n_circuit) in in_support.iter().zip(n_circuit) {
+			// The dummy wires sit immediately after the circuit's own wires, and none of them may
+			// appear in a constraint — that is what makes them useless against an evaluation.
+			for offset in 0..info.n_dummy_wires {
+				assert!(
+					!segment.contains(&(n_circuit + offset)),
+					"a dummy wire reached the wiring relation"
+				);
+			}
+
+			// The dummy constraints follow, and all three of their wires must appear, or the
+			// revealed evaluation of this segment has nothing masking it.
+			let dummy_constraint_base = n_circuit + info.n_dummy_wires;
+			for offset in 0..3 * info.n_dummy_constraints {
+				assert!(
+					segment.contains(&(dummy_constraint_base + offset)),
+					"a dummy constraint wire never reached the wiring relation"
+				);
+			}
+
+			// One free random value per revealed evaluation is the whole point of the count.
+			assert!(info.n_dummy_constraints >= crate::OPENINGS_PER_ORACLE);
+		}
 	}
 }
