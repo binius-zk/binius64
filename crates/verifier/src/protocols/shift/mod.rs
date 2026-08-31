@@ -72,6 +72,6 @@ mod verify;
 pub use error::Error;
 pub use shift_ind::evaluate_shift_inds;
 pub use verify::{
-	DeferredWiringClaim, OperationClaim, VerifyOutput, WiringEvalClaim, WiringEvalFn,
-	WiringEvalShape, check_eval, evaluate_words_mle, verify,
+	DeferredWiringClaim, OperationClaim, OperationShare, VerifyOutput, WiringEvalClaim,
+	WiringEvalFn, WiringEvalShape, check_eval, evaluate_words_mle, verify,
 };
