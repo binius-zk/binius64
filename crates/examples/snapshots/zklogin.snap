@@ -1,8 +1,8 @@
 zklogin circuit
 --
 Gates & Instructions
-├─ Number of gates: 388,463
-└─ Number of evaluation instructions: 456,550
+├─ Number of gates: 385,516
+└─ Number of evaluation instructions: 453,603
 
 Constraints
 ├─ ZERO constraints: 33,489 used (51.1% of 2^16)
@@ -26,5 +26,5 @@ Value Vector
 │  └─ Internal: 252,254
 ├─ Committed Trace: 253,635 used (96.8% of 2^18)
 │  [▓▓▓▓▓▓▓▓▓░] spare: 8,509
-└─ Scratch (uncommitted): 1,547 (peak live: 1,547)
+└─ Scratch (uncommitted): 1,484 (peak live: 1,484)
 
