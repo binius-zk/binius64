@@ -44,6 +44,56 @@ pub trait EvalContext {
 	/// Writes `value` to the register at index `reg` within instance `instance`.
 	fn store(&mut self, reg: u32, instance: usize, value: Word);
 
+	/// Applies `op` to every instance, reading the `srcs` registers and writing the `dsts`.
+	///
+	/// Every destination register must differ from every source register.
+	fn map<const D: usize, const S: usize, F>(&mut self, dsts: [u32; D], srcs: [u32; S], op: F)
+	where
+		F: Fn([Word; S]) -> [Word; D],
+	{
+		for i in 0..self.n_instances() {
+			let out = op(srcs.map(|reg| self.load(reg, i)));
+			for (dst, value) in dsts.into_iter().zip(out) {
+				self.store(dst, i, value);
+			}
+		}
+	}
+
+	/// Folds `src` into `dst` across every instance.
+	///
+	/// `dst` must differ from `src`.
+	fn update<F>(&mut self, dst: u32, src: u32, op: F)
+	where
+		F: Fn(Word, Word) -> Word,
+	{
+		for i in 0..self.n_instances() {
+			let value = op(self.load(dst, i), self.load(src, i));
+			self.store(dst, i, value);
+		}
+	}
+
+	/// Records a failure against `path_spec` for every instance whose `srcs` satisfy `fails`.
+	///
+	/// `message` renders the same words into the detail line of that failure.
+	/// It runs only for a failing instance, so it may allocate freely.
+	fn check<const S: usize, P, M>(
+		&mut self,
+		srcs: [u32; S],
+		path_spec: PathSpec,
+		fails: P,
+		message: M,
+	) where
+		P: Fn([Word; S]) -> bool,
+		M: Fn([Word; S]) -> String,
+	{
+		for i in 0..self.n_instances() {
+			let words = srcs.map(|reg| self.load(reg, i));
+			if fails(words) {
+				self.note_assertion_failure(i, path_spec, message(words));
+			}
+		}
+	}
+
 	/// Records an assertion violation for one instance.
 	///
 	/// The index is local to this context.
@@ -130,30 +180,21 @@ impl<'a> Executor<'a> {
 		let dst = self.read_reg();
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src1, i) & ctx.load(src2, i);
-			ctx.store(dst, i, val);
-		}
+		ctx.map([dst], [src1, src2], |[a, b]| [a & b]);
 	}
 
 	fn exec_bor<C: EvalContext>(&mut self, ctx: &mut C) {
 		let dst = self.read_reg();
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src1, i) | ctx.load(src2, i);
-			ctx.store(dst, i, val);
-		}
+		ctx.map([dst], [src1, src2], |[a, b]| [a | b]);
 	}
 
 	fn exec_bxor<C: EvalContext>(&mut self, ctx: &mut C) {
 		let dst = self.read_reg();
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src1, i) ^ ctx.load(src2, i);
-			ctx.store(dst, i, val);
-		}
+		ctx.map([dst], [src1, src2], |[a, b]| [a ^ b]);
 	}
 
 	fn exec_select<C: EvalContext>(&mut self, ctx: &mut C) {
@@ -161,15 +202,8 @@ impl<'a> Executor<'a> {
 		let cond = self.read_reg();
 		let t = self.read_reg();
 		let f = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			// Select t if MSB(cond) is 1, otherwise select f.
-			let val = if ctx.load(cond, i).is_msb_true() {
-				ctx.load(t, i)
-			} else {
-				ctx.load(f, i)
-			};
-			ctx.store(dst, i, val);
-		}
+		// Select t if MSB(cond) is 1, otherwise select f.
+		ctx.map([dst], [cond, t, f], |[cond, t, f]| [if cond.is_msb_true() { t } else { f }]);
 	}
 
 	fn exec_bxor_multi<C: EvalContext>(&mut self, ctx: &mut C) {
@@ -180,12 +214,15 @@ impl<'a> Executor<'a> {
 		let srcs = (0..n)
 			.map(|_| self.read_reg())
 			.collect::<SmallVec<[u32; 8]>>();
-		for i in 0..ctx.n_instances() {
-			let mut val = Word::ZERO;
-			for &src in &srcs {
-				val = val ^ ctx.load(src, i);
+		// The destination doubles as the accumulator, so it is seeded before the fold runs.
+		match srcs.split_first() {
+			None => ctx.map([dst], [], |[]| [Word::ZERO]),
+			Some((&first, rest)) => {
+				ctx.map([dst], [first], |[a]| [a]);
+				for &src in rest {
+					ctx.update(dst, src, |acc, w| acc ^ w);
+				}
 			}
-			ctx.store(dst, i, val);
 		}
 	}
 
@@ -194,10 +231,7 @@ impl<'a> Executor<'a> {
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
 		let src3 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let val = (ctx.load(src1, i) & ctx.load(src2, i)) ^ ctx.load(src3, i);
-			ctx.store(dst, i, val);
-		}
+		ctx.map([dst], [src1, src2, src3], |[a, b, c]| [(a & b) ^ c]);
 	}
 
 	// Shifts
@@ -229,9 +263,7 @@ impl<'a> Executor<'a> {
 	/// So the compiler monomorphizes this into a branch-free tight loop with the shift inlined.
 	#[inline]
 	fn shift_each<C: EvalContext>(ctx: &mut C, dst: u32, src: u32, op: impl Fn(Word) -> Word) {
-		for i in 0..ctx.n_instances() {
-			ctx.store(dst, i, op(ctx.load(src, i)));
-		}
+		ctx.map([dst], [src], |[w]| [op(w)]);
 	}
 
 	// Arithmetic operations
@@ -241,12 +273,11 @@ impl<'a> Executor<'a> {
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
 		let cin = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let cin_bit = ctx.load(cin, i) >> 63; // Use MSB as carry bit
-			let (sum, cout) = ctx.load(src1, i).iadd_cin_cout(ctx.load(src2, i), cin_bit);
-			ctx.store(dst_sum, i, sum);
-			ctx.store(dst_cout, i, cout);
-		}
+		ctx.map([dst_sum, dst_cout], [src1, src2, cin], |[a, b, cin]| {
+			// The carry in is the MSB of its word.
+			let (sum, cout) = a.iadd_cin_cout(b, cin >> 63);
+			[sum, cout]
+		});
 	}
 
 	/// Carry word of `src1 + src2`, discarding the sum.
@@ -254,13 +285,8 @@ impl<'a> Executor<'a> {
 		let dst_cout = self.read_reg();
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			// No carry in, and the sum is dropped rather than stored.
-			let (_sum, cout) = ctx
-				.load(src1, i)
-				.iadd_cin_cout(ctx.load(src2, i), Word::ZERO);
-			ctx.store(dst_cout, i, cout);
-		}
+		// No carry in, and the sum is dropped rather than stored.
+		ctx.map([dst_cout], [src1, src2], |[a, b]| [a.iadd_cin_cout(b, Word::ZERO).1]);
 	}
 
 	fn exec_isub_bin_bout<C: EvalContext>(&mut self, ctx: &mut C) {
@@ -269,12 +295,11 @@ impl<'a> Executor<'a> {
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
 		let bin = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let bin_bit = ctx.load(bin, i) >> 63; // Use MSB as borrow bit
-			let (diff, bout) = ctx.load(src1, i).isub_bin_bout(ctx.load(src2, i), bin_bit);
-			ctx.store(dst_diff, i, diff);
-			ctx.store(dst_bout, i, bout);
-		}
+		ctx.map([dst_diff, dst_bout], [src1, src2, bin], |[a, b, bin]| {
+			// The borrow in is the MSB of its word.
+			let (diff, bout) = a.isub_bin_bout(b, bin >> 63);
+			[diff, bout]
+		});
 	}
 
 	fn exec_imul<C: EvalContext>(&mut self, ctx: &mut C) {
@@ -282,11 +307,10 @@ impl<'a> Executor<'a> {
 		let dst_lo = self.read_reg();
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let (hi, lo) = ctx.load(src1, i).imul(ctx.load(src2, i));
-			ctx.store(dst_hi, i, hi);
-			ctx.store(dst_lo, i, lo);
-		}
+		ctx.map([dst_hi, dst_lo], [src1, src2], |[a, b]| {
+			let (hi, lo) = a.imul(b);
+			[hi, lo]
+		});
 	}
 
 	/// GHASH-field multiply: `(c_lo, c_hi) = (a_lo, a_hi) * (b_lo, b_hi)` in
@@ -301,16 +325,10 @@ impl<'a> Executor<'a> {
 		let a_hi = self.read_reg();
 		let b_lo = self.read_reg();
 		let b_hi = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let (lo, hi) = ghash_mul(
-				ctx.load(a_lo, i),
-				ctx.load(a_hi, i),
-				ctx.load(b_lo, i),
-				ctx.load(b_hi, i),
-			);
-			ctx.store(dst_lo, i, lo);
-			ctx.store(dst_hi, i, hi);
-		}
+		ctx.map([dst_lo, dst_hi], [a_lo, a_hi, b_lo, b_hi], |[a_lo, a_hi, b_lo, b_hi]| {
+			let (lo, hi) = ghash_mul(a_lo, a_hi, b_lo, b_hi);
+			[lo, hi]
+		});
 	}
 
 	// 32-bit operations
@@ -320,13 +338,10 @@ impl<'a> Executor<'a> {
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
 		let cin = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let (sum, cout) = ctx
-				.load(src1, i)
-				.iadd32_cin_cout(ctx.load(src2, i), ctx.load(cin, i));
-			ctx.store(dst_sum, i, sum);
-			ctx.store(dst_cout, i, cout);
-		}
+		ctx.map([dst_sum, dst_cout], [src1, src2, cin], |[a, b, cin]| {
+			let (sum, cout) = a.iadd32_cin_cout(b, cin);
+			[sum, cout]
+		});
 	}
 
 	fn exec_iadd32_cout<C: EvalContext>(&mut self, ctx: &mut C) {
@@ -334,11 +349,10 @@ impl<'a> Executor<'a> {
 		let dst_cout = self.read_reg();
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let (sum, cout) = ctx.load(src1, i).iadd_cout_32(ctx.load(src2, i));
-			ctx.store(dst_sum, i, sum);
-			ctx.store(dst_cout, i, cout);
-		}
+		ctx.map([dst_sum, dst_cout], [src1, src2], |[a, b]| {
+			let (sum, cout) = a.iadd_cout_32(b);
+			[sum, cout]
+		});
 	}
 
 	// Assertions
@@ -346,14 +360,7 @@ impl<'a> Executor<'a> {
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
 		let path_spec = self.read_path_spec();
-
-		for i in 0..ctx.n_instances() {
-			let val1 = ctx.load(src1, i);
-			let val2 = ctx.load(src2, i);
-			if val1 != val2 {
-				ctx.note_assertion_failure(i, path_spec, format!("{val1:?} != {val2:?}"));
-			}
-		}
+		ctx.check([src1, src2], path_spec, |[a, b]| a != b, |[a, b]| format!("{a:?} != {b:?}"));
 	}
 
 	fn exec_assert_eq_cond<C: EvalContext>(&mut self, ctx: &mut C) {
@@ -361,68 +368,36 @@ impl<'a> Executor<'a> {
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
 		let path_spec = self.read_path_spec();
-
-		for i in 0..ctx.n_instances() {
-			if ctx.load(cond, i).is_msb_true() {
-				let val1 = ctx.load(src1, i);
-				let val2 = ctx.load(src2, i);
-				if val1 != val2 {
-					ctx.note_assertion_failure(
-						i,
-						path_spec,
-						format!("conditional assert: {val1:?} != {val2:?}"),
-					);
-				}
-			}
-		}
+		ctx.check(
+			[cond, src1, src2],
+			path_spec,
+			|[cond, a, b]| cond.is_msb_true() && a != b,
+			|[_, a, b]| format!("conditional assert: {a:?} != {b:?}"),
+		);
 	}
 
 	fn exec_assert_zero<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src = self.read_reg();
 		let path_spec = self.read_path_spec();
-
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i);
-			if val != Word::ZERO {
-				ctx.note_assertion_failure(i, path_spec, format!("{val:?} != 0"));
-			}
-		}
+		ctx.check([src], path_spec, |[v]| v != Word::ZERO, |[v]| format!("{v:?} != 0"));
 	}
 
 	fn exec_assert_non_zero<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src = self.read_reg();
 		let path_spec = self.read_path_spec();
-
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i);
-			if val == Word::ZERO {
-				ctx.note_assertion_failure(i, path_spec, format!("{val:?} == 0"));
-			}
-		}
+		ctx.check([src], path_spec, |[v]| v == Word::ZERO, |[v]| format!("{v:?} == 0"));
 	}
 
 	fn exec_assert_false<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src = self.read_reg();
 		let path_spec = self.read_path_spec();
-
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i);
-			if val.is_msb_true() {
-				ctx.note_assertion_failure(i, path_spec, format!("{val:?} MSB is true"));
-			}
-		}
+		ctx.check([src], path_spec, |[v]| v.is_msb_true(), |[v]| format!("{v:?} MSB is true"));
 	}
 
 	fn exec_assert_true<C: EvalContext>(&mut self, ctx: &mut C) {
 		let src = self.read_reg();
 		let path_spec = self.read_path_spec();
-
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i);
-			if val.is_msb_false() {
-				ctx.note_assertion_failure(i, path_spec, format!("{val:?} MSB is false"));
-			}
-		}
+		ctx.check([src], path_spec, |[v]| v.is_msb_false(), |[v]| format!("{v:?} MSB is false"));
 	}
 
 	// Hint execution
