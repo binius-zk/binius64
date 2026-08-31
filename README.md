@@ -106,6 +106,13 @@ being listed as a contributor to the repo.
 Binius64 was originally developed by [Irreducible](https://www.irreducible.com), with funding from
 [Bain Capital Crypto](https://baincapitalcrypto.com/) and [Paradigm](https://www.paradigm.xyz/).
 
+## Acknowledgements
+
+Binius uses code and ideas from other great free software codebases. We try our best to attribute credit and include copyright notices in code-level documentation. A few notable influences are:
+
+- **[Flock](https://github.com/succinctlabs/flock)**. A binary field STARK protocol that builds on Binius64 and contributed significant algorithmic and codegen-level optimizations.
+- **[Plonky3](https://github.com/Plonky3/Plonky3)**. A small-field STARK framework that especially influenced the design of the `binius-field` core traits.
+
 ## Licensing
 
 ```

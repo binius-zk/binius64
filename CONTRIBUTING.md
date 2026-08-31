@@ -4,6 +4,12 @@
 
 All source files should include a copyright header. New files should start with `// Copyright YYYY The Binius Developers`, where YYYY is the current year. When modifying an existing file, add the copyright line if one referencing "The Binius Developers" is not already present.
 
+If a change takes code or a specific algorithmic idea from a third-party codebase, then
+
+1. the third-party code _must_ be published under either the MIT or Apache 2.0 open source license,
+2. the proper copyright notice _must_ be included at the top of the file,
+3. the module-level documentation _must_ explain what code or algorithm was sourced from that library.
+
 ## Style Guide & Conventions
 
 Many code formatting and style rules are enforced using
