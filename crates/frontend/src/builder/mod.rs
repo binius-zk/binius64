@@ -1719,16 +1719,21 @@ impl CircuitBuilder {
 
 	/// Invoke a [`Hint`] and emit the corresponding gate.
 	///
-	/// Registers `hint` in the builder's hint registry (idempotent, keyed by `T::NAME`),
-	/// allocates output wires according to `hint.shape(dimensions)`, and emits a
-	/// generic hint gate. Returns the freshly allocated output wires.
+	/// Registers `hint` in the builder's hint registry (keyed by `T::NAME`), allocates output
+	/// wires according to `hint.shape(dimensions)`, and emits a generic hint gate. Returns the
+	/// freshly allocated output wires.
 	///
 	/// `dimensions` is passed verbatim to [`Hint::shape`] and [`Hint::execute`]; it is the
 	/// hint's parameterization (e.g., limb counts for a bignum hint).
 	///
+	/// The registry keys on the name alone.
+	/// Only the first value passed under a name survives; a later value's fields are ignored.
+	/// Per-call parameters belong in `dimensions`, not in the hint's fields.
+	///
 	/// # Panics
 	///
 	/// Panics if `inputs.len()` does not match the hint's declared input arity.
+	/// Panics if another hint name already holds this hint's id.
 	pub fn call_hint<T: Hint>(&self, hint: T, dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
 		let (n_in, n_out) = hint.shape(dimensions);
 		assert_eq!(
