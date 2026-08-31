@@ -423,6 +423,12 @@ fn split_expand<Cube: Hypercube, P: PackedField, Data: VecLike<P>>(
 	point: &[P::Scalar],
 	low_len: usize,
 ) -> FieldBuffer<P, Data> {
+	// precondition
+	debug_assert!(P::LOG_WIDTH <= low_len && low_len < point.len());
+
+	// A block is `2^low_len` scalars, which is a whole number of packed words exactly because
+	// the cut sits at or above the packing width. That is what makes a block's position in the
+	// store equal its index into the high expansion.
 	let (low_coords, high_coords) = point.split_at(low_len);
 
 	// The low expansion is built straight into the store's first block, which is where the result
