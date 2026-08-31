@@ -20,7 +20,7 @@ use crate::{
 		chip::{ChipGadget, ChipRef, CircuitM4, EmbeddedCircuit},
 		circuit::Circuit,
 	},
-	eval_form,
+	eval_form::{self, BytecodeBuilder},
 	gates::Opcode,
 	ir::{
 		GateGraph, Wire, WireKind,
@@ -1722,9 +1722,24 @@ impl CircuitBuilder {
 	///
 	/// # Panics
 	///
+	/// Panics if the declared arity or a dimension exceeds what the witness bytecode encodes.
+	///
 	/// Panics if `inputs.len()` does not match the hint's declared input arity.
 	pub fn call_hint<T: Hint>(&self, hint: T, dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
 		let (n_in, n_out) = hint.shape(dimensions);
+
+		// A hint instruction names each of these in four bytes.
+		let max = BytecodeBuilder::MAX_HINT_FIELD;
+		assert!(
+			n_in <= max
+				&& n_out <= max
+				&& dimensions.len() <= max
+				&& dimensions.iter().all(|&dim| dim <= max),
+			"call_hint: hint {} declares a shape the witness bytecode cannot encode \
+			 ({n_in} inputs, {n_out} outputs, dimensions {dimensions:?}; each is capped at {max})",
+			T::NAME,
+		);
+
 		assert_eq!(
 			inputs.len(),
 			n_in,

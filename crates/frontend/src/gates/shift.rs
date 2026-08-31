@@ -45,6 +45,10 @@ impl GateKind for Shift {
 		let [variant, n] = gate.imms();
 
 		// One instruction carrying the variant and the amount.
+		//
+		// Invariant: the amount is one byte on the wire.
+		// Every builder entry point rejects an amount of 64 or more before emitting this gate.
+		debug_assert!(n < 64, "a shift amount fits in one byte");
 		bc.emit_shift(ctx.reg(z), ctx.reg(x), variant_of(variant), n as u8);
 	}
 }

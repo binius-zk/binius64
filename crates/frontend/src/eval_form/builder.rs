@@ -14,6 +14,9 @@ pub struct BytecodeBuilder {
 }
 
 impl BytecodeBuilder {
+	/// The largest number a hint instruction's counts and dimensions can each carry.
+	pub const MAX_HINT_FIELD: usize = u32::MAX as usize;
+
 	pub const fn new() -> Self {
 		Self {
 			bytecode: Vec::new(),
@@ -244,6 +247,9 @@ impl BytecodeBuilder {
 	}
 
 	// Hint calls
+	/// One instruction carrying a hint call's parameterization and its register operands.
+	///
+	/// Layout: `[Hint][id u32][n dims u32][dims u32..][n in u32][n out u32][in regs][out regs]`.
 	pub fn emit_hint(
 		&mut self,
 		hint_id: u32,
@@ -251,15 +257,24 @@ impl BytecodeBuilder {
 		inputs: &[u32],
 		outputs: &[u32],
 	) {
+		// Invariant: each count below is four bytes on the wire.
+		debug_assert!(
+			dimensions.len() <= Self::MAX_HINT_FIELD
+				&& dimensions.iter().all(|&dim| dim <= Self::MAX_HINT_FIELD)
+				&& inputs.len() <= Self::MAX_HINT_FIELD
+				&& outputs.len() <= Self::MAX_HINT_FIELD,
+			"a hint instruction's counts and dimensions each fit in four bytes"
+		);
+
 		self.n_eval_insn += 1;
 		self.emit_opcode(EvalOpcode::Hint);
 		self.emit_u32(hint_id);
-		self.emit_u16(dimensions.len() as u16);
+		self.emit_u32(dimensions.len() as u32);
 		for &dim in dimensions {
 			self.emit_u32(dim as u32);
 		}
-		self.emit_u16(inputs.len() as u16);
-		self.emit_u16(outputs.len() as u16);
+		self.emit_u32(inputs.len() as u32);
+		self.emit_u32(outputs.len() as u32);
 		for &input in inputs {
 			self.emit_reg(input);
 		}
@@ -275,10 +290,6 @@ impl BytecodeBuilder {
 
 	fn emit_u8(&mut self, val: u8) {
 		self.bytecode.push(val);
-	}
-
-	fn emit_u16(&mut self, val: u16) {
-		self.bytecode.extend_from_slice(&val.to_le_bytes());
 	}
 
 	fn emit_u32(&mut self, val: u32) {

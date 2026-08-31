@@ -430,14 +430,14 @@ impl<'a> Executor<'a> {
 		let hint_id = self.read_u32();
 
 		// Read dimensions
-		let n_dimensions = self.read_u16() as usize;
+		let n_dimensions = self.read_u32() as usize;
 		let mut dimensions: SmallVec<[usize; 4]> = SmallVec::with_capacity(n_dimensions);
 		for _ in 0..n_dimensions {
 			dimensions.push(self.read_u32() as usize);
 		}
 
-		let n_inputs = self.read_u16() as usize;
-		let n_outputs = self.read_u16() as usize;
+		let n_inputs = self.read_u32() as usize;
+		let n_outputs = self.read_u32() as usize;
 
 		// Read the input and output registers once; they are shared across every instance.
 		let input_regs = (0..n_inputs)
@@ -481,10 +481,6 @@ impl<'a> Executor<'a> {
 			.expect("the slice is exactly N bytes long");
 		self.pc += N;
 		bytes
-	}
-
-	fn read_u16(&mut self) -> u16 {
-		u16::from_le_bytes(self.read_bytes())
 	}
 
 	fn read_u32(&mut self) -> u32 {
