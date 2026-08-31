@@ -17,6 +17,9 @@ use crate::{
 // Rebuilding an operand means appending to that same arena, not allocating one of its own.
 // That is why every function below takes mutable access to the constraint builder.
 
+/// The stack an operand rebuild walks its cone with: a wire plus the shifts accumulated to it.
+type PendingTerms = Vec<(Wire, [Shift; 2])>;
+
 /// A patch is a description of a change to the constraint system.
 ///
 /// It specifies a list of constraints that are going to be removed and a list of constraints that
@@ -110,17 +113,23 @@ fn retain_unsubsumed<T>(constraints: &mut Vec<T>, subsumed: &[bool]) {
 ///
 /// NB: patches may have overlapping subsumes.
 pub fn build(cb: &mut ConstraintBuilder, leg: &LeGraph) -> Vec<Patch> {
+	let mut pending = Vec::new();
 	let mut patches = vec![];
-	build_root_patches(cb, leg, &mut patches);
+	build_root_patches(cb, leg, &mut pending, &mut patches);
 	for committed in leg.commit_set().iter() {
-		let patch = build_committed_lin_def_patch(cb, leg, committed);
+		let patch = build_committed_lin_def_patch(cb, leg, &mut pending, committed);
 		patches.push(patch);
 	}
 	patches
 }
 
 /// Collect patches for the root constraints that inline linear definitions.
-fn build_root_patches(cb: &mut ConstraintBuilder, leg: &LeGraph, patches: &mut Vec<Patch>) {
+fn build_root_patches(
+	cb: &mut ConstraintBuilder,
+	leg: &LeGraph,
+	pending: &mut PendingTerms,
+	patches: &mut Vec<Patch>,
+) {
 	// Collect *distinct* constraint references.
 	// Several roots may name the same constraint, e.g. two operands of one AND both inlined.
 	let mut constraints: Vec<ConstraintRef> = leg.roots.values().copied().collect();
@@ -129,7 +138,7 @@ fn build_root_patches(cb: &mut ConstraintBuilder, leg: &LeGraph, patches: &mut V
 
 	// Create a patch for each distinct constraint.
 	for constraint_ref in constraints {
-		let patch = build_root_patch(cb, leg, constraint_ref);
+		let patch = build_root_patch(cb, leg, pending, constraint_ref);
 		patches.push(patch);
 	}
 }
@@ -137,6 +146,7 @@ fn build_root_patches(cb: &mut ConstraintBuilder, leg: &LeGraph, patches: &mut V
 fn build_root_patch(
 	cb: &mut ConstraintBuilder,
 	leg: &LeGraph,
+	pending: &mut PendingTerms,
 	constraint_ref: ConstraintRef,
 ) -> Patch {
 	let mut subsumes = vec![constraint_ref];
@@ -147,9 +157,9 @@ fn build_root_patch(
 				let and = &cb.and_constraints[index];
 				(and.a, and.b, and.c)
 			};
-			let a = process_operand(cb, leg, &mut subsumes, old_a);
-			let b = process_operand(cb, leg, &mut subsumes, old_b);
-			let c = process_operand(cb, leg, &mut subsumes, old_c);
+			let a = process_operand(cb, leg, &mut subsumes, pending, old_a);
+			let b = process_operand(cb, leg, &mut subsumes, pending, old_b);
+			let c = process_operand(cb, leg, &mut subsumes, pending, old_c);
 			AddedConstraint::And(WireAndConstraint { a, b, c })
 		}
 		ConstraintRef::Imul { index } => {
@@ -157,10 +167,10 @@ fn build_root_patch(
 				let mul = &cb.imul_constraints[index];
 				(mul.a, mul.b, mul.lo, mul.hi)
 			};
-			let a = process_operand(cb, leg, &mut subsumes, old_a);
-			let b = process_operand(cb, leg, &mut subsumes, old_b);
-			let lo = process_operand(cb, leg, &mut subsumes, old_lo);
-			let hi = process_operand(cb, leg, &mut subsumes, old_hi);
+			let a = process_operand(cb, leg, &mut subsumes, pending, old_a);
+			let b = process_operand(cb, leg, &mut subsumes, pending, old_b);
+			let lo = process_operand(cb, leg, &mut subsumes, pending, old_lo);
+			let hi = process_operand(cb, leg, &mut subsumes, pending, old_hi);
 			AddedConstraint::Imul(WireImulConstraint { a, b, lo, hi })
 		}
 		ConstraintRef::Bmul { index } => {
@@ -168,12 +178,12 @@ fn build_root_patch(
 				let bmul = &cb.bmul_constraints[index];
 				(bmul.a_lo, bmul.a_hi, bmul.b_lo, bmul.b_hi, bmul.c_lo, bmul.c_hi)
 			};
-			let a_lo = process_operand(cb, leg, &mut subsumes, old_a_lo);
-			let a_hi = process_operand(cb, leg, &mut subsumes, old_a_hi);
-			let b_lo = process_operand(cb, leg, &mut subsumes, old_b_lo);
-			let b_hi = process_operand(cb, leg, &mut subsumes, old_b_hi);
-			let c_lo = process_operand(cb, leg, &mut subsumes, old_c_lo);
-			let c_hi = process_operand(cb, leg, &mut subsumes, old_c_hi);
+			let a_lo = process_operand(cb, leg, &mut subsumes, pending, old_a_lo);
+			let a_hi = process_operand(cb, leg, &mut subsumes, pending, old_a_hi);
+			let b_lo = process_operand(cb, leg, &mut subsumes, pending, old_b_lo);
+			let b_hi = process_operand(cb, leg, &mut subsumes, pending, old_b_hi);
+			let c_lo = process_operand(cb, leg, &mut subsumes, pending, old_c_lo);
+			let c_hi = process_operand(cb, leg, &mut subsumes, pending, old_c_hi);
 			AddedConstraint::Bmul(WireBmulConstraint {
 				a_lo,
 				a_hi,
@@ -185,7 +195,7 @@ fn build_root_patch(
 		}
 		ConstraintRef::Zero { index } => {
 			let old_val = cb.zero_constraints[index].val;
-			let val = process_operand(cb, leg, &mut subsumes, old_val);
+			let val = process_operand(cb, leg, &mut subsumes, pending, old_val);
 			AddedConstraint::Zero(WireZeroConstraint { val })
 		}
 		ConstraintRef::Linear { .. } => unreachable!(),
@@ -210,13 +220,18 @@ fn build_root_patch(
 /// the Zero constraint
 /// [`ConstraintBuilder::build`](crate::lower::ConstraintBuilder::build)
 /// lowers it to.
-fn build_committed_lin_def_patch(cb: &mut ConstraintBuilder, leg: &LeGraph, root: Wire) -> Patch {
+fn build_committed_lin_def_patch(
+	cb: &mut ConstraintBuilder,
+	leg: &LeGraph,
+	pending: &mut PendingTerms,
+	root: Wire,
+) -> Patch {
 	// `subsumes` is a list of constraints that become redundant with application of this patch.
 	// The first redundant constraint is the linear definition that's being committed.
 	let mut subsumes = vec![leg.lin_def_constraint_ref(root)];
 
 	let old_operand = leg.lin_def_operand(cb, root);
-	let new_operand = process_operand(cb, leg, &mut subsumes, old_operand);
+	let new_operand = process_operand(cb, leg, &mut subsumes, pending, old_operand);
 
 	// Enforce: root = new_operand, over the inlined cone rather than the original definition.
 	Patch {
@@ -239,55 +254,52 @@ fn process_operand(
 	cb: &mut ConstraintBuilder,
 	leg: &LeGraph,
 	subsumes: &mut Vec<ConstraintRef>,
+	pending: &mut PendingTerms,
 	old_operand: WireOperand,
 ) -> WireOperand {
 	let start = cb.next_term_start();
 	for i in 0..old_operand.len() {
 		let term = cb.term(old_operand, i);
-		process_term(cb, leg, subsumes, term.wire, term.shift_seq);
+		process_term(cb, leg, subsumes, pending, term.wire, term.shift_seq);
 	}
 	cb.operand_since(start)
 }
 
-/// Recursively process a term, inlining non-committed linear definitions.
+/// Process a term, inlining every non-committed linear definition it reaches.
 ///
-/// `shift_seq` is what the consumers above have accumulated, to be applied to `wire`. Inlining
-/// folds the definition's own shift inside it, greedily, so a slot is spent only where the two
-/// genuinely do not collapse.
-///
-/// Every push lands at the tail of the operand under construction.
-/// Nothing else appends to the shared arena while one such call is still running.
+/// The shifts passed in are what the consumers above accumulated.
 fn process_term(
 	cb: &mut ConstraintBuilder,
 	leg: &LeGraph,
 	subsumes: &mut Vec<ConstraintRef>,
+	pending: &mut PendingTerms,
 	wire: Wire,
 	shift_seq: [Shift; 2],
 ) {
-	// Check if this wire is committed or not a linear def (i.e., opaque)
-	if leg.commit_set().contains(wire) || !leg.is_lin_def(wire) {
-		// This is a terminal or committed wire - add it to the result with the accumulated shifts
-		cb.push_term(ShiftedWire { wire, shift_seq });
-	} else {
-		// This is a non-committed linear def - we need to inline it!
+	debug_assert!(pending.is_empty(), "the walk drains its stack before it returns");
+	pending.push((wire, shift_seq));
+
+	while let Some((wire, shift_seq)) = pending.pop() {
+		if leg.commit_set().contains(wire) || !leg.is_lin_def(wire) {
+			cb.push_term(ShiftedWire { wire, shift_seq });
+			continue;
+		}
+
 		let inner_operand = leg.lin_def_operand(cb, wire);
 		let constraint_ref = leg.lin_def_constraint_ref(wire);
 		subsumes.push(constraint_ref);
 
-		// Distribute the accumulated shifts over all terms in the inner operand
-		// This is crucial for correctness: shift(a ^ b) = shift(a) ^ shift(b)
-		for i in 0..inner_operand.len() {
+		// shift(a ^ b) = shift(a) ^ shift(b)
+		//
+		// Pushed in reverse so terms pop in the order the definition spells them.
+		for i in (0..inner_operand.len()).rev() {
 			let inner_term = cb.term(inner_operand, i);
-			// The definition's own shift is applied before anything accumulated above it, so it
-			// folds into the sequence from the inside.
 			let inner_shift = inner_term.sole_shift();
 			match push_inner(shift_seq, inner_shift, LOWERED_SHIFT_SLOTS) {
 				PushInner::Seq(composed) => {
-					// Recursively process this term with the composed sequence
-					process_term(cb, leg, subsumes, inner_term.wire, composed);
+					pending.push((inner_term.wire, composed));
 				}
-				// The shifts clear the word, so the term is identically zero. An operand is
-				// an XOR, so a zero term contributes nothing and the inlining simply drops it.
+				// The shifts clear the word, and a zero term contributes nothing to an XOR.
 				PushInner::Zero => {}
 				// Needing a third slot means the commit set inlined a definition it should have
 				// committed: the two passes disagree about what is inlinable.
@@ -401,7 +413,8 @@ mod tests {
 		cb.linear(expr::xor2(w(0), w(2)), w(3));
 
 		let leg = LeGraph::new(&cb);
-		let patch = super::build_committed_lin_def_patch(&mut cb, &leg, w(3));
+		let patch =
+			super::build_committed_lin_def_patch(&mut cb, &leg, &mut PendingTerms::new(), w(3));
 		match patch.added {
 			AddedConstraint::Linear(ref linc) => {
 				assert!(!linc.rhs.is_empty());

@@ -969,3 +969,31 @@ fn test_chained_shifts_beyond_the_word_width_evaluate() {
 	// The committed break carries its own Zero constraint, so check the constraints agree too.
 	circuit.constraint_system().verify(&w.value_vec).unwrap();
 }
+
+#[test]
+fn test_a_long_rotate_chain_compiles() {
+	// A rotate chain is single-term and always composes, so the cone is never truncated.
+	const LINKS: usize = 1_000_000;
+
+	let b = CircuitBuilder::new();
+	let x = b.add_witness();
+	let mask = b.add_witness();
+	let mut rotated = x;
+	for _ in 0..LINKS {
+		rotated = b.rotr(rotated, 1);
+	}
+	let out = b.band(rotated, mask);
+	b.force_commit(out);
+	let circuit = b.build();
+
+	let cs = circuit.constraint_system();
+	assert_eq!(cs.and_constraints.len(), 1);
+	assert_eq!(cs.zero_constraints.len(), 0);
+
+	// The run comes to one rotation by the link count taken modulo the word width.
+	let mut w = circuit.new_witness_filler();
+	w[x] = Word(0xDEAD_BEEF_CAFE_BABE);
+	w[mask] = Word(u64::MAX);
+	circuit.populate_wire_witness(&mut w).unwrap();
+	assert_eq!(w[out], Word(0xDEAD_BEEF_CAFE_BABE_u64.rotate_right((LINKS % 64) as u32)));
+}
