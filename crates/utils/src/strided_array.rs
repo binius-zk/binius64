@@ -1,7 +1,9 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use core::slice;
-use std::ops::{Index, IndexMut, Range};
+use std::{
+	marker::PhantomData,
+	ops::{Index, IndexMut, Range},
+};
 
 use crate::rayon::prelude::*;
 
@@ -15,11 +17,17 @@ pub enum Error {
 /// vertical slices.
 #[derive(Debug)]
 pub struct StridedArray2DViewMut<'a, T> {
-	data: &'a mut [T],
+	data: *mut T,
 	data_width: usize,
 	height: usize,
 	cols: Range<usize>,
+	_marker: PhantomData<&'a mut [T]>,
 }
+
+// SAFETY: the view has exclusive access to its columns, matching `&mut [T]`.
+unsafe impl<T: Send> Send for StridedArray2DViewMut<'_, T> {}
+// SAFETY: a shared reference to the view yields only `&T`, matching `&mut [T]`.
+unsafe impl<T: Sync> Sync for StridedArray2DViewMut<'_, T> {}
 
 impl<'a, T> StridedArray2DViewMut<'a, T> {
 	/// Create a single-piece view of the data.
@@ -32,10 +40,11 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 			return Err(Error::DimensionMismatch);
 		}
 		Ok(Self {
-			data,
+			data: data.as_mut_ptr(),
 			data_width: width,
 			height,
 			cols: 0..width,
+			_marker: PhantomData,
 		})
 	}
 
@@ -45,10 +54,13 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	pub unsafe fn get_unchecked_ref(&self, i: usize, j: usize) -> &T {
 		debug_assert!(i < self.height);
 		debug_assert!(j < self.width());
-		unsafe {
-			self.data
-				.get_unchecked(i * self.data_width + j + self.cols.start)
-		}
+		// SAFETY:
+		// - Provenance: reborrowed from the exclusive borrow the view was built from.
+		// - Bounds: construction pairs the buffer length with the dimensions, and the caller
+		//   guarantees the indices are in range.
+		// - Non-overlap: sibling views hold disjoint column ranges.
+		// - Only the addressed element is ever referenced, never a span of the buffer.
+		unsafe { &*self.data.add(i * self.data_width + j + self.cols.start) }
 	}
 
 	/// Returns a mutable reference to the data at the given indices without bounds checking.
@@ -57,10 +69,13 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	pub unsafe fn get_unchecked_mut(&mut self, i: usize, j: usize) -> &mut T {
 		debug_assert!(i < self.height);
 		debug_assert!(j < self.width());
-		unsafe {
-			self.data
-				.get_unchecked_mut(i * self.data_width + j + self.cols.start)
-		}
+		// SAFETY:
+		// - Provenance: reborrowed from the exclusive borrow the view was built from.
+		// - Bounds: construction pairs the buffer length with the dimensions, and the caller
+		//   guarantees the indices are in range.
+		// - Non-overlap: sibling views hold disjoint column ranges.
+		// - Only the addressed element is ever referenced, never a span of the buffer.
+		unsafe { &mut *self.data.add(i * self.data_width + j + self.cols.start) }
 	}
 
 	pub const fn height(&self) -> usize {
@@ -75,13 +90,13 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	pub fn iter_column_mut(&mut self, col: usize) -> impl Iterator<Item = &mut T> + '_ {
 		assert!(col < self.width());
 		let start = col + self.cols.start;
-		let data_ptr = self.data.as_mut_ptr();
+		let data = self.data;
 		(0..self.height).map(move |i|
-				// Safety:
-				// - `data_ptr` points to the start of the data slice.
-				// - `col` is within bounds of the width.
-				// - different iterator values do not overlap.
-				unsafe { &mut *data_ptr.add(i * self.data_width + start) })
+				// SAFETY:
+				// - Provenance: reborrowed from the exclusive borrow the view was built from.
+				// - Bounds: the row is below the height and the column is checked above.
+				// - Non-overlap: one row per step, so no two yielded references coincide.
+				unsafe { &mut *data.add(i * self.data_width + start) })
 	}
 
 	/// Returns iterator over vertical slices of the data for the given stride.
@@ -91,17 +106,17 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 			data_width,
 			height,
 			cols,
+			..
 		} = self;
 
 		cols.clone().step_by(stride).map(move |start| {
 			let end = (start + stride).min(cols.end);
 			Self {
-				// Safety: different instances of StridedArray2DViewMut created with the same data
-				// slice do not access overlapping indices.
-				data: unsafe { slice::from_raw_parts_mut(data.as_mut_ptr(), data.len()) },
+				data,
 				data_width,
 				height,
 				cols: start..end,
+				_marker: PhantomData,
 			}
 		})
 	}
@@ -111,6 +126,7 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	where
 		T: Send + Sync,
 	{
+		let data = SendPtr(self.data);
 		self.cols
 			.clone()
 			.into_par_iter()
@@ -119,29 +135,24 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 				let end = (start + stride).min(self.cols.end);
 				// We are setting the same lifetime as `self` captures.
 				Self {
-					// Safety: different instances of StridedArray2DViewMut created with the same
-					// data slice do not access overlapping indices.
-					data: unsafe {
-						slice::from_raw_parts_mut(self.data.as_ptr().cast_mut(), self.data.len())
-					},
+					data: data.as_ptr(),
 					data_width: self.data_width,
 					height: self.height,
 					cols: start..end,
+					_marker: PhantomData,
 				}
 			})
 	}
 
 	/// Returns iterator over single-column mutable views of the data.
 	pub fn iter_cols(&mut self) -> impl Iterator<Item = StridedArray2DColMut<'_, T>> + '_ {
-		let data_ptr = self.data.as_mut_ptr();
-		let data_len = self.data.len();
+		let data = self.data;
 		self.cols.clone().map(move |col| StridedArray2DColMut {
-			// Safety: different instances of StridedArray2DColMut created with the same data
-			// slice do not access overlapping indices since each accesses a different column.
-			data: unsafe { slice::from_raw_parts_mut(data_ptr, data_len) },
+			data,
 			data_width: self.data_width,
 			height: self.height,
 			col,
+			_marker: PhantomData,
 		})
 	}
 
@@ -152,31 +163,36 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	where
 		T: Send + Sync,
 	{
-		let data_ptr = SendPtr(self.data.as_mut_ptr());
-		let data_len = self.data.len();
+		let data = SendPtr(self.data);
 		let data_width = self.data_width;
 		let height = self.height;
-		self.cols.clone().into_par_iter().map(move |col| {
-			StridedArray2DColMut {
-				// Safety: different instances of StridedArray2DColMut created with the same data
-				// slice do not access overlapping indices since each accesses a different column.
-				data: unsafe { slice::from_raw_parts_mut(data_ptr.as_ptr(), data_len) },
+		self.cols
+			.clone()
+			.into_par_iter()
+			.map(move |col| StridedArray2DColMut {
+				data: data.as_ptr(),
 				data_width,
 				height,
 				col,
-			}
-		})
+				_marker: PhantomData,
+			})
 	}
 }
 
 /// A mutable view of a single column (vertical slice) of a 2D array in row-major order.
 #[derive(Debug)]
 pub struct StridedArray2DColMut<'a, T> {
-	data: &'a mut [T],
+	data: *mut T,
 	data_width: usize,
 	height: usize,
 	col: usize,
+	_marker: PhantomData<&'a mut [T]>,
 }
+
+// SAFETY: the view has exclusive access to its column, matching `&mut [T]`.
+unsafe impl<T: Send> Send for StridedArray2DColMut<'_, T> {}
+// SAFETY: a shared reference to the view yields only `&T`, matching `&mut [T]`.
+unsafe impl<T: Sync> Sync for StridedArray2DColMut<'_, T> {}
 
 impl<'a, T> StridedArray2DColMut<'a, T> {
 	pub const fn height(&self) -> usize {
@@ -188,7 +204,13 @@ impl<'a, T> StridedArray2DColMut<'a, T> {
 	/// The caller must ensure that `i < self.height`.
 	pub unsafe fn get_unchecked_ref(&self, i: usize) -> &T {
 		debug_assert!(i < self.height);
-		unsafe { self.data.get_unchecked(i * self.data_width + self.col) }
+		// SAFETY:
+		// - Provenance: reborrowed from the exclusive borrow the parent view was built from.
+		// - Bounds: the parent's dimensions cover the buffer, and the caller guarantees the row is
+		//   below the height.
+		// - Non-overlap: the constructors give each view its own column.
+		// - Only the addressed element is ever referenced, never a span of the buffer.
+		unsafe { &*self.data.add(i * self.data_width + self.col) }
 	}
 
 	/// Returns a mutable reference to the data at the given row index without bounds checking.
@@ -196,7 +218,13 @@ impl<'a, T> StridedArray2DColMut<'a, T> {
 	/// The caller must ensure that `i < self.height`.
 	pub unsafe fn get_unchecked_mut(&mut self, i: usize) -> &mut T {
 		debug_assert!(i < self.height);
-		unsafe { self.data.get_unchecked_mut(i * self.data_width + self.col) }
+		// SAFETY:
+		// - Provenance: reborrowed from the exclusive borrow the parent view was built from.
+		// - Bounds: the parent's dimensions cover the buffer, and the caller guarantees the row is
+		//   below the height.
+		// - Non-overlap: the constructors give each view its own column.
+		// - Only the addressed element is ever referenced, never a span of the buffer.
+		unsafe { &mut *self.data.add(i * self.data_width + self.col) }
 	}
 }
 
@@ -375,6 +403,13 @@ mod tests {
 		assert_eq!(data[0], 88); // row 0, col 0
 		assert_eq!(data[4], 99); // row 1, col 1
 		assert_eq!(data[11], 77); // row 3, col 2
+	}
+
+	#[test]
+	fn test_views_are_send_and_sync() {
+		fn assert_send_sync<T: Send + Sync>() {}
+		assert_send_sync::<StridedArray2DViewMut<'_, usize>>();
+		assert_send_sync::<StridedArray2DColMut<'_, usize>>();
 	}
 
 	#[test]
