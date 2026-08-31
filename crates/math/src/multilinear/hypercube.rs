@@ -393,8 +393,8 @@ const LOG_MIN_BLOCKS: usize = 6;
 ///
 /// A block spans whole packed words, so it never falls below one.
 fn split_low_len<P: PackedField>(n_vars: usize) -> Option<usize> {
-	let log_scalar_bytes = size_of::<P::Scalar>().next_power_of_two().ilog2() as usize;
-	let low_len = BLOCK_BYTES.ilog2().saturating_sub(log_scalar_bytes as u32) as usize;
+	let log_scalar_bytes = size_of::<P::Scalar>().next_power_of_two().ilog2();
+	let low_len = BLOCK_BYTES.ilog2().saturating_sub(log_scalar_bytes) as usize;
 	let low_len = low_len.max(P::LOG_WIDTH);
 
 	(n_vars >= low_len + LOG_MIN_BLOCKS).then_some(low_len)
