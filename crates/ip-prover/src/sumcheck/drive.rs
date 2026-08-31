@@ -32,7 +32,7 @@ use crate::channel::IPProverChannel;
 /// - The verifier reconstructs the omitted coefficient from the round claim it already holds.
 /// - The two protocols omit opposite ends, so sending the wrong one yields a rejected proof.
 #[derive(Debug, Clone, Copy)]
-pub enum RoundProofKind {
+pub(crate) enum RoundProofKind {
 	/// Omits the highest-degree coefficient, recovered from `claim = R(0) + R(1)`.
 	Sumcheck,
 	/// Omits the constant term, recovered from `claim = (1 - alpha) * R(0) + alpha * R(1)`.
@@ -55,7 +55,7 @@ impl RoundProofKind {
 /// The format is a constant on the type rather than an argument to the loop.
 /// A caller could pass an argument naming a format its prover does not emit; it cannot pick a
 /// wrong constant, because wrapping is the only way in and each wrapper sets its own.
-pub trait RoundProver<F: Field> {
+pub(crate) trait RoundProver<F: Field> {
 	/// The round-proof format this prover's round polynomials must be sent in.
 	const ROUND_PROOF_KIND: RoundProofKind;
 
@@ -76,7 +76,7 @@ pub trait RoundProver<F: Field> {
 ///
 /// The layout matches the wrapped prover, so mapping a vector reuses its allocation.
 #[repr(transparent)]
-pub struct SumcheckRounds<Prover>(pub Prover);
+pub(crate) struct SumcheckRounds<Prover>(pub(crate) Prover);
 
 impl<F: Field, Prover: SumcheckProver<F>> RoundProver<F> for SumcheckRounds<Prover> {
 	const ROUND_PROOF_KIND: RoundProofKind = RoundProofKind::Sumcheck;
@@ -102,7 +102,7 @@ impl<F: Field, Prover: SumcheckProver<F>> RoundProver<F> for SumcheckRounds<Prov
 ///
 /// The layout serves the same purpose as it does for the plain sumcheck wrapper.
 #[repr(transparent)]
-pub struct MleCheckRounds<Prover>(pub Prover);
+pub(crate) struct MleCheckRounds<Prover>(pub(crate) Prover);
 
 impl<F: Field, Prover: MleCheckProver<F>> RoundProver<F> for MleCheckRounds<Prover> {
 	const ROUND_PROOF_KIND: RoundProofKind = RoundProofKind::MleCheck;
@@ -129,7 +129,7 @@ impl<F: Field, Prover: MleCheckProver<F>> RoundProver<F> for MleCheckRounds<Prov
 /// # Panics
 ///
 /// Panics if the prover returns more than one composition from a round.
-pub fn single<F, Prover>(
+pub(crate) fn single<F, Prover>(
 	mut prover: Prover,
 	channel: &mut impl IPProverChannel<F>,
 ) -> ProveSingleOutput<F>
@@ -172,7 +172,7 @@ where
 /// # Panics
 ///
 /// Panics if the provers do not all have the same number of rounds.
-pub fn batch<F, Prover>(
+pub(crate) fn batch<F, Prover>(
 	provers: impl IntoIterator<Item = Prover>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchSumcheckOutput<F>

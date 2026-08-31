@@ -31,30 +31,30 @@ use crate::{
 };
 
 /// One table's witnesses and claims entering the pushforward reduction.
-pub struct TableWitness<'a, P: PackedField> {
+pub(crate) struct TableWitness<'a, P: PackedField> {
 	/// The table `T_t` over its `m_t`-variable cube.
-	pub table: FieldSlice<'a, P>,
+	pub(crate) table: FieldSlice<'a, P>,
 	/// The pushforward `Y_t` over the same cube.
-	pub pushforward: FieldSlice<'a, P>,
+	pub(crate) pushforward: FieldSlice<'a, P>,
 	/// The product claim `e_t = <T_t, Y_t>`.
-	pub eval_claim: P::Scalar,
+	pub(crate) eval_claim: P::Scalar,
 	/// The fractional-addition leaf claim `Y_t(z_t)`.
-	pub pushforward_eval_claim: P::Scalar,
+	pub(crate) pushforward_eval_claim: P::Scalar,
 	/// The leaf point `z_t`, of length `m_t`.
-	pub pushforward_eval_point: &'a [P::Scalar],
+	pub(crate) pushforward_eval_point: &'a [P::Scalar],
 }
 
 /// The evaluation claims that the pushforward reduction ends in.
-pub struct PushforwardOutput<F> {
+pub(crate) struct PushforwardOutput<F> {
 	/// The point spanning the widest table, at which every table's claims are taken.
 	///
 	/// Table `t`, over `m_t` variables, is claimed at the **first `m_t`** coordinates: the batch
 	/// pads each table at its high coordinates.
-	pub table_eval_point: Vec<F>,
+	pub(crate) table_eval_point: Vec<F>,
 	/// The claimed evaluations of the tables `T_t`, each at its own prefix of the point.
-	pub table_eval_claims: Vec<F>,
+	pub(crate) table_eval_claims: Vec<F>,
 	/// The claimed evaluations of the pushforwards `Y_t`, each at the same prefix.
-	pub pushforward_eval_claims: Vec<F>,
+	pub(crate) pushforward_eval_claims: Vec<F>,
 }
 
 /// Reduce every table's pushforward and product claims to one evaluation point.
@@ -93,7 +93,7 @@ pub struct PushforwardOutput<F> {
 /// * `tables` is non-empty.
 /// * For each table, `table.log_len() == pushforward.log_len() == pushforward_eval_point.len()`.
 #[tracing::instrument(skip_all, level = "debug", name = "logup* pushforward reduction")]
-pub fn prove_pushforward<'a, A, F, P>(
+pub(crate) fn prove_pushforward<'a, A, F, P>(
 	alloc: &'a A,
 	tables: impl IntoIterator<Item = TableWitness<'a, P>>,
 	channel: &mut impl IPProverChannel<F>,
