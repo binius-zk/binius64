@@ -1054,8 +1054,16 @@ mod tests {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let gamma = IPProverChannel::<F>::sample(&mut transcript);
 
-		// The table has 2^2 = 4 positions, so index value 4 is out of range.
-		// The range check is a debug_assert precondition, so this panics in debug builds.
+		// Fixture state: the table has 2^2 = 4 positions, addressed 0..=3.
+		//
+		// Mutation: row 1 of the looker asks for position 4.
+		//
+		//     table positions:  [0, 1, 2, 3]
+		//     index column:     [0, 4]
+		//                           ^ one past the end
+		//
+		// The scatter that builds the pushforward writes into one slot per table position.
+		// So the row is rejected whether or not assertions are compiled in.
 		let _ = prove::<GlobalAllocator, F, P>(
 			&alloc,
 			gamma,
