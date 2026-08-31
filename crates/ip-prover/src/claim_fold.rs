@@ -125,17 +125,9 @@ where
 	let mut point = output.challenges;
 	point.reverse();
 
-	// Cut the point into one run per axis, matching the shape the claims came in with.
-	let mut runs = Vec::with_capacity(axes.len());
-	let mut rest = point.as_slice();
-	for width in axes {
-		let (run, tail) = rest.split_at(width);
-		runs.push(run.to_vec());
-		rest = tail;
-	}
-
 	AxisClaim {
-		point: runs,
+		// Cut the point into one run per axis, matching the shape the claims came in with.
+		point: split_axes(&point, &axes),
 		value: tensor_eval,
 	}
 }
