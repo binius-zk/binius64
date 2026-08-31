@@ -174,3 +174,48 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use binius_field::Ghash128b as B128;
+	use binius_spartan_frontend::{
+		circuit_builder::{CircuitBuilder, ConstraintBuilder},
+		compiler::compile,
+	};
+
+	use super::*;
+
+	#[test]
+	fn every_committed_segment_reserves_one_wire_beyond_the_fri_queries() {
+		// Each FRI query opens one Merkle leaf, revealing one codeword symbol of the segment.
+		const N_TEST_QUERIES: usize = 32;
+
+		// Any circuit will do: blinding is padding appended after whatever real wires exist.
+		let mut builder = ConstraintBuilder::<B128>::new();
+		let x = builder.alloc_inout();
+		let y = builder.alloc_inout();
+		builder.assert_eq(x, y);
+		let (cs, _layout) = compile(builder);
+
+		let n_precommit = cs.n_precommit() as usize;
+		let n_private = cs.n_private() as usize;
+
+		let info = BlindingInfo::for_fri_queries(N_TEST_QUERIES);
+		let padded = ConstraintSystemPadded::new(cs, info);
+
+		// Invariant: the dummy wires must outnumber the queries.
+		// Spending exactly one per query would leave the unopened leaves with no randomness of
+		// their own, and the leaves carry no salt.
+		assert!(info.n_dummy_wires > N_TEST_QUERIES);
+
+		// Each segment is rounded up to a power of two, so its reserved size must still cover
+		// every real wire plus the whole blinding allowance:
+		//
+		//     precommit: n_precommit + n_dummy_wires
+		//     private  : n_private   + n_dummy_wires + 3 * n_dummy_constraints
+		assert!(padded.precommit_size() >= n_precommit + info.n_dummy_wires);
+		assert!(
+			padded.private_size() >= n_private + info.n_dummy_wires + 3 * info.n_dummy_constraints
+		);
+	}
+}
