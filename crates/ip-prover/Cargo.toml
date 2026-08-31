@@ -33,3 +33,11 @@ default = []
 [[bench]]
 name = "bivariate_product"
 harness = false
+
+[[bench]]
+name = "quadratic_mlecheck"
+harness = false
+
+[[bench]]
+name = "logup_star_witness"
+harness = false
