@@ -132,6 +132,52 @@ jobs:
         if: github.event_name != 'push'
         run: cargo test --doc --workspace
 
+  # The IOP prover writes a buffer through its spare capacity from a rayon loop and then sets the
+  # length by hand, in two places. Nothing else here can see whether every slot was really written.
+  #
+  # Miri interprets rather than executes, so a test costs minutes rather than milliseconds. Only
+  # three tests are run: the smallest one reaching each of those two writes, plus the one that
+  # duplicates each folded entry, where the slots a chunk covers are no longer one apiece.
+  miri:
+    name: miri-fri
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    # A fixed budget. Anything past this is a hang, not a slow run.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+      # Pinned like the rustfmt nightly above: Miri's aliasing model and its shims change between
+      # nightlies, and a floating channel can also ship without the component altogether.
+      #
+      # No `setup-rust` step, and so no build cache. Miri needs its own sysroot and its own target
+      # directory, which would compete for the repository's cache quota with the workspace legs —
+      # and those are where a restore actually pays.
+      - name: Install nightly toolchain for Miri
+        run: rustup toolchain install nightly-2026-08-26 --component miri --component rust-src
+      # Tree Borrows rather than the default Stacked Borrows. The latter rejects an
+      # integer-to-pointer cast inside crossbeam-epoch, reached from rayon's idle steal loop,
+      # before any code in this repository runs.
+      #
+      # The explicit target features keep the field crate on the packed paths that actually ship.
+      # Without them it falls back to portable code; with `-Ctarget-cpu=native`, as the workspace
+      # legs use, it would reach AVX-512, which Miri has no shims for.
+      #
+      # Every proptest case is a separate interpreted run, so the property tests get one case each.
+      #
+      # Widening the filter to the whole module buys more shapes over the same two writes, at many
+      # times the interpreted cost. Add a name here when a new write appears.
+      - name: Run Miri over the FRI prover
+        run: >-
+          cargo +nightly-2026-08-26 miri test -p binius-iop-prover --lib --
+          fri::encode::
+          fri::tests::test_commit_prove_verify_success_without_folding
+          fri::tests::test_commit_prove_verify_lifted_multi_oracle
+        env:
+          PROPTEST_CASES: 1
+          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-tree-borrows"
+          RUSTFLAGS: "-Ctarget-feature=+sse4.1,+pclmulqdq,+avx,+avx2"
+
   unused-deps:
     name: unused-deps
     if: github.event_name != 'push'
