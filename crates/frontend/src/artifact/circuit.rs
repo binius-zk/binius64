@@ -3,6 +3,8 @@
 
 //! The artifact a build hands back: a constraint system plus what it takes to fill a witness.
 
+use std::mem::MaybeUninit;
+
 use binius_compute::{Allocator, BufferData, VecLike};
 use binius_core::{
 	ValueTable,
@@ -342,11 +344,10 @@ impl Circuit {
 		// Each tile below gathers into one contiguous stripe of its columns.
 		let data_len = n_hidden_words << log_instances;
 		let mut data = alloc.alloc::<Word>(data_len);
-		data.resize(data_len, Word::ZERO);
 		{
-			let dest =
-				StridedArray2DViewMut::without_stride(&mut data, n_hidden_words, n_instances)
-					.expect("n_hidden_words * n_instances == data.len() by construction");
+			let spare = &mut data.spare_capacity_mut()[..data_len];
+			let dest = StridedArray2DViewMut::without_stride(spare, n_hidden_words, n_instances)
+				.expect("n_hidden_words * n_instances == spare.len() by construction");
 
 			(0..n_instances)
 				.into_par_iter()
@@ -384,7 +385,8 @@ impl Circuit {
 					// Gather the tile's hidden rows into their real position in the batch.
 					for row in 0..n_hidden_words {
 						for local in 0..tile_width {
-							dest_stripe[(row, local)] = tile_view[(row + offset_inout, local)];
+							dest_stripe[(row, local)] =
+								MaybeUninit::new(tile_view[(row + offset_inout, local)]);
 						}
 					}
 
@@ -392,6 +394,12 @@ impl Circuit {
 				})
 				.collect::<Result<Vec<()>, _>>()?;
 		}
+
+		// SAFETY: `data_len` slots must be initialized. The stripes tile `0..n_instances` and each
+		// writes all `n_hidden_words` rows of its own columns, so the gather covers every slot,
+		// short final stripe included. On the error path the `?` above returns first and the
+		// length stays zero. Narrowing the gather's row or column range would break this.
+		unsafe { data.set_len(data_len) };
 
 		Ok(ValueTable::from_hidden_words(layout, log_instances, data))
 	}
@@ -450,7 +458,7 @@ impl Circuit {
 mod tests {
 	use std::ops::IndexMut;
 
-	use binius_compute::GlobalAllocator;
+	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_core::{ValueVec, constraint_system::InoutSegment};
 	use proptest::prelude::*;
 
@@ -639,6 +647,61 @@ mod tests {
 				"stripe width {stripe_width} changed the populated table"
 			);
 		}
+	}
+
+	#[test]
+	fn parallel_population_overwrites_every_word_of_a_recycled_buffer() {
+		let c = mix_circuit();
+		let log_instances = 10;
+		let n_instances = 1usize << log_instances;
+		let fill = |i: usize, w: &mut BatchWitnessFiller<'_, '_>| {
+			c.fill(w, (i as u64).wrapping_mul(0x9e37_79b9), i as u64 ^ 0xdead_beef);
+		};
+
+		let serial = c
+			.circuit
+			.populate_batch(&GlobalAllocator, log_instances, fill)
+			.unwrap();
+
+		let n_hidden_words = c
+			.circuit
+			.constraint_system()
+			.n_hidden_words(InoutSegment::Hidden);
+		let data_len = n_hidden_words * n_instances;
+		let pool = BufferPool::new();
+		let mut poison = pool.alloc_vec::<Word>(data_len);
+		poison.resize(data_len, Word(0xa5a5_a5a5_a5a5_a5a5));
+		drop(poison);
+
+		// The destination is the first allocation the parallel path makes, so it draws that block
+		// back: a word the gather missed would still read as the sentinel.
+		let parallel = c
+			.circuit
+			.populate_batch_parallel(&&pool, log_instances, fill)
+			.unwrap();
+		assert_eq!(parallel.as_words(), serial.as_words());
+	}
+
+	#[test]
+	fn parallel_failure_in_a_short_final_stripe_reports_its_instance() {
+		// A circuit that asserts a == b; instances where they differ fail.
+		let builder = CircuitBuilder::new();
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		builder.assert_eq("a_eq_b", a, b);
+		let circuit = builder.build();
+
+		// Width 3 over 8 instances leaves a short final stripe holding instances 6 and 7.
+		// Instance 7 fails there, so the destination is abandoned mid-gather.
+		let result =
+			circuit.populate_batch_parallel_with_stripe_width(&GlobalAllocator, 3, 3, |i, w| {
+				w[a] = Word(i as u64);
+				w[b] = Word(if i == 7 { 99 } else { i as u64 });
+			});
+
+		let err = result.expect_err("instance 7 violates a == b");
+		assert_eq!(err.instance, 7);
+		assert_eq!(err.source.total, 1);
 	}
 
 	#[test]
