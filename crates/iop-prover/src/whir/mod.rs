@@ -8,7 +8,8 @@
 
 pub mod channel;
 pub mod compiler;
-mod induced_weight;
+#[doc(hidden)] // exposed for benchmarking (`benches/induced_weight.rs`), not a stable API
+pub mod induced_weight;
 pub(crate) mod opening;
 
 pub use opening::WHIRProver;

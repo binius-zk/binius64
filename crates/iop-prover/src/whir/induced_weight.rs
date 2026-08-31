@@ -23,7 +23,7 @@ use binius_math::{
 ///
 /// Two routes produce the same `w`, and which is cheaper turns on the level's shape alone.
 /// Holding the inputs together is what lets the choice be a method rather than a parameter.
-pub(super) struct InducedWeight<'a, F, NTT> {
+pub struct InducedWeight<'a, F, NTT> {
 	/// The level whose rows were opened, whose shape picks the route.
 	level: &'a WHIRLevel,
 	/// The transform the adjoint route runs its layers over.
@@ -44,7 +44,7 @@ where
 	/// ## Preconditions
 	///
 	/// * `ntt`'s domain covers the level's codeword domain.
-	pub(super) fn new(level: &'a WHIRLevel, ntt: &'a NTT, indices: &[Word], alpha: F) -> Self {
+	pub fn new(level: &'a WHIRLevel, ntt: &'a NTT, indices: &[Word], alpha: F) -> Self {
 		Self {
 			level,
 			ntt,
@@ -99,7 +99,7 @@ where
 	/// For `t` opened rows the whole build is therefore `2 * t * 2^log_msg_cols` multiplications.
 	///
 	/// This is the reference the adjoint route is tested against.
-	pub(super) fn by_rows<P, A>(&self, alloc: &A) -> FieldVec<P, A>
+	pub fn by_rows<P, A>(&self, alloc: &A) -> FieldVec<P, A>
 	where
 		P: PackedField<Scalar = F>,
 		A: Allocator,
@@ -124,7 +124,7 @@ where
 	///
 	/// The cost is `log_msg_cols` butterfly layers over `2^(log_msg_cols + log_inv_rate)` entries.
 	/// Nothing in it grows with the number of rows opened.
-	pub(super) fn by_adjoint<P, A>(&self, alloc: &A) -> FieldVec<P, A>
+	pub fn by_adjoint<P, A>(&self, alloc: &A) -> FieldVec<P, A>
 	where
 		P: PackedField<Scalar = F>,
 		A: Allocator,
@@ -209,15 +209,14 @@ mod tests {
 		}
 	}
 
-	/// The selection rule, at every level shape the ladder search picks at 96-bit security.
-	///
-	/// The last column is the row build's measured time over the transposed build's.
-	/// A value above one is therefore a shape where the transposed build won.
-	/// The rule must agree with that comparison at every shape.
 	#[test]
-	fn the_selection_rule_follows_the_measured_crossover() {
-		// (log_msg_cols, log_inv_rate, n_queries, measured speedup of the transposed build)
-		let measured: &[(usize, usize, usize, f64)] = &[
+	fn the_selection_rule_reproduces_a_recorded_speedup_table() {
+		// A fixture rather than a measurement, recorded on hardware this test cannot reach.
+		// Rerunning it is the induced-weight benchmark's job, at the shapes it covers.
+		//
+		// (log_msg_cols, log_inv_rate, n_queries, speedup of the transposed build)
+		// Above one is a shape where the transposed build won.
+		let recorded: &[(usize, usize, usize, f64)] = &[
 			(9, 1, 232, 26.43),
 			(9, 3, 116, 3.86),
 			(9, 5, 101, 0.88),
@@ -255,7 +254,7 @@ mod tests {
 			(24, 1, 232, 9.60),
 			(24, 2, 142, 2.96),
 		];
-		for &(log_msg_cols, log_inv_rate, n_queries, speedup) in measured {
+		for &(log_msg_cols, log_inv_rate, n_queries, speedup) in recorded {
 			let level = WHIRLevel {
 				log_msg_cols,
 				log_lanes: 1,
