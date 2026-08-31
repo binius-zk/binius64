@@ -84,15 +84,40 @@ where
 			let next_log_len = prev_layer.log_len() - 1;
 			let (half_0, half_1) = prev_layer.split_half();
 
+			// A next-layer word is the product of its two sibling words, written into the pool.
 			// Each layer is half the width of the one below it, down to a single word.
-			// The last layers are too small to be worth splitting.
-			let next_layer_evals: Vec<P> = (half_0.as_ref(), half_1.as_ref())
+			// One word is one multiply, so a run must be long enough to pay back handing it off.
+			let out_len = half_0.as_ref().len();
+			let mut next_data = alloc.alloc::<P>(out_len);
+			(next_data.spare_capacity_mut(), half_0.as_ref(), half_1.as_ref())
 				.into_par_iter()
 				.with_min_task(WorkPerItem::FieldMuls)
-				.map(|(v0, v1)| *v0 * *v1)
-				.collect();
-			let mut next_data = alloc.alloc::<P>(next_layer_evals.len());
-			next_data.extend_from_slice(&next_layer_evals);
+				.for_each(|(out, &v0, &v1)| {
+					out.write(v0 * v1);
+				});
+			// Invariant: every zip input holds at least `out_len` words.
+			//
+			// A parallel zip yields as many items as its shortest input holds.
+			// A shorter input would leave trailing slots uninitialized.
+			//
+			//     spare capacity:  >= out_len   allocated for at least that many
+			//     sibling halves:  == out_len   halves of one buffer
+			assert!(
+				next_data.capacity() - next_data.len() >= out_len,
+				"the allocated buffer must hold every claimed slot"
+			);
+			assert_eq!(
+				half_1.as_ref().len(),
+				out_len,
+				"the two sibling halves must hold exactly one word per claimed slot"
+			);
+			// Safety: the length claim covers only initialized slots.
+			// - The assertions above bound every zip input below by `out_len`.
+			// - So the loop ran `out_len` items.
+			// - Each item wrote one slot.
+			unsafe {
+				next_data.set_len(out_len);
+			}
 			let next_layer = FieldBuffer::new(next_log_len, next_data);
 
 			layers.push(next_layer);
@@ -736,6 +761,75 @@ mod tests {
 	#[test]
 	fn test_prodcheck_layer_computation() {
 		test_prodcheck_layer_computation_helper::<Packed128b>(4, 3);
+	}
+
+	/// Builds the same product layers serially, through a temporary vector.
+	///
+	/// The layer recurrence is written twice, so it can drift once.
+	fn reference_layers<P: PackedField>(
+		k: usize,
+		alloc: &GlobalAllocator,
+		witness: FieldBuffer<P>,
+	) -> Vec<FieldBuffer<P>> {
+		let mut layers = Vec::with_capacity(k + 1);
+		layers.push(witness);
+
+		for _ in 0..k {
+			let prev_layer = layers.last().expect("layers is non-empty");
+			let next_log_len = prev_layer.log_len() - 1;
+			let (half_0, half_1) = prev_layer.split_half();
+
+			// Pair each word of the low half with the word of the high half above it.
+			let evals = half_0
+				.as_ref()
+				.iter()
+				.zip(half_1.as_ref())
+				.map(|(v0, v1)| *v0 * *v1)
+				.collect::<Vec<P>>();
+
+			let mut next_data = alloc.alloc::<P>(evals.len());
+			next_data.extend_from_slice(&evals);
+			layers.push(FieldBuffer::new(next_log_len, next_data));
+		}
+
+		layers
+	}
+
+	#[test]
+	fn layers_match_the_reference_word_for_word() {
+		let mut rng = StdRng::seed_from_u64(7);
+		let alloc = GlobalAllocator;
+
+		// Invariant: the layers are compared as packed words, not as scalars.
+		// So the lanes past a short layer's length are compared too.
+		//
+		// Fixture state: four scalars per packed word.
+		//
+		//     log_len:   6   5   4   3   2   1   0
+		//     words:    16   8   4   2   1   1   1
+		//
+		// From log_len 2 down a layer is one word whose trailing lanes are not elements.
+		// Sweeping every depth at every witness size covers both sides of that line.
+		for log_len in 1..=6 {
+			for k in 1..=log_len {
+				let witness = random_field_buffer::<Packed128b>(&mut rng, log_len);
+
+				let (prover, products) = ProdcheckProver::new(k, &alloc, witness.clone());
+				let reference = reference_layers(k, &alloc, witness);
+
+				// The constructor keeps the first k layers and hands back the last one.
+				let built = prover.layers.iter().chain(iter::once(&products));
+
+				for (depth, (built, reference)) in built.zip(&reference).enumerate() {
+					assert_eq!(built.log_len(), reference.log_len(), "log_len at depth {depth}");
+					assert_eq!(
+						built.as_ref(),
+						reference.as_ref(),
+						"layer words at depth {depth}, witness log_len {log_len}, k {k}"
+					);
+				}
+			}
+		}
 	}
 
 	// ==================== batch_prove tests ====================
