@@ -141,8 +141,11 @@ pub trait MleCheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + S
 
 /// Maximum log2 chunk size of the parallel round pass.
 ///
-/// Chunked accumulation keeps the equality-indicator chunk resident in L1 cache while all
-/// evaluators read it, mirroring the chunking of the pre-store quadratic prover.
+/// Chunked accumulation keeps the equality-indicator chunk resident while all evaluators read it,
+/// mirroring the chunking of the pre-store quadratic prover.
+///
+/// A chunk is 64 KiB at 128-bit scalars.
+/// A group of `N` claims reads `2N + 1` of them, so the working set is second-level, not first.
 const MAX_CHUNK_VARS: usize = 12;
 
 /// The state a group of claims shares, whichever protocol drives them.
@@ -344,9 +347,6 @@ where
 
 		// One parallel pass over the halved hypercube feeds every evaluator, so shared columns
 		// and eq-indicator chunks are read once per round while they are cache-resident.
-		//
-		// TODO: dynamically choose chunk size based on the number of columns and P byte-size,
-		// based on estimated L1 cache size.
 		let chunk_vars = (n_vars_remaining - 1).min(MAX_CHUNK_VARS.max(P::LOG_WIDTH));
 
 		// Each evaluator owns a contiguous run of `degree` wide slots in one flat per-worker
