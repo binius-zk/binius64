@@ -4,7 +4,7 @@ use std::{array, iter};
 use binius_core::word::Word;
 use binius_frontend::{ChipGadget, CircuitBuilder, Hint, Wire, WitnessFiller};
 
-use crate::util::clear_high_bits;
+use crate::util::{clear_high_bits, pack_u32_words};
 
 const IV: [u32; 8] = [
 	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -47,18 +47,20 @@ impl State {
 		State(std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64))))
 	}
 
-	/// Packs the state into 4 x 64-bit words.
+	/// Packs the state into 4 x 64-bit big-endian words.
+	///
+	/// The lower-numbered word of each pair is the more significant, so it takes the high half.
+	///
+	/// # Preconditions
+	///
+	/// - Every state word holds its value in the low 32 bits, with the high 32 empty.
+	///   - The word lifted into the high half has its own high bits discarded by the shift.
+	///   - The word entering the low half is passed through unmasked.
+	///
+	/// Masking it here would commit one redundant intermediate per word.
+	/// Every caller already clears before packing.
 	pub fn pack_4x64b(&self, builder: &CircuitBuilder) -> [Wire; 4] {
-		fn pack_pair(b: &CircuitBuilder, hi: Wire, lo: Wire) -> Wire {
-			b.bxor(lo, b.shl(hi, 32))
-		}
-
-		[
-			pack_pair(builder, self.0[0], self.0[1]),
-			pack_pair(builder, self.0[2], self.0[3]),
-			pack_pair(builder, self.0[4], self.0[5]),
-			pack_pair(builder, self.0[6], self.0[7]),
-		]
+		array::from_fn(|j| builder.bxor(self.0[2 * j + 1], builder.shl(self.0[2 * j], 32)))
 	}
 }
 
@@ -219,18 +221,14 @@ pub fn sha256_compress(builder: &CircuitBuilder, state_in: State, m: [Wire; 16])
 	//     low lane  <- H[2j]
 	//     high lane <- H[2j + 1]
 	//
-	// Each summand is cleared before it enters the low lane.
+	// Neither operand arrives zero-extended, so the packing masks the one entering the low lane:
 	//
 	// - A state word's high half holds the round-31 state the split already spent.
 	// - A caller's high half is not required to be empty.
-	//
-	// The shift into the high lane clears its own operand, so only the low one needs it.
-	let pair =
-		|lo: Wire, hi: Wire| builder.bxor(clear_high_bits(builder, lo, 32), builder.shl(hi, 32));
 	let sums: [Wire; 4] = array::from_fn(|j| {
 		builder.iadd_32(
-			pair(state_in.0[2 * j], state_in.0[2 * j + 1]),
-			pair(state.0[2 * j], state.0[2 * j + 1]),
+			pack_u32_words(builder, state_in.0[2 * j], state_in.0[2 * j + 1]),
+			pack_u32_words(builder, state.0[2 * j], state.0[2 * j + 1]),
 		)
 	});
 
@@ -426,14 +424,12 @@ pub fn sha256_compress_2x_seq(
 	let merged_vec = builder.call_hint(Sha256CompressHint, &[], &hint_inputs);
 	let merged: [Wire; 8] = array::from_fn(|i| merged_vec[i]);
 
-	// Pack two lanes into one wire: low 32 bits = lane 0 (S2), high 32 bits = lane 1 (S1).
-	// `shl` already clears the high operand's upper bits.
-	// The low operand is cleared explicitly, since inputs are not guaranteed zero-extended.
-	let pack = |lo: Wire, hi: Wire| builder.bxor(lo, builder.shl(hi, 32));
-	let clear = |w: Wire| clear_high_bits(builder, w, 32);
-
-	// Merged block: low lane = second block, high lane = first block.
-	let merged_block: [Wire; 16] = array::from_fn(|i| pack(clear(blocks[1][i]), blocks[0][i]));
+	// Merged block, one wire per block word:
+	//
+	//     low lane  <- the second block's word
+	//     high lane <- the first block's word
+	let merged_block: [Wire; 16] =
+		array::from_fn(|i| pack_u32_words(builder, blocks[1][i], blocks[0][i]));
 
 	let out = sha256_compress_2x(builder, State::new(merged), merged_block);
 

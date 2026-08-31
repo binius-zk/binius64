@@ -26,6 +26,21 @@ pub fn clear_high_bits(builder: &CircuitBuilder, w: Wire, n: u32) -> Wire {
 	builder.shr(builder.shl(w, n), n)
 }
 
+/// Pack two 32-bit values into the two halves of one 64-bit wire.
+///
+/// The first argument lands in the low half, the second in the high half.
+///
+/// ```text
+///     bits 32..64  <-  second argument, shifted up
+///     bits  0..32  <-  first argument, masked down
+/// ```
+///
+/// Neither operand has to arrive zero-extended.
+/// The shift that lifts one discards its high bits, and the other is masked explicitly.
+pub(crate) fn pack_u32_words(builder: &CircuitBuilder, lo: Wire, hi: Wire) -> Wire {
+	builder.bxor(clear_high_bits(builder, lo, 32), builder.shl(hi, 32))
+}
+
 /// Splits each 64-bit wire into two little-endian 32-bit word wires (low half, then high half).
 ///
 /// Returns exactly `num_words` words, zero-padding when `data` runs out.
