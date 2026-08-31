@@ -181,13 +181,12 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Copies a borrowed buffer into memory drawn from `alloc`.
 	///
 	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
+	/// The copy splits into runs, so more than one worker carries a long source.
 	pub fn from_view_in<A>(alloc: &A, src: FieldSlice<'_, P>) -> Self
 	where
 		A: Allocator<Vec<P> = Data>,
 	{
-		let mut words = alloc.alloc::<P>(src.as_ref().len());
-		words.extend_from_slice(src.as_ref());
-		FieldBuffer::new(src.log_len(), words)
+		Self::from_view_with_capacity_in(alloc, src, src.log_len())
 	}
 
 	/// Copies a borrowed buffer into memory drawn from `alloc`, with room reserved to grow.
@@ -224,13 +223,18 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 		let run = source.len().min(task_chunk_len::<P>().next_power_of_two());
 
 		let head = &mut words.spare_capacity_mut()[..source.len()];
-		(head.par_chunks_mut(run), source.par_chunks(run))
-			.into_par_iter()
-			.for_each(|(dst, src)| {
-				dst.write_copy_of_slice(src);
-			});
+		if source.len() <= run {
+			// One run holds the whole source, so a split would only buy a worker handoff.
+			head.write_copy_of_slice(source);
+		} else {
+			(head.par_chunks_mut(run), source.par_chunks(run))
+				.into_par_iter()
+				.for_each(|(dst, src)| {
+					dst.write_copy_of_slice(src);
+				});
+		}
 
-		// SAFETY: the loop above wrote every word of the source.
+		// SAFETY: both branches above wrote every word of the source.
 		unsafe { words.set_len(source.len()) };
 
 		FieldBuffer::new(src.log_len(), words)
@@ -941,6 +945,23 @@ mod tests {
 			4,
 		);
 		buffer.repeat_extend(5);
+	}
+
+	#[test]
+	fn a_copy_reproduces_every_word_on_both_sides_of_the_run_boundary() {
+		// A run is the words one worker takes, capped by the byte budget for one task.
+		//
+		//     one run    [--------]              copied where the call stands
+		//     two runs   [--------][--------]    split across workers
+		let run = task_chunk_len::<P>().next_power_of_two();
+		for words in [run, 2 * run] {
+			let log_len = words.ilog2() as usize + P::LOG_WIDTH;
+			let src = random_field_buffer::<P>(&mut StdRng::seed_from_u64(0), log_len);
+			let copy: FieldVec<P, GlobalAllocator> =
+				FieldBuffer::from_view_in(&GlobalAllocator, src.as_view());
+			assert_eq!(copy.log_len(), log_len);
+			assert_eq!(copy.as_ref(), src.as_ref(), "words={words}");
+		}
 	}
 
 	#[test]
