@@ -851,13 +851,13 @@ proptest! {
 ///
 /// The module docs derive the layer-depth trade-off from this number, so a change here means the
 /// trade-off needs re-deriving.
-const LEVEL_AND: usize = 384;
+const LEVEL_AND: usize = 380;
 
 /// AND constraints one climbed level costs each query, when two openings share cores.
 const PAIRED_LEVEL_AND: usize = 377;
 
 /// AND constraints one inner node costs on its own core.
-const NODE_AND: usize = 384;
+const NODE_AND: usize = 380;
 
 /// AND constraints one inner node costs when it shares a core with a second node.
 const PAIRED_NODE_AND: usize = 380;
@@ -989,12 +989,14 @@ fn verify_opening_2x_follows_the_documented_cost_model() {
 }
 
 #[test]
-fn a_shared_core_barely_beats_two_lone_nodes() {
-	// Invariant: a lone node already spends both 32-bit lanes on its own split halves.
-	// So a second node sharing the core saves the split's overhead, not half the work.
+fn a_shared_core_costs_what_two_lone_nodes_cost() {
+	// Invariant: both cores spend every lane they have, so a node costs the same either way.
 	//
-	//     one node  on its own core :  both lanes work, one half of one node each
+	//     one node  on its own core :  both lanes work, one half of that node each
 	//     two nodes on a shared core:  both lanes work, one whole node each
+	//
+	// Sharing a core therefore buys gate count and chip reuse, never AND constraints.
+	// A leaf or a climbed level still gains, but from the work around the compression.
 	let (single, _) = cost(|builder| {
 		// Two children in, one node digest out, pinned to a public claim.
 		let inputs = digest_wires(builder, 2);

@@ -144,29 +144,23 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 		block_idx += 2;
 	}
 	if block_idx < n_blocks {
+		// The trailing odd block has no partner, so the paired core would idle a whole lane on
+		// it. The single-lane core fills that lane from the block itself, splitting its own 64
+		// rounds across the two halves, and costs half as much.
+		//
+		// It takes a pair's leftover high halves, since it reads an input state's low half only.
 		let sub = builder.subcircuit(format!("sha256_fixed_compress[{block_idx}]"));
-		state = if block_idx > 0 {
-			// The trailing odd block has no partner, but it still runs through the paired core
-			// with the second lane dead, so a registered chip serves it instead of leaving one
-			// compression behind in main. The dead lane chews on the leftover high halves and
-			// its output lands in the high halves, which the digest clearing below discards.
-			// In gates the two cores emit the same circuit, so nothing changes without a chip.
-			sha256_compress_2x(&sub, state, blocks[block_idx])
-		} else {
-			// A single-block message keeps the single-lane core: its empty high halves are what
-			// lets the digest skip the clearing below.
-			sha256_compress(&sub, state, blocks[block_idx])
-		};
+		state = sha256_compress(&sub, state, blocks[block_idx]);
 	}
 
 	// The escaping digest is the one place a clean high half is required.
 	// So clear the high half once here rather than after every pair, since a caller compares all
 	// 64 bits.
 	//
-	// Why a single-block message skips it:
-	// - Such a message never enters the paired core.
-	// - The one-lane core maps an empty high half to an empty high half.
-	if n_blocks < 2 {
+	// Why an odd block count skips it:
+	// - Such a message ends on the one-lane core.
+	// - That core empties the high half of every word it returns.
+	if n_blocks % 2 == 1 {
 		return state.0;
 	}
 	std::array::from_fn(|i| clear_high_bits(builder, state.0[i], 32))
@@ -362,7 +356,7 @@ mod tests {
 	use std::array;
 
 	use binius_core::Word;
-	use binius_frontend::{CircuitBuilder, Wire};
+	use binius_frontend::{CircuitBuilder, CircuitStat, Wire};
 	use hex_literal::hex;
 	use sha2::Digest;
 
@@ -574,6 +568,30 @@ mod tests {
 
 			// Test with our circuit
 			test_sha256_fixed_with_input(&message, expected_bytes);
+		}
+	}
+
+	#[test]
+	fn every_block_costs_the_same() {
+		// AND constraints one compression spends, as `compress`'s own bound pins it.
+		const AND_PER_BLOCK: usize = 364;
+
+		// Lengths chosen to end on a word, so no boundary mask joins the count.
+		for (len_bytes, n_blocks) in [(32, 1), (64, 2), (128, 3), (192, 4), (256, 5)] {
+			let b = CircuitBuilder::new();
+			let message: Vec<Wire> = (0..len_bytes / 4).map(|_| b.add_inout()).collect();
+
+			// Bind the digest, or dead code elimination drops the last compression's tail.
+			for wire in sha256_fixed(&b, &message, len_bytes) {
+				let public = b.add_inout();
+				b.assert_eq("digest", wire, public);
+			}
+
+			// The paired core carries two blocks and the single-lane core carries one.
+			// Both spend the two 32-bit halves of every gate, so an odd count costs no more
+			// per block than an even one.
+			let stat = CircuitStat::collect(&b.build());
+			assert_eq!(stat.n_and_constraints, n_blocks * AND_PER_BLOCK, "{len_bytes} bytes");
 		}
 	}
 

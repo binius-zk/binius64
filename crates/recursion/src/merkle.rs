@@ -55,11 +55,14 @@
 //! Its break-even therefore lands within rounding of the AND column's, and picks the same depth.
 //! These ratios are measured rather than pinned, unlike every figure in the table.
 //!
-//! One block compression is 368 AND constraints.
+//! One block compression is 364 AND constraints.
 //!
 //! A gate costs one constraint whatever its width.
 //! A compression already spends both 32-bit lanes of every gate, on its own two halves.
-//! So a second compression sharing that core saves only what the split costs, a few percent.
+//! So a second compression sharing that core costs exactly what it would cost alone.
+//!
+//! What sharing still saves is the work around the compression, paid once instead of twice.
+//! That is why a bare node costs the same either way, while a leaf and a climbed level do not.
 //!
 //! Every place that hashes independent values still takes this route:
 //!
@@ -73,13 +76,13 @@
 //!
 //! | what is measured                        | AND           | BMUL          |
 //! | --------------------------------------- | ------------- | ------------- |
-//! | a one-element leaf digest               | 376           | 0             |
-//! | a sixteen-element leaf digest           | 2263          | 0             |
+//! | a one-element leaf digest               | 372           | 0             |
+//! | a sixteen-element leaf digest           | 1948          | 0             |
 //! | two one-element leaves sharing a core   | 707 per pair  | 0             |
-//! | one inner node on its own core          | 384           | 0             |
+//! | one inner node on its own core          | 380           | 0             |
 //! | one inner node sharing a core           | 380 per node  | 0             |
 //! | one node of a verified layer's fold     | 380 per node  | 0             |
-//! | one climbed level of a lone opening     | 384           | 8             |
+//! | one climbed level of a lone opening     | 380           | 8             |
 //! | one climbed level of a paired opening   | 377 per query | 8 per query   |
 //! | picking the layer entry of an opening   | 0             | 4 * (2^L - 1) |
 //!

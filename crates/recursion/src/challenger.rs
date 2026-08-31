@@ -77,7 +77,7 @@
 //! | item | AND constraints |
 //! |---|---|
 //! | one compression core, covering two chained blocks | 728 |
-//! | one observed 64-byte block, amortized | 396 |
+//! | one observed 64-byte block, amortized | 395 |
 //! | one observed word, for the byte reversal | 4 |
 //! | one 128-bit challenge, refills excluded | 12 |
 //! | one bit sample, refills excluded | 4 |
@@ -88,11 +88,12 @@
 //! Consecutive blocks of an epoch chain, so they compress in pairs.
 //! One two-lane core runs both, one per 32-bit lane of a 64-bit datapath.
 //!
-//! A lone compression already splits itself across those two lanes, at 368 constraints.
-//! So pairing saves only that split's own overhead, 8 constraints per pair.
+//! A lone compression also splits itself across those two lanes, at 364 constraints.
+//! So a pair costs exactly what its two blocks cost apart, and chaining buys gates, not
+//! constraints.
 //!
 //! An epoch that observes nothing is a single block.
-//! So 32 bytes of sampler output cost about 380 constraints, however they are cut into values.
+//! So 32 bytes of sampler output cost about 374 constraints, however they are cut into values.
 
 use std::{array, mem};
 
@@ -724,7 +725,7 @@ mod tests {
 	}
 
 	/// AND constraints one observed 64-byte block adds, hashing and byte reversal together.
-	const OBSERVED_BLOCK_AND: usize = 396;
+	const OBSERVED_BLOCK_AND: usize = 395;
 
 	/// Builds a circuit that observes some words then samples one challenge, and reports its cost.
 	///
@@ -761,7 +762,7 @@ mod tests {
 		let single = cost(0).n_and_constraints;
 
 		// A core already fills both 32-bit lanes with the two halves of its own compression.
-		// So pairing consecutive blocks saves that split's overhead, not half the work.
+		// So pairing consecutive blocks saves the work around them, never half the work.
 		assert!(
 			marginal < single + single / 8,
 			"one observed block costs {marginal} AND constraints against {single} for one core"
