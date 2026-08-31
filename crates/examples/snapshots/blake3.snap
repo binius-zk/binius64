@@ -2,7 +2,7 @@ blake3 circuit
 --
 Gates & Instructions
 ├─ Number of gates: 7,256
-└─ Number of evaluation instructions: 7,256
+└─ Number of evaluation instructions: 7,120
 
 Constraints
 ├─ ZERO constraints: 1,389 used (67.8% of 2^11)

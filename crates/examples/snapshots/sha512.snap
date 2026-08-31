@@ -2,7 +2,7 @@ sha512 circuit
 --
 Gates & Instructions
 ├─ Number of gates: 24,839
-└─ Number of evaluation instructions: 24,839
+└─ Number of evaluation instructions: 24,748
 
 Constraints
 ├─ ZERO constraints: 2,015 used (98.4% of 2^11)

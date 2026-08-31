@@ -617,36 +617,36 @@ impl CircuitBuilder {
 			zero_fold::zero_propagation(&mut graph, &pinned, &shared.hint_registry);
 		}
 
+		// The gates that reach both the constraint system and the evaluation form.
+		// A pass left switched off excludes nothing.
+		let mut surviving = EntitySet::new();
+		surviving.extend(graph.gates.keys());
+
 		// Common-subexpression elimination: collapse structurally-identical gates.
 		// This runs first so the dead-code pass sees the canonicalized graph.
-		let dead_gates = shared
-			.opts
-			.enable_common_subexpression_elimination
-			.then(|| cse::dedup_gates(&mut graph, &pinned, &shared.hint_registry));
+		if shared.opts.enable_common_subexpression_elimination {
+			// A collapsed duplicate's outputs are read through the canonical gate.
+			for gate in cse::dedup_gates(&mut graph, &pinned, &shared.hint_registry).iter() {
+				surviving.remove(gate);
+			}
+		}
 
 		// Dead-code elimination: the gates that can affect the constraint system.
-		// A gate outside this set emits no constraint and no committed wire, so it is skipped
-		// below.
-		let live_gates = shared
-			.opts
-			.enable_dead_code_elimination
-			.then(|| dce::live_gates(&mut graph, &pinned, &shared.hint_registry));
+		if shared.opts.enable_dead_code_elimination {
+			// A gate outside the live set only writes wires that nothing reads.
+			let live = dce::live_gates(&mut graph, &pinned, &shared.hint_registry);
+			for gate in graph.gates.keys() {
+				if !live.contains(gate) {
+					surviving.remove(gate);
+				}
+			}
+		}
 
 		let mut builder = ConstraintBuilder::new();
-		for (gate_id, _) in graph.gates.iter() {
-			// Drop collapsed duplicates: their outputs are now read through the canonical gate.
-			if let Some(dead_gates) = &dead_gates
-				&& dead_gates.contains(gate_id)
-			{
-				continue;
+		for gate_id in graph.gates.keys() {
+			if surviving.contains(gate_id) {
+				gate_id.constrain(&graph, &mut builder, &shared.hint_registry);
 			}
-			// Drop dead gates: they would only add constraints on wires that nothing reads.
-			if let Some(live_gates) = &live_gates
-				&& !live_gates.contains(gate_id)
-			{
-				continue;
-			}
-			gate_id.constrain(&graph, &mut builder, &shared.hint_registry);
 		}
 
 		// Perform fusion if the corresponding feature flag is turned on.
@@ -769,6 +769,7 @@ impl CircuitBuilder {
 		// Build evaluation form (consumes the hint registry the user populated via call_hint).
 		let eval_form = eval_form::EvalForm::build(
 			&graph,
+			&surviving,
 			&wire_mapping,
 			&value_vec_layout,
 			shared.hint_registry,

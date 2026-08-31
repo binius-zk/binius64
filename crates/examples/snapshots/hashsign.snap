@@ -2,7 +2,7 @@ hashsign circuit
 --
 Gates & Instructions
 ├─ Number of gates: 275,391
-└─ Number of evaluation instructions: 276,525
+└─ Number of evaluation instructions: 232,413
 
 Constraints
 ├─ ZERO constraints: 42,501 used (64.9% of 2^16)

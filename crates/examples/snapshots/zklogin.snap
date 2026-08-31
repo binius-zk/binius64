@@ -2,7 +2,7 @@ zklogin circuit
 --
 Gates & Instructions
 ├─ Number of gates: 388,535
-└─ Number of evaluation instructions: 456,622
+└─ Number of evaluation instructions: 335,768
 
 Constraints
 ├─ ZERO constraints: 33,513 used (51.1% of 2^16)
