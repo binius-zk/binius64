@@ -147,6 +147,8 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 		// The trailing odd block has no partner, so the paired core would idle a whole lane on
 		// it. The single-lane core fills that lane from the block itself, splitting its own 64
 		// rounds across the two halves, and costs half as much.
+		//
+		// It takes a pair's leftover high halves, since it reads an input state's low half only.
 		let sub = builder.subcircuit(format!("sha256_fixed_compress[{block_idx}]"));
 		state = sha256_compress(&sub, state, blocks[block_idx]);
 	}
