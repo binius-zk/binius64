@@ -9,7 +9,7 @@
 //! - the negated table denominator `J - c`, with `J` the embedded table positions,
 //! - the pushforward `Y = I_* eq_r`, the looker numerator scattered onto table positions.
 
-use std::iter;
+use std::{iter, mem::MaybeUninit};
 
 use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
@@ -322,6 +322,12 @@ where
 	FieldBuffer::new(log_len, packed)
 }
 
+/// Output bytes below which the table denominator is built on the calling thread.
+///
+/// One core keeps up while the output fits in cache.
+/// Below that size, handing the work out costs more than it saves.
+const MIN_PARALLEL_DENOMINATOR_BYTES: usize = 32 << 20;
+
 /// Build the negated table denominator `J - c` over the `m`-variable table cube.
 ///
 /// Entry `j` is `iota(j) - c`. The logUp denominator for table position `j` is `c - iota(j)`; the
@@ -333,11 +339,34 @@ where
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
-	// One denominator per table position: shift the position's embedding by the challenge.
-	let values = (0..1usize << table_n_vars)
-		.map(|j| embed_position::<F>(j) - c)
-		.collect::<Vec<_>>();
-	FieldBuffer::from_values_in(alloc, &values)
+	let packed_len = 1 << table_n_vars.saturating_sub(P::LOG_WIDTH);
+	// A table shorter than one packed word occupies only the low lanes of its single word.
+	let live_lanes = P::WIDTH.min(1usize << table_n_vars);
+
+	// Positions sharing a word differ only in the low bits the word index leaves clear.
+	// The embedding is `GF(2)`-linear, so a word is one lane pattern shifted by a single scalar.
+	//
+	//     word w, lane l  ->  iota(w * WIDTH) + (iota(l) - c)
+	//
+	// Invariant: the challenge rides in the lane pattern, not in the shift.
+	// So a short table's dead lanes stay zero: only the first word has them, and its shift is zero.
+	let lanes = P::from_scalars((0..live_lanes).map(|l| embed_position::<F>(l) - c));
+	let fill = |(word, slot): (usize, &mut MaybeUninit<P>)| {
+		slot.write(P::broadcast(embed_position::<F>(word << P::LOG_WIDTH)) + lanes);
+	};
+
+	let mut packed = alloc.alloc::<P>(packed_len);
+	// The allocator rounds its blocks up, so the fill is bounded to the words that are entries.
+	let words = &mut packed.spare_capacity_mut()[..packed_len];
+	if packed_len * size_of::<P>() < MIN_PARALLEL_DENOMINATOR_BYTES {
+		words.iter_mut().enumerate().for_each(fill);
+	} else {
+		words.par_iter_mut().enumerate().for_each(fill);
+	}
+	// Safety: either branch writes each of the first `packed_len` slots exactly once.
+	unsafe { packed.set_len(packed_len) };
+
+	FieldBuffer::new(table_n_vars, packed)
 }
 
 /// Build the pushforward `Y = I_* eq_r` over the `m`-variable table cube.
@@ -376,7 +405,7 @@ where
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		Field,
+		Field, PackedBinaryGhash4x128b, PackedField,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
 	use binius_math::{
@@ -386,10 +415,15 @@ mod tests {
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
-	use super::{combined_pushforward, embed_position, looker_denominator, pushforward};
+	use super::{
+		combined_pushforward, embed_position, looker_denominator, pushforward, table_denominator,
+	};
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
+	// The optimal packing is one scalar per word at baseline x86-64, where the tests build.
+	// Four scalars to a word is what makes a table shorter than a word possible at all.
+	type Wide = PackedBinaryGhash4x128b;
 
 	// An independent single-threaded scatter, the reference the dispatched result must match.
 	fn reference(eq_r: &FieldBuffer<P>, index: &[usize], m: usize) -> Vec<F> {
@@ -543,6 +577,63 @@ mod tests {
 				.iter_scalars()
 				.collect::<Vec<_>>();
 			prop_assert_eq!(got, denominator_reference(c, &index));
+		}
+	}
+
+	// The scalar reference for the table denominator: iota(j) - c per table position.
+	fn table_reference(c: F, table_n_vars: usize) -> Vec<F> {
+		(0..1usize << table_n_vars)
+			.map(|j| embed_position::<F>(j) - c)
+			.collect()
+	}
+
+	// Pins one table shape against the scalar reference, entry by entry and then word by word.
+	fn check_table_denominator<Q>(c: F, table_n_vars: usize)
+	where
+		Q: PackedField<Scalar = F>,
+	{
+		let got = table_denominator::<_, F, Q>(&GlobalAllocator, c, table_n_vars);
+		let want = table_reference(c, table_n_vars);
+
+		assert_eq!(got.iter_scalars().collect::<Vec<_>>(), want);
+
+		// Packing the scalar reference zero-fills a final word the table does not fill.
+		// So the words must agree bit for bit, not just entry by entry.
+		let packed = FieldBuffer::<Q, _>::from_values_in(&GlobalAllocator, &want);
+		assert_eq!(got.iter_packed().collect::<Vec<_>>(), packed.iter_packed().collect::<Vec<_>>());
+
+		// Only the first word can hold lanes past the last position, and they are not entries.
+		let first = *got.iter_packed().next().expect("a buffer holds one word");
+		for lane in first.iter().skip(want.len()) {
+			assert_eq!(lane, F::ZERO);
+		}
+	}
+
+	#[test]
+	fn table_denominator_small_cases() {
+		let c = F::new(7);
+
+		// One entry in a four-lane word, so three lanes are not entries.
+		check_table_denominator::<Wide>(c, 0);
+		// Two entries, so the word is still short.
+		check_table_denominator::<Wide>(c, 1);
+		// Exactly one full word.
+		check_table_denominator::<Wide>(c, 2);
+		// Eight words, so the lane pattern repeats.
+		check_table_denominator::<Wide>(c, 5);
+	}
+
+	proptest! {
+		#![proptest_config(ProptestConfig::with_cases(16))]
+
+		// The range spans below, at, and above the four-lane packing width.
+		#[test]
+		fn table_denominator_matches_reference(seed in any::<u64>(), m in 0usize..=8) {
+			let mut rng = StdRng::seed_from_u64(seed);
+			let c = random_scalars::<F>(&mut rng, 1)[0];
+
+			check_table_denominator::<Wide>(c, m);
+			check_table_denominator::<P>(c, m);
 		}
 	}
 }
