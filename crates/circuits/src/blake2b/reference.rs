@@ -148,29 +148,49 @@ pub fn blake2b_256(data: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-	use blake2::digest::{Update, VariableOutput};
+	use blake2::{
+		Blake2b, Blake2b256, Digest,
+		digest::{
+			array::ArraySize,
+			consts::U64,
+			typenum::{IsLessOrEqual, True},
+		},
+	};
 
 	use super::*;
+
+	/// Compares [`blake2b`] against the reference hasher at the output length `N` names.
+	///
+	/// The length is a type rather than a value, since the hasher fixes its output size at
+	/// compile time.
+	fn check_output_length<N>(msg: &[u8])
+	where
+		N: ArraySize + IsLessOrEqual<U64, Output = True>,
+	{
+		let expected = Blake2b::<N>::digest(msg);
+		assert_eq!(blake2b(msg, N::USIZE), expected.as_slice(), "output length {}", N::USIZE);
+	}
+
+	/// Calls [`check_output_length`] once per named length.
+	macro_rules! check_output_lengths {
+		($msg:expr, $($len:ident),+ $(,)?) => {
+			$(check_output_length::<blake2::digest::consts::$len>($msg);)+
+		};
+	}
 
 	/// Test variable output lengths
 	#[test]
 	fn test_variable_output_lengths() {
 		let msg = b"test message for variable output lengths";
 
-		// Test various output lengths from 1 to 64 bytes
-		for outlen in 1..=64 {
-			let mut hasher = blake2::Blake2bVar::new(outlen).unwrap();
-			Update::update(&mut hasher, msg);
-			let expected = hasher.finalize_boxed();
-
-			let result = blake2b(msg, outlen);
-			assert_eq!(
-				result,
-				expected.as_ref(),
-				"Variable output test failed for length {}",
-				outlen
-			);
-		}
+		// BLAKE2b mixes its output length into the parameter block.
+		// So every length is its own computation, and none of them stands in for the rest.
+		check_output_lengths!(
+			msg, U1, U2, U3, U4, U5, U6, U7, U8, U9, U10, U11, U12, U13, U14, U15, U16, U17, U18,
+			U19, U20, U21, U22, U23, U24, U25, U26, U27, U28, U29, U30, U31, U32, U33, U34, U35,
+			U36, U37, U38, U39, U40, U41, U42, U43, U44, U45, U46, U47, U48, U49, U50, U51, U52,
+			U53, U54, U55, U56, U57, U58, U59, U60, U61, U62, U63, U64
+		);
 	}
 
 	/// Test incremental hashing verification
@@ -182,11 +202,11 @@ mod tests {
 		let expected = blake2b_256(&data);
 
 		// Incremental hashing using standard crate
-		let mut hasher = blake2::Blake2bVar::new(32).unwrap();
-		Update::update(&mut hasher, &data[0..100]);
-		Update::update(&mut hasher, &data[100..200]);
-		Update::update(&mut hasher, &data[200..300]);
-		let incremental = hasher.finalize_boxed();
+		let mut hasher = Blake2b256::new();
+		hasher.update(&data[0..100]);
+		hasher.update(&data[100..200]);
+		hasher.update(&data[200..300]);
+		let incremental = hasher.finalize();
 
 		// Our implementation should match incrementally computed hash
 		assert_eq!(&expected[..], &incremental[..], "Incremental hashing verification failed");
