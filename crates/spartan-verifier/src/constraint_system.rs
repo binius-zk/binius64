@@ -250,13 +250,11 @@ mod tests {
 			for operand in [&constraint.a, &constraint.b, &constraint.c] {
 				for wire in operand.wires() {
 					let slot = match wire.segment {
-						WitnessSegment::Precommit => Some(0),
-						WitnessSegment::Private => Some(1),
-						WitnessSegment::Public => None,
+						WitnessSegment::Precommit => 0,
+						WitnessSegment::Private => 1,
+						WitnessSegment::Public => continue,
 					};
-					if let Some(slot) = slot {
-						in_support[slot].insert(wire.index as usize);
-					}
+					in_support[slot].insert(wire.index as usize);
 				}
 			}
 		}
