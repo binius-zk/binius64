@@ -358,12 +358,17 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 		// The target starts fully zeroed, so only the occupied words need writing.
 		let mut extended = Self::zeros_in(alloc, log_len);
 
-		// Whole packed words move across untouched.
-		//
-		// Invariant: lanes past the logical length are zero.
-		// So a trailing partial word already carries zeros in its high lanes.
-		// Those are exactly the zeros the padding would otherwise write.
-		extended.as_mut()[..self.as_ref().len()].copy_from_slice(self.as_ref());
+		if self.log_len < P::LOG_WIDTH {
+			// The source's single word also spans lanes that the padding covers.
+			// Nothing sitting there is an element of it, so only the live scalars carry over.
+			//
+			//     source   [ s_0, s_1, x, y ]
+			//     result   [ s_0, s_1, 0, 0 ] [ 0, 0, 0, 0 ]
+			extended.as_mut()[0] = P::from_scalars(self.iter_scalars());
+		} else {
+			// Every lane of every source word is live, so whole words move across untouched.
+			extended.as_mut()[..self.as_ref().len()].copy_from_slice(self.as_ref());
+		}
 
 		extended
 	}
@@ -515,8 +520,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// The mutable counterpart of the shared word iterator, covering the same run of words.
 	/// A final word below the packing width is lent out whole, dead lanes included.
-	/// Padding the buffer out to a wider length turns those lanes live.
-	/// Zeros there are what make that padding zero.
 	#[inline]
 	pub fn iter_packed_mut(&mut self) -> slice::IterMut<'_, P> {
 		self.as_mut().iter_mut()
@@ -768,7 +771,24 @@ mod tests {
 		assert_eq!(cloned.as_view(), src.as_view());
 
 		// Copying a source shorter than one packed word keeps the two live lanes, not four.
-		let small = FieldBuffer::<P>::from_values(&scalars[..2]);
+		//
+		// Invariant: a lane past the logical length is not an element, whatever it holds.
+		//
+		// Fixture state: two live scalars, and two dead lanes carrying unrelated values.
+		//
+		//     word   [ 0, 1 | 0xdead, 0xbeef ]
+		//              ^^^^  live prefix
+		//
+		// Packing from scalars would zero those lanes, so the word is supplied whole instead.
+		let small = FieldBuffer::<P>::new(
+			1,
+			vec![P::from_scalars([
+				scalars[0],
+				scalars[1],
+				F::new(0xdead),
+				F::new(0xbeef),
+			])],
+		);
 		let cloned_small: FieldVec<P, A> = FieldBuffer::from_view_in(alloc, small.as_view());
 		assert_eq!(cloned_small.log_len(), 1);
 		assert_eq!(cloned_small.as_view(), small.as_view());
