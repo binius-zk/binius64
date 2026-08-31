@@ -215,7 +215,13 @@ impl Shape {
 		WordIPProverChannel::<B128>::observe_words(&mut channel, &point_words);
 
 		// Encodes level 0 lane by lane and sends its Merkle root.
-		let prover = WHIRProver::commit(&setup.params, &setup.ntt, witness.as_view(), &mut channel);
+		let prover = WHIRProver::commit(
+			&setup.params,
+			&setup.ntt,
+			witness.as_view(),
+			&GlobalAllocator,
+			&mut channel,
+		);
 		WordIPProverChannel::<B128>::observe_words(&mut channel, &element_words(eval_claim));
 
 		prover.prove(witness.as_view(), &eval_point, eval_claim, &GlobalAllocator, &mut channel);

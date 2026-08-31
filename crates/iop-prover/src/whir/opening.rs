@@ -12,9 +12,9 @@
 //! The proof of work is paid at exactly the two points the verifier checks it.
 //! That module's `Where the proof of work stands` section draws them.
 
-use std::iter::zip;
+use std::{iter::zip, ops::Deref};
 
-use binius_compute::{Allocator, GlobalAllocator};
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::whir::{WHIRLevel, WHIRParams};
@@ -57,23 +57,24 @@ use crate::{
 ///
 /// One leaf is one codeword position across every lane, so a leaf is `2^log_lanes` scalars.
 ///
-/// The codeword is allocated globally rather than from an arena.
-/// A level's codeword outlives the call that builds it, and nothing here is on a hot path yet.
+/// The encode writes every word of the codeword, so a recycled block leaks nothing it held.
 ///
 /// ## Preconditions
 ///
 /// * `message` has `level.log_msg_len()` variables.
 /// * `ntt`'s domain covers the level's codeword domain.
-pub(crate) fn commit_level<F, P, NTT, Channel>(
+pub(crate) fn commit_level<F, P, NTT, A, Channel>(
 	level: &WHIRLevel,
 	ntt: &NTT,
 	message: FieldSlice<'_, P>,
+	alloc: &A,
 	channel: &mut Channel,
-) -> BrakedownOracleProver<P, Channel::Commitment>
+) -> BrakedownOracleProver<P, Channel::Commitment, A::Vec<P>>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
+	A: Allocator,
 	Channel: MerkleIPProverChannel<F>,
 {
 	assert_eq!(
@@ -90,7 +91,7 @@ where
 		log_lanes = level.log_lanes,
 		log_inv_rate = level.log_inv_rate
 	)
-	.in_scope(|| code.encode_batch(ntt, message, level.log_lanes, &GlobalAllocator));
+	.in_scope(|| code.encode_batch(ntt, message, level.log_lanes, alloc));
 	let commitment = tracing::debug_span!("Merkle commit level")
 		.in_scope(|| channel.send_merkle_commitment(codeword.as_view(), 1 << level.log_lanes));
 
@@ -101,20 +102,25 @@ where
 ///
 /// Holds the ladder's shape, the transform its levels encode over, and level 0's oracles.
 /// Deeper levels only exist once the folds above them have run, so [`Self::prove`] commits those.
-pub struct WHIRProver<'a, P: PackedField, C, NTT> {
+pub struct WHIRProver<'a, P, C, NTT, Data = Vec<P>>
+where
+	P: PackedField,
+	Data: Deref<Target = [P]>,
+{
 	/// The ladder's shape, one [`WHIRLevel`] per committed level.
 	params: &'a WHIRParams,
 	/// The transform every level encodes over, sized for the largest of them.
 	ntt: &'a NTT,
 	/// Level 0's committed interleaved codewords, in the order their openings are written.
-	oracles: BatchBrakedownOracleProver<P, C>,
+	oracles: BatchBrakedownOracleProver<P, C, Data>,
 }
 
-impl<'a, F, P, C, NTT> WHIRProver<'a, P, C, NTT>
+impl<'a, F, P, C, NTT, Data> WHIRProver<'a, P, C, NTT, Data>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
+	Data: Deref<Target = [P]>,
 {
 	/// Encodes and commits level 0, sending its Merkle root.
 	///
@@ -127,17 +133,19 @@ where
 	///
 	/// * `message` has `params.log_msg_len()` variables.
 	/// * `ntt`'s domain covers every level's codeword domain.
-	pub fn commit<Channel>(
+	pub fn commit<A, Channel>(
 		params: &'a WHIRParams,
 		ntt: &'a NTT,
 		message: FieldSlice<'_, P>,
+		alloc: &A,
 		channel: &mut Channel,
 	) -> Self
 	where
+		A: Allocator<Vec<P> = Data>,
 		Channel: MerkleIPProverChannel<F, Commitment = C>,
 	{
 		let level = &params.levels()[0];
-		let oracle = commit_level(level, ntt, message, channel);
+		let oracle = commit_level(level, ntt, message, alloc, channel);
 		Self::new(params, ntt, BatchBrakedownOracleProver::new(vec![oracle]))
 	}
 
@@ -152,7 +160,7 @@ where
 	pub const fn new(
 		params: &'a WHIRParams,
 		ntt: &'a NTT,
-		oracles: BatchBrakedownOracleProver<P, C>,
+		oracles: BatchBrakedownOracleProver<P, C, Data>,
 	) -> Self {
 		Self {
 			params,
@@ -211,7 +219,7 @@ where
 		let mut weight: Option<FieldVec<P, A>> = None;
 		let mut sum = eval_claim;
 		// Level 0's oracle lives in `self`; every deeper level's is built in this loop.
-		let mut deeper: Option<BrakedownOracleProver<P, C>> = None;
+		let mut deeper: Option<BrakedownOracleProver<P, C, A::Vec<P>>> = None;
 
 		for (i, level) in levels.iter().enumerate() {
 			let n_vars = level.log_msg_len();
@@ -265,7 +273,7 @@ where
 			// Whatever this level folded to is bound here, before a query position exists.
 			let next = match levels.get(i + 1) {
 				Some(next_level) => {
-					Some(commit_level(next_level, self.ntt, current.as_view(), channel))
+					Some(commit_level(next_level, self.ntt, current.as_view(), alloc, channel))
 				}
 				None => {
 					let _residual_guard = tracing::debug_span!("Send residual").entered();
@@ -333,8 +341,10 @@ mod tests {
 		cell::Cell,
 		iter::{Product, Sum},
 		ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+		ptr,
 	};
 
+	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_field::{
 		ExtensionField, Field, Ghash128b as B128, Random,
 		arithmetic_traits::{InvertOrZero, Square},
@@ -402,11 +412,12 @@ mod tests {
 	///
 	/// Returns the finished transcript alongside the point and claim it opens at.
 	/// A verifier can then be pointed at it through whichever channel a test wants to watch.
-	fn write_proof(
+	fn write_proof<A: Allocator>(
 		params: &WHIRParams,
 		committed: &FieldBuffer<B128>,
 		opened: &FieldBuffer<B128>,
 		claim_offset: B128,
+		alloc: &A,
 	) -> (Vec<u8>, Vec<B128>, B128) {
 		let n_vars = params.log_msg_len();
 		let mut rng = StdRng::seed_from_u64(n_vars as u64);
@@ -425,8 +436,8 @@ mod tests {
 			ProverMerkleTranscriptChannel::<_, StdChallenger, B128, StdHashSuite>::new(
 				&mut transcript,
 			);
-		let prover = WHIRProver::commit(params, &ntt, committed.as_view(), &mut channel);
-		prover.prove(opened.as_view(), &eval_point, eval_claim, &GlobalAllocator, &mut channel);
+		let prover = WHIRProver::commit(params, &ntt, committed.as_view(), alloc, &mut channel);
+		prover.prove(opened.as_view(), &eval_point, eval_claim, alloc, &mut channel);
 		channel.into_transcript();
 
 		(transcript.finalize(), eval_point, eval_claim)
@@ -470,7 +481,8 @@ mod tests {
 		opened: &FieldBuffer<B128>,
 		claim_offset: B128,
 	) -> Result<usize, Error> {
-		let (proof, eval_point, eval_claim) = write_proof(params, committed, opened, claim_offset);
+		let (proof, eval_point, eval_claim) =
+			write_proof(params, committed, opened, claim_offset, &GlobalAllocator);
 		verify_proof(params, proof, &eval_point, eval_claim)
 	}
 
@@ -483,7 +495,8 @@ mod tests {
 		verifier_params: &WHIRParams,
 	) -> Result<usize, Error> {
 		let msg = message(prover_params, 0);
-		let (proof, eval_point, eval_claim) = write_proof(prover_params, &msg, &msg, B128::ZERO);
+		let (proof, eval_point, eval_claim) =
+			write_proof(prover_params, &msg, &msg, B128::ZERO, &GlobalAllocator);
 		verify_proof(verifier_params, proof, &eval_point, eval_claim)
 	}
 
@@ -518,6 +531,31 @@ mod tests {
 			run(&params, &msg, &msg, B128::ZERO)
 				.unwrap_or_else(|err| panic!("{log_msg_cols} {lanes:?}: {err}"));
 		}
+	}
+
+	#[test]
+	fn a_recycled_block_writes_the_same_proof_as_a_fresh_one() {
+		let params = ladder(6, &[2, 2, 2], 5);
+		let msg = message(&params, 0);
+
+		// A pool hands out whatever a freed block last held.
+		// Filling one block per size with a marker leaves every later allocation starting dirty.
+		let log_codeword_len = params.max_log_codeword_len();
+		let pool = BufferPool::new();
+		let mut released = ptr::null();
+		for log_len in 0..=log_codeword_len {
+			let mut dirt = FieldBuffer::<B128, _>::zeros_in(&&pool, log_len);
+			dirt.as_mut().fill(B128::new(0xdead_beef));
+			released = dirt.as_ref().as_ptr();
+		}
+		// Invariant: the fixture only bites while the pool hands the released block back in place.
+		let reused = FieldBuffer::<B128, _>::zeros_in(&&pool, log_codeword_len);
+		assert_eq!(reused.as_ref().as_ptr(), released);
+		drop(reused);
+
+		let (from_pool, ..) = write_proof(&params, &msg, &msg, B128::ZERO, &&pool);
+		let (from_global, ..) = write_proof(&params, &msg, &msg, B128::ZERO, &GlobalAllocator);
+		assert_eq!(from_pool, from_global);
 	}
 
 	/// A codeword that does not encode the message the prover reduced must be caught.
@@ -1182,7 +1220,8 @@ mod tests {
 	/// The prover runs first, under the shipped suite, so nothing it does reaches an instrument.
 	fn measure(params: &WHIRParams) -> Result<Measured, Error> {
 		let msg = message(params, 0);
-		let (proof, eval_point, eval_claim) = write_proof(params, &msg, &msg, B128::ZERO);
+		let (proof, eval_point, eval_claim) =
+			write_proof(params, &msg, &msg, B128::ZERO, &GlobalAllocator);
 
 		let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		let inner =

@@ -2,10 +2,10 @@
 
 //! That a pooled prover stops going to the global allocator for its large buffers.
 //!
-//! Covers the two buffers a BaseFold prover allocates per committed oracle: the Merkle tree's
-//! nodes, and the Reed-Solomon codeword.
+//! Covers the buffers a prover allocates per committed oracle: the Merkle tree's nodes, the
+//! BaseFold codeword, and the WHIR ladder's level-0 codeword.
 //!
-//! Wall-clock is the wrong instrument for either: the saving is a handful of large allocations
+//! Wall-clock is the wrong instrument for any of them: the saving is a handful of large allocations
 //! against work dominated by hashing and NTTs, well inside the run-to-run spread of a loaded
 //! machine. The count of large global allocations is the same fact measured exactly, and it does
 //! not depend on how busy the box is.
@@ -23,16 +23,24 @@ use std::{
 
 use binius_compute::{BufferPool, GlobalAllocator};
 use binius_field::{Ghash128b as B128, PackedBinaryGhash1x128b};
-use binius_hash::StdHashSuite;
-use binius_iop::{channel::OracleSpec, fri::FRIParams};
+use binius_hash::{StdDigest, StdHashSuite};
+use binius_iop::{
+	channel::OracleSpec,
+	fri::FRIParams,
+	soundness::SoundnessRegime,
+	whir::{WHIRLevel, WHIRParams},
+};
 use binius_iop_prover::{
 	fri,
+	merkle_channel::ProverMerkleTranscriptChannel,
 	merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver},
+	whir::WHIRProver,
 };
 use binius_math::{
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{random_field_buffer, random_scalars},
 };
+use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 use rand::{SeedableRng, rngs::StdRng};
 
 /// Allocations at or above this size are counted.
@@ -186,5 +194,70 @@ fn a_pooled_encode_stops_allocating_the_codeword_globally() {
 
 	println!(
 		"large allocations over {COMMITS} encodes: {global_allocs} global, {pooled_allocs} pooled"
+	);
+}
+
+#[test]
+fn a_pooled_whir_commit_stops_allocating_the_codeword_globally() {
+	// Invariant: a WHIR level's codeword is drawn from the allocator the caller hands the commit,
+	// so a repeat commitment against a warm pool asks the OS for nothing.
+	//
+	// Fixture state: one level of 2^16 columns at rate 2^1, committed four times per allocator.
+	// Both arms share one pooled Merkle prover, so the tree's nodes never reach the counter and
+	// the codeword is the only buffer that differs between them.
+	let _measuring = MEASURING
+		.lock()
+		.expect("no test in this binary panics while holding this");
+	let mut rng = StdRng::seed_from_u64(0);
+
+	let level = WHIRLevel {
+		log_msg_cols: LOG_DIM,
+		log_lanes: 0,
+		log_inv_rate: 1,
+		n_queries: 1,
+	};
+	let params = WHIRParams::new(vec![level], SoundnessRegime::default(), 32);
+	let ntt =
+		NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(params.max_log_codeword_len()));
+	let message = random_field_buffer::<PackedBinaryGhash1x128b>(&mut rng, params.log_msg_len());
+
+	let pool = BufferPool::new();
+	let mut transcript = ProverTranscript::new(HasherChallenger::<StdDigest>::default());
+	let merkle_prover = BinaryMerkleTreeProver::<B128, StdHashSuite, _>::with_allocator(&pool);
+	let mut channel = ProverMerkleTranscriptChannel::<_, HasherChallenger<StdDigest>, B128, _, _>::
+		with_merkle_prover(&mut transcript, merkle_prover);
+
+	// Warm both paths, so neither count includes one-off setup unrelated to the allocator.
+	drop(WHIRProver::commit(&params, &ntt, message.as_view(), &GlobalAllocator, &mut channel));
+	drop(WHIRProver::commit(&params, &ntt, message.as_view(), &&pool, &mut channel));
+
+	let global_allocs = count_large_allocs(|| {
+		for _ in 0..COMMITS {
+			drop(WHIRProver::commit(
+				&params,
+				&ntt,
+				message.as_view(),
+				&GlobalAllocator,
+				&mut channel,
+			));
+		}
+	});
+	let pooled_allocs = count_large_allocs(|| {
+		for _ in 0..COMMITS {
+			drop(WHIRProver::commit(&params, &ntt, message.as_view(), &&pool, &mut channel));
+		}
+	});
+
+	assert!(
+		global_allocs >= COMMITS,
+		"expected at least one large allocation per commit, got {global_allocs} for {COMMITS}"
+	);
+	assert!(
+		pooled_allocs < global_allocs,
+		"pooling must remove large allocations: {pooled_allocs} pooled against {global_allocs} global"
+	);
+
+	println!(
+		"large allocations over {COMMITS} WHIR commits: {global_allocs} global, {pooled_allocs} pooled"
 	);
 }
