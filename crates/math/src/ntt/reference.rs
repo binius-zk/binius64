@@ -75,6 +75,38 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastReference<DC> {
 		}
 	}
 
+	fn transpose_transform<P: PackedField<Scalar = Self::Field>>(
+		&self,
+		mut data: FieldSliceMut<'_, P>,
+		skip_early: usize,
+		skip_late: usize,
+	) {
+		let log_d = data.log_len();
+		input_check(&self.domain_context, log_d, skip_early, skip_late);
+
+		// Transposing a composition reverses it, so the layers run backwards and each keeps the
+		// twiddle it used going forward.
+		for layer in (skip_early..(log_d - skip_late)).rev() {
+			let num_blocks = 1 << layer;
+			let block_size_half = 1 << (log_d - layer - 1);
+			for block in 0..num_blocks {
+				let twiddle = self.domain_context.twiddle(layer, block);
+				let block_start = block << (log_d - layer);
+				for idx0 in block_start..(block_start + block_size_half) {
+					let idx1 = block_size_half | idx0;
+					// The transposed butterfly, which is the forward one with its two steps
+					// swapped: `u'' = u + v` and then `v'' = v + t * u''`.
+					let mut u = data.get(idx0);
+					let mut v = data.get(idx1);
+					u += v;
+					v += u * twiddle;
+					data.set(idx0, u);
+					data.set(idx1, v);
+				}
+			}
+		}
+	}
+
 	fn domain_context(&self) -> &impl DomainContext<Field = DC::Field> {
 		&self.domain_context
 	}
