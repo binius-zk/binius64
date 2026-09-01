@@ -30,7 +30,7 @@ use binius_utils::{
 	},
 };
 use itertools::izip;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
 use crate::{
 	basefold::prove_mlecheck_basefold,
@@ -122,13 +122,17 @@ where
 	/// parameters.
 	///
 	/// The FRI parameters should already account for ZK (log_batch_size = 1, doubled message
-	/// length). The `rng` is used to seed an internal `StdRng` for mask generation.
+	/// length).
+	///
+	/// The RNG seeds the channel's own generator, whose only output is the ZK masks.
+	/// A mask is what hides a committed witness at the positions the verifier opens.
+	/// Hiding is therefore only as strong as this RNG, so it must be a cryptographic one.
 	pub fn new(
 		channel: Channel,
 		ntt: &'a NTT,
 		oracle_specs: Vec<OracleSpec>,
 		fri_params: FRIParams<F>,
-		mut rng: impl Rng,
+		mut rng: impl CryptoRng,
 		alloc: A,
 	) -> Self {
 		Self {

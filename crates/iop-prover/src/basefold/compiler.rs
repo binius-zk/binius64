@@ -15,7 +15,7 @@ use binius_math::ntt::AdditiveNTT;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
 use digest::Output;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
 use crate::{
 	basefold::channel::BaseFoldProverChannel,
@@ -126,12 +126,15 @@ where
 	///
 	/// The returned channel drives all prover interaction through `channel`, committing and opening
 	/// oracles with this compiler's NTT, oracle specs, and combined FRI parameters. The caller
-	/// constructs the Merkle channel, so it decides how commitments are produced. The `rng` is used
-	/// to seed an internal `StdRng` for mask generation.
+	/// constructs the Merkle channel, so it decides how commitments are produced.
+	///
+	/// The RNG seeds the channel's own generator, whose only output is the ZK masks.
+	/// A mask is what hides a committed witness at the positions the verifier opens.
+	/// Hiding is therefore only as strong as this RNG, so it must be a cryptographic one.
 	pub fn create_channel<Channel, A>(
 		&self,
 		channel: Channel,
-		rng: impl Rng,
+		rng: impl CryptoRng,
 		alloc: A,
 	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel, A>
 	where
@@ -188,7 +191,7 @@ where
 	pub fn create_channel_from_transcript<H, Challenger_, T, A>(
 		&self,
 		transcript: T,
-		rng: impl Rng,
+		rng: impl CryptoRng,
 		alloc: A,
 	) -> TranscriptBaseFoldProverChannel<'_, F, P, NTT, T, Challenger_, H, A>
 	where
