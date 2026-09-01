@@ -55,6 +55,8 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	/// * `remaining_oracle_specs()` must be empty (all oracles committed).
 	/// * `oracle` must be a valid handle returned by `send_oracle()`.
 	/// * `transparent.log_len()` must match the oracle's message length.
+	/// * The claim must already be bound to the transcript, since the coefficient that batches the
+	///   queued relations is drawn only after the queue closes.
 	fn prove_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
