@@ -6,31 +6,29 @@ use std::{
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
-use crate::underlier::Underlier;
-
 /// Value that can be multiplied by itself
 pub trait Square {
 	/// Returns the value multiplied by itself
 	fn square(self) -> Self;
 }
 
-/// Scales a field element by `X`, the generator of its polynomial basis.
+/// Scales a value by `X`, the generator of the field's polynomial basis.
 ///
 /// A one-bit shift plus a masked exclusive or, not a field multiply.
-/// The scaling is `GF(2)`-linear, so it applies equally to an unreduced product.
+///
+/// The scaling is `GF(2)`-linear, so it commutes with the modular reduction.
+/// That is what lets one trait serve both a reduced element and an unreduced product:
+///
+/// ```text
+///     reduce(mul_x(wide)) == mul_x(reduce(wide))
+/// ```
+///
+/// Scaling an unreduced product folds the `X` of an irreducible polynomial into a reduction the
+/// caller is going to pay for anyway.
 pub trait MulX {
-	/// Returns the element scaled by `X`.
+	/// Returns the value scaled by `X`.
 	#[must_use]
 	fn mul_x(self) -> Self;
-}
-
-/// An underlier whose 128-bit lanes each hold a GHASH element that can be scaled by `X`.
-///
-/// The per-architecture dispatch point behind [`MulX`] for GHASH.
-pub trait GhashMulX: Underlier {
-	/// Returns the value with every 128-bit lane scaled by `X`.
-	#[must_use]
-	fn ghash_mul_x(self) -> Self;
 }
 
 /// A field type that supports widening (unreduced) multiplication.
@@ -58,18 +56,6 @@ pub trait WideMul: Sized {
 
 	fn wide_mul(a: Self, b: Self) -> Self::Output;
 	fn reduce(wide: Self::Output) -> Self;
-}
-
-/// An unreduced widening product (a [`WideMul::Output`]) that can be scaled by the field element
-/// `X` while still unreduced.
-///
-/// Scaling by `X` and the modular reduction are both `GF(2)`-linear, and they commute:
-/// `reduce(wide.mul_x_wide()) == reduce(wide).mul_x()`. Doing the scaling on the unreduced product
-/// lets an extension-field multiply fold the `X` of its irreducible polynomial into a product it is
-/// going to reduce anyway, saving a reduction over scaling the reduced coordinate.
-pub trait MulXWide {
-	/// Returns the unreduced product scaled by `X`.
-	fn mul_x_wide(self) -> Self;
 }
 
 /// Value that can be inverted
@@ -108,6 +94,23 @@ macro_rules! impl_square_with {
 }
 
 pub(crate) use impl_square_with;
+
+macro_rules! impl_mul_x_with {
+	($name:ident @ $($strategy:tt)*) => {
+		impl $crate::arithmetic_traits::MulX for $name {
+			#[inline]
+			fn mul_x(self) -> Self {
+				<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::peel(
+					$crate::arithmetic_traits::MulX::mul_x(
+						<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(self),
+					),
+				)
+			}
+		}
+	};
+}
+
+pub(crate) use impl_mul_x_with;
 
 macro_rules! impl_invert_with {
 	($name:ident @ $($strategy:tt)*) => {

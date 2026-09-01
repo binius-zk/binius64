@@ -13,9 +13,9 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-	Field, Rijndael8b,
+	Field, PackedGhash1x128b, Rijndael8b,
 	arch::M128,
-	arithmetic_traits::{GhashMulX, MulX},
+	arithmetic_traits::MulX,
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	field::ExtensionField,
 	underlier::{U1, UnderlierView},
@@ -73,7 +73,12 @@ impl Ghash128b {
 impl MulX for Ghash128b {
 	#[inline]
 	fn mul_x(self) -> Self {
-		Self::from_underlier(self.to_underlier().ghash_mul_x())
+		// The width-one packing is this field with one element, so it holds the same scaling.
+		Self::from_underlier(
+			PackedGhash1x128b::from_underlier(self.to_underlier())
+				.mul_x()
+				.to_underlier(),
+		)
 	}
 }
 

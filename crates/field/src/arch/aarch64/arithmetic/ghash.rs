@@ -20,7 +20,7 @@ use super::super::m128::M128;
 use crate::{
 	Ghash128b as GhashB128, WideMul,
 	arch::portable::arithmetic::ghash::POLY,
-	arithmetic_traits::{GhashMulX, MulXWide, Square},
+	arithmetic_traits::{MulX, Square},
 	packed_fields::primitive::PackedPrimitiveType,
 };
 
@@ -49,10 +49,15 @@ pub fn mul_x(x: M128) -> M128 {
 	}
 }
 
-impl GhashMulX for M128 {
+/// Scaling wrapper for the GHASH packing.
+#[repr(transparent)]
+#[derive(bytemuck::TransparentWrapper)]
+pub struct GhashMulX<T>(T);
+
+impl MulX for GhashMulX<PackedPrimitiveType<M128, GhashB128>> {
 	#[inline]
-	fn ghash_mul_x(self) -> Self {
-		mul_x(self)
+	fn mul_x(self) -> Self {
+		Self::wrap(PackedPrimitiveType::wrap(mul_x(PackedPrimitiveType::peel(Self::peel(self)))))
 	}
 }
 
@@ -175,7 +180,7 @@ impl WideGhashProduct {
 	}
 }
 
-impl MulXWide for WideGhashProduct {
+impl MulX for WideGhashProduct {
 	/// Shifts the represented 256-bit polynomial `lo + mid·X^64 + hi·X^128` left by one bit.
 	///
 	/// Each 64-bit lane shifts up by one; the bit leaving the top of a lane belongs 64 bit
@@ -187,7 +192,7 @@ impl MulXWide for WideGhashProduct {
 	/// XOR-accumulating such products preserves that. Bit 127 of `hi` is therefore clear, and the
 	/// bit the rotation wraps back into the low lane is zero.
 	#[inline]
-	fn mul_x_wide(self) -> Self {
+	fn mul_x(self) -> Self {
 		let (v0, v1, v2): (uint64x2_t, uint64x2_t, uint64x2_t) =
 			(self.lo.into(), self.mid.into(), self.hi.into());
 
@@ -287,7 +292,7 @@ impl WideMul for GhashClMulWideMul<PackedPrimitiveType<M128, GhashB128>> {
 mod tests {
 	use proptest::{prelude::any, proptest};
 
-	use super::{M128, MulXWide, WideGhashProduct};
+	use super::{M128, MulX, WideGhashProduct};
 
 	proptest! {
 		// Scaling by X commutes with the reduction: scaling the unreduced product matches
@@ -295,9 +300,9 @@ mod tests {
 		#[test]
 		fn mul_x_wide_commutes_with_reduce(a in any::<u128>(), b in any::<u128>()) {
 			let wide = WideGhashProduct::wide_mul(M128::from_u128(a), M128::from_u128(b));
-			let mul_x = WideGhashProduct::wide_mul(wide.reduce(), M128::from_u128(2)).reduce();
+			let scaled = WideGhashProduct::wide_mul(wide.reduce(), M128::from_u128(2)).reduce();
 
-			assert_eq!(wide.mul_x_wide().reduce(), mul_x);
+			assert_eq!(wide.mul_x().reduce(), scaled);
 		}
 	}
 }

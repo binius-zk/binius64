@@ -10,15 +10,12 @@
 //! Every lane operation below acts within a 128-bit lane, so one body serves both GHASH lanes.
 
 // Used by the `GhashWideMul2x` and `GhashSquare2x` fallbacks when VPCLMULQDQ is unavailable.
+use crate::arch::x86_64::{
+	arithmetic::ghash::{self, GhashLanes},
+	m256::M256,
+};
 #[cfg(not(target_feature = "vpclmulqdq"))]
 use crate::arch::{Divide, x86_64::m128::M128};
-use crate::{
-	arch::x86_64::{
-		arithmetic::ghash::{self, GhashLanes},
-		m256::M256,
-	},
-	arithmetic_traits::GhashMulX,
-};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
 /// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise divide into two `M128` lanes and
@@ -71,12 +68,9 @@ impl GhashLanes for M256 {
 	}
 }
 
-impl GhashMulX for M256 {
-	#[inline]
-	fn ghash_mul_x(self) -> Self {
-		ghash::mul_x(self)
-	}
-}
+/// Scaling wrapper for the `PackedGhash2x128b` packing: the vector sequence, which needs
+/// only AVX2.
+pub type GhashMulX2x<T> = ghash::GhashMulX<T>;
 
 #[cfg(target_feature = "vpclmulqdq")]
 impl ghash::ClMulUnderlier for M256 {

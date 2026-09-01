@@ -22,7 +22,6 @@ use rand::{
 use super::{U1, Underlier};
 use crate::{
 	Random,
-	arithmetic_traits::GhashMulX,
 	divisible::{Divisible, mapget},
 };
 
@@ -154,13 +153,6 @@ impl<U: Underlier + Pod, const N: usize> Underlier for ScaledUnderlier<U, N> {
 
 			(Self(a), Self(b))
 		}
-	}
-}
-
-impl<U: GhashMulX + Pod, const N: usize> GhashMulX for ScaledUnderlier<U, N> {
-	#[inline]
-	fn ghash_mul_x(self) -> Self {
-		Self(self.0.map(U::ghash_mul_x))
 	}
 }
 

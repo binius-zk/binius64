@@ -13,3 +13,6 @@ pub type GhashSquare4x<T> = Scaled<T>;
 
 /// Invert wrapper for the `PackedGhash4x128b` packing.
 pub type GhashInvert4x<T> = Scaled<T>;
+
+/// Scaling wrapper for the `PackedGhash4x128b` packing: the shared lane walk.
+pub type GhashMulX4x<T> = super::arithmetic::ghash::GhashMulX<T>;

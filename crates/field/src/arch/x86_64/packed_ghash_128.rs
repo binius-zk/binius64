@@ -10,10 +10,7 @@
 use super::m128::M128;
 #[cfg(not(target_feature = "pclmulqdq"))]
 use crate::arch::portable::univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64};
-use crate::{
-	arch::x86_64::arithmetic::ghash::{self, GhashLanes},
-	arithmetic_traits::GhashMulX,
-};
+use crate::arch::x86_64::arithmetic::ghash::{self, GhashLanes};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
 /// `GhashClMulWideMul` when PCLMULQDQ is available, otherwise the portable `GhashWideMul` which
@@ -94,12 +91,9 @@ impl GhashLanes for M128 {
 	}
 }
 
-impl GhashMulX for M128 {
-	#[inline]
-	fn ghash_mul_x(self) -> Self {
-		ghash::mul_x(self)
-	}
-}
+/// Scaling wrapper for the `PackedGhash1x128b` packing: the vector sequence, which needs
+/// only SSE2.
+pub type GhashMulX1x<T> = ghash::GhashMulX<T>;
 
 #[cfg(target_feature = "pclmulqdq")]
 impl ghash::ClMulUnderlier for M128 {

@@ -12,9 +12,10 @@ use bytemuck::TransparentWrapper;
 
 use super::super::univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64};
 use crate::{
-	Ghash128b as GhashB128, WideMul,
-	arithmetic_traits::{MulXWide, Square},
+	BinaryField, Divisible, Ghash128b as GhashB128, WideMul,
+	arithmetic_traits::{MulX, Square},
 	packed_fields::primitive::PackedPrimitiveType,
+	underlier::Underlier,
 };
 
 /// The reduction polynomial `X^128 + X^7 + X^2 + X + 1`, with its `X^128` term left implicit.
@@ -134,14 +135,14 @@ impl<U: Underlier128bLanes> WideGhashProduct<U> {
 	}
 }
 
-impl<U: Underlier128bLanes> MulXWide for WideGhashProduct<U> {
+impl<U: Underlier128bLanes> MulX for WideGhashProduct<U> {
 	/// Shifts the 256-bit schoolbook product left by one bit, carrying between the four 64-bit
 	/// limbs.
 	///
 	/// The product of two 128-bit polynomials has degree at most 254, and XOR-accumulating such
 	/// products preserves that, so the top bit of `v3` is always clear and nothing is shifted out.
 	#[inline]
-	fn mul_x_wide(self) -> Self {
+	fn mul_x(self) -> Self {
 		Self {
 			v0: self.v0.shl_64(1),
 			v1: self.v1.shl_64(1) ^ self.v0.shr_64(63),
@@ -237,6 +238,23 @@ impl<U: Underlier128bLanes> WideMul for GhashWideMul<PackedPrimitiveType<U, Ghas
 /// Shared by the portable and wasm32 packings and used by the x86_64 packing when CLMUL is
 /// unavailable. Squares via the bit-spread [`ghash_square`], which interleaves the input bits with
 /// zeroes and reduces — no carryless multiply required.
+/// Scaling wrapper for the GHASH packings with no vector shift for their width.
+///
+/// Walks the 128-bit lanes and applies the scalar shift to each, so it serves every width.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashMulX<T>(T);
+
+impl<U: Underlier + Divisible<u128>, F: BinaryField> MulX for GhashMulX<PackedPrimitiveType<U, F>> {
+	#[inline]
+	fn mul_x(self) -> Self {
+		let lanes = Divisible::<u128>::value_iter(PackedPrimitiveType::peel(Self::peel(self)))
+			.map(ghash_mul_x);
+
+		Self::wrap(PackedPrimitiveType::wrap(Divisible::<u128>::from_iter(lanes)))
+	}
+}
+
 #[repr(transparent)]
 #[derive(TransparentWrapper)]
 pub struct GhashSoftMul<T>(T);
@@ -254,7 +272,7 @@ impl<U: Underlier128bLanes> Square for GhashSoftMul<PackedPrimitiveType<U, Ghash
 mod tests {
 	use proptest::{prelude::any, proptest};
 
-	use super::{super::super::m128::M128, MulXWide, ghash_mul, ghash_wide_mul};
+	use super::{super::super::m128::M128, MulX, ghash_mul, ghash_wide_mul};
 
 	// Exercises the deferred wide-mul building blocks (`ghash_wide_mul` + `WideGhashProduct`) that
 	// `GhashWideMul` wraps, directly on the portable `M128`. This runs on every host, whereas the
@@ -286,7 +304,7 @@ mod tests {
 		fn mul_x_wide_commutes_with_reduce(a in any::<u128>(), b in any::<u128>()) {
 			let (a, b) = (M128::from(a), M128::from(b));
 			let wide = ghash_wide_mul(a, b);
-			assert_eq!(wide.mul_x_wide().reduce(), ghash_mul(wide.reduce(), M128::from(2u128)));
+			assert_eq!(wide.mul_x().reduce(), ghash_mul(wide.reduce(), M128::from(2u128)));
 		}
 	}
 }

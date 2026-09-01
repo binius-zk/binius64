@@ -4,21 +4,12 @@
 use crate::{
 	Ghash128b,
 	arch::{
-		GhashInvert1x, GhashInvert2x, GhashInvert4x, GhashSquare1x, GhashSquare2x, GhashSquare4x,
-		GhashWideMul1x, GhashWideMul2x, GhashWideMul4x, M128, M256, M512,
-		portable::packed_macros::*,
+		GhashInvert1x, GhashInvert2x, GhashInvert4x, GhashMulX1x, GhashMulX2x, GhashMulX4x,
+		GhashSquare1x, GhashSquare2x, GhashSquare4x, GhashWideMul1x, GhashWideMul2x,
+		GhashWideMul4x, M128, M256, M512, portable::packed_macros::*,
 	},
-	arithmetic_traits::{GhashMulX, MulX},
-	packed_fields::primitive::PackedPrimitiveType,
+	arithmetic_traits::impl_mul_x_with,
 };
-
-impl<U: GhashMulX> MulX for PackedPrimitiveType<U, Ghash128b> {
-	/// One vector sequence covers every lane, whatever the packing width.
-	#[inline]
-	fn mul_x(self) -> Self {
-		Self::from_underlier(self.to_underlier().ghash_mul_x())
-	}
-}
 
 define_packed_binary_field!(
 	PackedGhash1x128b,
@@ -47,13 +38,19 @@ define_packed_binary_field!(
 	(GhashWideMul4x)
 );
 
+// Scaling by `X` is not a multiply, so it wires through its own strategy rather than a slot of the
+// packing definition -- only the GHASH packings have one.
+impl_mul_x_with!(PackedGhash1x128b @ GhashMulX1x);
+impl_mul_x_with!(PackedGhash2x128b @ GhashMulX2x);
+impl_mul_x_with!(PackedGhash4x128b @ GhashMulX4x);
+
 #[cfg(test)]
 mod tests {
 	use proptest::{arbitrary::any, proptest};
 
 	use super::*;
 	use crate::{
-		Ghash128b, PackedField, packed_fields::test_utils::packed_field_tests,
+		Ghash128b, MulX, PackedField, packed_fields::test_utils::packed_field_tests,
 		underlier::UnderlierView,
 	};
 

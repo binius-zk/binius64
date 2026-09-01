@@ -16,7 +16,7 @@ use bytemuck::TransparentWrapper;
 use crate::{
 	Divisible, Ghash128b as GhashB128, WideMul,
 	arch::portable::arithmetic::ghash::POLY,
-	arithmetic_traits::{MulXWide, Square},
+	arithmetic_traits::{MulX, Square},
 	packed_fields::primitive::PackedPrimitiveType,
 	underlier::Underlier,
 };
@@ -51,6 +51,20 @@ pub trait ClMulUnderlier: GhashLanes {
 	/// Performs CLMUL operation on two 64-bit values that are selected from 128-bit lanes
 	/// by the bytes of the IMM8 parameter.
 	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self;
+}
+
+/// Scaling wrapper for the GHASH packings whose width has a vector shift.
+///
+/// One implementation covers every register width, since the sequence needs no carry-less multiply.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashMulX<T>(T);
+
+impl<U: GhashLanes> MulX for GhashMulX<PackedPrimitiveType<U, GhashB128>> {
+	#[inline]
+	fn mul_x(self) -> Self {
+		Self::wrap(PackedPrimitiveType::wrap(mul_x(PackedPrimitiveType::peel(Self::peel(self)))))
+	}
 }
 
 /// Scales every 128-bit GHASH lane by `X`.
@@ -166,7 +180,7 @@ impl<U: ClMulUnderlier> WideGhashProduct<U> {
 	}
 }
 
-impl<U: ClMulUnderlier> MulXWide for WideGhashProduct<U> {
+impl<U: ClMulUnderlier> MulX for WideGhashProduct<U> {
 	/// Shifts the represented 256-bit polynomial `lo + mid·X^64 + hi·X^128` left by one bit.
 	///
 	/// Each 64-bit lane shifts up by one; the bit leaving the top of a lane belongs 64 bit
@@ -178,7 +192,7 @@ impl<U: ClMulUnderlier> MulXWide for WideGhashProduct<U> {
 	/// XOR-accumulating such products preserves that. Bit 127 of `hi` is therefore clear and
 	/// nothing is shifted out of the top.
 	#[inline]
-	fn mul_x_wide(self) -> Self {
+	fn mul_x(self) -> Self {
 		let (shl_lo, shl_mid, shl_hi) =
 			(U::shl_1_epi64(self.lo), U::shl_1_epi64(self.mid), U::shl_1_epi64(self.hi));
 		let (carry_lo, carry_mid, carry_hi) =
@@ -271,7 +285,7 @@ mod tests {
 	use crate::{
 		Divisible, Random, WideMul,
 		arch::{OptimalPackedB128, portable::arithmetic::ghash::ghash_mul_x},
-		arithmetic_traits::MulXWide,
+		arithmetic_traits::MulX,
 	};
 
 	/// Scaling by X commutes with the reduction: scaling the unreduced product matches multiplying
@@ -284,13 +298,13 @@ mod tests {
 			let wide = WideGhashProduct::wide_mul(U::random(&mut rng), U::random(&mut rng));
 
 			assert_eq!(
-				wide.mul_x_wide().reduce(),
+				wide.mul_x().reduce(),
 				WideGhashProduct::wide_mul(wide.reduce(), x).reduce()
 			);
 		}
 	}
 
-	// Covers every CLMUL underlier width the target supports, since the `MulXWide` impl is shared
+	// Covers every CLMUL underlier width the target supports, since the scaling impl is shared
 	// but its per-lane shift is not.
 	#[cfg(target_feature = "pclmulqdq")]
 	#[test]

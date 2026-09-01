@@ -10,13 +10,10 @@
 //! Every lane operation below acts within a 128-bit lane, so one body serves all four GHASH lanes.
 
 use super::m512::M512;
+use crate::arch::x86_64::arithmetic::ghash::{self, GhashLanes};
 // Used by the `GhashWideMul4x` and `GhashSquare4x` fallbacks when VPCLMULQDQ is unavailable.
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 use crate::arch::{Divide, x86_64::m128::M128};
-use crate::{
-	arch::x86_64::arithmetic::ghash::{self, GhashLanes},
-	arithmetic_traits::GhashMulX,
-};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
 /// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when VPCLMULQDQ + AVX-512 are available,
@@ -76,12 +73,9 @@ impl GhashLanes for M512 {
 	}
 }
 
-impl GhashMulX for M512 {
-	#[inline]
-	fn ghash_mul_x(self) -> Self {
-		ghash::mul_x(self)
-	}
-}
+/// Scaling wrapper for the `PackedGhash4x128b` packing: the vector sequence, which needs
+/// only AVX-512F.
+pub type GhashMulX4x<T> = ghash::GhashMulX<T>;
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 impl ghash::ClMulUnderlier for M512 {

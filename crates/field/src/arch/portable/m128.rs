@@ -16,8 +16,6 @@ use rand::{
 
 use crate::{
 	BinaryField,
-	arch::portable::arithmetic::ghash::ghash_mul_x,
-	arithmetic_traits::GhashMulX,
 	divisible::{Divisible, impl_divisible_memcast, impl_divisible_self},
 	packed_fields::primitive::PackedPrimitiveType,
 	underlier::{SmallU, Underlier, impl_divisible_bitmask},
@@ -212,14 +210,6 @@ impl Underlier for M128 {
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		let (a, b) = self.0.interleave(other.0, log_block_len);
 		(Self(a), Self(b))
-	}
-}
-
-impl GhashMulX for M128 {
-	/// The single lane is a `u128`, so this is the scalar reference itself.
-	#[inline]
-	fn ghash_mul_x(self) -> Self {
-		Self(ghash_mul_x(self.0))
 	}
 }
 
