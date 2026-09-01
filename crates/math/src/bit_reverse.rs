@@ -400,9 +400,7 @@ fn bit_reverse_groups<T, const LOG_GROUP: usize>(buffer: &mut [T]) {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{
-		Field, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-	};
+	use binius_field::{Field, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b};
 	use proptest::prelude::*;
 	use rand::{RngExt, SeedableRng, rngs::StdRng};
 
@@ -418,9 +416,9 @@ mod tests {
 	//     1 scalar  (16 B) -> tile widens to a cache line, sub-block transpose is empty
 	//     2 scalars (32 B) -> keeps its own width, tile is one sub-block
 	//     4 scalars (64 B) -> keeps its own width, tile is one sub-block
-	type P1 = PackedBinaryGhash1x128b;
-	type P2 = PackedBinaryGhash2x128b;
-	type P4 = PackedBinaryGhash4x128b;
+	type P1 = PackedGhash1x128b;
+	type P2 = PackedGhash2x128b;
+	type P4 = PackedGhash4x128b;
 
 	fn check_equivalence<P: PackedField>(log_d: usize, seed: u64) {
 		// Two copies of one random buffer, so each implementation permutes the same input.

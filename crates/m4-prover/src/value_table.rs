@@ -46,7 +46,7 @@ where
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_core::{Word, constraint_system::InoutSegment};
-	use binius_field::PackedBinaryGhash1x128b;
+	use binius_field::PackedGhash1x128b;
 	use binius_frontend::CircuitBuilder;
 	use rand::prelude::*;
 
@@ -101,7 +101,7 @@ mod tests {
 
 	#[test]
 	fn pack_lays_out_hidden_words_wire_major() {
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		// A circuit deriving a few words from two inout inputs, so the table carries several rows.
 		let builder = CircuitBuilder::new();

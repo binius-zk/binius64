@@ -8,13 +8,13 @@
 //!
 //! The field is backed by [`M256`], with the low 128 bits holding the coefficient of `1` (`a`) and
 //! the high 128 bits holding the coefficient of `Y` (`b`). This is the same layout as
-//! [`PackedBinaryGhash2x128b`](crate::PackedBinaryGhash2x128b) (two GHASH lanes in an `M256`) and
+//! [`PackedGhash2x128b`](crate::PackedGhash2x128b) (two GHASH lanes in an `M256`) and
 //! matches the `{1, Y}` basis used by the `ExtensionField<Ghash128b>` implementation.
 //!
 //! Reducing with `Y² = X·Y + X` multiplies by `X` (a left shift) rather than by `X⁻¹`, and the
 //! multiply-by-`X` folds into the reduction. Multiplication batches the two GHASH products that
 //! share the AVX2 256-bit CLMUL into a single
-//! [`PackedBinaryGhash2x128b`](crate::PackedBinaryGhash2x128b) multiply (the `mul_m256i_hybrid`
+//! [`PackedGhash2x128b`](crate::PackedGhash2x128b) multiply (the `mul_m256i_hybrid`
 //! algorithm).
 
 use std::{
@@ -39,7 +39,7 @@ use crate::{
 //
 // The field's `Mul`/`Square`/`InvertOrZero`/`WideMul` are the width-one packing's arithmetic,
 // derived by the `binary_field!` macro from [`PackedGhashSq1x256b`] (`PackedPrimitiveType<M256,
-// GhashSq256b>`), whose implementation lives in `packed_ghash_sq`.
+// GhashSq256b>`), whose implementation lives in `packed_fields::ghash_sq`.
 // Bit 248 is the lowest single-bit element of trace 1; bit 254 is the only other one. Bit 248 sits
 // at position 120 of the high word.
 binary_field!(pub GhashSq256b(M256), m256_from_u128s(0, 1), m256_from_u128s(0, 1 << 120));
@@ -48,7 +48,7 @@ unsafe impl Pod for GhashSq256b {}
 
 // Degree-two extension over GHASH: the low 128 bits are the coefficient of `1`, the high 128 bits
 // the coefficient of `Y`. `square_transpose` uses the packed fast path via
-// `PackedBinaryGhash2x128b`.
+// `PackedGhash2x128b`.
 impl_field_extension!(Ghash128b(M128) < @1 => GhashSq256b(M256));
 
 // Extension over GF(2): the 256 underlier bits are the coordinates in the `BinaryField1b` basis.
@@ -61,7 +61,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		Divisible, PackedBinaryGhash2x128b, PackedField,
+		Divisible, PackedField, PackedGhash2x128b,
 		arithmetic_traits::{InvertOrZero, Square, WideMul},
 	};
 
@@ -69,17 +69,17 @@ mod tests {
 		/// Splits the element into its `(a, b)` coefficients over GHASH, where `self = a + b·Y`.
 		#[inline]
 		fn to_coeffs(self) -> [Ghash128b; 2] {
-			// `GhashSq256b` and `PackedBinaryGhash2x128b` share the `M256` underlier and lane
+			// `GhashSq256b` and `PackedGhash2x128b` share the `M256` underlier and lane
 			// layout (low lane = coefficient of `1`, high lane = coefficient of `Y`), so this
 			// reinterprets.
-			let packed = PackedBinaryGhash2x128b::from_underlier(self.0);
+			let packed = PackedGhash2x128b::from_underlier(self.0);
 			[packed.get(0), packed.get(1)]
 		}
 
 		/// Builds an element from its `(a, b)` coefficients over GHASH, so that `self = a + b·Y`.
 		#[inline]
 		fn from_coeffs(coeffs: [Ghash128b; 2]) -> Self {
-			Self(PackedBinaryGhash2x128b::from_scalars(coeffs).to_underlier())
+			Self(PackedGhash2x128b::from_scalars(coeffs).to_underlier())
 		}
 	}
 

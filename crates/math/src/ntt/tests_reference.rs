@@ -3,8 +3,7 @@
 //! implementation.
 
 use binius_field::{
-	BinaryField, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-	PackedField,
+	BinaryField, PackedField, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b,
 };
 use rand::prelude::*;
 
@@ -219,9 +218,9 @@ where
 
 #[test]
 fn test_equivalence_ntts_domain_contexts_packings() {
-	test_equivalence_ntts_domain_contexts::<PackedBinaryGhash1x128b>();
-	test_equivalence_ntts_domain_contexts::<PackedBinaryGhash2x128b>();
-	test_equivalence_ntts_domain_contexts::<PackedBinaryGhash4x128b>();
+	test_equivalence_ntts_domain_contexts::<PackedGhash1x128b>();
+	test_equivalence_ntts_domain_contexts::<PackedGhash2x128b>();
+	test_equivalence_ntts_domain_contexts::<PackedGhash4x128b>();
 }
 
 fn test_composition<P: PackedField>()

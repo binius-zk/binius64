@@ -18,7 +18,7 @@
 //!   packing divides into two width-one lanes.
 //!
 //! In both, the coordinate register is a [`PackedPrimitiveType`], so the multiply-by-`X` in the
-//! reduction is a per-lane bit shift ([`ghash_mul_x`]) rather than a full field multiply.
+//! reduction is a per-lane bit shift rather than a full field multiply.
 //!
 //! The width-one packing's widening multiply is architecture-specific — see [`GhashSqWideMul1x`],
 //! which selects between batching the Karatsuba diagonal into one 256-bit carry-less multiply and
@@ -32,7 +32,7 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	Divisible, Ghash128b, GhashSq256b, PackedBinaryGhash2x128b, PackedField, WideMul,
+	Divisible, Ghash128b, GhashSq256b, PackedField, PackedGhash2x128b, WideMul,
 	arch::{Divide, GhashSqWideMul1x, M128, M256, M512, portable::packed_macros::*},
 	arithmetic_traits::{InvertOrZero, Square},
 	packed_extension,
@@ -240,7 +240,7 @@ pub(crate) fn ghash_sq_coords(elem: PackedGhashSq1x256b) -> [Ghash128b; 2] {
 /// Assembles a width-one GHASH² element `a + b·Y` from its GHASH coordinates `[a, b]`.
 #[inline]
 pub(crate) fn ghash_sq_from_coords(coords: [Ghash128b; 2]) -> PackedGhashSq1x256b {
-	packed_extension::cast_ext::<Ghash128b, _>(PackedBinaryGhash2x128b::from_scalars(coords))
+	packed_extension::cast_ext::<Ghash128b, _>(PackedGhash2x128b::from_scalars(coords))
 }
 
 /// [`Square`] strategy for [`PackedGhashSq1x256b`].

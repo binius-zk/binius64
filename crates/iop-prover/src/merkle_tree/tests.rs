@@ -4,9 +4,7 @@
 use core::slice;
 
 use binius_compute::BufferPool;
-use binius_field::{
-	Ghash128b as B128, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-};
+use binius_field::{Ghash128b as B128, PackedField, PackedGhash2x128b, PackedGhash4x128b};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::merkle_tree::MerkleTreeScheme;
 use binius_math::{FieldBuffer, test_utils::random_scalars};
@@ -152,8 +150,8 @@ fn check_commit_field_buffer_matches_commit<P: PackedField<Scalar = B128>>() {
 #[test]
 fn test_commit_field_buffer_matches_commit() {
 	// Two packing widths, so a leaf of 2 scalars lands on either side of a word boundary.
-	check_commit_field_buffer_matches_commit::<PackedBinaryGhash2x128b>();
-	check_commit_field_buffer_matches_commit::<PackedBinaryGhash4x128b>();
+	check_commit_field_buffer_matches_commit::<PackedGhash2x128b>();
+	check_commit_field_buffer_matches_commit::<PackedGhash4x128b>();
 }
 
 #[test]
@@ -166,9 +164,8 @@ fn test_commit_field_buffer_rejects_oversized_leaf() {
 	//
 	// A leaf wider than the buffer would need half a leaf to hold it.
 	// No leaf count fits, so the split is rejected up front.
-	let buffer = FieldBuffer::<PackedBinaryGhash4x128b, _>::from_values(&random_scalars::<B128>(
-		&mut rng, 4,
-	));
+	let buffer =
+		FieldBuffer::<PackedGhash4x128b, _>::from_values(&random_scalars::<B128>(&mut rng, 4));
 	let _ = prover.commit_field_buffer(buffer.as_view(), 3);
 }
 

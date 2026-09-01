@@ -29,7 +29,7 @@ pub type GhashSquare2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMul<T
 #[cfg(not(target_feature = "vpclmulqdq"))]
 pub type GhashSquare2x<T> = Divide<M128, T, 2>;
 
-/// Invert wrapper for the `PackedBinaryGhash2x128b` packing: the shared Itoh-Tsujii inversion
+/// Invert wrapper for the `PackedGhash2x128b` packing: the shared Itoh-Tsujii inversion
 /// applied across the full 256-bit vector.
 pub type GhashInvert2x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
 

@@ -217,7 +217,7 @@ mod tests {
 	use binius_core::{
 		ValueTable, constraint_system::m4::ConstraintSystemM4, error::VerificationM4Error,
 	};
-	use binius_field::PackedBinaryGhash1x128b;
+	use binius_field::PackedGhash1x128b;
 	use binius_hash::StdHashSuite;
 	use binius_transcript::VerifierTranscript;
 	use binius_verifier::config::StdChallenger;
@@ -225,7 +225,7 @@ mod tests {
 	use super::*;
 	use crate::test_utils::{Crc64ChipCircuit, crc64_chip_circuit, crc64_iso_reference};
 
-	type P = PackedBinaryGhash1x128b;
+	type P = PackedGhash1x128b;
 
 	/// The rate every test proves at.
 	const LOG_INV_RATE: usize = 1;

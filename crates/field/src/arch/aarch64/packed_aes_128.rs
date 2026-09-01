@@ -17,10 +17,10 @@ use crate::{
 /// Widening-multiply wrapper used by the AES packing: the `vmull_p8`-backed `VmullWideMul`.
 pub type AesWideMul16x<T> = VmullWideMul<T>;
 
-/// Square wrapper for the `PackedAESBinaryField16x8b` packing.
+/// Square wrapper for the `PackedRijndael16x8b` packing.
 pub type AesSquare16x<T> = NeonTableLookupArithmetic<T>;
 
-/// Invert wrapper for the `PackedAESBinaryField16x8b` packing.
+/// Invert wrapper for the `PackedRijndael16x8b` packing.
 pub type AesInvert16x<T> = NeonTableLookupArithmetic<T>;
 
 /// Square and invert strategy wrapper for aarch64 AES, backed by `vqtbl` table lookups over the
@@ -52,11 +52,11 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_square_equals_self_mul_self(a_val in any::<u128>()) {
-			let a = crate::PackedAESBinaryField16x8b::from_underlier(a_val.into());
+			let a = crate::PackedRijndael16x8b::from_underlier(a_val.into());
 
 			let squared = Square::square(a);
 
-			for i in 0..crate::PackedAESBinaryField16x8b::WIDTH {
+			for i in 0..crate::PackedRijndael16x8b::WIDTH {
 				assert_eq!(squared.get(i), a.get(i) * a.get(i));
 			}
 		}

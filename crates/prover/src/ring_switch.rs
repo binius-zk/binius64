@@ -391,8 +391,8 @@ pub fn prove_public_eval<A, P, Channel>(
 mod test {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		ExtensionField, Field, Ghash128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-		PackedField, PackedSubfield, packed_extension,
+		ExtensionField, Field, Ghash128b, PackedField, PackedGhash2x128b, PackedGhash4x128b,
+		PackedSubfield, packed_extension,
 	};
 	use binius_math::{
 		FieldBuffer,
@@ -461,8 +461,8 @@ mod test {
 		for (i, log_len) in [0, 1, 2, 6, 7, 8].into_iter().enumerate() {
 			let seed = i as u64;
 			check_split_fold_matches_definition::<F>(log_len, seed);
-			check_split_fold_matches_definition::<PackedBinaryGhash2x128b>(log_len, seed);
-			check_split_fold_matches_definition::<PackedBinaryGhash4x128b>(log_len, seed);
+			check_split_fold_matches_definition::<PackedGhash2x128b>(log_len, seed);
+			check_split_fold_matches_definition::<PackedGhash4x128b>(log_len, seed);
 		}
 	}
 
@@ -510,8 +510,8 @@ mod test {
 		for (i, log_len) in [0, 1, 2, 6, 7, 8].into_iter().enumerate() {
 			let seed = i as u64;
 			check_rs_eq_ind_from_factors::<F>(log_len, seed);
-			check_rs_eq_ind_from_factors::<PackedBinaryGhash2x128b>(log_len, seed);
-			check_rs_eq_ind_from_factors::<PackedBinaryGhash4x128b>(log_len, seed);
+			check_rs_eq_ind_from_factors::<PackedGhash2x128b>(log_len, seed);
+			check_rs_eq_ind_from_factors::<PackedGhash4x128b>(log_len, seed);
 		}
 	}
 
@@ -559,7 +559,7 @@ mod test {
 	fn test_row_fold_composes_into_the_claim() {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		type P = PackedBinaryGhash2x128b;
+		type P = PackedGhash2x128b;
 
 		// The prover's row fold and the verifier's partial evaluation compose into the claim:
 		//

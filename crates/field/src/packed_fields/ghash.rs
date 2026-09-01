@@ -11,7 +11,7 @@ use crate::{
 };
 
 define_packed_binary_field!(
-	PackedBinaryGhash1x128b,
+	PackedGhash1x128b,
 	Ghash128b,
 	M128,
 	(GhashSquare1x),
@@ -20,7 +20,7 @@ define_packed_binary_field!(
 );
 
 define_packed_binary_field!(
-	PackedBinaryGhash2x128b,
+	PackedGhash2x128b,
 	Ghash128b,
 	M256,
 	(GhashSquare2x),
@@ -29,7 +29,7 @@ define_packed_binary_field!(
 );
 
 define_packed_binary_field!(
-	PackedBinaryGhash4x128b,
+	PackedGhash4x128b,
 	Ghash128b,
 	M512,
 	(GhashSquare4x),
@@ -62,22 +62,22 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_get_set_256(a in any::<[u128; 2]>(), b in any::<[u128; 2]>()) {
-			check_get_set::<2, PackedBinaryGhash2x128b>(a, b);
+			check_get_set::<2, PackedGhash2x128b>(a, b);
 		}
 
 		#[test]
 		fn test_get_set_512(a in any::<[u128; 4]>(), b in any::<[u128; 4]>()) {
-			check_get_set::<4, PackedBinaryGhash4x128b>(a, b);
+			check_get_set::<4, PackedGhash4x128b>(a, b);
 		}
 	}
 
-	packed_field_tests!(ghash_1x128b, PackedBinaryGhash1x128b);
-	packed_field_tests!(ghash_2x128b, PackedBinaryGhash2x128b);
-	packed_field_tests!(ghash_4x128b, PackedBinaryGhash4x128b);
+	packed_field_tests!(ghash_1x128b, PackedGhash1x128b);
+	packed_field_tests!(ghash_2x128b, PackedGhash2x128b);
+	packed_field_tests!(ghash_4x128b, PackedGhash4x128b);
 
 	#[test]
 	fn test_wide_mul_zero_inputs() {
-		use super::PackedBinaryGhash1x128b as P;
+		use super::PackedGhash1x128b as P;
 		use crate::{WideMul, field::FieldOps};
 
 		let zero = P::default();
@@ -96,7 +96,7 @@ mod tests {
 	fn test_wide_mul_single_accumulation() {
 		use rand::{SeedableRng, rngs::StdRng};
 
-		use super::PackedBinaryGhash1x128b as P;
+		use super::PackedGhash1x128b as P;
 		use crate::{Random, WideMul};
 
 		let mut rng = StdRng::seed_from_u64(77);

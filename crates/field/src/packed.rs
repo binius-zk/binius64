@@ -246,13 +246,13 @@ mod tests {
 	use rand::prelude::*;
 
 	use crate::{
-		BinaryField1b, Ghash128b, PackedAESBinaryField1x8b, PackedAESBinaryField16x8b,
-		PackedAESBinaryField32x8b, PackedAESBinaryField64x8b, PackedBinaryField1x1b,
-		PackedBinaryField2x1b, PackedBinaryField4x1b, PackedBinaryField8x1b,
-		PackedBinaryField16x1b, PackedBinaryField32x1b, PackedBinaryField64x1b,
-		PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
-		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-		Rijndael8b, SlicedGhashSq1x256b, SlicedGhashSq2x256b, SlicedGhashSq4x256b,
+		BinaryField1b, Ghash128b, PackedBinaryField1x1b, PackedBinaryField2x1b,
+		PackedBinaryField4x1b, PackedBinaryField8x1b, PackedBinaryField16x1b,
+		PackedBinaryField32x1b, PackedBinaryField64x1b, PackedBinaryField128x1b,
+		PackedBinaryField256x1b, PackedBinaryField512x1b, PackedField, PackedGhash1x128b,
+		PackedGhash2x128b, PackedGhash4x128b, PackedRijndael1x8b, PackedRijndael16x8b,
+		PackedRijndael32x8b, PackedRijndael64x8b, Rijndael8b, SlicedGhashSq1x256b,
+		SlicedGhashSq2x256b, SlicedGhashSq4x256b,
 	};
 
 	trait PackedFieldTest {
@@ -276,16 +276,16 @@ mod tests {
 
 		// AES
 		test.run::<Rijndael8b>();
-		test.run::<PackedAESBinaryField1x8b>();
-		test.run::<PackedAESBinaryField16x8b>();
-		test.run::<PackedAESBinaryField32x8b>();
-		test.run::<PackedAESBinaryField64x8b>();
+		test.run::<PackedRijndael1x8b>();
+		test.run::<PackedRijndael16x8b>();
+		test.run::<PackedRijndael32x8b>();
+		test.run::<PackedRijndael64x8b>();
 
 		// GHASH
 		test.run::<Ghash128b>();
-		test.run::<PackedBinaryGhash1x128b>();
-		test.run::<PackedBinaryGhash2x128b>();
-		test.run::<PackedBinaryGhash4x128b>();
+		test.run::<PackedGhash1x128b>();
+		test.run::<PackedGhash2x128b>();
+		test.run::<PackedGhash4x128b>();
 
 		// GHASH² in a sliced layout
 		test.run::<SlicedGhashSq1x256b>();

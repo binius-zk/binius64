@@ -141,7 +141,7 @@ impl<P: PackedField, Data: BufferData<P>> FactoredMultilinear<P, Data> {
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Ghash128b, PackedBinaryGhash1x128b, Random, arch::OptimalPackedB128};
+	use binius_field::{Ghash128b, PackedGhash1x128b, Random, arch::OptimalPackedB128};
 	use proptest::prelude::*;
 	use rand::{SeedableRng, prelude::StdRng};
 
@@ -186,7 +186,7 @@ mod tests {
 		//
 		// Keeping it in the list would leave a buffer a fold could never consume, and the variable
 		// count would then disagree with what folding can bind.
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 		let mut rng = StdRng::seed_from_u64(1);
 
 		let factors = random_factors::<P>(&mut rng, &[0, 2, 0]);
@@ -211,7 +211,7 @@ mod tests {
 		//                    low                 high
 		//
 		// Folding once must bind f2 away entirely, leaving three variables in two factors.
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 		let mut rng = StdRng::seed_from_u64(2);
 
 		let factors = random_factors::<P>(&mut rng, &[1, 2, 1]);
@@ -245,7 +245,7 @@ mod tests {
 		//     arena-backed -> the same value at each vertex
 		//
 		// Folding both and comparing at every step is what shows the storage is invisible.
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 		let mut rng = StdRng::seed_from_u64(23);
 		let alloc = GlobalAllocator;
 

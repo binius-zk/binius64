@@ -695,7 +695,7 @@ mod tests {
 
 	use assert_matches::assert_matches;
 	use binius_compute::GlobalAllocator;
-	use binius_field::PackedBinaryGhash1x128b;
+	use binius_field::PackedGhash1x128b;
 	use binius_frontend::CircuitBuilder;
 	use binius_hash::StdHashSuite;
 	use binius_iop::{
@@ -711,7 +711,7 @@ mod tests {
 	use super::*;
 	use crate::test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness};
 
-	type P = PackedBinaryGhash1x128b;
+	type P = PackedGhash1x128b;
 
 	// Builds a batch of `2^log_instances` CRC-64 instances with random input words.
 	fn setup_batch(log_instances: usize, seed: u64) -> (ConstraintSystem, ValueTable) {
@@ -1139,10 +1139,10 @@ mod tests {
 	// instance-axis multilinears, which the width-1 fixtures never reach.
 	#[test]
 	fn protocol_round_trips_with_mixed_constraints_and_wide_packing() {
-		use binius_field::PackedBinaryGhash2x128b;
+		use binius_field::PackedGhash2x128b;
 		use binius_frontend::Wire;
 
-		type WideP = PackedBinaryGhash2x128b;
+		type WideP = PackedGhash2x128b;
 
 		let builder = CircuitBuilder::new();
 		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
@@ -1260,9 +1260,9 @@ mod tests {
 	// instance-axis multilinears, which the width-1 fixtures never reach.
 	#[test]
 	fn protocol_round_trips_with_and_intmul_binmul_and_wide_packing() {
-		use binius_field::PackedBinaryGhash2x128b;
+		use binius_field::PackedGhash2x128b;
 		use binius_frontend::Wire;
-		type WideP = PackedBinaryGhash2x128b;
+		type WideP = PackedGhash2x128b;
 
 		let builder = CircuitBuilder::new();
 		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());

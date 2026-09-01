@@ -63,7 +63,7 @@ pub fn packed_aes_16x8b_square(x: M128) -> M128 {
 	}
 }
 
-/// The unreduced product of two [`PackedAESBinaryField16x8b`](PackedPrimitiveType) values: the 16
+/// The unreduced product of two [`PackedRijndael16x8b`](PackedPrimitiveType) values: the 16
 /// per-byte carryless products, split into their low bytes (`lo`, which need no reduction) and high
 /// bytes (`hi`, the overflow above `x^7` still to be folded down). Both the carryless multiply and
 /// the GF(2^8) reduction are linear, so products accumulate by XOR and reduce once at the end via

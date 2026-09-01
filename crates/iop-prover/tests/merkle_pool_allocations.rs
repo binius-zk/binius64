@@ -22,7 +22,7 @@ use std::{
 };
 
 use binius_compute::{BufferPool, GlobalAllocator};
-use binius_field::{Ghash128b as B128, PackedBinaryGhash1x128b};
+use binius_field::{Ghash128b as B128, PackedGhash1x128b};
 use binius_hash::StdHashSuite;
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_iop_prover::{
@@ -150,7 +150,7 @@ fn a_pooled_encode_stops_allocating_the_codeword_globally() {
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 	let (params, _) =
 		FRIParams::optimal_for_batch(merkle_prover.scheme(), &[OracleSpec::new_zk(LOG_DIM)], 1, 32);
-	let message = random_field_buffer::<PackedBinaryGhash1x128b>(&mut rng, LOG_DIM);
+	let message = random_field_buffer::<PackedGhash1x128b>(&mut rng, LOG_DIM);
 
 	// Warm both paths, so neither count includes one-off setup unrelated to the allocator.
 	let pool = BufferPool::new();

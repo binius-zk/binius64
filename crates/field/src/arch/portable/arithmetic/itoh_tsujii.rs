@@ -166,7 +166,7 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::{Field, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedField};
+	use crate::{Field, PackedField, PackedGhash1x128b, PackedGhash2x128b};
 
 	#[test]
 	fn test_compute_power_map_matrix_is_squaring() {
@@ -193,10 +193,10 @@ mod tests {
 
 	#[test]
 	fn test_invert_b128_known_values() {
-		let one = PackedBinaryGhash1x128b::broadcast(GhashB128::ONE);
+		let one = PackedGhash1x128b::broadcast(GhashB128::ONE);
 		assert_eq!(invert_b128(one), one);
 
-		let zero = PackedBinaryGhash1x128b::broadcast(GhashB128::ZERO);
+		let zero = PackedGhash1x128b::broadcast(GhashB128::ZERO);
 		assert_eq!(invert_b128(zero), zero);
 	}
 
@@ -218,20 +218,20 @@ mod tests {
 		#[test]
 		fn test_invert_b128_is_multiplicative_inverse_1x(raw in any::<u128>()) {
 			let scalar = GhashB128::from(raw);
-			let x = PackedBinaryGhash1x128b::broadcast(scalar);
+			let x = PackedGhash1x128b::broadcast(scalar);
 			let inv = invert_b128(x);
 			if scalar == GhashB128::ZERO {
 				prop_assert_eq!(inv, x);
 			} else {
-				prop_assert_eq!(x * inv, PackedBinaryGhash1x128b::broadcast(GhashB128::ONE));
+				prop_assert_eq!(x * inv, PackedGhash1x128b::broadcast(GhashB128::ONE));
 			}
 		}
 
 		#[test]
 		fn test_invert_b128_is_multiplicative_inverse_2x(a in any::<u128>(), b in any::<u128>()) {
-			let x = PackedBinaryGhash2x128b::from_scalars([a, b].map(GhashB128::from));
+			let x = PackedGhash2x128b::from_scalars([a, b].map(GhashB128::from));
 			let inv = invert_b128(x);
-			let ones = PackedBinaryGhash2x128b::from_scalars(
+			let ones = PackedGhash2x128b::from_scalars(
 				[a, b].map(|raw| {
 					if GhashB128::from(raw) == GhashB128::ZERO {
 						GhashB128::ZERO

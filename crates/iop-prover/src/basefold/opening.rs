@@ -110,7 +110,7 @@ pub fn prove_mlecheck_basefold<A, F, P, NTT, Channel, Data>(
 mod test {
 	use anyhow::Result;
 	use binius_compute::GlobalAllocator;
-	use binius_field::{BinaryField, PackedBinaryGhash1x128b, PackedField};
+	use binius_field::{BinaryField, PackedField, PackedGhash1x128b};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
 		basefold as verifier_basefold,
@@ -253,7 +253,7 @@ mod test {
 
 	#[test]
 	fn test_mlecheck_basefold_zk_valid_proof() {
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);
@@ -266,7 +266,7 @@ mod test {
 
 	#[test]
 	fn test_mlecheck_basefold_zk_invalid_proof() {
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);

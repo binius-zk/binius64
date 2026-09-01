@@ -597,7 +597,7 @@ mod tests {
 	use binius_core::constraint_system::{
 		AndConstraint, ConstraintSystem, InoutSegment, Shift, ShiftedValueIndex, ValueIndex,
 	};
-	use binius_field::{Field, Ghash128b, PackedBinaryGhash2x128b};
+	use binius_field::{Field, Ghash128b, PackedGhash2x128b};
 	use binius_math::{inner_product::inner_product_buffers, test_utils::random_scalars};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::config::StdChallenger;
@@ -869,7 +869,7 @@ mod tests {
 		// Both packing widths the prover is instantiated at: the m4 prover drives phase 1 with
 		// scalars, the single-instance prover with a packed field.
 		assert_sparse_matches_dense::<F>(&overlapping_shift_system(), 0);
-		assert_sparse_matches_dense::<PackedBinaryGhash2x128b>(&overlapping_shift_system(), 1);
+		assert_sparse_matches_dense::<PackedGhash2x128b>(&overlapping_shift_system(), 1);
 	}
 
 	/// A constraint system that constrains nothing names no shift, so `g` stores no row at all.
@@ -892,6 +892,6 @@ mod tests {
 		assert!(key_collection.public.dense_shift_enc.is_empty());
 		assert!(key_collection.hidden.dense_shift_enc.is_empty());
 
-		assert_sparse_matches_dense::<PackedBinaryGhash2x128b>(&cs, 2);
+		assert_sparse_matches_dense::<PackedGhash2x128b>(&cs, 2);
 	}
 }

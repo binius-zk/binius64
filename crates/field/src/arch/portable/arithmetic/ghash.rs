@@ -244,8 +244,8 @@ mod tests {
 
 	// Exercises the deferred wide-mul building blocks (`ghash_wide_mul` + `WideGhashProduct`) that
 	// `GhashWideMul` wraps, directly on the portable `M128`. This runs on every host, whereas the
-	// portable `PackedBinaryGhash1x128b` is only a usable `PackedField` on targets where it is the
-	// re-exported b128 type (covered there by the proptests in `packed_ghash.rs`).
+	// portable `PackedGhash1x128b` is only a usable `PackedField` on targets where it is the
+	// re-exported b128 type (covered there by the proptests in `packed_fields::ghash`).
 	proptest! {
 		// The split must agree with the fused multiply: wide-multiply then reduce == ghash_mul.
 		#[test]

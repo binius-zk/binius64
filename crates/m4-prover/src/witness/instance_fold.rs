@@ -161,7 +161,7 @@ mod tests {
 	use std::iter;
 
 	use binius_compute::GlobalAllocator;
-	use binius_field::PackedBinaryGhash1x128b;
+	use binius_field::PackedGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use binius_math::{
 		multilinear::{
@@ -263,7 +263,7 @@ mod tests {
 
 	#[test]
 	fn fold_instances_commutes_with_evaluation() {
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		// Invariant: the order of the two folds does not matter.
 		// Both routes compute one triple sum, associated differently:
@@ -368,7 +368,7 @@ mod tests {
 
 			// The packed contraction, evaluated at the word point, against the scalar reference.
 			let packed =
-				folded.fold_bits::<PackedBinaryGhash1x128b>(r_j_tensor.as_ref(), &GlobalAllocator);
+				folded.fold_bits::<PackedGhash1x128b>(r_j_tensor.as_ref(), &GlobalAllocator);
 			assert_eq!(
 				evaluate(&packed, &r_y),
 				folded.evaluate(&r_j, &r_y),
@@ -394,6 +394,6 @@ mod tests {
 		//
 		// The contraction pairs the two sides, so the width check must reject this up front.
 		let short = eq_ind_partial_eval::<B128>(&[B128::new(3); Word::LOG_BITS - 1]);
-		let _ = folded.fold_bits::<PackedBinaryGhash1x128b>(short.as_ref(), &GlobalAllocator);
+		let _ = folded.fold_bits::<PackedGhash1x128b>(short.as_ref(), &GlobalAllocator);
 	}
 }

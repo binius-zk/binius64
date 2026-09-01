@@ -522,7 +522,7 @@ mod tests {
 	use assert_matches::assert_matches;
 	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_core::constraint_system::{AndConstraint, Shift, ShiftVariant, ValueVec};
-	use binius_field::{PackedBinaryGhash1x128b, Random, Rijndael8b as B8};
+	use binius_field::{PackedGhash1x128b, Random, Rijndael8b as B8};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
 	use binius_math::{
@@ -544,7 +544,7 @@ mod tests {
 
 	/// A width-1 packed field keeps one scalar per element, so the SIMD sumcheck rounds stay
 	/// simple.
-	type P = PackedBinaryGhash1x128b;
+	type P = PackedGhash1x128b;
 
 	// Four instances of the AND circuit, with distinct satisfying inputs.
 	//

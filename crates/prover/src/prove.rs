@@ -646,7 +646,7 @@ where
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_core::constraint_system::{AndConstraint, ConstraintSystem};
-	use binius_field::{Field, PackedBinaryGhash2x128b, arch::OptimalPackedB128};
+	use binius_field::{Field, PackedGhash2x128b, arch::OptimalPackedB128};
 	use binius_frontend::CircuitBuilder;
 	use binius_hash::StdHashSuite;
 	use binius_transcript::VerifierTranscript;
@@ -802,7 +802,7 @@ mod tests {
 	/// element, shifting the last real scalar by one position.
 	#[test]
 	fn test_pack_witness_unaligned_pair_count_with_remainder() {
-		type P = PackedBinaryGhash2x128b;
+		type P = PackedGhash2x128b;
 		assert_eq!(P::WIDTH, 2, "this test is meaningful only when the packing width is 2");
 
 		let words: Vec<Word> = (1..=7u64).map(Word).collect();
@@ -818,7 +818,7 @@ mod tests {
 	/// unaligned, with and without a trailing word) plus a few larger sizes.
 	#[test]
 	fn test_pack_witness_various_lengths() {
-		type P = PackedBinaryGhash2x128b;
+		type P = PackedGhash2x128b;
 
 		for n_words in [1usize, 2, 3, 4, 5, 6, 7, 8, 9, 13, 17] {
 			let words: Vec<Word> = (0..n_words as u64).map(|i| Word(i + 100)).collect();

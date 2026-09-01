@@ -51,8 +51,8 @@ use std::{array, marker::PhantomData};
 
 use binius_core::Word;
 use binius_field::{
-	BinaryField, BinaryField1b as B1, Divisible, PackedAESBinaryField64x8b as Packed64xB8,
-	PackedField, Rijndael8b as B8, UnderlierView, arch::M128, util::expand_subset_sums_array,
+	BinaryField, BinaryField1b as B1, Divisible, PackedField, PackedRijndael64x8b as Packed64xB8,
+	Rijndael8b as B8, UnderlierView, arch::M128, util::expand_subset_sums_array,
 };
 use binius_math::{
 	BinarySubspace, FieldBuffer,

@@ -2,7 +2,7 @@
 
 use std::iter::repeat_with;
 
-use binius_field::{Field, Ghash128b, PackedBinaryGhash4x128b, PackedField};
+use binius_field::{Field, Ghash128b, PackedField, PackedGhash4x128b};
 use rand::prelude::*;
 
 use crate::FieldBuffer;
@@ -11,7 +11,7 @@ use crate::FieldBuffer;
 pub type B128 = Ghash128b;
 
 /// Type alias for a packed 128b field element with non-trivial packing width.
-pub type Packed128b = PackedBinaryGhash4x128b;
+pub type Packed128b = PackedGhash4x128b;
 
 /// Generates a vector of random field elements.
 ///

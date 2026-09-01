@@ -23,14 +23,14 @@ pub type GhashWideMul1x<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "pclmulqdq"))]
 pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
-/// Square wrapper for the `PackedBinaryGhash1x128b` packing: the CLMUL square `GhashClMul` when
+/// Square wrapper for the `PackedGhash1x128b` packing: the CLMUL square `GhashClMul` when
 /// PCLMULQDQ is available, otherwise the shared software square `GhashSoftMul`.
 #[cfg(target_feature = "pclmulqdq")]
 pub type GhashSquare1x<T> = ghash::GhashClMul<T>;
 #[cfg(not(target_feature = "pclmulqdq"))]
 pub type GhashSquare1x<T> = crate::arch::portable::arithmetic::ghash::GhashSoftMul<T>;
 
-/// Invert wrapper for the `PackedBinaryGhash1x128b` packing: the shared Itoh-Tsujii inversion
+/// Invert wrapper for the `PackedGhash1x128b` packing: the shared Itoh-Tsujii inversion
 /// (there is no CLMUL inverse).
 pub type GhashInvert1x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
 

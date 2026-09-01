@@ -232,7 +232,7 @@ mod tests {
 		constraint_system::{AndConstraint, InoutSegment},
 		word::Word,
 	};
-	use binius_field::{Field, PackedBinaryGhash1x128b, Random, Rijndael8b};
+	use binius_field::{Field, PackedGhash1x128b, Random, Rijndael8b};
 	use binius_math::{
 		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 		test_utils::random_scalars,
@@ -318,7 +318,7 @@ mod tests {
 	// transcript is exactly what the single-instance verifier expects.
 	#[test]
 	fn prove_and_verify_round_trip() {
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		let c = crc64_circuit();
 
@@ -462,7 +462,7 @@ mod tests {
 	// operand evals (the intmul claim is empty, contributing nothing).
 	#[test]
 	fn phase_1_g_h_inner_product_matches_batched_evals() {
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		let c = crc64_circuit();
 

@@ -34,7 +34,7 @@ pub type GhashSquare4x<T> = ghash::GhashClMul<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 pub type GhashSquare4x<T> = Divide<M128, T, 4>;
 
-/// Invert wrapper for the `PackedBinaryGhash4x128b` packing: the shared Itoh-Tsujii inversion
+/// Invert wrapper for the `PackedGhash4x128b` packing: the shared Itoh-Tsujii inversion
 /// applied across the full 512-bit vector.
 pub type GhashInvert4x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
 

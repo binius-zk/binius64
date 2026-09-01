@@ -141,14 +141,14 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{Divisible, Ghash128b, PackedBinaryGhash4x128b, PackedField, Random};
+	use binius_field::{Divisible, Ghash128b, PackedField, PackedGhash4x128b, Random};
 	use proptest::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
 	use crate::test_utils::random_field_buffer;
 
-	type P = PackedBinaryGhash4x128b;
+	type P = PackedGhash4x128b;
 	type F = Ghash128b;
 
 	// The packing width is four scalars, so this range straddles it in both directions.

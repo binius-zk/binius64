@@ -3,10 +3,17 @@
 
 //! Packed field implementations, and the packings of the tower's base field.
 
+pub mod ghash;
+pub mod ghash_sq;
 pub mod primitive;
+pub mod rijndael;
 pub mod sliced;
 
 use std::ops::Mul;
+
+pub use ghash::*;
+pub use ghash_sq::*;
+pub use rijndael::*;
 
 use crate::{
 	BinaryField1b,
@@ -322,9 +329,8 @@ mod tests {
 
 	use super::{test_utils::packed_field_tests, *};
 	use crate::{
-		Divisible, PackedAESBinaryField1x8b, PackedAESBinaryField16x8b, PackedAESBinaryField32x8b,
-		PackedAESBinaryField64x8b, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
-		PackedBinaryGhash4x128b, PackedField, Random,
+		Divisible, PackedField, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b,
+		PackedRijndael1x8b, PackedRijndael16x8b, PackedRijndael32x8b, PackedRijndael64x8b, Random,
 		test_utils::check_transpose_all_heights,
 		underlier::{U2, U4},
 	};
@@ -379,31 +385,31 @@ mod tests {
 
 	#[test]
 	fn test_set_then_get_128b() {
-		test_set_then_get::<PackedBinaryGhash1x128b>();
-		test_set_then_get::<PackedBinaryGhash2x128b>();
-		test_set_then_get::<PackedBinaryGhash4x128b>();
+		test_set_then_get::<PackedGhash1x128b>();
+		test_set_then_get::<PackedGhash2x128b>();
+		test_set_then_get::<PackedGhash4x128b>();
 	}
 
 	#[test]
 	fn test_serialize_then_deserialize_128b() {
-		test_serialize_then_deserialize::<PackedBinaryGhash1x128b>();
-		test_serialize_then_deserialize::<PackedBinaryGhash2x128b>();
-		test_serialize_then_deserialize::<PackedBinaryGhash4x128b>();
+		test_serialize_then_deserialize::<PackedGhash1x128b>();
+		test_serialize_then_deserialize::<PackedGhash2x128b>();
+		test_serialize_then_deserialize::<PackedGhash4x128b>();
 	}
 
 	#[test]
 	fn test_serialize_deserialize_different_packing_width() {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let packed0 = PackedBinaryGhash1x128b::random(&mut rng);
-		let packed1 = PackedBinaryGhash1x128b::random(&mut rng);
+		let packed0 = PackedGhash1x128b::random(&mut rng);
+		let packed1 = PackedGhash1x128b::random(&mut rng);
 
 		let mut buffer = BytesMut::new();
 		packed0.serialize(&mut buffer).unwrap();
 		packed1.serialize(&mut buffer).unwrap();
 
 		let mut read_buffer = buffer.freeze();
-		let packed01 = PackedBinaryGhash2x128b::deserialize(&mut read_buffer).unwrap();
+		let packed01 = PackedGhash2x128b::deserialize(&mut read_buffer).unwrap();
 
 		assert!(
 			packed01
@@ -422,12 +428,12 @@ mod tests {
 
 		#[test]
 		fn test_add_packed_16x8b(a_val in any::<u128>(), b_val in any::<u128>()) {
-			test_add_packed::<PackedAESBinaryField16x8b>(a_val, b_val);
+			test_add_packed::<PackedRijndael16x8b>(a_val, b_val);
 		}
 
 		#[test]
 		fn test_add_packed_1x128b(a_val in any::<u128>(), b_val in any::<u128>()) {
-			test_add_packed::<PackedBinaryGhash1x128b>(a_val, b_val);
+			test_add_packed::<PackedGhash1x128b>(a_val, b_val);
 		}
 	}
 
@@ -438,12 +444,12 @@ mod tests {
 
 	#[test]
 	fn test_mul_packed_32x8b() {
-		test_mul_packed_random::<PackedAESBinaryField32x8b>();
+		test_mul_packed_random::<PackedRijndael32x8b>();
 	}
 
 	#[test]
 	fn test_mul_packed_2x128b() {
-		test_mul_packed_random::<PackedBinaryGhash2x128b>();
+		test_mul_packed_random::<PackedGhash2x128b>();
 	}
 
 	packed_field_tests!(packed_8x1b, PackedBinaryField8x1b);
@@ -468,7 +474,7 @@ mod tests {
 		#[test]
 		fn test_interleave_8b(a_val in 0u8.., b_val in 0u8..) {
 			check_interleave_all_heights::<PackedBinaryField8x1b>(a_val, b_val);
-			check_interleave_all_heights::<PackedAESBinaryField1x8b>(a_val, b_val);
+			check_interleave_all_heights::<PackedRijndael1x8b>(a_val, b_val);
 		}
 
 		#[test]
@@ -490,22 +496,22 @@ mod tests {
 		#[allow(clippy::useless_conversion)] // this warning depends on the target platform
 		fn test_interleave_128b(a_val in 0u128.., b_val in 0u128..) {
 			check_interleave_all_heights::<PackedBinaryField128x1b>(a_val.into(), b_val.into());
-			check_interleave_all_heights::<PackedAESBinaryField16x8b>(a_val.into(), b_val.into());
-			check_interleave_all_heights::<PackedBinaryGhash1x128b>(a_val.into(), b_val.into());
+			check_interleave_all_heights::<PackedRijndael16x8b>(a_val.into(), b_val.into());
+			check_interleave_all_heights::<PackedGhash1x128b>(a_val.into(), b_val.into());
 		}
 
 		#[test]
 		fn test_interleave_256b(a_val in any::<[u128; 2]>(), b_val in any::<[u128; 2]>()) {
 			check_interleave_all_heights::<PackedBinaryField256x1b>(a_val.into(), b_val.into());
-			check_interleave_all_heights::<PackedAESBinaryField32x8b>(a_val.into(), b_val.into());
-			check_interleave_all_heights::<PackedBinaryGhash2x128b>(a_val.into(), b_val.into());
+			check_interleave_all_heights::<PackedRijndael32x8b>(a_val.into(), b_val.into());
+			check_interleave_all_heights::<PackedGhash2x128b>(a_val.into(), b_val.into());
 		}
 
 		#[test]
 		fn test_interleave_512b(a_val in any::<[u128; 4]>(), b_val in any::<[u128; 4]>()) {
 			check_interleave_all_heights::<PackedBinaryField512x1b>(a_val.into(), b_val.into());
-			check_interleave_all_heights::<PackedAESBinaryField64x8b>(a_val.into(), b_val.into());
-			check_interleave_all_heights::<PackedBinaryGhash4x128b>(a_val.into(), b_val.into());
+			check_interleave_all_heights::<PackedRijndael64x8b>(a_val.into(), b_val.into());
+			check_interleave_all_heights::<PackedGhash4x128b>(a_val.into(), b_val.into());
 		}
 
 		#[test]
@@ -521,7 +527,7 @@ mod tests {
 		#[test]
 		fn check_transpose_8b(a_val in 0u8.., b_val in 0u8..) {
 			check_transpose_all_heights::<PackedBinaryField8x1b>(a_val, b_val);
-			check_transpose_all_heights::<PackedAESBinaryField1x8b>(a_val, b_val);
+			check_transpose_all_heights::<PackedRijndael1x8b>(a_val, b_val);
 		}
 
 		#[test]
@@ -543,22 +549,22 @@ mod tests {
 		#[allow(clippy::useless_conversion)] // this warning depends on the target platform
 		fn check_transpose_128b(a_val in 0u128.., b_val in 0u128..) {
 			check_transpose_all_heights::<PackedBinaryField128x1b>(a_val.into(), b_val.into());
-			check_transpose_all_heights::<PackedAESBinaryField16x8b>(a_val.into(), b_val.into());
-			check_transpose_all_heights::<PackedBinaryGhash1x128b>(a_val.into(), b_val.into());
+			check_transpose_all_heights::<PackedRijndael16x8b>(a_val.into(), b_val.into());
+			check_transpose_all_heights::<PackedGhash1x128b>(a_val.into(), b_val.into());
 		}
 
 		#[test]
 		fn check_transpose_256b(a_val in any::<[u128; 2]>(), b_val in any::<[u128; 2]>()) {
 			check_transpose_all_heights::<PackedBinaryField256x1b>(a_val.into(), b_val.into());
-			check_transpose_all_heights::<PackedAESBinaryField32x8b>(a_val.into(), b_val.into());
-			check_transpose_all_heights::<PackedBinaryGhash2x128b>(a_val.into(), b_val.into());
+			check_transpose_all_heights::<PackedRijndael32x8b>(a_val.into(), b_val.into());
+			check_transpose_all_heights::<PackedGhash2x128b>(a_val.into(), b_val.into());
 		}
 
 		#[test]
 		fn check_transpose_512b(a_val in any::<[u128; 4]>(), b_val in any::<[u128; 4]>()) {
 			check_transpose_all_heights::<PackedBinaryField512x1b>(a_val.into(), b_val.into());
-			check_transpose_all_heights::<PackedAESBinaryField64x8b>(a_val.into(), b_val.into());
-			check_transpose_all_heights::<PackedBinaryGhash4x128b>(a_val.into(), b_val.into());
+			check_transpose_all_heights::<PackedRijndael64x8b>(a_val.into(), b_val.into());
+			check_transpose_all_heights::<PackedGhash4x128b>(a_val.into(), b_val.into());
 		}
 	}
 
@@ -582,7 +588,7 @@ mod tests {
 		check_roundtrip::<PackedBinaryField8x1b>(&mut rng);
 		check_roundtrip::<PackedBinaryField64x1b>(&mut rng);
 		check_roundtrip::<PackedBinaryField128x1b>(&mut rng);
-		check_roundtrip::<PackedBinaryGhash1x128b>(&mut rng);
+		check_roundtrip::<PackedGhash1x128b>(&mut rng);
 	}
 
 	// `FixedSizeSerializeBytes` propagates from the underlier. Integer-backed packed fields (here,

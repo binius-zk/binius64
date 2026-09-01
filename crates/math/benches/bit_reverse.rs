@@ -1,8 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{
-	BinaryField, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-	PackedField,
+	BinaryField, PackedField, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b,
 };
 use binius_math::{bit_reverse::bit_reverse_packed, test_utils::random_field_buffer};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -30,9 +29,9 @@ fn bench_bit_reverse_helper<F: BinaryField, P: PackedField<Scalar = F>>(
 }
 
 fn bench_bit_reverse(c: &mut Criterion) {
-	bench_bit_reverse_helper::<_, PackedBinaryGhash1x128b>(c, "1xGhash");
-	bench_bit_reverse_helper::<_, PackedBinaryGhash2x128b>(c, "2xGhash");
-	bench_bit_reverse_helper::<_, PackedBinaryGhash4x128b>(c, "4xGhash");
+	bench_bit_reverse_helper::<_, PackedGhash1x128b>(c, "1xGhash");
+	bench_bit_reverse_helper::<_, PackedGhash2x128b>(c, "2xGhash");
+	bench_bit_reverse_helper::<_, PackedGhash4x128b>(c, "4xGhash");
 }
 
 criterion_group! {

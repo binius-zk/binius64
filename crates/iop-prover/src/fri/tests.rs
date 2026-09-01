@@ -4,7 +4,7 @@
 use std::{iter, vec};
 
 use binius_compute::GlobalAllocator;
-use binius_field::{BinaryField, Field, Ghash128b as B128, PackedBinaryGhash1x128b, PackedField};
+use binius_field::{BinaryField, Field, Ghash128b as B128, PackedField, PackedGhash1x128b};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::{
 	fri::{self, CodewordSpec, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
@@ -138,7 +138,7 @@ fn test_commit_prove_verify_success_128b_full() {
 	let arities = vec![1; log_dimension - log_final_dimension];
 
 	// TODO: Make this test pass with non-trivial packing width
-	test_commit_prove_verify_success::<B128, PackedBinaryGhash1x128b>(
+	test_commit_prove_verify_success::<B128, PackedGhash1x128b>(
 		log_dimension,
 		log_inv_rate,
 		0,
@@ -153,7 +153,7 @@ fn test_commit_prove_verify_success_128b_higher_arity() {
 	let arities = [3, 2, 1];
 
 	// TODO: Make this test pass with non-trivial packing width
-	test_commit_prove_verify_success::<B128, PackedBinaryGhash1x128b>(
+	test_commit_prove_verify_success::<B128, PackedGhash1x128b>(
 		log_dimension,
 		log_inv_rate,
 		0,
@@ -214,7 +214,7 @@ fn test_commit_prove_verify_success_without_folding() {
 #[test]
 fn test_commit_prove_verify_batched_multi_oracle() {
 	type F = B128;
-	type P = PackedBinaryGhash1x128b;
+	type P = PackedGhash1x128b;
 
 	let mut rng = StdRng::seed_from_u64(0);
 
@@ -347,7 +347,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 #[test]
 fn test_commit_prove_verify_batched_mixed_skip() {
 	type F = B128;
-	type P = PackedBinaryGhash1x128b;
+	type P = PackedGhash1x128b;
 
 	let mut rng = StdRng::seed_from_u64(0);
 
@@ -503,7 +503,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 #[test]
 fn test_commit_prove_verify_lifted_multi_oracle() {
 	type F = B128;
-	type P = PackedBinaryGhash1x128b;
+	type P = PackedGhash1x128b;
 
 	let mut rng = StdRng::seed_from_u64(0);
 
@@ -698,7 +698,7 @@ where
 #[test]
 fn test_proof_size_higher_arity() {
 	let (proof_bytes, params, scheme) =
-		generate_fri_proof::<B128, PackedBinaryGhash1x128b>(8, 2, 0, &[3, 2, 1]);
+		generate_fri_proof::<B128, PackedGhash1x128b>(8, 2, 0, &[3, 2, 1]);
 	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
 }
 
