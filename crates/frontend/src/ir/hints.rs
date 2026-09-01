@@ -69,7 +69,7 @@ pub trait Hint: Send + Sync + 'static {
 ///
 /// Hashes the name with `std::hash::DefaultHasher` (fixed seed, deterministic across runs)
 /// and folds the resulting 64-bit value down to 32 bits by XORing its two halves.
-pub(crate) fn hint_id_of(name: &str) -> HintId {
+pub fn hint_id_of(name: &str) -> HintId {
 	let mut hasher = DefaultHasher::new();
 	name.hash(&mut hasher);
 	let h = hasher.finish();
