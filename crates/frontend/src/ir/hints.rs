@@ -7,17 +7,15 @@
 //! They can be used for operations that require many constraints to compute but few constraints
 //! to verify.
 
-use std::{
-	collections::hash_map::Entry,
-	hash::{DefaultHasher, Hash, Hasher},
-};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use binius_core::Word;
 use rustc_hash::FxHashMap;
 
 /// Registry key for one prover-side computation.
 ///
-/// Derived from the declared name rather than assigned in order, so it is stable across runs.
+/// Derived from the declared name rather than assigned in order, so registration order never
+/// changes it.
 pub type HintId = u32;
 
 /// Hint handler trait for extensible operations.
@@ -50,7 +48,7 @@ pub type HintId = u32;
 /// - A parameterized hint reads limb counts from `dimensions` and derives its arity from them.
 /// - A fixed-arity hint ignores `dimensions` (an empty slice) and returns a constant shape.
 pub trait Hint: Send + Sync + 'static {
-	/// Globally unique name for this hint. Used to derive a stable [`HintId`].
+	/// Globally unique name for this hint, which the registry hashes into its key.
 	const NAME: &'static str;
 
 	/// Compute the gate's input/output arity as a function of `dimensions`.
@@ -129,18 +127,11 @@ impl HintRegistry {
 	/// Panics if a different name already holds this id.
 	pub fn register<T: Hint>(&mut self, handler: T) -> HintId {
 		let id = hint_id_of(T::NAME);
-		match self.handlers.entry(id) {
-			Entry::Vacant(entry) => {
-				entry.insert((T::NAME, Box::new(handler)));
-			}
-			Entry::Occupied(entry) => assert_eq!(
-				entry.get().0,
-				T::NAME,
-				"hint id collision: {} and {}",
-				entry.get().0,
-				T::NAME,
-			),
-		}
+		let entry = self
+			.handlers
+			.entry(id)
+			.or_insert_with(|| (T::NAME, Box::new(handler)));
+		assert_eq!(entry.0, T::NAME, "hint id collision: {} and {}", entry.0, T::NAME);
 		id
 	}
 
