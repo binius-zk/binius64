@@ -109,6 +109,10 @@ pub(super) struct PaddedBatch<'a, A: Allocator, P: PackedField> {
 	pad_lens: Vec<usize>,
 	/// The depth every tree is padded to, which is how many layers the schedule runs.
 	n_layers: usize,
+	/// Scratch space for the inversion that de-pads a layer's claims.
+	///
+	/// Every layer inverts one weight per tree, so the size never changes.
+	pad_eq_inversion: BatchInversion<P::Scalar>,
 }
 
 impl<'a, A, F, P> PaddedBatch<'a, A, P>
@@ -135,10 +139,13 @@ where
 			.map(|tree| n_layers - tree.n_layers())
 			.collect();
 
+		let pad_eq_inversion = BatchInversion::new(trees.len());
+
 		Self {
 			trees,
 			pad_lens,
 			n_layers,
+			pad_eq_inversion,
 		}
 	}
 
@@ -200,7 +207,7 @@ where
 			pad_eq_invs.iter().all(|&pad_eq| pad_eq != F::ZERO),
 			"a padding coordinate of the claim point equals one"
 		);
-		BatchInversion::<F>::new(pad_eq_invs.len()).invert_nonzero(&mut pad_eq_invs);
+		self.pad_eq_inversion.invert_nonzero(&mut pad_eq_invs);
 
 		izip!(&mut self.trees, &self.pad_lens, claims, &pad_eq_invs)
 			.map(|(tree, &tree_pad_len, &Fraction { num, den }, &pad_eq_inv)| {
