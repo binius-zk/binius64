@@ -149,6 +149,49 @@ for _ in 0..n {
 }
 ```
 
+### Parallel loops
+
+Every rayon loop over a buffer floors its task size with `with_min_task_bytes` or `with_min_task`
+from `binius_utils::rayon::task_size`. Handing a slice of work to another worker costs about a
+microsecond, and an unfloored `par_iter` splits all the way down to one item, so a loop over a small
+buffer loses more to the handoff than the workers win back. The adapters state what one item costs
+and derive the floor from a shared budget. A chunked loop takes its chunk size from
+`task_chunk_len`, which is already the floor.
+
+Don't hand-roll the floor. A tuned size threshold picking between a serial and a parallel arm is two
+code paths where one belongs, and its constant tracks neither the packing width nor the machine.
+
+```rust
+// Memory-bound: charge one item by the bytes it moves.
+words
+    .par_iter_mut()
+    .enumerate()
+    .with_min_task_bytes::<P>()
+    .for_each(fill);
+
+// Arithmetic-bound: charge one item by its work class.
+values
+    .par_iter_mut()
+    .with_min_task(WorkPerItem::FieldMuls)
+    .for_each(scale);
+```
+
+Poor examples:
+```rust
+// Unfloored: splits to one item per task on a small buffer.
+words.par_iter_mut().enumerate().for_each(fill);
+
+// A hand-tuned threshold and a second code path.
+if words.len() * size_of::<P>() < MIN_PARALLEL_BYTES {
+    words.iter_mut().enumerate().for_each(fill);
+} else {
+    words.par_iter_mut().enumerate().for_each(fill);
+}
+```
+
+`crates/utils/src/rayon/task_size.rs` holds the cost model, the `WorkPerItem` classes, and the
+`BINIUS_TASK_TARGET_NS` / `BINIUS_MIN_TASK_BYTES` overrides that disable the floors for an A/B run.
+
 ### Unwrap
 
 Don't call `unwrap` in library code. Either throw or propagate an `Err` or call `expect`, leaving an explanation of why
