@@ -18,9 +18,6 @@ use crate::{
 	merkle_channel::MerkleIPProverChannel,
 };
 
-/// The type of the termination round codeword in the FRI protocol.
-pub type TerminateCodeword<F> = FieldBuffer<F>;
-
 enum FRIFolderState<P, C, Data = Vec<P>>
 where
 	P: PackedField,
@@ -310,7 +307,7 @@ where
 	/// * All fold rounds must have been executed (`curr_round == n_rounds()`).
 	#[instrument(skip_all, name = "fri::FRIFolder::finalize", level = "debug")]
 	#[allow(clippy::type_complexity)]
-	pub fn finalize(mut self) -> (TerminateCodeword<F>, C, FRIQueryProver<F, P, C, Data>) {
+	pub fn finalize(mut self) -> (FieldBuffer<F>, C, FRIQueryProver<F, P, C, Data>) {
 		assert_eq!(
 			self.curr_round,
 			self.n_rounds(),
