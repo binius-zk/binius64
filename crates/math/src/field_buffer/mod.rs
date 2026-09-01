@@ -43,7 +43,10 @@ use binius_field::{
 };
 use binius_utils::{
 	checked_arithmetics::strict_log_2,
-	rayon::{prelude::*, slice::ParallelSlice, task_size::task_chunk_len},
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, task_chunk_len},
+	},
 };
 use bytemuck::zeroed_vec;
 
@@ -181,7 +184,7 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Copies a borrowed buffer into memory drawn from `alloc`.
 	///
 	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
-	/// The copy splits into runs, so more than one worker carries a long source.
+	/// A long source spreads across workers.
 	pub fn from_view_in<A>(alloc: &A, src: FieldSlice<'_, P>) -> Self
 	where
 		A: Allocator<Vec<P> = Data>,
@@ -196,7 +199,7 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// [`Self::repeat_extend`] is the growth this reserves for.
 	///
 	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
-	/// The copy splits into runs, so more than one worker carries a long source.
+	/// A long source spreads across workers.
 	///
 	/// # Panics
 	///
@@ -217,24 +220,19 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 
 		let mut words = alloc.alloc::<P>(1 << log_capacity.saturating_sub(P::LOG_WIDTH));
 
-		// A run is the words one worker copies at a time.
-		// It is a power of two at most the source length, so it divides the source evenly.
+		// The allocator rounds its blocks up, so the fill is bounded to the words that are live.
 		let source = src.as_ref();
-		let run = source.len().min(task_chunk_len::<P>().next_power_of_two());
-
 		let head = &mut words.spare_capacity_mut()[..source.len()];
-		if source.len() <= run {
-			// One run holds the whole source, so a split would only buy a worker handoff.
-			head.write_copy_of_slice(source);
-		} else {
-			(head.par_chunks_mut(run), source.par_chunks(run))
-				.into_par_iter()
-				.for_each(|(dst, src)| {
-					dst.write_copy_of_slice(src);
-				});
-		}
 
-		// SAFETY: both branches above wrote every word of the source.
+		// The floor holds a worker's share at one task's byte budget, so a short source stays put.
+		(head.par_iter_mut(), source.par_iter())
+			.into_par_iter()
+			.with_min_task_bytes::<P>()
+			.for_each(|(dst, src)| {
+				dst.write(*src);
+			});
+
+		// SAFETY: the loop above wrote every word of the source.
 		unsafe { words.set_len(source.len()) };
 
 		FieldBuffer::new(src.log_len(), words)
@@ -749,6 +747,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for SplitMut<P, Data> {
 mod tests {
 	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_field::packed::get_packed_slice;
+	use binius_utils::rayon::task_size::min_len_for_bytes;
 	use proptest::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -948,13 +947,13 @@ mod tests {
 	}
 
 	#[test]
-	fn a_copy_reproduces_every_word_on_both_sides_of_the_run_boundary() {
-		// A run is the words one worker takes, capped by the byte budget for one task.
+	fn a_copy_reproduces_every_word_on_both_sides_of_the_task_floor() {
+		// The floor is the fewest words a worker takes, set by one task's byte budget.
 		//
-		//     one run    [--------]              copied where the call stands
-		//     two runs   [--------][--------]    split across workers
-		let run = task_chunk_len::<P>().next_power_of_two();
-		for words in [run, 2 * run] {
+		//     at the floor   [--------]              one task
+		//     above it       [--------][--------]    split across workers
+		let floor = min_len_for_bytes::<P>();
+		for words in [floor, 2 * floor] {
 			let log_len = words.ilog2() as usize + P::LOG_WIDTH;
 			let src = random_field_buffer::<P>(&mut StdRng::seed_from_u64(0), log_len);
 			let copy: FieldVec<P, GlobalAllocator> =
