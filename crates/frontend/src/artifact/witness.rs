@@ -86,13 +86,6 @@ impl WitnessFiller<'_> {
 		&self.value_vec
 	}
 
-	/// Returns a mutable reference to the underlying value vector.
-	///
-	/// Raw access is what plants a witness the evaluator would never produce.
-	pub const fn value_vec_mut(&mut self) -> &mut ValueVec {
-		&mut self.value_vec
-	}
-
 	/// Populates the given wires from bytes as little-endian packed 64-bit words.
 	///
 	/// If `bytes` is not a multiple of 8, the last word is zero-padded.

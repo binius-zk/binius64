@@ -14,13 +14,16 @@ use std::{
 
 use binius_core::Word;
 
+/// Registry key for one prover-side computation.
+///
+/// Derived from the declared name rather than assigned in order, so it is stable across runs.
 pub type HintId = u32;
 
 /// Hint handler trait for extensible operations.
 ///
 /// Each implementor declares a globally unique `NAME`. The registry identifies hints by the
-/// hash of this name (see [`hint_id_of`]), so registering the same hint twice is a no-op
-/// and every gate using the same hint type shares a single handler entry.
+/// hash of this name, so registering the same hint twice is a no-op and every gate using the
+/// same hint type shares a single handler entry.
 ///
 /// # The `dimensions` parameter
 ///
@@ -66,7 +69,7 @@ pub trait Hint: Send + Sync + 'static {
 ///
 /// Hashes the name with `std::hash::DefaultHasher` (fixed seed, deterministic across runs)
 /// and folds the resulting 64-bit value down to 32 bits by XORing its two halves.
-pub fn hint_id_of(name: &str) -> HintId {
+pub(crate) fn hint_id_of(name: &str) -> HintId {
 	let mut hasher = DefaultHasher::new();
 	name.hash(&mut hasher);
 	let h = hasher.finish();
@@ -101,6 +104,7 @@ pub struct HintRegistry {
 }
 
 impl HintRegistry {
+	/// An empty registry.
 	pub fn new() -> Self {
 		Self {
 			handlers: HashMap::new(),
@@ -120,6 +124,11 @@ impl HintRegistry {
 		self.handlers[&hint_id].shape(dimensions)
 	}
 
+	/// Run the handler under `hint_id`, writing its results into `outputs`.
+	///
+	/// # Panics
+	///
+	/// Panics if nothing is registered under `hint_id`.
 	pub fn execute(
 		&self,
 		hint_id: HintId,
