@@ -2,6 +2,7 @@
 
 //! Sumcheck prover for the product of a sparse and a dense multilinear.
 
+use binius_compute::BufferData;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_utils::rayon::{
@@ -63,7 +64,7 @@ pub type SparseEntry<F> = (usize, F);
 /// Entries thus stay a flat list of the same length for the whole protocol, and collapse to the
 /// evaluation of $A$ at the challenge point only in [`SumcheckProver::finish`], which emits the
 /// sparse multilinear's evaluation before the dense one's.
-pub struct SparseDenseProductSumcheckProver<P: PackedField> {
+pub struct SparseDenseProductSumcheckProver<P: PackedField, Data: BufferData<P> = Vec<P>> {
 	/// The sparse multilinear, folded in place.
 	///
 	/// Indices are always below `1 << self.n_vars()`.
@@ -74,12 +75,12 @@ pub struct SparseDenseProductSumcheckProver<P: PackedField> {
 	/// So a weight whose table is too large to materialize can drive this prover too.
 	///
 	/// A weight that really is one table is one factor, so nothing is given up by taking this.
-	dense: FactoredMultilinear<P>,
+	dense: FactoredMultilinear<P, Data>,
 	/// This round's sum claim, or the round polynomial awaiting the challenge that reduces it.
 	state: RoundState<RoundCoeffs<P::Scalar>, P::Scalar>,
 }
 
-impl<P: PackedField> SparseDenseProductSumcheckProver<P> {
+impl<P: PackedField, Data: BufferData<P>> SparseDenseProductSumcheckProver<P, Data> {
 	/// Creates a prover for the claim that the sparse-dense product sums to `sum`.
 	///
 	/// # Arguments
@@ -93,7 +94,7 @@ impl<P: PackedField> SparseDenseProductSumcheckProver<P> {
 	/// Panics if any entry index is out of range for `dense`.
 	pub fn new(
 		sparse: Vec<SparseEntry<P::Scalar>>,
-		dense: FactoredMultilinear<P>,
+		dense: FactoredMultilinear<P, Data>,
 		sum: P::Scalar,
 	) -> Self {
 		assert!(
@@ -120,8 +121,8 @@ impl<P: PackedField> SparseDenseProductSumcheckProver<P> {
 	}
 }
 
-impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
-	for SparseDenseProductSumcheckProver<P>
+impl<F: Field, P: PackedField<Scalar = F>, Data: BufferData<P> + Sync> SumcheckProver<F>
+	for SparseDenseProductSumcheckProver<P, Data>
 {
 	fn n_vars(&self) -> usize {
 		self.dense.n_vars()
@@ -374,6 +375,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		Random,
 		arch::{OptimalB128, OptimalPackedB128},
@@ -603,6 +605,56 @@ mod tests {
 		let sparse_eval = evals[0];
 		assert_ne!(sparse_eval, F::ZERO);
 		assert!(evals[1..].iter().all(|&dense| dense != sparse_eval));
+	}
+
+	#[test]
+	fn an_arena_backed_weight_proves_the_same_claim_as_a_heap_backed_one() {
+		// Invariant: where the weight's words live never reaches the protocol.
+		//
+		// A prover working out of an arena builds its weights there.
+		// So it must be able to hand them over as they are.
+		//
+		// Copying onto the heap first is the cost the arena exists to avoid.
+		// That cost grows with the weight.
+		//
+		// Proving the same claim over both storages, then comparing transcripts byte for byte.
+		// That asserts identical round polynomials in every round, not a matching final value.
+		let mut rng = StdRng::seed_from_u64(29);
+		let alloc = GlobalAllocator;
+
+		let n_vars = 5;
+		let scalars = (0..1usize << n_vars)
+			.map(|_| F::random(&mut rng))
+			.collect::<Vec<_>>();
+		let sparse = random_sparse(&mut rng, n_vars, 13);
+
+		let heap = FactoredMultilinear::<P>::new([FieldBuffer::<P>::from_values(&scalars)]);
+		let sum = sparse
+			.iter()
+			.map(|&(index, value)| value * heap.get(index))
+			.sum::<F>();
+		// A vacuous claim would prove nothing about either storage.
+		assert_ne!(sum, F::ZERO);
+
+		let prove_over = |weight| {
+			let prover = SparseDenseProductSumcheckProver::new(sparse.clone(), weight, sum);
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let output = prove_single(prover, &mut transcript);
+			(output.multilinear_evals, transcript.finalize())
+		};
+
+		let from_heap = prove_over(heap);
+		let from_arena = {
+			let weight =
+				FactoredMultilinear::new([FieldBuffer::<P>::from_values_in(&alloc, &scalars)]);
+			let prover = SparseDenseProductSumcheckProver::new(sparse, weight, sum);
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let output = prove_single(prover, &mut transcript);
+			(output.multilinear_evals, transcript.finalize())
+		};
+
+		assert_eq!(from_heap.1, from_arena.1, "both storages must prove the same rounds");
+		assert_eq!(from_heap.0, from_arena.0, "and reduce to the same evaluations");
 	}
 
 	/// Draws `n_entries` entries at uniformly random indices, so repeats arise on their own.
