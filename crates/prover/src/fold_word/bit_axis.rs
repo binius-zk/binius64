@@ -210,7 +210,7 @@ impl<F: BinaryField> BitAxisFolder<F> {
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Field, PackedBinaryGhash2x128b, arch::OptimalPackedB128};
+	use binius_field::{Field, PackedGhash2x128b, arch::OptimalPackedB128};
 	use binius_math::test_utils::random_scalars;
 	use binius_utils::checked_arithmetics::log2_ceil_usize;
 	use binius_verifier::config::B128;
@@ -306,7 +306,7 @@ mod tests {
 			let weights = random_scalars::<B128>(&mut rng, Word::BITS);
 
 			check_bit_axis_fold::<OptimalPackedB128>(&words, &weights);
-			check_bit_axis_fold::<PackedBinaryGhash2x128b>(&words, &weights);
+			check_bit_axis_fold::<PackedGhash2x128b>(&words, &weights);
 		}
 
 		#[test]
@@ -322,7 +322,7 @@ mod tests {
 			let weights = random_scalars::<B128>(&mut rng, Word::BITS);
 
 			check_fused_bitand_fold::<OptimalPackedB128>(&a_words, &b_words, &weights);
-			check_fused_bitand_fold::<PackedBinaryGhash2x128b>(&a_words, &b_words, &weights);
+			check_fused_bitand_fold::<PackedGhash2x128b>(&a_words, &b_words, &weights);
 		}
 
 	}

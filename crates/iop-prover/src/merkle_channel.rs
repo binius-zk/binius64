@@ -280,7 +280,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_core::word::Word;
-	use binius_field::{Ghash128b as B128, PackedBinaryGhash2x128b};
+	use binius_field::{Ghash128b as B128, PackedGhash2x128b};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
 		channel::grinding::GrindingVerifierChannel,
@@ -299,7 +299,7 @@ mod tests {
 	};
 
 	type StdChallenger = HasherChallenger<StdDigest>;
-	type P = PackedBinaryGhash2x128b;
+	type P = PackedGhash2x128b;
 	type VerifierChannel<T> = VerifierMerkleTranscriptChannel<T, StdChallenger, B128, StdHashSuite>;
 	type ProverChannel<T> = ProverMerkleTranscriptChannel<T, StdChallenger, B128, StdHashSuite>;
 

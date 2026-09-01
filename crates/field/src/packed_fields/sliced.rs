@@ -31,7 +31,7 @@
 //! is then blanket-implemented as `reduce(wide_mul(a, b))`, mirroring how the scalar fields are
 //! defined. A concrete extension whose coordinate `PSub` is a [`PackedPrimitiveType`] can reach
 //! into its underlier for optimizations a generic packed field cannot express. See
-//! `packed_ghash_sq` for the GHASH² instantiation.
+//! `packed_fields::ghash_sq` for the GHASH² instantiation.
 //!
 //! # The `F` type parameter
 //!
@@ -69,7 +69,7 @@ use crate::{
 /// documentation for the layout and for which operations are generic here versus supplied per
 /// concrete extension.
 ///
-/// Concrete packings are named through type aliases; see `packed_ghash_sq` for GHASH².
+/// Concrete packings are named through type aliases; see `packed_fields::ghash_sq` for GHASH².
 ///
 /// ```
 /// use binius_field::{Divisible, Field, GhashSq256b, PackedField, SlicedGhashSq2x256b};

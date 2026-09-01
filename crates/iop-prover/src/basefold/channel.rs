@@ -694,8 +694,8 @@ mod tests {
 
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		BinaryField, Field, Ghash128b, Ghash128b as B128, PackedBinaryGhash1x128b,
-		PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField, Random,
+		BinaryField, Field, Ghash128b, Ghash128b as B128, PackedField, PackedGhash1x128b,
+		PackedGhash2x128b, PackedGhash4x128b, Random,
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
@@ -753,7 +753,7 @@ mod tests {
 	#[test]
 	fn test_basefold_channel_single_oracle() {
 		type F = Ghash128b;
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_vars = 8;
@@ -819,7 +819,7 @@ mod tests {
 	#[test]
 	fn test_basefold_channel_two_oracles() {
 		type F = Ghash128b;
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_vars_1 = 6;
@@ -1076,7 +1076,7 @@ mod tests {
 	fn test_basefold_channel_three_oracles_non_power_of_two() {
 		// 3 oracles (not a power of two) of unequal sizes: exercises oracle padding (Lifted FRI)
 		// and the `⌈log 3⌉ = 2` outer oracle-combine rounds.
-		assert!(run_zk_channel::<PackedBinaryGhash1x128b>(&[5, 6, 8], false));
+		assert!(run_zk_channel::<PackedGhash1x128b>(&[5, 6, 8], false));
 	}
 
 	/// A batch whose lift blocks are narrower than one packed field element must still prove.
@@ -1087,7 +1087,7 @@ mod tests {
 	/// to write into part of a single element instead.
 	///
 	/// Whether that happens is a function of the packed width alone, so this pins the width rather
-	/// than leaving it to `-Ctarget-cpu=native` and the host: under `PackedBinaryGhash4x128b` the
+	/// than leaving it to `-Ctarget-cpu=native` and the host: under `PackedGhash4x128b` the
 	/// `[0, 1]` batch reaches the case on every machine, while the 128-bit type the other tests use
 	/// never does. That batch also lifts its first oracle (`log_lift = 1`), so the sub-packed
 	/// placement is exercised on a lifted block rather than only on an unlifted one.
@@ -1143,22 +1143,22 @@ mod tests {
 			}
 		}
 
-		check_all_shapes::<PackedBinaryGhash1x128b>();
-		check_all_shapes::<PackedBinaryGhash2x128b>();
-		check_all_shapes::<PackedBinaryGhash4x128b>();
+		check_all_shapes::<PackedGhash1x128b>();
+		check_all_shapes::<PackedGhash2x128b>();
+		check_all_shapes::<PackedGhash4x128b>();
 	}
 
 	#[test]
 	fn batch_narrower_than_a_packed_element_proves() {
 		const {
 			assert!(
-				PackedBinaryGhash4x128b::LOG_WIDTH > 1,
+				PackedGhash4x128b::LOG_WIDTH > 1,
 				"the fixture needs a packed element wider than the `[0, 1]` batch's lift block"
 			);
 		};
 		for sizes in [[0, 1], [1, 2]] {
 			assert!(
-				run_zk_channel::<PackedBinaryGhash4x128b>(&sizes, false),
+				run_zk_channel::<PackedGhash4x128b>(&sizes, false),
 				"batch of {sizes:?}-variable oracles"
 			);
 		}
@@ -1172,24 +1172,24 @@ mod tests {
 	fn test_basefold_channel_mixed_zk_non_zk() {
 		// One non-ZK oracle (8 vars) and one ZK oracle (6 vars): exercises conditional masking,
 		// the heterogeneous combined-buffer lift/repeat placement, and the non-ZK unmasked commit.
-		assert!(run_mixed_channel::<PackedBinaryGhash1x128b>(&[(8, false), (6, true)], false));
+		assert!(run_mixed_channel::<PackedGhash1x128b>(&[(8, false), (6, true)], false));
 	}
 
 	#[test]
 	fn test_basefold_channel_zero_zk() {
 		// All non-ZK oracles: γ must never be sampled and the proof must still verify.
-		assert!(run_mixed_channel::<PackedBinaryGhash1x128b>(&[(6, false), (8, false)], false));
+		assert!(run_mixed_channel::<PackedGhash1x128b>(&[(6, false), (8, false)], false));
 	}
 
 	#[test]
 	fn test_basefold_channel_mixed_invalid_proof() {
 		// Tampering the claim on a mixed batch must be rejected.
-		assert!(!run_mixed_channel::<PackedBinaryGhash1x128b>(&[(8, false), (6, true)], true));
+		assert!(!run_mixed_channel::<PackedGhash1x128b>(&[(8, false), (6, true)], true));
 	}
 
 	#[test]
 	fn test_basefold_channel_invalid_proof() {
-		assert!(!run_zk_channel::<PackedBinaryGhash1x128b>(&[6, 8], true));
+		assert!(!run_zk_channel::<PackedGhash1x128b>(&[6, 8], true));
 	}
 
 	/// Generates a committed buffer of `n_vars` variables together with `n_relations` independent
@@ -1223,7 +1223,7 @@ mod tests {
 	/// accepted.
 	fn run_multi_relation_channel(specs: &[(usize, bool, usize)], tamper: Option<usize>) -> bool {
 		type F = Ghash128b;
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let data = specs

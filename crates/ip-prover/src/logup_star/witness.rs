@@ -394,7 +394,7 @@ where
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		Field, PackedBinaryGhash4x128b, PackedField,
+		Field, PackedField, PackedGhash4x128b,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
 	use binius_math::{
@@ -412,7 +412,7 @@ mod tests {
 	type P = OptimalPackedB128;
 	// The optimal packing is one scalar per word at baseline x86-64, where the tests build.
 	// Four scalars to a word is what makes a table shorter than a word possible at all.
-	type Wide = PackedBinaryGhash4x128b;
+	type Wide = PackedGhash4x128b;
 
 	// An independent single-threaded scatter, the reference the dispatched result must match.
 	fn reference(eq_r: &FieldBuffer<P>, index: &[usize], m: usize) -> Vec<F> {

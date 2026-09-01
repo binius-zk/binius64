@@ -5,9 +5,9 @@ mod packed_field_utils;
 use std::ops::Mul;
 
 use binius_field::{
-	PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
-	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
-	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
+	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b, PackedGhash1x128b,
+	PackedGhash2x128b, PackedGhash4x128b, PackedRijndael16x8b, PackedRijndael32x8b,
+	PackedRijndael64x8b,
 };
 use criterion::criterion_main;
 use packed_field_utils::benchmark_packed_operation;

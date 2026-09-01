@@ -458,8 +458,7 @@ mod tests {
 
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		BinaryField, Field, Ghash128b, PackedBinaryGhash1x128b, PackedBinaryGhash4x128b,
-		PackedField,
+		BinaryField, Field, Ghash128b, PackedField, PackedGhash1x128b, PackedGhash4x128b,
 	};
 	use binius_hash::StdDigest;
 	use binius_iop::channel::{
@@ -617,7 +616,7 @@ mod tests {
 	fn single_oracle_round_trip() {
 		// A single round holding a single oracle.
 		// The degenerate case, where merging has nothing to do.
-		run_merge_round_trip::<PackedBinaryGhash1x128b>(&[&[6]], false);
+		run_merge_round_trip::<PackedGhash1x128b>(&[&[6]], false);
 	}
 
 	#[test]
@@ -631,7 +630,7 @@ mod tests {
 		// A non-power-of-two total, so padding is required.
 		//
 		// Round 3: a single oracle, the degenerate case.
-		run_merge_round_trip::<PackedBinaryGhash1x128b>(&[&[3, 3], &[4, 2, 2], &[1]], false);
+		run_merge_round_trip::<PackedGhash1x128b>(&[&[3, 3], &[4, 2, 2], &[1]], false);
 	}
 
 	#[test]
@@ -642,18 +641,18 @@ mod tests {
 		// Placement then writes into part of one, not a whole chunk.
 		const {
 			assert!(
-				PackedBinaryGhash4x128b::LOG_WIDTH > 0,
+				PackedGhash4x128b::LOG_WIDTH > 0,
 				"the fixture needs sub-packed-width oracle sizes to appear"
 			);
 		};
-		run_merge_round_trip::<PackedBinaryGhash4x128b>(&[&[3, 3], &[4, 2, 2], &[1]], false);
+		run_merge_round_trip::<PackedGhash4x128b>(&[&[3, 3], &[4, 2, 2], &[1]], false);
 	}
 
 	#[test]
 	fn zero_variable_oracle_round_trip() {
 		// A round mixing two single-scalar oracles with a larger one.
 		// The smallest possible oracle size.
-		run_merge_round_trip::<PackedBinaryGhash1x128b>(&[&[0, 0, 3]], false);
+		run_merge_round_trip::<PackedGhash1x128b>(&[&[0, 0, 3]], false);
 	}
 
 	#[test]
@@ -661,13 +660,13 @@ mod tests {
 	fn tampered_claim_is_rejected() {
 		// Corrupting one oracle's claim must fail the whole round trip.
 		// It must not be silently absorbed by the merge.
-		run_merge_round_trip::<PackedBinaryGhash1x128b>(&[&[3, 3], &[4, 2, 2]], true);
+		run_merge_round_trip::<PackedGhash1x128b>(&[&[3, 3], &[4, 2, 2]], true);
 	}
 
 	#[test]
 	fn multiple_relations_on_merged_oracle() {
 		type F = Ghash128b;
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		// Two oracles, merged into a single round.
 		// Each carries two independent claims, rather than just one.
@@ -767,11 +766,11 @@ mod tests {
 			// This goes far beyond the hand-picked shapes above.
 			// It stress-tests the alignment argument the merge relies on.
 			let round_refs: Vec<&[usize]> = rounds.iter().map(Vec::as_slice).collect();
-			run_merge_round_trip::<PackedBinaryGhash1x128b>(&round_refs, false);
+			run_merge_round_trip::<PackedGhash1x128b>(&round_refs, false);
 
 			// The wider packing also mixes word-aligned oracles with sub-word ones,
 			// which is where the two placement paths meet.
-			run_merge_round_trip::<PackedBinaryGhash4x128b>(&round_refs, false);
+			run_merge_round_trip::<PackedGhash4x128b>(&round_refs, false);
 		}
 	}
 }

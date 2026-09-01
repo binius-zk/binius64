@@ -11,7 +11,7 @@ use crate::{
 };
 
 define_packed_binary_field!(
-	PackedAESBinaryField1x8b,
+	PackedRijndael1x8b,
 	Rijndael8b,
 	u8,
 	(AesSquare1x),
@@ -19,7 +19,7 @@ define_packed_binary_field!(
 	(AesWideMul1x)
 );
 define_packed_binary_field!(
-	PackedAESBinaryField16x8b,
+	PackedRijndael16x8b,
 	Rijndael8b,
 	M128,
 	(AesSquare16x),
@@ -27,7 +27,7 @@ define_packed_binary_field!(
 	(AesWideMul16x)
 );
 define_packed_binary_field!(
-	PackedAESBinaryField32x8b,
+	PackedRijndael32x8b,
 	Rijndael8b,
 	M256,
 	(AesSquare32x),
@@ -35,7 +35,7 @@ define_packed_binary_field!(
 	(AesWideMul32x)
 );
 define_packed_binary_field!(
-	PackedAESBinaryField64x8b,
+	PackedRijndael64x8b,
 	Rijndael8b,
 	M512,
 	(AesSquare64x),
@@ -48,10 +48,10 @@ mod tests {
 	use super::*;
 	use crate::{WideMul, packed_fields::test_utils::packed_field_tests};
 
-	packed_field_tests!(aes_1x8b, PackedAESBinaryField1x8b);
-	packed_field_tests!(aes_16x8b, PackedAESBinaryField16x8b);
-	packed_field_tests!(aes_32x8b, PackedAESBinaryField32x8b);
-	packed_field_tests!(aes_64x8b, PackedAESBinaryField64x8b);
+	packed_field_tests!(aes_1x8b, PackedRijndael1x8b);
+	packed_field_tests!(aes_16x8b, PackedRijndael16x8b);
+	packed_field_tests!(aes_32x8b, PackedRijndael32x8b);
+	packed_field_tests!(aes_64x8b, PackedRijndael64x8b);
 
 	#[test]
 	fn test_wide_mul_exhaustive_scalar_pairs() {
@@ -66,17 +66,15 @@ mod tests {
 			for b in 0..=u8::MAX {
 				let expected = crate::Rijndael8b::new(a) * crate::Rijndael8b::new(b);
 
-				let a_packed =
-					crate::PackedAESBinaryField16x8b::broadcast(crate::Rijndael8b::new(a));
-				let b_packed =
-					crate::PackedAESBinaryField16x8b::broadcast(crate::Rijndael8b::new(b));
-				let reduced = crate::PackedAESBinaryField16x8b::reduce(
-					crate::PackedAESBinaryField16x8b::wide_mul(a_packed, b_packed),
+				let a_packed = crate::PackedRijndael16x8b::broadcast(crate::Rijndael8b::new(a));
+				let b_packed = crate::PackedRijndael16x8b::broadcast(crate::Rijndael8b::new(b));
+				let reduced = crate::PackedRijndael16x8b::reduce(
+					crate::PackedRijndael16x8b::wide_mul(a_packed, b_packed),
 				);
 
 				assert_eq!(
 					reduced,
-					crate::PackedAESBinaryField16x8b::broadcast(expected),
+					crate::PackedRijndael16x8b::broadcast(expected),
 					"a={a:#04x} b={b:#04x}"
 				);
 			}

@@ -157,5 +157,5 @@ const AES_TOWER_8B_INVERT_MAP: [u8; 256] = [
 ];
 
 // Correctness of the byte-lookup square/invert is covered end-to-end by the
-// `PackedAESBinaryField1x8b` square/invert proptests in `packed_aes.rs`, which route
+// `PackedRijndael1x8b` square/invert proptests in `packed_fields::rijndael`, which route
 // `Square`/`InvertOrZero` through this strategy.

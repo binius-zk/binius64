@@ -6,7 +6,7 @@
 /// diagonal into a single 256-bit carry-less multiply when VPCLMULQDQ is available, otherwise the
 /// sliced Karatsuba multiply, which trades that batching for one fewer GHASH reduction.
 ///
-/// AVX2 is part of the condition because without it `PackedBinaryGhash2x128b` is backed by the
+/// AVX2 is part of the condition because without it `PackedGhash2x128b` is backed by the
 /// scaled `M256`, whose widening multiply is two independent 128-bit multiplies — exactly what the
 /// batching is meant to avoid.
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2"))]

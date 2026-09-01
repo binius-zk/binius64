@@ -11,9 +11,9 @@
 /// `GhashClMulWideMul`.
 pub type GhashWideMul1x<T> = super::arithmetic::ghash::GhashClMulWideMul<T>;
 
-/// Square wrapper for the `PackedBinaryGhash1x128b` packing: the PMULL carryless-multiply square.
+/// Square wrapper for the `PackedGhash1x128b` packing: the PMULL carryless-multiply square.
 pub type GhashSquare1x<T> = super::arithmetic::ghash::GhashClMul<T>;
 
-/// Invert wrapper for the `PackedBinaryGhash1x128b` packing: the shared Itoh-Tsujii inversion
+/// Invert wrapper for the `PackedGhash1x128b` packing: the shared Itoh-Tsujii inversion
 /// (there is no CLMUL inverse).
 pub type GhashInvert1x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;

@@ -237,7 +237,7 @@ mod tests {
 
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		BinaryField1b, ExtensionField, Field, PackedBinaryGhash1x128b,
+		BinaryField1b, ExtensionField, Field, PackedGhash1x128b,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
@@ -268,7 +268,7 @@ mod tests {
 	type P = OptimalPackedB128;
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	/// The commitment field is the GHASH 128-bit field; BaseFold uses a single-lane packing of it.
-	type BP = PackedBinaryGhash1x128b;
+	type BP = PackedGhash1x128b;
 	type Chal = HasherChallenger<StdDigest>;
 
 	// Embed a table position j into the field through the GF(2)-linear basis, as the protocol does.

@@ -175,7 +175,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Ghash128b as B128, PackedBinaryGhash1x128b};
+	use binius_field::{Ghash128b as B128, PackedGhash1x128b};
 	use binius_hash::StdHashSuite;
 	use binius_iop::fri::FRIParams;
 	use binius_math::{
@@ -190,7 +190,7 @@ mod tests {
 	#[test]
 	fn test_encode_masked() {
 		type F = B128;
-		type P = PackedBinaryGhash1x128b;
+		type P = PackedGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(42);
 

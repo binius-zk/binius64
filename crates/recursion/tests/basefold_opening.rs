@@ -44,7 +44,7 @@ use std::iter;
 
 use binius_compute::GlobalAllocator;
 use binius_core::word::Word;
-use binius_field::{Ghash128b as B128, PackedBinaryGhash1x128b};
+use binius_field::{Ghash128b as B128, PackedGhash1x128b};
 use binius_frontend::{CircuitStat, MAX_ASSERTION_FAILURES, PopulateError, Wire};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::{
@@ -75,7 +75,7 @@ use rand::{SeedableRng, rngs::StdRng};
 type StdChallenger = HasherChallenger<StdDigest>;
 
 /// The packed field the native prover runs over.
-type P = PackedBinaryGhash1x128b;
+type P = PackedGhash1x128b;
 
 /// Words one field element occupies on the transcript, low half first.
 const ELEMENT_WORDS: usize = 2;

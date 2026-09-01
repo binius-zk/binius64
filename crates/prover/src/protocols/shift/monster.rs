@@ -204,7 +204,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Ghash128b, PackedBinaryGhash2x128b, Random, Rijndael8b};
+	use binius_field::{Ghash128b, PackedGhash2x128b, Random, Rijndael8b};
 	use binius_math::{
 		BinarySubspace, inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval,
 		test_utils::random_scalars, univariate::EvaluationDomain,
@@ -227,7 +227,7 @@ mod tests {
 	#[test]
 	fn h_op_consistency() {
 		type F = Ghash128b;
-		type P = PackedBinaryGhash2x128b;
+		type P = PackedGhash2x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 

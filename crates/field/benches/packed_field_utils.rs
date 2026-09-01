@@ -200,14 +200,14 @@ macro_rules! benchmark_packed_operation {
 				PackedBinaryField512x1b
 
 				// AES
-				PackedAESBinaryField16x8b
-				PackedAESBinaryField32x8b
-				PackedAESBinaryField64x8b
+				PackedRijndael16x8b
+				PackedRijndael32x8b
+				PackedRijndael64x8b
 
 				// GHASH
-				PackedBinaryGhash1x128b
-				PackedBinaryGhash2x128b
-				PackedBinaryGhash4x128b
+				PackedGhash1x128b
+				PackedGhash2x128b
+				PackedGhash4x128b
 			]);
 	};
 }

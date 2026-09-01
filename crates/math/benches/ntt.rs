@@ -1,8 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{
-	BinaryField, FieldOps, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
-	PackedBinaryGhash4x128b, PackedField,
+	BinaryField, FieldOps, PackedField, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b,
 };
 use binius_math::{
 	ntt::{
@@ -209,9 +208,9 @@ fn bench_fields(c: &mut Criterion) {
 			("pre-expanded", GaoMateerPreExpanded<_>, GaoMateerPreExpanded::generate),
 		],
 		fields = [
-			(PackedBinaryGhash1x128b, "1xGhash"),
-			(PackedBinaryGhash2x128b, "2xGhash"),
-			(PackedBinaryGhash4x128b, "4xGhash"),
+			(PackedGhash1x128b, "1xGhash"),
+			(PackedGhash2x128b, "2xGhash"),
+			(PackedGhash4x128b, "4xGhash"),
 		],
 		log_d = [16, 20, 24],
 		// `skip_early = 1` is the shape a rate-1/2 Reed-Solomon encoder asks for.

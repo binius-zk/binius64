@@ -278,7 +278,7 @@ mod tests {
 	}
 
 	/// Stress-test accumulation of many widening products. Correctness / linearity for each
-	/// individual packed width is covered by the proptest suite in `packed_ghash.rs`.
+	/// individual packed width is covered by the proptest suite in `packed_fields::ghash`.
 	#[test]
 	fn test_wide_mul_accumulation() {
 		type P = OptimalPackedB128;

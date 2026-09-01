@@ -14,7 +14,7 @@ use bytemuck::TransparentWrapper;
 use crate::{
 	Ghash128b, PackedGhashSq1x256b, SlicedGhashSqWide, WideMul,
 	arithmetic_traits::MulXWide,
-	packed_ghash_sq::{ghash_sq_coords, ghash_sq_from_coords},
+	packed_fields::ghash_sq::{ghash_sq_coords, ghash_sq_from_coords},
 };
 
 /// The unreduced product of a single GHASH coordinate multiply.

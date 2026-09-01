@@ -86,8 +86,7 @@ impl<P: PackedField, A: Allocator> CombinedMessage<P, A> {
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		Field, Ghash128b as B128, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
-		PackedBinaryGhash4x128b, Random,
+		Field, Ghash128b as B128, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b, Random,
 	};
 	use binius_math::test_utils::random_field_buffer;
 	use rand::{SeedableRng, rngs::StdRng};
@@ -140,9 +139,9 @@ mod tests {
 	// against a reference that never packs.
 	#[test]
 	fn a_combination_matches_the_scalar_definition_at_every_width() {
-		check_all_shapes::<PackedBinaryGhash1x128b>();
-		check_all_shapes::<PackedBinaryGhash2x128b>();
-		check_all_shapes::<PackedBinaryGhash4x128b>();
+		check_all_shapes::<PackedGhash1x128b>();
+		check_all_shapes::<PackedGhash2x128b>();
+		check_all_shapes::<PackedGhash4x128b>();
 	}
 
 	#[test]

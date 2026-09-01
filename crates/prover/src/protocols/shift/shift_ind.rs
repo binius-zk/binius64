@@ -476,9 +476,9 @@ mod tests {
 	#[test]
 	fn claimed_sum_is_the_weighted_indicator_sum() {
 		use binius_compute::GlobalAllocator;
-		use binius_field::{PackedBinaryGhash2x128b, Random, Rijndael8b};
+		use binius_field::{PackedGhash2x128b, Random, Rijndael8b};
 
-		type P = PackedBinaryGhash2x128b;
+		type P = PackedGhash2x128b;
 
 		let mut rng = StdRng::seed_from_u64(1);
 		let r_zhat_prime = B128::random(&mut rng);

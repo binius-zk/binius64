@@ -736,7 +736,7 @@ impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b};
+	use binius_field::{PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b};
 	use proptest::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -854,9 +854,9 @@ mod tests {
 		//     2x128b -> LOG_WIDTH 1
 		//     4x128b -> LOG_WIDTH 2, the width that first refuses the widest windows
 		for log_d in 6..13 {
-			sweep_window_widths::<PackedBinaryGhash1x128b>(log_d, 0);
-			sweep_window_widths::<PackedBinaryGhash2x128b>(log_d, 1);
-			sweep_window_widths::<PackedBinaryGhash4x128b>(log_d, 2);
+			sweep_window_widths::<PackedGhash1x128b>(log_d, 0);
+			sweep_window_widths::<PackedGhash2x128b>(log_d, 1);
+			sweep_window_widths::<PackedGhash4x128b>(log_d, 2);
 		}
 	}
 
@@ -866,13 +866,13 @@ mod tests {
 		//
 		//     log_d = 8, LOG_WIDTH = 2, skip_early = 1, width = 4
 		//     plane length = 2^(8 - 1 - 4 - 2) = 2 packed elements, the smallest fusable plane
-		check_fused_matches_per_layer::<PackedBinaryGhash4x128b>(8, 1, 0, 5, 7);
+		check_fused_matches_per_layer::<PackedGhash4x128b>(8, 1, 0, 5, 7);
 
 		// One layer deeper the plane would hold a single packed element, so this shape falls back.
 		//
 		//     log_d = 8, LOG_WIDTH = 2, skip_early = 0, width = 5 -> plane length 2^1
 		//     the same start with width 6 would need plane length 2^0, refused
-		check_fused_matches_per_layer::<PackedBinaryGhash4x128b>(8, 0, 0, 5, 8);
+		check_fused_matches_per_layer::<PackedGhash4x128b>(8, 0, 0, 5, 8);
 	}
 
 	#[test]
@@ -885,14 +885,14 @@ mod tests {
 						continue;
 					}
 					for log_num_shares in [0, 1, 2, 3, 5, 1000] {
-						check_transform_matches_reference::<PackedBinaryGhash1x128b>(
+						check_transform_matches_reference::<PackedGhash1x128b>(
 							log_d,
 							skip_early,
 							skip_late,
 							log_num_shares,
 							0,
 						);
-						check_transform_matches_reference::<PackedBinaryGhash4x128b>(
+						check_transform_matches_reference::<PackedGhash4x128b>(
 							log_d,
 							skip_early,
 							skip_late,
@@ -918,13 +918,13 @@ mod tests {
 			// one, for every shape the multithreaded transform can hand the shared phase.
 			prop_assume!(skip_early + skip_late <= log_d);
 
-			check_fused_matches_per_layer::<PackedBinaryGhash1x128b>(
+			check_fused_matches_per_layer::<PackedGhash1x128b>(
 				log_d, skip_early, skip_late, log_num_shares, seed,
 			);
-			check_fused_matches_per_layer::<PackedBinaryGhash2x128b>(
+			check_fused_matches_per_layer::<PackedGhash2x128b>(
 				log_d, skip_early, skip_late, log_num_shares, seed,
 			);
-			check_fused_matches_per_layer::<PackedBinaryGhash4x128b>(
+			check_fused_matches_per_layer::<PackedGhash4x128b>(
 				log_d, skip_early, skip_late, log_num_shares, seed,
 			);
 		}
@@ -941,10 +941,10 @@ mod tests {
 			// which shares no code with it.
 			prop_assume!(skip_early + skip_late <= log_d);
 
-			check_transform_matches_reference::<PackedBinaryGhash1x128b>(
+			check_transform_matches_reference::<PackedGhash1x128b>(
 				log_d, skip_early, skip_late, log_num_shares, seed,
 			);
-			check_transform_matches_reference::<PackedBinaryGhash4x128b>(
+			check_transform_matches_reference::<PackedGhash4x128b>(
 				log_d, skip_early, skip_late, log_num_shares, seed,
 			);
 		}

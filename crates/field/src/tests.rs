@@ -6,11 +6,10 @@ use std::iter;
 use proptest::prelude::*;
 
 use crate::{
-	BinaryField1b, ExtensionField, Field, Ghash128b, PackedAESBinaryField16x8b,
-	PackedAESBinaryField32x8b, PackedAESBinaryField64x8b, PackedBinaryField64x1b,
-	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
-	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-	Rijndael8b, SlicedGhashSq2x256b,
+	BinaryField1b, ExtensionField, Field, Ghash128b, PackedBinaryField64x1b,
+	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b, PackedField,
+	PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b, PackedRijndael16x8b,
+	PackedRijndael32x8b, PackedRijndael64x8b, Rijndael8b, SlicedGhashSq2x256b,
 	field::FieldOps,
 	underlier::{SmallU, UnderlierView},
 };
@@ -22,14 +21,12 @@ fn test_field_text_debug() {
 	assert_eq!(
 		format!(
 			"{:?}",
-			PackedBinaryGhash1x128b::broadcast(Ghash128b::from(
-				162259276829213363391578010288127u128
-			))
+			PackedGhash1x128b::broadcast(Ghash128b::from(162259276829213363391578010288127u128))
 		),
 		"Packed1x128([0x000007ffffffffffffffffffffffffff])"
 	);
 	assert_eq!(
-		format!("{:?}", PackedAESBinaryField16x8b::broadcast(Rijndael8b::new(123))),
+		format!("{:?}", PackedRijndael16x8b::broadcast(Rijndael8b::new(123))),
 		"Packed16x8([0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b])"
 	);
 }
@@ -99,14 +96,14 @@ macro_rules! generate_spread_tests {
 
 generate_spread_tests! {
 	// 128-bit configurations
-	spread_equals_basic_spread_4x128, PackedBinaryGhash4x128b, Ghash128b, u128, 4;
-	spread_equals_basic_spread_2x128, PackedBinaryGhash2x128b, Ghash128b, u128, 2;
-	spread_equals_basic_spread_1x128, PackedBinaryGhash1x128b, Ghash128b, u128, 1;
+	spread_equals_basic_spread_4x128, PackedGhash4x128b, Ghash128b, u128, 4;
+	spread_equals_basic_spread_2x128, PackedGhash2x128b, Ghash128b, u128, 2;
+	spread_equals_basic_spread_1x128, PackedGhash1x128b, Ghash128b, u128, 1;
 
 	// 8-bit configurations
-	spread_equals_basic_spread_64x8, PackedAESBinaryField64x8b, Rijndael8b, u8, 64;
-	spread_equals_basic_spread_32x8, PackedAESBinaryField32x8b, Rijndael8b, u8, 32;
-	spread_equals_basic_spread_16x8, PackedAESBinaryField16x8b, Rijndael8b, u8, 16;
+	spread_equals_basic_spread_64x8, PackedRijndael64x8b, Rijndael8b, u8, 64;
+	spread_equals_basic_spread_32x8, PackedRijndael32x8b, Rijndael8b, u8, 32;
+	spread_equals_basic_spread_16x8, PackedRijndael16x8b, Rijndael8b, u8, 16;
 }
 
 generate_spread_tests_small! {
@@ -185,7 +182,7 @@ fn test_scalar_field_ops_square_transpose_1b_over_1b() {
 
 #[test]
 fn test_packed_field_ops_square_transpose_packed_aes16x8b_over_1b() {
-	check_packed_field_ops_square_transpose::<BinaryField1b, PackedAESBinaryField16x8b>();
+	check_packed_field_ops_square_transpose::<BinaryField1b, PackedRijndael16x8b>();
 }
 
 #[test]

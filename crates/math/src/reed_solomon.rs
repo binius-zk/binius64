@@ -237,9 +237,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{
-		BinaryField, Ghash128b, PackedBinaryGhash1x128b, PackedBinaryGhash4x128b, PackedField,
-	};
+	use binius_field::{BinaryField, Ghash128b, PackedField, PackedGhash1x128b, PackedGhash4x128b};
 	use proptest::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -297,21 +295,21 @@ mod tests {
 
 	#[test]
 	fn test_encode_batch_above_packing_width() {
-		// Test with PackedBinaryGhash1x128b
-		test_encode_batch_helper::<PackedBinaryGhash1x128b>(4, 2, 0);
-		test_encode_batch_helper::<PackedBinaryGhash1x128b>(6, 2, 1);
-		test_encode_batch_helper::<PackedBinaryGhash1x128b>(8, 3, 2);
+		// Test with PackedGhash1x128b
+		test_encode_batch_helper::<PackedGhash1x128b>(4, 2, 0);
+		test_encode_batch_helper::<PackedGhash1x128b>(6, 2, 1);
+		test_encode_batch_helper::<PackedGhash1x128b>(8, 3, 2);
 
-		// Test with PackedBinaryGhash4x128b
-		test_encode_batch_helper::<PackedBinaryGhash4x128b>(4, 2, 0);
-		test_encode_batch_helper::<PackedBinaryGhash4x128b>(6, 2, 1);
-		test_encode_batch_helper::<PackedBinaryGhash4x128b>(8, 3, 2);
+		// Test with PackedGhash4x128b
+		test_encode_batch_helper::<PackedGhash4x128b>(4, 2, 0);
+		test_encode_batch_helper::<PackedGhash4x128b>(6, 2, 1);
+		test_encode_batch_helper::<PackedGhash4x128b>(8, 3, 2);
 	}
 
 	#[test]
 	fn test_encode_batch_below_packing_width() {
 		// Test where message length is less than the packing width and codeword length is greater.
-		test_encode_batch_helper::<PackedBinaryGhash4x128b>(1, 2, 0);
+		test_encode_batch_helper::<PackedGhash4x128b>(1, 2, 0);
 	}
 
 	/// Pins the codeword-duplication identity that underlies Lifted FRI (oracle padding).
@@ -376,13 +374,13 @@ mod tests {
 	#[test]
 	fn test_lift_duplicate_identity() {
 		// eta = 0 degrades to plain equality.
-		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(6, 6, 2);
+		test_lift_duplicate_identity_helper::<PackedGhash1x128b>(6, 6, 2);
 		// Non-trivial lifts of varying sizes.
-		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(4, 6, 2);
-		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(2, 8, 1);
-		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(0, 4, 3);
+		test_lift_duplicate_identity_helper::<PackedGhash1x128b>(4, 6, 2);
+		test_lift_duplicate_identity_helper::<PackedGhash1x128b>(2, 8, 1);
+		test_lift_duplicate_identity_helper::<PackedGhash1x128b>(0, 4, 3);
 		// Same lifts with a wider packing width.
-		test_lift_duplicate_identity_helper::<PackedBinaryGhash4x128b>(4, 8, 2);
+		test_lift_duplicate_identity_helper::<PackedGhash4x128b>(4, 8, 2);
 	}
 
 	/// Checks the adjoint identity at one shape, over the packing `P`.
@@ -436,10 +434,10 @@ mod tests {
 				for log_inv_rate in 1..4 {
 					for log_batch_size in 0..3 {
 						// One lane per word and four lanes per word take different chunk paths.
-						assert_encode_adjoint::<PackedBinaryGhash1x128b>(
+						assert_encode_adjoint::<PackedGhash1x128b>(
 							log_dim, log_inv_rate, log_batch_size, seed,
 						);
-						assert_encode_adjoint::<PackedBinaryGhash4x128b>(
+						assert_encode_adjoint::<PackedGhash4x128b>(
 							log_dim, log_inv_rate, log_batch_size, seed,
 						);
 					}
@@ -457,7 +455,7 @@ mod tests {
 			domain_context: &domain_context,
 		};
 		// The codeword has 2^4 positions, so a weight of 2^3 cannot be one over them.
-		let mut weights = FieldBuffer::<PackedBinaryGhash1x128b>::zeros(3);
+		let mut weights = FieldBuffer::<PackedGhash1x128b>::zeros(3);
 		code.encode_batch_transpose(&ntt, weights.as_mut_view(), 0, &GlobalAllocator);
 	}
 }
