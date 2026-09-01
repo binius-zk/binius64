@@ -154,30 +154,71 @@ impl<F: BinaryField, Data: Deref<Target = [F]>> EvaluationDomain<F> for BinarySu
 /// One weight therefore serves every point:
 ///
 /// ```text
-///     w = (prod_{j >= 1} d_j)^{-1}
+///     w = (prod_{d != 0} d)^{-1}
 /// ```
+///
+/// # Algorithm
+///
+/// That product is the linear coefficient of the subspace polynomial, and the subspace polynomial
+/// has a recurrence:
+///
+/// ```text
+///     W_0(X)     = X
+///     W_{i+1}(X) = W_i(X) * (W_i(X) + W_i(b_i))
+/// ```
+///
+/// Squaring a linearized polynomial doubles every exponent, so it contributes no linear term.
+/// Each step therefore multiplies the linear coefficient by one number, leaving
+///
+/// ```text
+///     prod_{d != 0} d = prod_i W_i(b_i)
+/// ```
+///
+/// which costs a square of the dimension rather than one multiplication per point of the domain.
+///
+/// The weight depends on the subspace alone, so all of it runs in the domain's own field and
+/// crosses into the arithmetic field once.
+/// That is what allows the checked inversion below: one wrapper channel's element type offers the
+/// unchecked inverse alone.
+///
+/// # Panics
+///
+/// Panics if the basis is linearly dependent, which makes the product vanish.
 fn barycentric_weight<F, E, Data>(subspace: &BinarySubspace<F, Data>) -> E
 where
 	F: BinaryField,
 	E: FieldOps + From<F>,
 	Data: Deref<Target = [F]>,
 {
-	let product = subspace
-		.iter()
-		.skip(1)
-		.map(E::from)
-		.fold(E::one(), |acc, d| acc * d);
+	// Seed the recurrence at the polynomial `X`, whose values on the basis are the basis itself.
+	let mut evals = subspace.basis().to_vec();
 
-	// SAFETY: the product runs over the subspace's non-zero elements — `skip(1)` drops index 0,
-	// which is the zero element — so it is non-zero by construction, whatever the caller passes.
-	// Inverting without the zero case spares the wrapper channels a constraint that could never
-	// fire.
-	unsafe { product.invert() }
+	let mut product = F::ONE;
+	for i in 0..evals.len() {
+		// Entry `i` has reached the polynomial vanishing on everything below it, so it is the
+		// factor this step contributes.
+		let normalizer = evals[i];
+		product *= normalizer;
+
+		// Advance the entries still to come one polynomial along.
+		for eval in &mut evals[i + 1..] {
+			*eval *= *eval + normalizer;
+		}
+	}
+
+	// Invariant: each factor is a subspace polynomial evaluated off the subspace it vanishes on,
+	// which is nonzero exactly when the basis is independent. The subspace type leaves that to its
+	// caller, so it is checked here rather than assumed.
+	assert_ne!(product, F::ZERO, "precondition: the subspace basis must be independent");
+
+	E::from(product.invert_or_zero())
 }
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{Field, Ghash128b, Random, util::powers};
+	use binius_field::{
+		Field, Ghash128b, Random, Rijndael8b, arithmetic_traits::InvertOrZero, util::powers,
+	};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
@@ -216,6 +257,48 @@ mod tests {
 				numerator * denominator.invert_or_zero()
 			})
 			.collect()
+	}
+
+	#[test]
+	fn the_weight_recurrence_matches_the_product_over_the_subspace() {
+		// Invariant: the weight is the inverse of the product of every nonzero point of the
+		// domain. That product is what the weight is defined as, so it is the reference here.
+		//
+		// Fixture state: dim 0 is the one-point domain, whose empty product is one.
+		// Dim 8 is 255 factors, enough that a wrong recurrence cannot coincide.
+		for dim in 0..=8 {
+			let subspace = BinarySubspace::<F>::with_dim(dim);
+
+			let product: F = subspace.iter().skip(1).product();
+			let expected = product.invert_or_zero();
+
+			assert_eq!(barycentric_weight::<F, F, _>(&subspace), expected, "dim={dim}");
+		}
+	}
+
+	#[test]
+	fn the_weight_crosses_fields_once_and_lands_on_the_same_value() {
+		// Invariant: which field the arithmetic runs in cannot change the weight.
+		//
+		// The recurrence runs entirely in the domain's own field and embeds its result, so this
+		// pins that the embedding lands on the finished weight rather than partway through.
+		for dim in 0..=6 {
+			let subspace = BinarySubspace::<Rijndael8b>::with_dim(dim);
+
+			let native = barycentric_weight::<Rijndael8b, Rijndael8b, _>(&subspace);
+			let embedded = barycentric_weight::<Rijndael8b, B128, _>(&subspace);
+
+			assert_eq!(embedded, B128::from(native), "dim={dim}");
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn a_dependent_basis_is_rejected() {
+		// A repeated basis element spans fewer dimensions than the basis claims, so some index
+		// past zero also maps to the zero point and the product vanishes.
+		let subspace = BinarySubspace::<F>::new_unchecked(vec![F::ONE, F::ONE]);
+		let _ = barycentric_weight::<F, F, _>(&subspace);
 	}
 
 	#[test]
