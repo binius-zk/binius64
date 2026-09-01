@@ -9,7 +9,7 @@
 //! - the negated table denominator `J - c`, with `J` the embedded table positions,
 //! - the pushforward `Y = I_* eq_r`, the looker numerator scattered onto table positions.
 
-use std::{iter, mem::MaybeUninit};
+use std::iter;
 
 use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
@@ -345,14 +345,13 @@ where
 	// Invariant: the challenge rides in the lane pattern, not in the shift.
 	// So a short table's dead lanes stay zero: only the first word has them, and its shift is zero.
 	let lanes = P::from_scalars((0..live_lanes).map(|l| embed_position::<F>(l) - c));
-	let fill = |(word, slot): (usize, &mut MaybeUninit<P>)| {
-		slot.write(P::broadcast(embed_position::<F>(word << P::LOG_WIDTH)) + lanes);
-	};
 
 	let mut packed = alloc.alloc::<P>(packed_len);
 	// The allocator rounds its blocks up, so the fill is bounded to the words that are entries.
 	let words = &mut packed.spare_capacity_mut()[..packed_len];
-	words.iter_mut().enumerate().for_each(fill);
+	for (word, slot) in words.iter_mut().enumerate() {
+		slot.write(P::broadcast(embed_position::<F>(word << P::LOG_WIDTH)) + lanes);
+	}
 	// Safety: the loop writes each of the first `packed_len` slots exactly once.
 	unsafe { packed.set_len(packed_len) };
 
