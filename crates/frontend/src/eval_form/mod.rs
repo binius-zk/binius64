@@ -98,17 +98,7 @@ impl EvalForm {
 		values: &mut StridedArray2DViewMut<'_, Word>,
 		path_spec_tree: Option<&PathSpecTree>,
 	) -> Result<(), BatchPopulateError> {
-		self.evaluate_stripe(values, 0, path_spec_tree)
-	}
-
-	/// Evaluate the bytecode over a view whose local column 0 is the global `instance_offset`.
-	fn evaluate_stripe(
-		&self,
-		values: &mut StridedArray2DViewMut<'_, Word>,
-		instance_offset: usize,
-		path_spec_tree: Option<&PathSpecTree>,
-	) -> Result<(), BatchPopulateError> {
-		let mut ctx = BatchExecutionContext::new(values, instance_offset);
+		let mut ctx = BatchExecutionContext::new(values);
 		self.executor().run(&mut ctx);
 		ctx.check_assertions(path_spec_tree)
 	}
