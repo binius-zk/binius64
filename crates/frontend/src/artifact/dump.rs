@@ -10,10 +10,9 @@ use crate::ir::{
 
 struct PathSpecData {
 	name: String,
-	gates: Vec<GateBody>,
 	parent: Option<PathSpec>,
 	children: Vec<PathSpec>,
-	breakdown: Option<GateBreakdown>,
+	breakdown: GateBreakdown,
 	cum_breakdown: Option<GateBreakdown>,
 }
 
@@ -21,10 +20,9 @@ impl PathSpecData {
 	const fn new() -> Self {
 		PathSpecData {
 			name: String::new(),
-			gates: Vec::new(),
 			parent: None,
 			children: Vec::new(),
-			breakdown: None,
+			breakdown: GateBreakdown::new(),
 			cum_breakdown: None,
 		}
 	}
@@ -37,14 +35,14 @@ struct GateBreakdown {
 }
 
 impl GateBreakdown {
-	fn count(gates: &[GateBody]) -> GateBreakdown {
-		let mut breakdown = GateBreakdown {
+	const fn new() -> Self {
+		GateBreakdown {
 			by_kind: BTreeMap::new(),
-		};
-		for &kind in gates {
-			*breakdown.by_kind.entry(kind).or_insert(0) += 1;
 		}
-		breakdown
+	}
+
+	fn add(&mut self, kind: GateBody) {
+		*self.by_kind.entry(kind).or_insert(0) += 1;
 	}
 
 	fn merge(mut self, other: &GateBreakdown) -> GateBreakdown {
@@ -122,9 +120,9 @@ impl Cx {
 			self.data.entry(path_spec).or_insert_with(PathSpecData::new);
 		}
 
-		// Now add gates to their respective PathSpecs
+		// Now tally gates into their respective PathSpecs
 		for &(path, body) in gate_records {
-			self.data.get_mut(&path).unwrap().gates.push(body);
+			self.data.get_mut(&path).unwrap().breakdown.add(body);
 		}
 	}
 
@@ -141,12 +139,6 @@ impl Cx {
 	fn symbolicate_paths(&mut self, path_spec_tree: &PathSpecTree) {
 		for (path, data) in &mut self.data {
 			path_spec_tree.stringify(*path, &mut data.name);
-		}
-	}
-
-	fn compute_breakdowns(&mut self) {
-		for data in self.data.values_mut() {
-			data.breakdown = Some(GateBreakdown::count(&data.gates));
 		}
 	}
 
@@ -191,7 +183,7 @@ impl Cx {
 			// accumulating and the list handed straight back.
 			let children = std::mem::take(&mut self.data.get_mut(&path_spec).unwrap().children);
 
-			let mut cum_breakdown = self.data[&path_spec].breakdown.as_ref().unwrap().clone();
+			let mut cum_breakdown = self.data[&path_spec].breakdown.clone();
 			for child in &children {
 				if let Some(child_cum) = self.data[child].cum_breakdown.as_ref() {
 					cum_breakdown = cum_breakdown.merge(child_cum);
@@ -249,7 +241,6 @@ pub(crate) fn dump_composition(
 	cx.bucket_gates(path_spec_tree, gate_records);
 	cx.recover_hierarchy(path_spec_tree);
 	cx.compute_postorder(path_spec_tree);
-	cx.compute_breakdowns();
 	cx.compute_cum_breakdowns();
 	cx.symbolicate_paths(path_spec_tree);
 

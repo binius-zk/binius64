@@ -124,7 +124,7 @@ impl JwtClaims {
 			}
 
 			// Assert that we found the pattern (found_start should be msb-true)
-			b.assert_true("attr_found".to_string(), found_start);
+			b.assert_true("attr_found", found_start);
 
 			// ---- Find value terminator
 			//

@@ -797,11 +797,11 @@ impl CircuitBuilder {
 	///
 	/// Note that this is the same builder instance, but with a different namespace, and that means
 	/// calling [`Self::build`] on the returned builder is going to build the whole circuit.
-	pub fn subcircuit(&self, name: impl Into<String>) -> CircuitBuilder {
+	pub fn subcircuit(&self, name: impl AsRef<str>) -> CircuitBuilder {
 		let nested_path = self
 			.graph_mut()
 			.path_spec_tree
-			.extend(self.current_path, name);
+			.extend(self.current_path, name.as_ref());
 		CircuitBuilder {
 			current_path: nested_path,
 			shared: self.shared.clone(),
@@ -1388,7 +1388,8 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint.
-	pub fn assert_eq(&self, name: impl Into<String>, x: Wire, y: Wire) {
+	pub fn assert_eq(&self, name: impl AsRef<str>, x: Wire, y: Wire) {
+		let name = name.as_ref();
 		let mut graph = self.graph_mut();
 		let gate = graph.emit_gate(self.current_path, Opcode::AssertEq, [x, y], []);
 		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
@@ -1405,8 +1406,8 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// N AND constraints (one per element).
-	pub fn assert_eq_v<const N: usize>(&self, name: impl Into<String>, x: [Wire; N], y: [Wire; N]) {
-		let base_name = name.into();
+	pub fn assert_eq_v<const N: usize>(&self, name: impl AsRef<str>, x: [Wire; N], y: [Wire; N]) {
+		let base_name = name.as_ref();
 		for i in 0..N {
 			self.assert_eq(format!("{base_name}[{i}]"), x[i], y[i]);
 		}
@@ -1419,7 +1420,8 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint.
-	pub fn assert_zero(&self, name: impl Into<String>, x: Wire) {
+	pub fn assert_zero(&self, name: impl AsRef<str>, x: Wire) {
+		let name = name.as_ref();
 		let mut graph = self.graph_mut();
 		let gate = graph.emit_gate(self.current_path, Opcode::AssertZero, [x], []);
 		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
@@ -1433,7 +1435,8 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint.
-	pub fn assert_non_zero(&self, name: impl Into<String>, x: Wire) {
+	pub fn assert_non_zero(&self, name: impl AsRef<str>, x: Wire) {
+		let name = name.as_ref();
 		let mut graph = self.graph_mut();
 		let gate = graph.emit_gate(self.current_path, Opcode::AssertNonZero, [x], []);
 		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
@@ -1452,7 +1455,8 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint.
-	pub fn assert_false(&self, name: impl Into<String>, x: Wire) {
+	pub fn assert_false(&self, name: impl AsRef<str>, x: Wire) {
+		let name = name.as_ref();
 		let mut graph = self.graph_mut();
 		let gate = graph.emit_gate(self.current_path, Opcode::AssertFalse, [x], []);
 		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
@@ -1471,7 +1475,8 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint.
-	pub fn assert_true(&self, name: impl Into<String>, x: Wire) {
+	pub fn assert_true(&self, name: impl AsRef<str>, x: Wire) {
+		let name = name.as_ref();
 		let mut graph = self.graph_mut();
 		let gate = graph.emit_gate(self.current_path, Opcode::AssertTrue, [x], []);
 		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
@@ -1530,7 +1535,8 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint.
-	pub fn assert_eq_cond(&self, name: impl Into<String>, x: Wire, y: Wire, cond: Wire) {
+	pub fn assert_eq_cond(&self, name: impl AsRef<str>, x: Wire, y: Wire, cond: Wire) {
+		let name = name.as_ref();
 		let mut graph = self.graph_mut();
 		let gate = graph.emit_gate(self.current_path, Opcode::AssertEqCond, [x, y, cond], []);
 		let path_spec = graph.path_spec_tree.extend(self.current_path, name);
