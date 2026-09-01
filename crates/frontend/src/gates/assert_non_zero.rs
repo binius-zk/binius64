@@ -77,7 +77,10 @@ impl GateKind for AssertNonZero {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::word::Word;
+	use binius_core::{
+		constraint_system::{ValueIndex, ValueVec},
+		word::Word,
+	};
 	use rand::prelude::*;
 
 	use crate::builder::CircuitBuilder;
@@ -139,8 +142,6 @@ mod tests {
 
 	#[test]
 	fn test_assert_non_zero_forge_zero_rejected() {
-		use binius_core::constraint_system::ValueIndex;
-
 		// Soundness regression: a malicious prover claims `x ≠ 0` while actually planting
 		// `x = 0` and the aux carry-out `cout = 0`. Before the `MSB(cout) = 1` constraint
 		// (`sar(cout, 63) ∧ all_one = all_one`) was added, only the carry-defining AND was
@@ -155,19 +156,20 @@ mod tests {
 		builder.assert_non_zero("non_zero", x);
 		let circuit = builder.build();
 
-		// Build the forged witness by hand. A fresh value vec is all zeros, so the input `x`
-		// and the aux carry-out `cout` are already 0. We cannot call `populate_wire_witness`
-		// (it panics on `x = 0`), so we only fill the constants section directly, exactly as
-		// `populate_wire_witness` would, so the verifier's constant check passes.
-		let mut w = circuit.new_witness_filler();
+		// Build the forged witness by hand, bypassing the evaluator entirely. A fresh value vec
+		// is all zeros, so the input `x` and the aux carry-out `cout` are already 0. We cannot
+		// call `populate_wire_witness` (it panics on `x = 0`), so we only fill the constants
+		// section directly, exactly as `populate_wire_witness` would, so the verifier's constant
+		// check passes.
 		let cs = circuit.constraint_system();
+		let mut value_vec = ValueVec::new(circuit.value_vec_layout());
 		for (i, c) in cs.constants.iter().enumerate() {
-			w.value_vec_mut()[ValueIndex::constant(i as u32)] = *c;
+			value_vec[ValueIndex::constant(i as u32)] = *c;
 		}
 
 		// The carry-out constraint is satisfied by the all-zero witness, but the AND
 		// `sar(cout, 63) ∧ all_one = all_one` constraint (`MSB(cout) = 1`) must reject it.
-		let result = cs.verify(w.value_vec());
+		let result = cs.verify(&value_vec);
 		assert!(
 			result.is_err(),
 			"constraint verification must reject the forged x = 0 witness, got: {result:?}"

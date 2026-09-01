@@ -36,6 +36,7 @@
 //!
 //! Every module reads `ir`, and nothing reads `builder`.
 
+#![warn(missing_docs)]
 #![warn(rustdoc::missing_crate_level_docs)]
 
 mod artifact;
