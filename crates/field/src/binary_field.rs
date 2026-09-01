@@ -9,7 +9,7 @@ use std::{
 
 use bytemuck::Zeroable;
 
-use super::{Underlier, UnderlierView, extension::ExtensionField};
+use super::{Underlier, UnderlierView, field::ExtensionField};
 use crate::{Field, underlier::U1};
 
 /// A finite field with characteristic 2.

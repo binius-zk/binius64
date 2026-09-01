@@ -16,7 +16,7 @@ use crate::{
 	Field, Rijndael8b,
 	arch::M128,
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
-	extension::ExtensionField,
+	field::ExtensionField,
 	underlier::{U1, UnderlierView},
 };
 
