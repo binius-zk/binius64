@@ -25,7 +25,7 @@ use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
-	line::extrapolate_line_prepared,
+	line::extrapolate_line_preprocessed,
 	multilinear::fold::{fold_highest_var, fold_highest_var_inplace},
 };
 use binius_utils::rayon;
@@ -387,8 +387,8 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			return self.map_reduce(chunk_vars, map, reduce);
 		}
 
-		// Every folded word shares this challenge, so prepare the multiplier once.
-		let challenge_broadcast = P::broadcast(challenge).prepare();
+		// Every folded word shares this challenge, so preprocess the multiplier once.
+		let challenge_broadcast = P::preprocess_mul(challenge);
 
 		// Fresh destination buffers for the borrowed columns, held outside the column borrow so
 		// they can be moved into the store once the fold has written them.
@@ -470,7 +470,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 
 		let chunk = PreFoldEvaluationChunk {
 			n_vars: n_vars - 1,
-			challenge_broadcast: &challenge_broadcast,
+			challenge_broadcast,
 			cols,
 			eqs,
 		};
@@ -577,8 +577,8 @@ impl<'a, P: PackedField> PreFoldColumnChunk<'a, P> {
 	}
 
 	/// Folds a column half, interpolating its two segments on the round's variable.
-	fn fold(self, challenge_broadcast: &P::Prepared) -> &'a [P] {
-		self.fold_with(|lo, hi| extrapolate_line_prepared(lo, hi, challenge_broadcast))
+	fn fold(self, challenge_broadcast: &impl Fn(P) -> P) -> &'a [P] {
+		self.fold_with(|lo, hi| extrapolate_line_preprocessed(lo, hi, challenge_broadcast))
 	}
 
 	/// Contracts an eq expansion by summing its two segments.
@@ -595,14 +595,14 @@ impl<'a, P: PackedField> PreFoldColumnChunk<'a, P> {
 /// counterpart of [`EvaluationChunk`]. Each column is a `[low, high]` pair of fold producers and
 /// each eq expansion is a single producer; [`Self::fold`] runs them all to produce an
 /// [`EvaluationChunk`] at a leaf.
-struct PreFoldEvaluationChunk<'a, P: PackedField> {
+struct PreFoldEvaluationChunk<'a, P: PackedField, M> {
 	n_vars: usize,
-	challenge_broadcast: &'a P::Prepared,
+	challenge_broadcast: M,
 	cols: Vec<[PreFoldColumnChunk<'a, P>; 2]>,
 	eqs: Vec<PreFoldColumnChunk<'a, P>>,
 }
 
-impl<'a, P: PackedField> PreFoldEvaluationChunk<'a, P> {
+impl<'a, P: PackedField, M: Fn(P) -> P + Copy> PreFoldEvaluationChunk<'a, P, M> {
 	/// Bisects the range on its highest remaining variable, matching
 	/// [`EvaluationChunk::split_half`].
 	fn split_half(self) -> [Self; 2] {
@@ -655,8 +655,8 @@ impl<'a, P: PackedField> PreFoldEvaluationChunk<'a, P> {
 		let cols = cols
 			.into_iter()
 			.map(|[lo, hi]| ColumnChunk {
-				lo: FieldSlice::from_slice(n_vars, lo.fold(challenge_broadcast)),
-				hi: FieldSlice::from_slice(n_vars, hi.fold(challenge_broadcast)),
+				lo: FieldSlice::from_slice(n_vars, lo.fold(&challenge_broadcast)),
+				hi: FieldSlice::from_slice(n_vars, hi.fold(&challenge_broadcast)),
 			})
 			.collect();
 		let eqs = eqs
@@ -791,8 +791,8 @@ fn map_reduce_helper<P: PackedField, T: Send>(
 	reduce(ret_0, ret_1, level)
 }
 
-fn map_reduce_with_fold_helper<P: PackedField, T: Send>(
-	chunk: PreFoldEvaluationChunk<'_, P>,
+fn map_reduce_with_fold_helper<P: PackedField, T: Send, M: Fn(P) -> P + Copy + Send>(
+	chunk: PreFoldEvaluationChunk<'_, P, M>,
 	sub_vars: usize,
 	map: &(impl (for<'a> Fn(EvaluationChunk<'a, P>) -> T) + Sync),
 	reduce: &(impl (Fn(T, T, usize) -> T) + Sync),

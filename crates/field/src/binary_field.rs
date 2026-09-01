@@ -378,28 +378,6 @@ macro_rules! binary_field {
 				Self(<P as $crate::arithmetic_traits::WideMul>::reduce(wide).to_underlier())
 			}
 		}
-
-		impl $crate::arithmetic_traits::PreparedMul for $name {
-			type Prepared = <$crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name> as $crate::arithmetic_traits::PreparedMul>::Prepared;
-
-			#[inline]
-			fn prepare(self) -> Self::Prepared {
-				type P = $crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name>;
-				<P as $crate::arithmetic_traits::PreparedMul>::prepare(P::from_underlier(self.0))
-			}
-
-			#[inline]
-			fn mul_prepared(self, rhs: &Self::Prepared) -> Self {
-				type P = $crate::packed_fields::primitive::PackedPrimitiveType<$typ, $name>;
-				Self(
-					<P as $crate::arithmetic_traits::PreparedMul>::mul_prepared(
-						P::from_underlier(self.0),
-						rhs,
-					)
-					.to_underlier(),
-				)
-			}
-		}
 	};
 }
 

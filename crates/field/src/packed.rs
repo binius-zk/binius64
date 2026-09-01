@@ -14,7 +14,7 @@ use std::{
 use bytemuck::Zeroable;
 
 use super::{Random, arithmetic_traits::Square};
-use crate::{BinaryField, Divisible, Maskable, PreparedMul, WideMul, field::FieldOps};
+use crate::{BinaryField, Divisible, Maskable, WideMul, field::FieldOps};
 
 /// A packed field represents a vector of underlying field elements.
 ///
@@ -40,7 +40,6 @@ pub trait PackedField:
 	+ Zeroable
 	+ Random
 	+ WideMul<Output: Debug + Send + Sync + 'static>
-	+ PreparedMul
 	+ 'static
 	// A packed field divides into its `WIDTH` scalars. Scalar element access (`get`/`set` and
 	// their `_unchecked` variants), broadcast, and the scalar iterators are all provided by this
@@ -89,6 +88,21 @@ pub trait PackedField:
 	#[inline]
 	fn from_scalars(values: impl IntoIterator<Item = Self::Scalar>) -> Self {
 		Divisible::from_iter(values.into_iter())
+	}
+
+	/// Preprocesses a multiplier that a loop will apply to many values.
+	///
+	/// Every hot loop multiplies a whole buffer by one loop constant.
+	/// A broadcast transform twiddle and a broadcast sumcheck challenge are both that shape.
+	/// Work spent once here then buys a cheaper multiply for every value the constant reaches.
+	///
+	/// The returned multiplier must agree with multiplying by the broadcast scalar.
+	/// Most fields keep that ordinary multiply, which is what this default does.
+	#[inline]
+	fn preprocess_mul(scalar: Self::Scalar) -> impl Fn(Self) -> Self + Copy + Send + Sync {
+		// Broadcasting into the capture keeps it out of the loop the multiplier runs in.
+		let broadcast = Self::broadcast(scalar);
+		move |value| value * broadcast
 	}
 
 	/// Returns the value to the power `exp`.

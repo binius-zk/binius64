@@ -174,7 +174,7 @@ where
 #[derive(TransparentWrapper)]
 pub struct PreparedMulFromMul<T>(T);
 
-impl<P: Copy + Debug + Send + Sync + Mul<Output = P>> PreparedMul for PreparedMulFromMul<P> {
+impl<P: Copy + Send + Sync + Mul<Output = P>> PreparedMul for PreparedMulFromMul<P> {
 	type Prepared = P;
 
 	#[inline]

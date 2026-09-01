@@ -2,7 +2,6 @@
 // Copyright 2026 The Binius Developers
 
 use std::{
-	fmt::Debug,
 	iter::Sum,
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
@@ -40,28 +39,21 @@ pub trait WideMul: Sized {
 	fn reduce(wide: Self::Output) -> Self;
 }
 
-/// A field whose multiplier can be preprocessed once and then applied to many values.
+/// The per-type multiply that a preprocessed multiplier is built from.
 ///
-/// Every hot loop in the prover multiplies by a loop constant.
+/// One blanket implementation gives every binary packing its packed-field behaviour, so a packing
+/// that wants its own preprocessed multiply injects it here, as squaring and inversion are
+/// injected.
 ///
-/// A broadcast NTT twiddle and a broadcast sumcheck challenge are both that shape.
-///
-/// Work spent once on the multiplier then buys a cheaper multiply for every value it reaches.
-///
-/// This is a parent trait of both the scalar and the packed field traits, so every field has it.
-///
-/// Most fields use the trivial form: the prepared multiplier is the multiplier, and applying it is
-/// ordinary multiplication.
-///
-/// The `GF(2^128)` field and its carry-less-multiply packings instead precompute the multiplier
-/// scaled by `X^64`.
+/// The `GF(2^128)` packings precompute the multiplier scaled by `X^64`.
+/// Everything else keeps the multiplier as it is and multiplies ordinarily.
 ///
 /// # Invariant
 ///
 /// Preparing a multiplier and applying it must equal multiplying by it directly.
 pub trait PreparedMul: Sized {
 	/// The preprocessed form of a multiplier.
-	type Prepared: Copy + Send + Sync + Debug;
+	type Prepared: Copy + Send + Sync;
 
 	/// Preprocesses a multiplier for repeated use.
 	fn prepare(self) -> Self::Prepared;

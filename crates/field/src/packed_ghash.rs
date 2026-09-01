@@ -46,7 +46,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		Ghash128b, PackedField, PreparedMul, packed_fields::test_utils::packed_field_tests,
+		Ghash128b, PackedField, packed_fields::test_utils::packed_field_tests,
 		underlier::UnderlierView,
 	};
 
@@ -56,11 +56,11 @@ mod tests {
 	/// the operands whose product reaches the highest degree.
 	const BOUNDARY_SCALARS: [u128; 7] = [0, 1, 2, 0x87, u128::MAX, 1 << 127, (1 << 127) | 1];
 
-	/// Every pairing of the boundary patterns multiplies the same prepared as unprepared.
+	/// Every pairing of the boundary patterns multiplies the same preprocessed as plain.
 	///
 	/// A rotation of the pattern list fills the lanes with distinct patterns, so the pairs cover a
 	/// lane-dependent bug as well: a packing wider than one lane sees a different pattern in each.
-	fn check_mul_prepared_boundaries<P: PackedField<Scalar = Ghash128b>>() {
+	fn check_preprocess_mul_boundaries<P: PackedField<Scalar = Ghash128b>>() {
 		let rotation = |first: usize| {
 			P::from_scalars((0..P::WIDTH).map(|lane| {
 				Ghash128b::from(BOUNDARY_SCALARS[(first + lane) % BOUNDARY_SCALARS.len()])
@@ -68,11 +68,15 @@ mod tests {
 		};
 
 		for i in 0..BOUNDARY_SCALARS.len() {
-			for j in 0..BOUNDARY_SCALARS.len() {
-				let (x, y) = (rotation(i), rotation(j));
+			let value = rotation(i);
+			for pattern in BOUNDARY_SCALARS {
+				let multiplier = Ghash128b::from(pattern);
 
-				assert_eq!(x.mul_prepared(&y.prepare()), x * y, "rotations {i} and {j}");
-				assert_eq!(y.mul_prepared(&x.prepare()), x * y, "rotations {j} and {i}");
+				assert_eq!(
+					P::preprocess_mul(multiplier)(value),
+					value * P::broadcast(multiplier),
+					"rotation {i} by {pattern:#x}"
+				);
 			}
 		}
 	}
@@ -106,18 +110,17 @@ mod tests {
 	packed_field_tests!(ghash_4x128b, PackedBinaryGhash4x128b);
 
 	#[test]
-	fn mul_prepared_on_boundary_patterns() {
-		check_mul_prepared_boundaries::<PackedBinaryGhash1x128b>();
-		check_mul_prepared_boundaries::<PackedBinaryGhash2x128b>();
-		check_mul_prepared_boundaries::<PackedBinaryGhash4x128b>();
+	fn preprocess_mul_on_boundary_patterns() {
+		check_preprocess_mul_boundaries::<PackedBinaryGhash1x128b>();
+		check_preprocess_mul_boundaries::<PackedBinaryGhash2x128b>();
+		check_preprocess_mul_boundaries::<PackedBinaryGhash4x128b>();
 	}
 
-	/// Preparing a broadcast scalar must agree with preparing the scalar itself.
+	/// The preprocessed multiply must agree with the scalar multiply in every lane.
 	///
-	/// The scalar field derives its arithmetic from the width-one packing, so this pins the two
-	/// entry points to the same field element — lane by lane, at every packing width.
+	/// This is the reference the carry-less-multiply path is pinned to, at every packing width.
 	#[test]
-	fn prepared_broadcast_agrees_with_the_scalar_path() {
+	fn preprocessed_multiply_agrees_with_the_scalar_multiply() {
 		use rand::{SeedableRng, rngs::StdRng};
 
 		use crate::Random;
@@ -127,13 +130,10 @@ mod tests {
 				let value = P::random(&mut *rng);
 				let multiplier = Ghash128b::random(&mut *rng);
 
-				let prepared = P::broadcast(multiplier).prepare();
-				let scalar_prepared = multiplier.prepare();
-
-				let product = value.mul_prepared(&prepared);
+				let product = P::preprocess_mul(multiplier)(value);
 				assert_eq!(product, value * P::broadcast(multiplier));
 				for i in 0..P::WIDTH {
-					assert_eq!(product.get(i), value.get(i).mul_prepared(&scalar_prepared));
+					assert_eq!(product.get(i), value.get(i) * multiplier);
 				}
 			}
 		}

@@ -164,13 +164,13 @@ pub mod test_utils {
 		}
 	}
 
-	/// A prepared multiplier applied to a value equals the plain multiply of the two.
-	pub fn check_mul_prepared<P: PackedField + UnderlierView>(a: P::Underlier, b: P::Underlier) {
-		let (a, b) = (P::from_underlier(a), P::from_underlier(b));
+	/// A preprocessed multiplier applied to a value equals multiplying by the broadcast scalar.
+	pub fn check_preprocess_mul<P: PackedField + UnderlierView>(a: P::Underlier, b: P::Underlier) {
+		let value = P::from_underlier(a);
+		// Preprocessing takes a scalar, so the second operand supplies one lane's worth.
+		let scalar = P::from_underlier(b).get(0);
 
-		assert_eq!(a.mul_prepared(&b.prepare()), a * b);
-		// Preparing the other operand must land on the same product, since multiplication commutes.
-		assert_eq!(b.mul_prepared(&a.prepare()), a * b);
+		assert_eq!(P::preprocess_mul(scalar)(value), value * P::broadcast(scalar));
 	}
 
 	/// One deferred product, reduced immediately, equals the plain multiply.
@@ -202,7 +202,7 @@ pub mod test_utils {
 			mod $mod {
 				use proptest::{prelude::any, proptest};
 				use $crate::packed_fields::test_utils::{
-					check_invert_or_zero, check_mul, check_mul_prepared, check_square,
+					check_invert_or_zero, check_mul, check_preprocess_mul, check_square,
 					check_wide_mul, check_wide_mul_linearity,
 				};
 
@@ -228,8 +228,8 @@ pub mod test_utils {
 					}
 
 					#[test]
-					fn mul_prepared(a in any::<U>(), b in any::<U>()) {
-						check_mul_prepared::<$ty>(a, b);
+					fn preprocess_mul(a in any::<U>(), b in any::<U>()) {
+						check_preprocess_mul::<$ty>(a, b);
 					}
 
 					#[test]

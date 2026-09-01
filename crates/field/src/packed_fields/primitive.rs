@@ -29,8 +29,8 @@ use rand::{
 };
 
 use crate::{
-	BinaryField, Divisible, ExtensionField, Field, Maskable, PackedField, PreparedMul, WideMul,
-	arithmetic_traits::{InvertOrZero, Square},
+	BinaryField, Divisible, ExtensionField, Field, Maskable, PackedField, WideMul,
+	arithmetic_traits::{InvertOrZero, PreparedMul, Square},
 	field::FieldOps,
 	underlier::{U1, Underlier, UnderlierView},
 };
@@ -532,6 +532,13 @@ where
 	U: Underlier + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
+	#[inline]
+	fn preprocess_mul(scalar: Self::Scalar) -> impl Fn(Self) -> Self + Copy + Send + Sync {
+		// The packing chooses the representation, so the broadcast multiplier is prepared by it.
+		let prepared = PreparedMul::prepare(Self::broadcast(scalar));
+		move |value| PreparedMul::mul_prepared(value, &prepared)
+	}
+
 	#[inline]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		assert!(log_block_len < Self::LOG_WIDTH);

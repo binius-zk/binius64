@@ -24,18 +24,18 @@ pub fn extrapolate_line<F: FieldOps>(x0: F, x1: F, z: F) -> F {
 
 /// Extrapolates a line through two points, at a preprocessed parameter.
 ///
-/// The line is the same one the unprepared form names.
+/// The line is the same one the plain form names.
 ///
-/// Binding a variable runs over a whole buffer at one parameter, so preparing it once pays for
+/// Binding a variable runs over a whole buffer at one parameter, so preprocessing it once pays for
 /// every pair.
 #[inline]
-pub fn extrapolate_line_prepared<P: PackedField>(x0: P, x1: P, z: &P::Prepared) -> P {
-	x0 + (x1 - x0).mul_prepared(z)
+pub fn extrapolate_line_preprocessed<P: PackedField>(x0: P, x1: P, z: &impl Fn(P) -> P) -> P {
+	x0 + z(x1 - x0)
 }
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{Field, PreparedMul, Random, field::FieldOps};
+	use binius_field::{Field, Random, field::FieldOps};
 	use rand::prelude::*;
 
 	use super::*;
@@ -79,17 +79,17 @@ mod tests {
 	}
 
 	#[test]
-	fn extrapolate_line_prepared_matches_the_plain_form() {
+	fn extrapolate_line_preprocessed_matches_the_plain_form() {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Preparing the parameter changes its representation, not the line it names.
+		// Preprocessing the parameter changes its representation, not the line it names.
 		for _ in 0..10 {
 			let x0 = P::random(&mut rng);
 			let x1 = P::random(&mut rng);
-			let z = P::random(&mut rng);
+			let z = F::random(&mut rng);
 			assert_eq!(
-				extrapolate_line_prepared(x0, x1, &z.prepare()),
-				extrapolate_line(x0, x1, z)
+				extrapolate_line_preprocessed(x0, x1, &P::preprocess_mul(z)),
+				extrapolate_line(x0, x1, P::broadcast(z))
 			);
 		}
 	}

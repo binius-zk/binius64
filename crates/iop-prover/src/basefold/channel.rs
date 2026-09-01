@@ -18,7 +18,7 @@ use binius_ip_prover::{
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
 	inner_product::inner_product_par,
-	line::{extrapolate_line, extrapolate_line_prepared},
+	line::{extrapolate_line, extrapolate_line_preprocessed},
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
 	ntt::AdditiveNTT,
 };
@@ -280,16 +280,17 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 		if spec.is_zk {
 			let mask = committed.mask.as_ref().expect("ZK oracle carries a mask");
-			// Every word of the message shares γ, so prepare the multiplier once.
+			// Every word of the message shares γ, so preprocess the multiplier once.
 			let gamma_broadcast =
-				P::broadcast(gamma.expect("γ sampled when ZK oracles present")).prepare();
+				P::preprocess_mul(gamma.expect("γ sampled when ZK oracles present"));
 
 			let _scope = tracing::debug_span!("Fold message and ZK mask", log_len = n_i).entered();
 			(message.as_mut(), mask.as_ref())
 				.into_par_iter()
 				.with_min_task(WorkPerItem::FieldMuls)
 				.for_each(|(message_i, &mask_i)| {
-					*message_i = extrapolate_line_prepared(*message_i, mask_i, &gamma_broadcast);
+					*message_i =
+						extrapolate_line_preprocessed(*message_i, mask_i, &gamma_broadcast);
 				});
 		}
 	}

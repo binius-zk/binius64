@@ -35,7 +35,7 @@ pub mod transpose;
 mod underlier;
 pub mod util;
 
-pub use arithmetic_traits::{PreparedMul, WideMul};
+pub use arithmetic_traits::WideMul;
 pub use binary_field::*;
 pub use divisible::Divisible;
 pub use extension::*;

@@ -51,11 +51,11 @@ pub trait Hypercube {
 
 	/// Scales the basis of one variable by a value, at a preprocessed coordinate.
 	///
-	/// The result is the same pair the unprepared form gives.
+	/// The result is the same pair the plain form gives.
 	///
-	/// One coordinate drives a whole round of an expansion, so preparing it once pays for every
+	/// One coordinate drives a whole round of an expansion, so preprocessing it once pays for every
 	/// value that round touches.
-	fn expand_var_prepared<P: PackedField>(value: &P, coord: &P::Prepared) -> [P; 2];
+	fn expand_var_preprocessed<P: PackedField>(value: &P, coord: &impl Fn(P) -> P) -> [P; 2];
 
 	/// Strips one variable's basis factor from the two halves of an expansion.
 	///
@@ -107,8 +107,8 @@ impl Hypercube for OneCube {
 	}
 
 	#[inline(always)]
-	fn expand_var_prepared<P: PackedField>(value: &P, coord: &P::Prepared) -> [P; 2] {
-		let prod = value.mul_prepared(coord);
+	fn expand_var_preprocessed<P: PackedField>(value: &P, coord: &impl Fn(P) -> P) -> [P; 2] {
+		let prod = coord(*value);
 		[*value - prod, prod]
 	}
 
@@ -158,8 +158,8 @@ impl Hypercube for InfCube {
 	}
 
 	#[inline(always)]
-	fn expand_var_prepared<P: PackedField>(value: &P, coord: &P::Prepared) -> [P; 2] {
-		[*value, value.mul_prepared(coord)]
+	fn expand_var_preprocessed<P: PackedField>(value: &P, coord: &impl Fn(P) -> P) -> [P; 2] {
+		[*value, coord(*value)]
 	}
 
 	#[inline(always)]
@@ -273,8 +273,8 @@ fn tensor_prod_eq_ind_reserved<Cube: Hypercube, P: PackedField, Data: VecLike<P>
 	//     low half    the initialized prefix, expanded in place
 	//     high half   reserved spare capacity, written once
 	for &r_i in packed_coords {
-		// Every word of the round shares this coordinate, so prepare it once.
-		let packed_r_i = P::broadcast(r_i).prepare();
+		// Every word of the round shares this coordinate, so preprocess it once.
+		let packed_r_i = P::preprocess_mul(r_i);
 		let old_packed = data.len();
 
 		// The safe two-slice split of a Vec into its initialized prefix and its spare capacity
@@ -291,7 +291,7 @@ fn tensor_prod_eq_ind_reserved<Cube: Hypercube, P: PackedField, Data: VecLike<P>
 			.into_par_iter()
 			.with_min_task(WorkPerItem::FieldMuls)
 			.for_each(|(low_i, high_i)| {
-				let [new_low, new_high] = Cube::expand_var_prepared(low_i, &packed_r_i);
+				let [new_low, new_high] = Cube::expand_var_preprocessed(low_i, &packed_r_i);
 				*low_i = new_low;
 				high_i.write(new_high);
 			});
@@ -490,7 +490,7 @@ pub fn scaled_eq_ind_partial_eval_scalars<Cube: Hypercube, F: FieldOps>(
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{PreparedMul, Random};
+	use binius_field::Random;
 	use binius_utils::rayon::task_size::{min_len_for_bytes, min_len_for_work};
 	use proptest::prelude::*;
 	use rand::prelude::*;
@@ -519,21 +519,23 @@ mod tests {
 	}
 
 	#[test]
-	fn expand_var_prepared_matches_expand_var() {
+	fn expand_var_preprocessed_matches_expand_var() {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Preparing the coordinate changes its representation, not the pair it expands to.
+		// Preprocessing the coordinate changes its representation, not the pair it expands to.
 		for _ in 0..16 {
-			let [value, coord] = [(); 2].map(|_| P::random(&mut rng));
-			let prepared = coord.prepare();
+			let value = P::random(&mut rng);
+			let coord = F::random(&mut rng);
+			let preprocessed = P::preprocess_mul(coord);
+			let broadcast = P::broadcast(coord);
 
 			assert_eq!(
-				OneCube::expand_var_prepared(&value, &prepared),
-				OneCube::expand_var(&value, &coord)
+				OneCube::expand_var_preprocessed(&value, &preprocessed),
+				OneCube::expand_var(&value, &broadcast)
 			);
 			assert_eq!(
-				InfCube::expand_var_prepared(&value, &prepared),
-				InfCube::expand_var(&value, &coord)
+				InfCube::expand_var_preprocessed(&value, &preprocessed),
+				InfCube::expand_var(&value, &broadcast)
 			);
 		}
 	}
