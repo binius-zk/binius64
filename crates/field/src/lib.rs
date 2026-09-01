@@ -20,7 +20,6 @@ pub mod extension;
 pub mod field;
 pub mod fields;
 pub mod linear_transformation;
-mod macros;
 mod maskable;
 pub mod packed;
 pub mod packed_aes;
