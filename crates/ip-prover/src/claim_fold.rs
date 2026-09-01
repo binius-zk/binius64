@@ -144,6 +144,9 @@ where
 ///
 /// This is the reference a folded claim is settled against.
 /// It reads the entries and the point, and nothing from the run that raised the claim.
+///
+/// The indicator is materialized in full, so the cost is one element per vertex of the point.
+/// Call it only where that fits.
 pub fn evaluate<F: Field>(entries: &[TensorEntry<F>], point: &[Vec<F>]) -> F {
 	let flat = point.concat();
 	let indicator = eq_ind_partial_eval_scalars(&flat);
