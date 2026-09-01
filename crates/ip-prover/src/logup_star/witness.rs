@@ -322,12 +322,6 @@ where
 	FieldBuffer::new(log_len, packed)
 }
 
-/// Output bytes below which the table denominator is built on the calling thread.
-///
-/// One core keeps up while the output fits in cache.
-/// Below that size, handing the work out costs more than it saves.
-const MIN_PARALLEL_DENOMINATOR_BYTES: usize = 32 << 20;
-
 /// Build the negated table denominator `J - c` over the `m`-variable table cube.
 ///
 /// Entry `j` is `iota(j) - c`. The logUp denominator for table position `j` is `c - iota(j)`; the
@@ -358,12 +352,8 @@ where
 	let mut packed = alloc.alloc::<P>(packed_len);
 	// The allocator rounds its blocks up, so the fill is bounded to the words that are entries.
 	let words = &mut packed.spare_capacity_mut()[..packed_len];
-	if packed_len * size_of::<P>() < MIN_PARALLEL_DENOMINATOR_BYTES {
-		words.iter_mut().enumerate().for_each(fill);
-	} else {
-		words.par_iter_mut().enumerate().for_each(fill);
-	}
-	// Safety: either branch writes each of the first `packed_len` slots exactly once.
+	words.iter_mut().enumerate().for_each(fill);
+	// Safety: the loop writes each of the first `packed_len` slots exactly once.
 	unsafe { packed.set_len(packed_len) };
 
 	FieldBuffer::new(table_n_vars, packed)
