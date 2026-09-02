@@ -51,7 +51,7 @@ use std::{array, marker::PhantomData};
 
 use binius_core::Word;
 use binius_field::{
-	BinaryField, BinaryField1b as B1, Divisible, PackedField, PackedRijndael64x8b as Packed64xB8,
+	BinaryField, BinaryField1b as B1, Divisible, PackedField, PackedRijndael64x8b,
 	Rijndael8b as B8, UnderlierView, arch::M128, util::expand_subset_sums_array,
 };
 use binius_math::{
@@ -68,16 +68,16 @@ use binius_verifier::protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS
 ///
 /// ## Structure
 ///
-/// The internal data structure is a boxed array `Box<[[Packed64xB8; 256]; 2]>` where:
+/// The internal data structure is a boxed array `Box<[[PackedRijndael64x8b; 256]; 2]>` where:
 /// - **First dimension**: the byte-position parity `b % 2`. Only these two tables are stored; the
 ///   remaining six byte positions are recovered by permutation (see the module-level "Compressed
 ///   storage" notes).
 /// - **Second dimension**: the 8-bit value (0-255) for that byte.
 ///
 /// Each entry holds the `ROWS_PER_HYPERCUBE_VERTEX` LDE evaluations of that byte's coefficients,
-/// packed into a single [`Packed64xB8`].
+/// packed into a single [`PackedRijndael64x8b`].
 #[derive(Debug, Clone)]
-pub struct NTTLookup(Box<[[Packed64xB8; 256]; 2]>);
+pub struct NTTLookup(Box<[[PackedRijndael64x8b; 256]; 2]>);
 
 impl NTTLookup {
 	/// Creates a new NTT lookup table by precomputing all possible NTT evaluations
@@ -99,7 +99,7 @@ impl NTTLookup {
 	pub fn new(subspace: &BinarySubspace<B8>) -> Self {
 		assert_eq!(subspace.dim(), SKIPPED_VARS + 1);
 
-		let lde = LowDegreeExtension::<Packed64xB8>::new(subspace);
+		let lde = LowDegreeExtension::<PackedRijndael64x8b>::new(subspace);
 		let lde_mat = array::from_fn::<_, 2, _>(|b| {
 			array::from_fn::<_, 8, _>(|i| {
 				let output = lde.transform(1 << (8 * b + i));
@@ -130,14 +130,14 @@ impl NTTLookup {
 	///
 	/// ## Returns
 	///
-	/// A [`Packed64xB8`] holding the `ROWS_PER_HYPERCUBE_VERTEX` LDE evaluations over the output
-	/// domain.
+	/// A [`PackedRijndael64x8b`] holding the `ROWS_PER_HYPERCUBE_VERTEX` LDE evaluations over the
+	/// output domain.
 	#[inline]
 	#[must_use]
-	pub fn ntt(&self, input: Word) -> Packed64xB8 {
+	pub fn ntt(&self, input: Word) -> PackedRijndael64x8b {
 		let input_bytes = input.as_u64().to_le_bytes();
 
-		let mut out = Packed64xB8::default();
+		let mut out = PackedRijndael64x8b::default();
 		// This will get unrolled, so indexing arithmetic washes away.
 		for b in 0..8 {
 			let packed = &self.0[b % 2][input_bytes[b] as usize];
@@ -145,7 +145,7 @@ impl NTTLookup {
 			let dst_bitvec = Divisible::<M128>::from_iter(
 				(0..4).map(|i| Divisible::<M128>::get(bitvec, i ^ (b / 2))),
 			);
-			out += Packed64xB8::from_underlier(dst_bitvec);
+			out += PackedRijndael64x8b::from_underlier(dst_bitvec);
 		}
 		out
 	}

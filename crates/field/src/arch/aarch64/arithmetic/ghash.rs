@@ -18,7 +18,7 @@ use bytemuck::TransparentWrapper;
 
 use super::super::m128::M128;
 use crate::{
-	Ghash128b as GhashB128, WideMul,
+	Ghash128b, WideMul,
 	arch::portable::arithmetic::ghash::POLY,
 	arithmetic_traits::{MulX, Square},
 	packed_fields::primitive::PackedPrimitiveType,
@@ -54,7 +54,7 @@ pub fn mul_x(x: M128) -> M128 {
 #[derive(bytemuck::TransparentWrapper)]
 pub struct GhashMulX<T>(T);
 
-impl MulX for GhashMulX<PackedPrimitiveType<M128, GhashB128>> {
+impl MulX for GhashMulX<PackedPrimitiveType<M128, Ghash128b>> {
 	#[inline]
 	fn mul_x(self) -> Self {
 		Self::wrap(PackedPrimitiveType::wrap(mul_x(PackedPrimitiveType::peel(Self::peel(self)))))
@@ -134,7 +134,7 @@ pub fn square_clmul(x: M128) -> M128 {
 #[derive(TransparentWrapper)]
 pub struct GhashClMul<T>(T);
 
-impl Square for GhashClMul<PackedPrimitiveType<M128, GhashB128>> {
+impl Square for GhashClMul<PackedPrimitiveType<M128, Ghash128b>> {
 	#[inline]
 	fn square(self) -> Self {
 		Self::wrap(PackedPrimitiveType::from_underlier(square_clmul(
@@ -267,7 +267,7 @@ impl SubAssign for WideGhashProduct {
 #[derive(bytemuck::TransparentWrapper)]
 pub struct GhashClMulWideMul<T>(T);
 
-impl WideMul for GhashClMulWideMul<PackedPrimitiveType<M128, GhashB128>> {
+impl WideMul for GhashClMulWideMul<PackedPrimitiveType<M128, Ghash128b>> {
 	type Output = WideGhashProduct;
 
 	// Why always inline: every packed multiply funnels through this wrapper.

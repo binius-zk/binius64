@@ -14,7 +14,7 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	Divisible, Ghash128b as GhashB128, WideMul,
+	Divisible, Ghash128b, WideMul,
 	arch::portable::arithmetic::ghash::POLY,
 	arithmetic_traits::{MulX, Square},
 	packed_fields::primitive::PackedPrimitiveType,
@@ -60,7 +60,7 @@ pub trait ClMulUnderlier: GhashLanes {
 #[derive(TransparentWrapper)]
 pub struct GhashMulX<T>(T);
 
-impl<U: GhashLanes> MulX for GhashMulX<PackedPrimitiveType<U, GhashB128>> {
+impl<U: GhashLanes> MulX for GhashMulX<PackedPrimitiveType<U, Ghash128b>> {
 	#[inline]
 	fn mul_x(self) -> Self {
 		Self::wrap(PackedPrimitiveType::wrap(mul_x(PackedPrimitiveType::peel(Self::peel(self)))))
@@ -108,7 +108,7 @@ pub fn square_clmul<U: ClMulUnderlier>(x: U) -> U {
 #[derive(TransparentWrapper)]
 pub struct GhashClMul<T>(T);
 
-impl<U: ClMulUnderlier> Square for GhashClMul<PackedPrimitiveType<U, GhashB128>> {
+impl<U: ClMulUnderlier> Square for GhashClMul<PackedPrimitiveType<U, Ghash128b>> {
 	#[inline]
 	fn square(self) -> Self {
 		Self::wrap(PackedPrimitiveType::from_underlier(square_clmul(
@@ -262,7 +262,7 @@ impl<U: ClMulUnderlier> SubAssign for WideGhashProduct<U> {
 #[derive(bytemuck::TransparentWrapper)]
 pub struct GhashClMulWideMul<T>(T);
 
-impl<U: ClMulUnderlier> WideMul for GhashClMulWideMul<PackedPrimitiveType<U, GhashB128>> {
+impl<U: ClMulUnderlier> WideMul for GhashClMulWideMul<PackedPrimitiveType<U, Ghash128b>> {
 	type Output = WideGhashProduct<U>;
 
 	fn wide_mul(a: Self, b: Self) -> Self::Output {

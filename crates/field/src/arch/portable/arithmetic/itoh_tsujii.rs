@@ -11,7 +11,7 @@
 //!
 //! Squaring `beta_a` repeatedly `b` times (the `x -> x^(2^b)` power map) is an `F_2`-linear
 //! transformation. We precompute each power map as a [`BytewiseLookupTransformation`] (the [Method
-//! of Four Russians]), wrapped into a `GhashB128 -> GhashB128` transform, and hold them in a
+//! of Four Russians]), wrapped into a `Ghash128b -> Ghash128b` transform, and hold them in a
 //! process-wide [`LazyLock`] so the tables are computed once and shared read-only across all
 //! threads.
 //!
@@ -22,10 +22,9 @@ use std::{array, iter, ops::Mul, sync::LazyLock};
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	BinaryField1b, Divisible, ExtensionField,
+	BinaryField1b, Divisible, ExtensionField, Ghash128b,
 	arch::M128,
 	arithmetic_traits::{InvertOrZero, Square},
-	fields::ghash::Ghash128b as GhashB128,
 	linear_transformation::{
 		BytewiseLookupTransformation, BytewiseLookupTransformationFactory,
 		InputWrappingTransformationFactory, LinearTransformationFactory,
@@ -36,12 +35,12 @@ use crate::{
 /// Number of bits in a GHASH element.
 const FIELD_BITS: usize = 128;
 
-/// A precomputed `x -> x^(2^n)` power map as a byte-lookup transform on `GhashB128`.
+/// A precomputed `x -> x^(2^n)` power map as a byte-lookup transform on `Ghash128b`.
 ///
 /// The underlying [`BytewiseLookupTransformation`] operates on the underlier `M128`; the input and
-/// output wrappers lift it to a `GhashB128 -> GhashB128` transform.
+/// output wrappers lift it to a `Ghash128b -> Ghash128b` transform.
 type GhashPowerMap =
-	WrappingTransformation<BytewiseLookupTransformation<M128, M128>, GhashB128, GhashB128>;
+	WrappingTransformation<BytewiseLookupTransformation<M128, M128>, Ghash128b, Ghash128b>;
 
 /// The power maps needed by the Itoh-Tsujii addition chain for the GHASH field.
 ///
@@ -70,15 +69,15 @@ impl GhashPowerMapTables {
 static GHASH_POWER_MAP_TABLES: LazyLock<GhashPowerMapTables> =
 	LazyLock::new(GhashPowerMapTables::new);
 
-/// Build the byte-lookup transform for the power map `x -> x^(2^n)` over `GhashB128`.
+/// Build the byte-lookup transform for the power map `x -> x^(2^n)` over `Ghash128b`.
 ///
 /// The power map is the `F_2`-linear transformation whose matrix has one column per input bit
 /// (`compute_power_map_matrix`). [`BytewiseLookupTransformation`] turns that column set into
-/// byte-indexed lookup tables; the input/output wrappers make it accept and return `GhashB128`.
+/// byte-indexed lookup tables; the input/output wrappers make it accept and return `Ghash128b`.
 fn compute_power_map_transform(n: usize) -> GhashPowerMap {
 	let matrix = compute_power_map_matrix(n);
-	OutputWrappingTransformationFactory::<_, GhashB128, GhashB128>::new(
-		InputWrappingTransformationFactory::<_, GhashB128, M128>::new(
+	OutputWrappingTransformationFactory::<_, Ghash128b, Ghash128b>::new(
+		InputWrappingTransformationFactory::<_, Ghash128b, M128>::new(
 			BytewiseLookupTransformationFactory,
 		),
 	)
@@ -89,9 +88,9 @@ fn compute_power_map_transform(n: usize) -> GhashPowerMap {
 ///
 /// Column `i` is the image of the `i`-th basis element, i.e. `basis(i)^(2^n)`, obtained by squaring
 /// `n` times.
-fn compute_power_map_matrix(n: usize) -> [GhashB128; FIELD_BITS] {
+fn compute_power_map_matrix(n: usize) -> [Ghash128b; FIELD_BITS] {
 	array::from_fn(|i| {
-		let basis = <GhashB128 as ExtensionField<BinaryField1b>>::basis(i);
+		let basis = <Ghash128b as ExtensionField<BinaryField1b>>::basis(i);
 		iter::successors(Some(basis), |basis_pow_2_i| Some(basis_pow_2_i.square()))
 			.nth(n)
 			.expect("closure always returns Some")
@@ -103,15 +102,15 @@ fn compute_power_map_matrix(n: usize) -> [GhashB128; FIELD_BITS] {
 /// Zero elements map to zero, matching `InvertOrZero` semantics.
 ///
 /// The bound is phrased in terms of the field operations (`Square`, `Mul`) plus
-/// `Divisible<GhashB128>` rather than `P: PackedField`. `PackedField`'s blanket impl lists
+/// `Divisible<Ghash128b>` rather than `P: PackedField`. `PackedField`'s blanket impl lists
 /// `InvertOrZero` in its where-clause, so requiring it here would form a trait-resolution cycle
-/// when this function backs the `InvertOrZero` impls. `Divisible<GhashB128>` carries no such
+/// when this function backs the `InvertOrZero` impls. `Divisible<Ghash128b>` carries no such
 /// obligation, keeps the function statically GHASH-typed, and is satisfied both by the GHASH packed
 /// fields and (reflexively) by the scalar `Ghash128b`, so the scalar inverts directly
 /// without routing through a packed type.
 pub fn invert_b128<P>(x: P) -> P
 where
-	P: Copy + Square + Mul<Output = P> + Divisible<GhashB128>,
+	P: Copy + Square + Mul<Output = P> + Divisible<Ghash128b>,
 {
 	let tables = &*GHASH_POWER_MAP_TABLES;
 
@@ -134,10 +133,10 @@ where
 /// Apply the power map `x -> x^(2^n)` to every GHASH scalar of `x`.
 fn pow_2_n<P>(x: P, power_map: &GhashPowerMap) -> P
 where
-	P: Divisible<GhashB128>,
+	P: Divisible<Ghash128b>,
 {
-	Divisible::<GhashB128>::from_iter(
-		Divisible::<GhashB128>::value_iter(x).map(|scalar| power_map.transform(&scalar)),
+	Divisible::<Ghash128b>::from_iter(
+		Divisible::<Ghash128b>::value_iter(x).map(|scalar| power_map.transform(&scalar)),
 	)
 }
 
@@ -153,7 +152,7 @@ pub struct GhashItohTsujii<T>(T);
 
 impl<P> InvertOrZero for GhashItohTsujii<P>
 where
-	P: Copy + Square + Mul<Output = P> + Divisible<GhashB128>,
+	P: Copy + Square + Mul<Output = P> + Divisible<Ghash128b>,
 {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
@@ -173,7 +172,7 @@ mod tests {
 		// The 2^1 power map is just squaring; column i must equal basis(i)^2.
 		let matrix = compute_power_map_matrix(1);
 		for i in 0..FIELD_BITS {
-			let basis = <GhashB128 as ExtensionField<BinaryField1b>>::basis(i);
+			let basis = <Ghash128b as ExtensionField<BinaryField1b>>::basis(i);
 			assert_eq!(matrix[i], basis.square());
 		}
 	}
@@ -182,7 +181,7 @@ mod tests {
 	fn test_power_map_transform_matches_repeated_squaring() {
 		let power_map = compute_power_map_transform(7);
 		for &raw in &[0u128, 1, 2, 0x87, 0x21ac73a21d46a21badd6747bcdfc5d4d] {
-			let x = GhashB128::from(raw);
+			let x = Ghash128b::from(raw);
 			let mut expected = x;
 			for _ in 0..7 {
 				expected = expected.square();
@@ -193,10 +192,10 @@ mod tests {
 
 	#[test]
 	fn test_invert_b128_known_values() {
-		let one = PackedGhash1x128b::broadcast(GhashB128::ONE);
+		let one = PackedGhash1x128b::broadcast(Ghash128b::ONE);
 		assert_eq!(invert_b128(one), one);
 
-		let zero = PackedGhash1x128b::broadcast(GhashB128::ZERO);
+		let zero = PackedGhash1x128b::broadcast(Ghash128b::ZERO);
 		assert_eq!(invert_b128(zero), zero);
 	}
 
@@ -206,37 +205,37 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_invert_b128_is_multiplicative_inverse_scalar(raw in any::<u128>()) {
-			let x = GhashB128::from(raw);
+			let x = Ghash128b::from(raw);
 			let inv = invert_b128(x);
-			if x == GhashB128::ZERO {
-				prop_assert_eq!(inv, GhashB128::ZERO);
+			if x == Ghash128b::ZERO {
+				prop_assert_eq!(inv, Ghash128b::ZERO);
 			} else {
-				prop_assert_eq!(x * inv, GhashB128::ONE);
+				prop_assert_eq!(x * inv, Ghash128b::ONE);
 			}
 		}
 
 		#[test]
 		fn test_invert_b128_is_multiplicative_inverse_1x(raw in any::<u128>()) {
-			let scalar = GhashB128::from(raw);
+			let scalar = Ghash128b::from(raw);
 			let x = PackedGhash1x128b::broadcast(scalar);
 			let inv = invert_b128(x);
-			if scalar == GhashB128::ZERO {
+			if scalar == Ghash128b::ZERO {
 				prop_assert_eq!(inv, x);
 			} else {
-				prop_assert_eq!(x * inv, PackedGhash1x128b::broadcast(GhashB128::ONE));
+				prop_assert_eq!(x * inv, PackedGhash1x128b::broadcast(Ghash128b::ONE));
 			}
 		}
 
 		#[test]
 		fn test_invert_b128_is_multiplicative_inverse_2x(a in any::<u128>(), b in any::<u128>()) {
-			let x = PackedGhash2x128b::from_scalars([a, b].map(GhashB128::from));
+			let x = PackedGhash2x128b::from_scalars([a, b].map(Ghash128b::from));
 			let inv = invert_b128(x);
 			let ones = PackedGhash2x128b::from_scalars(
 				[a, b].map(|raw| {
-					if GhashB128::from(raw) == GhashB128::ZERO {
-						GhashB128::ZERO
+					if Ghash128b::from(raw) == Ghash128b::ZERO {
+						Ghash128b::ZERO
 					} else {
-						GhashB128::ONE
+						Ghash128b::ONE
 					}
 				}),
 			);

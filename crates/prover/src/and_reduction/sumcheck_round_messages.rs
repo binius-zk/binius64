@@ -5,8 +5,8 @@ use std::{array, borrow::Cow, iter};
 
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, BinaryField1b as B1, ExtensionField, Field, PackedField,
-	PackedRijndael64x8b as Packed64xB8, Rijndael8b as B8, WideMul, util::expand_subset_sums_array,
+	BinaryField, BinaryField1b as B1, ExtensionField, Field, PackedField, PackedRijndael64x8b,
+	Rijndael8b as B8, WideMul, util::expand_subset_sums_array,
 };
 use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::{self, iter::Either, prelude::*};
@@ -120,7 +120,7 @@ where
 	let eq_ind_small: [_; 1 << N_FIXED_SMALL_CHALLENGES] =
 		eq_ind_partial_eval::<B8>(&PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES)
 			.iter_scalars()
-			.map(Packed64xB8::broadcast)
+			.map(PackedRijndael64x8b::broadcast)
 			.collect::<Vec<_>>()
 			.try_into()
 			.expect("PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() == N_FIXED_SMALL_CHALLENGES");
@@ -147,7 +147,7 @@ where
 			for (a_subchunk, b_subchunk, outer_weight) in
 				izip!(a_subchunks, b_subchunks, &outer_weight_mul_maps)
 			{
-				let mut summed_ntt = <Packed64xB8 as WideMul>::Output::default();
+				let mut summed_ntt = <PackedRijndael64x8b as WideMul>::Output::default();
 				for (&a_i, &b_i, inner_weight) in izip!(a_subchunk, b_subchunk, &eq_ind_small) {
 					let c_i = a_i & b_i;
 
@@ -157,10 +157,11 @@ where
 					let c_lde = ntt_lookup.ntt(c_i);
 
 					// Compute the weighted composition of the LDE values.
-					summed_ntt += Packed64xB8::wide_mul(a_lde * b_lde - c_lde, *inner_weight);
+					summed_ntt +=
+						PackedRijndael64x8b::wide_mul(a_lde * b_lde - c_lde, *inner_weight);
 				}
 
-				let summed_ntt_reduced = Packed64xB8::reduce(summed_ntt);
+				let summed_ntt_reduced = PackedRijndael64x8b::reduce(summed_ntt);
 				for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt_reduced.into_iter()) {
 					*acc_i += outer_weight.call(summed_ntt_i);
 				}

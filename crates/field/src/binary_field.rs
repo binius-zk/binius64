@@ -607,7 +607,6 @@ pub(crate) mod tests {
 	use binius_utils::{DeserializeBytes, SerializeBytes, bytes::BytesMut};
 	use proptest::prelude::*;
 
-	use super::BinaryField1b as BF1;
 	use crate::{
 		BinaryField, BinaryField1b, ExtensionField, Field, Ghash128b, GhashSq256b, Rijndael8b,
 		arithmetic_traits::InvertOrZero,
@@ -615,26 +614,26 @@ pub(crate) mod tests {
 
 	#[test]
 	fn test_gf2_add() {
-		assert_eq!(BF1::from(0) + BF1::from(0), BF1::from(0));
-		assert_eq!(BF1::from(0) + BF1::from(1), BF1::from(1));
-		assert_eq!(BF1::from(1) + BF1::from(0), BF1::from(1));
-		assert_eq!(BF1::from(1) + BF1::from(1), BF1::from(0));
+		assert_eq!(BinaryField1b::from(0) + BinaryField1b::from(0), BinaryField1b::from(0));
+		assert_eq!(BinaryField1b::from(0) + BinaryField1b::from(1), BinaryField1b::from(1));
+		assert_eq!(BinaryField1b::from(1) + BinaryField1b::from(0), BinaryField1b::from(1));
+		assert_eq!(BinaryField1b::from(1) + BinaryField1b::from(1), BinaryField1b::from(0));
 	}
 
 	#[test]
 	fn test_gf2_sub() {
-		assert_eq!(BF1::from(0) - BF1::from(0), BF1::from(0));
-		assert_eq!(BF1::from(0) - BF1::from(1), BF1::from(1));
-		assert_eq!(BF1::from(1) - BF1::from(0), BF1::from(1));
-		assert_eq!(BF1::from(1) - BF1::from(1), BF1::from(0));
+		assert_eq!(BinaryField1b::from(0) - BinaryField1b::from(0), BinaryField1b::from(0));
+		assert_eq!(BinaryField1b::from(0) - BinaryField1b::from(1), BinaryField1b::from(1));
+		assert_eq!(BinaryField1b::from(1) - BinaryField1b::from(0), BinaryField1b::from(1));
+		assert_eq!(BinaryField1b::from(1) - BinaryField1b::from(1), BinaryField1b::from(0));
 	}
 
 	#[test]
 	fn test_gf2_mul() {
-		assert_eq!(BF1::from(0) * BF1::from(0), BF1::from(0));
-		assert_eq!(BF1::from(0) * BF1::from(1), BF1::from(0));
-		assert_eq!(BF1::from(1) * BF1::from(0), BF1::from(0));
-		assert_eq!(BF1::from(1) * BF1::from(1), BF1::from(1));
+		assert_eq!(BinaryField1b::from(0) * BinaryField1b::from(0), BinaryField1b::from(0));
+		assert_eq!(BinaryField1b::from(0) * BinaryField1b::from(1), BinaryField1b::from(0));
+		assert_eq!(BinaryField1b::from(1) * BinaryField1b::from(0), BinaryField1b::from(0));
+		assert_eq!(BinaryField1b::from(1) * BinaryField1b::from(1), BinaryField1b::from(1));
 	}
 
 	pub(crate) fn is_binary_field_valid_generator<F: BinaryField>() -> bool {
