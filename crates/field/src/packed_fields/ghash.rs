@@ -4,10 +4,11 @@
 use crate::{
 	Ghash128b,
 	arch::{
-		GhashInvert1x, GhashInvert2x, GhashInvert4x, GhashSquare1x, GhashSquare2x, GhashSquare4x,
-		GhashWideMul1x, GhashWideMul2x, GhashWideMul4x, M128, M256, M512,
-		portable::packed_macros::*,
+		GhashInvert1x, GhashInvert2x, GhashInvert4x, GhashMulX1x, GhashMulX2x, GhashMulX4x,
+		GhashSquare1x, GhashSquare2x, GhashSquare4x, GhashWideMul1x, GhashWideMul2x,
+		GhashWideMul4x, M128, M256, M512, portable::packed_macros::*,
 	},
+	arithmetic_traits::impl_mul_x_with,
 };
 
 define_packed_binary_field!(
@@ -37,13 +38,19 @@ define_packed_binary_field!(
 	(GhashWideMul4x)
 );
 
+// Scaling by `X` is not a multiply, so it wires through its own strategy rather than a slot of the
+// packing definition -- only the GHASH packings have one.
+impl_mul_x_with!(PackedGhash1x128b @ GhashMulX1x);
+impl_mul_x_with!(PackedGhash2x128b @ GhashMulX2x);
+impl_mul_x_with!(PackedGhash4x128b @ GhashMulX4x);
+
 #[cfg(test)]
 mod tests {
 	use proptest::{arbitrary::any, proptest};
 
 	use super::*;
 	use crate::{
-		Ghash128b, PackedField, packed_fields::test_utils::packed_field_tests,
+		Ghash128b, MulX, PackedField, packed_fields::test_utils::packed_field_tests,
 		underlier::UnderlierView,
 	};
 
@@ -59,6 +66,23 @@ mod tests {
 		}
 	}
 
+	/// Scaling by `X` must agree with multiplying by the field element `X` in every lane.
+	///
+	/// The multiply is an independent oracle: it runs the product and the modular reduction, none
+	/// of which the scaling touches.
+	fn check_mul_x<P>(underlier: P::Underlier)
+	where
+		P: PackedField<Scalar = Ghash128b> + UnderlierView + MulX,
+	{
+		let packed = P::from_underlier(underlier);
+		let scaled = packed.mul_x();
+		let x = Ghash128b::new(2);
+
+		for i in 0..P::WIDTH {
+			assert_eq!(scaled.get(i), packed.get(i) * x, "lane {i}");
+		}
+	}
+
 	proptest! {
 		#[test]
 		fn test_get_set_256(a in any::<[u128; 2]>(), b in any::<[u128; 2]>()) {
@@ -68,6 +92,22 @@ mod tests {
 		#[test]
 		fn test_get_set_512(a in any::<[u128; 4]>(), b in any::<[u128; 4]>()) {
 			check_get_set::<4, PackedGhash4x128b>(a, b);
+		}
+
+		#[test]
+		#[allow(clippy::useless_conversion)] // the conversion depends on the target platform
+		fn mul_x_is_multiplication_by_x_1x(a in any::<u128>()) {
+			check_mul_x::<PackedGhash1x128b>(a.into());
+		}
+
+		#[test]
+		fn mul_x_is_multiplication_by_x_2x(a in any::<[u128; 2]>()) {
+			check_mul_x::<PackedGhash2x128b>(a.into());
+		}
+
+		#[test]
+		fn mul_x_is_multiplication_by_x_4x(a in any::<[u128; 4]>()) {
+			check_mul_x::<PackedGhash4x128b>(a.into());
 		}
 	}
 

@@ -18,7 +18,7 @@
 //!   packing divides into two width-one lanes.
 //!
 //! In both, the coordinate register is a [`PackedPrimitiveType`], so the multiply-by-`X` in the
-//! reduction is a per-lane bit shift rather than a full field multiply.
+//! reduction is a bit shift over the register rather than a full field multiply.
 //!
 //! The width-one packing's widening multiply is architecture-specific — see [`GhashSqWideMul1x`],
 //! which selects between batching the Karatsuba diagonal into one 256-bit carry-less multiply and
@@ -34,10 +34,10 @@ use bytemuck::TransparentWrapper;
 use crate::{
 	Divisible, Ghash128b, GhashSq256b, PackedField, PackedGhash2x128b, WideMul,
 	arch::{Divide, GhashSqWideMul1x, M128, M256, M512, portable::packed_macros::*},
-	arithmetic_traits::{InvertOrZero, Square},
+	arithmetic_traits::{InvertOrZero, MulX, Square},
 	packed_extension,
 	packed_fields::{primitive::PackedPrimitiveType, sliced::SlicedPackedField},
-	underlier::{Underlier, UnderlierView},
+	underlier::Underlier,
 };
 
 /// The packed GHASH coordinate register backing a `SlicedGhashSq256b<U>`.
@@ -54,26 +54,6 @@ pub type SlicedGhashSq4x256b = SlicedGhashSq256b<M512>;
 
 /// The unreduced widening product of the coordinate GHASH multiply.
 type GhashWide<U> = <Ghash<U> as WideMul>::Output;
-
-/// Multiplies every 128-bit GHASH lane of an underlier by `X`.
-///
-/// `X` scaling is `GF(2)`-linear — a per-lane bit shift with a fixed compensation, not a field
-/// multiply — so this is far cheaper than a CLMUL. It reuses the scalar
-/// [`Ghash128b::mul_x`] on each 128-bit lane, which every supported underlier divides
-/// into.
-#[inline]
-fn ghash_mul_x<U: Divisible<M128>>(u: U) -> U {
-	U::from_iter(
-		Divisible::<M128>::value_iter(u)
-			.map(|lane| Ghash128b::from_underlier(lane).mul_x().to_underlier()),
-	)
-}
-
-/// Multiplies every GHASH lane of a packed coordinate by `X`.
-#[inline]
-fn mul_x<U: Underlier + Divisible<M128>>(coord: Ghash<U>) -> Ghash<U> {
-	Ghash::<U>::from_underlier(ghash_mul_x(coord.to_underlier()))
-}
 
 /// The unreduced product of two GHASH² elements, as three separate GHASH products.
 ///
@@ -144,8 +124,8 @@ impl<W: Default + Add<Output = W>> Sum for SlicedGhashSqWide<W> {
 
 impl<U> WideMul for SlicedGhashSq256b<U>
 where
-	U: Underlier + Divisible<M128>,
-	Ghash<U>: PackedField<Scalar = Ghash128b> + WideMul,
+	U: Underlier,
+	Ghash<U>: PackedField<Scalar = Ghash128b> + WideMul + MulX,
 {
 	type Output = SlicedGhashSqWide<GhashWide<U>>;
 
@@ -170,15 +150,15 @@ where
 		let t2 = <Ghash<U> as WideMul>::reduce(wide.t2);
 		let t1 = <Ghash<U> as WideMul>::reduce(wide.t1);
 
-		let z0 = t0 + mul_x(t2);
+		let z0 = t0 + t2.mul_x();
 		Self::from_coords([z0, z0 + t1 + t2])
 	}
 }
 
 impl<U> Square for SlicedGhashSq256b<U>
 where
-	U: Underlier + Divisible<M128>,
-	Ghash<U>: PackedField<Scalar = Ghash128b>,
+	U: Underlier,
+	Ghash<U>: PackedField<Scalar = Ghash128b> + MulX,
 {
 	/// `(a + b·Y)² = (a² + X·b²) + (X·b²)·Y` — the cross term vanishes in characteristic two, and
 	/// `Y² = X·Y + X`.
@@ -189,15 +169,15 @@ where
 		let t0 = Square::square(a);
 		let t2 = Square::square(b);
 
-		let x_t2 = mul_x(t2);
+		let x_t2 = t2.mul_x();
 		Self::from_coords([t0 + x_t2, x_t2])
 	}
 }
 
 impl<U> InvertOrZero for SlicedGhashSq256b<U>
 where
-	U: Underlier + Divisible<M128>,
-	Ghash<U>: PackedField<Scalar = Ghash128b>,
+	U: Underlier,
+	Ghash<U>: PackedField<Scalar = Ghash128b> + MulX,
 {
 	/// Inverts through the norm of the degree-two extension. The conjugate of `u = a + b·Y` sends
 	/// `Y` to the other root of `Y² + X·Y + X` (the roots sum to `X` and multiply to `X`), giving
@@ -207,10 +187,10 @@ where
 	fn invert_or_zero(self) -> Self {
 		let [a, b] = self.to_coords();
 
-		let norm = Square::square(a) + mul_x(a * b + Square::square(b));
+		let norm = Square::square(a) + (a * b + Square::square(b)).mul_x();
 		let norm_inv = norm.invert_or_zero();
 
-		Self::from_coords([(a + mul_x(b)) * norm_inv, b * norm_inv])
+		Self::from_coords([(a + b.mul_x()) * norm_inv, b * norm_inv])
 	}
 }
 

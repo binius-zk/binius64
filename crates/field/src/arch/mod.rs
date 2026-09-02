@@ -11,9 +11,9 @@ cfg_if! {
 	if #[cfg(all(target_arch = "x86_64"))] {
 		mod x86_64;
 		pub use x86_64::{packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_128, packed_ghash_256, packed_ghash_512, M128, M256, M512, m256_from_u128s};
-		pub use x86_64::packed_ghash_128::{GhashWideMul1x, GhashSquare1x, GhashInvert1x};
-		pub use x86_64::packed_ghash_256::{GhashWideMul2x, GhashSquare2x, GhashInvert2x};
-		pub use x86_64::packed_ghash_512::{GhashWideMul4x, GhashSquare4x, GhashInvert4x};
+		pub use x86_64::packed_ghash_128::{GhashWideMul1x, GhashSquare1x, GhashInvert1x, GhashMulX1x};
+		pub use x86_64::packed_ghash_256::{GhashWideMul2x, GhashSquare2x, GhashInvert2x, GhashMulX2x};
+		pub use x86_64::packed_ghash_512::{GhashWideMul4x, GhashSquare4x, GhashInvert4x, GhashMulX4x};
 		pub use x86_64::packed_ghash_sq_256::GhashSqWideMul1x;
 		pub use x86_64::packed_aes_128::{AesWideMul16x, AesSquare16x, AesInvert16x};
 		pub use x86_64::packed_aes_256::{AesWideMul32x, AesSquare32x, AesInvert32x};
@@ -21,10 +21,10 @@ cfg_if! {
 	} else if #[cfg(target_arch = "aarch64")] {
 		mod aarch64;
 		pub use aarch64::{packed_aes_128, packed_ghash_128, M128, M256, M512, m256_from_u128s};
-		pub use aarch64::packed_ghash_128::{GhashWideMul1x, GhashSquare1x, GhashInvert1x};
+		pub use aarch64::packed_ghash_128::{GhashWideMul1x, GhashSquare1x, GhashInvert1x, GhashMulX1x};
 		pub use portable::{packed_aes_256, packed_aes_512, packed_ghash_256, packed_ghash_512};
-		pub use portable::packed_ghash_256::{GhashWideMul2x, GhashSquare2x, GhashInvert2x};
-		pub use portable::packed_ghash_512::{GhashWideMul4x, GhashSquare4x, GhashInvert4x};
+		pub use portable::packed_ghash_256::{GhashWideMul2x, GhashSquare2x, GhashInvert2x, GhashMulX2x};
+		pub use portable::packed_ghash_512::{GhashWideMul4x, GhashSquare4x, GhashInvert4x, GhashMulX4x};
 		pub use portable::packed_ghash_sq_256::GhashSqWideMul1x;
 		pub use aarch64::packed_aes_128::{AesWideMul16x, AesSquare16x, AesInvert16x};
 		pub use portable::packed_aes_256::{AesWideMul32x, AesSquare32x, AesInvert32x};
@@ -32,19 +32,19 @@ cfg_if! {
 	} else if #[cfg(target_arch = "wasm32")] {
 		mod wasm32;
 		pub use wasm32::{packed_ghash_128, packed_ghash_256};
-		pub use wasm32::packed_ghash_128::{GhashWideMul1x, GhashSquare1x, GhashInvert1x};
+		pub use wasm32::packed_ghash_128::{GhashWideMul1x, GhashSquare1x, GhashInvert1x, GhashMulX1x};
 		pub use portable::{M128, M256, M512, m256_from_u128s, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_512};
-		pub use portable::packed_ghash_256::{GhashWideMul2x, GhashSquare2x, GhashInvert2x};
-		pub use portable::packed_ghash_512::{GhashWideMul4x, GhashSquare4x, GhashInvert4x};
+		pub use portable::packed_ghash_256::{GhashWideMul2x, GhashSquare2x, GhashInvert2x, GhashMulX2x};
+		pub use portable::packed_ghash_512::{GhashWideMul4x, GhashSquare4x, GhashInvert4x, GhashMulX4x};
 		pub use portable::packed_ghash_sq_256::GhashSqWideMul1x;
 		pub use portable::packed_aes_128::{AesWideMul16x, AesSquare16x, AesInvert16x};
 		pub use portable::packed_aes_256::{AesWideMul32x, AesSquare32x, AesInvert32x};
 		pub use portable::packed_aes_512::{AesWideMul64x, AesSquare64x, AesInvert64x};
 	} else {
 		pub use portable::{M128, M256, M512, m256_from_u128s, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_128, packed_ghash_256, packed_ghash_512};
-		pub use portable::packed_ghash_128::{GhashWideMul1x, GhashSquare1x, GhashInvert1x};
-		pub use portable::packed_ghash_256::{GhashWideMul2x, GhashSquare2x, GhashInvert2x};
-		pub use portable::packed_ghash_512::{GhashWideMul4x, GhashSquare4x, GhashInvert4x};
+		pub use portable::packed_ghash_128::{GhashWideMul1x, GhashSquare1x, GhashInvert1x, GhashMulX1x};
+		pub use portable::packed_ghash_256::{GhashWideMul2x, GhashSquare2x, GhashInvert2x, GhashMulX2x};
+		pub use portable::packed_ghash_512::{GhashWideMul4x, GhashSquare4x, GhashInvert4x, GhashMulX4x};
 		pub use portable::packed_ghash_sq_256::GhashSqWideMul1x;
 		pub use portable::packed_aes_128::{AesWideMul16x, AesSquare16x, AesInvert16x};
 		pub use portable::packed_aes_256::{AesWideMul32x, AesSquare32x, AesInvert32x};

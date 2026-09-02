@@ -17,6 +17,9 @@ pub type GhashSquare1x<T> = super::arithmetic::ghash::GhashSoftMul<T>;
 /// Invert wrapper for the `PackedGhash1x128b` packing: the shared Itoh-Tsujii inversion.
 pub type GhashInvert1x<T> = super::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
 
+/// Scaling wrapper for the `PackedGhash1x128b` packing: the shared lane walk.
+pub type GhashMulX1x<T> = super::arithmetic::ghash::GhashMulX<T>;
+
 // `M128` packs its GHASH 64-bit lanes the same way `u128` does — delegate through `u128`.
 impl Underlier128bLanes for M128 {
 	type U64 = u64;

@@ -10,10 +10,7 @@
 use super::m128::M128;
 #[cfg(not(target_feature = "pclmulqdq"))]
 use crate::arch::portable::univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64};
-// Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul1x`/`GhashSquare1x`
-// aliases below.
-#[cfg(target_feature = "pclmulqdq")]
-use crate::arch::x86_64::arithmetic::ghash;
+use crate::arch::x86_64::arithmetic::ghash::{self, GhashLanes};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
 /// `GhashClMulWideMul` when PCLMULQDQ is available, otherwise the portable `GhashWideMul` which
@@ -65,13 +62,7 @@ impl Underlier128bLanes for M128 {
 	}
 }
 
-#[cfg(target_feature = "pclmulqdq")]
-impl ghash::ClMulUnderlier for M128 {
-	#[inline]
-	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self {
-		unsafe { std::arch::x86_64::_mm_clmulepi64_si128::<IMM8>(a.into(), b.into()) }.into()
-	}
-
+impl GhashLanes for M128 {
 	#[inline]
 	fn move_64_to_hi(a: Self) -> Self {
 		unsafe { std::arch::x86_64::_mm_slli_si128::<8>(a.into()) }.into()
@@ -85,5 +76,30 @@ impl ghash::ClMulUnderlier for M128 {
 	#[inline]
 	fn shr_63_epi64(a: Self) -> Self {
 		unsafe { std::arch::x86_64::_mm_srli_epi64::<63>(a.into()) }.into()
+	}
+
+	#[inline]
+	fn broadcast_bit_127(a: Self) -> Self {
+		// Bit 127 is the sign bit of the lane's top 32-bit word.
+		// Copying that word over the whole lane, then shifting each word right by 31 as a signed
+		// value, leaves every bit equal to it.
+		unsafe {
+			let top_word = std::arch::x86_64::_mm_shuffle_epi32::<0xff>(a.into());
+			std::arch::x86_64::_mm_srai_epi32::<31>(top_word)
+		}
+		.into()
+	}
+}
+
+/// Scaling wrapper for the `PackedGhash1x128b` packing: the vector sequence, which needs
+/// only SSE2.
+pub type GhashMulX1x<T> = ghash::GhashMulX<T>;
+
+#[cfg(target_feature = "pclmulqdq")]
+impl ghash::ClMulUnderlier for M128 {
+	#[inline]
+	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self {
+		// Safety: the `pclmulqdq` gate on this impl is exactly what the intrinsic requires.
+		unsafe { std::arch::x86_64::_mm_clmulepi64_si128::<IMM8>(a.into(), b.into()) }.into()
 	}
 }
