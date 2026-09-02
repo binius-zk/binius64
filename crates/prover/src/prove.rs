@@ -537,8 +537,9 @@ pub fn pack_witness<P: PackedField<Scalar = B128>, A: Allocator>(
 	let (pairs, word_remaining) = witness.as_chunks::<2>();
 	let aligned_len = pairs.len() / P::WIDTH * P::WIDTH;
 	let (pairs_aligned, word_pair_remaining) = pairs.split_at(aligned_len);
-	// `collect_into_vec` needs a `&mut Vec`, which the generic buffer is not, so the aligned groups
-	// are written straight into the buffer's spare capacity instead.
+	// The buffer is sized for the whole padded witness, which the trailing element and the zero
+	// padding below fill out, so the aligned groups are written straight into its spare capacity
+	// rather than collected into a buffer of their own.
 	let n_aligned_elems = aligned_len / P::WIDTH;
 	(
 		pairs_aligned.par_chunks(P::WIDTH),
