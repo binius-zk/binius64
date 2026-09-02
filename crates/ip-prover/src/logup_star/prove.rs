@@ -351,7 +351,10 @@ where
 	// A witness satisfying the lookup identity zeroes the root numerator, so it is not sent: the
 	// verifier supplies the zero itself, and a prover whose lookups do not match cannot make the
 	// rest of the GKR agree with it.
-	debug_assert_eq!(
+	//
+	// One field comparison against a 2^n circuit, so it runs in every build.
+	// A mismatched witness then fails here instead of as an opaque verification failure later.
+	assert_eq!(
 		top_root.num.get(0),
 		F::ZERO,
 		"the lookup identities must hold: each table's looker fractions must sum to its own"
