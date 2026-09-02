@@ -528,7 +528,7 @@ mod tests {
 	use binius_math::{
 		BinarySubspace, FieldBuffer, multilinear::evaluate::evaluate, univariate::EvaluationDomain,
 	};
-	use binius_prover::{and_reduction, fold_word::BitAxisFolder};
+	use binius_prover::{fold_word::BitAxisFolder, protocols::bitand};
 	use binius_transcript::{ProverTranscript, VerifierTranscript};
 	use binius_utils::checked_arithmetics::checked_log_2;
 	use binius_verifier::{
@@ -1337,11 +1337,8 @@ mod tests {
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prove_output = and_reduction::prove::<_, B128, P, _, _>(
-			[a, b],
-			&mut prover_transcript,
-			&GlobalAllocator,
-		);
+		let prove_output =
+			bitand::prove::<_, B128, P, _, _>([a, b], &mut prover_transcript, &GlobalAllocator);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verify_output = verify_bitand_reduction(
@@ -1374,11 +1371,7 @@ mod tests {
 
 		// Produce a faithful proof.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let _ = and_reduction::prove::<_, B128, P, _, _>(
-			[a, b],
-			&mut prover_transcript,
-			&GlobalAllocator,
-		);
+		let _ = bitand::prove::<_, B128, P, _, _>([a, b], &mut prover_transcript, &GlobalAllocator);
 		let mut proof = prover_transcript.finalize();
 
 		// Mutation: flip a bit in the prover's first message, the univariate round evaluations.
@@ -1432,7 +1425,7 @@ mod tests {
 			let log_total = checked_log_2(a.len());
 
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let prove_output = and_reduction::prove::<_, B128, P, _, _>(columns.as_slices(), &mut prover_transcript, &GlobalAllocator);
+			let prove_output = bitand::prove::<_, B128, P, _, _>(columns.as_slices(), &mut prover_transcript, &GlobalAllocator);
 
 			let mut verifier_transcript = prover_transcript.into_verifier();
 			let verify_output =

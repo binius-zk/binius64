@@ -8,10 +8,10 @@ use binius_ip_prover::sumcheck::{common::MleCheckProver, quadratic_mlecheck_prov
 use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 use binius_prover::{
 	OptimalPackedB128,
-	and_reduction::{
+	fold_word::BitAxisFolder,
+	protocols::bitand::{
 		NTTLookup, sumcheck_round_messages::univariate_round_message_extension_domain,
 	},
-	fold_word::BitAxisFolder,
 };
 use binius_verifier::{
 	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},

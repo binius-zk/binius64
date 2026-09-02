@@ -33,10 +33,9 @@ use digest::Output;
 
 use super::error::Error;
 use crate::{
-	and_reduction,
 	pcs_compiler::PcsProverCompiler,
 	protocols::{
-		binmul, intmul,
+		binmul, bitand, intmul,
 		shift::{self, KeyCollection, OperatorClaims, OperatorData, ShiftOutput},
 	},
 	ring_switch,
@@ -184,7 +183,7 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = and_reduction::prove::<_, B128, P, _, _>(bitand_columns, &mut *channel, alloc);
+			} = bitand::prove::<_, B128, P, _, _>(bitand_columns, &mut *channel, alloc);
 			OperatorData {
 				evals: [a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,

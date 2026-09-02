@@ -54,7 +54,7 @@ name = "batch_quadratic_mle"
 harness = false
 
 [[bench]]
-name = "and_reduction"
+name = "bitand"
 harness = false
 
 [[bench]]

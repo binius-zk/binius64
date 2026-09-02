@@ -27,9 +27,8 @@ use binius_math::{
 	univariate::EvaluationDomain,
 };
 use binius_prover::{
-	and_reduction,
 	protocols::{
-		binmul, intmul,
+		binmul, bitand, intmul,
 		shift::{KeyCollection, OperatorClaims, OperatorData},
 	},
 	ring_switch::{self, RingSwitchOutput},
@@ -215,8 +214,7 @@ impl IOPProver {
 			// Reduce over borrowed columns so the owned ones can be reused below without a clone.
 			// Nothing touches the channel between the reduction and the derivation, so the
 			// transcript is unchanged.
-			let output =
-				and_reduction::prove::<_, B128, P, _, _>(columns.as_slices(), channel, alloc);
+			let output = bitand::prove::<_, B128, P, _, _>(columns.as_slices(), channel, alloc);
 			// The re-randomization re-reads all three columns, so derive the third only there.
 			let and_columns =
 				(mul.is_some() || bmul.is_some()).then(|| columns.with_derived_and(alloc));
