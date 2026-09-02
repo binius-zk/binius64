@@ -23,7 +23,7 @@ use binius_iop_prover::{
 };
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::{FieldSlice, FieldVec, ntt::AdditiveNTT};
-use binius_spartan_frontend::constraint_system::{BlindingInfo, WitnessLayout};
+use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_verifier::IOPVerifier;
 use rand::CryptoRng;
 
@@ -158,12 +158,7 @@ where
 		let keys = repeat_with(|| F::random(&mut rng))
 			.take(cs.n_precommit() as usize)
 			.collect::<Vec<F>>();
-		// The precommit segment has no dummy mul-constraint blinding (see
-		// ConstraintSystemPadded::new) — mirror that when packing.
-		let precommit_blinding = BlindingInfo {
-			n_dummy_wires: cs.blinding_info().n_dummy_wires,
-			n_dummy_constraints: 0,
-		};
+		let precommit_blinding = *cs.blinding_info();
 		let precommit_packed = pack_and_blind_witness::<_, _, P>(
 			alloc,
 			cs.log_precommit() as usize,
