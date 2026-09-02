@@ -62,7 +62,13 @@ impl EvalForm {
 		// every load and store.
 		//
 		// Invariant: every wire the graph holds was given a value index before this runs.
-		let wire_to_reg = |wire: Wire| -> u32 { layout.word_offset(wire_mapping[wire]) as u32 };
+		//
+		// Invariant: a register index is four bytes on the wire.
+		let wire_to_reg = |wire: Wire| -> u32 {
+			let word_offset = layout.word_offset(wire_mapping[wire]);
+			debug_assert!(word_offset <= u32::MAX as usize, "a register index fits in four bytes");
+			word_offset as u32
+		};
 
 		// Build bytecode for each gate
 		for gate_id in gate_graph.gates.keys() {

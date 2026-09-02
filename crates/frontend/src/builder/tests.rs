@@ -295,6 +295,77 @@ fn test_call_hint_user_registered() {
 	assert_eq!(w[out2[0]], expected);
 }
 
+/// A hint folding however many input words its caller asks for into one.
+struct WideXor;
+
+impl Hint for WideXor {
+	const NAME: &'static str = "test.wide_xor";
+
+	fn shape(&self, dimensions: &[usize]) -> (usize, usize) {
+		let [n_in] = dimensions else {
+			panic!("test.wide_xor takes exactly 1 dimension");
+		};
+		(*n_in, 1)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		outputs[0] = inputs.iter().fold(Word::ZERO, |acc, &w| Word(acc.0 ^ w.0));
+	}
+}
+
+#[test]
+fn test_call_hint_arity_beyond_a_two_byte_count() {
+	for n_in in [65_535usize, 65_536] {
+		let builder = CircuitBuilder::new();
+		let inputs = (0..n_in).map(|_| builder.add_inout()).collect::<Vec<_>>();
+		let out = builder.call_hint(WideXor, &[n_in], &inputs);
+		// A hint emits no constraint of its own, so promote its output to read it back.
+		builder.mark_inout(out[0]);
+		let circuit = builder.build();
+
+		// Distinct odd multiples, so dropping or repeating any input moves the fold.
+		let mut w = circuit.new_witness_filler();
+		let mut expected = Word::ZERO;
+		for (i, &wire) in inputs.iter().enumerate() {
+			let value = Word(0x9e37_79b9_7f4a_7c15u64.wrapping_mul(i as u64 + 1));
+			w[wire] = value;
+			expected = Word(expected.0 ^ value.0);
+		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+		assert_eq!(w[out[0]], expected, "wide hint fold at arity {n_in}");
+	}
+}
+
+/// A hint declaring more inputs than any encoding could name.
+struct UnencodableArity;
+
+impl Hint for UnencodableArity {
+	const NAME: &'static str = "test.unencodable_arity";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(usize::MAX, 1)
+	}
+
+	fn execute(&self, _dimensions: &[usize], _inputs: &[Word], outputs: &mut [Word]) {
+		outputs[0] = Word::ZERO;
+	}
+}
+
+#[test]
+#[should_panic(expected = "test.unencodable_arity")]
+fn test_call_hint_rejects_an_arity_the_bytecode_cannot_encode() {
+	CircuitBuilder::new().call_hint(UnencodableArity, &[], &[]);
+}
+
+#[test]
+#[should_panic(expected = "test.and_then_xor")]
+fn test_call_hint_rejects_a_dimension_the_bytecode_cannot_encode() {
+	// A dimension is four bytes on the wire, so it is bounded like an arity is.
+	let builder = CircuitBuilder::new();
+	let inputs = [builder.add_inout(), builder.add_inout()];
+	builder.call_hint(AndThenXor, &[usize::MAX], &inputs);
+}
+
 #[test]
 fn test_try_build_reports_an_always_failing_constant_gate() {
 	// Constant propagation evaluates a gate once every one of its inputs is a constant.
