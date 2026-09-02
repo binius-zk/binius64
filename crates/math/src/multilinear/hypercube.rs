@@ -361,24 +361,14 @@ pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField, Data: Ve
 	}
 }
 
-/// Bytes one block of a split expansion spans.
-///
-/// # Why this value
-///
-/// A block is read once per block of the result and written once in total.
-/// Sizing it for the second cache level keeps those repeated reads off memory, while leaving room
-/// beside them for the writes they feed.
-///
-/// Halving it measurably loses at the largest sizes, and quadrupling it gains nothing.
-const BLOCK_BYTES: usize = 1 << 16;
-
 /// Coordinates the low half of a split takes, or nothing when the point is too short to split.
 ///
-/// A block spans whole packed words, so it never falls below one.
+/// The cut sits at the midpoint, so neither expansion is much larger than the square root of the
+/// result and the two cost the same to build.
+///
+/// A block spans whole packed words, so the cut never falls below the packing width.
 fn split_low_len<P: PackedField>(n_vars: usize) -> Option<usize> {
-	let log_scalar_bytes = size_of::<P::Scalar>().next_power_of_two().ilog2();
-	let low_len = BLOCK_BYTES.ilog2().saturating_sub(log_scalar_bytes) as usize;
-	let low_len = low_len.max(P::LOG_WIDTH);
+	let low_len = (n_vars / 2).max(P::LOG_WIDTH);
 
 	// A point no longer than one block leaves no high half to take the outer product against.
 	(n_vars > low_len).then_some(low_len)
@@ -884,8 +874,8 @@ mod tests {
 			// Property: cutting the point and multiplying the two expansions together is the same
 			// map as appending its coordinates one at a time.
 			//
-			// The production cut is far above these sizes, so it is passed in directly here.
-			// That covers every cut shape, including the ones a tuning change could start picking.
+			// The cut is passed in directly rather than taken from the midpoint rule, so this
+			// covers every cut shape, not only the one that rule picks.
 			//
 			//     n_vars = 5, low_len = 2  ->  4 blocks of 4 coefficients
 			prop_assume!(low_len >= P::LOG_WIDTH);
@@ -920,9 +910,11 @@ mod tests {
 		// The public entry point picks the cut itself, so this runs at sizes that reach it,
 		// against the scalar engine, which shares no code with either packed path.
 		//
-		// 13 is one coordinate past the cut, where the result spans two blocks and the parallel
-		// loop has a single item. 19 is far enough past it to split many ways.
-		for n_vars in [13, 14, 18, 19] {
+		// 3 is the shortest point that splits at all, where the result spans two blocks and the
+		// parallel loop has a single item.
+		// 4 and 5 are where the packing-width floor still overrides the midpoint.
+		// 6 is where the midpoint takes over, and 13, 14 and 19 split many ways, odd and even.
+		for n_vars in [3, 4, 5, 6, 13, 14, 19] {
 			assert!(split_low_len::<P>(n_vars).is_some(), "expected the split at {n_vars} vars");
 
 			let point = random_scalars::<F>(&mut rng, n_vars);
@@ -939,7 +931,7 @@ mod tests {
 	}
 
 	#[test]
-	fn the_crossover_leaves_a_whole_block_below_the_cut() {
+	fn the_cut_leaves_a_whole_block_below_it() {
 		// Invariant: a block spans whole packed words, and the result spans whole blocks.
 		//
 		// Both are what let the outer product address a block as a run of the store.
