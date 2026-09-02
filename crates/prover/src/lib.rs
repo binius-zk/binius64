@@ -29,7 +29,6 @@
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
-pub mod and_reduction;
 pub mod bit_matrix;
 mod error;
 pub mod fold_word;
