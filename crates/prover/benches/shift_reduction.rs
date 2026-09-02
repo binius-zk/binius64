@@ -28,7 +28,7 @@ use binius_verifier::{
 	protocols::shift::{OperationClaim, verify},
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use sha2::{Digest, Sha256 as Sha256Hasher};
+use sha2::{Digest, Sha256};
 
 pub fn create_sha256_cs_with_witness(
 	log_message_len_bytes: usize,
@@ -68,7 +68,7 @@ pub fn create_sha256_cs_with_witness(
 	}
 
 	// Calculate SHA256 digest of the message dynamically and populate the expected digest wires.
-	let hash = Sha256Hasher::digest(&message_bytes);
+	let hash = Sha256::digest(&message_bytes);
 	let expected_bytes: [u8; 32] = hash.into();
 	for (i, wire) in expected_digest.iter().enumerate() {
 		let mut word = 0u32;

@@ -9,7 +9,7 @@
 use std::hint::black_box;
 
 use binius_field::{
-	Ghash128b as GhashB128, PackedField, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b,
+	Ghash128b, PackedField, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b,
 };
 use criterion::{
 	BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main, measurement::WallTime,
@@ -36,7 +36,7 @@ fn bench_ghash_invert(c: &mut Criterion) {
 	let mut group = c.benchmark_group("ghash_invert");
 
 	for &n in &[16, 256, 4096] {
-		bench_width::<GhashB128>(&mut group, "scalar", n);
+		bench_width::<Ghash128b>(&mut group, "scalar", n);
 		bench_width::<PackedGhash1x128b>(&mut group, "1x128b", n);
 		bench_width::<PackedGhash2x128b>(&mut group, "2x128b", n);
 		bench_width::<PackedGhash4x128b>(&mut group, "4x128b", n);

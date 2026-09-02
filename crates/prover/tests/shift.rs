@@ -32,7 +32,7 @@ use binius_verifier::{
 };
 use itertools::Itertools;
 use rand::{SeedableRng, rngs::StdRng};
-use sha2::{Digest, Sha256 as Sha256Hasher};
+use sha2::{Digest, Sha256};
 
 pub fn create_sha256_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 	let builder = CircuitBuilder::new();
@@ -66,7 +66,7 @@ pub fn create_sha256_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 	message.populate_data(&mut witness_filler, message_bytes);
 
 	// Calculate SHA256 digest of the message dynamically
-	let hash = Sha256Hasher::digest(message_bytes);
+	let hash = Sha256::digest(message_bytes);
 	let expected_digest: [u8; 32] = hash.into();
 	for (i, chunk) in expected_digest.chunks(8).enumerate() {
 		witness_filler[digest[i]] = Word(u64::from_be_bytes(chunk.try_into().unwrap()));

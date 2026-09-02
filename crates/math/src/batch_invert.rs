@@ -254,7 +254,7 @@ fn unproduct_layer<P: PackedField>(input: &[P], output: &mut [P]) {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{Ghash128b as Ghash, Random, arithmetic_traits::InvertOrZero};
+	use binius_field::{Ghash128b, Random, arithmetic_traits::InvertOrZero};
 	use proptest::prelude::*;
 	use rand::{Rng, SeedableRng, rngs::StdRng, seq::IteratorRandom};
 
@@ -262,7 +262,7 @@ mod tests {
 
 	/// Shared helper to test batch inversion with a given inverter.
 	fn invert_with_inverter(
-		inverter: &mut BatchInversion<Ghash>,
+		inverter: &mut BatchInversion<Ghash128b>,
 		n: usize,
 		n_zeros: usize,
 		rng: &mut impl Rng,
@@ -277,14 +277,14 @@ mod tests {
 		let mut state = Vec::with_capacity(n);
 		for i in 0..n {
 			if zero_indices.contains(&i) {
-				state.push(Ghash::ZERO);
+				state.push(Ghash128b::ZERO);
 			} else {
-				state.push(Ghash::random(&mut *rng));
+				state.push(Ghash128b::random(&mut *rng));
 			}
 		}
 
 		// Reference result: invert every element independently, one call per element.
-		let expected: Vec<Ghash> = state
+		let expected: Vec<Ghash128b> = state
 			.iter()
 			.map(|x| InvertOrZero::invert_or_zero(*x))
 			.collect();
@@ -298,7 +298,7 @@ mod tests {
 
 	fn test_batch_inversion_for_size(n: usize, n_zeros: usize, rng: &mut impl Rng) {
 		// Fresh context sized for exactly n elements.
-		let mut inverter = BatchInversion::<Ghash>::new(n);
+		let mut inverter = BatchInversion::<Ghash128b>::new(n);
 		invert_with_inverter(&mut inverter, n, n_zeros, rng);
 	}
 
@@ -307,16 +307,16 @@ mod tests {
 		// So the non-zero-only entry point is safe to use directly.
 		let mut state = Vec::with_capacity(n);
 		for _ in 0..n {
-			state.push(Ghash::random(&mut *rng));
+			state.push(Ghash128b::random(&mut *rng));
 		}
 
 		// Reference result: invert every element independently, one call per element.
-		let expected: Vec<Ghash> = state
+		let expected: Vec<Ghash128b> = state
 			.iter()
 			.map(|x| InvertOrZero::invert_or_zero(*x))
 			.collect();
 
-		let mut inverter = BatchInversion::<Ghash>::new(n);
+		let mut inverter = BatchInversion::<Ghash128b>::new(n);
 		inverter.invert_nonzero(&mut state);
 
 		// The batched result must match the per-element reference exactly.
@@ -345,7 +345,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 		// One context, reused across every zero count from 0 to 8 below.
 		// This checks that the zero mask from one call never leaks into the next.
-		let mut inverter = BatchInversion::<Ghash>::new(8);
+		let mut inverter = BatchInversion::<Ghash128b>::new(8);
 
 		for n_zeros in 0..=8 {
 			invert_with_inverter(&mut inverter, 8, n_zeros, &mut rng);
@@ -369,9 +369,9 @@ mod tests {
 			.map(|i| {
 				Packed128b::from_fn(|lane| {
 					if (i == 1 && lane == 0) || (i == 2 && lane == 2) {
-						Ghash::ZERO
+						Ghash128b::ZERO
 					} else {
-						Ghash::random(&mut rng)
+						Ghash128b::random(&mut rng)
 					}
 				})
 			})

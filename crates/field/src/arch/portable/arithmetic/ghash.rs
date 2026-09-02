@@ -12,7 +12,7 @@ use bytemuck::TransparentWrapper;
 
 use super::super::univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64};
 use crate::{
-	BinaryField, Divisible, Ghash128b as GhashB128, WideMul,
+	BinaryField, Divisible, Ghash128b, WideMul,
 	arithmetic_traits::{MulX, Square},
 	packed_fields::primitive::PackedPrimitiveType,
 	underlier::Underlier,
@@ -217,7 +217,7 @@ impl<U: Underlier128bLanes> SubAssign for WideGhashProduct<U> {
 #[derive(bytemuck::TransparentWrapper)]
 pub struct GhashWideMul<T>(T);
 
-impl<U: Underlier128bLanes> WideMul for GhashWideMul<PackedPrimitiveType<U, GhashB128>> {
+impl<U: Underlier128bLanes> WideMul for GhashWideMul<PackedPrimitiveType<U, Ghash128b>> {
 	type Output = WideGhashProduct<U>;
 
 	#[inline]
@@ -259,7 +259,7 @@ impl<U: Underlier + Divisible<u128>, F: BinaryField> MulX for GhashMulX<PackedPr
 #[derive(TransparentWrapper)]
 pub struct GhashSoftMul<T>(T);
 
-impl<U: Underlier128bLanes> Square for GhashSoftMul<PackedPrimitiveType<U, GhashB128>> {
+impl<U: Underlier128bLanes> Square for GhashSoftMul<PackedPrimitiveType<U, Ghash128b>> {
 	#[inline]
 	fn square(self) -> Self {
 		Self::wrap(PackedPrimitiveType::wrap(ghash_square(PackedPrimitiveType::peel(Self::peel(
