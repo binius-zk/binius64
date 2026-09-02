@@ -1,8 +1,10 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
+	array,
 	cmp::{max, min},
-	iter,
+	iter, mem,
 	ops::Range,
 	slice::from_raw_parts_mut,
 };
@@ -12,7 +14,6 @@ use binius_utils::rayon::{
 	iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
 	slice::ParallelSliceMut,
 };
-use itertools::izip;
 
 use super::{
 	AdditiveNTT, DomainContext,
@@ -24,6 +25,12 @@ use crate::field_buffer::FieldSliceMut;
 //
 // Empirically it performs well and is small enough for the buffer to fit comfortably in L1 cache.
 const DEFAULT_LOG_BASE_LEN: usize = 10;
+
+/// The widest window of butterfly layers one pass over the buffer may cover.
+///
+/// A wider window divides the traffic of the shared layers by more, up to the point where a
+/// super-block's planes and twiddles no longer fit in registers.
+const MAX_WINDOW_LAYERS: usize = 4;
 
 /// Runs a **part** of an NTT butterfly network, in depth-first order.
 ///
@@ -314,46 +321,67 @@ fn butterfly<P: PackedField>(u: &mut P, v: &mut P, twiddle: P) {
 	*v += *u;
 }
 
-/// Applies two consecutive butterfly layers to four planes held in registers.
+/// Applies a window of consecutive butterfly layers to the planes of one super-block.
 ///
-/// The four planes are the quarters of one super-block, in plane order.
-/// `twiddle_0` belongs to the first layer, which pairs planes `(0, 2)` and `(1, 3)`.
-/// `twiddle_1_even` and `twiddle_1_odd` belong to the second, which pairs `(0, 1)` and `(2, 3)`.
+/// A super-block is the run of planes the window's layers move elements between; a position
+/// inside a plane never moves. Each element is loaded once, takes part in every layer of the
+/// window, and is stored once, so a window of any width costs one pass over the buffer.
 ///
-/// Each element is loaded once, takes part in both layers, and is stored once.
-fn fused_pair<P: PackedField>(
-	planes: [&mut [P]; 4],
-	twiddle_0: P,
-	twiddle_1_even: P,
-	twiddle_1_odd: P,
+/// The twiddles are the window's layers in order, each layer's blocks in order, so layer `l`
+/// occupies `2^l` of them.
+///
+/// `ZERO_BLOCK` marks the super-block that reads block zero in every layer.
+/// That block's twiddle is zero, so its butterflies collapse to an add and the first plane is
+/// only ever read.
+#[inline(always)]
+fn fused_window<P: PackedField, const W: usize, const N: usize, const ZERO_BLOCK: bool>(
+	planes: [&mut [P]; N],
+	twiddles: &[P],
 ) {
-	let [plane_0, plane_1, plane_2, plane_3] = planes;
+	debug_assert_eq!(N, 1 << W);
+	debug_assert_eq!(twiddles.len(), N - 1);
 
-	for (x_0, x_1, x_2, x_3) in izip!(plane_0, plane_1, plane_2, plane_3) {
-		butterfly(x_0, x_2, twiddle_0);
-		butterfly(x_1, x_3, twiddle_0);
-		butterfly(x_0, x_1, twiddle_1_even);
-		butterfly(x_2, x_3, twiddle_1_odd);
+	// Every plane is a run of the same length, which the cursors below step through in lockstep.
+	let lens = planes.each_ref().map(|plane| plane.len());
+	let len = lens[0];
+	debug_assert!(lens.into_iter().all(|plane_len| plane_len == len));
+
+	// One cursor per plane, stepped in lockstep, so the unrolled network reaches each plane
+	// without re-deriving it from an index.
+	let mut cursors = planes.map(<[P]>::iter_mut);
+
+	for _ in 0..len {
+		let slots: [&mut P; N] =
+			array::from_fn(|plane| cursors[plane].next().expect("a plane holds `len` elements"));
+		let mut x: [P; N] = array::from_fn(|plane| *slots[plane]);
+
+		// Layer `l` pairs planes `2^(W - 1 - l)` apart, in `2^l` blocks of one twiddle each.
+		let mut layer_base = 0;
+		for layer in 0..W {
+			let stride = N >> (layer + 1);
+			for block in 0..1 << layer {
+				let twiddle = twiddles[layer_base + block];
+				let start = block * (stride << 1);
+				for offset in start..start + stride {
+					if ZERO_BLOCK && block == 0 {
+						x[offset + stride] += x[offset];
+					} else {
+						let u = x[offset] + x[offset + stride] * twiddle;
+						x[offset] = u;
+						x[offset + stride] += u;
+					}
+				}
+			}
+			layer_base += 1 << layer;
+		}
+
+		for (slot, value) in iter::zip(slots, x) {
+			*slot = value;
+		}
 	}
 }
 
-/// Same as [`fused_pair`], for the super-block whose index is zero.
-///
-/// There `twiddle_0` and `twiddle_1_even` are both the layer's block-0 twiddle, which is zero.
-/// Each of their butterflies collapses to `v += u`, leaving `u` untouched.
-/// So plane 0 is never written, and its cache lines stay clean.
-fn fused_pair_zero_block<P: PackedField>(planes: [&mut [P]; 4], twiddle_1_odd: P) {
-	let [plane_0, plane_1, plane_2, plane_3] = planes;
-
-	for (x_0, x_1, x_2, x_3) in izip!(plane_0, plane_1, plane_2, plane_3) {
-		*x_2 += *x_0;
-		*x_3 += *x_1;
-		*x_1 += *x_0;
-		butterfly(x_2, x_3, twiddle_1_odd);
-	}
-}
-
-/// Processes layers `first_layer` and `first_layer + 1` in a single pass over the buffer.
+/// Processes `W` consecutive layers in a single pass over the buffer.
 ///
 /// Index the buffer by `i` in `[0, 2^log_d)`.
 /// Layer `l` pairs `i` with `i XOR 2^(log_d - 1 - l)`, under the twiddle of block `i >> (log_d -
@@ -362,28 +390,27 @@ fn fused_pair_zero_block<P: PackedField>(planes: [&mut [P]; 4], twiddle_1_odd: P
 /// Writing `a` for `first_layer`, split the index three ways:
 ///
 /// ```text
-///     i = h * 2^(log_d - a)  +  m * 2^(log_d - a - 2)  +  offset
+///     i = h * 2^(log_d - a)  +  m * 2^(log_d - a - W)  +  offset
 ///
-///     h < 2^a                    super-block index, which the two layers never move
-///     m < 4                      plane index, the only bits they do move
-///     offset < 2^(log_d - a - 2) position inside a plane, which they never move
+///     h < 2^a                    super-block index, which the window never moves
+///     m < 2^W                    plane index, the only bits it does move
+///     offset < 2^(log_d - a - W) position inside a plane, which it never moves
 /// ```
 ///
-/// The four entries sharing one `(h, offset)` are closed under both layers, and distinct pairs
-/// never interact.
-/// So a quarter of the buffer's elements can be transformed independently of the rest, which is
-/// what lets both layers run without a barrier between them.
+/// The `2^W` entries sharing one `(h, offset)` are closed under every layer of the window, and
+/// distinct groups never interact.
+/// So a `2^-W` share of the buffer's elements can be transformed independently of the rest, which
+/// is what lets the whole window run without a barrier inside it.
 ///
-/// Layer `a` reads the twiddle of block `h`, shared by both of its pairs.
-/// Layer `a + 1` reads blocks `2h` and `2h + 1`, one per pair.
+/// Layer `a + l` reads the blocks `h * 2^l` through `h * 2^l + 2^l - 1`, one per pair it makes.
 ///
 /// ## Preconditions
 ///
 /// - `2^log_d == data.len() * packing_width`
-/// - `first_layer + 2 <= log_num_shares`
-/// - `first_layer + 2 + P::LOG_WIDTH < log_d`
-/// - `domain_context` holds the twiddles of layers `first_layer` and `first_layer + 1`
-fn forward_shared_layer_pair<P: PackedField>(
+/// - `first_layer + W <= log_num_shares`
+/// - `first_layer + W + P::LOG_WIDTH < log_d`
+/// - `domain_context` holds the twiddles of layers `first_layer` through `first_layer + W - 1`
+fn forward_shared_layer_window<P: PackedField, const W: usize, const N: usize>(
 	domain_context: &(impl DomainContext<Field = P::Scalar> + Sync),
 	data: &mut [P],
 	log_d: usize,
@@ -391,63 +418,66 @@ fn forward_shared_layer_pair<P: PackedField>(
 	log_num_shares: usize,
 ) {
 	// check preconditions
+	debug_assert_eq!(N, 1 << W);
 	debug_assert_eq!(data.len() << P::LOG_WIDTH, 1 << log_d);
-	debug_assert!(first_layer + 2 <= log_num_shares);
-	debug_assert!(first_layer + 2 + P::LOG_WIDTH < log_d);
-	debug_assert!(first_layer + 2 <= domain_context.log_domain_size());
+	debug_assert!(first_layer + W <= log_num_shares);
+	debug_assert!(first_layer + W + P::LOG_WIDTH < log_d);
+	debug_assert!(first_layer + W <= domain_context.log_domain_size());
 
-	let log_plane_len = log_d - first_layer - 2 - P::LOG_WIDTH;
+	let log_plane_len = log_d - first_layer - W - P::LOG_WIDTH;
 	let plane_len = 1 << log_plane_len;
 
 	// Cut every plane into equal runs, enough of them to feed each share at least one.
 	// A run never drops below one packed element.
 	let log_run_len = log_plane_len.saturating_sub(log_num_shares - first_layer);
 	let run_len = 1 << log_run_len;
+	let n_runs = plane_len >> log_run_len;
 
 	// One task per (super-block, run) pair, which the borrow checker proves disjoint for us.
-	let tasks = data
-		.chunks_exact_mut(plane_len << 2)
-		.enumerate()
-		.flat_map(|(h, super_block)| {
-			let twiddle = |layer, block| P::broadcast(domain_context.twiddle(layer, block));
-			let twiddles = (
-				twiddle(first_layer, h),
-				twiddle(first_layer + 1, h << 1),
-				twiddle(first_layer + 1, (h << 1) | 1),
-			);
-
-			let (halves_0_1, halves_2_3) = super_block.split_at_mut(plane_len << 1);
-			let (plane_0, plane_1) = halves_0_1.split_at_mut(plane_len);
-			let (plane_2, plane_3) = halves_2_3.split_at_mut(plane_len);
-
-			izip!(
-				plane_0.chunks_exact_mut(run_len),
-				plane_1.chunks_exact_mut(run_len),
-				plane_2.chunks_exact_mut(run_len),
-				plane_3.chunks_exact_mut(run_len),
-			)
-			.map(move |(run_0, run_1, run_2, run_3)| ([run_0, run_1, run_2, run_3], h, twiddles))
-		})
-		.collect::<Vec<_>>();
-
-	tasks
-		.into_par_iter()
-		.for_each(|(planes, h, (twiddle_0, twiddle_1_even, twiddle_1_odd))| {
-			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
-			// Only super-block 0 reads block 0, and it does so in both of its layers.
-			if h == 0 {
-				fused_pair_zero_block(planes, twiddle_1_odd);
-			} else {
-				fused_pair(planes, twiddle_0, twiddle_1_even, twiddle_1_odd);
+	let mut tasks = Vec::with_capacity((1 << first_layer) * n_runs);
+	for (h, super_block) in data.chunks_exact_mut(plane_len << W).enumerate() {
+		// The window's layers in order, each layer's blocks in order.
+		let mut twiddles = [P::zero(); N];
+		let mut layer_base = 0;
+		for layer in 0..W {
+			for block in 0..1 << layer {
+				twiddles[layer_base + block] =
+					P::broadcast(domain_context.twiddle(first_layer + layer, (h << layer) | block));
 			}
+			layer_base += 1 << layer;
+		}
+
+		let mut rest: &mut [P] = super_block;
+		let planes: [&mut [P]; N] = array::from_fn(|_| {
+			let (plane, tail) = mem::take(&mut rest).split_at_mut(plane_len);
+			rest = tail;
+			plane
 		});
+
+		let mut plane_runs = planes.map(|plane| plane.chunks_exact_mut(run_len));
+		for _ in 0..n_runs {
+			let runs: [&mut [P]; N] =
+				array::from_fn(|plane| plane_runs[plane].next().expect("one run per step"));
+			tasks.push((runs, h, twiddles));
+		}
+	}
+
+	tasks.into_par_iter().for_each(|(runs, h, twiddles)| {
+		// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+		// Super-block zero is the only one that reads block zero, and it does so in every layer.
+		if h == 0 {
+			fused_window::<P, W, N, true>(runs, &twiddles[..N - 1]);
+		} else {
+			fused_window::<P, W, N, false>(runs, &twiddles[..N - 1]);
+		}
+	});
 }
 
-/// Runs the shared layers of the butterfly network, two layers per pass where possible.
+/// Runs the shared layers of the butterfly network, in as few passes as the window width allows.
 ///
-/// Pairing halves the passes a window of layers costs, so it halves its memory traffic.
-/// A layer that cannot be paired -- an odd one out, or a shape whose planes would fall below one
-/// packed element -- runs alone, exactly as it did before pairing existed.
+/// A window of `W` layers costs one pass, so it divides the memory traffic of that many layers by
+/// `W`. The width is capped so a super-block's planes and twiddles stay in registers, and it
+/// shrinks when too few layers are left or when the planes would fall below one packed element.
 ///
 /// ## Preconditions
 ///
@@ -464,14 +494,36 @@ fn forward_shared_layers<P: PackedField>(
 
 	let mut layer = layers.start;
 	while layer < layers.end {
-		// A pair needs one more layer to pair with, and planes of at least one packed element.
-		if layers.end - layer >= 2 && layer + 2 + P::LOG_WIDTH < log_d {
-			forward_shared_layer_pair(domain_context, data, log_d, layer, log_num_shares);
-			layer += 2;
-		} else {
-			forward_shared_layer(domain_context, data, log_d, layer, log_num_shares);
-			layer += 1;
+		// A window needs its layers to exist, and planes of at least one packed element.
+		let width = min(
+			min(layers.end - layer, MAX_WINDOW_LAYERS),
+			(log_d - P::LOG_WIDTH).saturating_sub(layer + 1),
+		);
+		match width {
+			4 => forward_shared_layer_window::<P, 4, 16>(
+				domain_context,
+				data,
+				log_d,
+				layer,
+				log_num_shares,
+			),
+			3 => forward_shared_layer_window::<P, 3, 8>(
+				domain_context,
+				data,
+				log_d,
+				layer,
+				log_num_shares,
+			),
+			2 => forward_shared_layer_window::<P, 2, 4>(
+				domain_context,
+				data,
+				log_d,
+				layer,
+				log_num_shares,
+			),
+			_ => forward_shared_layer(domain_context, data, log_d, layer, log_num_shares),
 		}
+		layer += max(width, 1);
 	}
 }
 
