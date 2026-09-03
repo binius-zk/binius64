@@ -111,24 +111,28 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	where
 		T: Send + Sync,
 	{
-		self.cols
-			.clone()
-			.into_par_iter()
-			.step_by(stride)
-			.map(move |start| {
-				let end = (start + stride).min(self.cols.end);
-				// We are setting the same lifetime as `self` captures.
-				Self {
-					// Safety: different instances of StridedArray2DViewMut created with the same
-					// data slice do not access overlapping indices.
-					data: unsafe {
-						slice::from_raw_parts_mut(self.data.as_ptr().cast_mut(), self.data.len())
-					},
-					data_width: self.data_width,
-					height: self.height,
-					cols: start..end,
-				}
-			})
+		let Self {
+			data,
+			data_width,
+			height,
+			cols,
+		} = self;
+		let data_ptr = SendPtr(data.as_mut_ptr());
+		let data_len = data.len();
+		let cols_end = cols.end;
+
+		cols.into_par_iter().step_by(stride).map(move |start| {
+			let end = (start + stride).min(cols_end);
+			Self {
+				// Safety: the pointer is taken from the mutable slice above, outside the
+				// closure, which can capture only by shared borrow. Different instances created
+				// from the same data slice do not access overlapping indices.
+				data: unsafe { slice::from_raw_parts_mut(data_ptr.as_ptr(), data_len) },
+				data_width,
+				height,
+				cols: start..end,
+			}
+		})
 	}
 
 	/// Returns iterator over single-column mutable views of the data.
