@@ -2,7 +2,7 @@ blake2s circuit
 --
 Gates & Instructions
 ├─ Number of gates: 10,392
-└─ Number of evaluation instructions: 10,392
+└─ Number of evaluation instructions: 10,315
 
 Constraints
 ├─ ZERO constraints: 2,069 used (50.5% of 2^12)

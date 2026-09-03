@@ -2,7 +2,7 @@ sha3_512 circuit
 --
 Gates & Instructions
 ├─ Number of gates: 41,513
-└─ Number of evaluation instructions: 41,513
+└─ Number of evaluation instructions: 41,449
 
 Constraints
 ├─ ZERO constraints: 8 used (100.0% of 2^3)
