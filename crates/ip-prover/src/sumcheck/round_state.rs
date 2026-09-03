@@ -9,7 +9,7 @@
 /// A prover holds exactly one of the two at any time.
 /// Tracking which one lets the mandated call order be validated in a single place.
 #[derive(Debug, Clone)]
-pub enum RoundState<Coeffs, Claim> {
+pub(crate) enum RoundState<Coeffs, Claim> {
 	/// Round polynomial(s) already produced for this variable, awaiting the reduction step.
 	Coeffs(Coeffs),
 	/// Claim(s) awaiting the next round polynomial(s): the initial claim, or a reduction result.
@@ -23,7 +23,7 @@ impl<Coeffs, Claim> RoundState<Coeffs, Claim> {
 	///
 	/// Panics when the prover still holds an unreduced round polynomial.
 	/// That means execute was called before the previous round's fold.
-	pub fn claim(&self) -> &Claim {
+	pub(crate) fn claim(&self) -> &Claim {
 		match self {
 			// A carried claim is the expected input to the round-polynomial phase.
 			Self::Claim(claim) => claim,
@@ -38,7 +38,7 @@ impl<Coeffs, Claim> RoundState<Coeffs, Claim> {
 	///
 	/// Panics when the prover instead holds a claim.
 	/// That means fold was called before this round's execute produced a polynomial.
-	pub fn coeffs(&self) -> &Coeffs {
+	pub(crate) fn coeffs(&self) -> &Coeffs {
 		match self {
 			// The round polynomial is the expected input to the reduction phase.
 			Self::Coeffs(coeffs) => coeffs,

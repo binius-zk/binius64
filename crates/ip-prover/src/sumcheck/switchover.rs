@@ -34,7 +34,7 @@ use binius_utils::{
 ///
 /// Choosing switchover round value is a balancing act between peak memory consumption and
 /// performance.
-pub struct BinarySwitchover<'b, P: PackedField, B: Bitwise> {
+pub(crate) struct BinarySwitchover<'b, P: PackedField, B: Bitwise> {
 	n_multilinears: usize,
 	bitmasks: &'b [B],
 	// The folding tensor grows one variable per pre-switchover round, so it is backed by a `Vec`.
@@ -55,7 +55,7 @@ where
 	/// * `bitmasks`       - bitmask representation of 1-bit multilinears
 	/// * `n_multilinears` - number of  lower bitmask bits that become multilinears
 	/// * `switchover`     - number of rounds after which to do the folding
-	pub fn new(n_multilinears: usize, switchover: usize, bitmasks: &'b [B]) -> Self {
+	pub(crate) fn new(n_multilinears: usize, switchover: usize, bitmasks: &'b [B]) -> Self {
 		assert!(
 			bitmasks.len().is_power_of_two(),
 			"Bitmasks represent a collection of multilinears and thus should be of power of two length"
@@ -86,7 +86,7 @@ where
 	/// Get a power-of-two sized aligned chunk of the multilinear at `bit_offset` in the current
 	/// round. This method abstracts transparent/folded state handling. Pre-switchover logic
 	/// requires a chunk sized scratchpad to hold the result.
-	pub fn get_chunk<'switchover, 'scratchpad, Data: DerefMut<Target = [P]>>(
+	pub(crate) fn get_chunk<'switchover, 'scratchpad, Data: DerefMut<Target = [P]>>(
 		&'switchover self,
 		scratchpad: &'scratchpad mut FieldBuffer<P, Data>,
 		bit_offset: usize,
@@ -114,7 +114,7 @@ where
 		)
 	}
 
-	pub fn fold(&mut self, challenge: F) {
+	pub(crate) fn fold(&mut self, challenge: F) {
 		if let Some(folded) = &mut self.folded {
 			// Post-switchover: fold high as usual
 			folded
@@ -165,7 +165,7 @@ where
 		self.folded = Some(all_folded);
 	}
 
-	pub fn finalize(mut self) -> Vec<FieldBuffer<P>> {
+	pub(crate) fn finalize(mut self) -> Vec<FieldBuffer<P>> {
 		self.perform();
 		self.folded.expect("explicit call to perform()")
 	}
