@@ -30,16 +30,30 @@ runs:
           HASH=portable
         fi
         echo "key=cpu-${HASH}" >> "$GITHUB_OUTPUT"
+    - name: Setup Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: ${{ inputs.components }}
+        target: ${{ inputs.target }}
+        cache: false
+    # actions-rust-lang/setup-rust-toolchain bundles Swatinem/rust-cache v2.9.1, which drops the
+    # .fingerprint/build metadata for every crate whose name contains a hyphen when it sweeps
+    # workspace-crate artifacts before saving (the sweep's keep-list only had the hyphenated Cargo
+    # package name, not the underscored target name Cargo actually uses on disk for those
+    # directories). Without that metadata cargo can't trust the surviving .rlib/.rmeta files, so it
+    # recompiles the whole dependency tree on every restore even on an exact cache-key match. Fixed
+    # in rust-cache v2.9.2, which setup-rust-toolchain hasn't picked up in a tagged release yet
+    # (github.com/actions-rust-lang/setup-rust-toolchain/pull/102), so call it directly here instead.
+    #
     # Actions scopes every cache entry to the ref that wrote it, and a run may only restore from
     # its own ref, its base branch, or the default branch. Merge-queue runs execute on
     # `refs/heads/gh-readonly-queue/main/pr-<N>-<sha>`, which GitHub deletes the moment the run
     # finishes, so anything they save is unreachable from that point on — it only occupies the
     # repo's cache quota and evicts entries that pull-request and main runs can still restore.
     # Merge-queue runs therefore restore as usual but do not write.
-    - name: Setup Rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+    - name: Setup Rust Caching
+      uses: Swatinem/rust-cache@v2.9.2
       with:
-        components: ${{ inputs.components }}
-        target: ${{ inputs.target }}
-        cache-key: ${{ steps.cpu.outputs.key }}
-        cache-save-if: ${{ github.event_name != 'merge_group' }}
+        key: ${{ steps.cpu.outputs.key }}
+        cache-on-failure: true
+        save-if: ${{ github.event_name != 'merge_group' }}
