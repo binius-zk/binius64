@@ -26,7 +26,7 @@ use binius_compute::{Allocator, BufferData, VecLike};
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::{
 	prelude::*,
-	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	task_size::{IndexedParallelIteratorExt, WorkPerItem, min_len_for_bytes},
 };
 
 use crate::{FieldBuffer, FieldVec};
@@ -336,6 +336,9 @@ pub fn scaled_eq_ind_partial_eval<Cube: Hypercube, P: PackedField>(
 /// The caller owns the store, so it can be drawn from a pool.
 /// It can equally be reserved on a different thread than the one that fills it.
 ///
+/// Each of the `2^n` coefficients is written once, so the expansion costs one multiplication per
+/// coefficient.
+///
 /// # Preconditions
 ///
 /// * The store's capacity must cover the packed length of the expansion.
@@ -353,8 +356,73 @@ pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField, Data: Ve
 	// Appending the coordinates multiplies it through, so every coefficient ends up scaled.
 	buffer.clear();
 	buffer.push(P::from_scalars(iter::once(scale)));
+	let seed = FieldBuffer::new(0, buffer);
 
-	tensor_prod_eq_ind_reserved::<Cube, P, Data>(FieldBuffer::new(0, buffer), point)
+	// A coefficient is a product over the coordinates, so cutting the point cuts the product:
+	//
+	//     index = high * 2^low_len + low
+	//     coeff = high_expansion[high] * low_expansion[low]
+	//
+	// The cut sits at the midpoint, so neither expansion is much larger than the square root of the
+	// result and the two cost the same to build.
+	// A block spans whole packed words, so the cut never falls below the packing width, and it
+	// never passes the end of the point, which leaves the low expansion holding the whole result.
+	let low_len = (point.len() / 2).max(P::LOG_WIDTH).min(point.len());
+	let (low_coords, high_coords) = point.split_at(low_len);
+
+	// The low expansion is built straight into the store's first block, which is where the result
+	// wants it anyway. Nothing else is expanded over the result's own length.
+	let low = tensor_prod_eq_ind_reserved::<Cube, P, Data>(seed, low_coords);
+
+	// A cut that takes the whole point leaves one block, which is the result already.
+	if high_coords.is_empty() {
+		return low;
+	}
+
+	// A block is `2^low_len` scalars, a whole number of packed words exactly because a cut that
+	// leaves a tail sits at or above the packing width.
+	// That is what makes a block's position in the store equal its index into the high expansion.
+	let block = low.as_ref().len();
+	let mut data = low.into_inner();
+
+	// One scalar per block of the result, so the high expansion stays far smaller than it.
+	let high = eq_ind_partial_eval_scalars::<Cube, P::Scalar>(high_coords);
+	let total = block * high.len();
+	debug_assert_eq!(total, packed_words::<P>(point.len()));
+
+	// The safe two-slice split of a Vec into its initialized prefix and its spare capacity is
+	// still unstable (rust-lang/rust#81944).
+	// So the spare blocks come from the safe accessor and the first block from a raw part.
+	let first_ptr = data.as_mut_ptr();
+	let spare = &mut data.spare_capacity_mut()[..total - block];
+	// SAFETY: `[0, block)` is the initialized first block, disjoint from the spare blocks past
+	// it; the two slices never overlap.
+	let first = unsafe { slice::from_raw_parts(first_ptr, block) };
+
+	// Every block past the first is the first scaled by one coefficient of the high expansion.
+	// One item here is a whole block, so the byte floor is divided down by what a block holds.
+	let min_len = (min_len_for_bytes::<P>() / block).max(1);
+	spare
+		.par_chunks_mut(block)
+		.zip(high[1..].par_iter())
+		.with_min_len(min_len)
+		.for_each(|(dst, &coeff)| {
+			let coeff = P::broadcast(coeff);
+			for (dst_i, &src_i) in iter::zip(dst, first) {
+				dst_i.write(src_i * coeff);
+			}
+		});
+	// SAFETY: the loop above initialized every spare word up to the total.
+	unsafe { data.set_len(total) };
+
+	// The first block still holds the low expansion unscaled, since every other block read it.
+	// Its own coefficient therefore lands last.
+	let coeff = P::broadcast(high[0]);
+	for word in &mut data[..block] {
+		*word *= coeff;
+	}
+
+	FieldBuffer::new(point.len(), data)
 }
 
 /// Truncates a built equality indicator expansion to its low indexed variables.
@@ -770,6 +838,61 @@ mod tests {
 					eq_ind_partial_eval::<InfCube, P>(&point[..truncated_log_len])
 				);
 			}
+		}
+
+		#[test]
+		fn the_split_agrees_with_the_doubling_rounds(
+			seed in any::<u64>(),
+			n_vars in 0usize..=10,
+		) {
+			// Property: cutting the point and multiplying the two expansions together is the same
+			// map as appending its coordinates one at a time.
+			//
+			// The range covers a cut that takes the whole point, one held at the packing width,
+			// and one at the midpoint.
+			let mut rng = StdRng::seed_from_u64(seed);
+			let point = random_scalars::<F>(&mut rng, n_vars);
+			let scale = random_scalars::<F>(&mut rng, 1)[0];
+
+			// A seed is one coefficient carrying the scale, over a store sized for the result.
+			let seeded = || {
+				let mut buffer = Vec::with_capacity(1 << n_vars.saturating_sub(P::LOG_WIDTH));
+				buffer.push(P::from_scalars(iter::once(scale)));
+				FieldBuffer::new(0, buffer)
+			};
+
+			prop_assert_eq!(
+				scaled_eq_ind_partial_eval::<OneCube, P>(&point, scale),
+				tensor_prod_eq_ind_reserved::<OneCube, P, _>(seeded(), &point)
+			);
+			prop_assert_eq!(
+				scaled_eq_ind_partial_eval::<InfCube, P>(&point, scale),
+				tensor_prod_eq_ind_reserved::<InfCube, P, _>(seeded(), &point)
+			);
+		}
+	}
+
+	#[test]
+	fn the_split_path_agrees_with_the_scalar_engine() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// The public entry point picks the cut itself, so this runs against the scalar engine,
+		// which shares no code with either packed path.
+		//
+		// 0 up to the packing width is where the cut takes the whole point and leaves one block.
+		// Past it the packing-width floor holds the cut until the midpoint overtakes it, and
+		// 13, 14 and 19 split many ways, odd and even.
+		for n_vars in (0..=8).chain([13, 14, 19]) {
+			let point = random_scalars::<F>(&mut rng, n_vars);
+			let scale = random_scalars::<F>(&mut rng, 1)[0];
+
+			let packed = scaled_eq_ind_partial_eval::<OneCube, P>(&point, scale);
+			let scalars = scaled_eq_ind_partial_eval_scalars::<OneCube, F>(&point, scale);
+			assert!(packed.iter_scalars().eq(scalars), "one cube at {n_vars} vars");
+
+			let packed = scaled_eq_ind_partial_eval::<InfCube, P>(&point, scale);
+			let scalars = scaled_eq_ind_partial_eval_scalars::<InfCube, F>(&point, scale);
+			assert!(packed.iter_scalars().eq(scalars), "inf cube at {n_vars} vars");
 		}
 	}
 }
