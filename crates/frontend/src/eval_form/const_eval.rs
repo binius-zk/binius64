@@ -172,6 +172,7 @@ pub fn evaluate_gate_constants(
 #[cfg(test)]
 mod tests {
 	use binius_core::Word;
+	use proptest::{prelude::*, test_runner::TestCaseResult};
 
 	use super::*;
 
@@ -248,134 +249,128 @@ mod tests {
 			.collect())
 	}
 
-	#[test]
-	fn differential_against_interpreter() {
-		let vals = [
-			Word::ZERO,
-			Word::ALL_ONE,
-			Word::MSB_ONE,
-			Word::from_u64(1),
-			Word::from_u64(0x8000000000000000),
-			Word::from_u64(0x123456789ABCDEF0),
-			Word::from_u64(0xFFFFFFFF),
-			Word::from_u64(0x5),
-			Word::from_u64(0x9),
-		];
-		let opcodes = [
-			(Opcode::Band, 2),
-			(Opcode::Bor, 2),
-			(Opcode::Bxor, 2),
-			(Opcode::Fax, 3),
-			(Opcode::Select, 3),
-			(Opcode::IaddCinCout, 3),
-			(Opcode::Iadd32, 2),
-			(Opcode::Iadd32CinCout, 3),
-			(Opcode::IsubBinBout, 3),
-			(Opcode::Imul, 2),
-			(Opcode::Bmul, 4),
-			(Opcode::IcmpUlt, 2),
-			(Opcode::IcmpEq, 2),
-			(Opcode::AssertEq, 2),
-			(Opcode::AssertEqCond, 3),
-			(Opcode::AssertZero, 1),
-			(Opcode::AssertNonZero, 1),
-			(Opcode::AssertFalse, 1),
-			(Opcode::AssertTrue, 1),
-		];
-		let mut checked = 0;
-		for (opcode, n_in) in opcodes {
-			// Enumerate every combination of `vals` of length `n_in`.
-			let total = vals.len().pow(n_in as u32);
-			for mut k in 0..total {
-				let inputs: Vec<Word> = (0..n_in)
-					.map(|_| {
-						let v = vals[k % vals.len()];
-						k /= vals.len();
-						v
-					})
-					.collect();
-				let (graph, gate, constants) = create_test_gate(opcode, &inputs);
-				let hints = HintRegistry::new();
-				let want = eval_via_interpreter(&graph, gate, &constants, &hints);
-				let got = evaluate_gate_constants(&graph, gate, &constants, &hints);
-				assert_eq!(
-					want.is_ok(),
-					got.is_ok(),
-					"{opcode:?} {inputs:?}: ok mismatch, interpreter={want:?} match={got:?}"
-				);
-				if let (Ok(want), Ok(got)) = (want, got) {
-					assert_eq!(want, got, "{opcode:?} {inputs:?}");
-				}
-				checked += 1;
-			}
-		}
-		println!("differential: {checked} cases checked");
+	/// Weighted into the generator: a uniform draw never reaches these corners.
+	const BOUNDARY_WORDS: [Word; 12] = [
+		Word::ZERO,
+		Word::ONE,
+		Word::ALL_ONE,
+		Word::MSB_ONE,
+		Word::MASK_32,
+		Word(0x7FFFFFFFFFFFFFFF),
+		Word(0xFFFFFFFF00000000),
+		Word(0x0000000100000000),
+		Word(0x0000000080000000),
+		Word(0x123456789ABCDEF0),
+		Word(0x5),
+		Word(0x9),
+	];
+
+	fn any_word() -> impl Strategy<Value = Word> {
+		prop_oneof![
+			3 => prop::sample::select(BOUNDARY_WORDS.to_vec()),
+			1 => any::<u64>().prop_map(Word),
+		]
 	}
 
-	#[test]
-	fn differential_shift_and_bxor_multi() {
-		let vals = [
-			Word::ZERO,
-			Word::ALL_ONE,
-			Word::MSB_ONE,
-			Word::from_u64(1),
-			Word::from_u64(0x123456789ABCDEF0),
-			Word::from_u64(0xFFFFFFFF),
-		];
-		let hints = HintRegistry::new();
-		let mut checked = 0;
+	/// Every opcode of fixed arity, with the number of inputs it takes.
+	const FIXED_ARITY: [(Opcode, usize); 19] = [
+		(Opcode::Band, 2),
+		(Opcode::Bor, 2),
+		(Opcode::Bxor, 2),
+		(Opcode::Fax, 3),
+		(Opcode::Select, 3),
+		(Opcode::IaddCinCout, 3),
+		(Opcode::Iadd32, 2),
+		(Opcode::Iadd32CinCout, 3),
+		(Opcode::IsubBinBout, 3),
+		(Opcode::Imul, 2),
+		(Opcode::Bmul, 4),
+		(Opcode::IcmpUlt, 2),
+		(Opcode::IcmpEq, 2),
+		(Opcode::AssertEq, 2),
+		(Opcode::AssertEqCond, 3),
+		(Opcode::AssertZero, 1),
+		(Opcode::AssertNonZero, 1),
+		(Opcode::AssertFalse, 1),
+		(Opcode::AssertTrue, 1),
+	];
 
-		for variant in 0..8u32 {
-			for n in [0u32, 1, 7, 31, 32, 63] {
-				for &x in &vals {
-					let mut graph = GateGraph::new();
-					let root = graph.path_spec_tree.root();
-					let input = graph.add_constant(x);
-					let out = graph.add_witness();
-					let gate = graph.emit_gate_generic(
-						root,
-						Opcode::Shift,
-						[input],
-						[out],
-						&[],
-						&[variant, n],
-					);
-					let want = eval_via_interpreter(&graph, gate, &[x], &hints);
-					let got = evaluate_gate_constants(&graph, gate, &[x], &hints);
-					assert_eq!(want, got, "shift variant={variant} n={n} x={x:?}");
-					checked += 1;
-				}
+	/// Holds one gate's folded outputs against the interpreter's.
+	fn check_agreement(graph: &GateGraph, gate: Gate, constants: &[Word]) -> TestCaseResult {
+		let hints = HintRegistry::new();
+		let data = &graph.gates[gate];
+		let (body, imms) = (data.body, &data.immediates);
+		let want = eval_via_interpreter(graph, gate, constants, &hints);
+		let got = evaluate_gate_constants(graph, gate, constants, &hints);
+		// An assertion gate reports a verdict rather than values.
+		prop_assert_eq!(
+			want.is_ok(),
+			got.is_ok(),
+			"{:?} imm={:?} in={:?}: interpreter={:?} folded={:?}",
+			body,
+			imms,
+			constants,
+			want,
+			got
+		);
+		if let (Ok(want), Ok(got)) = (want, got) {
+			prop_assert_eq!(want, got, "{:?} imm={:?} in={:?}", body, imms, constants);
+		}
+		Ok(())
+	}
+
+	proptest! {
+		#![proptest_config(ProptestConfig::with_cases(1024))]
+
+		#[test]
+		fn fixed_arity_gates_fold_as_the_interpreter_evaluates_them(
+			words in prop::collection::vec(any_word(), 4),
+		) {
+			for (opcode, n_in) in FIXED_ARITY {
+				let (graph, gate, constants) = create_test_gate(opcode, &words[..n_in]);
+				check_agreement(&graph, gate, &constants)?;
 			}
 		}
 
-		for n_in in 1..=5usize {
-			for mut k in 0..vals.len().pow(n_in as u32) {
-				let inputs: Vec<Word> = (0..n_in)
-					.map(|_| {
-						let v = vals[k % vals.len()];
-						k /= vals.len();
-						v
-					})
-					.collect();
+		#[test]
+		fn shift_folds_as_the_interpreter_evaluates_it(x in any_word(), amount in 0u32..64) {
+			for variant in ShiftVariant::ALL {
+				// A lane variant only takes amounts below 32.
+				let n = amount % variant.max_amount() as u32;
 				let mut graph = GateGraph::new();
 				let root = graph.path_spec_tree.root();
-				let input_wires: Vec<_> = inputs.iter().map(|&v| graph.add_constant(v)).collect();
+				let input = graph.add_constant(x);
 				let out = graph.add_witness();
 				let gate = graph.emit_gate_generic(
 					root,
-					Opcode::BxorMulti,
-					input_wires,
+					Opcode::Shift,
+					[input],
 					[out],
-					&[n_in],
 					&[],
+					&[variant as u32, n],
 				);
-				let want = eval_via_interpreter(&graph, gate, &inputs, &hints);
-				let got = evaluate_gate_constants(&graph, gate, &inputs, &hints);
-				assert_eq!(want, got, "bxor_multi {inputs:?}");
-				checked += 1;
+				check_agreement(&graph, gate, &[x])?;
 			}
 		}
-		println!("differential shift/bxor_multi: {checked} cases checked");
+
+		#[test]
+		fn bxor_multi_folds_as_the_interpreter_evaluates_it(
+			inputs in prop::collection::vec(any_word(), 1..=12),
+		) {
+			let mut graph = GateGraph::new();
+			let root = graph.path_spec_tree.root();
+			let input_wires: Vec<_> = inputs.iter().map(|&v| graph.add_constant(v)).collect();
+			let out = graph.add_witness();
+			let gate = graph.emit_gate_generic(
+				root,
+				Opcode::BxorMulti,
+				input_wires,
+				[out],
+				&[inputs.len()],
+				&[],
+			);
+			check_agreement(&graph, gate, &inputs)?;
+		}
 	}
 
 	#[test]
