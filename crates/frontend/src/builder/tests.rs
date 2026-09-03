@@ -1173,6 +1173,30 @@ fn dead_code_elimination_flag_is_honoured() {
 }
 
 #[test]
+fn zero_propagation_flag_is_honoured() {
+	// Invariant: adding zero leaves the addend alone and carries nothing.
+	// So the flag decides whether a carry chain is paid for a value another wire already holds.
+	let and_count = |enable| {
+		stat_with(
+			Options {
+				enable_zero_propagation: enable,
+				..Options::default()
+			},
+			|b| {
+				let x = b.add_inout();
+				let zero = b.add_constant(Word::ZERO);
+				let sum = b.iadd_32(x, zero);
+				let out = b.add_inout();
+				b.assert_eq("sum", sum, out);
+			},
+		)
+		.n_and_constraints
+	};
+	assert_eq!(and_count(true), 0, "readers move to the addend, so the gate is dropped");
+	assert_eq!(and_count(false), 1, "the carry chain is emitted and constrained in full");
+}
+
+#[test]
 fn test_scratch_pooling_matches_scalar_per_instance_batched() {
 	// Invariant: the batched fill and the one-at-a-time fill must agree for every instance.
 	// This is where shared slots are most at risk.
