@@ -38,7 +38,10 @@ use crate::{
 	},
 };
 
+mod compile_cache;
 mod gadget;
+
+pub use compile_cache::CompileCacheError;
 #[cfg(test)]
 mod tests;
 
@@ -493,12 +496,128 @@ impl CircuitBuilder {
 	///
 	/// Returns an error when an enabled constant-propagation pass finds an unsatisfiable gate.
 	pub fn try_build(self) -> Result<Circuit, AlwaysFailingGateError> {
-		let shared = self.into_shared();
-		assert!(
-			shared.chips.is_empty(),
-			"a builder carrying chips builds with CircuitBuilder::build_m4"
+		let shared = self.into_chipless_shared();
+		Self::compile(shared, &[], None)
+	}
+
+	/// Returns the circuit and a byte-serialized compilation cache for it.
+	/// Returns an error instead of panicking on an unsatisfiable constant gate.
+	///
+	/// The cache holds the outputs of compilation — the constraint system, value-vector layout,
+	/// wire mapping, inout list and evaluation bytecode — so a later process that runs the same
+	/// construction can assemble the same circuit with
+	/// [`Self::try_build_from_compile_cache`], skipping the optimization passes and constraint
+	/// building; the validity contract is documented on that method. The cache scales linearly
+	/// with the circuit (on the order of a hundred bytes per gate), and the load path pays
+	/// deserialization, a checksum and constraint-system validation, so the win is the passes
+	/// and constraint building it skips.
+	///
+	/// ```no_run
+	/// use binius_frontend::CircuitBuilder;
+	///
+	/// // The construction, exactly as it runs in every process.
+	/// fn construct() -> CircuitBuilder {
+	///     let builder = CircuitBuilder::new();
+	///     let x = builder.add_inout();
+	///     let y = builder.add_witness();
+	///     builder.assert_eq("xy", x, y);
+	///     builder
+	/// }
+	///
+	/// // Once, at build time:
+	/// let (_circuit, cache) = construct().try_build_with_compile_cache()?;
+	/// std::fs::write("circuit.cache", &cache)?;
+	///
+	/// // Later, in each fresh process: the same construction, loading instead of compiling.
+	/// let _circuit = construct().try_build_from_compile_cache(&std::fs::read("circuit.cache")?)?;
+	/// # Ok::<(), Box<dyn std::error::Error>>(())
+	/// ```
+	///
+	/// # Panics
+	///
+	/// Panics under the same conditions as [`Self::try_build`], and if any serialized count
+	/// exceeds `u32::MAX`, the byte format limit (`ConstraintSystem` serialization carries the
+	/// same one).
+	///
+	/// # Errors
+	///
+	/// Returns an error when an enabled constant-propagation pass finds an unsatisfiable gate.
+	pub fn try_build_with_compile_cache(
+		self,
+	) -> Result<(Circuit, Vec<u8>), AlwaysFailingGateError> {
+		let shared = self.into_chipless_shared();
+		let mut cache = Vec::new();
+		let circuit = Self::compile(shared, &[], Some(&mut cache))?;
+		Ok((circuit, cache))
+	}
+
+	/// Returns the circuit assembled from a compilation cache produced by
+	/// [`Self::try_build_with_compile_cache`], skipping the optimization passes and constraint
+	/// building.
+	///
+	/// The builder must be in exactly the state that produced the cache: the same code built the
+	/// same gate graph under the same options. The freshly constructed state is digested — wire
+	/// kinds, constant values, gate bodies, wires, immediates, dimensions, path references, the
+	/// builder options and the force-committed set — and a cache recorded for a different state
+	/// is refused with [`CompileCacheError::StateMismatch`]; one written by a different
+	/// published version of this crate is refused with [`CompileCacheError::VersionMismatch`],
+	/// since the digest cannot see changes to the passes or the lowering (two builds of the
+	/// same published version share a header, so regenerate the cache with the build — see the
+	/// error type's docs). The digest guards against accidental drift, not against a hostile
+	/// cache file: treat the bytes as trusted input, like the binary itself.
+	///
+	/// # Panics
+	///
+	/// Panics if a clone or a subcircuit still holds a live handle to the same shared state, or
+	/// if the builder carries a chip registered by [`Self::add_chip`] (a chip-composed circuit
+	/// builds with [`Self::build_m4`], which has no cached path).
+	///
+	/// # Errors
+	///
+	/// Returns an error when the bytes do not decode as a compilation cache, were written by a
+	/// different published version of this crate, were written for a different builder state,
+	/// or carry a constraint system that fails validation.
+	pub fn try_build_from_compile_cache(self, bytes: &[u8]) -> Result<Circuit, CompileCacheError> {
+		let shared = self.into_chipless_shared();
+		let parts = compile_cache::CompileCacheParts::deserialize(bytes)?;
+		let built_digest =
+			compile_cache::graph_digest(&shared.graph, &shared.opts, &shared.force_committed);
+		let graph = shared.graph;
+		if parts.n_wires != graph.wires.len()
+			|| parts.n_gates != graph.gates.len()
+			|| parts.digest != built_digest
+		{
+			return Err(CompileCacheError::StateMismatch {
+				cached_wires: parts.n_wires,
+				cached_gates: parts.n_gates,
+				cached_digest: parts.digest,
+				built_wires: graph.wires.len(),
+				built_gates: graph.gates.len(),
+				built_digest,
+			});
+		}
+
+		// The build path validates the constraint system it just produced as a debug check; here
+		// the constraint system is deserialized input, so validation always runs and a failure
+		// is an error, not a panic.
+		parts.constraint_system.validate()?;
+
+		let eval_form = eval_form::EvalForm::from_parts(
+			parts.bytecode,
+			parts.n_eval_insn,
+			shared.hint_registry,
 		);
-		Self::compile(shared, &[])
+		let built_gates = BuiltGates::from_graph(graph);
+		Ok(Circuit::new(
+			built_gates,
+			parts.constraint_system,
+			parts.value_vec_layout,
+			parts.wire_mapping,
+			parts.inout,
+			eval_form,
+			parts.scratch_peak_live,
+			parts.scratch_pooled,
+		))
 	}
 
 	/// Returns the chip-composed circuit built by this builder.
@@ -536,7 +655,7 @@ impl CircuitBuilder {
 		let mut shared = self.into_shared();
 		let chips = mem::take(&mut shared.chips);
 		let pending = mem::take(&mut shared.chip_calls);
-		let circuit = Self::compile(shared, &pending)?;
+		let circuit = Self::compile(shared, &pending, None)?;
 
 		// The instances and the active-instance counts are the whole call graph's to settle, so
 		// both are left to `recompute_instances` below.
@@ -576,6 +695,20 @@ impl CircuitBuilder {
 			.into_inner()
 	}
 
+	/// [`Self::into_shared`], for the build paths that do not compose chips.
+	///
+	/// # Panics
+	///
+	/// Panics if the builder carries a chip registered by [`Self::add_chip`].
+	fn into_chipless_shared(self) -> Shared {
+		let shared = self.into_shared();
+		assert!(
+			shared.chips.is_empty(),
+			"a builder carrying chips builds with CircuitBuilder::build_m4"
+		);
+		shared
+	}
+
 	/// Compiles the builder's state into a circuit, running every optimization pass it enables.
 	///
 	/// # Errors
@@ -584,8 +717,23 @@ impl CircuitBuilder {
 	fn compile(
 		shared: Shared,
 		chip_calls: &[PendingCall],
+		cache_out: Option<&mut Vec<u8>>,
 	) -> Result<Circuit, AlwaysFailingGateError> {
 		let mut graph = shared.graph;
+
+		// The cache's fingerprint is taken now, before any pass touches the graph and before
+		// the force-committed set is folded into `pinned`: the loading builder digests its
+		// state exactly as construction left it, since it runs no passes, so the two sides
+		// must digest the same objects. (CSE rewrites surviving gates' wires to canonical
+		// form, and constant propagation rewrites wire kinds, so a post-pass digest would
+		// not match.)
+		let fingerprint = cache_out.is_some().then(|| {
+			(
+				graph.wires.len(),
+				graph.gates.len(),
+				compile_cache::graph_digest(&graph, &shared.opts, &shared.force_committed),
+			)
+		});
 
 		// A chip call is a constraint on the words its wires hold, but the compiler passes have
 		// no notion of a call. Folding its wires into the pinned set gives them the treatment a
@@ -773,6 +921,36 @@ impl CircuitBuilder {
 			&value_vec_layout,
 			shared.hint_registry,
 		);
+
+		// The compilation cache is written here, while the graph is still whole: the digest
+		// above walked the constructed graph, and everything being serialized is now final.
+		if let Some(out) = cache_out {
+			let (n_wires, n_gates, digest) =
+				fingerprint.expect("fingerprint is taken whenever a cache is requested");
+			compile_cache::write(
+				&compile_cache::CacheWrite {
+					n_wires,
+					n_gates,
+					digest,
+					// The mapping is dense over the graph as the passes left it, which can
+					// hold more wires than construction made (interned constants); its
+					// length is its own field.
+					n_mapped: graph.wires.len(),
+					constraint_system: &cs,
+					value_vec_layout: &value_vec_layout,
+					wire_mapping: &wire_mapping,
+					inout: &inout,
+					bytecode: eval_form.bytecode(),
+					n_eval_insn: eval_form.n_eval_insn(),
+					scratch_peak_live: scratch_alloc.peak_live(),
+					scratch_pooled: scratch_policy == ScratchPolicy::Pooled,
+				},
+				out,
+			)
+			.expect(
+				"writing a compilation cache to a Vec fails only when a serialized count exceeds u32::MAX",
+			);
+		}
 
 		// Passes above needed the whole graph.
 		// A circuit only reads back path names and a per-gate record, so the rest drops now.

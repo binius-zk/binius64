@@ -119,6 +119,28 @@ impl EvalForm {
 		ctx.check_assertions(path_spec_tree)
 	}
 
+	/// Reassemble an evaluation form from cached bytecode and a freshly populated hint registry.
+	///
+	/// The bytecode must come from [`EvalForm::build`] in the compilation of an identical
+	/// builder state; hint ids are name hashes, so the fresh registry resolves the cached
+	/// references.
+	pub(crate) const fn from_parts(
+		bytecode: Vec<u8>,
+		n_eval_insn: usize,
+		hint_registry: HintRegistry,
+	) -> Self {
+		EvalForm {
+			bytecode,
+			n_eval_insn,
+			hint_registry,
+		}
+	}
+
+	/// The compiled bytecode, for the compilation cache.
+	pub(crate) fn bytecode(&self) -> &[u8] {
+		&self.bytecode
+	}
+
 	/// A fresh executor over this form's bytecode, with its cursor at the first instruction.
 	fn executor(&self) -> Executor<'_> {
 		Executor::new(&self.bytecode, &self.hint_registry)
