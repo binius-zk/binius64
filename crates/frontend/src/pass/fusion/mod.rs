@@ -31,11 +31,8 @@ mod commit_set;
 mod legraph;
 mod patch;
 
-mod stat;
 #[cfg(test)]
 mod tests;
-
-use stat::Stat;
 
 /// How many shifts a term of the lowered constraint system may carry.
 ///
@@ -52,10 +49,8 @@ use stat::Stat;
 pub(super) const LOWERED_SHIFT_SLOTS: usize = 2;
 
 pub fn run_pass(cb: &mut ConstraintBuilder, pinned_wires: &EntitySet<Wire>) {
-	let mut stat = Stat::new(cb);
-
 	let mut leg = LeGraph::new(cb);
-	commit_set::run_decide_commit_set(&mut leg, &mut stat, LOWERED_SHIFT_SLOTS);
+	commit_set::run_decide_commit_set(&mut leg, LOWERED_SHIFT_SLOTS);
 	// Pin force-committed wires that are linear definitions so their values survive as committed
 	// definitions. Pinned wires that are not linear definitions (e.g. AND or IMUL outputs) are
 	// already committed by their own constraints, so they must be excluded here: `patch::build`
