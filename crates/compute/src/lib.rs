@@ -10,8 +10,13 @@
 //! [`VecLike`] buffers, letting the prover's allocation code be written against `&impl Allocator`
 //! rather than a concrete pool. `&BufferPool` is the primary [`Allocator`], producing [`PoolVec`]
 //! buffers.
+//!
+//! [`CollectIntoAllocVec`] is the rayon seam over the same machinery: it collects a parallel
+//! iterator straight into one of those buffers.
 
 use std::{mem, mem::MaybeUninit, ops::DerefMut};
+
+use rayon::prelude::*;
 
 pub mod buffer_pool;
 
@@ -43,6 +48,42 @@ pub trait Allocator: Sync + Copy {
 
 	/// Allocates an empty buffer with room for at least `capacity` elements of type `T`.
 	fn alloc<T: Send>(&self, capacity: usize) -> Self::Vec<T>;
+}
+
+/// Collects a parallel iterator into a buffer drawn from an [`Allocator`].
+///
+/// The allocator's counterpart to [`IndexedParallelIterator::collect_into_vec`], which targets a
+/// `&mut Vec` that a generic buffer is not. The buffer is sized to the iterator's length, and its
+/// uninitialized capacity is written in parallel rather than zero-filled first.
+pub trait CollectIntoAllocVec: IndexedParallelIterator {
+	/// Allocates a buffer holding one element per item and fills it with the iterator's items.
+	///
+	/// ```
+	/// use binius_compute::{CollectIntoAllocVec, GlobalAllocator};
+	/// use rayon::prelude::*;
+	///
+	/// let squares = (0..8usize).into_par_iter().map(|i| i * i);
+	/// let buffer = squares.collect_into_alloc_vec(&GlobalAllocator);
+	/// assert_eq!(&*buffer, &[0, 1, 4, 9, 16, 25, 36, 49]);
+	/// ```
+	fn collect_into_alloc_vec<A: Allocator>(self, alloc: &A) -> A::Vec<Self::Item>;
+}
+
+impl<I: IndexedParallelIterator> CollectIntoAllocVec for I {
+	fn collect_into_alloc_vec<A: Allocator>(self, alloc: &A) -> A::Vec<Self::Item> {
+		let len = self.len();
+		let mut buffer = alloc.alloc::<Self::Item>(len);
+		// The allocator may hand back more capacity than requested, so bound the spare slice to the
+		// item count: a rayon zip yields as many items as its shorter side holds.
+		self.zip(&mut buffer.spare_capacity_mut()[..len])
+			.for_each(|(item, slot)| {
+				slot.write(item);
+			});
+		// SAFETY: the two zipped sides are both `len` long, so the loop wrote each of the `len`
+		// slots exactly once.
+		unsafe { buffer.set_len(len) };
+		buffer
+	}
 }
 
 /// Backing store of a `binius_math::FieldBuffer` that can be shrunk in place.
@@ -233,6 +274,22 @@ mod tests {
 		buffer.extend_from_slice(&[2, 3]);
 		buffer.resize(5, 0);
 		buffer
+	}
+
+	#[test]
+	fn collect_into_alloc_vec_fills_the_whole_buffer() {
+		// The pool rounds its blocks up, so 1000 items draw a buffer with spare slots past them.
+		// Those slots must stay outside the collected length.
+		let pool = BufferPool::new();
+		let squares = (0..1000usize).into_par_iter().map(|i| (i * i) as u64);
+		let buffer = squares.collect_into_alloc_vec(&&pool);
+		assert_eq!(buffer.len(), 1000);
+		assert!(
+			buffer
+				.iter()
+				.enumerate()
+				.all(|(i, &sq)| sq == (i * i) as u64)
+		);
 	}
 
 	#[test]

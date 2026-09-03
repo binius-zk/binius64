@@ -11,7 +11,7 @@
 
 use std::iter;
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec, multilinear::eq::scaled_eq_ind_partial_eval_into,
@@ -306,18 +306,11 @@ where
 	// One denominator per row: c minus the row's embedded index value.
 	// Subtract a full word at a time: one packed subtraction per word, built in parallel straight
 	// into the allocator's buffer.
-	let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 	let c_packed = P::broadcast(c);
-	let mut packed = alloc.alloc::<P>(packed_len);
-	packed
-		.spare_capacity_mut()
-		.par_iter_mut()
-		.zip(index.par_chunks(P::WIDTH))
-		.for_each(|(slot, chunk)| {
-			slot.write(c_packed - P::from_scalars(chunk.iter().copied().map(embed_position::<F>)));
-		});
-	// Safety: every packed slot is written exactly once by the parallel loop above.
-	unsafe { packed.set_len(packed_len) };
+	let packed = index
+		.par_chunks(P::WIDTH)
+		.map(|chunk| c_packed - P::from_scalars(chunk.iter().copied().map(embed_position::<F>)))
+		.collect_into_alloc_vec(alloc);
 
 	FieldBuffer::new(log_len, packed)
 }

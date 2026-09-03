@@ -5,7 +5,7 @@
 
 use std::{iter, mem::MaybeUninit, ops::Deref, ptr};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_core::{
 	ValueSegment, ValueTable,
 	constraint_system::{Operand, Shift, ShiftVariant, ShiftedValueIndex},
@@ -172,13 +172,10 @@ impl<A: Allocator, const ARITY: usize> OperandColumns<A, ARITY> {
 		// Lanes past the instance count are the multilinear's zero padding.
 		let n_instances = 1usize << self.log_instances;
 		let packed_len = 1usize << self.log_instances.saturating_sub(P::LOG_WIDTH);
-		let mut packed = alloc.alloc::<P>(packed_len);
-		packed
-			.spare_capacity_mut()
-			.par_iter_mut()
-			.enumerate()
-			.for_each(|(packed_index, slot)| {
-				slot.write(P::from_scalars((0..P::WIDTH).map(|lane| {
+		let packed = (0..packed_len)
+			.into_par_iter()
+			.map(|packed_index| {
+				P::from_scalars((0..P::WIDTH).map(|lane| {
 					let instance = (packed_index << P::LOG_WIDTH) | lane;
 					if instance < n_instances {
 						// Constraint `local` of this instance sits at row `local * K + rho`.
@@ -193,10 +190,9 @@ impl<A: Allocator, const ARITY: usize> OperandColumns<A, ARITY> {
 					} else {
 						B128::ZERO
 					}
-				})));
-			});
-		// SAFETY: the parallel loop writes every packed slot exactly once.
-		unsafe { packed.set_len(packed_len) };
+				}))
+			})
+			.collect_into_alloc_vec(alloc);
 
 		FieldBuffer::new(self.log_instances, packed)
 	}
@@ -225,20 +221,15 @@ impl<A: Allocator> OperandColumns<A, 2> {
 			log_instances,
 		} = self;
 
-		// The parallel zip stops at the shortest of its three sides.
-		// Equal input lengths are therefore what make the output fully written.
+		// The parallel zip stops at the shorter of its two sides, and the derived column is sized
+		// to it. Equal input lengths are therefore what make it cover every row.
 		debug_assert_eq!(a.len(), b.len());
-		let n_rows = a.len();
 
-		let mut c = alloc.alloc::<Word>(n_rows);
-		(&a[..], &b[..], c.spare_capacity_mut())
+		let c = (&a[..], &b[..])
 			.into_par_iter()
 			.with_min_task_bytes::<[Word; 3]>()
-			.for_each(|(&a_i, &b_i, out)| {
-				out.write(a_i & b_i);
-			});
-		// SAFETY: the loop above writes each of the `n_rows` entries exactly once.
-		unsafe { c.set_len(n_rows) };
+			.map(|(&a_i, &b_i)| a_i & b_i)
+			.collect_into_alloc_vec(alloc);
 
 		OperandColumns {
 			columns: [a, b, c],

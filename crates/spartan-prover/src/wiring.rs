@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, FieldSlice, FieldVec};
 use binius_spartan_frontend::constraint_system::{
@@ -111,16 +111,13 @@ pub fn fold_constraints<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	let log_size = transposed.log_size();
 	let len = 1 << log_size.saturating_sub(P::LOG_WIDTH);
 
-	// Fill the packed words in parallel through the allocated buffer's spare capacity, then commit
-	// the length once every word has been written.
-	let mut result = alloc.alloc::<P>(len);
-	result.spare_capacity_mut()[..len]
-		.par_iter_mut()
-		.enumerate()
-		.for_each(|(packed_idx, slot)| {
+	// Build the packed words in parallel, straight into a buffer drawn from the allocator.
+	let result = (0..len)
+		.into_par_iter()
+		.map(|packed_idx| {
 			let base_idx = packed_idx << P::LOG_WIDTH;
 
-			slot.write(P::from_fn(|scalar_idx| {
+			P::from_fn(|scalar_idx| {
 				let idx = base_idx + scalar_idx;
 				if idx >= segment_size {
 					return F::ZERO;
@@ -133,10 +130,9 @@ pub fn fold_constraints<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 					acc += r_x_weight * lambda_weight;
 				}
 				acc
-			}));
-		});
-	// SAFETY: the loop above initialized every one of the `len` spare words.
-	unsafe { result.set_len(len) };
+			})
+		})
+		.collect_into_alloc_vec(alloc);
 
 	FieldBuffer::new(log_size, result)
 }

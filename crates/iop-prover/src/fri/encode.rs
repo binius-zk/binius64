@@ -3,11 +3,11 @@
 
 use std::{iter, ops::Deref};
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::fri::FRIParams;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
-use binius_utils::{rand::par_rand, rayon::prelude::*};
+use binius_utils::rand::par_rand;
 use rand::{CryptoRng, rngs::StdRng};
 
 /// Reed-Solomon encodes one input oracle's interleaved message.
@@ -134,19 +134,8 @@ where
 	let packed_len = 1usize << log_len.saturating_sub(P::LOG_WIDTH);
 
 	let gen_mask_scope = tracing::debug_span!("Generate random mask").entered();
-	// `par_rand` is a parallel iterator, so the buffer is filled by writing into its uninitialized
-	// capacity rather than collected — an allocator's buffer has no rayon `collect` to target.
-	let mut mask_values = alloc.alloc::<P>(packed_len);
-	(
-		mask_values.spare_capacity_mut()[..packed_len].par_iter_mut(),
-		par_rand::<StdRng, _, _>(packed_len, &mut rng, P::random),
-	)
-		.into_par_iter()
-		.for_each(|(slot, value)| {
-			slot.write(value);
-		});
-	// SAFETY: the loop above wrote every one of the leading `packed_len` words.
-	unsafe { mask_values.set_len(packed_len) };
+	let mask_values =
+		par_rand::<StdRng, _, _>(packed_len, &mut rng, P::random).collect_into_alloc_vec(alloc);
 	let mask = FieldBuffer::new(log_len, mask_values);
 	drop(gen_mask_scope);
 

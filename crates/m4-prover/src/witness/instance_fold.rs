@@ -4,7 +4,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_core::{ValueTable, word::Word};
 use binius_field::{BinaryField, PackedField};
 use binius_math::{FieldVec, inner_product::inner_product};
@@ -82,20 +82,13 @@ impl<F: BinaryField, A: Allocator> FoldedWitness<F, A> {
 		debug_assert_eq!(table.as_words().len(), n_words << table.log_instances());
 
 		// One output element per committed word position.
-		let mut words = alloc.alloc::<FoldedWord<F>>(n_words);
-		table
+		let words = table
 			.as_words()
 			// One chunk is one word position across every instance of the batch.
 			.par_chunks(1 << table.log_instances())
-			.zip(words.spare_capacity_mut())
-			.for_each(|(instance_words, out)| {
-				// Collapse those instances into 64 elements, one per bit position.
-				out.write(folder.fold(instance_words));
-			});
-
-		// SAFETY: chunks and output elements correspond one-to-one by the equality above, so the
-		// loop writes each of the `n_words` elements exactly once.
-		unsafe { words.set_len(n_words) };
+			// Collapse those instances into 64 elements, one per bit position.
+			.map(|instance_words| folder.fold(instance_words))
+			.collect_into_alloc_vec(alloc);
 
 		Self { words }
 	}

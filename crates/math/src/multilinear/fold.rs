@@ -14,7 +14,7 @@
 
 use std::ops::{Deref, DerefMut};
 
-use binius_compute::{Allocator, BufferData, VecLike};
+use binius_compute::{Allocator, BufferData, CollectIntoAllocVec};
 use binius_field::{Field, PackedField};
 use binius_utils::{
 	random_access_sequence::RandomAccessSequence,
@@ -89,19 +89,12 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 	let (lo, hi) = values.split_half();
 
 	// Interpolate the line through each pair at the challenge directly into a fresh buffer
-	// drawn from the allocator, writing the uninitialized spare capacity in parallel rather
-	// than zero-filling first.
-	let len = lo.as_ref().len();
-	let mut data = alloc.alloc::<P>(len);
-	let spare = &mut data.spare_capacity_mut()[..len];
-	(spare, lo.as_ref(), hi.as_ref())
+	// drawn from the allocator.
+	let data = (lo.as_ref(), hi.as_ref())
 		.into_par_iter()
 		.with_min_task(WorkPerItem::FieldMuls)
-		.for_each(|(out, &lo_i, &hi_i)| {
-			out.write(extrapolate_line(lo_i, hi_i, broadcast_scalar));
-		});
-	// SAFETY: the parallel loop initialized all `len` slots.
-	unsafe { data.set_len(len) };
+		.map(|(&lo_i, &hi_i)| extrapolate_line(lo_i, hi_i, broadcast_scalar))
+		.collect_into_alloc_vec(alloc);
 	FieldBuffer::new(values.log_len() - 1, data)
 }
 
