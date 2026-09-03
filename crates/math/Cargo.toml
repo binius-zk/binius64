@@ -54,3 +54,7 @@ harness = false
 [[bench]]
 name = "reed_solomon"
 harness = false
+
+[[bench]]
+name = "ntt_shared_phase"
+harness = false
