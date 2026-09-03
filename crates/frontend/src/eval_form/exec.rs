@@ -496,3 +496,54 @@ impl<'a> Executor<'a> {
 		PathSpec::from_u32(self.read_u32())
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Reads a 16-byte GHASH block, given as a big-endian `u128`, as a `(lo, hi)` word pair.
+	///
+	/// GCM numbers bits from the left: the leading bit of the block is the coefficient of `X^0`.
+	/// Here bit `i` of `lo` is the coefficient of `X^i`, and bit `i` of `hi` that of `X^(64 + i)`.
+	/// Reversing the 128 bits and splitting it in half is therefore the whole conversion.
+	fn from_gcm_block(block: u128) -> (Word, Word) {
+		let value = block.reverse_bits();
+		(Word::from_u64(value as u64), Word::from_u64((value >> 64) as u64))
+	}
+
+	/// Walks the GHASH recurrence `X_i = (X_{i-1} + B_i) * H`, checking every `X_i`.
+	fn check_ghash_chain(h: u128, blocks: &[u128], expected: &[u128]) {
+		assert_eq!(blocks.len(), expected.len());
+		let (h_lo, h_hi) = from_gcm_block(h);
+		let (mut lo, mut hi) = (Word::ZERO, Word::ZERO);
+		for (block, want) in blocks.iter().zip(expected) {
+			let (b_lo, b_hi) = from_gcm_block(*block);
+			(lo, hi) = ghash_mul(lo ^ b_lo, hi ^ b_hi, h_lo, h_hi);
+			assert_eq!((lo, hi), from_gcm_block(*want), "block {block:#034x}");
+		}
+	}
+
+	#[test]
+	fn test_ghash_mul_gcm_spec_test_case_2() {
+		check_ghash_chain(
+			0x66e94bd4ef8a2c3b884cfa59ca342b2e,
+			&[
+				0x0388dace60b6a392f328c2b971b2fe78,
+				0x00000000000000000000000000000080,
+			],
+			&[
+				0x5e2ec746917062882c85b0685353deb7,
+				0xf38cbb1ad69223dcc3457ae5b6b0f885,
+			],
+		);
+	}
+
+	#[test]
+	fn test_ghash_mul_splits_coefficients_at_x64() {
+		// X^63 * X = X^64, the one product that crosses from `lo` into `hi`.
+		assert_eq!(
+			ghash_mul(Word::from_u64(1 << 63), Word::ZERO, Word::from_u64(2), Word::ZERO),
+			(Word::ZERO, Word::from_u64(1))
+		);
+	}
+}

@@ -489,7 +489,174 @@ mod tests {
 		}
 	}
 
+	/// Reads a 16-byte GHASH block, given as a big-endian `u128`, as a field element.
+	///
+	/// GCM numbers bits from the left: the leading bit of the block is the coefficient of `X^0`.
+	/// `Ghash128b` numbers them from the right: bit `i` of the `u128` is the coefficient of `X^i`.
+	/// Reversing the 128 bits is therefore the whole conversion.
+	fn from_gcm_block(block: u128) -> Ghash128b {
+		Ghash128b::new(block.reverse_bits())
+	}
+
+	/// Carry-less multiply of `x` by the reduction tail `X^7 + X^2 + X + 1`, as `(lo, hi)`.
+	fn mul_by_reduction_tail(x: u128) -> (u128, u128) {
+		(x ^ (x << 1) ^ (x << 2) ^ (x << 7), (x >> 127) ^ (x >> 126) ^ (x >> 121))
+	}
+
+	/// Schoolbook carry-less multiply and reduce, written from the field definition alone.
+	///
+	/// Bit `i` is the coefficient of `X^i`, so a left shift by `i` multiplies by `X^i`.
+	/// The high half folds back down through `X^128 = X^7 + X^2 + X + 1`.
+	fn schoolbook_mul(a: u128, b: u128) -> u128 {
+		let mut lo = 0u128;
+		let mut hi = 0u128;
+		for i in 0..128 {
+			if (a >> i) & 1 == 1 {
+				lo ^= b << i;
+				hi ^= (b >> 1) >> (127 - i);
+			}
+		}
+		while hi != 0 {
+			let (fold_lo, fold_hi) = mul_by_reduction_tail(hi);
+			lo ^= fold_lo;
+			hi = fold_hi;
+		}
+		lo
+	}
+
+	/// Walks the GHASH recurrence `X_i = (X_{i-1} + B_i) * H`, checking every `X_i`.
+	fn check_ghash_chain(h: u128, blocks: &[u128], expected: &[u128]) {
+		assert_eq!(blocks.len(), expected.len());
+		let h = from_gcm_block(h);
+		let mut acc = Ghash128b::ZERO;
+		for (block, want) in blocks.iter().zip(expected) {
+			acc = (acc + from_gcm_block(*block)) * h;
+			assert_eq!(acc, from_gcm_block(*want), "block {block:#034x}");
+		}
+	}
+
+	fn boundary_values() -> [u128; 7] {
+		[
+			0,
+			1,
+			2,
+			0x87,
+			1 << 127,
+			u128::MAX,
+			Ghash128b::MULTIPLICATIVE_GENERATOR.into(),
+		]
+	}
+
+	#[test]
+	fn test_gcm_spec_test_case_2() {
+		check_ghash_chain(
+			0x66e94bd4ef8a2c3b884cfa59ca342b2e,
+			&[
+				0x0388dace60b6a392f328c2b971b2fe78,
+				0x00000000000000000000000000000080,
+			],
+			&[
+				0x5e2ec746917062882c85b0685353deb7,
+				0xf38cbb1ad69223dcc3457ae5b6b0f885,
+			],
+		);
+	}
+
+	#[test]
+	fn test_gcm_spec_test_case_3() {
+		check_ghash_chain(
+			0xb83b533708bf535d0aa6e52980d53b78,
+			&[
+				0x42831ec2217774244b7221b784d0d49c,
+				0xe3aa212f2c02a4e035c17e2329aca12e,
+				0x21d514b25466931c7d8f6a5aac84aa05,
+				0x1ba30b396a0aac973d58e091473f5985,
+				0x00000000000000000000000000000200,
+			],
+			&[
+				0x59ed3f2bb1a0aaa07c9f56c6a504647b,
+				0xb714c9048389afd9f9bc5c1d4378e052,
+				0x47400c6577b1ee8d8f40b2721e86ff10,
+				0x4796cf49464704b5dd91f159bb1b7f95,
+				0x7f1b32b81b820d02614f8895ac1d4eac,
+			],
+		);
+	}
+
+	#[test]
+	fn test_gcm_spec_test_case_4() {
+		check_ghash_chain(
+			0xb83b533708bf535d0aa6e52980d53b78,
+			&[
+				0xfeedfacedeadbeeffeedfacedeadbeef,
+				0xabaddad2000000000000000000000000,
+				0x42831ec2217774244b7221b784d0d49c,
+				0xe3aa212f2c02a4e035c17e2329aca12e,
+				0x21d514b25466931c7d8f6a5aac84aa05,
+				0x1ba30b396a0aac973d58e09100000000,
+				0x00000000000000a000000000000001e0,
+			],
+			&[
+				0xed56aaf8a72d67049fdb9228edba1322,
+				0xcd47221ccef0554ee4bb044c88150352,
+				0x54f5e1b2b5a8f9525c23924751a3ca51,
+				0x324f585c6ffc1359ab371565d6c45f93,
+				0xca7dd446af4aa70cc3c0cd5abba6aa1c,
+				0x1590df9b2eb6768289e57d56274c8570,
+				0x698e57f70e6ecc7fd9463b7260a9ae5f,
+			],
+		);
+	}
+
+	#[test]
+	fn test_boundary_products_match_schoolbook() {
+		for a in boundary_values() {
+			for b in boundary_values() {
+				assert_eq!(
+					Ghash128b::from(a) * Ghash128b::from(b),
+					Ghash128b::new(schoolbook_mul(a, b)),
+					"{a:#034x} * {b:#034x}"
+				);
+			}
+		}
+	}
+
 	proptest! {
+		#[test]
+		fn test_mul_matches_schoolbook(a in any::<u128>(), b in any::<u128>()) {
+			assert_eq!(
+				Ghash128b::from(a) * Ghash128b::from(b),
+				Ghash128b::new(schoolbook_mul(a, b))
+			);
+		}
+
+		#[test]
+		fn test_mul_is_commutative(a in any::<u128>(), b in any::<u128>()) {
+			let (a, b) = (Ghash128b::from(a), Ghash128b::from(b));
+			assert_eq!(a * b, b * a);
+		}
+
+		#[test]
+		fn test_mul_is_associative(a in any::<u128>(), b in any::<u128>(), c in any::<u128>()) {
+			let (a, b, c) = (Ghash128b::from(a), Ghash128b::from(b), Ghash128b::from(c));
+			assert_eq!((a * b) * c, a * (b * c));
+		}
+
+		#[test]
+		fn test_mul_distributes_over_addition(
+			a in any::<u128>(), b in any::<u128>(), c in any::<u128>(),
+		) {
+			let (a, b, c) = (Ghash128b::from(a), Ghash128b::from(b), Ghash128b::from(c));
+			assert_eq!(a * (b + c), a * b + a * c);
+		}
+
+		#[test]
+		fn test_mul_by_one_and_zero(a in any::<u128>()) {
+			let a = Ghash128b::from(a);
+			assert_eq!(a * Ghash128b::ONE, a);
+			assert_eq!(a * Ghash128b::ZERO, Ghash128b::ZERO);
+		}
+
 		#[test]
 		fn test_conversion_from_aes_consistency(a in any::<u8>(), b in any::<u8>()) {
 			let a_val = Rijndael8b::new(a);
