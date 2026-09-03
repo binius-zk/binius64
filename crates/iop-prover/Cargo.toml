@@ -39,3 +39,7 @@ default = []
 [[bench]]
 name = "binary_merkle_tree"
 harness = false
+
+[[bench]]
+name = "induced_weight"
+harness = false
