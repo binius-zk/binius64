@@ -16,14 +16,21 @@ use binius_core::Word;
 
 /// Registry key for one prover-side computation.
 ///
-/// Derived from the declared name rather than assigned in order, so it is stable across runs.
+/// Derived from the declared name rather than assigned in order, so registration order never
+/// changes it.
 pub type HintId = u32;
 
 /// Hint handler trait for extensible operations.
 ///
-/// Each implementor declares a globally unique `NAME`. The registry identifies hints by the
-/// hash of this name, so registering the same hint twice is a no-op and every gate using the
-/// same hint type shares a single handler entry.
+/// Each implementor declares a globally unique name, and the registry keys on the hash of that
+/// name alone.
+///
+/// Every gate using the same hint type therefore shares one handler entry.
+///
+/// A hint's fields are not part of its identity.
+/// Only the first value registered under a name is kept; later values are dropped.
+/// Gates that differ only in those fields fold together under deduplication.
+/// Parameterize a hint through its dimensions, never through its fields.
 ///
 /// # The `dimensions` parameter
 ///
@@ -43,7 +50,7 @@ pub type HintId = u32;
 /// - A parameterized hint reads limb counts from `dimensions` and derives its arity from them.
 /// - A fixed-arity hint ignores `dimensions` (an empty slice) and returns a constant shape.
 pub trait Hint: Send + Sync + 'static {
-	/// Globally unique name for this hint. Used to derive a stable [`HintId`].
+	/// Globally unique name for this hint, which the registry hashes into its key.
 	const NAME: &'static str;
 
 	/// Compute the gate's input/output arity as a function of `dimensions`.
@@ -67,8 +74,10 @@ pub trait Hint: Send + Sync + 'static {
 
 /// Derive a [`HintId`] from a hint's name.
 ///
-/// Hashes the name with `std::hash::DefaultHasher` (fixed seed, deterministic across runs)
-/// and folds the resulting 64-bit value down to 32 bits by XORing its two halves.
+/// Hashes the name and folds the resulting 64-bit value down to 32 bits by XORing its two halves.
+///
+/// The hash algorithm is unspecified, so an id is stable only within one process.
+/// Never persist an id or compare one across builds.
 pub fn hint_id_of(name: &str) -> HintId {
 	let mut hasher = DefaultHasher::new();
 	name.hash(&mut hasher);
@@ -97,10 +106,10 @@ impl<T: Hint> ErasedHint for T {
 
 /// Registry for hint handlers keyed by [`HintId`].
 ///
-/// Registration is idempotent: the same hint type always hashes to the same id, so a second
-/// call to [`HintRegistry::register`] with the same concrete type is a no-op.
+/// Each entry keeps the name it was registered under.
+/// An id shared by two names is then caught, instead of running one hint as the other.
 pub struct HintRegistry {
-	handlers: HashMap<HintId, Box<dyn ErasedHint>>,
+	handlers: HashMap<HintId, (&'static str, Box<dyn ErasedHint>)>,
 }
 
 impl HintRegistry {
@@ -111,17 +120,26 @@ impl HintRegistry {
 		}
 	}
 
-	/// Register a hint, returning its stable [`HintId`]. No-op if the same hint is already
-	/// registered.
+	/// Register a hint, returning its [`HintId`].
+	///
+	/// Registering a name already present is a no-op, the handler's fields included.
+	///
+	/// # Panics
+	///
+	/// Panics if a different name already holds this id.
 	pub fn register<T: Hint>(&mut self, handler: T) -> HintId {
 		let id = hint_id_of(T::NAME);
-		self.handlers.entry(id).or_insert_with(|| Box::new(handler));
+		let entry = self
+			.handlers
+			.entry(id)
+			.or_insert_with(|| (T::NAME, Box::new(handler)));
+		assert_eq!(entry.0, T::NAME, "hint id collision: {} and {}", entry.0, T::NAME);
 		id
 	}
 
 	/// Compute the `(n_in, n_out)` arity of the hint identified by `hint_id`.
 	pub fn shape(&self, hint_id: HintId, dimensions: &[usize]) -> (usize, usize) {
-		self.handlers[&hint_id].shape(dimensions)
+		self.handlers[&hint_id].1.shape(dimensions)
 	}
 
 	/// Run the handler under `hint_id`, writing its results into `outputs`.
@@ -136,12 +154,70 @@ impl HintRegistry {
 		inputs: &[Word],
 		outputs: &mut [Word],
 	) {
-		self.handlers[&hint_id].execute(dimensions, inputs, outputs);
+		self.handlers[&hint_id]
+			.1
+			.execute(dimensions, inputs, outputs);
 	}
 }
 
 impl Default for HintRegistry {
 	fn default() -> Self {
 		Self::new()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	struct AddK {
+		k: u64,
+	}
+
+	impl Hint for AddK {
+		const NAME: &'static str = "test::add_k";
+
+		fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+			(1, 1)
+		}
+
+		fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+			outputs[0] = Word(inputs[0].0.wrapping_add(self.k));
+		}
+	}
+
+	fn run(registry: &HintRegistry, id: HintId, input: u64) -> u64 {
+		let mut outputs = [Word::ZERO];
+		registry.execute(id, &[], &[Word(input)], &mut outputs);
+		outputs[0].0
+	}
+
+	#[test]
+	fn re_registering_one_hint_type_keeps_a_single_entry() {
+		let mut registry = HintRegistry::new();
+		let first = registry.register(AddK { k: 7 });
+		let second = registry.register(AddK { k: 7 });
+		assert_eq!(first, second);
+		assert_eq!(registry.handlers.len(), 1);
+	}
+
+	// Pins the known limitation the trait doc warns about.
+	#[test]
+	fn fields_of_a_second_registration_are_ignored() {
+		let mut registry = HintRegistry::new();
+		let id = registry.register(AddK { k: 7 });
+		registry.register(AddK { k: 1000 });
+		assert_eq!(run(&registry, id, 0), 7);
+	}
+
+	// A 32-bit collision is out of reach of a search over static names, so it is planted.
+	#[test]
+	#[should_panic(expected = "hint id collision: test::squatter and test::add_k")]
+	fn colliding_names_panic() {
+		let mut registry = HintRegistry::new();
+		registry
+			.handlers
+			.insert(hint_id_of(AddK::NAME), ("test::squatter", Box::new(AddK { k: 7 })));
+		registry.register(AddK { k: 7 });
 	}
 }
