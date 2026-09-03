@@ -217,6 +217,14 @@ impl<F: FieldOps> InducedBasis<F> {
 		self.factors.len()
 	}
 
+	/// Each opened row, as the coefficient batching it and its `n_vars` tensor factors.
+	///
+	/// A prover that materializes the weight vector expands these itself.
+	pub fn rows(&self) -> impl ExactSizeIterator<Item = (&F, &[F])> {
+		std::iter::zip(&self.batching, &self.factors)
+			.map(|(coefficient, row)| (coefficient, row.as_slice()))
+	}
+
 	/// Evaluates the basis's multilinear extension at `point`, in `O(n_rows * n_vars)`.
 	///
 	/// This is the module documentation's closed form, and it is the verifier's only route.

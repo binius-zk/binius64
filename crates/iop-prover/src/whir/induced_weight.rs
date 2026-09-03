@@ -6,11 +6,18 @@ use std::iter::zip;
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField, PackedField, util::powers};
+use binius_field::{
+	BinaryField, PackedField,
+	util::{expand_subset_products, powers},
+};
 use binius_iop::whir::{InducedBasis, WHIRLevel};
 use binius_math::{
 	FieldBuffer, FieldVec, ReedSolomonCode,
 	ntt::{AdditiveNTT, domain_context::GaoMateerOnTheFly},
+};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	rayon::{current_num_threads, prelude::*},
 };
 
 /// The weight one level's opened rows induce on the message that level folded to.
@@ -92,23 +99,24 @@ where
 		}
 	}
 
-	/// Builds the weight by expanding one opened row at a time.
+	/// Builds the weight by expanding the opened rows.
 	///
-	/// A row is a tensor of `log_msg_cols` factors, so expanding it costs `2^log_msg_cols`
-	/// products. Accumulating it into the running vector costs as many multiplications again.
-	/// For `t` opened rows the whole build is therefore `2 * t * 2^log_msg_cols` multiplications.
+	/// Each row is a tensor of `log_msg_cols` factors, scaled by the coefficient batching it:
 	///
-	/// This is the reference the adjoint route is tested against.
+	/// ```text
+	///     w[j] = sum_i alpha^i * prod_{k : bit k of j is set} f_i[k]
+	/// ```
+	///
+	/// The cost is one product per entry per opened row, and none of it grows with the rate.
 	pub(super) fn by_rows<P, A>(&self, alloc: &A) -> FieldVec<P, A>
 	where
 		P: PackedField<Scalar = F>,
 		A: Allocator,
 	{
 		let domain_context = GaoMateerOnTheFly::generate(self.level.log_codeword_len());
-		let dense =
-			InducedBasis::new(&domain_context, self.level.log_msg_cols, &self.indices, self.alpha)
-				.to_dense();
-		FieldBuffer::from_values_in(alloc, &dense)
+		let basis =
+			InducedBasis::new(&domain_context, self.level.log_msg_cols, &self.indices, self.alpha);
+		expand_blocked(&basis, log_expansion_block::<P>(basis.n_vars(), basis.n_rows()), alloc)
 	}
 
 	/// Builds the weight as one pass of the encoder's adjoint.
@@ -141,10 +149,102 @@ where
 	}
 }
 
+/// Entries one task expands at a time, as a log.
+fn log_expansion_block<P: PackedField>(n_vars: usize, n_rows: usize) -> usize {
+	/// Tasks per worker, so an uneven finish costs a fraction of the pass rather than a half.
+	const LOG_TASKS_PER_WORKER: usize = 4;
+	/// Below this a block's own products stop dominating the setup that precedes them.
+	const LOG_MIN_BLOCK: usize = 4;
+	/// Bytes the shared expansion may take, sized to stay inside a core's private cache.
+	const SHARED_BYTES: usize = 1 << 19;
+
+	// Enough blocks that every worker has several to take.
+	let log_tasks = log2_ceil_usize(current_num_threads()) + LOG_TASKS_PER_WORKER;
+
+	// Narrow enough that the expansion stays resident across the blocks reading it.
+	let resident = (SHARED_BYTES / (n_rows.max(1) * size_of::<P::Scalar>())).max(1);
+
+	n_vars
+		.saturating_sub(log_tasks)
+		.min(resident.ilog2() as usize)
+		.max(LOG_MIN_BLOCK.max(P::LOG_WIDTH))
+		.min(n_vars)
+}
+
+/// Expands a basis into a packed buffer, one output block per task.
+///
+/// An entry's index splits into the block holding it and its offset inside that block:
+///
+/// ```text
+///     j = block * 2^log_block + offset
+/// ```
+///
+/// The offset selects a row's low factors and the block selects its high ones.
+/// So one expansion over the low factors serves every block, and each block scales it by a
+/// product the block index alone determines.
+///
+/// ## Preconditions
+///
+/// * `log_block` is at most the basis's variable count.
+/// * a block spans whole packed words, unless the whole weight sits inside one.
+fn expand_blocked<P, A>(
+	basis: &InducedBasis<P::Scalar>,
+	log_block: usize,
+	alloc: &A,
+) -> FieldVec<P, A>
+where
+	P: PackedField,
+	A: Allocator,
+{
+	assert!(
+		(basis.n_vars().min(P::LOG_WIDTH)..=basis.n_vars()).contains(&log_block),
+		"precondition: blocks must tile the packed words they are written through"
+	);
+
+	// A block below one packed word still occupies a whole one, whose spare lanes stay zero.
+	let block_words = 1 << log_block.saturating_sub(P::LOG_WIDTH);
+
+	// Every row's tensor over the low factors, packed and laid out one row after another.
+	let mut low = Vec::with_capacity(basis.n_rows() * block_words);
+	for (_, factors) in basis.rows() {
+		low.extend(
+			expand_subset_products(&factors[..log_block])
+				.chunks(P::WIDTH)
+				.map(|lanes| P::from_scalars(lanes.iter().copied())),
+		);
+	}
+
+	let mut weight = FieldBuffer::zeros_in(alloc, basis.n_vars());
+	weight
+		.as_mut()
+		.par_chunks_mut(block_words)
+		.enumerate()
+		.for_each(|(block, entries)| {
+			for (row, (coefficient, factors)) in basis.rows().enumerate() {
+				// One product per set bit of the block index, over the factors above the block.
+				let mut scale = *coefficient;
+				let mut selected = block;
+				while selected != 0 {
+					scale *= factors[log_block + selected.trailing_zeros() as usize];
+					selected &= selected - 1;
+				}
+
+				// The scale is one field element, so the whole block multiplies by one word.
+				let scale = P::broadcast(scale);
+				let tensor = &low[row * block_words..][..block_words];
+				for (entry, factor) in zip(&mut *entries, tensor) {
+					*entry += scale * *factor;
+				}
+			}
+		});
+
+	weight
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Field, Ghash128b as B128, Random};
+	use binius_field::{Field, Ghash128b as B128, PackedBinaryGhash4x128b, Random};
 	use binius_math::{
 		FieldBuffer,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
@@ -297,6 +397,47 @@ mod tests {
 
 			let (rows, transposed) = both_builds(log_msg_cols, log_inv_rate, &indices, alpha);
 			prop_assert_eq!(rows, transposed);
+		}
+
+		#[test]
+		fn the_blocked_expansion_matches_the_dense_one(
+			seed: u64,
+			n_vars in 0usize..8,
+			log_inv_rate in 1usize..4,
+			n_rows in 0usize..12,
+		) {
+			// A weight below one packed word shares that word with lanes that are not entries.
+			// Pinning the width reaches those lanes on every machine, native flags or not.
+			const {
+				assert!(
+					PackedBinaryGhash4x128b::LOG_WIDTH > 1,
+					"the fixture needs a packed element wider than the narrowest weight"
+				);
+			};
+
+			let mut rng = StdRng::seed_from_u64(seed);
+			let log_codeword_len = n_vars + log_inv_rate;
+			let indices = (0..n_rows)
+				.map(|_| rng.random_range(0..1usize << log_codeword_len))
+				.collect::<Vec<_>>();
+			let domain_context = GaoMateerOnTheFly::<B128>::generate(log_codeword_len);
+			let basis =
+				InducedBasis::new(&domain_context, n_vars, &indices, B128::random(&mut rng));
+
+			let dense = FieldBuffer::<PackedBinaryGhash4x128b>::from_values_in(
+				&GlobalAllocator,
+				&basis.to_dense(),
+			);
+
+			// Every split of an index into a block and an offset must reach the same words.
+			for log_block in n_vars.min(PackedBinaryGhash4x128b::LOG_WIDTH)..=n_vars {
+				let blocked = expand_blocked::<PackedBinaryGhash4x128b, _>(
+					&basis,
+					log_block,
+					&GlobalAllocator,
+				);
+				prop_assert_eq!(blocked.as_ref(), dense.as_ref(), "log_block {}", log_block);
+			}
 		}
 	}
 }
