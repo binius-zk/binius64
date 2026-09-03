@@ -224,25 +224,23 @@ fn strauss_accumulate(
 		for (point_idx, subscalar) in subscalars.iter().enumerate() {
 			// Selector = this window's exponent bits, low bit first; bits at or past
 			// `exponent_bits` read as zero. `multi_wire_multiplex` reads bit `j` of `sel` as bit
-			// `j` of the table index, matching `table[x] = x · P`. One masked shift pulls the whole
-			// chunk, where the old code spent a band per bit (two limbs when the chunk straddles a
-			// 64-bit boundary).
-			let sel = if base_bit >= exponent_bits {
-				b.add_constant(Word::ZERO)
+			// `j` of the table index, matching `table[x] = x · P`. One masked shift pulls the
+			// whole chunk, joining two limbs when it straddles a 64-bit boundary.
+			let n_bits = (base_bit + window).min(exponent_bits) - base_bit;
+			let mask = b.add_constant_64((1u64 << n_bits) - 1);
+			let offset = (base_bit % Word::BITS) as u32;
+			let lo = base_bit / Word::BITS;
+			let hi = (base_bit + n_bits - 1) / Word::BITS;
+			let sel = if lo == hi {
+				b.band(b.shr(subscalar[lo], offset), mask)
 			} else {
-				let n_bits = (base_bit + window).min(exponent_bits) - base_bit;
-				let mask = b.add_constant_64((1u64 << n_bits) - 1);
-				let offset = (base_bit % Word::BITS) as u32;
-				let lo = base_bit / Word::BITS;
-				let hi = (base_bit + n_bits - 1) / Word::BITS;
-				if lo == hi {
-					b.band(b.shr(subscalar[lo], offset), mask)
-				} else {
-					// The halves land in disjoint bit ranges, so XOR joins them before the mask.
-					let low = b.shr(subscalar[lo], offset);
-					let high = b.shl(subscalar[hi], Word::BITS as u32 - offset);
-					b.band(b.bxor(low, high), mask)
-				}
+				// The halves land in disjoint bit ranges, so XOR joins them before the mask.
+				let low = b.shr(subscalar[lo], offset);
+				// `offset == 0` never reaches this arm: a chunk starting on a limb boundary fits
+				// in `subscalar[lo]` (`n_bits <= window < Word::BITS`, asserted in
+				// `msm_strauss_endo`), so this left shift stays below `Word::BITS`.
+				let high = b.shl(subscalar[hi], Word::BITS as u32 - offset);
+				b.band(b.bxor(low, high), mask)
 			};
 
 			let selected =
