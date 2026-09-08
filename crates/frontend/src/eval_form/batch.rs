@@ -58,8 +58,6 @@ pub struct BatchPopulateError {
 pub struct BatchExecutionContext<'a, 'v> {
 	/// Rows are value-vector indices; columns are instances.
 	values: &'a mut StridedArray2DViewMut<'v, Word>,
-	/// The global instance index represented by local column 0.
-	instance_offset: usize,
 	/// Failures recorded for [`Self::min_failing_instance`], capped by [`MAX_ASSERTION_FAILURES`].
 	///
 	/// Cleared whenever a strictly lower failing instance is found.
@@ -74,13 +72,9 @@ pub struct BatchExecutionContext<'a, 'v> {
 }
 
 impl<'a, 'v> BatchExecutionContext<'a, 'v> {
-	pub const fn new(
-		values: &'a mut StridedArray2DViewMut<'v, Word>,
-		instance_offset: usize,
-	) -> Self {
+	pub const fn new(values: &'a mut StridedArray2DViewMut<'v, Word>) -> Self {
 		Self {
 			values,
-			instance_offset,
 			failures: Vec::new(),
 			min_failure_count: 0,
 			min_failing_instance: None,
@@ -132,16 +126,14 @@ impl EvalContext for BatchExecutionContext<'_, '_> {
 		self.values[(reg as usize, instance)] = value;
 	}
 
-	/// Record an assertion failure for one local instance.
+	/// Record an assertion failure for one instance.
 	///
 	/// A failure for a higher instance than the current lowest-failing one is dropped.
 	/// It can never become the reported instance.
 	/// A failure for a new, strictly lower instance clears every record kept so far.
 	/// Those records belonged to an instance that turned out not to be the one reported.
-	/// The stripe offset remaps the local index to a global instance index.
 	#[cold]
 	fn note_assertion_failure(&mut self, instance: usize, path_spec: PathSpec, message: String) {
-		let instance = self.instance_offset + instance;
 		match self.min_failing_instance {
 			Some(min) if instance > min => return,
 			Some(min) if instance < min => {

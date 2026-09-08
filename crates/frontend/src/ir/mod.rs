@@ -158,7 +158,11 @@ pub struct GateData {
 	/// This is empty for gates of constant shape. When the shape is variable, the number of
 	/// input, output and internal wires is a function of non-empty `dimensions`. This function is
 	/// typically linear.
-	pub dimensions: Vec<usize>,
+	///
+	/// Emission fixes the length, so a boxed slice replaces a vector.
+	/// That is 16 bytes against 24.
+	/// Neither allocates for the empty case that most gates hold.
+	pub dimensions: Box<[usize]>,
 }
 
 impl GateData {
@@ -344,7 +348,7 @@ impl GateGraph {
 		let data = GateData {
 			body: GateBody::Op(opcode),
 			wires,
-			dimensions: dimensions.to_vec(),
+			dimensions: dimensions.into(),
 			immediates: SmallVec::from_slice(immediates),
 		};
 		// Inline validate_shape: non-hint shape doesn't need a registry.
@@ -377,7 +381,7 @@ impl GateGraph {
 		let data = GateData {
 			body: GateBody::Hint(hint_id),
 			wires,
-			dimensions: dimensions.to_vec(),
+			dimensions: dimensions.into(),
 			immediates: SmallVec::new(),
 		};
 		let gate = self.gates.push(data);

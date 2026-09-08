@@ -47,11 +47,10 @@ use crate::{
 pub struct IcmpEq;
 
 impl GateKind for IcmpEq {
-	// The auxiliary wire is the carry-out; the scratch wire holds the operands' difference.
+	// The scratch wires are the carry-out and the operands' difference.
 	const SHAPE: OpcodeShape = OpcodeShape::new(2, 1)
 		.with_consts(&[Word::ALL_ONE, Word::MSB_ONE])
-		.with_aux(1)
-		.with_scratch(1);
+		.with_scratch(2);
 
 	fn constrain(gate: GateParam<'_>, cb: &mut ConstraintBuilder) {
 		let [all_one, msb_one] = gate.const_wires();
@@ -68,8 +67,7 @@ impl GateKind for IcmpEq {
 		let [all_one, msb_one] = gate.const_wires();
 		let [x, y] = gate.in_wires();
 		let [out] = gate.out_wires();
-		let [cout] = gate.aux_wires();
-		let [diff] = gate.scratch_wires();
+		let [cout, diff] = gate.scratch_wires();
 
 		// diff = x ⊕ y
 		bc.emit_bxor(ctx.reg(diff), ctx.reg(x), ctx.reg(y));
