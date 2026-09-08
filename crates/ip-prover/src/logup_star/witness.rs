@@ -46,6 +46,10 @@ type LogupWitnesses<P, A> = (Vec<Vec<FieldVec<P, A>>>, Vec<FieldVec<P, A>>);
 /// * `tables` is non-empty, every table has at least one looker, every looker's index column has
 ///   `2^n` entries for its own evaluation point length `n`, and every index entry is less than its
 ///   table's size.
+///
+/// # Panics
+///
+/// Panics if any precondition is violated.
 #[tracing::instrument(
 	skip_all,
 	level = "debug",
@@ -66,20 +70,6 @@ where
 	assert!(
 		tables.iter().all(|table| !table.lookers.is_empty()),
 		"every table must have at least one looker"
-	);
-	// Every index must address a real position in its table, for the embedding and pushforward to
-	// be valid. This is a precondition: the O(n) scan is compiled out of release builds. It is
-	// checked up front because an out-of-range index would otherwise surface as an opaque
-	// out-of-bounds panic inside the scatter-add.
-	debug_assert!(
-		tables.iter().all(|table| {
-			let table_size = 1usize << table.table.log_len();
-			table
-				.lookers
-				.iter()
-				.all(|looker| looker.index.iter().all(|&j| j < table_size))
-		}),
-		"every index entry must be less than the size of the table its looker reads"
 	);
 
 	// Build one numerator per looker, fanned out across all of them at once.
@@ -135,6 +125,9 @@ where
 	// The tables are walked one at a time rather than in parallel: each scatter is already parallel
 	// over the looker rows that dominate its cost, and drawing a buffer from `alloc` inside a rayon
 	// task is not available here.
+	//
+	// The scatter reads every index entry into a cube that spans exactly the table.
+	// So it is also where each index is checked to address a real table position.
 	let mut remaining = flat_numerators.as_slice();
 	let mut grouped_slices = Vec::with_capacity(tables.len());
 	for table in tables {
@@ -255,6 +248,10 @@ where
 /// ```
 ///
 /// The numerator is read sequentially, so each row is a lane read, not an indexed lookup.
+///
+/// # Panics
+///
+/// Panics if a row indexes past the last table position.
 #[inline]
 fn scatter_add<F, P>(acc: &mut [F], numerator: &FieldSlice<'_, P>, index: &[usize])
 where
@@ -262,8 +259,15 @@ where
 	P: PackedField<Scalar = F>,
 {
 	// Row i's numerator value lands in the table position that row indexes into.
+	//
+	// The accumulator spans exactly the table.
+	// So resolving the slot is the range check on the index column.
+	// That check is the one the write already pays for.
 	for (value, &target) in numerator.iter_scalars().zip(index) {
-		acc[target] += value;
+		let slot = acc
+			.get_mut(target)
+			.expect("every index entry must be less than the size of the table its looker reads");
+		*slot += value;
 	}
 }
 
