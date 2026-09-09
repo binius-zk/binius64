@@ -1,8 +1,11 @@
 // Copyright 2026 The Binius Developers
 //! Zero propagation over the gate graph.
 
+use std::collections::VecDeque;
+
 use binius_core::word::Word;
 use cranelift_entity::EntitySet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
 	gates::Opcode,
@@ -23,14 +26,10 @@ use crate::{
 ///
 /// # Algorithm
 ///
-/// Zeros travel: clearing a zero leaves zero, and packing zero into a lane leaves zero. So one
-/// sweep is not enough, and the sweeps repeat until one changes nothing.
+/// A gate matches a rule only while it reads the zero wire.
+/// So the worklist starts at that wire's readers, and grows by the gates a rewrite hands a zero.
 ///
-/// Each sweep rebuilds the reader index first. Forwarding to an ordinary wire grows that wire's
-/// set of readers, which a stale index would not list, and a later sweep forwarding that same
-/// wire would then miss those readers.
-///
-/// Only the reader half is rebuilt. This pass follows readers, never definitions.
+/// The reader index is a snapshot, so the readers a rewrite moves are tracked alongside it.
 pub fn zero_propagation(
 	graph: &mut GateGraph,
 	force_committed: &EntitySet<Wire>,
@@ -42,29 +41,83 @@ pub fn zero_propagation(
 		return 0;
 	};
 
+	graph.rebuild_wire_uses(hint_registry);
+
+	let mut queue: VecDeque<Gate> = graph.get_wire_uses(zero).collect();
+	let mut queued: FxHashSet<Gate> = queue.iter().copied().collect();
+	let mut readers = Readers::default();
 	let mut total_rewritten = 0;
-	loop {
-		graph.rebuild_wire_uses(hint_registry);
 
-		// Gathered before any rewriting, since reading the graph and mutating it cannot overlap.
-		let mut forwardings = Vec::new();
-		for gate in graph.gates() {
-			if let Some(pairs) = zero_identity(graph, gate, zero, force_committed, hint_registry) {
-				forwardings.extend(pairs);
-			}
-		}
+	while let Some(gate) = queue.pop_front() {
+		queued.remove(&gate);
+		let Some(forwardings) = zero_identity(graph, gate, zero, force_committed, hint_registry)
+		else {
+			continue;
+		};
 
-		let mut rewritten = 0;
 		for (from, to) in forwardings {
-			rewritten += graph.replace_wire_with_wire(from, to).n_slots_rewritten;
-		}
+			if from == to {
+				continue;
+			}
 
-		// A sweep that moved no reader has reached the fixpoint.
-		if rewritten == 0 {
-			return total_rewritten;
+			let moving = readers.take(graph, from);
+			let mut landed = Vec::with_capacity(moving.len());
+			for reader in moving {
+				// Asked before the rewrite, after which every reader holds the target.
+				let had_target = reads(graph, reader, to, hint_registry);
+				total_rewritten += graph.replace_gate_wire(reader, from, to);
+				if !had_target {
+					landed.push(reader);
+				}
+				// A rewrite makes a gate newly match only by handing it a zero operand.
+				if to == zero && queued.insert(reader) {
+					queue.push_back(reader);
+				}
+			}
+			readers.record(to, landed);
 		}
-		total_rewritten += rewritten;
 	}
+
+	total_rewritten
+}
+
+/// The gates reading each wire, past the point the snapshot index still describes them.
+#[derive(Default)]
+struct Readers {
+	/// Wires whose snapshot run has already been handed out.
+	drained: FxHashSet<Wire>,
+	/// Readers a rewrite moved onto a wire.
+	moved: FxHashMap<Wire, Vec<Gate>>,
+}
+
+impl Readers {
+	/// Removes and returns every gate reading the wire.
+	fn take(&mut self, graph: &GateGraph, wire: Wire) -> Vec<Gate> {
+		let mut readers: Vec<Gate> = if self.drained.insert(wire) {
+			graph.get_wire_uses(wire).collect()
+		} else {
+			Vec::new()
+		};
+		readers.extend(self.moved.remove(&wire).into_iter().flatten());
+		readers
+	}
+
+	/// Adds gates that now read the wire.
+	fn record(&mut self, wire: Wire, gates: Vec<Gate>) {
+		if !gates.is_empty() {
+			self.moved.entry(wire).or_default().extend(gates);
+		}
+	}
+}
+
+/// Whether the gate takes the wire as a constant or input operand.
+fn reads(graph: &GateGraph, gate: Gate, wire: Wire, hint_registry: &HintRegistry) -> bool {
+	let param = graph.gate_data(gate).gate_param(hint_registry);
+	param
+		.constants
+		.iter()
+		.chain(param.inputs)
+		.any(|w| *w == wire)
 }
 
 /// The zero constant wire, if the circuit already has one.
@@ -110,7 +163,7 @@ fn zero_identity(
 		return None;
 	}
 
-	// The padding pair, which `replace_wire_with_wire` recognises as a no-op.
+	// The padding pair, which the forwarding loop skips.
 	let nothing = (zero, zero);
 
 	match (opcode, param.inputs, param.outputs) {
@@ -131,6 +184,9 @@ fn zero_identity(
 
 #[cfg(test)]
 mod tests {
+	use binius_core::constraint_system::ShiftVariant;
+	use proptest::prelude::*;
+
 	use super::*;
 	use crate::{Options, builder::CircuitBuilder};
 
@@ -206,5 +262,192 @@ mod tests {
 		// Only the all-one word the gate graph seeds, plus the one the assertion uses.
 		let constants = &circuit.constraint_system().constants;
 		assert!(!constants.contains(&Word::ZERO));
+	}
+
+	fn zero_propagation_by_sweeps(
+		graph: &mut GateGraph,
+		force_committed: &EntitySet<Wire>,
+		hint_registry: &HintRegistry,
+	) -> usize {
+		let Some(zero) = find_zero_constant(graph) else {
+			return 0;
+		};
+
+		let mut total_rewritten = 0;
+		loop {
+			graph.rebuild_wire_uses(hint_registry);
+
+			let mut forwardings = Vec::new();
+			for gate in graph.gates() {
+				if let Some(pairs) =
+					zero_identity(graph, gate, zero, force_committed, hint_registry)
+				{
+					forwardings.extend(pairs);
+				}
+			}
+
+			let mut rewritten = 0;
+			for (from, to) in forwardings {
+				rewritten += graph.replace_wire_with_wire(from, to).n_slots_rewritten;
+			}
+
+			if rewritten == 0 {
+				return total_rewritten;
+			}
+			total_rewritten += rewritten;
+		}
+	}
+
+	/// One gate of a generated fixture, naming its operands by position in the wire pool.
+	#[derive(Clone, Copy, Debug)]
+	enum Op {
+		Shift(usize, u32),
+		Bxor(usize, usize),
+		Iadd32(usize, usize),
+		Band(usize, usize),
+	}
+
+	/// Builds the fixture, returning the graph and the wire pool the operand positions index.
+	fn build_fixture(ops: &[Op]) -> (GateGraph, Vec<Wire>) {
+		let mut graph = GateGraph::new();
+		let root = graph.path_spec_tree.root();
+
+		// Position 0 is the zero constant, position 1 an ordinary input.
+		let mut pool = vec![graph.add_constant(Word::ZERO), graph.add_inout()];
+
+		for &op in ops {
+			let n = pool.len();
+			match op {
+				Op::Shift(a, amount) => {
+					let out = graph.add_internal();
+					graph.emit_gate_generic(
+						root,
+						Opcode::Shift,
+						vec![pool[a % n]],
+						vec![out],
+						&[],
+						&[ShiftVariant::Sll as u32, amount % 64],
+					);
+					pool.push(out);
+				}
+				Op::Bxor(a, b) => {
+					let out = graph.add_internal();
+					graph.emit_gate(root, Opcode::Bxor, vec![pool[a % n], pool[b % n]], vec![out]);
+					pool.push(out);
+				}
+				Op::Iadd32(a, b) => {
+					let sum = graph.add_internal();
+					let cout = graph.add_internal();
+					graph.emit_gate(
+						root,
+						Opcode::Iadd32,
+						vec![pool[a % n], pool[b % n]],
+						vec![sum, cout],
+					);
+					pool.push(sum);
+					pool.push(cout);
+				}
+				Op::Band(a, b) => {
+					let out = graph.add_internal();
+					graph.emit_gate(root, Opcode::Band, vec![pool[a % n], pool[b % n]], vec![out]);
+					pool.push(out);
+				}
+			}
+		}
+
+		// An assertion per wire, so every forwarding has a reader to move.
+		for &wire in &pool {
+			graph.emit_gate(root, Opcode::AssertZero, vec![wire], vec![]);
+		}
+
+		(graph, pool)
+	}
+
+	/// The pinned set the fixture's operand positions name.
+	fn pin_wires(pool: &[Wire], pins: &[usize]) -> EntitySet<Wire> {
+		let mut pinned = EntitySet::new();
+		for &pin in pins {
+			pinned.insert(pool[pin % pool.len()]);
+		}
+		pinned
+	}
+
+	/// Every gate's wire slots, which is the whole of what the pass rewrites.
+	fn wiring(graph: &GateGraph) -> Vec<Vec<Wire>> {
+		graph
+			.gates
+			.values()
+			.map(|data| data.wires.to_vec())
+			.collect()
+	}
+
+	/// A cone whose every level turns zero only once the level below it has.
+	fn deep_zero_cone(depth: usize) -> Vec<Op> {
+		let mut ops = Vec::new();
+		let mut zero_at = 0;
+		let mut next = 2;
+		for _ in 0..depth {
+			// The shift and the exclusive-or each hand their level's zero one step further on.
+			ops.push(Op::Shift(zero_at, 3));
+			let shifted = next;
+			ops.push(Op::Bxor(shifted, 1));
+			let folded = next + 1;
+			// The carry-out is the next level's zero, and it is zero only once both above fired.
+			ops.push(Op::Iadd32(folded, shifted));
+			zero_at = next + 3;
+			next += 4;
+		}
+		ops
+	}
+
+	#[test]
+	fn a_deep_zero_cone_reaches_the_sweep_fixpoint() {
+		let registry = HintRegistry::new();
+		let ops = deep_zero_cone(16);
+
+		let (mut swept, _) = build_fixture(&ops);
+		zero_propagation_by_sweeps(&mut swept, &EntitySet::new(), &registry);
+
+		let (mut worked, _) = build_fixture(&ops);
+		zero_propagation(&mut worked, &EntitySet::new(), &registry);
+
+		assert_eq!(wiring(&swept), wiring(&worked));
+
+		// The cone really does collapse, so the comparison above is not between two untouched
+		// graphs.
+		let (untouched, _) = build_fixture(&ops);
+		assert_ne!(wiring(&untouched), wiring(&worked));
+	}
+
+	fn any_op() -> impl Strategy<Value = Op> {
+		prop_oneof![
+			(0usize..64, 0u32..64).prop_map(|(a, n)| Op::Shift(a, n)),
+			(0usize..64, 0usize..64).prop_map(|(a, b)| Op::Bxor(a, b)),
+			(0usize..64, 0usize..64).prop_map(|(a, b)| Op::Iadd32(a, b)),
+			(0usize..64, 0usize..64).prop_map(|(a, b)| Op::Band(a, b)),
+		]
+	}
+
+	proptest! {
+		#[test]
+		fn the_worklist_reaches_the_sweep_fixpoint(
+			ops in prop::collection::vec(any_op(), 1..48),
+			pins in prop::collection::vec(0usize..64, 0..4),
+		) {
+			let registry = HintRegistry::new();
+
+			let (mut swept, pool) = build_fixture(&ops);
+			let pinned = pin_wires(&pool, &pins);
+			zero_propagation_by_sweeps(&mut swept, &pinned, &registry);
+
+			let (mut worked, _) = build_fixture(&ops);
+			zero_propagation(&mut worked, &pinned, &registry);
+
+			// The two schedules land on the same graph, slot for slot.
+			prop_assert_eq!(wiring(&swept), wiring(&worked));
+
+			// And the worklist result is a sweep fixpoint in its own right.
+			prop_assert_eq!(zero_propagation_by_sweeps(&mut worked, &pinned, &registry), 0);
+		}
 	}
 }
