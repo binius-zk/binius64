@@ -45,7 +45,7 @@ use binius_hash::StdHashSuite;
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::VerifierTranscript;
 use binius_verifier::{
-	Pcs, Verifier,
+	Verifier,
 	config::StdChallenger,
 	protocols::shift::{DeferredWiringClaim, WiringEvalShape},
 };
@@ -55,13 +55,6 @@ use crate::{Binius64BuilderChannel, Recorded, WitnessFillerChannel, merkle::elem
 /// Why a recursive circuit could not be built, or its witness could not be filled.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-	/// The inner trace is opened with a scheme the in-circuit gadgets do not express.
-	#[error("the inner trace is opened with {pcs:?}, and only FRI is expressed in-circuit")]
-	UnsupportedPcs {
-		/// The scheme the inner verifier was set up with.
-		pcs: Pcs,
-	},
-
 	/// The statement handed to [`RecursiveCircuit::witness`] is the wrong length.
 	#[error("the inner statement holds {expected} words, and {actual} were supplied")]
 	StatementLength {
@@ -163,8 +156,6 @@ impl RecursiveCircuit {
 	///
 	/// # Errors
 	///
-	/// Returns [`Error::UnsupportedPcs`] when the inner trace is not opened with FRI.
-	///
 	/// Returns [`Error::Verifier`] when the shape itself is unsatisfiable, which a build-time
 	/// constant assertion decides before any proof exists.
 	pub fn build(verifier: Verifier<StdHashSuite>) -> Result<Self, Error> {
@@ -177,19 +168,14 @@ impl RecursiveCircuit {
 	///
 	/// # Errors
 	///
-	/// Returns an error when the inner trace is not opened with FRI.
-	///
 	/// Returns an error when the shape itself is unsatisfiable.
 	pub fn build_with(
 		verifier: Verifier<StdHashSuite>,
 		discharge: Discharge,
 	) -> Result<Self, Error> {
-		let Some(compiler) = verifier.iop_compiler().as_basefold() else {
-			return Err(Error::UnsupportedPcs {
-				pcs: verifier.pcs(),
-			});
-		};
-		let mut channel = compiler.create_channel(Binius64BuilderChannel::new());
+		let mut channel = verifier
+			.iop_compiler()
+			.create_channel(Binius64BuilderChannel::new());
 
 		// Invariant: on this channel `observe_words` reads the length and never the values.
 		//
@@ -458,13 +444,7 @@ impl RecursiveCircuit {
 			self.recorded.inputs.clone(),
 		);
 
-		// `build` rejected any other scheme, so this shape opens a FRI trace.
-		let mut channel = self
-			.verifier
-			.iop_compiler()
-			.as_basefold()
-			.expect("build accepts only a FRI-opened shape")
-			.create_channel(filler_channel);
+		let mut channel = self.verifier.iop_compiler().create_channel(filler_channel);
 
 		let statement = channel.observe_words(inout);
 		let claim = self

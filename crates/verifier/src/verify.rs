@@ -9,7 +9,10 @@ use binius_core::{
 };
 use binius_field::{BinaryField, ExtensionField, FieldOps, Rijndael8b as B8};
 use binius_hash::HashSuite;
-use binius_iop::channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel};
+use binius_iop::{
+	basefold::compiler::BaseFoldVerifierCompiler,
+	channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel},
+};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::BinarySubspace;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
@@ -20,10 +23,8 @@ use itertools::chain;
 use super::error::Error;
 use crate::{
 	config::{B1, B128, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
-	fri::FRIParams,
+	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
-	pcs::Pcs,
-	pcs_compiler::PcsVerifierCompiler,
 	protocols::{
 		bitand::{AndCheckOutput, verify_with_channel},
 		shift::WiringEvalClaim,
@@ -244,7 +245,7 @@ pub struct Verifier<H: HashSuite> {
 	/// The constraint system and the reduction that opens it, independent of the commitment.
 	iop_verifier: IOPVerifier,
 	/// The commitment scheme's parameters, chosen once at setup.
-	iop_compiler: PcsVerifierCompiler<B128>,
+	iop_compiler: BaseFoldVerifierCompiler<B128>,
 	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
 	_hash_marker: PhantomData<H>,
 }
@@ -254,28 +255,14 @@ where
 	H: HashSuite,
 	Output<H::LeafHash>: DeserializeBytes,
 {
-	/// Constructs a verifier for a constraint system, opening the trace with the default scheme.
+	/// Constructs a verifier for a constraint system.
 	///
 	/// See [`Verifier`] struct documentation for details.
-	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
-		Self::setup_with_pcs(constraint_system, log_inv_rate, Pcs::default())
-	}
-
-	/// Constructs a verifier that opens the trace with the named commitment scheme.
-	///
-	/// Both schemes read the rate the same way.
-	/// So two verifiers set up at one rate encode the same message into the same first codeword.
-	/// That is what makes their proof sizes and their prover times comparable.
 	///
 	/// # Errors
 	///
 	/// Returns an error when the constraint system is invalid.
-	/// Also when the chosen scheme reaches the security target under no parameters at all.
-	pub fn setup_with_pcs(
-		constraint_system: ConstraintSystem,
-		log_inv_rate: usize,
-		scheme: Pcs,
-	) -> Result<Self, Error> {
+	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
 		constraint_system.validate()?;
 
 		let log_public_words = constraint_system.log_public_words(InoutSegment::Public);
@@ -287,13 +274,23 @@ where
 		let oracle_specs = iop_verifier.oracle_specs(false);
 
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
-		let iop_compiler = PcsVerifierCompiler::new(
-			scheme,
+
+		// Pick the proof-size-optimal FRI fold arity for this codeword length.
+		let log_code_len = oracle_specs[0].log_msg_len + log_inv_rate;
+		let fri_arity =
+			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
+				.arity;
+
+		// The query count is fixed by the rate and the soundness target.
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+
+		let iop_compiler = BaseFoldVerifierCompiler::new(
 			&merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
-			SECURITY_BITS,
-		)?;
+			n_test_queries,
+			&ConstantArityStrategy::new(fri_arity),
+		);
 
 		Ok(Self {
 			iop_verifier,
@@ -327,17 +324,9 @@ where
 		self.iop_verifier.constraint_system()
 	}
 
-	/// Returns the chosen FRI parameters, when the trace is opened with FRI.
-	pub const fn fri_params(&self) -> Option<&FRIParams<B128>> {
-		match self.iop_compiler.as_basefold() {
-			Some(compiler) => Some(compiler.fri_params()),
-			None => None,
-		}
-	}
-
-	/// Returns which commitment scheme opens the trace.
-	pub const fn pcs(&self) -> Pcs {
-		self.iop_compiler.scheme()
+	/// Returns the chosen FRI parameters.
+	pub const fn fri_params(&self) -> &FRIParams<B128> {
+		self.iop_compiler.fri_params()
 	}
 
 	/// Returns log2 of the number of public constants and input/output words.
@@ -346,7 +335,7 @@ where
 	}
 
 	/// Returns the IOP compiler for creating verifier channels.
-	pub const fn iop_compiler(&self) -> &PcsVerifierCompiler<B128> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.iop_compiler
 	}
 
@@ -365,22 +354,11 @@ where
 		)
 		.entered();
 
-		// The two schemes lay the transcript out differently, so each arm builds its own channel
-		// and closes it with its own opening. What runs in between is the same verification.
-		match &self.iop_compiler {
-			PcsVerifierCompiler::BaseFold(compiler) => {
-				let mut channel =
-					compiler.create_channel_from_transcript::<H, Challenger_, _>(transcript);
-				self.iop_verifier.verify_statement(inout, &mut channel)?;
-				channel.finish()?;
-			}
-			PcsVerifierCompiler::WHIR(compiler) => {
-				let mut channel =
-					compiler.create_channel_from_transcript::<H, Challenger_, _>(transcript);
-				self.iop_verifier.verify_statement(inout, &mut channel)?;
-				channel.finish()?;
-			}
-		}
+		let mut channel = self
+			.iop_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
+		self.iop_verifier.verify_statement(inout, &mut channel)?;
+		channel.finish()?;
 		Ok(())
 	}
 }

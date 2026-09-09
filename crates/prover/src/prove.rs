@@ -10,7 +10,7 @@ use binius_core::{
 };
 use binius_field::{Field, PackedField, Rijndael8b as B8};
 use binius_hash_prover::ParallelHashSuite;
-use binius_iop_prover::channel::IOPProverChannel;
+use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::WordIPProverChannel;
 use binius_math::{
@@ -33,7 +33,6 @@ use digest::Output;
 
 use super::error::Error;
 use crate::{
-	pcs_compiler::PcsProverCompiler,
 	protocols::{
 		binmul, bitand, intmul,
 		shift::{self, KeyCollection, OperatorClaims, OperatorData, ShiftOutput},
@@ -381,7 +380,7 @@ where
 	/// The constraint system and the reduction that commits it, independent of the commitment.
 	iop_prover: IOPProver,
 	/// The commitment scheme's parameters, mirrored from the verifier this prover was set up for.
-	iop_compiler: PcsProverCompiler<P, ProverNTT<B128>>,
+	iop_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>>,
 	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
 	/// so blocks freed by one `prove` call are reused by the next.
 	pool: BufferPool,
@@ -424,8 +423,9 @@ where
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		// Mirror the verifier's scheme and its parameters, so neither side can pick its own.
-		let iop_compiler = PcsProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
+		// Mirror the verifier's parameters, so neither side can pick its own.
+		let iop_compiler =
+			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
 		let iop_prover = IOPProver::new(verifier.into_iop_verifier(), key_collection);
 
@@ -469,30 +469,15 @@ where
 		// commits its Merkle trees out of the same pool.
 		let alloc = &self.pool;
 
-		// The two schemes lay the transcript out differently, so each arm builds its own channel
-		// and closes it with its own opening. What runs in between is the same proof.
-		match &self.iop_compiler {
-			PcsProverCompiler::BaseFold(compiler) => {
-				// The unified channel takes an rng to mask ZK oracles, but a plain `Prover`
-				// produces a transparent proof whose only oracle is non-ZK, so no masks are drawn
-				// and the rng is never consumed.
-				let mut channel = compiler
-					.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(
-						transcript, alloc,
-					);
-				self.iop_prover
-					.prove::<_, P, _>(witness, &mut channel, &alloc)?;
-				channel.finish();
-			}
-			PcsProverCompiler::WHIR(compiler) => {
-				// The ladder commits no mask at all, so it needs no randomness of its own.
-				let mut channel = compiler
-					.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
-				self.iop_prover
-					.prove::<_, P, _>(witness, &mut channel, &alloc)?;
-				channel.finish();
-			}
-		}
+		// The unified channel takes an rng to mask ZK oracles, but a plain `Prover` produces a
+		// transparent proof whose only oracle is non-ZK, so no masks are drawn and the rng is never
+		// consumed.
+		let mut channel = self
+			.iop_compiler
+			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript, alloc);
+		self.iop_prover
+			.prove::<_, P, _>(witness, &mut channel, &alloc)?;
+		channel.finish();
 		Ok(())
 	}
 }
@@ -646,15 +631,10 @@ where
 mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_core::constraint_system::{AndConstraint, ConstraintSystem};
-	use binius_field::{Field, PackedGhash2x128b, arch::OptimalPackedB128};
+	use binius_field::{Field, PackedGhash2x128b};
 	use binius_frontend::CircuitBuilder;
-	use binius_hash::StdHashSuite;
-	use binius_transcript::VerifierTranscript;
-	use binius_verifier::{Pcs, Verifier, config::StdChallenger};
 
-	use super::{
-		B128, Prover, ProverTranscript, ValueVec, Word, build_operation_columns, pack_witness,
-	};
+	use super::{B128, ValueVec, Word, build_operation_columns, pack_witness};
 
 	/// A circuit of `n_gates` independent AND gates, its constraint system, and a valid witness.
 	///
@@ -683,60 +663,6 @@ mod tests {
 		let cs = circuit.constraint_system().clone();
 		cs.validate().unwrap();
 		(cs, w.into_value_vec())
-	}
-
-	/// Proves and verifies one instance with the given scheme, returning the proof's byte count.
-	///
-	/// The prover mirrors the verifier's scheme rather than choosing its own.
-	/// So a mismatch between the two is not expressible here.
-	fn prove_and_verify(cs: ConstraintSystem, witness: &ValueVec, scheme: Pcs) -> usize {
-		let verifier = Verifier::<StdHashSuite>::setup_with_pcs(cs, 1, scheme).unwrap();
-		assert_eq!(verifier.pcs(), scheme);
-		let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone()).unwrap();
-
-		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover.prove(witness, &mut prover_transcript).unwrap();
-		let proof = prover_transcript.finalize();
-		let proof_size = proof.len();
-
-		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
-		verifier
-			.verify(witness.inout(), &mut verifier_transcript)
-			.unwrap();
-		verifier_transcript.finalize().unwrap();
-
-		// A byte count is only ever taken from a transcript that convinced the verifier.
-		proof_size
-	}
-
-	/// Both schemes must prove and verify the same instance, and the ladder must be the smaller.
-	///
-	/// Invariant: the two schemes differ only in how the trace oracle is opened.
-	/// Everything above it writes identical bytes.
-	/// So the whole difference in proof size belongs to the opening.
-	///
-	/// Fixture state: 20000 AND gates at inverse rate 2, over the committed trace they produce.
-	///
-	///     FRI     : one codeword at rate 1/2, folded round by round
-	///     ladder  : level 0 at rate 1/2, deeper levels shorter and at lower rates
-	///
-	/// The ladder pays for extra Merkle roots and extra sumcheck rounds and buys back query rows.
-	/// At this size the trade is already positive, which is what the rate ladder exists to do.
-	#[test]
-	fn both_commitment_schemes_prove_and_verify_one_instance() {
-		let (cs, witness) = and_gate_system(20000);
-		// Three words per gate, packed two to a field element, rounded up to a power of two.
-		assert_eq!(
-			Verifier::<StdHashSuite>::setup(cs.clone(), 1)
-				.unwrap()
-				.log_witness_elems(),
-			15
-		);
-
-		let basefold = prove_and_verify(cs.clone(), &witness, Pcs::BaseFold);
-		let whir = prove_and_verify(cs, &witness, Pcs::WHIR);
-
-		assert!(whir < basefold, "the ladder wrote {whir} bytes against FRI's {basefold}");
 	}
 
 	/// The AND constraints of that circuit, and the same witness.

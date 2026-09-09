@@ -5,7 +5,6 @@
 //! A grind is a nonce the prover had to search for and the verifier re-checks cheaply.
 //! It taxes re-rolling the challenge that follows it, and that tax is the whole point.
 //! Grinding is the one lever that moves a proximity bound no number of queries can reach.
-//! [`Grinding`](crate::soundness::Grinding) turns it into bits a security budget can count.
 
 use binius_transcript::Error;
 

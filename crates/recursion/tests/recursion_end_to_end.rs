@@ -430,7 +430,7 @@ fn a_malformed_proof_is_rejected_rather_than_crashing() {
 		// Reaching here at all is the invariant: an error came back, nothing unwound.
 		// The variant still has to name the tape, not the statement, or the wrong check fired.
 		assert!(
-			!matches!(error, Error::StatementLength { .. } | Error::UnsupportedPcs { .. }),
+			!matches!(error, Error::StatementLength { .. }),
 			"a {len}-byte tape must fail on the tape, got {error}"
 		);
 	}

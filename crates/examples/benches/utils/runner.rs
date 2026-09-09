@@ -3,7 +3,7 @@
 
 use std::error::Error;
 
-use binius_examples::{ExampleCircuit, PcsType, setup_with_pcs};
+use binius_examples::{ExampleCircuit, setup};
 use binius_frontend::{Circuit, CircuitBuilder};
 use binius_hash::StdHashSuite;
 use binius_prover::{OptimalPackedB128, Prover};
@@ -121,11 +121,7 @@ pub fn run_cs_benchmark_with_extra_groups<B, F>(
 	let example = B::build_example_circuit(params, &mut builder).unwrap();
 	let circuit = builder.build();
 	let cs = circuit.constraint_system().clone();
-	// The scheme comes from the environment, so one binary measures either of them.
-	let pcs = PcsType::from_env();
-	println!("  PCS: {pcs:?}");
-	let (verifier, prover) =
-		setup_with_pcs::<StdHashSuite>(cs, benchmark.log_inv_rate(), pcs.into(), None).unwrap();
+	let (verifier, prover) = setup::<StdHashSuite>(cs, benchmark.log_inv_rate(), None).unwrap();
 
 	// Track memory for witness generation
 	peak_alloc.reset_peak_memory();
