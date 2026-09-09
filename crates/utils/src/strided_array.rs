@@ -3,6 +3,7 @@
 use std::{
 	marker::PhantomData,
 	ops::{Index, IndexMut, Range},
+	slice,
 };
 
 use crate::rayon::prelude::*;
@@ -86,41 +87,47 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	pub fn row(&self, i: usize) -> &[T] {
 		assert!(i < self.height);
 		let start = i * self.data_width + self.cols.start;
-		&self.data[start..start + self.width()]
+		// SAFETY:
+		// - Provenance: reborrowed from the exclusive borrow the view was built from.
+		// - Bounds: construction pairs the buffer length with the dimensions, `i` is checked above,
+		//   and the column range is a subrange of the row.
+		// - Non-overlap: the slice spans only this view's columns, which no sibling view holds.
+		unsafe { slice::from_raw_parts(self.data.add(start), self.width()) }
 	}
 
-	/// Returns the `dsts` rows mutably alongside the `srcs` rows.
+	/// Returns the `mut_rows` rows mutably alongside the `shared_rows` rows.
 	///
 	/// # Panics
 	///
 	/// Panics if any index is out of bounds.
-	/// Panics if a destination row repeats, or appears among the sources.
-	pub fn rows_mut<const D: usize, const S: usize>(
+	/// Panics if a mutable row repeats, or appears among the shared rows.
+	pub fn rows_mut<const M: usize, const S: usize>(
 		&mut self,
-		dsts: [usize; D],
-		srcs: [usize; S],
-	) -> ([&mut [T]; D], [&[T]; S]) {
-		for &src in &srcs {
-			assert!(src < self.height);
+		mut_rows: [usize; M],
+		shared_rows: [usize; S],
+	) -> ([&mut [T]; M], [&[T]; S]) {
+		for &shared in &shared_rows {
+			assert!(shared < self.height);
 		}
-		for (k, &dst) in dsts.iter().enumerate() {
-			assert!(dst < self.height);
-			assert!(!dsts[..k].contains(&dst), "a destination row repeats");
-			assert!(!srcs.contains(&dst), "a destination row is also a source row");
+		for (k, &row) in mut_rows.iter().enumerate() {
+			assert!(row < self.height);
+			assert!(!mut_rows[..k].contains(&row), "a mutable row repeats");
+			assert!(!shared_rows.contains(&row), "a mutable row is also a shared row");
 		}
 
 		let (data_width, start, width) = (self.data_width, self.cols.start, self.width());
-		let base = self.data.as_mut_ptr();
+		let base = self.data;
 		// SAFETY:
 		// Row `i` occupies `i * data_width + start .. + width`, inside `data` because
 		// `i < height` and the column range is a subrange of the row.
-		// The asserts above make the destination rows pairwise distinct and disjoint from the
-		// sources, so no two of the returned slices ever overlap.
+		// The asserts above make the mutable rows pairwise distinct and disjoint from the
+		// shared rows, so no two of the returned slices ever overlap.
 		// Dropping either assert would hand out two references to one element.
 		unsafe {
 			(
-				dsts.map(|i| slice::from_raw_parts_mut(base.add(i * data_width + start), width)),
-				srcs.map(|i| slice::from_raw_parts(base.add(i * data_width + start), width)),
+				mut_rows
+					.map(|i| slice::from_raw_parts_mut(base.add(i * data_width + start), width)),
+				shared_rows.map(|i| slice::from_raw_parts(base.add(i * data_width + start), width)),
 			)
 		}
 	}
@@ -427,16 +434,16 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "a destination row is also a source row")]
-	fn a_destination_row_may_not_be_a_source_row() {
+	#[should_panic(expected = "a mutable row is also a shared row")]
+	fn a_mutable_row_may_not_be_a_shared_row() {
 		let mut data = array::from_fn::<_, 12, _>(|i| i);
 		let mut arr = StridedArray2DViewMut::without_stride(&mut data, 4, 3).unwrap();
 		arr.rows_mut([1], [0, 1]);
 	}
 
 	#[test]
-	#[should_panic(expected = "a destination row repeats")]
-	fn two_destinations_may_not_name_one_row() {
+	#[should_panic(expected = "a mutable row repeats")]
+	fn two_mutable_rows_may_not_name_one_row() {
 		let mut data = array::from_fn::<_, 12, _>(|i| i);
 		let mut arr = StridedArray2DViewMut::without_stride(&mut data, 4, 3).unwrap();
 		arr.rows_mut([2, 2], [0]);

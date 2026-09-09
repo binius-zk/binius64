@@ -46,7 +46,9 @@ pub trait EvalContext {
 
 	/// Applies `op` to every instance, reading the `srcs` registers and writing the `dsts`.
 	///
-	/// Every destination register must differ from every source register.
+	/// Every destination register must differ from every source register. Emitted bytecode
+	/// satisfies this: a gate's outputs are freshly allocated wires, and `pool_slots` reclaims
+	/// a scratch slot only after the whole gate that last read it has run.
 	fn map<const D: usize, const S: usize, F>(&mut self, dsts: [u32; D], srcs: [u32; S], op: F)
 	where
 		F: Fn([Word; S]) -> [Word; D],
@@ -246,24 +248,15 @@ impl<'a> Executor<'a> {
 		//
 		// Each arm is then a branch-free tight loop, the shape Keccak's many rotations need.
 		match variant {
-			ShiftVariant::Sll => Self::shift_each(ctx, dst, src, |w| w << amount),
-			ShiftVariant::Slr => Self::shift_each(ctx, dst, src, |w| w >> amount),
-			ShiftVariant::Sar => Self::shift_each(ctx, dst, src, |w| w.sar(amount)),
-			ShiftVariant::Rotr => Self::shift_each(ctx, dst, src, |w| w.rotr(amount)),
-			ShiftVariant::Sll32 => Self::shift_each(ctx, dst, src, |w| w.sll32(amount)),
-			ShiftVariant::Srl32 => Self::shift_each(ctx, dst, src, |w| w.srl32(amount)),
-			ShiftVariant::Sra32 => Self::shift_each(ctx, dst, src, |w| w.sra32(amount)),
-			ShiftVariant::Rotr32 => Self::shift_each(ctx, dst, src, |w| w.rotr32(amount)),
+			ShiftVariant::Sll => ctx.map([dst], [src], |[w]| [w << amount]),
+			ShiftVariant::Slr => ctx.map([dst], [src], |[w]| [w >> amount]),
+			ShiftVariant::Sar => ctx.map([dst], [src], |[w]| [w.sar(amount)]),
+			ShiftVariant::Rotr => ctx.map([dst], [src], |[w]| [w.rotr(amount)]),
+			ShiftVariant::Sll32 => ctx.map([dst], [src], |[w]| [w.sll32(amount)]),
+			ShiftVariant::Srl32 => ctx.map([dst], [src], |[w]| [w.srl32(amount)]),
+			ShiftVariant::Sra32 => ctx.map([dst], [src], |[w]| [w.sra32(amount)]),
+			ShiftVariant::Rotr32 => ctx.map([dst], [src], |[w]| [w.rotr32(amount)]),
 		}
-	}
-
-	/// Applies one fixed word-level shift across every instance.
-	///
-	/// The op is a distinct zero-sized closure per call site.
-	/// So the compiler monomorphizes this into a branch-free tight loop with the shift inlined.
-	#[inline]
-	fn shift_each<C: EvalContext>(ctx: &mut C, dst: u32, src: u32, op: impl Fn(Word) -> Word) {
-		ctx.map([dst], [src], |[w]| [op(w)]);
 	}
 
 	// Arithmetic operations
