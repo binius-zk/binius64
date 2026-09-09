@@ -320,7 +320,7 @@ mod tests {
 	use std::collections::BTreeMap;
 
 	use super::*;
-	use crate::{ir::Wire, lower::expr, pass::fusion::Stat};
+	use crate::{ir::Wire, lower::expr};
 
 	/// Test helper to create a Wire with a given ID
 	fn w(id: u32) -> Wire {
@@ -336,9 +336,8 @@ mod tests {
 		let mut cb = ConstraintBuilder::new();
 		build_constraints(&mut cb);
 
-		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
+		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, 1);
 
 		// Verify commit set
 		for &wire in expected_committed {
@@ -439,9 +438,8 @@ mod tests {
 
 		cb.imul(w(10), w(11), w(12), w(13));
 
-		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
+		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, 1);
 
 		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb;
@@ -474,9 +472,8 @@ mod tests {
 
 		cb.bmul(w(20), w(21), w(22), w(23), w(24), w(25));
 
-		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
+		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, 1);
 
 		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb;
@@ -548,9 +545,8 @@ mod tests {
 				cb.linear(shifted_expr(w(2), *s2), w(4));
 				cb.and(w(4), w(5), w(6));
 
-				let mut stat = Stat::default();
 				let mut leg = LeGraph::new(&cb);
-				crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
+				crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, 1);
 				let patches = super::build(&mut cb, &leg);
 				let mut cb2 = cb;
 				super::apply_patches(&mut cb2, patches);
@@ -883,9 +879,8 @@ mod tests {
 		// AND2: use t
 		cb.and(w(2), w(7), w(8));
 
-		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
+		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, 1);
 
 		// Sanity: y should be committed; t and z should not be
 		assert!(leg.commit_set().contains(w(3)), "y should be committed");
@@ -921,9 +916,8 @@ mod tests {
 		// IMUL: a = y ^ y ^ z; b = u; hi, lo are outputs
 		cb.imul(crate::lower::expr::xor3(w(2), w(2), w(3)), w(4), w(5), w(6));
 
-		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
+		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, 1);
 
 		let patches = super::build(&mut cb, &leg);
 		let mut cb2 = cb;
@@ -963,9 +957,8 @@ mod tests {
 		cb.linear(expr::xor2(w(3), w(4)), w(5)); // u
 		cb.imul(w(2), w(5), w(6), w(7));
 
-		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
+		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, 1);
 
 		assert!(leg.commit_set().contains(w(1)), "t_committed should be committed");
 		let patches = super::build(&mut cb, &leg);
@@ -1008,9 +1001,8 @@ mod tests {
 		// build IMUL: a,b plain; hi=hi_src; lo=lo_src
 		cb.imul(w(6), w(7), w(2), w(5));
 
-		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb);
-		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat, 1);
+		crate::pass::fusion::commit_set::run_decide_commit_set(&mut leg, 1);
 
 		assert!(leg.commit_set().contains(w(1)), "inner t should be committed");
 		let patches = super::build(&mut cb, &leg);

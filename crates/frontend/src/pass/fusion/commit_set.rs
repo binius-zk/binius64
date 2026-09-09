@@ -7,7 +7,7 @@ use petgraph::{
 	visit::{DfsPostOrder, EdgeRef},
 };
 
-use super::{LeGraph, Stat, legraph::NodeKind};
+use super::{LeGraph, legraph::NodeKind};
 
 /// Longest inline chain a definition of two or more terms may sit at the top of.
 ///
@@ -284,7 +284,7 @@ impl CommitSetCx {
 ///
 /// - `shift_slots`: how many shifts a term of the lowered constraint system may carry. A path whose
 ///   shifts do not fit in that many slots falls under the first case above.
-pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat, shift_slots: usize) {
+pub fn run_decide_commit_set(leg: &mut LeGraph, shift_slots: usize) {
 	// Context carried for each graph edge during the commit-set decision.
 	//
 	// Edge identifiers are dense integers from zero up to the edge count.
@@ -408,11 +408,6 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat, shift_slots: us
 
 				// Insert into the committed set verifying that this wire was not inserted before.
 				assert!(leg.lin_committed.insert(lin_def_wire));
-
-				stat.note_committed();
-				if too_deep {
-					stat.note_committed_linear_depth();
-				}
 			} else {
 				// Decision: inline.
 				//
@@ -431,8 +426,6 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat, shift_slots: us
 					per_edge[in_edge.id().index()] = Some(join_cx.add(in_shift));
 				}
 			}
-
-			stat.note_visited();
 		}
 	}
 }
