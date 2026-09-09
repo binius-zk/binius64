@@ -130,9 +130,7 @@ fn price(n_words: usize, log_inv_rate: usize) -> Priced {
 
 	// The claim is deferred, since that is the shape a node in a tower runs.
 	// Discharging it in-circuit would add a term tracking the inner size and drown the rate.
-	let fri = verifier
-		.fri_params()
-		.expect("the sweep runs the FRI scheme");
+	let fri = verifier.fri_params();
 	let (n_oracles, index_bits) = (fri.n_oracles(), fri.index_bits());
 	let recursive = RecursiveCircuit::build_with(verifier, Discharge::Deferred).unwrap();
 	let stat = CircuitStat::collect(recursive.circuit());

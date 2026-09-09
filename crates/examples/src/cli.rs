@@ -12,9 +12,8 @@ use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 use digest::Output;
 
 use crate::{
-	ExampleCircuit, HashSuiteType, PcsType, check_proof, check_proof_zk, create_proof,
-	create_proof_zk, prove_verify, setup_verifier_with_pcs, setup_with_pcs, setup_zk,
-	setup_zk_verifier,
+	ExampleCircuit, HashSuiteType, check_proof, check_proof_zk, create_proof, create_proof_zk,
+	prove_verify, setup, setup_verifier, setup_zk, setup_zk_verifier,
 };
 
 /// Write raw bytes to the given path, creating the parent directory if it is missing.
@@ -66,7 +65,6 @@ fn prove_with_hash_suite<H>(
 	cs: ConstraintSystem,
 	log_inv_rate: usize,
 	zk: bool,
-	pcs: PcsType,
 	message: Option<&[u8]>,
 	witness: &ValueVec,
 	output: Option<&str>,
@@ -81,7 +79,7 @@ where
 		maybe_write_proof(&proof_bytes, output)?;
 		check_proof_zk(&verifier, witness, proof_bytes, message)?;
 	} else {
-		let (verifier, prover) = setup_with_pcs::<H>(cs, log_inv_rate, pcs.into(), None)?;
+		let (verifier, prover) = setup::<H>(cs, log_inv_rate, None)?;
 		let proof_bytes = create_proof(&prover, witness)?;
 		maybe_write_proof(&proof_bytes, output)?;
 		check_proof(&verifier, witness, proof_bytes)?;
@@ -94,7 +92,6 @@ fn verify_with_hash_suite<H>(
 	cs: ConstraintSystem,
 	log_inv_rate: usize,
 	zk: bool,
-	pcs: PcsType,
 	message: Option<&[u8]>,
 	witness: &ValueVec,
 	proof_bytes: Vec<u8>,
@@ -107,7 +104,7 @@ where
 		let verifier = setup_zk_verifier::<H>(cs, log_inv_rate)?;
 		check_proof_zk(&verifier, witness, proof_bytes, message)?;
 	} else {
-		let verifier = setup_verifier_with_pcs::<H>(cs, log_inv_rate, pcs.into())?;
+		let verifier = setup_verifier::<H>(cs, log_inv_rate)?;
 		check_proof(&verifier, witness, proof_bytes)?;
 	}
 	Ok(())
@@ -303,7 +300,6 @@ where
 					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
-			.arg(PcsType::arg(true))
 			.arg(
 				Arg::new("zk")
 					.long("zk")
@@ -361,7 +357,6 @@ where
 					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
-			.arg(PcsType::arg(true))
 			.arg(
 				Arg::new("zk")
 					.long("zk")
@@ -495,7 +490,6 @@ where
 					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
-			.arg(PcsType::arg(false))
 	}
 
 	fn build_verify_subcommand() -> Command {
@@ -526,7 +520,6 @@ where
 					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
-			.arg(PcsType::arg(true))
 			.arg(
 				Arg::new("zk")
 					.long("zk")
@@ -652,9 +645,6 @@ where
 			.get_one::<HashSuiteType>("hash_suite")
 			.expect("has default value")
 			.clone();
-		let pcs = *matches
-			.get_one::<PcsType>("pcs")
-			.expect("has default value");
 		let zk = matches.get_flag("zk");
 		let sign_message = matches.get_one::<String>("sign_message").cloned();
 		let output = matches.get_one::<String>("output").cloned();
@@ -704,7 +694,6 @@ where
 					cs,
 					log_inv_rate as usize,
 					zk,
-					pcs,
 					message,
 					&witness,
 					output,
@@ -716,7 +705,6 @@ where
 					cs,
 					log_inv_rate as usize,
 					zk,
-					pcs,
 					message,
 					&witness,
 					output,
@@ -873,9 +861,6 @@ where
 			.get_one::<HashSuiteType>("hash_suite")
 			.expect("has default value")
 			.clone();
-		let pcs = *matches
-			.get_one::<PcsType>("pcs")
-			.expect("has default value");
 
 		// Load constraint system
 		let cs_load_scope = tracing::info_span!("Loading constraint system").entered();
@@ -909,22 +894,14 @@ where
 		match hash_suite {
 			HashSuiteType::Sha256 => {
 				tracing::info!("Using SHA-256 hash suite for Merkle tree");
-				let (verifier, prover) = setup_with_pcs::<StdHashSuite>(
-					cs,
-					log_inv_rate as usize,
-					pcs.into(),
-					maybe_key_collection,
-				)?;
+				let (verifier, prover) =
+					setup::<StdHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, &witness)?;
 			}
 			HashSuiteType::Blake3 => {
 				tracing::info!("Using Blake3 hash suite for Merkle tree");
-				let (verifier, prover) = setup_with_pcs::<Blake3HashSuite>(
-					cs,
-					log_inv_rate as usize,
-					pcs.into(),
-					maybe_key_collection,
-				)?;
+				let (verifier, prover) =
+					setup::<Blake3HashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, &witness)?;
 			}
 		};
@@ -943,9 +920,6 @@ where
 			.get_one::<HashSuiteType>("hash_suite")
 			.expect("has default value")
 			.clone();
-		let pcs = *matches
-			.get_one::<PcsType>("pcs")
-			.expect("has default value");
 		let zk = matches.get_flag("zk");
 		let sign_message = matches.get_one::<String>("sign_message").cloned();
 		let message = sign_message.as_deref().map(str::as_bytes);
@@ -981,7 +955,6 @@ where
 					cs,
 					log_inv_rate as usize,
 					zk,
-					pcs,
 					message,
 					&witness,
 					proof_bytes,
@@ -993,7 +966,6 @@ where
 					cs,
 					log_inv_rate as usize,
 					zk,
-					pcs,
 					message,
 					&witness,
 					proof_bytes,

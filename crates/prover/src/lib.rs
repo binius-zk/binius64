@@ -19,7 +19,6 @@
 //!   [`Prover::prove`] with witness data
 //! - [`IOPProver`] - Core IOP proving logic, independent of the compilation strategy
 //! - [`KeyCollection`] - Precomputed keys for shift reduction (can be serialized for reuse)
-//! - [`PcsProverCompiler`] - The commitment scheme's prover parameters, mirrored from the verifier
 //!
 //! # Related crates
 //!
@@ -32,7 +31,6 @@
 pub mod bit_matrix;
 mod error;
 pub mod fold_word;
-mod pcs_compiler;
 pub mod protocols;
 mod prove;
 pub mod ring_switch;
@@ -42,6 +40,5 @@ pub use binius_field::arch::OptimalPackedB128;
 pub use binius_hash as hash;
 pub use binius_iop_prover::{fri, merkle_tree};
 pub use error::*;
-pub use pcs_compiler::*;
 pub use protocols::shift::KeyCollection;
 pub use prove::*;

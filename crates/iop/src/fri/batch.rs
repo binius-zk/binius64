@@ -3,7 +3,6 @@
 //! Proximity-test oracles, which recover a folded value by opening the cosets it folds.
 //!
 //! FRI drives them round by round.
-//! A WHIR level drives one of them once, since its whole fold is a single round.
 
 use std::iter;
 

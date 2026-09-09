@@ -348,7 +348,6 @@ impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 	/// A prover that wants to re-roll whatever challenge comes next must redo this search first.
 	/// Every term derived from that challenge therefore gains `bits` of soundness.
 	/// That is how a protocol buys back a term no query count can touch.
-	/// `binius_iop::soundness::Grinding` is where that credit enters a security budget.
 	///
 	/// The search is the obvious one: try nonces in order until one lands.
 	/// A trial is one challenger observation plus one sample, and lands with probability `2^-bits`.

@@ -17,7 +17,6 @@
 //! - [`Verifier`] - Main verification interface; call [`Verifier::setup`] with a constraint system,
 //!   then [`Verifier::verify`] with a proof and public inputs
 //! - [`IOPVerifier`] - Core IOP verification logic, independent of the compilation strategy
-//! - [`Pcs`] - Which polynomial commitment scheme opens the trace, chosen at setup
 //! - [`Error`] - Error type returned when proof verification fails
 //!
 //! # Design philosophy
@@ -36,8 +35,6 @@
 
 pub mod config;
 mod error;
-mod pcs;
-mod pcs_compiler;
 pub mod protocols;
 pub mod reduction;
 pub mod ring_switch;
@@ -46,9 +43,7 @@ mod verify;
 pub mod zk_config;
 
 pub use binius_hash as hash;
-pub use binius_iop::{fri, merkle_tree, whir};
+pub use binius_iop::{fri, merkle_tree};
 pub use binius_transcript as transcript;
 pub use error::*;
-pub use pcs::*;
-pub use pcs_compiler::*;
 pub use verify::*;
