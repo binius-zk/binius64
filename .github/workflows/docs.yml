@@ -30,8 +30,6 @@ jobs:
           cargo doc --no-deps --all-features
           # Create redirect to main crate (binius_core) - using relative path for GitHub Pages compatibility
           echo '<html><head><meta http-equiv="refresh" content="0; url=binius_core/"></head><body>Redirecting to <a href="binius_core/">binius_core</a></body></html>' > target/doc/index.html
-        env:
-          RUSTFLAGS: "-C target-cpu=native"
 
       - name: Upload Documentation Artifact
         uses: actions/upload-pages-artifact@v5

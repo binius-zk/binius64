@@ -53,8 +53,9 @@ $ prek run --all-files
 implementations of `GF(2^128)` (and related) arithmetic, selected at compile time with
 `#[cfg(target_arch = ...)]` and `#[cfg(target_feature = ...)]`. Code on an *inactive* arch/feature
 path is never type-checked by your native build, so it is easy to break the `aarch64` paths from an
-`x86_64` host (or vice versa) and not notice until CI fails — CI builds `x86_64` (both portable and
-`-Ctarget-cpu=native`), `aarch64`, and `wasm32`.
+`x86_64` host (or vice versa) and not notice until CI fails — CI builds `x86_64` (portable, a pinned
+CLMUL/AVX2 set that it also runs, and a check-only pass over the wider AVX-512/GFNI/VAES set),
+`aarch64`, and `wasm32`.
 
 When you touch these crates, cross-compile them for the target(s) you are not running natively.
 You do **not** need an emulator — compiling is enough to type-check the inactive paths.

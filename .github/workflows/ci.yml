@@ -66,17 +66,27 @@ jobs:
           # the x86_64 leg. The other legs skip them with nextest's run-layer filter (`-E`) rather
           # than `cargo --exclude`: keeping the build set at `--workspace` matches the Compile step's
           # feature unification, so the dependency tree is not recompiled. See BINIUS-151.
+          #
+          # The feature-enabled legs pin an explicit target-feature set rather than asking for
+          # `-Ctarget-cpu=native`. GitHub's runner fleet is heterogeneous, so `native` makes the
+          # generated code — and therefore which `cfg(target_feature)` paths CI compiles and runs
+          # — a property of whichever SKU the job landed on, and it makes every artifact
+          # unshareable between SKUs. The sets below are the ones every SKU in the fleet has:
+          # AES-NI and PCLMULQDQ are Westmere-era, AVX2 (`x86-64-v3`) is Haswell-era, and Armv8
+          # AES/SHA2 are present on every arm64 runner. Wider x86_64 features — AVX-512, GFNI,
+          # VAES, VPCLMULQDQ, SHA-NI — are only on some SKUs, so they are type-checked by the
+          # check-only clippy pass below instead of executed.
           - name: x86_64-portable
             runner: ubuntu-26.04
             rustflags: # portable
             test_args: "-E 'not package(binius-circuits)'"
           - name: x86_64
             runner: ubuntu-26.04
-            rustflags: "-Ctarget-cpu=native"
+            rustflags: "-Ctarget-cpu=x86-64-v3 -Ctarget-feature=+pclmulqdq,+aes"
             test_args: ""
           - name: arm64
             runner: ubuntu-26.04-arm
-            rustflags: "-Ctarget-cpu=native"
+            rustflags: "-Ctarget-feature=+neon,+aes,+sha2"
             test_args: "-E 'not package(binius-circuits)'"
     name: rust-checks-${{ matrix.arch.name }}
     # This job also runs on pushes to main, where it stops after Compile and exists only to write a
@@ -91,8 +101,8 @@ jobs:
     runs-on: ${{ matrix.arch.runner }}
     env:
       # Link with lld instead of the default ld.bfd: the rust-checks build links many test and
-      # example binaries, where bfd is a serial bottleneck. Appended to the per-arch flags
-      # (target-cpu). lld is installed below.
+      # example binaries, where bfd is a serial bottleneck. Appended to the per-arch target
+      # features. lld is installed below.
       RUSTFLAGS: "${{ matrix.arch.rustflags }} -Clink-arg=-fuse-ld=lld"
     steps:
       - name: Checkout Repository
@@ -132,6 +142,26 @@ jobs:
       - name: Run doctests
         if: github.event_name != 'push'
         run: cargo test --doc --workspace
+      # The AVX-512, GFNI, VAES, VPCLMULQDQ and SHA-NI paths are compiled nowhere else in CI: the
+      # x86_64 leg's pinned features stop at what every runner is guaranteed to have, so nothing
+      # above type-checks them. Clippy is check-only, so it compiles those `cfg(target_feature)`
+      # branches without ever running the instructions. Only the three crates with
+      # architecture-specific code are checked; the rest of the workspace is feature-agnostic.
+      # Executing these paths needs a runner that has the features, and is not attempted here.
+      #
+      # `--target` is load-bearing rather than redundant. Without it cargo applies RUSTFLAGS to
+      # build scripts and proc macros as well, which it then executes on the runner — and those
+      # die with SIGILL the moment the compiler uses an instruction the runner lacks. Naming the
+      # target explicitly splits host units from target units, leaving the host ones on the
+      # default feature set.
+      - name: Run clippy with the wide x86_64 feature set
+        if: github.event_name != 'push' && matrix.arch.name == 'x86_64'
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Ctarget-feature=+pclmulqdq,+vpclmulqdq,+aes,+vaes,+sha,+gfni,+avx512f,+avx512bw -Clink-arg=-fuse-ld=lld"
+        run: >-
+          cargo clippy --target x86_64-unknown-linux-gnu
+          -p binius-field -p binius-hash-prover -p binius-arith-bench
+          --all-targets -- -D warnings
 
   unused-deps:
     name: unused-deps
