@@ -5,15 +5,13 @@
 //!
 //! See [`ReedSolomonCode`] for details.
 
-use std::{iter, marker::PhantomData};
+use std::marker::PhantomData;
 
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use getset::CopyGetters;
 
-use super::{
-	FieldBuffer, FieldSlice, FieldSliceMut, binary_subspace::BinarySubspace, ntt::AdditiveNTT,
-};
+use super::{FieldBuffer, FieldSlice, binary_subspace::BinarySubspace, ntt::AdditiveNTT};
 use crate::{
 	bit_reverse::bit_reverse_packed,
 	ntt::{DomainContext, domain_context::GaoMateerOnTheFly},
@@ -151,101 +149,18 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		ntt.forward_transform(output.as_mut_view(), self.log_inv_rate, log_batch_size);
 		output
 	}
-
-	/// The adjoint of the interleaved encoder, taking a codeword weight back to a message weight.
-	///
-	/// The encoder is a linear map, so it has a transpose.
-	/// Writing `E` for the encoder, this applies `E^T`, which is defined by
-	///
-	/// ```text
-	///     <E^T a, m> = <a, E m>
-	/// ```
-	///
-	/// for every weight `a` over codeword positions and every message `m`.
-	///
-	/// A caller reaches for this holding a sparse weight over codeword positions.
-	/// What it wants back is the message weight that sparse weight induces.
-	/// Expanding one generator row per nonzero costs `2^log_dim` per row.
-	/// This costs one encode however many nonzeros there are.
-	///
-	/// # Algorithm
-	///
-	/// The encoder is three steps, so its transpose is those three steps reversed:
-	///
-	/// ```text
-	///     encode   =  transform  after  repeat  after  bit-reverse
-	///     adjoint  =  bit-reverse  after  sum-of-repeats  after  transposed transform
-	/// ```
-	///
-	/// Bit reversal is a permutation that is its own inverse, so it transposes to itself.
-	/// Repeating a message `2^log_inv_rate` times transposes to summing those repeats back down.
-	///
-	/// ## Preconditions
-	///
-	/// * `weights.log_len()` must equal `log_len() + log_batch_size`.
-	/// * The NTT subspace must match the code's subspace.
-	pub fn encode_batch_transpose<P, NTT, A>(
-		&self,
-		ntt: &NTT,
-		mut weights: FieldSliceMut<'_, P>,
-		log_batch_size: usize,
-		alloc: &A,
-	) -> FieldBuffer<P, A::Vec<P>>
-	where
-		P: PackedField<Scalar = F>,
-		NTT: AdditiveNTT<Field = F> + Sync,
-		A: Allocator,
-	{
-		assert_eq!(
-			ntt.subspace(self.log_len()),
-			self.subspace(),
-			"precondition: NTT subspace must match code subspace"
-		);
-		assert_eq!(
-			weights.log_len(),
-			self.log_len() + log_batch_size,
-			"precondition: weights.log_len() must equal log_len() + log_batch_size"
-		);
-
-		let _scope = tracing::trace_span!(
-			"Reed-Solomon encode transpose",
-			log_len = self.log_len(),
-			log_batch_size = log_batch_size,
-			symbol_bits = F::N_BITS,
-		)
-		.entered();
-
-		// The transform runs at the same skips the encoder uses, with its layers reversed.
-		ntt.transpose_transform(weights.as_mut_view(), self.log_inv_rate, log_batch_size);
-
-		// The encoder repeated the message to fill the codeword, so the adjoint sums the repeats.
-		let log_msg_len = self.log_dim() + log_batch_size;
-		let mut folded = FieldBuffer::zeros_in(alloc, log_msg_len);
-		for repeat in weights.chunks(log_msg_len) {
-			for (accumulator, &word) in iter::zip(folded.as_mut(), repeat.as_ref()) {
-				*accumulator += word;
-			}
-		}
-
-		// The encoder permuted the message before repeating it.
-		// A bit reversal is its own transpose, so the same permutation undoes it here.
-		bit_reverse_packed(folded.as_mut_view());
-		folded
-	}
 }
 
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{BinaryField, Ghash128b, PackedField, PackedGhash1x128b, PackedGhash4x128b};
-	use proptest::prelude::*;
+	use binius_field::{BinaryField, PackedField, PackedGhash1x128b, PackedGhash4x128b};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
 	use crate::{
 		FieldBuffer,
 		bit_reverse::reverse_bits,
-		inner_product::inner_product,
 		ntt::{NeighborsLastReference, domain_context::GaoMateerPreExpanded},
 		test_utils::random_field_buffer,
 	};
@@ -381,81 +296,5 @@ mod tests {
 		test_lift_duplicate_identity_helper::<PackedGhash1x128b>(0, 4, 3);
 		// Same lifts with a wider packing width.
 		test_lift_duplicate_identity_helper::<PackedGhash4x128b>(4, 8, 2);
-	}
-
-	/// Checks the adjoint identity at one shape, over the packing `P`.
-	fn assert_encode_adjoint<P: PackedField>(
-		log_dim: usize,
-		log_inv_rate: usize,
-		log_batch_size: usize,
-		seed: u64,
-	) where
-		P::Scalar: BinaryField,
-	{
-		let code = ReedSolomonCode::<P::Scalar>::new(log_dim, log_inv_rate);
-		let domain_context = GaoMateerPreExpanded::<P::Scalar>::generate(code.log_len());
-		let ntt = NeighborsLastReference {
-			domain_context: &domain_context,
-		};
-		let mut rng = StdRng::seed_from_u64(seed);
-
-		// `a` weighs codeword positions, `m` is a message the encoder could be handed.
-		let a = random_field_buffer::<P>(&mut rng, code.log_len() + log_batch_size);
-		let m = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-
-		// Left side: pair the message with the weight the codeword weight induces on it.
-		// The adjoint runs in place, so it gets a copy and `a` stays readable below.
-		let mut scratch = a.clone();
-		let induced = code.encode_batch_transpose(
-			&ntt,
-			scratch.as_mut_view(),
-			log_batch_size,
-			&GlobalAllocator,
-		);
-		let left = inner_product(induced.iter_scalars(), m.iter_scalars());
-
-		// Right side: pair the codeword weight with the encoding itself.
-		let encoded = code.encode_batch(&ntt, m.as_view(), log_batch_size, &GlobalAllocator);
-		let right = inner_product(a.iter_scalars(), encoded.iter_scalars());
-
-		assert_eq!(left, right, "log_dim={log_dim} rate={log_inv_rate} batch={log_batch_size}");
-	}
-
-	proptest! {
-		/// The adjoint identity is the whole specification of the transposed encoder.
-		///
-		/// It is basis free, so one check covers an error in any of the three steps.
-		/// Those are the layer order, the direction the repeats are summed, and the permutation.
-		#[test]
-		fn transposed_encoding_is_the_adjoint_of_encoding(seed: u64) {
-			// A dimension of 0 is a one-element message, the smallest a code can carry.
-			// A batch of 0 is the single-lane case the induced basis uses.
-			for log_dim in 0..6 {
-				for log_inv_rate in 1..4 {
-					for log_batch_size in 0..3 {
-						// One lane per word and four lanes per word take different chunk paths.
-						assert_encode_adjoint::<PackedGhash1x128b>(
-							log_dim, log_inv_rate, log_batch_size, seed,
-						);
-						assert_encode_adjoint::<PackedGhash4x128b>(
-							log_dim, log_inv_rate, log_batch_size, seed,
-						);
-					}
-				}
-			}
-		}
-	}
-
-	#[test]
-	#[should_panic(expected = "weights.log_len() must equal log_len() + log_batch_size")]
-	fn transposed_encoding_rejects_a_weight_of_the_wrong_width() {
-		let code = ReedSolomonCode::<Ghash128b>::new(3, 1);
-		let domain_context = GaoMateerPreExpanded::generate(code.log_len());
-		let ntt = NeighborsLastReference {
-			domain_context: &domain_context,
-		};
-		// The codeword has 2^4 positions, so a weight of 2^3 cannot be one over them.
-		let mut weights = FieldBuffer::<PackedGhash1x128b>::zeros(3);
-		code.encode_batch_transpose(&ntt, weights.as_mut_view(), 0, &GlobalAllocator);
 	}
 }
