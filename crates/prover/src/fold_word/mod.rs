@@ -20,19 +20,23 @@
 //! | the bit axis, the columns | one per bit position | one element per word |
 //! | the word axis, the rows | an equality tensor over the rows | one element per bit position |
 //!
-//! Both use the [Method of Four Russians]: group eight weights, precompute all 256 of their subset
-//! sums, then let one byte of the matrix index eight positions' whole contribution at once.
+//! Both can be computed by the [Method of Four Russians]: group eight weights, precompute all 256
+//! of their subset sums, then let one byte of the matrix index eight positions' whole contribution
+//! at once. The two directions differ in one step. Folding the bit axis reads a byte of the word
+//! directly. Folding the word axis first transposes a group of eight rows, so that one byte carries
+//! eight rows' bits at a single column.
 //!
-//! The two directions differ in one step. Folding the bit axis reads a byte of the word directly.
-//! Folding the word axis first transposes a group of eight rows, so that one byte carries eight
-//! rows' bits at a single column.
+//! The bit axis has a second route, which the kernel module picks where the target supports it: a
+//! fold is a GF(2)-linear map, so it is a bit matrix, and a vector instruction can apply that
+//! matrix directly with no tables at all.
 //!
-//! Each axis is folded through a folder that owns its lookup tables. Building the folder is what
-//! costs, so a caller folding several lists against one point builds it once and reuses it.
+//! Each axis is folded through a folder that owns its kernel. Building the folder is what costs, so
+//! a caller folding several lists against one point builds it once and reuses it.
 //!
 //! [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
 
 mod bit_axis;
+mod kernel;
 mod lookup;
 mod output;
 mod word_axis;
