@@ -347,9 +347,17 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckPr
 /// Returns [`ProveZKOutput`] containing the main polynomial's multilinear evaluations
 /// and the round challenges.
 ///
+/// # Pre-conditions
+///
+/// * The mask's univariate degree must be at least the degree of the main prover's round
+///   polynomials.
+/// * The two round polynomials are added coefficient by coefficient, so a shorter mask leaves the
+///   high-degree coefficients uncovered and the protocol is no longer hiding.
+///
 /// # Panics
 ///
 /// Panics if the main prover emits more than one round polynomial.
+/// Panics if the mask's round polynomial is shorter than the main prover's.
 pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 	mut main_prover: impl MleCheckProver<F>,
 	mask: Mask<P, Data>,
@@ -384,6 +392,21 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 		let mask_round_coeffs = mask_round_coeffs_vec
 			.pop()
 			.expect("mask prover has 1 claim");
+
+		// The batching below pads the shorter polynomial with zeros, so any coefficient beyond
+		// the mask's degree would reach the channel exactly as the witness produced it.
+		//
+		//     main   : [a_0, a_1, a_2]
+		//     mask   : [b_0, b_1]      -> padded to [b_0, b_1, 0]
+		//     batched: [a_0 + c*b_0, a_1 + c*b_1, a_2]
+		//                                         ^^^ unmasked
+		assert!(
+			mask_round_coeffs.0.len() >= main_round_coeffs.0.len(),
+			"the mask round polynomial has {} coefficients against the main round polynomial's \
+			 {}, so the excess would be sent unmasked",
+			mask_round_coeffs.0.len(),
+			main_round_coeffs.0.len()
+		);
 
 		// Batch the round coefficients: batched = main + batch_challenge * mask
 		let batched_round_coeffs = main_round_coeffs + &(mask_round_coeffs * batch_challenge);
@@ -540,11 +563,8 @@ mod tests {
 		assert_eq!(output.multilinear_evals[0], expected_eval);
 	}
 
-	#[test]
-	fn test_prove() {
+	fn test_prove_with_degrees(main_degree: usize, mask_degree: usize) {
 		let n_vars = 6;
-		let main_degree = 2;
-		let mask_degree = 2;
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Generate random main mask buffer (using Mask as a simple MleCheckProver for testing)
@@ -608,6 +628,38 @@ mod tests {
 		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.as_view());
 		let expected_mask_eval = evaluate_mask_polynomial(&zk_mask, &challenge_point);
 		assert_eq!(mask_eval, expected_mask_eval);
+	}
+
+	#[test]
+	fn test_prove() {
+		// Both round polynomials carry three coefficients, so every one of them is covered.
+		test_prove_with_degrees(2, 2);
+	}
+
+	#[test]
+	fn test_prove_mask_above_main_degree() {
+		// A mask that overshoots is still hiding.
+		//
+		//     main   : [a_0, a_1]
+		//     mask   : [b_0, b_1, b_2]
+		//     batched: [a_0 + c*b_0, a_1 + c*b_1, c*b_2]
+		//
+		// The verifier is told the batched degree, so the proof still checks out.
+		test_prove_with_degrees(1, 2);
+	}
+
+	#[test]
+	#[should_panic(expected = "would be sent unmasked")]
+	fn test_prove_mask_below_main_degree() {
+		// A mask one degree short leaves the top coefficient of every round in the clear.
+		//
+		//     main   : [a_0, a_1, a_2]
+		//     mask   : [b_0, b_1]      -> zero-padded to [b_0, b_1, 0]
+		//     batched: [a_0 + c*b_0, a_1 + c*b_1, a_2]
+		//                                         ^^^ witness-dependent, unmasked
+		//
+		// The transcript truncates the constant term, so this coefficient is sent every round.
+		test_prove_with_degrees(2, 1);
 	}
 
 	#[test]
