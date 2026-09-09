@@ -126,18 +126,24 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	where
 		T: Send + Sync,
 	{
-		let data = SendPtr(self.data);
-		self.cols
-			.clone()
+		let Self {
+			data,
+			data_width,
+			height,
+			cols,
+			..
+		} = self;
+		let data = SendPtr(data);
+
+		cols.clone()
 			.into_par_iter()
 			.step_by(stride)
 			.map(move |start| {
-				let end = (start + stride).min(self.cols.end);
-				// We are setting the same lifetime as `self` captures.
+				let end = (start + stride).min(cols.end);
 				Self {
 					data: data.as_ptr(),
-					data_width: self.data_width,
-					height: self.height,
+					data_width,
+					height,
 					cols: start..end,
 					_marker: PhantomData,
 				}
