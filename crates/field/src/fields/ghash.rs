@@ -51,23 +51,6 @@ impl Ghash128b {
 	pub const fn new(value: u128) -> Self {
 		Self(M128::from_u128(value))
 	}
-
-	#[inline]
-	pub fn mul_inv_x(self) -> Self {
-		// These scalar bit manipulations are simplest over `u128`; the underlier is `M128`.
-		let val: u128 = self.to_underlier().into();
-		let shifted = val >> 1;
-
-		// If low bit was set, we need to add compensation for the remainder
-		// When dividing by x with remainder 1, we add x^(-1) = x^127 to the result
-		// Since x^128 ≡ x^7 + x^2 + x + 1, we have x^127 ≡ x^6 + x + 1
-		// So 0x43 = x^6 + x + 1 (bits 6, 1, 0) and we set bit 127 for the x^127 term
-		// All 1s if the bottom bit is set, all 0s otherwise
-		let mask = (val & 1).wrapping_neg();
-		let result = shifted ^ (((1u128 << 127) | 0x43) & mask);
-
-		Self::new(result)
-	}
 }
 
 impl MulX for Ghash128b {
@@ -357,10 +340,7 @@ mod tests {
 	use proptest::{prelude::any, proptest};
 
 	use super::*;
-	use crate::{
-		WideMul, arithmetic_traits::InvertOrZero,
-		binary_field::tests::is_binary_field_valid_generator,
-	};
+	use crate::{WideMul, binary_field::tests::is_binary_field_valid_generator};
 
 	#[test]
 	fn test_ghash_mul() {
@@ -457,33 +437,6 @@ mod tests {
 			assert_eq!(
 				mul_x_result, regular_mul_result,
 				"mul_x and regular multiplication by 2 differ for value {:#x}",
-				value
-			);
-		}
-	}
-
-	#[test]
-	fn test_mul_inv_x() {
-		let test_cases = [
-			0x0,                                    // Zero
-			0x1,                                    // One
-			0x2,                                    // Two
-			0x1u128,                                // Low bit set
-			0x3u128,                                // Two lowest bits set
-			0xffffffffffffffffffffffffffffffffu128, // All bits set
-			0x87u128,                               // GHASH reduction polynomial
-			0x21ac73a21d46a21badd6747bcdfc5d4d,     // Random value
-		];
-
-		for &value in &test_cases {
-			let field_val = Ghash128b::from(value);
-			let mul_inv_x_result = field_val.mul_inv_x();
-			// Safety: 2 is a non-zero field element.
-			let regular_mul_result = field_val * unsafe { Ghash128b::new(2u128).invert() };
-
-			assert_eq!(
-				mul_inv_x_result, regular_mul_result,
-				"mul_inv_x and regular multiplication by 2 differ for value {:#x}",
 				value
 			);
 		}
