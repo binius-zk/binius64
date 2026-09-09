@@ -134,6 +134,23 @@ pub struct ProverMerkleCommitment<Committed> {
 	log_leaf_size: usize,
 }
 
+impl<Committed> ProverMerkleCommitment<Committed> {
+	/// Wraps a tree committed with [`MerkleTreeProver::commit_field_buffer`] (or
+	/// `commit_iterated`) into the handle the channel opens with.
+	///
+	/// `depth` is the commitment's tree depth and `log_leaf_size` the base-2 logarithm of the
+	/// leaf size the tree was committed at. A prover that has to drop a committed tree between
+	/// sending its root and opening it commits the same data again with the same
+	/// [`MerkleTreeProver`] and wraps the result here; the root it gets back is the one it sent.
+	pub const fn new(committed: Committed, depth: usize, log_leaf_size: usize) -> Self {
+		Self {
+			committed,
+			depth,
+			log_leaf_size,
+		}
+	}
+}
+
 impl<F, T, Challenger_, H, A> IPProverChannel<F>
 	for ProverMerkleTranscriptChannel<T, Challenger_, F, H, A>
 where
@@ -223,11 +240,7 @@ where
 			.borrow_mut()
 			.message()
 			.write(&commitment.root);
-		ProverMerkleCommitment {
-			committed,
-			depth: commitment.depth,
-			log_leaf_size,
-		}
+		ProverMerkleCommitment::new(committed, commitment.depth, log_leaf_size)
 	}
 
 	fn send_openings<P: PackedField<Scalar = F>>(
@@ -294,9 +307,10 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::{
-		GrindingProverChannel, IPProverChannel, MerkleIPProverChannel,
+		GrindingProverChannel, IPProverChannel, MerkleIPProverChannel, ProverMerkleCommitment,
 		ProverMerkleTranscriptChannel,
 	};
+	use crate::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 	type P = PackedGhash2x128b;
@@ -354,6 +368,50 @@ mod tests {
 		assert_eq!(vector, scalars);
 
 		verifier_channel.into_transcript().finalize().unwrap();
+	}
+
+	#[test]
+	fn a_commitment_rebuilt_after_it_was_sent_opens_like_the_original() {
+		// Invariant: a commitment is a function of the data and the leaf size alone, so a handle
+		// wrapped around a tree committed again after the sent one was dropped opens to the same
+		// bytes, and the root it comes with is the root the verifier reads.
+		//
+		// Fixture state: one committed buffer, opened at the same sampled indices through the
+		// sent handle and through a rebuilt one.
+		let mut rng = StdRng::seed_from_u64(0);
+		let scalars = random_scalars::<B128>(&mut rng, 1 << LOG_LEN);
+		let data = FieldBuffer::<P, _>::from_values(&scalars);
+		let rebuild = || {
+			let (commitment, tree) = BinaryMerkleTreeProver::<B128, StdHashSuite>::new()
+				.commit_field_buffer(data.as_view(), LOG_LEAF_SIZE);
+			(commitment.root, ProverMerkleCommitment::new(tree, commitment.depth, LOG_LEAF_SIZE))
+		};
+
+		let open_through = |rebuilt: bool| {
+			let mut prover_channel =
+				ProverChannel::new(ProverTranscript::new(StdChallenger::default()));
+			let sent = prover_channel.send_merkle_commitment(data.as_view(), LEAF_SIZE);
+			let commitment = if rebuilt {
+				drop(sent);
+				rebuild().1
+			} else {
+				sent
+			};
+			let indices = sample_indices(&mut prover_channel);
+			prover_channel.send_openings(&commitment, data.as_view(), &indices);
+			prover_channel.into_transcript().finalize()
+		};
+		assert_eq!(open_through(true), open_through(false));
+
+		let mut prover_channel =
+			ProverChannel::new(ProverTranscript::new(StdChallenger::default()));
+		prover_channel.send_merkle_commitment(data.as_view(), LEAF_SIZE);
+		let transcript = prover_channel.into_transcript().into_verifier();
+		let mut verifier_channel = VerifierChannel::new(transcript);
+		let received = verifier_channel
+			.recv_merkle_commitment(LEAF_SIZE, DEPTH)
+			.unwrap();
+		assert_eq!(received.commitment.root, rebuild().0);
 	}
 
 	#[test]
