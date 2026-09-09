@@ -61,12 +61,6 @@ jobs:
       fail-fast: false
       matrix:
         arch:
-          # binius-circuits tests are architecture-independent (the crate depends only on
-          # binius-frontend + binius-core, which contain no arch-specific code), so they run only on
-          # the x86_64 leg. The other legs skip them with nextest's run-layer filter (`-E`) rather
-          # than `cargo --exclude`: keeping the build set at `--workspace` matches the Compile step's
-          # feature unification, so the dependency tree is not recompiled. See BINIUS-151.
-          #
           # The feature-enabled legs pin an explicit target-feature set rather than asking for
           # `-Ctarget-cpu=native`. GitHub's runner fleet is heterogeneous, so `native` makes the
           # generated code — and therefore which `cfg(target_feature)` paths CI compiles and runs
@@ -76,18 +70,20 @@ jobs:
           # AES/SHA2 are present on every arm64 runner. Wider x86_64 features — AVX-512, GFNI,
           # VAES, VPCLMULQDQ, SHA-NI — are only on some SKUs, so they are type-checked by the
           # check-only clippy pass below instead of executed.
+          #
+          # `arch_packages_on_pr` marks a leg that narrows to the architecture-specific packages on
+          # a pull request. See `PACKAGES` below.
           - name: x86_64-portable
             runner: ubuntu-26.04
             rustflags: # portable
-            test_args: "-E 'not package(binius-circuits)'"
+            arch_packages_on_pr: true
           - name: x86_64
             runner: ubuntu-26.04
             rustflags: "-Ctarget-cpu=x86-64-v3 -Ctarget-feature=+pclmulqdq,+aes"
-            test_args: ""
           - name: arm64
             runner: ubuntu-26.04-arm
             rustflags: "-Ctarget-feature=+neon,+aes,+sha2"
-            test_args: "-E 'not package(binius-circuits)'"
+            arch_packages_on_pr: true
     name: rust-checks-${{ matrix.arch.name }}
     # This job also runs on pushes to main, where it stops after Compile and exists only to write a
     # cache entry that pull-request and merge-queue runs can restore. The verification steps below
@@ -104,6 +100,20 @@ jobs:
       # example binaries, where bfd is a serial bottleneck. Appended to the per-arch target
       # features. lld is installed below.
       RUSTFLAGS: "${{ matrix.arch.rustflags }} -Clink-arg=-fuse-ld=lld"
+      # Package selection for the build, test and doctest steps: either the packages that contain
+      # architecture-specific code, or the whole workspace. A pull request takes the narrow set on
+      # the two secondary legs — the rest of the workspace is architecture-independent, so building
+      # and testing it three times asks the same question three times. Everything else — the x86_64
+      # leg, the merge queue, the push warmers — takes the workspace, so the whole of it is still
+      # built and tested on all three legs before anything reaches main.
+      #
+      # The `field` SIMD paths are also exercised transitively by the `prover` and `math` tests,
+      # which the narrow set drops. A SIMD bug that `field`'s own tests miss therefore bounces a
+      # merge rather than failing the pull request.
+      #
+      # Clippy below stays on the whole workspace on every leg and every event: it is the cheap way
+      # to type-check the arch-gated code under this leg's cfg.
+      PACKAGES: ${{ github.event_name == 'pull_request' && matrix.arch.arch_packages_on_pr && '-p binius-field -p binius-hash-prover -p binius-arith-bench' || '--workspace' }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -125,7 +135,7 @@ jobs:
       # build. The demo circuits are not among the examples: they are subcommands of the
       # `binius-examples` binary, which `--bins` builds here and `circuits-snapshot` runs.
       - name: Compile
-        run: cargo build --workspace --lib --bins --tests
+        run: cargo build $PACKAGES --lib --bins --tests
       - name: Run platform diagnostics
         if: github.event_name != 'push'
         run: cargo test -p binius-utils --features platform-diagnostics test_platform_diagnostics -- --nocapture
@@ -137,11 +147,11 @@ jobs:
       # here builds every one of them, paying in this step the cost Compile above declines to pay.
       - name: Run tests
         if: github.event_name != 'push'
-        run: cargo nextest run --workspace --lib --bins --tests --no-fail-fast ${{ matrix.arch.test_args }}
+        run: cargo nextest run $PACKAGES --lib --bins --tests --no-fail-fast
       # Must run doctests separately, see https://github.com/nextest-rs/nextest/issues/16
       - name: Run doctests
         if: github.event_name != 'push'
-        run: cargo test --doc --workspace
+        run: cargo test --doc $PACKAGES
       # The AVX-512, GFNI, VAES, VPCLMULQDQ and SHA-NI paths are compiled nowhere else in CI: the
       # x86_64 leg's pinned features stop at what every runner is guaranteed to have, so nothing
       # above type-checks them. Clippy is check-only, so it compiles those `cfg(target_feature)`
