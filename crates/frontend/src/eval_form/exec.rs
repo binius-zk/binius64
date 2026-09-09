@@ -467,7 +467,7 @@ impl<'a> Executor<'a> {
 	// So a multi-byte value costs a single bounds check, not one per byte.
 	//
 	// This is the innermost decode of witness filling.
-	fn read_u8(&mut self) -> u8 {
+	const fn read_u8(&mut self) -> u8 {
 		let val = self.bytecode[self.pc];
 		self.pc += 1;
 		val

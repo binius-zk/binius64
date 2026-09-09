@@ -125,6 +125,7 @@ tuple_array_conversions = "allow"
 transmute_undefined_repr = "allow"
 cognitive_complexity = "allow"
 use_self = "allow"
+chunks_exact_to_as_chunks = "allow"
 
 [workspace.metadata.typos]
 default.extend-words = { "typ" = "typ", "Toom" = "Toom", "inouts" = "inouts" }

@@ -443,7 +443,6 @@ impl_divisible_memcast!(
 mod tests {
 	use binius_utils::bytes::BytesMut;
 	use proptest::{arbitrary::any, proptest};
-	use rand::prelude::*;
 
 	use super::*;
 

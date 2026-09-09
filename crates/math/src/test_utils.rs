@@ -90,7 +90,6 @@ pub fn index_to_hypercube_point<F: Field>(n_vars: usize, index: usize) -> Vec<F>
 mod tests {
 	use binius_field::Ghash128b as B128;
 	use proptest::prelude::*;
-	use rand::prelude::*;
 
 	use super::*;
 

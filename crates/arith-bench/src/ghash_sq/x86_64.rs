@@ -305,8 +305,6 @@ mod clmul_tests {
 	target_feature = "sse2"
 ))]
 mod tests {
-	use std::arch::x86_64::*;
-
 	use proptest::prelude::*;
 
 	use super::*;

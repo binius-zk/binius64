@@ -152,7 +152,7 @@ impl CircuitM4 {
 	}
 
 	/// Checks that one call names the callee instance the invocations counted so far leave it.
-	fn check_call_instance(
+	const fn check_call_instance(
 		chip_index: Option<usize>,
 		call_index: usize,
 		call: &ChipCall,

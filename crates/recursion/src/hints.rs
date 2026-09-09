@@ -14,7 +14,7 @@ use binius_field::{Ghash128b as B128, arithmetic_traits::InvertOrZero};
 use binius_frontend::Hint;
 
 /// Reads a `(lo, hi)` wire pair as a field element.
-fn elem_of(words: &[Word]) -> B128 {
+const fn elem_of(words: &[Word]) -> B128 {
 	B128::new(((words[1].as_u64() as u128) << 64) | words[0].as_u64() as u128)
 }
 
