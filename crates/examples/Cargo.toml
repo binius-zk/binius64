@@ -3,6 +3,8 @@ name = "binius-examples"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+# `cargo run -p binius-examples` has three bins to choose from; the circuits are the usual one.
+default-run = "binius-examples"
 
 [lints]
 workspace = true
