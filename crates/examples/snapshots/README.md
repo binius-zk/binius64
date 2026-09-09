@@ -6,20 +6,20 @@ This directory contains snapshot files for example circuit statistics. These sna
 
 For any example circuit (e.g., `sha256`, `zklogin`):
 
-- **Check snapshot**: `cargo run --example <name> -- check-snapshot [params]`
-- **Update snapshot**: `cargo run --example <name> -- bless-snapshot [params]`
+- **Check snapshot**: `cargo run -p binius-examples -- <name> check-snapshot [params]`
+- **Update snapshot**: `cargo run -p binius-examples -- <name> bless-snapshot [params]`
 
 ### Examples
 
 ```bash
 # Check sha256 circuit snapshot with specific parameters
-cargo run --example sha256 -- check-snapshot --max-len 64
+cargo run -p binius-examples -- sha256 check-snapshot --max-message-len 64
 
 # Update zklogin circuit snapshot with default parameters
-cargo run --example zklogin -- bless-snapshot
+cargo run -p binius-examples -- zklogin bless-snapshot
 
 # View circuit statistics without checking snapshot
-cargo run --example sha256 -- stat --max-len 2048
+cargo run -p binius-examples -- sha256 stat --max-message-len 2048
 ```
 
 ## CI Integration

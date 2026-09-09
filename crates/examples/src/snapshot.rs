@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use std::{env, fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -8,7 +9,7 @@ use binius_frontend::{Circuit, CircuitStat};
 fn workspace_root() -> Result<PathBuf> {
 	let manifest_dir = env::var("CARGO_MANIFEST_DIR").context(
 		"CARGO_MANIFEST_DIR environment variable not set. \
-		Please run this command via 'cargo run --example <name>' or 'cargo test'.",
+		Please run this command via 'cargo run -p binius-examples' or 'cargo test'.",
 	)?;
 
 	// CARGO_MANIFEST_DIR points to prover/examples, so go up two levels to reach workspace root
@@ -45,7 +46,7 @@ pub fn check_snapshot(circuit_name: &str, circuit: &Circuit) -> Result<()> {
 	if !snapshot_path.exists() {
 		anyhow::bail!(
 			"Snapshot file not found at {}\n\
-            Run '{} bless-snapshot' to create it.",
+            Run 'binius-examples {} bless-snapshot' to create it.",
 			snapshot_path.display(),
 			circuit_name
 		);
@@ -109,5 +110,5 @@ fn print_snapshot_diff(expected: &str, actual: &str, circuit_name: &str) {
 		}
 	}
 
-	eprintln!("\nRun '{} bless-snapshot' to update the snapshot.", circuit_name);
+	eprintln!("\nRun 'binius-examples {} bless-snapshot' to update the snapshot.", circuit_name);
 }

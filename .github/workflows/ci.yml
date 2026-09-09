@@ -110,11 +110,10 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y lld
       # Build only the targets this job runs. Benchmarks and examples are both excluded: each is a
       # separate binary linking the whole crate, and this job runs neither. Codegen + linking them
-      # is pure overhead, and for the 23 examples it is the single largest item in this step —
-      # ~59% of its CPU time, because most of them monomorphize the whole prover stack (see
-      # BINIUS-656). Clippy below still checks both via `--all-targets` — that's front-end only
-      # (no codegen/link), so it guards against bitrot (API drift) for a fraction of a full build.
-      # 13 of the examples are still built *and executed* by the `circuits-snapshot` job.
+      # is pure overhead. Clippy below still checks both via `--all-targets` — that's front-end
+      # only (no codegen/link), so it guards against bitrot (API drift) for a fraction of a full
+      # build. The demo circuits are not among the examples: they are subcommands of the
+      # `binius-examples` binary, which `--bins` builds here and `circuits-snapshot` runs.
       - name: Compile
         run: cargo build --workspace --lib --bins --tests
       - name: Run platform diagnostics
@@ -129,7 +128,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       # The target selection repeats the Compile step's, and is load-bearing: nextest inherits
       # `cargo test`'s default target selection, which includes examples. A bare `--workspace`
-      # here builds all 23 of them, paying in this step the cost Compile above declines to pay.
+      # here builds every one of them, paying in this step the cost Compile above declines to pay.
       - name: Run tests
         if: github.event_name != 'push'
         run: cargo nextest run --workspace --lib --bins --tests --no-fail-fast ${{ matrix.arch.test_args }}
@@ -236,17 +235,15 @@ jobs:
         uses: actions/checkout@v7
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
-      # One job instead of a 9-way matrix: the examples share the same `binius-examples` crate, so
-      # a matrix recompiled that whole tree (which links the prover + verifier) nine times for a
-      # stats-only check. Building once and running each snapshot in turn keeps the work but cuts
-      # ~8 redundant compiles. See BINIUS-151.
+      # One job instead of a 9-way matrix: the circuits are subcommands of one binary, so the
+      # first iteration below builds it and the rest are plain runs. See BINIUS-151.
       - name: Check circuit statistics snapshots
         run: |
           set -e
           # Keep this list in sync with the committed snapshots in crates/examples/snapshots:
-          # every example that ships a .snap must be checked here, or it can drift undetected.
-          for example in ethsign zklogin sha256 sha512 sha3 sha3_512 keccak blake2s blake2b blake3_compress blake3 hashsign ec_msm bitcoin_header_chain bitcoin_p2pkh; do
-            echo "::group::${example}"
-            cargo run --example "${example}" -- check-snapshot
+          # every circuit that ships a .snap must be checked here, or it can drift undetected.
+          for circuit in ethsign zklogin sha256 sha512 sha3 sha3_512 keccak blake2s blake2b blake3_compress blake3 hashsign ec_msm bitcoin_headers bitcoin_p2pkh; do
+            echo "::group::${circuit}"
+            cargo run -p binius-examples -- "${circuit}" check-snapshot
             echo "::endgroup::"
           done
