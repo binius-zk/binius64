@@ -110,6 +110,180 @@ where
 	Ok(())
 }
 
+/// Prove and verify, with the Merkle hash suite chosen at run time.
+///
+/// This is deliberately not generic. A non-generic function is codegen'd once, in this library,
+/// so every example binary links one copy of the proving stack instead of instantiating its own.
+fn prove_dispatch(
+	cs: ConstraintSystem,
+	log_inv_rate: usize,
+	hash_suite: HashSuiteType,
+	zk: bool,
+	message: Option<&[u8]>,
+	witness: &ValueVec,
+	output: Option<&str>,
+) -> Result<()> {
+	match hash_suite {
+		HashSuiteType::Sha256 => {
+			tracing::info!("Using SHA-256 hash suite for Merkle tree");
+			prove_with_hash_suite::<StdHashSuite>(cs, log_inv_rate, zk, message, witness, output)
+		}
+		HashSuiteType::Blake3 => {
+			tracing::info!("Using Blake3 hash suite for Merkle tree");
+			prove_with_hash_suite::<Blake3HashSuite>(cs, log_inv_rate, zk, message, witness, output)
+		}
+	}
+}
+
+/// Verify a proof, with the Merkle hash suite chosen at run time.
+///
+/// Non-generic for the same reason as [`prove_dispatch`].
+fn verify_dispatch(
+	cs: ConstraintSystem,
+	log_inv_rate: usize,
+	hash_suite: HashSuiteType,
+	zk: bool,
+	message: Option<&[u8]>,
+	witness: &ValueVec,
+	proof_bytes: Vec<u8>,
+) -> Result<()> {
+	match hash_suite {
+		HashSuiteType::Sha256 => {
+			tracing::info!("Using SHA-256 hash suite for Merkle tree");
+			verify_with_hash_suite::<StdHashSuite>(
+				cs,
+				log_inv_rate,
+				zk,
+				message,
+				witness,
+				proof_bytes,
+			)
+		}
+		HashSuiteType::Blake3 => {
+			tracing::info!("Using Blake3 hash suite for Merkle tree");
+			verify_with_hash_suite::<Blake3HashSuite>(
+				cs,
+				log_inv_rate,
+				zk,
+				message,
+				witness,
+				proof_bytes,
+			)
+		}
+	}
+}
+
+/// Write whichever of the proving-job artifacts were given a path.
+///
+/// Non-generic for the same reason as [`prove_dispatch`].
+fn save_artifacts(
+	cs: &ConstraintSystem,
+	witness: &ValueVec,
+	cs_path: Option<&str>,
+	pub_witness_path: Option<&str>,
+	non_pub_data_path: Option<&str>,
+	key_collection_path: Option<&str>,
+) -> Result<()> {
+	if let Some(path) = cs_path {
+		write_serialized(cs, path)?;
+		tracing::info!("Constraint system saved to '{}'", path);
+	}
+
+	if let Some(path) = pub_witness_path {
+		// Only the inout values: the constants ride along in the constraint system.
+		write_serialized(&ValuesRef::new(witness.inout()), path)?;
+		tracing::info!("Inout witness saved to '{}'", path);
+	}
+
+	if let Some(path) = non_pub_data_path {
+		write_serialized(&ValuesRef::new(witness.non_public()), path)?;
+		tracing::info!("Non-public witness saved to '{}'", path);
+	}
+
+	if let Some(path) = key_collection_path {
+		let key_collection_scope = tracing::info_span!("Building key collection").entered();
+		let key_collection = binius_prover::protocols::shift::KeyCollection::build(
+			cs,
+			binius_core::constraint_system::InoutSegment::Public,
+		);
+		drop(key_collection_scope);
+		write_serialized(&key_collection, path)?;
+		tracing::info!("Key collection saved to '{}'", path);
+	}
+
+	Ok(())
+}
+
+/// Prove and verify a constraint system and witness read from files.
+///
+/// Nothing here depends on the example circuit, so it lives outside the generic
+/// [`Cli`] impl and is codegen'd once, in this library.
+fn run_load_prove(matches: &clap::ArgMatches) -> Result<()> {
+	// Extract file paths and parameters
+	let cs_path = matches
+		.get_one::<String>("cs_path")
+		.expect("cs_path is required");
+	let pub_witness_path = matches
+		.get_one::<String>("pub_witness_path")
+		.expect("pub_witness_path is required");
+	let non_pub_data_path = matches
+		.get_one::<String>("non_pub_data_path")
+		.expect("non_pub_data_path is required");
+	let key_collection_path = matches.get_one::<String>("key_collection_path").cloned();
+	let log_inv_rate = *matches
+		.get_one::<u32>("log_inv_rate")
+		.expect("has default value");
+	let hash_suite = *matches
+		.get_one::<HashSuiteType>("hash_suite")
+		.expect("has default value");
+
+	// Load constraint system
+	let cs_load_scope = tracing::info_span!("Loading constraint system").entered();
+	let cs: ConstraintSystem = read_deserialized(cs_path)?;
+	tracing::info!("Constraint system loaded from '{}'", cs_path);
+	drop(cs_load_scope);
+
+	// Load pre-built KeyCollection if path provided
+	let maybe_key_collection = key_collection_path
+		.map(|kc_path| -> Result<_> {
+			let kc_load_scope = tracing::info_span!("Loading key collection").entered();
+			let key_collection: binius_prover::KeyCollection = read_deserialized(&kc_path)?;
+			tracing::info!("Key collection loaded from '{kc_path}'");
+			drop(kc_load_scope);
+			Ok(key_collection)
+		})
+		.transpose()?;
+
+	// Load witness data
+	let witness_load_scope = tracing::info_span!("Loading witness data").entered();
+	let inout: ValuesData = read_deserialized(pub_witness_path)?;
+	tracing::info!("Public inout values loaded from '{}'", pub_witness_path);
+
+	let non_pub_data: ValuesData = read_deserialized(non_pub_data_path)?;
+	tracing::info!("Non-public data loaded from '{}'", non_pub_data_path);
+
+	// Reconstruct the full witness from its two segments
+	let witness = cs.value_vec_from_data(&inout, &non_pub_data);
+	drop(witness_load_scope);
+
+	match hash_suite {
+		HashSuiteType::Sha256 => {
+			tracing::info!("Using SHA-256 hash suite for Merkle tree");
+			let (verifier, prover) =
+				setup::<StdHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
+			prove_verify(&verifier, &prover, &witness)?;
+		}
+		HashSuiteType::Blake3 => {
+			tracing::info!("Using Blake3 hash suite for Merkle tree");
+			let (verifier, prover) =
+				setup::<Blake3HashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
+			prove_verify(&verifier, &prover, &witness)?;
+		}
+	};
+
+	Ok(())
+}
+
 /// A CLI builder for circuit examples that handles all command-line parsing and execution.
 ///
 /// This provides a clean API for circuit examples where developers only need to:
@@ -626,7 +800,7 @@ where
 				Self::run_bless_snapshot_impl(sub_matches, circuit_name)
 			}
 			Some(("save", sub_matches)) => Self::run_save(sub_matches),
-			Some(("load-prove", sub_matches)) => Self::run_load_prove(sub_matches),
+			Some(("load-prove", sub_matches)) => run_load_prove(sub_matches),
 			Some(("verify", sub_matches)) => Self::run_verify(sub_matches),
 			Some((cmd, _)) => anyhow::bail!("Unknown subcommand: {}", cmd),
 			None => {
@@ -641,10 +815,9 @@ where
 		let log_inv_rate = *matches
 			.get_one::<u32>("log_inv_rate")
 			.expect("has default value");
-		let hash_suite = matches
+		let hash_suite = *matches
 			.get_one::<HashSuiteType>("hash_suite")
-			.expect("has default value")
-			.clone();
+			.expect("has default value");
 		let zk = matches.get_flag("zk");
 		let sign_message = matches.get_one::<String>("sign_message").cloned();
 		let output = matches.get_one::<String>("output").cloned();
@@ -686,33 +859,15 @@ where
 		let witness = filler.into_value_vec();
 		drop(witness_population);
 
-		let output = output.as_deref();
-		match hash_suite {
-			HashSuiteType::Sha256 => {
-				tracing::info!("Using SHA-256 hash suite for Merkle tree");
-				prove_with_hash_suite::<StdHashSuite>(
-					cs,
-					log_inv_rate as usize,
-					zk,
-					message,
-					&witness,
-					output,
-				)?;
-			}
-			HashSuiteType::Blake3 => {
-				tracing::info!("Using Blake3 hash suite for Merkle tree");
-				prove_with_hash_suite::<Blake3HashSuite>(
-					cs,
-					log_inv_rate as usize,
-					zk,
-					message,
-					&witness,
-					output,
-				)?;
-			}
-		}
-
-		Ok(())
+		prove_dispatch(
+			cs,
+			log_inv_rate as usize,
+			hash_suite,
+			zk,
+			message,
+			&witness,
+			output.as_deref(),
+		)
 	}
 
 	fn run_stat(matches: &clap::ArgMatches) -> Result<()> {
@@ -809,104 +964,14 @@ where
 		circuit.populate_wire_witness(&mut filler)?;
 		let witness: ValueVec = filler.into_value_vec();
 
-		// Conditionally write artifacts
-		let cs = circuit.constraint_system();
-		if let Some(path) = cs_path.as_deref() {
-			write_serialized(cs, path)?;
-			tracing::info!("Constraint system saved to '{}'", path);
-		}
-
-		if let Some(path) = pub_witness_path.as_deref() {
-			// Only the inout values: the constants ride along in the constraint system.
-			write_serialized(&ValuesRef::new(witness.inout()), path)?;
-			tracing::info!("Inout witness saved to '{}'", path);
-		}
-
-		if let Some(path) = non_pub_data_path.as_deref() {
-			write_serialized(&ValuesRef::new(witness.non_public()), path)?;
-			tracing::info!("Non-public witness saved to '{}'", path);
-		}
-
-		// Save KeyCollection if requested
-		if let Some(path) = key_collection_path.as_deref() {
-			let key_collection_scope = tracing::info_span!("Building key collection").entered();
-			let key_collection = binius_prover::protocols::shift::KeyCollection::build(
-				cs,
-				binius_core::constraint_system::InoutSegment::Public,
-			);
-			drop(key_collection_scope);
-			write_serialized(&key_collection, path)?;
-			tracing::info!("Key collection saved to '{}'", path);
-		}
-
-		Ok(())
-	}
-
-	fn run_load_prove(matches: &clap::ArgMatches) -> Result<()> {
-		// Extract file paths and parameters
-		let cs_path = matches
-			.get_one::<String>("cs_path")
-			.expect("cs_path is required");
-		let pub_witness_path = matches
-			.get_one::<String>("pub_witness_path")
-			.expect("pub_witness_path is required");
-		let non_pub_data_path = matches
-			.get_one::<String>("non_pub_data_path")
-			.expect("non_pub_data_path is required");
-		let key_collection_path = matches.get_one::<String>("key_collection_path").cloned();
-		let log_inv_rate = *matches
-			.get_one::<u32>("log_inv_rate")
-			.expect("has default value");
-		let hash_suite = matches
-			.get_one::<HashSuiteType>("hash_suite")
-			.expect("has default value")
-			.clone();
-
-		// Load constraint system
-		let cs_load_scope = tracing::info_span!("Loading constraint system").entered();
-		let cs: ConstraintSystem = read_deserialized(cs_path)?;
-		tracing::info!("Constraint system loaded from '{}'", cs_path);
-		drop(cs_load_scope);
-
-		// Load pre-built KeyCollection if path provided
-		let maybe_key_collection = key_collection_path
-			.map(|kc_path| -> Result<_> {
-				let kc_load_scope = tracing::info_span!("Loading key collection").entered();
-				let key_collection: binius_prover::KeyCollection = read_deserialized(&kc_path)?;
-				tracing::info!("Key collection loaded from '{kc_path}'");
-				drop(kc_load_scope);
-				Ok(key_collection)
-			})
-			.transpose()?;
-
-		// Load witness data
-		let witness_load_scope = tracing::info_span!("Loading witness data").entered();
-		let inout: ValuesData = read_deserialized(pub_witness_path)?;
-		tracing::info!("Public inout values loaded from '{}'", pub_witness_path);
-
-		let non_pub_data: ValuesData = read_deserialized(non_pub_data_path)?;
-		tracing::info!("Non-public data loaded from '{}'", non_pub_data_path);
-
-		// Reconstruct the full witness from its two segments
-		let witness = cs.value_vec_from_data(&inout, &non_pub_data);
-		drop(witness_load_scope);
-
-		match hash_suite {
-			HashSuiteType::Sha256 => {
-				tracing::info!("Using SHA-256 hash suite for Merkle tree");
-				let (verifier, prover) =
-					setup::<StdHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
-				prove_verify(&verifier, &prover, &witness)?;
-			}
-			HashSuiteType::Blake3 => {
-				tracing::info!("Using Blake3 hash suite for Merkle tree");
-				let (verifier, prover) =
-					setup::<Blake3HashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
-				prove_verify(&verifier, &prover, &witness)?;
-			}
-		};
-
-		Ok(())
+		save_artifacts(
+			circuit.constraint_system(),
+			&witness,
+			cs_path.as_deref(),
+			pub_witness_path.as_deref(),
+			non_pub_data_path.as_deref(),
+			key_collection_path.as_deref(),
+		)
 	}
 
 	fn run_verify(matches: &clap::ArgMatches) -> Result<()> {
@@ -916,10 +981,9 @@ where
 		let log_inv_rate = *matches
 			.get_one::<u32>("log_inv_rate")
 			.expect("has default value");
-		let hash_suite = matches
+		let hash_suite = *matches
 			.get_one::<HashSuiteType>("hash_suite")
-			.expect("has default value")
-			.clone();
+			.expect("has default value");
 		let zk = matches.get_flag("zk");
 		let sign_message = matches.get_one::<String>("sign_message").cloned();
 		let message = sign_message.as_deref().map(str::as_bytes);
@@ -948,30 +1012,7 @@ where
 		circuit.populate_wire_witness(&mut filler)?;
 		let witness = filler.into_value_vec();
 
-		match hash_suite {
-			HashSuiteType::Sha256 => {
-				tracing::info!("Using SHA-256 hash suite for Merkle tree");
-				verify_with_hash_suite::<StdHashSuite>(
-					cs,
-					log_inv_rate as usize,
-					zk,
-					message,
-					&witness,
-					proof_bytes,
-				)?;
-			}
-			HashSuiteType::Blake3 => {
-				tracing::info!("Using Blake3 hash suite for Merkle tree");
-				verify_with_hash_suite::<Blake3HashSuite>(
-					cs,
-					log_inv_rate as usize,
-					zk,
-					message,
-					&witness,
-					proof_bytes,
-				)?;
-			}
-		}
+		verify_dispatch(cs, log_inv_rate as usize, hash_suite, zk, message, &witness, proof_bytes)?;
 
 		tracing::info!("Proof verified successfully.");
 		Ok(())

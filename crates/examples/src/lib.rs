@@ -60,7 +60,7 @@ pub fn init_tracing() {
 /// - the two-to-one compression that folds a pair of child nodes into their parent.
 ///
 /// It does not select a compression function alone, which is why the flag is `--hash-suite`.
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum HashSuiteType {
 	/// SHA-256 leaves with a SHA-256 two-to-one compression.
 	Sha256,
