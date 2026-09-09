@@ -167,6 +167,26 @@ jobs:
       - name: Compile vanilla wasm32
         run: cargo build -p binius-field --target wasm32-unknown-unknown
 
+  # Build against wasm32-unknown-unknown with the simd128 target feature enabled. This is the
+  # only configuration that compiles the SIMD GHASH implementation in
+  # crates/field/src/arch/wasm32: the vanilla build above leaves it unbuilt, so without this job
+  # it type-checks nowhere in CI.
+  wasm-simd128-build:
+    name: wasm-simd128-build
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-C target-feature=+simd128"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          target: wasm32-unknown-unknown
+      - name: Compile wasm32 with simd128
+        run: cargo build -p binius-field --target wasm32-unknown-unknown
+
   wasm-tests:
     name: wasm-tests
     if: github.event_name != 'push'

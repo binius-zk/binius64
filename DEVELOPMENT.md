@@ -88,12 +88,15 @@ RUSTFLAGS="-C target-feature=+neon,+aes" \
 RUSTFLAGS="-C target-feature=+sse2,+avx2,+pclmulqdq,+vpclmulqdq" \
   cargo check --target x86_64-unknown-linux-gnu -p binius-field -p binius-arith-bench
 
-# wasm32 — matches CI (binius-field on wasm32-unknown-unknown; the wider crate set on wasm32-wasip1)
+# wasm32 — matches CI (binius-field on wasm32-unknown-unknown, portable and with simd128 to
+# also exercise the SIMD GHASH path; the wider crate set on wasm32-wasip1)
 cargo build -p binius-field --target wasm32-unknown-unknown
+RUSTFLAGS="-C target-feature=+simd128" \
+  cargo build -p binius-field --target wasm32-unknown-unknown
 cargo build -p binius-field --target wasm32-wasip1
 ```
 
-(All four commands above are verified to compile cleanly. The 512-bit AVX-512 path —
+(All five commands above are verified to compile cleanly. The 512-bit AVX-512 path —
 `+sse2,+avx2,+avx512f,+pclmulqdq,+vpclmulqdq` — also compiles cleanly, including
 `cargo build --all-targets` and a full `--workspace` build, even on a host without AVX-512:
 its `std::arch::x86_64::_mm512_*` intrinsics are stable on the pinned toolchain. Older Rust,
