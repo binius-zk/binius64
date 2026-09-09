@@ -449,12 +449,12 @@ impl<'a> Executor<'a> {
 
 		let mut inputs: SmallVec<[Word; 8]> = smallvec![Word::ZERO; n_inputs];
 		let mut outputs: SmallVec<[Word; 8]> = smallvec![Word::ZERO; n_outputs];
+		let handler = self.hints.handler(hint_id);
 		for i in 0..ctx.n_instances() {
 			for (input, &reg) in inputs.iter_mut().zip(&input_regs) {
 				*input = ctx.load(reg, i);
 			}
-			self.hints
-				.execute(hint_id, &dimensions, &inputs, &mut outputs);
+			handler.execute(&dimensions, &inputs, &mut outputs);
 			for (&reg, &output) in output_regs.iter().zip(&outputs) {
 				ctx.store(reg, i, output);
 			}
