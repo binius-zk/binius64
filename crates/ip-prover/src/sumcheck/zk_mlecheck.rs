@@ -101,7 +101,7 @@ pub struct Mask<P: PackedField, Data: Deref<Target = [P]> = Box<[P]>> {
 	/// Degree of each univariate polynomial (d)
 	degree: usize,
 	/// Coefficients stored as a FieldBuffer with log_len = m_n + m_d.
-	/// Layout: row i contains the monomial coefficients [a_{i,0}, ..., a_{i,d}, 0, ..., 0].
+	/// Layout: row i contains the monomial coefficients [g_{i,0}, ..., g_{i,d}, 0, ..., 0].
 	/// Row i spans indices [i * 2^m_d, (i+1) * 2^m_d).
 	buffer: FieldBuffer<P, Data>,
 }
@@ -145,7 +145,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> Mask<P, Da
 		self.buffer.get(var_index * row_stride + coeff_index)
 	}
 
-	/// Returns the monomial coefficients [a_{i,0}, a_{i,1}, ..., a_{i,d}] for variable i.
+	/// Returns the monomial coefficients [g_{i,0}, g_{i,1}, ..., g_{i,d}] for variable i.
 	pub fn coeffs_for_var(&self, var_index: usize) -> impl Iterator<Item = F> + '_ {
 		debug_assert!(var_index < self.n_vars);
 		let m_d = self.log_degree_plus_one();
