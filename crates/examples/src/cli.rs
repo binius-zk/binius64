@@ -8,7 +8,7 @@ use binius_frontend::{CircuitBuilder, CircuitStat};
 use binius_hash::{Blake3HashSuite, StdHashSuite};
 use binius_hash_prover::ParallelHashSuite;
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
-use clap::{Arg, ArgMatches, Args, Command, FromArgMatches, Subcommand};
+use clap::{Arg, ArgMatches, Args, Command, FromArgMatches};
 use digest::Output;
 
 use crate::{
@@ -338,113 +338,6 @@ impl Cli {
 			.expect("clap only accepts a registered subcommand");
 		run(sub_matches, name)
 	}
-}
-
-/// Subcommands available for circuit examples
-#[derive(Subcommand, Clone)]
-enum Commands {
-	/// Generate and verify a proof (default)
-	Prove {
-		/// Log of the inverse rate for the proof system
-		#[arg(short = 'l', long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
-		log_inv_rate: u32,
-
-		/// Merkle hash suite to use (leaf hash + inner-node compression)
-		#[arg(short = 'c', long = "hash-suite", alias = "compression", value_enum, default_value_t = HashSuiteType::Sha256)]
-		hash_suite: HashSuiteType,
-
-		#[command(flatten)]
-		params: CommandArgs,
-
-		#[command(flatten)]
-		instance: CommandArgs,
-	},
-
-	/// Display circuit statistics
-	Stat {
-		#[command(flatten)]
-		params: CommandArgs,
-	},
-
-	/// Output circuit composition in JSON format
-	Composition {
-		#[command(flatten)]
-		params: CommandArgs,
-	},
-
-	/// Verify circuit statistics against a snapshot
-	CheckSnapshot {
-		#[command(flatten)]
-		params: CommandArgs,
-	},
-
-	/// Update the snapshot with current statistics
-	BlessSnapshot {
-		#[command(flatten)]
-		params: CommandArgs,
-	},
-
-	/// Save constraint system, public inout values, non-public data, and key collection to files
-	/// if paths are provided
-	Save {
-		/// Output path for the constraint system binary
-		#[arg(long = "cs-path")]
-		cs_path: Option<String>,
-
-		/// Output path for the public inout values binary
-		#[arg(long = "pub-witness-path")]
-		pub_witness_path: Option<String>,
-
-		/// Output path for the non-public data (witness + internal) binary
-		#[arg(long = "non-pub-data-path")]
-		non_pub_data_path: Option<String>,
-
-		/// Output path for the key collection binary (for fast prover setup)
-		#[arg(long = "key-collection-path")]
-		key_collection_path: Option<String>,
-
-		#[command(flatten)]
-		params: CommandArgs,
-
-		#[command(flatten)]
-		instance: CommandArgs,
-	},
-
-	/// Load constraint system, witness data, and optionally key collection from files and prove
-	///
-	/// If key-collection-path is provided, it will be loaded to skip the expensive
-	/// key building phase during setup.
-	LoadProve {
-		/// Input path for the constraint system binary
-		#[arg(long = "cs-path", required = true)]
-		cs_path: String,
-
-		/// Input path for the public inout values binary
-		#[arg(long = "pub-witness-path", required = true)]
-		pub_witness_path: String,
-
-		/// Input path for the non-public data (witness + internal) binary
-		#[arg(long = "non-pub-data-path", required = true)]
-		non_pub_data_path: String,
-
-		/// Input path for the key collection binary (optional, for fast prover setup)
-		#[arg(long = "key-collection-path")]
-		key_collection_path: Option<String>,
-
-		/// Log of the inverse rate for the proof system
-		#[arg(
-			short = 'l', long, default_value_t = 1,
-			value_parser = clap::value_parser!(u32).range(1..)
-		)]
-		log_inv_rate: u32,
-	},
-}
-
-/// Wrapper for dynamic command arguments
-#[derive(Args, Clone)]
-struct CommandArgs {
-	#[arg(skip)]
-	_phantom: (),
 }
 
 /// Build the subcommand tree for one circuit.
