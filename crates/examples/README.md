@@ -11,7 +11,7 @@ This crate provides example circuits for the Binius zero-knowledge proof system.
 - **sha256**: SHA-256 hash function implementation demonstrating efficient binary field arithmetic
 - **zklogin**: Zero-knowledge authentication circuit for JWT verification
 
-Each example is a standalone binary that can be run with customizable parameters to test different configurations and input sizes.
+Each example is a subcommand of the `binius-examples` binary, run with customizable parameters to test different configurations and input sizes.
 
 ## Creating New Circuit Examples
 
@@ -23,7 +23,7 @@ Here's a minimal template for a new circuit example:
 
 ```rust
 use anyhow::{ensure, Result};
-use binius_examples::{Cli, ExampleCircuit};
+use binius_examples::ExampleCircuit;
 use binius_frontend::compiler::{circuit::WitnessFiller, CircuitBuilder, Wire};
 use clap::Args;
 
@@ -111,13 +111,12 @@ impl ExampleCircuit for MyCircuitExample {
         Ok(())
     }
 }
+```
 
-fn main() -> Result<()> {
-    // Create and run the CLI - this is all you need!
-    Cli::<MyCircuitExample>::new("my_circuit")
-        .about("Description of what your circuit does")
-        .run()
-}
+Then register it in `src/main.rs`:
+
+```rust
+        .circuit::<MyCircuitExample>("my_circuit", "Description of what your circuit does")
 ```
 
 ## The Simple API
@@ -126,7 +125,7 @@ The new API requires only three things from developers:
 
 1. **Implement `ExampleCircuit`** - Define your circuit logic
 2. **Define `Params` and `Instance` structs** - Use `#[derive(Args)]` for automatic CLI parsing
-3. **Call `Cli::new().run()`** - The library handles everything else
+3. **Register it with `Cli::circuit`** - The library handles everything else
 
 No more manual CLI struct definitions or boilerplate code!
 
@@ -166,19 +165,6 @@ In the `populate_witness` method:
 - Use `ensure!` for validation with clear error messages
 - Return `Result<()>` from all trait methods
 - Validate instance data against params before populating witnesses
-
-## CLI Builder Options
-
-The `Cli` builder provides additional customization options:
-
-```rust
-Cli::<MyExample>::new("my_circuit")
-    .about("Short description")           // Shown in help
-    .long_about("Detailed description")   // Shown with --help
-    .version("1.0.0")                     // Version info
-    .author("Your Name")                  // Author info
-    .run()
-```
 
 ## Common Patterns
 
@@ -257,27 +243,30 @@ Build and run your example:
 
 ```bash
 # Build
-cargo build --release --example my_circuit
+cargo build --release -p binius-examples
 
 # Run with default parameters
-cargo run --release --example my_circuit
+cargo run --release -p binius-examples -- my_circuit
 
 # Run with custom parameters
-cargo run --release --example my_circuit -- --max-size 2048 --input "test data"
+cargo run --release -p binius-examples -- my_circuit --max-size 2048 --input "test data"
 
 # Show help
-cargo run --release --example my_circuit -- --help
+cargo run --release -p binius-examples -- my_circuit --help
+
+# List every circuit
+cargo run --release -p binius-examples -- --help
 
 # Run with increased verbosity
-RUST_LOG=info cargo run --release --example my_circuit
+RUST_LOG=info cargo run --release -p binius-examples -- my_circuit
 
 # With perfetto feature for performance profiling
-cargo run --release --example my_circuit --features perfetto
+cargo run --release -p binius-examples --features perfetto -- my_circuit
 ```
 
 ## CLI subcommands
 
-All example binaries share a common CLI with these subcommands:
+Every circuit shares a common CLI with these subcommands:
 
 - prove (default): build the circuit, generate witness, create and verify a proof
 - stat: print circuit statistics
@@ -299,15 +288,15 @@ Examples:
 
 ```bash
 # Save only the constraint system
-cargo run --release --example my_circuit -- save --cs-path out/cs.bin
+cargo run --release -p binius-examples -- my_circuit save --cs-path out/cs.bin
 
 # Save public inout values and non-public values
-cargo run --release --example my_circuit -- save \
+cargo run --release -p binius-examples -- my_circuit save \
     --pub-witness-path out/inout.bin \
     --non-pub-data-path out/non_public.bin
 
 # Save all three
-cargo run --release --example my_circuit -- save \
+cargo run --release -p binius-examples -- my_circuit save \
     --cs-path out/cs.bin \
     --pub-witness-path out/inout.bin \
     --non-pub-data-path out/non_public.bin
@@ -319,21 +308,11 @@ Notes:
 - The circuit's constants live in the constraint system, and are restored when the segment is rebuilt.
 - Parent directories are created automatically if they don’t exist.
 
-## Adding to Cargo.toml
-
-Add your example to `prover/examples/Cargo.toml`:
-
-```toml
-[[example]]
-name = "my_circuit"
-path = "examples/my_circuit.rs"
-```
-
 ## Real Examples
 
-Look at these examples for reference:
-- `sha256.rs` - Shows parameter/instance separation, random data generation
-- `zklogin.rs` - Shows complex witness population with external data generation
+Look at these circuits for reference:
+- `src/circuits/sha256.rs` - Shows parameter/instance separation, random data generation
+- `src/circuits/zklogin.rs` - Shows complex witness population with external data generation
 
 ## Prover binary
 
@@ -350,7 +329,7 @@ Usage:
 
 ```bash
 # 1) Generate artifacts from an example circuit (e.g., sha256)
-cargo run --release --example sha256 -- save \
+cargo run --release -p binius-examples -- sha256 save \
     --cs-path out/sha256/cs.bin \
     --pub-witness-path out/sha256/inout.bin \
     --non-pub-data-path out/sha256/non_public.bin

@@ -43,9 +43,12 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 /// Calling this when a global subscriber is already installed is a no-op, so it is safe to
 /// invoke from every example entry point.
 pub fn init_tracing() {
+	// `ureq` logs every HTTP request at DEBUG, which would bury the trace tree of any circuit
+	// that fetches its instance data over the network.
 	let env_filter = EnvFilter::builder()
 		.with_default_directive(LevelFilter::DEBUG.into())
-		.from_env_lossy();
+		.from_env_lossy()
+		.add_directive("ureq=off".parse().expect("literal directive"));
 
 	let _ = tracing_subscriber::registry()
 		.with(env_filter)
