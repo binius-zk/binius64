@@ -1,8 +1,8 @@
 bitcoin_p2pkh circuit
 --
 Gates & Instructions
-├─ Number of gates: 149,311
-└─ Number of evaluation instructions: 161,206
+├─ Number of gates: 149,307
+└─ Number of evaluation instructions: 161,202
 
 Constraints
 ├─ ZERO constraints: 15,896 used (97.0% of 2^14)
