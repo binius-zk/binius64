@@ -141,7 +141,9 @@ pub fn eq_ind_zero<F: FieldOps>(point: &[F]) -> F {
 
 /// Computes the partial evaluation of the equality indicator polynomial, returning scalars.
 ///
-/// This is the scalar-only engine, which never touches a packed store.
+/// This is the scalar-only engine, which never touches a packed store. It expands the tensor on
+/// one thread, one doubling per coordinate, so it costs `2^n` scalar multiplications serially;
+/// [`eq_ind_partial_eval`] expands wide points in parallel over a packed buffer.
 pub fn eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F]) -> Vec<F> {
 	hypercube::eq_ind_partial_eval_scalars::<OneCube, F>(point)
 }
