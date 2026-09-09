@@ -22,13 +22,13 @@ use binius_core::{ValueIndex, ValueVec, ValueVecLayout, Word};
 use binius_utils::strided_array::StridedArray2DViewMut;
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;
-use cranelift_entity::SecondaryMap;
+use cranelift_entity::{EntitySet, SecondaryMap};
 use exec::Executor;
 use scalar::ExecutionContext;
 
 use crate::{
 	artifact::witness::PopulateError,
-	ir::{GateGraph, Wire, hints::HintRegistry, path::PathSpecTree},
+	ir::{Gate, GateGraph, Wire, hints::HintRegistry, path::PathSpecTree},
 };
 
 /// Compiled evaluation form for circuit witness computation
@@ -44,10 +44,15 @@ pub struct EvalForm {
 impl EvalForm {
 	/// Build the evaluation form from the gate graph.
 	///
+	/// `surviving` names the gates the compiler passes kept, a subset of the graph's gates. A
+	/// gate left out of it emits no bytecode, so its output wires are never written; the passes
+	/// guarantee no surviving gate reads them and none of them is committed.
+	///
 	/// The registry already holds every hint the circuit called.
 	/// Emission only reads it to resolve each gate's arity.
 	pub(crate) fn build(
 		gate_graph: &GateGraph,
+		surviving: &EntitySet<Gate>,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 		layout: &ValueVecLayout,
 		hint_registry: HintRegistry,
@@ -70,8 +75,8 @@ impl EvalForm {
 			word_offset as u32
 		};
 
-		// Build bytecode for each gate
-		for gate_id in gate_graph.gates.keys() {
+		// Build bytecode for each surviving gate
+		for gate_id in surviving.iter() {
 			gate_id.emit_bytecode(gate_graph, &mut builder, wire_to_reg, &hint_registry);
 		}
 
