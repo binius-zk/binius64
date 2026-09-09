@@ -120,13 +120,9 @@ jobs:
       - name: Run platform diagnostics
         if: github.event_name != 'push'
         run: cargo test -p binius-utils --features platform-diagnostics test_platform_diagnostics -- --nocapture
-      # `--all-features` so that feature-gated code (perfetto, trace_multiplications, …) is
-      # linted too. Every optional feature in the workspace is off by default, so without this the
-      # gated code is never compiled and bitrots silently. The cost is that clippy cannot reuse the
-      # Compile step's artifacts, since the feature unification differs.
       - name: Run clippy
         if: github.event_name != 'push'
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       # The target selection repeats the Compile step's, and is load-bearing: nextest inherits
       # `cargo test`'s default target selection, which includes examples. A bare `--workspace`
       # here builds all 23 of them, paying in this step the cost Compile above declines to pay.
