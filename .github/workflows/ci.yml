@@ -108,12 +108,15 @@ jobs:
           tool: cargo-nextest
       - name: Install lld
         run: sudo apt-get update -qq && sudo apt-get install -y lld
-      # Don't *build* benchmarks: each criterion bench is a separate binary linking the whole crate,
-      # and CI never runs them (`cargo bench`), so codegen + linking them is pure overhead. Clippy
-      # below still checks them via `--all-targets` — that's front-end only (no codegen/link), so it
-      # guards against bench bitrot (API drift) for a fraction of a full build.
+      # Build only the targets this job runs. Benchmarks and examples are both excluded: each is a
+      # separate binary linking the whole crate, and this job runs neither. Codegen + linking them
+      # is pure overhead, and for the 23 examples it is the single largest item in this step —
+      # ~59% of its CPU time, because most of them monomorphize the whole prover stack (see
+      # BINIUS-656). Clippy below still checks both via `--all-targets` — that's front-end only
+      # (no codegen/link), so it guards against bitrot (API drift) for a fraction of a full build.
+      # 13 of the examples are still built *and executed* by the `circuits-snapshot` job.
       - name: Compile
-        run: cargo build --workspace --lib --bins --tests --examples
+        run: cargo build --workspace --lib --bins --tests
       - name: Run platform diagnostics
         if: github.event_name != 'push'
         run: cargo test -p binius-utils --features platform-diagnostics test_platform_diagnostics -- --nocapture
@@ -124,9 +127,12 @@ jobs:
       - name: Run clippy
         if: github.event_name != 'push'
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # The target selection repeats the Compile step's, and is load-bearing: nextest inherits
+      # `cargo test`'s default target selection, which includes examples. A bare `--workspace`
+      # here builds all 23 of them, paying in this step the cost Compile above declines to pay.
       - name: Run tests
         if: github.event_name != 'push'
-        run: cargo nextest run --workspace --no-fail-fast ${{ matrix.arch.test_args }}
+        run: cargo nextest run --workspace --lib --bins --tests --no-fail-fast ${{ matrix.arch.test_args }}
       # Must run doctests separately, see https://github.com/nextest-rs/nextest/issues/16
       - name: Run doctests
         if: github.event_name != 'push'
