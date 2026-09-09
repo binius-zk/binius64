@@ -694,7 +694,7 @@ impl<F: Field, P: PackedField<Scalar = F>> RoundContext<'_, P> {
 	/// The [Gruen24] technique multiplies it into each round polynomial.
 	///
 	/// [Gruen24]: <https://eprint.iacr.org/2024/108>
-	pub fn eq_prefix(&self, id: EqId) -> F {
+	pub const fn eq_prefix(&self, id: EqId) -> F {
 		self.eq_trackers[id.index()].eq_prefix_eval()
 	}
 }
