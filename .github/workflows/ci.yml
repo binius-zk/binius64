@@ -33,7 +33,7 @@ jobs:
   format:
     name: format
     if: github.event_name != 'push'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -67,15 +67,15 @@ jobs:
           # than `cargo --exclude`: keeping the build set at `--workspace` matches the Compile step's
           # feature unification, so the dependency tree is not recompiled. See BINIUS-151.
           - name: x86_64-portable
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
             rustflags: # portable
             test_args: "-E 'not package(binius-circuits)'"
           - name: x86_64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
             rustflags: "-Ctarget-cpu=native"
             test_args: ""
           - name: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
             rustflags: "-Ctarget-cpu=native"
             test_args: "-E 'not package(binius-circuits)'"
     name: rust-checks-${{ matrix.arch.name }}
@@ -136,7 +136,7 @@ jobs:
   unused-deps:
     name: unused-deps
     if: github.event_name != 'push'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -157,7 +157,7 @@ jobs:
   wasm-vanilla-build:
     name: wasm-vanilla-build
     if: github.event_name != 'push'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -175,7 +175,7 @@ jobs:
   wasm-simd128-build:
     name: wasm-simd128-build
     if: github.event_name != 'push'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       RUSTFLAGS: "-C target-feature=+simd128"
     steps:
@@ -191,7 +191,7 @@ jobs:
   wasm-tests:
     name: wasm-tests
     if: github.event_name != 'push'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
