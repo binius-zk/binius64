@@ -152,6 +152,7 @@ where
 				prover,
 				max_m - m,
 				vec![table.pushforward_eval_claim, table.eval_claim],
+				2,
 			)
 		})
 		.collect::<Vec<_>>();

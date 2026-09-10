@@ -61,8 +61,8 @@ pub struct Pushforward<F> {
 /// Tables need not agree on a size. A table over `m_t < max_t m_t` variables is batched through
 /// the padded claim `S * eq(0^nu; X_pad)` over the padding variables, which are the highest ones
 /// and so are bound first; that equality factor sums to one over the cube, so the padded claim
-/// holds exactly when the original does. The deepest table is never padded, so every round
-/// polynomial in the batch still has degree 2.
+/// holds exactly when the original does. A padded table sends its padding rounds at degree 2, so
+/// every round polynomial in the batch has degree 2.
 ///
 /// The reduction ends in one evaluation of `Y_t` and one of `T_t` per table, all at the prefix of
 /// one shared point.
