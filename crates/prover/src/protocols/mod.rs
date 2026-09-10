@@ -3,4 +3,5 @@
 pub mod binmul;
 pub mod bitand;
 pub mod intmul;
+pub mod rerand;
 pub mod shift;

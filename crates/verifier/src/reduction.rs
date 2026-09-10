@@ -211,11 +211,8 @@ where
 	// padding row, so `None` is zero constraint variables.
 	let log_n_and = cs.log_and_constraints().unwrap_or(0);
 	let AndCheckOutput {
-		a_eval,
-		b_eval,
-		c_eval,
 		z_challenge,
-		eval_point,
+		rerand,
 	} = {
 		let _guard = tracing::info_span!(
 			"[phase] Verify BitAnd Reduction",
@@ -224,8 +221,10 @@ where
 			n_constraints = cs.n_and_constraints()
 		)
 		.entered();
-		verify_bitand_reduction(log_instances + log_n_and, &andcheck_domain, channel)?
+		verify_bitand_reduction(log_instances + log_n_and, &andcheck_domain, &[], channel)?
 	};
+	let [a_eval, b_eval, c_eval] = rerand.bitand_evals;
+	let eval_point = rerand.eval_point;
 
 	// The AND-check row point is `r_rho_and || r_x_and`: the instance index low, the constraint
 	// index high. With one instance the instance half is empty.
