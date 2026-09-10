@@ -75,7 +75,7 @@ where
 		(&hidden, &key_collection.hidden.dense_shift_enc),
 	]);
 
-	g.run_phase_1_sumcheck(oblong_weights, prepared.batched_eval(), channel, alloc)
+	g.run_phase_1_sumcheck(oblong_weights, prepared.batched_eval, channel, alloc)
 }
 
 /// The number of variables the shift-and-bit phases of the reduction span: the bit position

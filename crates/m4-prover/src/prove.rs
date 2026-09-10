@@ -202,8 +202,9 @@ impl IOPProver {
 		};
 
 		// Every operation is claimed at a prefix of the sumcheck's point `r_rho || r_x_star`, so
-		// all of them share the instance point `r_rho`. The Zero point draws its extension here,
-		// where `IOPVerifier::verify_chip` does.
+		// all of them share the instance point `r_rho`. The constraint point extends `r_x_star`
+		// when the ZERO set is wider, drawing the extension here, where
+		// `IOPVerifier::verify_chip` does.
 		let log_instances = table.log_instances();
 		let r_rho = rerand.eval_point[..log_instances].to_vec();
 		let claims = OperatorClaims::from_rerand(cs, log_instances, z_challenge, &rerand, || {

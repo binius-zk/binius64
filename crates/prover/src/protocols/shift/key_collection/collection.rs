@@ -138,7 +138,7 @@ impl KeyCollection {
 					let base = (key.dense_shift_idx as usize) << LOG_MAX_ARITY;
 					key.accumulate_wide(
 						&segment.constraint_indices,
-						prepared[key.operation].weighted_r_x_prime_tensor.as_ref(),
+						&prepared[key.operation],
 						&scalars[base..base + (1 << LOG_MAX_ARITY)],
 					)
 				})

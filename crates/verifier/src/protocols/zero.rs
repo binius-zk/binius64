@@ -29,6 +29,10 @@
 /// longer still. The prover and verifier derive it identically, so `sample` draws the same
 /// challenges at the same point in both transcripts.
 ///
+/// Asked for `max(r_x_star.len(), log_zero_constraints)` coordinates instead, it returns the
+/// unified constraint point every operation is claimed at a prefix of, `rho` included. It draws the
+/// same challenges either way.
+///
 /// `sample` stands in for the channel: the prover and verifier channel traits are unrelated, so one
 /// function can only reach both through a closure.
 ///

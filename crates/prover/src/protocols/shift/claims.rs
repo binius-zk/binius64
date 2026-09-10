@@ -1,16 +1,14 @@
 // Copyright 2026 The Binius Developers
 
-//! The shift reduction's operand evaluation claims, one per operation.
+//! The shift reduction's operand evaluation claims, all at prefixes of one constraint point.
 //!
 //! The reduction closes four constraint families in one proof: ZERO, AND, IMUL and BMUL.
 //!
-//! Each family arrives with its own operand evaluation claim.
-//! Those four claims then travel together through both phases of the reduction.
+//! Each family arrives with its own operand evaluations.
+//! Each is claimed at the prefix of the one constraint point `r_x` its rows span.
+//! Those claims then travel together through both phases of the reduction.
 //!
-//! Passed as four positional arguments, they are easy to hand over in the wrong order.
-//! Bundling them names each claim where it is built.
-//!
-//! Each claim also carries its operation's arity in its type, so no two share one.
+//! Each family's evaluations carry its operation's arity in their type, so no two share one.
 //! Putting a BMUL claim in the IMUL field is a type error, not a wrong proof.
 //!
 //! The batched form erases that arity, because a shift key picks its operation at run time.
@@ -21,41 +19,57 @@ use std::{array, iter, ops::Index};
 use binius_core::constraint_system::ConstraintSystem;
 use binius_field::Field;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
+use binius_math::{
+	inner_product::inner_product,
+	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
+};
+use binius_utils::rayon::{
+	prelude::*,
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+};
 use binius_verifier::protocols::{
 	rerand::RerandOutput,
 	shift::{
-		BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_MAX_ARITY, LOG_OPERATION_COUNT, ZERO_ARITY,
+		BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_MAX_ARITY, LOG_OPERATION_COUNT,
+		OPERATION_COUNT, ZERO_ARITY, constraint_tables, log_constraints,
 	},
 	zero,
 };
 
-use super::{Operation, OperatorData, PreparedOperatorData};
+use super::Operation;
 
-/// The operand evaluation claim of every operation, as the shift reduction receives them.
+/// The operand evaluation claims of every operation, as the shift reduction receives them.
 ///
-/// The four fields have four distinct types, one per arity, so none can stand in for another.
+/// The four eval arrays have four distinct types, one per arity, so none can stand in for another.
 #[derive(Debug, Clone)]
 pub struct OperatorClaims<F: Field> {
-	/// The claim for the ZERO constraints, `VAL == 0`.
-	pub zero: OperatorData<F, ZERO_ARITY>,
-	/// The claim for the AND constraints, `A & B ^ C == 0`.
-	pub bitand: OperatorData<F, BITAND_ARITY>,
-	/// The claim for the IMUL constraints, `A * B == (HI << 64) | LO`.
-	pub intmul: OperatorData<F, INTMUL_ARITY>,
-	/// The claim for the BMUL constraints, `A * B == C` in the GHASH field.
-	pub binmul: OperatorData<F, BINMUL_ARITY>,
+	/// The unified constraint point, as long as the widest operation's constraint count.
+	pub r_x: Vec<F>,
+	/// Each operation's constraint-variable count, in `[zero, bitand, intmul, binmul]` order.
+	///
+	/// Operation `z` is claimed at `r_x[..log_constraints[z]]`; see [`log_constraints`].
+	pub log_constraints: [usize; OPERATION_COUNT],
+	/// The univariate challenge folding the bit axis, shared by every operation.
+	pub r_zhat_prime: F,
+	/// The evaluation of the ZERO constraints' operand, `VAL == 0`.
+	pub zero: [F; ZERO_ARITY],
+	/// The evaluations of the AND constraints' operands, `A & B ^ C == 0`.
+	pub bitand: [F; BITAND_ARITY],
+	/// The evaluations of the IMUL constraints' operands, `A * B == (HI << 64) | LO`.
+	pub intmul: [F; INTMUL_ARITY],
+	/// The evaluations of the BMUL constraints' operands, `A * B == C` in the GHASH field.
+	pub binmul: [F; BINMUL_ARITY],
 }
 
 impl<F: Field> OperatorClaims<F> {
-	/// Assembles the four claims from the output of the BitAnd sumcheck.
+	/// Assembles the claims from the output of the BitAnd sumcheck.
 	///
 	/// The sumcheck's point is `r_rho || r_x_star`, instance index low, constraint index high.
-	/// Each operation is claimed at the prefix of `r_x_star` its rows span, so all four share
-	/// `r_rho`. The Zero point comes from [`zero::reduction_point`], which draws any extra
+	/// `r_x_star` spans the widest AND, IMUL and BMUL set. The constraint point `r_x` extends it
+	/// through [`zero::reduction_point`] when the ZERO set is wider still, drawing the extra
 	/// challenges from `sample`.
 	///
-	/// An operation the constraint system does not use gets a zero claim.
+	/// An operation the constraint system does not use gets zero evaluations.
 	///
 	/// # Arguments
 	///
@@ -64,7 +78,7 @@ impl<F: Field> OperatorClaims<F> {
 	/// - `z_challenge`: the univariate challenge, shared by every operation.
 	/// - `rerand`: the sumcheck's output, with the IntMul operand evaluations before the BinMul
 	///   ones.
-	/// - `sample`: draws the Zero point's extra challenges from the transcript.
+	/// - `sample`: draws the constraint point's extra challenges from the transcript.
 	pub fn from_rerand(
 		cs: &ConstraintSystem,
 		log_instances: usize,
@@ -73,20 +87,19 @@ impl<F: Field> OperatorClaims<F> {
 		sample: impl FnMut() -> F,
 	) -> Self {
 		let r_x_star = &rerand.eval_point[log_instances..];
+		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
+		let r_x = zero::reduction_point(r_x_star, r_x_star.len().max(log_n_zero), sample);
+
 		let mut evals = iter::chain(rerand.bitand_evals, rerand.operand_evals.iter().copied());
 		// The BitAnd check has no skip branch: an empty AND set reduces over one zero row.
-		let log_n_and = cs.log_and_constraints().unwrap_or(0);
-		let bitand = operation_claim(Some(log_n_and), r_x_star, z_challenge, &mut evals);
-		let intmul = operation_claim(cs.log_imul_constraints(), r_x_star, z_challenge, &mut evals);
-		let binmul = operation_claim(cs.log_bmul_constraints(), r_x_star, z_challenge, &mut evals);
-		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
-		let zero = OperatorData {
-			evals: [F::ZERO],
-			r_zhat_prime: z_challenge,
-			r_x_prime: zero::reduction_point(r_x_star, log_n_zero, sample),
-		};
+		let bitand = operand_evals(true, &mut evals);
+		let intmul = operand_evals(cs.n_imul_constraints() > 0, &mut evals);
+		let binmul = operand_evals(cs.n_bmul_constraints() > 0, &mut evals);
 		Self {
-			zero,
+			r_x,
+			log_constraints: log_constraints(cs),
+			r_zhat_prime: z_challenge,
+			zero: [F::ZERO],
 			bitand,
 			intmul,
 			binmul,
@@ -102,9 +115,6 @@ impl<F: Field> OperatorClaims<F> {
 	/// ```text
 	/// eq(operation_batch_challenges, op) * eq(operand_batch_challenges, m)
 	/// ```
-	///
-	/// Two operations' weights are distinct entries of one equality tensor, so their batched
-	/// values sum directly, with no further scaling to separate them.
 	///
 	/// The operand axis is shared by the four operations, and padded to a cube: an operation of
 	/// arity below `1 << LOG_MAX_ARITY` reads a prefix of the same weights, and the slots above
@@ -126,53 +136,76 @@ impl<F: Field> OperatorClaims<F> {
 		let operation_weights = eq_ind_partial_eval_scalars(&operation_batch_challenges);
 		let operand_weights = eq_ind_partial_eval_scalars(&operand_batch_challenges);
 
+		// Only the leading `ARITY` operand weights name a claim; `inner_product` pairs the two
+		// sequences exactly, so the shared tail is cut here.
+		let operation_evals =
+			[&self.zero[..], &self.bitand, &self.intmul, &self.binmul].map(|evals| {
+				inner_product(evals.iter().copied(), operand_weights[..evals.len()].iter().copied())
+			});
+		let batched_eval = inner_product(operation_weights.iter().copied(), operation_evals);
+
+		// Every operation is claimed at a prefix of `r_x`, so one expansion of it truncates to
+		// each operation's table. The operation's weight reaches every term of the operation, so
+		// it is folded into the table.
+		let mut weighted_r_x_tensors = constraint_tables(
+			eq_ind_partial_eval::<F>(&self.r_x).into_inner(),
+			self.log_constraints,
+		);
+		for (tensor, &weight) in iter::zip(&mut weighted_r_x_tensors, &operation_weights) {
+			tensor
+				.par_iter_mut()
+				.with_min_task(WorkPerItem::FieldMuls)
+				.for_each(|entry| *entry *= weight);
+		}
+
 		PreparedOperatorClaims {
-			zero: PreparedOperatorData::new(self.zero, operation_weights[0], &operand_weights),
-			bitand: PreparedOperatorData::new(self.bitand, operation_weights[1], &operand_weights),
-			intmul: PreparedOperatorData::new(self.intmul, operation_weights[2], &operand_weights),
-			binmul: PreparedOperatorData::new(self.binmul, operation_weights[3], &operand_weights),
+			batched_eval,
+			r_zhat_prime: self.r_zhat_prime,
+			weighted_r_x_tensors,
 			operand_weights,
 		}
 	}
 }
 
-/// An operation's claim at its prefix of `r_x_star`, or a zero claim when it is absent.
+/// An operation's operand evaluations, or zeros when it is absent.
 ///
 /// A present operation takes its `ARITY` evaluations off the front of `evals`.
-fn operation_claim<F: Field, const ARITY: usize>(
-	log_n_constraints: Option<usize>,
-	r_x_star: &[F],
-	z_challenge: F,
+fn operand_evals<F: Field, const ARITY: usize>(
+	present: bool,
 	evals: &mut impl Iterator<Item = F>,
-) -> OperatorData<F, ARITY> {
-	log_n_constraints.map_or_else(
-		|| OperatorData::zero_claim(z_challenge),
-		|log_n| OperatorData {
-			evals: array::from_fn(|_| {
-				evals
-					.next()
-					.expect("the sumcheck returns one evaluation per operand column")
-			}),
-			r_zhat_prime: z_challenge,
-			r_x_prime: r_x_star[..log_n].to_vec(),
-		},
-	)
+) -> [F; ARITY] {
+	if present {
+		array::from_fn(|_| {
+			evals
+				.next()
+				.expect("the sumcheck returns one evaluation per operand column")
+		})
+	} else {
+		[F::ZERO; ARITY]
+	}
 }
 
 /// The claims with their batching weights folded in, as both proving phases read them.
 ///
-/// Each entry also carries the tensor expansion of its constraint point.
-/// That expansion is shared by every key of the operation, so it is built once here.
+/// Each operation's constraint table is shared by every key of the operation, so it is built once
+/// here. Indexing by an [`Operation`] reads it.
 #[derive(Debug, Clone)]
 pub struct PreparedOperatorClaims<F: Field> {
-	/// The prepared claim for the ZERO constraints.
-	pub zero: PreparedOperatorData<F>,
-	/// The prepared claim for the AND constraints.
-	pub bitand: PreparedOperatorData<F>,
-	/// The prepared claim for the IMUL constraints.
-	pub intmul: PreparedOperatorData<F>,
-	/// The prepared claim for the BMUL constraints.
-	pub binmul: PreparedOperatorData<F>,
+	/// The operand claims collapsed into the single value the reduction proves:
+	///
+	/// ```text
+	/// batched_eval = sum_op operation_weights[op] * sum_m evals_op[m] * operand_weights[m]
+	/// ```
+	///
+	/// This is the claim phase 1 hands its sumcheck, and it is the same value the verifier
+	/// computes from the operand evaluation claims before running its own.
+	pub batched_eval: F,
+	/// The univariate challenge folding the bit axis, shared by every operation.
+	pub r_zhat_prime: F,
+	/// Each operation's constraint table, in `[zero, bitand, intmul, binmul]` order: the equality
+	/// indicator of its prefix of `r_x`, one weight per constraint, scaled by the operation's own
+	/// batching weight.
+	pub weighted_r_x_tensors: [Vec<F>; OPERATION_COUNT],
 	/// The weight of each operand position, `1 << LOG_MAX_ARITY` entries.
 	///
 	/// The operand axis is shared by the four operations, so this table is too: a key reads it at
@@ -180,32 +213,18 @@ pub struct PreparedOperatorClaims<F: Field> {
 	pub operand_weights: Vec<F>,
 }
 
-impl<F: Field> PreparedOperatorClaims<F> {
-	/// The four operations' claims collapsed into the single value the reduction proves.
-	///
-	/// Each operation's batched evaluation already carries its own weight on the operation axis,
-	/// so the four sum directly with no further scaling.
-	///
-	/// This is the claim phase 1 hands its sumcheck, and it is the same value the verifier
-	/// computes from the operand evaluation claims before running its own.
-	pub fn batched_eval(&self) -> F {
-		self.zero.batched_eval
-			+ self.bitand.batched_eval
-			+ self.intmul.batched_eval
-			+ self.binmul.batched_eval
-	}
-}
-
 impl<F: Field> Index<Operation> for PreparedOperatorClaims<F> {
-	type Output = PreparedOperatorData<F>;
+	type Output = [F];
 
-	fn index(&self, operation: Operation) -> &PreparedOperatorData<F> {
-		match operation {
-			Operation::Zero => &self.zero,
-			Operation::BitwiseAnd => &self.bitand,
-			Operation::IntegerMul => &self.intmul,
-			Operation::BinMul => &self.binmul,
-		}
+	/// The operation's weighted constraint table.
+	fn index(&self, operation: Operation) -> &[F] {
+		let index = match operation {
+			Operation::Zero => 0,
+			Operation::BitwiseAnd => 1,
+			Operation::IntegerMul => 2,
+			Operation::BinMul => 3,
+		};
+		&self.weighted_r_x_tensors[index]
 	}
 }
 
@@ -216,13 +235,16 @@ mod tests {
 
 	use super::*;
 
-	// A zero claim per operation, each at the arity its field's type fixes.
+	// Zero claims at the empty constraint point.
 	fn zero_claims() -> OperatorClaims<B128> {
 		OperatorClaims {
-			zero: OperatorData::zero_claim(B128::ZERO),
-			bitand: OperatorData::zero_claim(B128::ZERO),
-			intmul: OperatorData::zero_claim(B128::ZERO),
-			binmul: OperatorData::zero_claim(B128::ZERO),
+			r_x: Vec::new(),
+			log_constraints: [0; OPERATION_COUNT],
+			r_zhat_prime: B128::ZERO,
+			zero: [B128::ZERO; ZERO_ARITY],
+			bitand: [B128::ZERO; BITAND_ARITY],
+			intmul: [B128::ZERO; INTMUL_ARITY],
+			binmul: [B128::ZERO; BINMUL_ARITY],
 		}
 	}
 
@@ -268,15 +290,15 @@ mod tests {
 			IPProverChannel::<B128>::sample(&mut expected)
 		);
 
-		// A claim scaled by its operation's weight reproduces that weight, since the operand
-		// claims here are all zero and the constraint point is empty.
+		// A table scaled by its operation's weight reproduces that weight, since the constraint
+		// point is empty.
 		for (operation, weight) in [
 			(Operation::Zero, operation_weights[0]),
 			(Operation::BitwiseAnd, operation_weights[1]),
 			(Operation::IntegerMul, operation_weights[2]),
 			(Operation::BinMul, operation_weights[3]),
 		] {
-			assert_eq!(prepared[operation].weighted_r_x_prime_tensor.as_ref(), &[weight]);
+			assert_eq!(prepared[operation], [weight]);
 		}
 	}
 }

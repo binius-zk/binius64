@@ -41,6 +41,13 @@ pub const BINMUL_ARITY: usize = 6;
 /// The number of operations the shift reduction batches: ZERO, AND, IMUL and BMUL.
 pub const OPERATION_COUNT: usize = 4;
 
+/// Each operation's operand arity, in the order the reduction batches them.
+///
+/// The reduction's operand claims arrive as one flat slice, holding each operation's run of this
+/// many evaluations in this order.
+pub const OPERATION_ARITIES: [usize; OPERATION_COUNT] =
+	[ZERO_ARITY, BITAND_ARITY, INTMUL_ARITY, BINMUL_ARITY];
+
 /// The base-2 logarithm of the operation axis the reduction batches over.
 ///
 /// An operation's claims are weighted by the equality indicator of this many challenges, evaluated
@@ -72,6 +79,6 @@ mod verify;
 pub use error::Error;
 pub use shift_ind::evaluate_shift_inds;
 pub use verify::{
-	DeferredWiringClaim, OperationClaim, OperationShare, VerifyOutput, WiringEvalClaim,
-	WiringEvalFn, WiringEvalShape, check_eval, evaluate_words_mle, verify,
+	DeferredWiringClaim, OperationShare, VerifyOutput, WiringEvalClaim, WiringEvalFn,
+	WiringEvalShape, check_eval, constraint_tables, evaluate_words_mle, log_constraints, verify,
 };
