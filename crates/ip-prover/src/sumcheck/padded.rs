@@ -1,4 +1,5 @@
 // Copyright 2026 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::multilinear::eq::eq_one_var;
@@ -24,7 +25,9 @@ use crate::sumcheck::common::SumcheckProver;
 ///
 /// - In a padding round `i < n_extra_vars`, the round polynomial is $R_i(X) = s \cdot \text{eq}(0,
 ///   X) \cdot \prod_{k<i} \text{eq}(0, r_k)$, where $r_k$ is the $k$-th challenge. This is a
-///   genuine degree-1 polynomial built without touching the inner prover.
+///   genuine degree-1 polynomial built without touching the inner prover. It is emitted with
+///   `degree + 1` coefficients, the ones above $X^1$ zero, so a batch that contains it has the full
+///   degree in every round, even when this prover is the only one of that degree.
 /// - In an inner round `i \ge n_extra_vars`, the round polynomial is $R^\text{inner}_{i -
 ///   n_\text{extra}}(X) \cdot \prod_{k<n_\text{extra}} \text{eq}(0, r_k)$.
 ///
@@ -34,6 +37,8 @@ use crate::sumcheck::common::SumcheckProver;
 pub struct PaddedSumcheckDecorator<F: Field, Inner> {
 	inner: Inner,
 	n_extra_vars: usize,
+	/// The degree at which the padding rounds are emitted.
+	degree: usize,
 	/// Number of folds performed so far.
 	round: usize,
 	/// $\prod_{k < \min(\text{round}, n_\text{extra})} \text{eq}(0, r_k)$.
@@ -53,10 +58,13 @@ impl<F: Field, Inner: SumcheckProver<F>> PaddedSumcheckDecorator<F, Inner> {
 	/// * `inner` - The prover whose variable count is being raised.
 	/// * `n_extra_vars` - How many padding variables to prepend.
 	/// * `claims` - The inner prover's claimed sums, one per claim.
-	pub const fn new(inner: Inner, n_extra_vars: usize, claims: Vec<F>) -> Self {
+	/// * `degree` - The round degree the verifier reads, at least 1. The padding rounds are emitted
+	///   at this degree.
+	pub const fn new(inner: Inner, n_extra_vars: usize, claims: Vec<F>, degree: usize) -> Self {
 		Self {
 			inner,
 			n_extra_vars,
+			degree,
 			round: 0,
 			eq_prefix: F::ONE,
 			claims,
@@ -76,13 +84,16 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		if self.in_padding_phase() {
-			// R_i(X) = (s * eq_prefix) * eq(0, X), with eq(0, X) = 1 - X. The inner prover is not
-			// touched during padding rounds.
+			// R_i(X) = (s * eq_prefix) * eq(0, X), with eq(0, X) = 1 - X, zero-extended to the
+			// round degree. The inner prover is not touched during padding rounds.
 			self.claims
 				.iter()
 				.map(|&claim| {
 					let scaled = claim * self.eq_prefix;
-					RoundCoeffs(vec![scaled, -scaled])
+					let mut coeffs = vec![F::ZERO; self.degree + 1];
+					coeffs[0] = scaled;
+					coeffs[1] = -scaled;
+					RoundCoeffs(coeffs)
 				})
 				.collect()
 		} else {
@@ -118,20 +129,19 @@ mod tests {
 		Random,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
-	use binius_ip::{
-		channel::IPVerifierChannel,
-		sumcheck::{RoundCoeffs, RoundProof},
-	};
+	use binius_ip::sumcheck::{BatchSumcheckOutput, RoundCoeffs, batch_verify, verify};
 	use binius_math::{
 		inner_product::inner_product_par,
 		multilinear::{eq::eq_one_var, evaluate::evaluate},
 		test_utils::random_field_buffer,
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use either::Either;
 	use rand::prelude::*;
 
 	use super::*;
 	use crate::sumcheck::{
+		batch::batch_prove_and_write_evals,
 		bivariate_product_evaluator::{BivariateProductEvaluator, bivariate_product_prover},
 		prove::prove_single,
 		round_evaluator::SharedSumcheckProver,
@@ -153,6 +163,36 @@ mod tests {
 		(prover, sum)
 	}
 
+	/// A degree-1 prover for the hypercube sum of one multilinear, held as its evaluations.
+	struct MultilinearSumProver(Vec<F>);
+
+	impl SumcheckProver<F> for MultilinearSumProver {
+		fn n_vars(&self) -> usize {
+			self.0.len().ilog2() as usize
+		}
+
+		fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+			// The highest variable splits the evaluations into its X = 0 and X = 1 halves.
+			let (lo, hi) = self.0.split_at(self.0.len() / 2);
+			let r_0 = lo.iter().copied().sum::<F>();
+			let r_1 = hi.iter().copied().sum::<F>();
+			vec![RoundCoeffs(vec![r_0, r_1 - r_0])]
+		}
+
+		fn fold(&mut self, challenge: F) {
+			let half = self.0.len() / 2;
+			let (lo, hi) = self.0.split_at_mut(half);
+			for (lo_i, &hi_i) in lo.iter_mut().zip(hi.iter()) {
+				*lo_i += challenge * (hi_i - *lo_i);
+			}
+			self.0.truncate(half);
+		}
+
+		fn finish(self) -> Vec<F> {
+			self.0
+		}
+	}
+
 	/// The padding rounds emit `s * eq(0, X) * prod eq(0, r_k)`, and the inner rounds emit the
 	/// inner round polynomial scaled by the same padding product.
 	#[test]
@@ -166,7 +206,7 @@ mod tests {
 		// A parallel bare inner prover, driven only on the inner-phase challenges, to compare round
 		// polynomials against.
 		let (mut bare_inner, _) = make_inner(&mut StdRng::seed_from_u64(0), &alloc, n_vars);
-		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum]);
+		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum], 2);
 
 		let challenges = (0..n_vars + n_extra_vars)
 			.map(|_| F::random(&mut rng))
@@ -180,9 +220,9 @@ mod tests {
 			assert_eq!(round_coeffs.len(), 1);
 
 			if i < n_extra_vars {
-				// Degree-1 polynomial v * (1 - X) with v = s * eq_prefix.
+				// v * (1 - X) with v = s * eq_prefix, zero-extended to degree 2.
 				let v = sum * eq_prefix;
-				assert_eq!(round_coeffs[0], RoundCoeffs(vec![v, -v]));
+				assert_eq!(round_coeffs[0], RoundCoeffs(vec![v, -v, F::ZERO]));
 			} else {
 				// Inner round polynomial scaled by the (now complete) padding product.
 				let inner_coeffs = bare_inner.execute();
@@ -212,7 +252,7 @@ mod tests {
 		let alloc = GlobalAllocator;
 
 		let (inner, sum) = make_inner(&mut rng, &alloc, n_vars);
-		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum]);
+		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum], 2);
 
 		// The running claim starts at the inner prover's sum, before any padding is applied.
 		let mut running = sum;
@@ -228,8 +268,7 @@ mod tests {
 		}
 	}
 
-	/// Full prove/verify roundtrip through a transcript, with a degree-aware verifier loop (padding
-	/// rounds are degree 1, inner rounds degree 2).
+	/// Full prove/verify roundtrip through a transcript, with the fixed-degree verifier.
 	#[test]
 	fn test_prove_verify_roundtrip() {
 		let mut rng = StdRng::seed_from_u64(2);
@@ -242,7 +281,7 @@ mod tests {
 		let b = random_field_buffer::<P>(&mut rng, n_vars);
 		let sum = inner_product_par(&a, &b);
 		let inner = bivariate_product_prover(&alloc, [a.clone(), b.clone()], sum);
-		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum]);
+		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![sum], 2);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove_single(padded, &mut prover_transcript);
@@ -250,20 +289,10 @@ mod tests {
 			.message()
 			.write_slice(&output.multilinear_evals);
 
-		// Degree-aware verification mirroring `binius_ip::sumcheck::verify`.
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut running_sum = sum;
-		let mut challenges = Vec::with_capacity(total_vars);
-		for round in 0..total_vars {
-			let degree = if round < n_extra_vars { 1 } else { 2 };
-			let round_proof =
-				RoundProof(RoundCoeffs(verifier_transcript.recv_many(degree).unwrap()));
-			let challenge = verifier_transcript.sample();
-			let round_coeffs = round_proof.recover(running_sum);
-			running_sum = round_coeffs.evaluate(&challenge);
-			challenges.push(challenge);
-		}
-		let reduced_eval = running_sum;
+		let sumcheck_output = verify(total_vars, 2, sum, &mut verifier_transcript)
+			.expect("verification should succeed");
+		let challenges = sumcheck_output.challenges;
 
 		let multilinear_evals: Vec<F> = verifier_transcript.message().read_vec(2).unwrap();
 		assert_eq!(output.multilinear_evals, multilinear_evals);
@@ -276,13 +305,58 @@ mod tests {
 			.product();
 
 		// Reduced eval = A(r_inner) * B(r_inner) * prod eq(0, r_pad).
-		assert_eq!(multilinear_evals[0] * multilinear_evals[1] * eq_pad, reduced_eval);
+		assert_eq!(multilinear_evals[0] * multilinear_evals[1] * eq_pad, sumcheck_output.eval);
 
 		// The inner multilinears evaluate to the claimed values at the (reversed) inner challenges.
 		let mut inner_point = challenges[n_extra_vars..].to_vec();
 		inner_point.reverse();
 		assert_eq!(evaluate(&a, &inner_point), multilinear_evals[0]);
 		assert_eq!(evaluate(&b, &inner_point), multilinear_evals[1]);
+	}
+
+	/// A padded degree-2 prover batches with a longer, unpadded degree-1 prover. The padding rounds
+	/// carry the batch's degree 2, so every batched round polynomial has the degree the verifier
+	/// reads.
+	#[test]
+	fn test_batch_padded_with_longer_lower_degree_prover() {
+		let mut rng = StdRng::seed_from_u64(4);
+		let n_vars = 4;
+		let n_extra_vars = 3;
+		let total_vars = n_vars + n_extra_vars;
+		let alloc = GlobalAllocator;
+
+		let (inner, product_sum) = make_inner(&mut rng, &alloc, n_vars);
+		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars, vec![product_sum], 2);
+
+		let m = (0..1 << total_vars)
+			.map(|_| F::random(&mut rng))
+			.collect::<Vec<_>>();
+		let m_sum = m.iter().copied().sum::<F>();
+		let linear = MultilinearSumProver(m);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let output = batch_prove_and_write_evals(
+			vec![Either::Left(padded), Either::Right(linear)],
+			&mut prover_transcript,
+		);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let BatchSumcheckOutput {
+			batch_coeff,
+			eval,
+			challenges,
+		} = batch_verify(total_vars, 2, &[product_sum, m_sum], &mut verifier_transcript)
+			.expect("verification should succeed");
+		let evals: Vec<F> = verifier_transcript.message().read_vec(3).unwrap();
+		assert_eq!(output.challenges, challenges);
+
+		let eq_pad: F = challenges[..n_extra_vars]
+			.iter()
+			.map(|&r| eq_one_var(F::ZERO, r))
+			.product();
+
+		// Reduced eval = A(r) * B(r) * prod eq(0, r_pad) + batch_coeff * M(r).
+		assert_eq!(evals[0] * evals[1] * eq_pad + batch_coeff * evals[2], eval);
 	}
 
 	/// With no extra variables the decorator is a transparent passthrough.
@@ -293,7 +367,7 @@ mod tests {
 		let alloc = GlobalAllocator;
 
 		let (inner, sum) = make_inner(&mut rng, &alloc, n_vars);
-		let padded = PaddedSumcheckDecorator::new(inner, 0, vec![sum]);
+		let padded = PaddedSumcheckDecorator::new(inner, 0, vec![sum], 2);
 		assert_eq!(padded.n_vars(), n_vars);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -303,8 +377,8 @@ mod tests {
 			.write_slice(&output.multilinear_evals);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let sumcheck_output = binius_ip::sumcheck::verify(n_vars, 2, sum, &mut verifier_transcript)
-			.expect("verification should succeed");
+		let sumcheck_output =
+			verify(n_vars, 2, sum, &mut verifier_transcript).expect("verification should succeed");
 		let multilinear_evals: Vec<F> = verifier_transcript.message().read_vec(2).unwrap();
 
 		assert_eq!(multilinear_evals[0] * multilinear_evals[1], sumcheck_output.eval);
