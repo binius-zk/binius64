@@ -19,7 +19,7 @@ use binius_verifier::{
 	Error, SECURITY_BITS,
 	config::{B1, B128},
 	protocols::shift::WiringEvalClaim,
-	reduction::{Instances, reduce_constraints},
+	reduction::reduce_constraints,
 	ring_switch::{self, RingSwitchVerifyOutput},
 };
 use digest::Output;
@@ -137,9 +137,7 @@ impl IOPVerifier {
 			.collect::<Vec<_>>();
 		let reduction = reduce_constraints(
 			&self.cs,
-			Instances::Batch {
-				log_instances: self.layout.log_instances,
-			},
+			self.layout.log_instances,
 			InoutSegment::Hidden,
 			&constants,
 			channel,

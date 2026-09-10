@@ -30,7 +30,7 @@ use crate::{
 		rerand::{self, OperandClaims},
 		shift::WiringEvalClaim,
 	},
-	reduction::{Instances, reduce_constraints},
+	reduction::reduce_constraints,
 	ring_switch,
 };
 
@@ -180,7 +180,7 @@ impl IOPVerifier {
 		// Reduce every constraint to one claim on the committed trace.
 		let reduction = reduce_constraints(
 			self.constraint_system(),
-			Instances::Single,
+			0,
 			InoutSegment::Public,
 			&public,
 			channel,

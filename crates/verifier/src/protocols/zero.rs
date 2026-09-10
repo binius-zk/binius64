@@ -22,10 +22,11 @@
 
 /// Builds the constraint point the Zero reduction closes at.
 ///
-/// The reduction runs directly after the BitAnd reduction and evaluates at the point that reduction
-/// has just produced: `rho` is the length-`log_zero_constraints` prefix of the BitAnd sumcheck's
-/// output challenges, extended by fresh challenges from `sample` when the ZERO set has more rows
-/// than the AND set. The prover and verifier derive it identically, so `sample` draws the same
+/// The reduction runs directly after the BitAnd sumcheck and evaluates at the constraint half of
+/// the point that sumcheck has just produced, `r_x_star`: `rho` is its
+/// length-`log_zero_constraints` prefix. The sumcheck runs over the longest of the AND, IMUL and
+/// BMUL arrays, so fresh challenges from `sample` extend `r_x_star` only when the ZERO array is
+/// longer still. The prover and verifier derive it identically, so `sample` draws the same
 /// challenges at the same point in both transcripts.
 ///
 /// `sample` stands in for the channel: the prover and verifier channel traits are unrelated, so one
@@ -43,14 +44,14 @@
 /// leaves untouched. What it does require is that every challenge be drawn after the witness is
 /// committed, which the phase ordering guarantees.
 pub fn reduction_point<F: Clone>(
-	bitand_eval_point: &[F],
+	r_x_star: &[F],
 	log_zero_constraints: usize,
 	mut sample: impl FnMut() -> F,
 ) -> Vec<F> {
-	// The ZERO and AND sets are padded to power-of-two row counts independently, so a ZERO set
-	// with more rows than the AND set runs past the BitAnd point and samples the rest.
+	// Each set is padded to a power-of-two row count independently, so a ZERO set with more rows
+	// than every AND, IMUL and BMUL set runs past `r_x_star` and samples the rest.
 	(0..log_zero_constraints)
-		.map(|i| bitand_eval_point.get(i).map_or_else(&mut sample, F::clone))
+		.map(|i| r_x_star.get(i).map_or_else(&mut sample, F::clone))
 		.collect()
 }
 
