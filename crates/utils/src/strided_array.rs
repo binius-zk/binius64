@@ -3,6 +3,7 @@
 use std::{
 	marker::PhantomData,
 	ops::{Index, IndexMut, Range},
+	slice,
 };
 
 use crate::rayon::prelude::*;
@@ -76,6 +77,59 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 		// - Non-overlap: sibling views hold disjoint column ranges.
 		// - Only the addressed element is ever referenced, never a span of the buffer.
 		unsafe { &mut *self.data.add(i * self.data_width + j + self.cols.start) }
+	}
+
+	/// Returns this view's columns of row `i`, which are contiguous in memory.
+	///
+	/// # Panics
+	///
+	/// Panics if `i` is out of bounds.
+	pub fn row(&self, i: usize) -> &[T] {
+		assert!(i < self.height);
+		let start = i * self.data_width + self.cols.start;
+		// SAFETY:
+		// - Provenance: reborrowed from the exclusive borrow the view was built from.
+		// - Bounds: construction pairs the buffer length with the dimensions, `i` is checked above,
+		//   and the column range is a subrange of the row.
+		// - Non-overlap: the slice spans only this view's columns, which no sibling view holds.
+		unsafe { slice::from_raw_parts(self.data.add(start), self.width()) }
+	}
+
+	/// Returns the `mut_rows` rows mutably alongside the `shared_rows` rows.
+	///
+	/// # Panics
+	///
+	/// Panics if any index is out of bounds.
+	/// Panics if a mutable row repeats, or appears among the shared rows.
+	pub fn rows_mut<const M: usize, const S: usize>(
+		&mut self,
+		mut_rows: [usize; M],
+		shared_rows: [usize; S],
+	) -> ([&mut [T]; M], [&[T]; S]) {
+		for &shared in &shared_rows {
+			assert!(shared < self.height);
+		}
+		for (k, &row) in mut_rows.iter().enumerate() {
+			assert!(row < self.height);
+			assert!(!mut_rows[..k].contains(&row), "a mutable row repeats");
+			assert!(!shared_rows.contains(&row), "a mutable row is also a shared row");
+		}
+
+		let (data_width, start, width) = (self.data_width, self.cols.start, self.width());
+		let base = self.data;
+		// SAFETY:
+		// Row `i` occupies `i * data_width + start .. + width`, inside `data` because
+		// `i < height` and the column range is a subrange of the row.
+		// The asserts above make the mutable rows pairwise distinct and disjoint from the
+		// shared rows, so no two of the returned slices ever overlap.
+		// Dropping either assert would hand out two references to one element.
+		unsafe {
+			(
+				mut_rows
+					.map(|i| slice::from_raw_parts_mut(base.add(i * data_width + start), width)),
+				shared_rows.map(|i| slice::from_raw_parts(base.add(i * data_width + start), width)),
+			)
+		}
 	}
 
 	pub const fn height(&self) -> usize {
@@ -347,6 +401,52 @@ mod tests {
 
 		assert_eq!(data[0], 88);
 		assert_eq!(data[5], 99);
+	}
+
+	#[test]
+	fn a_row_covers_only_the_columns_the_view_holds() {
+		let mut data = array::from_fn::<_, 12, _>(|i| i);
+		let arr = StridedArray2DViewMut::without_stride(&mut data, 4, 3).unwrap();
+
+		// Row 1 of the array is 3, 4, 5, and a full-width view sees all of it.
+		assert_eq!(arr.row(1), &[3, 4, 5]);
+
+		// The second stride of width 2 holds column 2 alone.
+		let stride = arr.into_strides(2).nth(1).unwrap();
+		assert_eq!(stride.row(1), &[5]);
+	}
+
+	#[test]
+	fn split_rows_alias_nothing_and_write_through() {
+		let mut data = array::from_fn::<_, 12, _>(|i| i);
+		let mut arr = StridedArray2DViewMut::without_stride(&mut data, 4, 3).unwrap();
+
+		let ([sum, diff], [x, y]) = arr.rows_mut([0, 1], [2, 3]);
+		assert_eq!(x, &[6, 7, 8]);
+		assert_eq!(y, &[9, 10, 11]);
+		for i in 0..3 {
+			sum[i] = x[i] + y[i];
+			diff[i] = y[i] - x[i];
+		}
+
+		assert_eq!(&data[0..3], &[15, 17, 19]);
+		assert_eq!(&data[3..6], &[3, 3, 3]);
+	}
+
+	#[test]
+	#[should_panic(expected = "a mutable row is also a shared row")]
+	fn a_mutable_row_may_not_be_a_shared_row() {
+		let mut data = array::from_fn::<_, 12, _>(|i| i);
+		let mut arr = StridedArray2DViewMut::without_stride(&mut data, 4, 3).unwrap();
+		arr.rows_mut([1], [0, 1]);
+	}
+
+	#[test]
+	#[should_panic(expected = "a mutable row repeats")]
+	fn two_mutable_rows_may_not_name_one_row() {
+		let mut data = array::from_fn::<_, 12, _>(|i| i);
+		let mut arr = StridedArray2DViewMut::without_stride(&mut data, 4, 3).unwrap();
+		arr.rows_mut([2, 2], [0]);
 	}
 
 	#[test]
