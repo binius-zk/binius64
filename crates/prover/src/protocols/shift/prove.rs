@@ -3,12 +3,9 @@
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, PackedField};
+use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{
-	BinarySubspace, FieldBuffer, inner_product::inner_product,
-	multilinear::eq::scaled_eq_ind_partial_eval, univariate::EvaluationDomain,
-};
+use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 
 use super::{
 	SegmentWords,
@@ -18,106 +15,6 @@ use super::{
 	phase_2::{ShiftOutput, prove_phase_2},
 	shift_ind::{ShiftChallengePoint, ShiftIndSumcheck},
 };
-
-/// One operation's operand evaluation claims, with the point they are claimed at.
-///
-/// An operation constrains a fixed number of operands at once, its arity:
-///
-/// ```text
-/// ZERO 1   AND 3   IMUL 4   BMUL 6
-/// ```
-///
-/// The arity is a type parameter, so two operations' claims cannot be passed in each other's
-/// place.
-///
-/// Every operand is claimed at the same point: an oblong pair of a univariate bit-axis
-/// coordinate and a multilinear constraint-index coordinate.
-#[derive(Debug, Clone)]
-pub struct OperatorData<F: Field, const ARITY: usize> {
-	/// The claimed evaluation of each operand column, in the operation's operand order.
-	pub evals: [F; ARITY],
-	/// The univariate challenge folding the bit axis, shared by every operation.
-	pub r_zhat_prime: F,
-	/// The multilinear challenge over the constraint index.
-	pub r_x_prime: Vec<F>,
-}
-
-impl<F: Field, const ARITY: usize> OperatorData<F, ARITY> {
-	/// The claim of an operation the constraint system does not use.
-	///
-	/// Every operand evaluates to zero, at the empty constraint point, so this claim
-	/// contributes nothing to the batch.
-	///
-	/// # Arguments
-	///
-	/// - `r_zhat_prime`: the univariate challenge, shared by every operation.
-	pub const fn zero_claim(r_zhat_prime: F) -> Self {
-		Self {
-			evals: [F::ZERO; ARITY],
-			r_zhat_prime,
-			r_x_prime: Vec::new(),
-		}
-	}
-}
-
-/// One operation's claims, with the expansion every proving phase needs precomputed.
-///
-/// Every shift key of the operation reads the same constraint-point expansion, built once here.
-/// The operation's own batching weight is folded into it: that weight reaches every term of the
-/// operation, and the expansion's seed is where it costs nothing to carry.
-///
-/// The arity is erased, since every phase picks an operation at run time and all four have to
-/// share one type.
-/// Only the batched combination survives that erasure, as a single scalar.
-#[derive(Debug, Clone)]
-pub struct PreparedOperatorData<F: Field> {
-	/// The operand claims collapsed into one value by the batching weights:
-	///
-	/// ```text
-	/// batched_eval = operation_weight * sum_i evals[i] * operand_weights[i]
-	/// ```
-	///
-	/// Two operations' batched values can be summed directly, with no further scaling, since
-	/// their operation weights are distinct entries of one equality tensor.
-	pub batched_eval: F,
-	/// The univariate challenge folding the bit axis, shared by every operation.
-	pub r_zhat_prime: F,
-	/// The equality-indicator tensor of the constraint point, one weight per constraint, scaled by
-	/// this operation's own batching weight.
-	pub weighted_r_x_prime_tensor: FieldBuffer<F>,
-}
-
-impl<F: Field> PreparedOperatorData<F> {
-	/// Expands one operation's claims against the batching weights drawn for it.
-	///
-	/// # Arguments
-	///
-	/// - `operator_data`: the operand claims, and the point they are claimed at.
-	/// - `operation_weight`: this operation's entry in the operation-axis equality tensor.
-	/// - `operand_weights`: the operand-axis equality tensor, shared by the four operations. Only
-	///   its leading `ARITY` entries name a claim of this operation.
-	pub fn new<const ARITY: usize>(
-		operator_data: OperatorData<F, ARITY>,
-		operation_weight: F,
-		operand_weights: &[F],
-	) -> Self {
-		let OperatorData {
-			evals,
-			r_zhat_prime,
-			r_x_prime,
-		} = operator_data;
-		let weighted_r_x_prime_tensor =
-			scaled_eq_ind_partial_eval::<F>(&r_x_prime, operation_weight);
-		Self {
-			// Only the leading `ARITY` weights name a claim; `inner_product` pairs the two
-			// sequences exactly, so the shared tail is cut here.
-			batched_eval: operation_weight
-				* inner_product(evals, operand_weights[..ARITY].iter().copied()),
-			r_zhat_prime,
-			weighted_r_x_prime_tensor,
-		}
-	}
-}
 
 /// Proves the shift protocol reduction, collapsing every operation's claims into one.
 ///
@@ -136,7 +33,7 @@ impl<F: Field> PreparedOperatorData<F> {
 /// - `key_collection`: the prover's key collection for the constraint system.
 /// - `public_words`: the constants followed by the inout values, as the circuit declares them.
 /// - `hidden_words`: the private values, as the circuit declares them.
-/// - `claims`: the operand evaluation claim of each operation.
+/// - `claims`: the operand evaluation claims, all at prefixes of one constraint point.
 /// - `domain_subspace`: the univariate evaluation domain.
 /// - `channel`: the prover channel the interactive rounds run over.
 /// - `alloc`: the allocator the intermediate buffers are drawn from.
@@ -167,7 +64,8 @@ where
 		hidden: hidden_words,
 	};
 
-	// One batching coefficient per operation, expanded along with its constraint point.
+	// One batching coefficient per operation, folded into its prefix of the constraint point's
+	// expansion.
 	// SOUNDNESS: this must draw in the same order the verifier draws in.
 	let prepared = {
 		let _scope = tracing::debug_span!("Expand tensor queries").entered();
@@ -176,8 +74,7 @@ where
 
 	// The weights the reduction's first factor carries, one per bit position.
 	// Phase 1 and phase 3 both need them, so they are computed once here.
-	// All four operations share `r_zhat_prime`, so it is drawn from the BitAnd claim.
-	let oblong_weights = domain_subspace.lagrange_evals_buffer(prepared.bitand.r_zhat_prime);
+	let oblong_weights = domain_subspace.lagrange_evals_buffer(prepared.r_zhat_prime);
 
 	// Phase 1: bind the shift variant, the shift amount, and the bit position.
 	let phase_1_output = prove_phase_1::<_, P, _, _>(

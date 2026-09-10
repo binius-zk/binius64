@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, iter};
+use std::{array, cmp::Reverse, iter};
 
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
@@ -65,40 +65,63 @@ where
 		.sum()
 }
 
-/// One operation's evaluation claims entering the shift reduction.
+/// The evaluation claims entering the shift reduction, all at prefixes of one constraint point.
 ///
-/// The reduction takes one claim per operation and batches the four into the single claim its
-/// sumcheck runs on.
+/// The reduction batches the four operations' claims into the single claim its sumcheck runs on.
 #[derive(Debug, Clone)]
-pub struct OperationClaim<F> {
-	/// The constraint-index point the operands are claimed at.
-	pub r_x_prime: Vec<F>,
-	/// One evaluation per operand position, so as many as the operation's arity.
-	pub evals: Vec<F>,
+pub struct OperationClaims<F> {
+	/// The unified constraint point `r_x`, as long as the widest operation's constraint count.
+	pub r_x: Vec<F>,
+	/// One eval per operand position, per operation in `[zero, bitand, intmul, binmul]` order.
+	///
+	/// Operation `z` is claimed at `r_x[..log_constraints(cs)[z]]`; see [`log_constraints`]. Each
+	/// holds at most `1 << LOG_MAX_ARITY` evals.
+	pub evals: [Vec<F>; OPERATION_COUNT],
 }
 
-impl<F: FieldOps> OperationClaim<F> {
-	/// The operand evaluations `evals`, claimed at the constraint-index point `r_x_prime`.
-	pub const fn new(r_x_prime: Vec<F>, evals: Vec<F>) -> Self {
-		Self { r_x_prime, evals }
-	}
+/// Each operation's constraint-variable count, in `[zero, bitand, intmul, binmul]` order.
+///
+/// Operation `z` is claimed at the prefix `r_x[..log_constraints(cs)[z]]` of the constraint point.
+/// An empty constraint array reads as zero variables.
+pub fn log_constraints(cs: &ConstraintSystem) -> [usize; OPERATION_COUNT] {
+	[
+		cs.log_zero_constraints(),
+		cs.log_and_constraints(),
+		cs.log_imul_constraints(),
+		cs.log_bmul_constraints(),
+	]
+	.map(|log_constraints| log_constraints.unwrap_or(0))
+}
 
-	/// The operand claims collapsed into one value by the operand-axis equality tensor.
-	///
-	/// Operand `m` is weighted by `operand_weights[m]`. Combining the four operations is the
-	/// caller's step: their weights are distinct entries of the operation-axis tensor, so the
-	/// four values this returns pair with it as an inner product.
-	///
-	/// ## Preconditions
-	///
-	/// * `operand_weights` has at least one entry per eval; the slots above the arity name no
-	///   claim.
-	fn batched_eval(&self, operand_weights: &[F]) -> F {
-		assert!(operand_weights.len() >= self.evals.len()); // precondition
-		iter::zip(&self.evals, operand_weights)
-			.map(|(eval, weight)| eval.clone() * weight)
-			.sum()
+/// Cuts one expansion of the constraint point into each operation's constraint table.
+///
+/// Operation `z`'s table is the equality indicator of its prefix `r_x[..log_constraints[z]]`.
+/// Summing an expansion's two halves strips its highest variable, so the one expansion of `r_x`
+/// truncates to every prefix with additions alone. The operations are cut widest first, each
+/// continuing from the last.
+///
+/// # Preconditions
+///
+/// * `r_x_tensor` is the equality indicator of a point at least as long as every `log_constraints`
+///   entry.
+pub fn constraint_tables<E: FieldOps>(
+	mut r_x_tensor: Vec<E>,
+	log_constraints: [usize; OPERATION_COUNT],
+) -> [Vec<E>; OPERATION_COUNT] {
+	let mut operations = array::from_fn::<_, OPERATION_COUNT, _>(|operation| operation);
+	operations.sort_by_key(|&operation| Reverse(log_constraints[operation]));
+
+	let mut tables = array::from_fn(|_| Vec::new());
+	for operation in operations {
+		let len = 1 << log_constraints[operation];
+		assert!(len <= r_x_tensor.len()); // precondition
+		while r_x_tensor.len() > len {
+			let high = r_x_tensor.split_off(r_x_tensor.len() / 2);
+			iter::zip(&mut r_x_tensor, high).for_each(|(low, high)| *low += high);
+		}
+		tables[operation] = r_x_tensor.clone();
 	}
+	tables
 }
 
 /// Output of the shift reduction verification protocol.
@@ -181,8 +204,7 @@ impl<F> VerifyOutput<F> {
 /// # Parameters
 /// - `constraint_system`: The constraint system containing AND, IMUL and BMUL constraints
 /// - `inout`: Which segment holds the inout values, which fixes where the two segments split
-/// - `claims`: Each operation's evaluation claims, ordered as the operators are declared: zero,
-///   bitand, intmul, binmul
+/// - `claims`: The operand evaluation claims, all at prefixes of one constraint point
 /// - `channel`: Interactive channel for challenge sampling and message reading
 ///
 /// # Returns
@@ -196,7 +218,7 @@ impl<F> VerifyOutput<F> {
 pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
 	inout: InoutSegment,
-	claims: [&OperationClaim<C::Elem>; OPERATION_COUNT],
+	claims: &OperationClaims<C::Elem>,
 	channel: &mut C,
 ) -> Result<VerifyOutput<C::Elem>, Error>
 where
@@ -210,12 +232,18 @@ where
 	// A claim's batching weight is the product of the two axes' equality indicators, so the two
 	// expansions factor it: the operand tensor batches one operation's own claims, and the
 	// operation tensor combines the four. The operation weights are indexed in the order the four
-	// operator arguments are declared.
+	// operations' evals are held. An operation of lower arity reads a prefix of the operand
+	// weights; the slots above its arity name no claim.
 	let operation_weights = eq_ind_partial_eval_scalars(&operation_batch_challenges);
 	let operand_weights = eq_ind_partial_eval_scalars(&operand_batch_challenges);
 
-	let eval =
-		inner_product(operation_weights, claims.map(|claim| claim.batched_eval(&operand_weights)));
+	let operation_evals = claims.evals.iter().map(|evals| {
+		assert!(evals.len() <= operand_weights.len()); // precondition
+		iter::zip(evals, &operand_weights)
+			.map(|(eval, weight)| eval.clone() * weight)
+			.sum::<C::Elem>()
+	});
+	let eval = inner_product(operation_weights, operation_evals);
 
 	// The sumcheck runs over the witness as well: the public segment in the low half-cube and
 	// the hidden segment in the high half-cube, selected by the top word-index variable. Each
@@ -301,9 +329,8 @@ where
 /// from the prover and reduces it onto the packed public segment, so a prover that used different
 /// public values fails there rather than here.
 ///
-/// `r_x_primes` holds the four operations' sumcheck challenge points, ordered as the operators are
-/// declared: zero, bitand, intmul, binmul. Only the points enter here; the evaluation claims they
-/// carry are [`verify`]'s to batch.
+/// `r_x` is the unified constraint point every operation is claimed at a prefix of. Only the point
+/// enters here; the evaluation claims at it are [`verify`]'s to batch.
 ///
 /// # Errors
 ///
@@ -314,7 +341,7 @@ pub fn check_eval<'a, F, C>(
 	constraint_system: &'a ConstraintSystem,
 	inout: InoutSegment,
 	public_eval: C::Elem,
-	r_x_primes: [&[C::Elem]; OPERATION_COUNT],
+	r_x: &[C::Elem],
 	subspace: &BinarySubspace<F>,
 	r_zhat_prime: &C::Elem,
 	output: &VerifyOutput<C::Elem>,
@@ -364,11 +391,11 @@ where
 	let monster_eval = l_tilde_eval * shift_ind_eval * wiring_eval.clone();
 
 	// The function the caller checks the claim with, and the flat input it reads. Every entry is a
-	// public-channel-derived element (the two batching challenge vectors, the four operations'
-	// `r_x_prime` vectors, both shift slots' challenges, `r_y`, and `r_segment` last); the
-	// constraint system it sums over is fixed.
+	// public-channel-derived element (the two batching challenge vectors, the constraint point
+	// `r_x`, both shift slots' challenges, `r_y`, and `r_segment` last); the constraint system it
+	// sums over is fixed.
 	let claim = {
-		let r_x_prime_lens = r_x_primes.map(<[_]>::len);
+		let r_x_len = r_x.len();
 		let r_s_len = r_s_inner.len();
 		let r_v_len = r_v_inner.len();
 		let r_y_len = r_y.len();
@@ -376,7 +403,7 @@ where
 		let inputs: Vec<C::Elem> = chain!(
 			operation_batch_challenges,
 			operand_batch_challenges,
-			r_x_primes.into_iter().flatten(),
+			r_x,
 			r_s_inner,
 			r_v_inner,
 			r_s_outer,
@@ -391,7 +418,7 @@ where
 			constraint_system,
 			WiringEvalShape {
 				inout,
-				r_x_prime_lens,
+				r_x_len,
 				r_s_len,
 				r_v_len,
 				r_y_len,
@@ -554,7 +581,7 @@ impl<E> WiringEvalClaim<'_, E> {
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// operation_batch_challenges.. | operand_batch_challenges.. | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y.. | r_segment
+/// operation_batch_challenges.. | operand_batch_challenges.. | r_x.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y.. | r_segment
 /// ```
 ///
 /// The stored lengths recover each variable-length section from that flat slice. Both shift slots
@@ -587,9 +614,9 @@ pub struct WiringEvalFn<'a> {
 pub struct WiringEvalShape {
 	/// Which segment holds the inout values, which fixes where the word-index tensor is cut.
 	inout: InoutSegment,
-	/// Length of each operator's `r_x_prime` section, ordered as the operators are declared:
-	/// zero, bitand, intmul, binmul.
-	r_x_prime_lens: [usize; OPERATION_COUNT],
+	/// Length of the `r_x` section, the unified constraint point. Each operation reads the prefix
+	/// its own constraint count spans, which [`log_constraints`] reads off the constraint system.
+	r_x_len: usize,
 	/// Length of each `r_s` section (one shift slot's amount challenges).
 	r_s_len: usize,
 	/// Length of each `r_v` section (one shift slot's variant challenges).
@@ -657,9 +684,7 @@ impl<'a> WiringEvalFn<'a> {
 		&self,
 		vals: &[E],
 	) -> [OperationShare<E>; OPERATION_COUNT] {
-		// Seeded with one, so an evaluation is the operation's own rather than its batch term.
-		let unscaled = array::from_fn(|_| E::one());
-		let inputs = self.wiring_weights(vals, scaled_eq_ind_partial_eval_scalars, &unscaled);
+		let inputs = self.wiring_weights(vals, scaled_eq_ind_partial_eval_scalars);
 		let cs = self.constraint_system;
 		let value = inputs.value_tensor(cs, self.shape.inout);
 		let weights = |constraint| operation_weights(constraint, &inputs, value);
@@ -674,24 +699,25 @@ impl<'a> WiringEvalFn<'a> {
 
 		// A point reads the flat input in the order the input already holds it.
 		//
-		//     vals:   operation batch | operand batch | a constraint run per operation | the rest
-		//     point:  this operation's constraint run | operand batch | the rest
+		//     vals:   operation batch | operand batch | r_x | the rest
+		//     point:  this operation's prefix of r_x | operand batch | the rest
 		//
-		// So only the constraint runs have to be located, and everything above them is one slice.
+		// So only the constraint run has to be located, and everything above it is one slice.
 		let operand_batch = &vals[LOG_OPERATION_COUNT..][..LOG_MAX_ARITY];
-		let mut off = LOG_OPERATION_COUNT + LOG_MAX_ARITY;
-		let r_x_prime = self.shape.r_x_prime_lens.map(|len| {
-			let run = &vals[off..off + len];
-			off += len;
-			run
-		});
-		let above_constraints = &vals[off..];
+		let (r_x, above_constraints) =
+			vals[LOG_OPERATION_COUNT + LOG_MAX_ARITY..].split_at(self.shape.r_x_len);
+		let log_constraints = log_constraints(cs);
 
 		let scales = operation_scales(vals);
 		array::from_fn(|operation| OperationShare {
 			claim: MultilinearEvalClaim {
 				eval: evals[operation].clone(),
-				point: [r_x_prime[operation], operand_batch, above_constraints].concat(),
+				point: [
+					&r_x[..log_constraints[operation]],
+					operand_batch,
+					above_constraints,
+				]
+				.concat(),
 			},
 			weight: scales[operation].clone(),
 		})
@@ -703,13 +729,9 @@ impl<'a> WiringEvalFn<'a> {
 /// Only the constraint-index table differs between operations. The other three are built once and
 /// lent to all four, rather than copied per operation.
 ///
-/// Each constraint table is the equality indicator of its operation's constraint challenge, scaled
-/// by the seed its builder was handed.
-///
-/// A batched evaluation seeds it with that operation's weight, which then rides for free: it
-/// reaches every term of the operation at no cost beyond the expansion.
-///
-/// An operation with no constraints sums no terms, so its table is left empty.
+/// Each constraint table is the equality indicator of its operation's prefix of `r_x`, unscaled.
+/// An evaluation is linear in that table, so a batched evaluation multiplies the operation's weight
+/// into the operation's evaluation instead.
 struct WiringInputs<E> {
 	/// Each operation's constraint-index table, ordered as the operators are declared: zero,
 	/// bitand, intmul, binmul.
@@ -779,43 +801,24 @@ impl WiringEvalFn<'_> {
 	/// - The word-index axis spans the whole trace, so it is the expansion worth threading.
 	/// - Only a concrete field element can cross threads, so the generic path stays serial.
 	///
-	/// It is handed a scale as well as a point, since every table it builds carries one.
-	///
-	/// The caller also supplies the seed for each operation's constraint table.
-	/// A batched evaluation seeds it with that operation's weight on the operation axis.
-	/// A per-operation evaluation seeds it with one, so the table is the operation's own.
+	/// It is handed a scale as well as a point, since the word-index tables carry one.
 	fn wiring_weights<E: FieldOps>(
 		&self,
 		vals: &[E],
 		scaled_expand: impl Fn(&[E], E) -> Vec<E>,
-		operation_scales: &[E; OPERATION_COUNT],
 	) -> WiringInputs<E> {
-		// Each operation's `r_x'` section is as long as its reduction has constraint variables, so
-		// its expansion covers the padded constraint count the evaluation walks. An absent IntMul
-		// (resp. BinMul) reduction contributes an empty point, which matches the `None` the
-		// accessor reports for an empty constraint set; so do the Zero and BitAnd reductions'
-		// single all-zero padding rows.
-		debug_assert_eq!(
-			self.shape.r_x_prime_lens,
-			[
-				self.constraint_system.log_zero_constraints(),
-				self.constraint_system.log_and_constraints(),
-				self.constraint_system.log_imul_constraints(),
-				self.constraint_system.log_bmul_constraints(),
-			]
-			.map(|log_constraints| log_constraints.unwrap_or(0))
-		);
+		let log_constraints = log_constraints(self.constraint_system);
+		// The `r_x` section is as long as the widest operation's constraint count, so each
+		// operation's prefix of it covers the padded constraint count its evaluation walks.
+		debug_assert_eq!(Some(self.shape.r_x_len), log_constraints.into_iter().max());
 
 		// Split the flat input back into its sections, in the order they were concatenated.
-		// The leading operation batch is read by the caller, which is what seeds the tables.
+		// The leading operation batch is read by the caller, which scales the evaluations.
 		let mut off = LOG_OPERATION_COUNT;
 		let operand_batch_v = &vals[off..off + LOG_MAX_ARITY];
 		off += LOG_MAX_ARITY;
-		let r_x_prime_v = self.shape.r_x_prime_lens.map(|len| {
-			let section = &vals[off..off + len];
-			off += len;
-			section
-		});
+		let r_x_v = &vals[off..off + self.shape.r_x_len];
+		off += self.shape.r_x_len;
 		let r_s_inner_v = &vals[off..off + self.shape.r_s_len];
 		off += self.shape.r_s_len;
 		let r_v_inner_v = &vals[off..off + self.shape.r_v_len];
@@ -865,21 +868,9 @@ impl WiringEvalFn<'_> {
 		let outer_shift_scalars = eq_ind_partial_eval_scalars(&[r_s_outer_v, r_v_outer_v].concat());
 		debug_assert_eq!(outer_shift_scalars.len(), SHIFT_COUNT);
 
-		// The constraint-index table is the one left that differs between operations, so it is
-		// the one the caller seeds.
-		let n_constraints = [
-			cs.zero_constraints.len(),
-			cs.and_constraints.len(),
-			cs.imul_constraints.len(),
-			cs.bmul_constraints.len(),
-		];
-		let constraint_tables = array::from_fn(|operation| {
-			if n_constraints[operation] == 0 {
-				Vec::new()
-			} else {
-				scaled_expand(r_x_prime_v[operation], operation_scales[operation].clone())
-			}
-		});
+		// The constraint-index table is the one left that differs between operations. All four
+		// are prefixes of one point, so one expansion of it serves them all.
+		let constraint_tables = constraint_tables(scaled_expand(r_x_v, E::one()), log_constraints);
 
 		WiringInputs {
 			constraint_tables,
@@ -893,46 +884,43 @@ impl WiringEvalFn<'_> {
 
 impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
-		let inputs =
-			self.wiring_weights(vals, scaled_eq_ind_partial_eval_scalars, &operation_scales(vals));
+		let inputs = self.wiring_weights(vals, scaled_eq_ind_partial_eval_scalars);
 		let cs = &self.constraint_system;
 		let value = inputs.value_tensor(cs, self.shape.inout);
 		// Three of the four tables are lent to all four operations; only the constraint one
-		// differs, and it is what carries the operation's own batching weight.
+		// differs.
 		let weights = |constraint| operation_weights(constraint, &inputs, value);
 		let [zero_table, bitand_table, intmul_table, binmul_table] = &inputs.constraint_tables;
 
-		let zero = OperationEvalFn::new(&cs.zero_constraints).call(weights(zero_table));
-		let bitand = OperationEvalFn::new(&cs.and_constraints).call(weights(bitand_table));
-		let intmul = OperationEvalFn::new(&cs.imul_constraints).call(weights(intmul_table));
-		let binmul = OperationEvalFn::new(&cs.bmul_constraints).call(weights(binmul_table));
-
-		zero + bitand + intmul + binmul
+		let evals = [
+			OperationEvalFn::new(&cs.zero_constraints).call(weights(zero_table)),
+			OperationEvalFn::new(&cs.and_constraints).call(weights(bitand_table)),
+			OperationEvalFn::new(&cs.imul_constraints).call(weights(intmul_table)),
+			OperationEvalFn::new(&cs.bmul_constraints).call(weights(binmul_table)),
+		];
+		inner_product(operation_scales(vals), evals)
 	}
 
 	/// Native fast path: each operation's evaluation defers `WideMul` reductions (see
 	/// [`OperationEvalFn`]'s `call_native`).
 	fn call_native(&self, vals: &[F]) -> F {
-		let inputs = self.wiring_weights(
-			vals,
-			|point, scale| {
-				// The packed expansion threads the tensor's multiplications.
-				// It applies over the base field, which is its own single-element packing.
-				scaled_eq_ind_partial_eval::<F>(point, scale).into_inner()
-			},
-			&operation_scales(vals),
-		);
+		let inputs = self.wiring_weights(vals, |point, scale| {
+			// The packed expansion threads the tensor's multiplications.
+			// It applies over the base field, which is its own single-element packing.
+			scaled_eq_ind_partial_eval::<F>(point, scale).into_inner()
+		});
 		let cs = &self.constraint_system;
 		let value = inputs.value_tensor(cs, self.shape.inout);
 		let weights = |constraint| operation_weights(constraint, &inputs, value);
 		let [zero_table, bitand_table, intmul_table, binmul_table] = &inputs.constraint_tables;
 
-		let zero = OperationEvalFn::new(&cs.zero_constraints).call_native(weights(zero_table));
-		let bitand = OperationEvalFn::new(&cs.and_constraints).call_native(weights(bitand_table));
-		let intmul = OperationEvalFn::new(&cs.imul_constraints).call_native(weights(intmul_table));
-		let binmul = OperationEvalFn::new(&cs.bmul_constraints).call_native(weights(binmul_table));
-
-		zero + bitand + intmul + binmul
+		let evals = [
+			OperationEvalFn::new(&cs.zero_constraints).call_native(weights(zero_table)),
+			OperationEvalFn::new(&cs.and_constraints).call_native(weights(bitand_table)),
+			OperationEvalFn::new(&cs.imul_constraints).call_native(weights(intmul_table)),
+			OperationEvalFn::new(&cs.bmul_constraints).call_native(weights(binmul_table)),
+		];
+		inner_product(operation_scales(vals), evals)
 	}
 }
 
@@ -992,15 +980,7 @@ mod tests {
 
 	impl RebuiltWeights {
 		/// Cuts the point into runs and expands each into the table its axis is read with.
-		///
-		/// The constraint count is what decides whether the operation has a table at all.
-		/// Its run cannot: a single constraint also spans zero variables.
-		fn cut(
-			point: &[B128],
-			shape: WiringEvalShape,
-			n_constraint_vars: usize,
-			n_constraints: usize,
-		) -> Self {
+		fn cut(point: &[B128], shape: WiringEvalShape, n_constraint_vars: usize) -> Self {
 			let mut off = 0;
 			let mut take = |len: usize| {
 				let run = &point[off..off + len];
@@ -1025,11 +1005,7 @@ mod tests {
 			value_point.push(r_segment);
 
 			Self {
-				constraint: if n_constraints == 0 {
-					Vec::new()
-				} else {
-					eq_ind_partial_eval_scalars(r_x_prime)
-				},
+				constraint: eq_ind_partial_eval_scalars(r_x_prime),
 				inner_operand: eq_ind_partial_eval_scalars(
 					&[operand, r_s_inner, r_v_inner].concat(),
 				),
@@ -1085,15 +1061,10 @@ mod tests {
 		let cs = two_operation_system(&mut rng);
 		let inout = InoutSegment::Public;
 
+		let log_constraints = log_constraints(&cs);
 		let shape = WiringEvalShape {
 			inout,
-			r_x_prime_lens: [
-				cs.log_zero_constraints(),
-				cs.log_and_constraints(),
-				cs.log_imul_constraints(),
-				cs.log_bmul_constraints(),
-			]
-			.map(|log_constraints| log_constraints.unwrap_or(0)),
+			r_x_len: log_constraints.into_iter().max().unwrap_or(0),
 			r_s_len: Word::LOG_BITS,
 			r_v_len: LOG_SHIFT_VARIANT_COUNT,
 			r_y_len: cs.log_segment_words(inout),
@@ -1103,7 +1074,7 @@ mod tests {
 		// The flat input holds every section the shape describes, and the segment challenge last.
 		let n_inputs = LOG_OPERATION_COUNT
 			+ LOG_MAX_ARITY
-			+ shape.r_x_prime_lens.iter().sum::<usize>()
+			+ shape.r_x_len
 			+ 2 * (shape.r_s_len + shape.r_v_len)
 			+ shape.r_y_len
 			+ 1;
@@ -1133,19 +1104,8 @@ mod tests {
 			2
 		);
 
-		let n_constraints = [
-			cs.zero_constraints.len(),
-			cs.and_constraints.len(),
-			cs.imul_constraints.len(),
-			cs.bmul_constraints.len(),
-		];
 		let rebuilt: [RebuiltWeights; OPERATION_COUNT] = array::from_fn(|operation| {
-			RebuiltWeights::cut(
-				&shares[operation].claim.point,
-				shape,
-				shape.r_x_prime_lens[operation],
-				n_constraints[operation],
-			)
+			RebuiltWeights::cut(&shares[operation].claim.point, shape, log_constraints[operation])
 		});
 		let [zero_w, bitand_w, intmul_w, binmul_w] = &rebuilt;
 
@@ -1170,6 +1130,21 @@ mod tests {
 			.map(|share| share.weight * share.claim.eval)
 			.sum::<B128>();
 		assert_eq!(recombined, whole, "the shares must recombine into the claim");
+	}
+
+	#[test]
+	fn constraint_tables_are_the_prefix_expansions_of_the_point() {
+		// Invariant: each operation's table is the equality indicator of its own prefix of `r_x`.
+		//
+		// The widths are unsorted, one repeats, and one is zero, so every cut order is exercised.
+		let mut rng = StdRng::seed_from_u64(0);
+		let r_x = random_scalars::<B128>(&mut rng, 6);
+		let log_constraints = [3, 6, 0, 3];
+
+		let tables = constraint_tables(eq_ind_partial_eval_scalars(&r_x), log_constraints);
+		for (table, log_len) in iter::zip(tables, log_constraints) {
+			assert_eq!(table, eq_ind_partial_eval_scalars(&r_x[..log_len]), "log_len = {log_len}");
+		}
 	}
 
 	#[test]

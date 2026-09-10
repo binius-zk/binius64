@@ -86,7 +86,7 @@ where
 	]);
 	// The oblong weights, which phase 1 pushes through both shift slots and phase 3 runs its rounds
 	// over directly.
-	let oblong_weights = domain_subspace.lagrange_evals_buffer(prepared.bitand.r_zhat_prime);
+	let oblong_weights = domain_subspace.lagrange_evals_buffer(prepared.r_zhat_prime);
 	let Phase1Output {
 		r_j,
 		inner: inner_shift,
@@ -94,7 +94,7 @@ where
 		psi,
 		gamma,
 		g_eval,
-	} = g.run_phase_1_sumcheck(oblong_weights.as_ref(), prepared.batched_eval(), channel, alloc);
+	} = g.run_phase_1_sumcheck(oblong_weights.as_ref(), prepared.batched_eval, channel, alloc);
 
 	// Phases 2 and 3 bind the two bit indices the shift indicators chain through, working back up
 	// the chain — see the single-instance prover for what each run carries.
@@ -200,12 +200,10 @@ pub fn build_g_from_folded_words<F: BinaryField>(
 	for (index, word) in folded_words.iter().enumerate().take(segment.n_words()) {
 		let keys = segment.word_keys(index);
 		for key in keys {
-			let operator_data = &prepared[key.operation];
-
 			// The batching-weighted partial evaluation tensor for this shifted word.
 			let acc = key.accumulate(
 				&segment.constraint_indices,
-				operator_data.weighted_r_x_prime_tensor.as_ref(),
+				&prepared[key.operation],
 				&prepared.operand_weights,
 			);
 
@@ -238,14 +236,14 @@ mod tests {
 		test_utils::random_scalars,
 	};
 	use binius_prover::protocols::shift::{
-		DenseShiftEncoding, KeyCollection, OperatorData, monster::shift_operator_row,
-		outer::decode_shift,
+		DenseShiftEncoding, KeyCollection, monster::shift_operator_row, outer::decode_shift,
 	};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{
-			LOG_SHIFT_COUNT, OperationClaim, SHIFT_COUNT, check_eval, evaluate_words_mle, verify,
+			LOG_SHIFT_COUNT, OperationClaims, SHIFT_COUNT, check_eval, evaluate_words_mle,
+			log_constraints, verify,
 		},
 	};
 	use rand::prelude::*;
@@ -336,13 +334,15 @@ mod tests {
 		let key_collection = KeyCollection::build(&cs, InoutSegment::Hidden);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
+		//
+		// The constraint point is as wide as the widest constraint set, and every operation is
+		// claimed at a prefix of it. The Zero claim's value is zero at any point: a satisfied ZERO
+		// constraint array vanishes identically, so its multilinear extension is the zero
+		// polynomial.
 		let domain_subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
+		let log_constraints = log_constraints(&cs);
 		let r_z = B128::random(&mut rng);
-		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
-		// The Zero claim closes at its own constraint point, as wide as the ZERO set. Its value is
-		// zero at any point: a satisfied ZERO constraint array vanishes identically, so its
-		// multilinear extension is the zero polynomial.
-		let r_x_zero = random_scalars::<B128>(&mut rng, cs.log_zero_constraints().unwrap_or(0));
+		let r_x = random_scalars::<B128>(&mut rng, log_constraints.into_iter().max().unwrap_or(0));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The hidden witness folded over instances (one FoldedWord per committed word), and the
@@ -351,15 +351,15 @@ mod tests {
 			FoldedWitness::<B128, _>::fold_instances(&table, &r_rho, &GlobalAllocator);
 		let public_words = &cs.constants;
 
-		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no IMUL constraints, so
-		// the intmul claim is the zero claim over an empty point.
+		// The bitand operand evals at (r_z, its prefix of r_x, r_rho); the circuit has no IMUL or
+		// BMUL constraints, so those evals are zero.
 		let bitand_evals = evaluate_and_witness::<P>(
 			&table,
 			public_words,
 			&cs.and_constraints,
 			&domain_subspace,
 			r_z,
-			&r_x,
+			&r_x[..log_constraints[1]],
 			&r_rho,
 		);
 		let intmul_evals = [B128::ZERO; 4];
@@ -371,18 +371,13 @@ mod tests {
 			public_words,
 			&folded_witness,
 			OperatorClaims {
-				zero: OperatorData {
-					evals: [B128::ZERO],
-					r_zhat_prime: r_z,
-					r_x_prime: r_x_zero.clone(),
-				},
-				bitand: OperatorData {
-					evals: bitand_evals,
-					r_zhat_prime: r_z,
-					r_x_prime: r_x.clone(),
-				},
-				intmul: OperatorData::zero_claim(r_z),
-				binmul: OperatorData::zero_claim(r_z),
+				r_x: r_x.clone(),
+				log_constraints,
+				r_zhat_prime: r_z,
+				zero: [B128::ZERO],
+				bitand: bitand_evals,
+				intmul: intmul_evals,
+				binmul: [B128::ZERO; 6],
 			},
 			&domain_subspace,
 			&mut prover_transcript,
@@ -395,18 +390,17 @@ mod tests {
 
 		// Verify against the single-instance shift verifier.
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_zero = OperationClaim::new(r_x_zero, vec![B128::ZERO]);
-		let verifier_bitand = OperationClaim::new(r_x, bitand_evals.to_vec());
-		let verifier_intmul = OperationClaim::new(Vec::new(), intmul_evals.to_vec());
-		let verifier_bmul = OperationClaim::new(Vec::new(), vec![B128::ZERO; 6]);
-		let verifier_claims = [
-			&verifier_zero,
-			&verifier_bitand,
-			&verifier_intmul,
-			&verifier_bmul,
-		];
+		let verifier_claims = OperationClaims {
+			r_x,
+			evals: [
+				vec![B128::ZERO],
+				bitand_evals.to_vec(),
+				intmul_evals.to_vec(),
+				vec![B128::ZERO; 6],
+			],
+		};
 		let verifier_output =
-			verify(&cs, InoutSegment::Hidden, verifier_claims, &mut verifier_transcript).unwrap();
+			verify(&cs, InoutSegment::Hidden, &verifier_claims, &mut verifier_transcript).unwrap();
 		// The public segment over the shift's whole index space. The full reduction reads this
 		// from the prover and ties it to the constants with a ring-switch; driving the shift
 		// alone, evaluate it here.
@@ -420,7 +414,7 @@ mod tests {
 			&cs,
 			InoutSegment::Hidden,
 			public_eval,
-			verifier_claims.map(|claim| claim.r_x_prime.as_slice()),
+			&verifier_claims.r_x,
 			&domain_subspace,
 			&r_z,
 			&verifier_output,
@@ -482,19 +476,20 @@ mod tests {
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
+		let log_constraints = log_constraints(&cs);
 		let r_z = B128::random(&mut rng);
-		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
+		let r_x = random_scalars::<B128>(&mut rng, log_constraints.into_iter().max().unwrap_or(0));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
-		// The batched AND-check operand evals at (r_z, r_x, r_rho), and the full folded witness at
-		// the same r_rho, so g and the claim agree on the instance point.
+		// The batched AND-check operand evals at (r_z, its prefix of r_x, r_rho), and the full
+		// folded witness at the same r_rho, so g and the claim agree on the instance point.
 		let bitand_evals = evaluate_and_witness::<P>(
 			&table,
 			constants,
 			&cs.and_constraints,
 			&domain_subspace,
 			r_z,
-			&r_x,
+			&r_x[..log_constraints[1]],
 			&r_rho,
 		);
 		// The hidden segment spans value indices `[offset_inout, combined_len)`.
@@ -505,21 +500,15 @@ mod tests {
 		let hidden_folded = fold_words_over_instances(&table, constants, &r_rho, offset..combined);
 
 		// Prepare the operator data: lambda batches the three operand claims. The circuit has no
-		// IMUL or BMUL constraints, so those two are zero claims at an empty point.
-		// The ZERO set has its own constraint point, as wide as the set itself.
+		// IMUL or BMUL constraints, so those evals are zero, as is the ZERO claim's.
 		let claims = OperatorClaims {
-			zero: OperatorData {
-				evals: [B128::ZERO],
-				r_zhat_prime: r_z,
-				r_x_prime: random_scalars::<B128>(&mut rng, cs.log_zero_constraints().unwrap_or(0)),
-			},
-			bitand: OperatorData {
-				evals: bitand_evals,
-				r_zhat_prime: r_z,
-				r_x_prime: r_x,
-			},
-			intmul: OperatorData::zero_claim(r_z),
-			binmul: OperatorData::zero_claim(r_z),
+			r_x,
+			log_constraints,
+			r_zhat_prime: r_z,
+			zero: [B128::ZERO],
+			bitand: bitand_evals,
+			intmul: [B128::ZERO; 4],
+			binmul: [B128::ZERO; 6],
 		};
 		let prepared = claims.prepare(&mut ProverTranscript::<StdChallenger>::default());
 
@@ -555,8 +544,8 @@ mod tests {
 		let inner_product = segment_inner_product(&public, &key_collection.public.dense_shift_enc)
 			+ segment_inner_product(&hidden, &key_collection.hidden.dense_shift_enc);
 
-		// The lambda-powers scaling of the batched AND-check evals, plus the empty intmul claim.
-		let expected = prepared.bitand.batched_eval + prepared.intmul.batched_eval;
-		assert_eq!(inner_product, expected);
+		// The lambda-powers scaling of the batched AND-check evals; the other operations' evals
+		// are zero.
+		assert_eq!(inner_product, prepared.batched_eval);
 	}
 }

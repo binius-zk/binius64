@@ -16,7 +16,7 @@ use binius_math::{
 use binius_prover::{
 	fold_word::BitAxisFolder,
 	protocols::shift::{
-		self, KeyCollection, OperatorClaims, OperatorData,
+		self, KeyCollection, OperatorClaims,
 		monster::shift_operator_table,
 		phase_1::{Phase1Output, SparseShiftRows},
 		phase_2::run_sumcheck,
@@ -25,7 +25,7 @@ use binius_prover::{
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{OperationClaim, verify},
+	protocols::shift::{OperationClaims, log_constraints, verify},
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sha2::{Digest, Sha256};
@@ -97,30 +97,30 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let (cs, value_vec) = create_sha256_cs_with_witness(log_message_len_bytes, &mut rng);
 		cs.validate().unwrap();
 
-		// Sample multilinear eval points
-		let r_x_prime_bitand = {
-			// The BitAnd reduction always runs; `None` is its single all-zero padding row.
-			let log_bitand_constraint_count = cs.log_and_constraints().unwrap_or(0);
-			(0..log_bitand_constraint_count as u128)
-				.map(F::new)
-				.collect::<Vec<_>>()
-		};
-		// The circuit's digest assertions lower to ZERO constraints, so the Zero reduction runs
-		// over its own constraint point, as wide as the ZERO set.
-		let r_x_prime_zero = (0..cs.log_zero_constraints().unwrap_or(0) as u128)
+		// Sample the one constraint point, as wide as the widest constraint set. Every operation
+		// is claimed at the prefix its own constraint count spans.
+		let log_constraints = log_constraints(&cs);
+		let r_x = (0..log_constraints.into_iter().max().unwrap_or(0) as u128)
 			.map(F::new)
 			.collect::<Vec<_>>();
-		// SHA256 has no IMUL constraints, so the IntMul operator is the zero claim (four zero evals
-		// at an empty point), exactly as the real prover/verifier synthesize it (`prove.rs` /
-		// `verify.rs` `None` branch). Its `r_x_prime` is therefore empty.
-		let r_x_prime_intmul: Vec<F> = Vec::new();
 
-		// Sample univariate eval point — shared across bitand and intmul operators.
+		// Sample univariate eval point — shared across the operators.
 		let r_zhat_prime = F::random(&mut rng);
 
+		// SHA256 has no IMUL or BMUL constraints, so those evals are zero, exactly as the real
+		// prover/verifier synthesize them (`prove.rs` / `verify.rs` `None` branch).
 		let zero_evals = [F::random(&mut rng)];
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
+		let claims = || OperatorClaims {
+			r_x: r_x.clone(),
+			log_constraints,
+			r_zhat_prime,
+			zero: zero_evals,
+			bitand: bitand_evals,
+			intmul: intmul_evals,
+			binmul: [F::ZERO; 6],
+		};
 		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 		let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 
@@ -133,34 +133,13 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			let pool = BufferPool::new();
 			let alloc = &pool;
 			b.iter(|| {
-				let prover_zero_data = OperatorData {
-					evals: zero_evals,
-					r_zhat_prime,
-					r_x_prime: r_x_prime_zero.clone(),
-				};
-				let prover_bitand_data = OperatorData {
-					evals: bitand_evals,
-					r_zhat_prime,
-					r_x_prime: r_x_prime_bitand.clone(),
-				};
-				let prover_intmul_data = OperatorData {
-					evals: intmul_evals,
-					r_zhat_prime,
-					r_x_prime: r_x_prime_intmul.clone(),
-				};
-
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
 				shift::prove::<_, P, _, _>(
 					&key_collection,
 					value_vec.public(),
 					value_vec.non_public(),
-					OperatorClaims {
-						zero: prover_zero_data,
-						bitand: prover_bitand_data,
-						intmul: prover_intmul_data,
-						binmul: OperatorData::zero_claim(r_zhat_prime),
-					},
+					claims(),
 					&subspace,
 					&mut prover_transcript,
 					&alloc,
@@ -169,34 +148,13 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		});
 
 		// Pre-run the prover to get the transcript for verifier benchmarking
-		let prover_zero_data = OperatorData {
-			evals: zero_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_zero.clone(),
-		};
-		let prover_bitand_data = OperatorData {
-			evals: bitand_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_bitand.clone(),
-		};
-		let prover_intmul_data = OperatorData {
-			evals: intmul_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_intmul.clone(),
-		};
-
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
 		shift::prove::<_, P, _, _>(
 			&key_collection,
 			value_vec.public(),
 			value_vec.non_public(),
-			OperatorClaims {
-				zero: prover_zero_data,
-				bitand: prover_bitand_data,
-				intmul: prover_intmul_data,
-				binmul: OperatorData::zero_claim(r_zhat_prime),
-			},
+			claims(),
 			&subspace,
 			&mut prover_transcript,
 			&&BufferPool::new(),
@@ -208,26 +166,18 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			b.iter(|| {
 				let mut verifier_transcript = setup_verifier_transcript.clone();
 
-				let verifier_zero_data =
-					OperationClaim::new(r_x_prime_zero.clone(), zero_evals.to_vec());
-				let verifier_bitand_data =
-					OperationClaim::new(r_x_prime_bitand.clone(), bitand_evals.to_vec());
-				let verifier_intmul_data =
-					OperationClaim::new(r_x_prime_intmul.clone(), intmul_evals.to_vec());
-				let verifier_binmul_data = OperationClaim::new(Vec::new(), vec![F::ZERO; 6]);
-
-				verify(
-					&cs,
-					InoutSegment::Public,
-					[
-						&verifier_zero_data,
-						&verifier_bitand_data,
-						&verifier_intmul_data,
-						&verifier_binmul_data,
+				let verifier_claims = OperationClaims {
+					r_x: r_x.clone(),
+					evals: [
+						zero_evals.to_vec(),
+						bitand_evals.to_vec(),
+						intmul_evals.to_vec(),
+						vec![F::ZERO; 6],
 					],
-					&mut verifier_transcript,
-				)
-				.unwrap();
+				};
+
+				verify(&cs, InoutSegment::Public, &verifier_claims, &mut verifier_transcript)
+					.unwrap();
 			});
 		});
 	}
@@ -248,19 +198,12 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let (cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
 	cs.validate().unwrap();
 
-	// The BitAnd reduction always runs; `None` is its single all-zero padding row.
-	let r_x_prime_bitand = (0..cs.log_and_constraints().unwrap_or(0) as u128)
+	// The one constraint point, as wide as the widest constraint set.
+	let log_constraints = log_constraints(&cs);
+	let r_x = (0..log_constraints.into_iter().max().unwrap_or(0) as u128)
 		.map(F::new)
 		.collect::<Vec<_>>();
-	// The circuit's digest assertions lower to ZERO constraints, so the Zero reduction runs over
-	// its own constraint point, as wide as the ZERO set.
-	let r_x_prime_zero = (0..cs.log_zero_constraints().unwrap_or(0) as u128)
-		.map(F::new)
-		.collect::<Vec<_>>();
-	// SHA256 has no IMUL constraints, so the IntMul operator is the zero claim at an empty point,
-	// matching the real prover (`prove.rs` `None` branch).
-	let r_x_prime_intmul: Vec<F> = Vec::new();
-	// `r_zhat_prime` is shared across the bitand and intmul operators.
+	// `r_zhat_prime` is shared across the operators.
 	let r_zhat_prime = F::random(&mut rng);
 	let zero_evals = [F::random(&mut rng)];
 	let bitand_evals = [F::random(&mut rng); 3];
@@ -275,25 +218,16 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	// Prepare the operator data. Sampling is cheap and not part of any benched phase, so a
 	// throwaway transcript stands in for the proving one and yields realistic-magnitude data.
-	// SHA256 has no BMUL constraints, so that one is a zero claim at an empty point, matching the
-	// real prover (`prove.rs` `None` branch).
+	// SHA256 has no IMUL or BMUL constraints, so those evals are zero, matching the real prover
+	// (`prove.rs` `None` branch).
 	let prepared = OperatorClaims {
-		zero: OperatorData {
-			evals: zero_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_zero,
-		},
-		bitand: OperatorData {
-			evals: bitand_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_bitand,
-		},
-		intmul: OperatorData {
-			evals: intmul_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_intmul,
-		},
-		binmul: OperatorData::zero_claim(r_zhat_prime),
+		r_x,
+		log_constraints,
+		r_zhat_prime,
+		zero: zero_evals,
+		bitand: bitand_evals,
+		intmul: intmul_evals,
+		binmul: [F::ZERO; 6],
 	}
 	.prepare(&mut ProverTranscript::<StdChallenger>::default());
 
@@ -322,7 +256,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	};
 
 	let g = build_combined_g();
-	let oblong_weights = subspace.lagrange_evals_buffer(prepared.bitand.r_zhat_prime);
+	let oblong_weights = subspace.lagrange_evals_buffer(prepared.r_zhat_prime);
 	let Phase1Output {
 		r_j,
 		inner: inner_shift,
@@ -334,7 +268,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
 		g.clone().run_phase_1_sumcheck(
 			oblong_weights.as_ref(),
-			prepared.batched_eval(),
+			prepared.batched_eval,
 			&mut transcript,
 			&GlobalAllocator,
 		)
@@ -376,7 +310,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
 				g.run_phase_1_sumcheck(
 					oblong_weights.as_ref(),
-					prepared.batched_eval(),
+					prepared.batched_eval,
 					&mut transcript,
 					&GlobalAllocator,
 				)
