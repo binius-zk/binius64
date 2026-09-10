@@ -22,13 +22,13 @@ use binius_math::{
 };
 use binius_prover::{
 	fold_word::BitAxisFolder,
-	protocols::shift::{self, KeyCollection, OperatorClaims, OperatorData},
+	protocols::shift::{self, KeyCollection, OperatorClaims},
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{OperationClaim, check_eval, evaluate_words_mle, verify},
+	protocols::shift::{OperationClaims, check_eval, evaluate_words_mle, log_constraints, verify},
 };
 use itertools::Itertools;
 use rand::{SeedableRng, rngs::StdRng};
@@ -343,34 +343,21 @@ fn test_shift_prove_and_verify() {
 			panic!("Circuit failed constraint validation: {e}");
 		}
 
-		// Sample multilinear challenge point
-		let r_x_prime_bitand = {
-			// The BitAnd reduction always runs; an empty AND set reduces over its single all-zero
-			// padding row, i.e. an empty point.
-			let log_bitand_constraint_count = cs.log_and_constraints().unwrap_or(0);
-			(0..log_bitand_constraint_count as u128)
-				.map(F::new)
-				.collect::<Vec<_>>()
-		};
-		// A constraint system may have zero IMUL constraints (e.g. a pure-AND circuit like
-		// SHA-256). The IntMul operator is then empty — an empty challenge point and a zero claim
-		// — mirroring the prover/verifier skip of the IntMul reduction in `binius_prover` /
-		// `binius_verifier`.
-		let intmul_is_empty = cs.imul_constraints.is_empty();
-		let r_x_prime_intmul = cs
-			.log_imul_constraints()
-			.map_or_else(Vec::new, |log_count| {
-				(0..log_count as u128).map(F::new).collect::<Vec<_>>()
-			});
+		// Sample the one constraint point, as wide as the widest constraint set. Every operation
+		// is claimed at the prefix its own constraint count spans; an empty set spans the empty
+		// prefix.
+		let log_constraints = log_constraints(&cs);
+		let r_x = (0..log_constraints.into_iter().max().unwrap_or(0) as u128)
+			.map(F::new)
+			.collect::<Vec<_>>();
+		let [_, r_x_bitand, r_x_intmul, r_x_binmul] =
+			log_constraints.map(|log_len| &r_x[..log_len]);
 
-		// A constraint system may equally have zero BMUL constraints, and the BinMul operator is
-		// then empty for the same reason.
+		// A constraint system may have zero IMUL constraints (e.g. a pure-AND circuit like
+		// SHA-256), or zero BMUL constraints. That operator's claim is then zero, mirroring the
+		// prover/verifier skip of its reduction in `binius_prover` / `binius_verifier`.
+		let intmul_is_empty = cs.imul_constraints.is_empty();
 		let binmul_is_empty = cs.bmul_constraints.is_empty();
-		let r_x_prime_binmul = cs
-			.log_bmul_constraints()
-			.map_or_else(Vec::new, |log_count| {
-				(0..log_count as u128).map(F::new).collect::<Vec<_>>()
-			});
 
 		// Sample univariate eval point — the bitand and intmul operators share
 		// `r_zhat_prime` so the verifier can compute `h_op_evals` once for both.
@@ -383,7 +370,7 @@ fn test_shift_prove_and_verify() {
 				&subspace,
 				&image,
 				r_zhat_prime,
-				eq_ind_partial_eval(&r_x_prime_bitand).as_ref(),
+				eq_ind_partial_eval(r_x_bitand).as_ref(),
 			)
 		});
 
@@ -395,7 +382,7 @@ fn test_shift_prove_and_verify() {
 					&subspace,
 					&image,
 					r_zhat_prime,
-					eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
+					eq_ind_partial_eval(r_x_intmul).as_ref(),
 				)
 			})
 		};
@@ -408,7 +395,7 @@ fn test_shift_prove_and_verify() {
 					&subspace,
 					&image,
 					r_zhat_prime,
-					eq_ind_partial_eval(&r_x_prime_binmul).as_ref(),
+					eq_ind_partial_eval(r_x_binmul).as_ref(),
 				)
 			})
 		};
@@ -419,42 +406,20 @@ fn test_shift_prove_and_verify() {
 		// Create prover transcript and call the prover
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-		let prover_bitand_data = OperatorData {
-			evals: bitand_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_bitand.clone(),
-		};
-		let prover_intmul_data = OperatorData {
-			evals: intmul_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_intmul.clone(),
-		};
-		// The Zero claim closes at its own constraint point, as wide as the ZERO set. Its value is
-		// zero at any point: a satisfied ZERO constraint array vanishes identically, so its
-		// multilinear extension is the zero polynomial.
-		let r_x_prime_zero = (0..cs.log_zero_constraints().unwrap_or(0) as u128)
-			.map(F::new)
-			.collect::<Vec<_>>();
-		let prover_zero_data = OperatorData {
-			evals: [F::ZERO],
-			r_zhat_prime,
-			r_x_prime: r_x_prime_zero.clone(),
-		};
-		let prover_binmul_data = OperatorData {
-			evals: binmul_evals,
-			r_zhat_prime,
-			r_x_prime: r_x_prime_binmul.clone(),
-		};
-
 		let prover_output = shift::prove::<_, P, _, _>(
 			&key_collection,
 			value_vec.public(),
 			value_vec.non_public(),
 			OperatorClaims {
-				zero: prover_zero_data.clone(),
-				bitand: prover_bitand_data.clone(),
-				intmul: prover_intmul_data.clone(),
-				binmul: prover_binmul_data.clone(),
+				r_x: r_x.clone(),
+				log_constraints,
+				r_zhat_prime,
+				// The Zero claim's value is zero at any point: a satisfied ZERO constraint array
+				// vanishes identically, so its multilinear extension is the zero polynomial.
+				zero: [F::ZERO],
+				bitand: bitand_evals,
+				intmul: intmul_evals,
+				binmul: binmul_evals,
 			},
 			&subspace,
 			&mut prover_transcript,
@@ -468,19 +433,18 @@ fn test_shift_prove_and_verify() {
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		let verifier_zero_data = OperationClaim::new(r_x_prime_zero, vec![F::ZERO]);
-		let verifier_bitand_data = OperationClaim::new(r_x_prime_bitand, bitand_evals.to_vec());
-		let verifier_intmul_data = OperationClaim::new(r_x_prime_intmul, intmul_evals.to_vec());
-		let verifier_binmul_data = OperationClaim::new(r_x_prime_binmul, binmul_evals.to_vec());
-		let verifier_claims = [
-			&verifier_zero_data,
-			&verifier_bitand_data,
-			&verifier_intmul_data,
-			&verifier_binmul_data,
-		];
+		let verifier_claims = OperationClaims {
+			r_x,
+			evals: [
+				vec![F::ZERO],
+				bitand_evals.to_vec(),
+				intmul_evals.to_vec(),
+				binmul_evals.to_vec(),
+			],
+		};
 
 		let verifier_output =
-			verify(&cs, InoutSegment::Public, verifier_claims, &mut verifier_transcript).unwrap();
+			verify(&cs, InoutSegment::Public, &verifier_claims, &mut verifier_transcript).unwrap();
 
 		// The public segment over the shift's whole index space. The full reduction reads this
 		// from the prover and ties it to the public words with a ring-switch; driving the shift
@@ -496,7 +460,7 @@ fn test_shift_prove_and_verify() {
 			&cs,
 			InoutSegment::Public,
 			public_eval,
-			verifier_claims.map(|claim| claim.r_x_prime.as_slice()),
+			&verifier_claims.r_x,
 			&subspace,
 			&r_zhat_prime,
 			&verifier_output,

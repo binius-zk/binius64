@@ -189,34 +189,32 @@ where
 	};
 
 	// The sumcheck's point is `r_rho || r_x_star`: the instance index low, the constraint index
-	// high. Every operation is claimed at `r_rho` and the prefix of `r_x_star` its rows span.
+	// high. `r_x_star` spans the widest AND, IMUL and BMUL set.
 	let (r_rho, r_x_star) = eval_point.split_at(log_instances);
 
 	// The Zero reduction reads nothing and runs no sumcheck.
 	// A ZERO constraint is linear, so its oblong form vanishing at one unpredictable point
 	// certifies it.
 	//
-	// A ZERO array vanishes identically, so its claim is zero at any point. The prover draws the
-	// same extension of `r_x_star` at the same place.
+	// A ZERO array vanishes identically, so its claim is zero at any point. A ZERO set wider than
+	// the rest extends `r_x_star` with fresh challenges, and the prover draws the same extension
+	// at the same place. The result is the one constraint point `r_x` every operation is claimed at
+	// a prefix of.
 	let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
-	let zero_point = zero::reduction_point(r_x_star, log_n_zero, || channel.sample());
-	let zero = shift::OperationClaim::new(zero_point, vec![Channel::Elem::zero()]);
-
-	let bitand = shift::OperationClaim::new(r_x_star[..log_n_and].to_vec(), bitand_evals.to_vec());
-	let mut operand_evals = operand_evals.into_iter();
-	let intmul = absent_or_claimed::<_, INTMUL_ARITY>(
-		cs.log_imul_constraints(),
-		r_x_star,
-		&mut operand_evals,
-	);
-	let binmul = absent_or_claimed::<_, BINMUL_ARITY>(
-		cs.log_bmul_constraints(),
-		r_x_star,
-		&mut operand_evals,
-	);
+	let r_x_len = r_x_star.len().max(log_n_zero);
+	let r_x = zero::reduction_point(r_x_star, r_x_len, || channel.sample());
 
 	// The four operations' claims, in the order the shift reduction batches them.
-	let claims = [&zero, &bitand, &intmul, &binmul];
+	let mut operand_evals = operand_evals.into_iter();
+	let claims = shift::OperationClaims {
+		r_x,
+		evals: [
+			vec![Channel::Elem::zero()],
+			bitand_evals.to_vec(),
+			absent_or_claimed::<_, INTMUL_ARITY>(cs.log_imul_constraints(), &mut operand_evals),
+			absent_or_claimed::<_, BINMUL_ARITY>(cs.log_bmul_constraints(), &mut operand_evals),
+		],
+	};
 
 	// Reduce the operand claims to one witness evaluation.
 	let shift = {
@@ -226,7 +224,7 @@ where
 			perfetto_category = "phase"
 		)
 		.entered();
-		shift::verify::<B128, _>(cs, inout, claims, channel)?
+		shift::verify::<B128, _>(cs, inout, &claims, channel)?
 	};
 
 	// Tie in the public values through the public-input consistency check.
@@ -244,7 +242,7 @@ where
 			cs,
 			inout,
 			public_eval,
-			claims.map(|claim| claim.r_x_prime.as_slice()),
+			&claims.r_x,
 			&shift_domain,
 			&z_challenge,
 			&shift,
@@ -341,19 +339,17 @@ where
 	Ok(eq_ind_zero(&r_y[log_packed_words..]) * public_eval)
 }
 
-/// An operation's claim at its prefix of `r_x_star`, or a zero claim at an empty point when it is
-/// absent.
+/// An operation's operand evaluations, or zeros when it is absent.
 ///
 /// A present operation takes its `ARITY` evaluations off the front of `evals`.
 /// An absent operation has an empty constraint set, so the shift finds no key naming it.
 /// Its zero claim therefore contributes nothing.
 fn absent_or_claimed<F: FieldOps, const ARITY: usize>(
 	log_n_constraints: Option<usize>,
-	r_x_star: &[F],
 	evals: impl Iterator<Item = F>,
-) -> shift::OperationClaim<F> {
-	log_n_constraints.map_or_else(
-		|| shift::OperationClaim::new(Vec::new(), vec![F::zero(); ARITY]),
-		|log_n| shift::OperationClaim::new(r_x_star[..log_n].to_vec(), evals.take(ARITY).collect()),
-	)
+) -> Vec<F> {
+	match log_n_constraints {
+		Some(_) => evals.take(ARITY).collect(),
+		None => vec![F::zero(); ARITY],
+	}
 }
