@@ -6,16 +6,10 @@ use std::ops::Deref;
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField, Rijndael8b as B8};
-use binius_ip_prover::{
-	channel::IPProverChannel,
-	sumcheck::{
-		ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck, quadratic_mlecheck_prover,
-	},
-};
+use binius_ip_prover::sumcheck::{common::MleCheckProver, quadratic_mlecheck_prover};
 use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 use binius_verifier::{
-	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
-	protocols::bitand::{AndCheckOutput, ROWS_PER_HYPERCUBE_VERTEX},
+	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX,
 };
 
 use super::sumcheck_round_messages;
@@ -132,6 +126,17 @@ where
 		&self.univariate_round_message
 	}
 
+	/// The univariate round polynomial at `challenge`: the claim the multilinear rounds prove.
+	///
+	/// The polynomial is zero on the base half of the domain, and the round message holds its
+	/// evaluations on the upper half.
+	pub fn univariate_claim(&self, challenge: F) -> F {
+		let mut coeffs = vec![F::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
+		coeffs[ROWS_PER_HYPERCUBE_VERTEX..].copy_from_slice(&self.univariate_round_message);
+		self.univariate_round_message_domain
+			.extrapolate(&coeffs, &challenge)
+	}
+
 	/// Folds the oblong multilinears at the univariate challenge and creates the sumcheck prover.
 	///
 	/// This method performs the transition between Phase 1 (univariate polynomial) and Phase 2
@@ -168,6 +173,7 @@ where
 		challenge: F,
 		alloc: &'alloc A,
 	) -> impl MleCheckProver<F> + 'alloc {
+		let claim = self.univariate_claim(challenge);
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
 		let lagrange_evals = univariate_domain.lagrange_evals(&challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
@@ -185,87 +191,14 @@ where
 			.chain(self.big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
 
-		let mut first_round_message_coeffs = vec![F::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
-
-		first_round_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX]
-			.copy_from_slice(&self.univariate_round_message);
-
 		quadratic_mlecheck_prover(
 			alloc,
 			proving_polys,
 			|[a, b, c]| a * b - c,
 			|[a, b, _]| a * b,
 			verifier_field_zerocheck_challenges,
-			round_message_domain.extrapolate(&first_round_message_coeffs, &challenge),
+			claim,
 		)
-	}
-
-	/// Executes the complete AND reduction protocol with an IP prover channel.
-	///
-	/// This method orchestrates the entire AND reduction protocol:
-	/// 1. Sends the univariate polynomial evaluations to the channel
-	/// 2. Receives the univariate challenge via Fiat-Shamir
-	/// 3. Folds the oblong multilinears at the challenge point
-	/// 4. Runs the multilinear sumcheck protocol
-	///
-	/// # Arguments
-	///
-	/// * `channel` - The prover's channel for non-interactive proof generation
-	///
-	/// # Returns
-	///
-	/// Returns `ProveAndReductionOutput` containing:
-	/// - The sumcheck output with evaluation claims and challenges
-	/// - The univariate challenge used for folding
-	///
-	/// # Protocol Flow
-	///
-	/// 1. **Phase 1**: Write univariate polynomial evaluations to channel
-	/// 2. **Challenge**: Sample univariate challenge z via Fiat-Shamir
-	/// 3. **Transition**: Fold oblong multilinears at Z = z
-	/// 4. **Phase 2**: Execute sumcheck protocol on folded multilinears
-	///
-	/// # Panics
-	///
-	/// Panics if the MLE-check sumcheck does not resolve to exactly 3 evaluation claims (one each
-	/// for A, B, and C).
-	pub fn prove_with_channel<PChallenge: PackedField<Scalar = F>, A: Allocator>(
-		self,
-		channel: &mut impl IPProverChannel<F>,
-		alloc: &A,
-	) -> AndCheckOutput<F> {
-		let univariate_message_coeffs = self.round_message();
-
-		channel.send_many(univariate_message_coeffs);
-
-		let univariate_sumcheck_challenge = channel.sample();
-		let univariate_round_message_domain = self.univariate_round_message_domain.clone();
-		let sumcheck_prover = tracing::debug_span!("Fold univariate round").in_scope(|| {
-			self.fold_and_send_reduced_prover::<PChallenge, A>(
-				&univariate_round_message_domain,
-				univariate_sumcheck_challenge,
-				alloc,
-			)
-		});
-
-		let ProveSingleOutput {
-			multilinear_evals: mle_claims,
-			challenges: mut eval_point,
-		} = tracing::debug_span!("MLE-check remaining rounds")
-			.in_scope(|| prove_single_mlecheck(sumcheck_prover, channel));
-
-		eval_point.reverse();
-
-		assert_eq!(mle_claims.len(), 3);
-		channel.send_many(&mle_claims);
-
-		AndCheckOutput {
-			a_eval: mle_claims[0],
-			b_eval: mle_claims[1],
-			c_eval: mle_claims[2],
-			z_challenge: univariate_sumcheck_challenge,
-			eval_point,
-		}
 	}
 }
 
@@ -279,15 +212,15 @@ mod test {
 	use binius_math::{
 		BinarySubspace, FieldBuffer, multilinear::evaluate::evaluate, univariate::EvaluationDomain,
 	};
-	use binius_transcript::{ProverTranscript, fiat_shamir::CanSample};
+	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
-		config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, StdChallenger},
-		protocols::bitand::{AndCheckOutput, SKIPPED_VARS, verify_with_channel},
+		config::{B128, StdChallenger},
+		protocols::bitand::{AndCheckOutput, SKIPPED_VARS},
+		verify_bitand_reduction,
 	};
 	use rand::prelude::*;
 
-	use super::OblongZerocheckProver;
-	use crate::fold_word::BitAxisFolder;
+	use crate::{fold_word::BitAxisFolder, protocols::bitand::prove};
 
 	fn random_words(log_num_words: usize, mut rng: impl Rng) -> Vec<Word> {
 		repeat_with(|| Word(rng.random()))
@@ -301,8 +234,6 @@ mod test {
 		let log_num_rows = 6;
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let small_field_zerocheck_challenges =
-			[Rijndael8b::new(2), Rijndael8b::new(4), Rijndael8b::new(16)];
 		let first_mlv = random_words(log_num_rows, &mut rng);
 		let second_mlv = random_words(log_num_rows, &mut rng);
 		// The prover receives only the A and B columns.
@@ -315,51 +246,30 @@ mod test {
 		let prover_message_domain = BinarySubspace::<Rijndael8b>::with_dim(SKIPPED_VARS + 1);
 		let verifier_message_domain = prover_message_domain.isomorphic();
 
-		// Prover is instantiated
-		let big_field_zerocheck_challenges = prover_challenger
-			.sample_vec(log_num_rows - PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
-		let prover = OblongZerocheckProver::<_, _>::new(
-			log_num_rows,
-			first_mlv.clone(),
-			second_mlv.clone(),
-			big_field_zerocheck_challenges,
-			&prover_message_domain,
+		let prove_output = prove::<_, B128, OptimalPackedB128, _, _>(
+			[first_mlv.clone(), second_mlv.clone()],
+			&[],
+			&mut prover_challenger,
+			&GlobalAllocator,
 		);
 
-		let prove_output = prover
-			.prove_with_channel::<OptimalPackedB128, _>(&mut prover_challenger, &GlobalAllocator);
-
-		// Verifier is instantiated
 		let mut verifier_challenger = prover_challenger.into_verifier();
-
-		let big_field_zerocheck_challenges = verifier_challenger.sample_vec(log_num_rows - 3);
-
-		let mut all_zerocheck_challenges = vec![];
-
-		for small_field_challenge in small_field_zerocheck_challenges {
-			all_zerocheck_challenges.push(B128::from(small_field_challenge));
-		}
-
-		for big_field_challenge in &big_field_zerocheck_challenges {
-			all_zerocheck_challenges.push(*big_field_challenge);
-		}
-
-		let verify_output = verify_with_channel(
-			&all_zerocheck_challenges,
-			&mut verifier_challenger,
+		let verify_output = verify_bitand_reduction(
+			log_num_rows,
 			&verifier_message_domain,
+			&[],
+			&mut verifier_challenger,
 		)
 		.unwrap();
 
 		assert_eq!(prove_output, verify_output);
 
 		let AndCheckOutput {
-			a_eval,
-			b_eval,
-			c_eval,
 			z_challenge,
-			eval_point,
+			rerand,
 		} = verify_output;
+		let [a_eval, b_eval, c_eval] = rerand.bitand_evals;
+		let eval_point = rerand.eval_point;
 
 		let verifier_univariate_domain = verifier_message_domain.reduce_dim(SKIPPED_VARS);
 

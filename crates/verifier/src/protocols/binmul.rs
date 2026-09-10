@@ -5,7 +5,7 @@ use binius_field::{BinaryField, field::FieldOps};
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck::SumcheckOutput};
 use binius_math::inner_product::inner_product;
 
-use crate::Error;
+use crate::{Error, protocols::rerand::OperandClaims};
 
 /// Output of the BinMul reduction.
 ///
@@ -26,6 +26,23 @@ pub struct BinMulOutput<F> {
 	pub b_hi_evals: [F; Word::BITS],
 	pub c_lo_evals: [F; Word::BITS],
 	pub c_hi_evals: [F; Word::BITS],
+}
+
+impl<F> BinMulOutput<F> {
+	/// The operand claims, in the shift operand order `[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]`.
+	pub fn operand_claims(&self) -> OperandClaims<'_, F> {
+		OperandClaims {
+			point: &self.eval_point,
+			columns: vec![
+				&self.a_lo_evals,
+				&self.a_hi_evals,
+				&self.b_lo_evals,
+				&self.b_hi_evals,
+				&self.c_lo_evals,
+				&self.c_hi_evals,
+			],
+		}
+	}
 }
 
 /// Verify the binary-field multiplication check (BinMul) reduction.

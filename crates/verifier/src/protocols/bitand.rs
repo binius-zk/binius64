@@ -4,9 +4,10 @@
 use std::iter::{self};
 
 use binius_field::{BinaryField, field::FieldOps};
-use binius_ip::{channel::IPVerifierChannel, mlecheck::verify, sumcheck::SumcheckOutput};
+use binius_ip::channel::IPVerifierChannel;
 use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 
+use super::rerand::RerandOutput;
 use crate::Error;
 
 /// log2 size of the univariate domain
@@ -15,17 +16,25 @@ pub const SKIPPED_VARS: usize = binius_core::Word::LOG_BITS;
 /// Size of the univariate domain
 pub const ROWS_PER_HYPERCUBE_VERTEX: usize = 1 << SKIPPED_VARS;
 
-/// Output from the AND constraint reduction protocol verification.
-#[derive(Debug, PartialEq, Eq)]
-pub struct AndCheckOutput<F> {
-	pub a_eval: F,
-	pub b_eval: F,
-	pub c_eval: F,
+/// Output of the univariate skip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnivariateSkipOutput<F> {
+	/// The univariate challenge `z` sampled for the bit-index variable.
 	pub z_challenge: F,
-	pub eval_point: Vec<F>,
+	/// The univariate polynomial at `z`, `g(z)`: the claim the multilinear rounds prove.
+	pub claim: F,
 }
 
-/// Verifies the AND constraint reduction protocol via univariate zerocheck.
+/// Output of the whole BitAnd reduction: the univariate skip, then the batched sumcheck.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AndCheckOutput<F> {
+	/// The univariate challenge `z` sampled for the bit-index variable.
+	pub z_challenge: F,
+	/// The batched sumcheck's evaluation claims. See [`super::rerand`].
+	pub rerand: RerandOutput<F>,
+}
+
+/// Verifies the univariate skip of the AND constraint reduction.
 ///
 /// Note: Following section 4.4 of the Binius64 writeup, Z is the bit index within a word, and X is
 /// the word index
@@ -34,68 +43,25 @@ pub struct AndCheckOutput<F> {
 ///
 /// Let our zerocheck challenges be (r₀, ...)
 ///
-/// This protocol reduces the verification of AND constraints (A(Z,X₀,...,Xₙ₋₁)·B(Z,X₀,...,Xₙ₋₁) -
-/// C(Z,X₀,...,Xₙ₋₁) = 0) over a multivariate domain to a single multilinear polynomial evaluation.
-/// The key insight is that A·B-C = 0 if and only if for all Z, the multilinear extension of A·B-C
-/// evaluates to zero at a random point (Z,r₀,...,rₙ₋₁), (up to some negligible error probability).
-///
-/// Note: This is equivalent to proving |D| multilinear zerochecks at once, all using the same
-/// random zerocheck challenges
-///
-/// ## Phase 1: Univariate Polynomial Verification
+/// The reduction checks A·B-C = 0 on every row. That holds if and only if, for all Z, the
+/// multilinear extension of A·B-C evaluates to zero at a random point (Z,r₀,...,rₙ₋₁), up to some
+/// negligible error probability.
 ///
 /// The prover sends a univariate polynomial R₀(Z) that encodes the sum:
 ///
 /// R₀(Z) = ∑_{X₀,...,Xₙ₋₁ ∈ {0,1}} (A(Z,X₀,...,Xₙ₋₁)·B(Z,X₀,...,Xₙ₋₁) -
 /// C(Z,X₀,...,Xₙ₋₁))·eq(X₀,...,Xₙ₋₁; r₀,...,rₙ₋₁)
 ///
-/// where:
-/// - A(Z,X₀,...,Xₙ₋₁), B(Z,X₀,...,Xₙ₋₁), C(Z,X₀,...,Xₙ₋₁) are oblong multilinear polynomials
-///   representing the AND constraint operands
-/// - eq(X₀,...,Xₙ₋₁; r₀,...,rₙ₋₁) is the multilinear equality indicator partially evaluated at a
-///   series of random and compile-time pre-known challenges r₀,...,rₙ₋₁ (note: Z is not included in
-///   the equality check)
-/// - Z ranges over a univariate domain of size 2^(SKIPPED_VARS + 1)
+/// Z ranges over a univariate domain of size 2^(SKIPPED_VARS + 1). The polynomial R₀(Z) has degree
+/// at most 2*(|D| - 1). The prover only sends evaluations on the upper half of the domain, since
+/// R₀(Z) = 0 on the base domain when all AND constraints are satisfied.
 ///
-/// The equality indicator eq(X₀,...,Xₙ₋₁; r₀,...,rₙ₋₁) = ∏ᵢ₌₀ⁿ⁻¹(Xᵢ·rᵢ + (1-Xᵢ)·(1-rᵢ)) ensures
-/// we're checking that the multilinear extension of A·B-C evaluates to zero at the random point
-/// (Z, r₀,...,rₙ₋₁) for each Z in the domain.
-///
-/// The polynomial R₀(Z) has degree at most 2*(|D| - 1) where |D| is the domain size. The prover
-/// only sends evaluations on an extension domain (the upper half) since R₀(Z) = 0 on the base
-/// domain when all AND constraints are satisfied.
-///
-/// ## Phase 2: Multilinear Sumcheck Reduction
-///
-/// After the verifier samples a random challenge z for Z, the protocol continues with a standard
-/// sumcheck protocol on the remaining variables X₀,...,Xₙ₋₁ to verify that:
-///
-/// R₀(z) = ∑_{X₀,...,Xₙ₋₁ ∈ {0,1}} (A(z,X₀,...,Xₙ₋₁)·B(z,X₀,...,Xₙ₋₁) -
-/// C(z,X₀,...,Xₙ₋₁))·eq(X₀,...,Xₙ₋₁; r₀,...,rₙ₋₁)
-///
-///
-/// This reduces to a single evaluation of the folded polynomial at the sumcheck challenge point.
-///
-/// ## Arguments
-///
-/// * `n_vars` - The number of variables in the sumcheck protocol (excluding the univariate variable
-///   Z)
-/// * `transcript` - The verifier's transcript for reading prover messages and sampling challenges
-/// * `round_message_univariate_domain` - The univariate domain D for polynomial evaluations
-///
-/// ## Returns
-///
-/// Returns `AndCheckOutput` containing:
-/// - `z_challenge`: The univariate challenge z sampled for the bit-index variable
-/// - `eval_point`: The multilinear evaluation point. Prepened with the `z_challenge` this makes the
-///   oblong evaluation point
-/// - `a_eval`, `b_eval`, `c_eval`: The claimed evaluations of the A, B, and C at the oblong
-///   evaluation point
-pub fn verify_with_channel<F, C>(
-	all_zerocheck_challenges: &[C::Elem],
+/// The verifier samples a challenge z for Z. The claim R₀(z) is then proven by the batched
+/// sumcheck in [`super::rerand`], over the remaining variables X₀,...,Xₙ₋₁.
+pub fn verify_univariate_skip<F, C>(
 	channel: &mut C,
-	round_message_univariate_domain: &BinarySubspace<F>,
-) -> Result<AndCheckOutput<C::Elem>, Error>
+	domain: &BinarySubspace<F>,
+) -> Result<UnivariateSkipOutput<C::Elem>, Error>
 where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,
@@ -110,27 +76,8 @@ where
 	)
 	.collect::<Vec<_>>();
 
-	let univariate_sumcheck_challenge = channel.sample();
+	let z_challenge = channel.sample();
+	let claim = domain.extrapolate(&univariate_message_coeffs, &z_challenge);
 
-	let sumcheck_claim = round_message_univariate_domain
-		.extrapolate(&univariate_message_coeffs, &univariate_sumcheck_challenge);
-
-	let SumcheckOutput {
-		eval,
-		challenges: mut eval_point,
-	} = verify(all_zerocheck_challenges, 2, sumcheck_claim, channel)?;
-
-	let [a_eval, b_eval, c_eval] = channel.recv_array()?;
-
-	channel.assert_zero(a_eval.clone() * &b_eval - &c_eval - &eval)?;
-
-	eval_point.reverse();
-
-	Ok(AndCheckOutput {
-		a_eval,
-		b_eval,
-		c_eval,
-		z_challenge: univariate_sumcheck_challenge,
-		eval_point,
-	})
+	Ok(UnivariateSkipOutput { z_challenge, claim })
 }

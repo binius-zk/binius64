@@ -177,16 +177,13 @@ impl IOPProver {
 				.in_scope(|| build_operation_columns(&cs.and_constraints, witness, alloc));
 
 			let AndCheckOutput {
-				a_eval,
-				b_eval,
-				c_eval,
 				z_challenge,
-				eval_point,
-			} = bitand::prove::<_, B128, P, _, _>(bitand_columns, &mut *channel, alloc);
+				rerand,
+			} = bitand::prove::<_, B128, P, _, _>(bitand_columns, &[], &mut *channel, alloc);
 			OperatorData {
-				evals: [a_eval, b_eval, c_eval],
+				evals: rerand.bitand_evals,
 				r_zhat_prime: z_challenge,
-				r_x_prime: eval_point,
+				r_x_prime: rerand.eval_point,
 			}
 		};
 		drop(bitand_guard);

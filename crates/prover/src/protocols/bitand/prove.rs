@@ -7,18 +7,21 @@ use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField, Rijndael8b as B8};
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::BinarySubspace;
+use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, protocols::bitand::AndCheckOutput,
 };
 
 use super::prover::OblongZerocheckProver;
+use crate::protocols::rerand::{self, OperandWitness};
 
 /// Proves the AND constraint reduction over the two operand columns `A` and `B`.
 ///
 /// This wraps [`OblongZerocheckProver`], the univariate-skip zerocheck kernel, so both the
 /// single-instance prover and the M4 batch prover route their AND check through one entry point.
+/// Its multilinear rounds are one sumcheck with the operand-column MLE-checks of `operands`; see
+/// [`rerand::prove`].
 /// The `C` operand is never passed: the reduction derives `C = A & B` word-by-word, which is sound
 /// because folding is F2-linear on word bits (see [`OblongZerocheckProver::new`]).
 ///
@@ -42,6 +45,7 @@ use super::prover::OblongZerocheckProver;
 /// Panics if the two operand columns don't have equal length.
 pub fn prove<A, F, PChallenge, Channel, Data>(
 	columns: [Data; 2],
+	operands: &[OperandWitness<'_, F>],
 	channel: &mut Channel,
 	alloc: &A,
 ) -> AndCheckOutput<F>
@@ -77,7 +81,24 @@ where
 		&prover_message_domain,
 	);
 
-	prover.prove_with_channel::<PChallenge, _>(channel, alloc)
+	channel.send_many(prover.round_message());
+	let z_challenge = channel.sample();
+	let claim = prover.univariate_claim(z_challenge);
+
+	let domain = prover_message_domain.isomorphic::<F>();
+	let bitand = tracing::debug_span!("Fold univariate round").in_scope(|| {
+		prover.fold_and_send_reduced_prover::<PChallenge, _>(&domain, z_challenge, alloc)
+	});
+	// The operand columns fold over the 64-point domain: the skip domain less its top dimension.
+	let lagrange = domain
+		.reduce_dim(Word::LOG_BITS)
+		.lagrange_evals(&z_challenge);
+	let rerand =
+		rerand::prove::<_, PChallenge, _, _>(bitand, claim, &lagrange, operands, channel, alloc);
+	AndCheckOutput {
+		z_challenge,
+		rerand,
+	}
 }
 
 #[cfg(test)]
@@ -126,6 +147,7 @@ mod tests {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let output = prove::<_, B128, OptimalPackedB128, _, _>(
 					columns,
+					&[],
 					&mut transcript,
 					&GlobalAllocator,
 				);
@@ -142,6 +164,7 @@ mod tests {
 			let verify_output = verify_bitand_reduction(
 				log_rows,
 				&BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1).isomorphic::<B128>(),
+				&[],
 				&mut verifier_transcript,
 			)
 			.unwrap();

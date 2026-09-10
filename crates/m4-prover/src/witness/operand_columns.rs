@@ -1328,13 +1328,18 @@ mod tests {
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prove_output =
-			bitand::prove::<_, B128, P, _, _>([a, b], &mut prover_transcript, &GlobalAllocator);
+		let prove_output = bitand::prove::<_, B128, P, _, _>(
+			[a, b],
+			&[],
+			&mut prover_transcript,
+			&GlobalAllocator,
+		);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verify_output = verify_bitand_reduction(
 			log_total,
 			&message_domain().isomorphic::<B128>(),
+			&[],
 			&mut verifier_transcript,
 		)
 		.unwrap();
@@ -1362,7 +1367,12 @@ mod tests {
 
 		// Produce a faithful proof.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let _ = bitand::prove::<_, B128, P, _, _>([a, b], &mut prover_transcript, &GlobalAllocator);
+		let _ = bitand::prove::<_, B128, P, _, _>(
+			[a, b],
+			&[],
+			&mut prover_transcript,
+			&GlobalAllocator,
+		);
 		let mut proof = prover_transcript.finalize();
 
 		// Mutation: flip a bit in the prover's first message, the univariate round evaluations.
@@ -1375,12 +1385,13 @@ mod tests {
 		let err = verify_bitand_reduction(
 			log_total,
 			&message_domain().isomorphic::<B128>(),
+			&[],
 			&mut verifier_transcript,
 		)
 		.unwrap_err();
 
-		// The closing check is `A_eval * B_eval - C_eval == sumcheck_eval`.
-		// The tampered message moves the claim, so this equality no longer holds.
+		// The closing check ties `A_eval * B_eval - C_eval`, weighted by its indicator, to the
+		// sumcheck eval. The tampered message moves the claim, so this equality no longer holds.
 		// The channel rejects the non-zero assertion, the protocol's terminal check.
 		assert_matches!(err, VerifierError::Channel(ChannelError::InvalidAssert));
 	}
@@ -1416,24 +1427,20 @@ mod tests {
 			let log_total = checked_log_2(a.len());
 
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let prove_output = bitand::prove::<_, B128, P, _, _>(columns.as_slices(), &mut prover_transcript, &GlobalAllocator);
+			let prove_output = bitand::prove::<_, B128, P, _, _>(columns.as_slices(), &[], &mut prover_transcript, &GlobalAllocator);
 
 			let mut verifier_transcript = prover_transcript.into_verifier();
 			let verify_output =
-				verify_bitand_reduction(log_total, &message_domain().isomorphic::<B128>(), &mut verifier_transcript).unwrap();
+				verify_bitand_reduction(log_total, &message_domain().isomorphic::<B128>(), &[], &mut verifier_transcript).unwrap();
 			verifier_transcript.finalize().expect("no trailing proof data");
 
 			// Both sides reach the same reduced claim.
 			prop_assert_eq!(&prove_output, &verify_output);
 
 			// Each claimed eval is the column's multilinear, folded at z and evaluated at the point.
-			let AndCheckOutput {
-				a_eval,
-				b_eval,
-				c_eval,
-				z_challenge,
-				eval_point,
-			} = verify_output;
+			let AndCheckOutput { z_challenge, rerand } = verify_output;
+			let [a_eval, b_eval, c_eval] = rerand.bitand_evals;
+			let eval_point = rerand.eval_point;
 			prop_assert_eq!(fold_eval_column(a, z_challenge, &eval_point), a_eval);
 			prop_assert_eq!(fold_eval_column(b, z_challenge, &eval_point), b_eval);
 			prop_assert_eq!(fold_eval_column(&c_cols, z_challenge, &eval_point), c_eval);

@@ -14,7 +14,7 @@ use binius_iop::{
 	channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel},
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
-use binius_math::BinarySubspace;
+use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::DeserializeBytes;
 use digest::Output;
@@ -26,7 +26,8 @@ use crate::{
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::{
-		bitand::{AndCheckOutput, verify_with_channel},
+		bitand::{AndCheckOutput, UnivariateSkipOutput, verify_univariate_skip},
+		rerand::{self, OperandClaims},
 		shift::WiringEvalClaim,
 	},
 	reduction::{Instances, reduce_constraints},
@@ -366,7 +367,9 @@ where
 /// Verifies the batched BitAnd check: `A & B == C` on every row.
 ///
 /// This is the univariate-skip zerocheck of `A(Z, X) * B(Z, X) - C(Z, X) == 0` for all rows
-/// `(Z, X)`, where `Z` is the bit index within a 64-bit word and `X` is the row index.
+/// `(Z, X)`, where `Z` is the bit index within a 64-bit word and `X` is the row index. Its
+/// multilinear rounds are one sumcheck with the operand-column MLE-checks of `operands`; see
+/// [`rerand`].
 ///
 /// # Arguments
 ///
@@ -376,6 +379,8 @@ where
 ///   there is an (instance, constraint) pair.
 /// - `eval_domain`: the univariate-skip domain, one dimension above the 64-bit word, already lifted
 ///   to `F`. The caller passes it so it matches the shift reduction's domain by construction.
+/// - `operands`: the multiplication reductions' per-bit operand claims. They must be in the
+///   transcript before this runs, since it draws the challenge that folds them.
 /// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.
 ///
 /// # Errors
@@ -384,6 +389,7 @@ where
 pub fn verify_bitand_reduction<F, C>(
 	log_constraint_count: usize,
 	eval_domain: &BinarySubspace<F>,
+	operands: &[OperandClaims<'_, C::Elem>],
 	channel: &mut C,
 ) -> Result<AndCheckOutput<C::Elem>, Error>
 where
@@ -404,5 +410,15 @@ where
 	let zerocheck_challenges =
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
-	verify_with_channel(&zerocheck_challenges, channel, eval_domain)
+
+	let UnivariateSkipOutput { z_challenge, claim } = verify_univariate_skip(channel, eval_domain)?;
+	// The operand columns fold over the 64-point domain: the skip domain less its top dimension.
+	let lagrange = eval_domain
+		.reduce_dim(Word::LOG_BITS)
+		.lagrange_evals(&z_challenge);
+	let rerand = rerand::verify(&zerocheck_challenges, claim, &lagrange, operands, channel)?;
+	Ok(AndCheckOutput {
+		z_challenge,
+		rerand,
+	})
 }

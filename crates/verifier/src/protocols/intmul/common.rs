@@ -7,6 +7,8 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, field::FieldOps};
 use itertools::iterate;
 
+use crate::protocols::rerand::OperandClaims;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntMulOutput<F> {
 	pub eval_point: Vec<F>,
@@ -14,6 +16,21 @@ pub struct IntMulOutput<F> {
 	pub b_evals: [F; Word::BITS],
 	pub c_lo_evals: [F; Word::BITS],
 	pub c_hi_evals: [F; Word::BITS],
+}
+
+impl<F> IntMulOutput<F> {
+	/// The operand claims, in the shift operand order `[a, b, c_lo, c_hi]`.
+	pub fn operand_claims(&self) -> OperandClaims<'_, F> {
+		OperandClaims {
+			point: &self.eval_point,
+			columns: vec![
+				&self.a_evals,
+				&self.b_evals,
+				&self.c_lo_evals,
+				&self.c_hi_evals,
+			],
+		}
+	}
 }
 
 /// Output of Phase 1: GKR reduction of the exponentiation product tree.

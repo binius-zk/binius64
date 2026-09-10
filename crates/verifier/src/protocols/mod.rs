@@ -5,5 +5,6 @@ pub mod binmul;
 pub mod bitand;
 pub mod intmul;
 pub mod pubcheck;
+pub mod rerand;
 pub mod shift;
 pub mod zero;
