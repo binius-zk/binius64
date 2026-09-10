@@ -8,16 +8,14 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment, Operand, ValueVec},
 	word::Word,
 };
-use binius_field::{Field, PackedField, Rijndael8b as B8};
+use binius_field::{PackedField, Rijndael8b as B8};
 use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::WordIPProverChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec,
-	inner_product::inner_product,
 	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
-	univariate::EvaluationDomain,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{
@@ -27,7 +25,7 @@ use binius_utils::{
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
-	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput, zero},
+	protocols::bitand::AndCheckOutput,
 };
 use digest::Output;
 
@@ -35,7 +33,8 @@ use super::error::Error;
 use crate::{
 	protocols::{
 		binmul, bitand, intmul,
-		shift::{self, KeyCollection, OperatorClaims, OperatorData, ShiftOutput},
+		rerand::OperandWitness,
+		shift::{self, KeyCollection, OperatorClaims, ShiftOutput},
 	},
 	ring_switch,
 };
@@ -121,9 +120,10 @@ impl IOPProver {
 		//
 		// Skipped entirely (no transcript messages) when the constraint system has no IMUL
 		// constraints. The verifier applies the identical guard, so the transcript stays in sync;
-		// the zero `OperatorData` synthesized below then contributes nothing to the shift
-		// reduction.
-		let intmul_output = if cs.n_imul_constraints() > 0 {
+		// the IntMul claim is then a zero claim, contributing nothing to the shift reduction.
+		//
+		// The columns are kept with the output, since the BitAnd sumcheck re-reads them.
+		let intmul = if cs.n_imul_constraints() > 0 {
 			let intmul_guard = tracing::info_span!(
 				"[phase] IntMul check",
 				n_constraints = cs.imul_constraints.len()
@@ -135,7 +135,7 @@ impl IOPProver {
 			let [a, b, lo, hi] = &mul_columns;
 			let intmul_output = intmul::prove::<_, _, P, _>([a, b, lo, hi], &mut *channel, alloc)?;
 			drop(intmul_guard);
-			Some(intmul_output)
+			Some((mul_columns, intmul_output))
 		} else {
 			None
 		};
@@ -144,9 +144,9 @@ impl IOPProver {
 		//
 		// Runs immediately after the IntMul reduction and before BitAnd, matching the verifier so
 		// the transcript stays in sync. Skipped entirely (no transcript messages) when there are
-		// no BMUL constraints; the zero `OperatorData` synthesized below then contributes nothing
-		// to the shift reduction.
-		let binmul_output = if cs.n_bmul_constraints() > 0 {
+		// no BMUL constraints; the BinMul claim is then a zero claim, contributing nothing to the
+		// shift reduction.
+		let binmul = if cs.n_bmul_constraints() > 0 {
 			let binmul_guard = tracing::info_span!(
 				"[phase] BinMul check",
 				n_constraints = cs.bmul_constraints.len()
@@ -162,113 +162,51 @@ impl IOPProver {
 				alloc,
 			);
 			drop(binmul_guard);
-			Some(binmul_output)
+			Some((binmul_columns, binmul_output))
 		} else {
 			None
 		};
 
 		// [phase] BitAnd Reduction - AND constraint reduction
+		//
+		// Its sumcheck carries the multiplications' per-bit operand claims, IntMul first.
+		let operands = [
+			intmul.as_ref().map(|(columns, output)| OperandWitness {
+				words: columns.iter().map(|column| &**column).collect(),
+				claims: output.operand_claims(),
+			}),
+			binmul.as_ref().map(|(columns, output)| OperandWitness {
+				words: columns.iter().map(|column| &**column).collect(),
+				claims: output.operand_claims(),
+			}),
+		]
+		.into_iter()
+		.flatten()
+		.collect::<Vec<_>>();
 		let bitand_guard =
 			tracing::info_span!("[phase] BitAnd check", n_constraints = cs.and_constraints.len())
 				.entered();
-		let bitand_claim = {
+		let AndCheckOutput {
+			z_challenge,
+			rerand,
+		} = {
 			// Only the `A` and `B` columns are built; the reduction derives `C = A & B`.
 			let bitand_columns = tracing::debug_span!("Assemble columns")
 				.in_scope(|| build_operation_columns(&cs.and_constraints, witness, alloc));
-
-			let AndCheckOutput {
-				z_challenge,
-				rerand,
-			} = bitand::prove::<_, B128, P, _, _>(bitand_columns, &[], &mut *channel, alloc);
-			OperatorData {
-				evals: rerand.bitand_evals,
-				r_zhat_prime: z_challenge,
-				r_x_prime: rerand.eval_point,
-			}
+			bitand::prove::<_, B128, P, _, _>(bitand_columns, &operands, &mut *channel, alloc)
 		};
 		drop(bitand_guard);
 
-		// Build `OperatorData` for IntMul using the same `r_zhat_prime`
-		// challenge as in BitAnd. Sharing this univariate challenge
-		// improves ShiftReduction perf. When IntMul was skipped, synthesize a zero claim (four
-		// zero evals at an empty point): the shift reduction iterates the (empty) IMUL constraints,
-		// so this claim contributes zero to its batched evaluation.
-		//
-		// Build the oblong domain subspace once and pass it into the shift reduction, mirroring
-		// the verifier side (`shift::check_eval` takes the domain subspace). It is reused for the
-		// IntMul claim collapse below.
-		let subspace = BinarySubspace::<B8>::with_dim(Word::LOG_BITS).isomorphic();
-		let intmul_claim = match intmul_output {
-			Some(IntMulOutput {
-				eval_point,
-				a_evals,
-				b_evals,
-				c_lo_evals,
-				c_hi_evals,
-			}) => {
-				let r_zhat_prime = bitand_claim.r_zhat_prime;
-				let l_tilde = subspace.lagrange_evals_buffer(r_zhat_prime);
-				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
-				OperatorData {
-					evals: [
-						make_final_claim(a_evals),
-						make_final_claim(b_evals),
-						make_final_claim(c_lo_evals),
-						make_final_claim(c_hi_evals),
-					],
-					r_zhat_prime,
-					r_x_prime: eval_point,
-				}
-			}
-			None => OperatorData::zero_claim(bitand_claim.r_zhat_prime),
-		};
-
-		// Build `OperatorData` for BinMul using the same shared `r_zhat_prime` challenge,
-		// collapsing each of the six per-bit operand columns identically to IntMul. When BinMul
-		// was skipped, synthesize a zero claim (six zero evals at an empty point): the shift
-		// reduction iterates the (empty) BMUL constraints, so this claim contributes zero to its
-		// batched evaluation.
-		let binmul_claim = match binmul_output {
-			Some(BinMulOutput {
-				eval_point,
-				a_lo_evals,
-				a_hi_evals,
-				b_lo_evals,
-				b_hi_evals,
-				c_lo_evals,
-				c_hi_evals,
-			}) => {
-				let r_zhat_prime = bitand_claim.r_zhat_prime;
-				let l_tilde = subspace.lagrange_evals_buffer(r_zhat_prime);
-				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
-				OperatorData {
-					evals: [
-						make_final_claim(a_lo_evals),
-						make_final_claim(a_hi_evals),
-						make_final_claim(b_lo_evals),
-						make_final_claim(b_hi_evals),
-						make_final_claim(c_lo_evals),
-						make_final_claim(c_hi_evals),
-					],
-					r_zhat_prime,
-					r_x_prime: eval_point,
-				}
-			}
-			None => OperatorData::zero_claim(bitand_claim.r_zhat_prime),
-		};
-
 		// [phase] Zero Reduction - linear constraint reduction
 		//
-		// The reduction's claim, at the point the BitAnd sumcheck just output. See
-		// `IOPVerifier::verify` for why it carries no message.
-		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
-		let zero_claim = OperatorData {
-			evals: [B128::ZERO],
-			r_zhat_prime: bitand_claim.r_zhat_prime,
-			r_x_prime: zero::reduction_point(&bitand_claim.r_x_prime, log_n_zero, || {
-				channel.sample()
-			}),
-		};
+		// Every operation is claimed at a prefix of the BitAnd sumcheck's point. The Zero point
+		// draws its extension here, where the verifier does. See `IOPVerifier::verify` for why the
+		// Zero reduction carries no message.
+		let claims = OperatorClaims::from_rerand(cs, 0, z_challenge, &rerand, || channel.sample());
+
+		// The shift reduction folds the bit axis over the 64-point domain, as the verifier's
+		// `shift::check_eval` does.
+		let subspace = BinarySubspace::<B8>::with_dim(Word::LOG_BITS).isomorphic();
 
 		// [phase] Shift Reduction - shift operations
 		let shift_guard = tracing::info_span!(
@@ -287,12 +225,7 @@ impl IOPProver {
 			&self.key_collection,
 			witness.public(),
 			witness.non_public(),
-			OperatorClaims {
-				zero: zero_claim,
-				bitand: bitand_claim,
-				intmul: intmul_claim,
-				binmul: binmul_claim,
-			},
+			claims,
 			&subspace,
 			&mut *channel,
 			alloc,

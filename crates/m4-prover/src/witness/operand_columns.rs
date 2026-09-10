@@ -5,17 +5,13 @@
 
 use std::{iter, mem::MaybeUninit, ops::Deref, ptr};
 
-use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
+use binius_compute::{Allocator, VecLike};
 use binius_core::{
 	ValueSegment, ValueTable,
 	constraint_system::{Operand, Shift, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
-use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, FieldVec};
-use binius_prover::fold_word::BitAxisFolder;
-use binius_utils::rayon::{prelude::*, task_size::IndexedParallelIteratorExt};
-use binius_verifier::config::B128;
+use binius_utils::rayon::prelude::*;
 
 /// The operand columns of one batched fixed-arity operation.
 ///
@@ -46,8 +42,6 @@ use binius_verifier::config::B128;
 pub struct OperandColumns<A: Allocator, const ARITY: usize> {
 	/// One column per operand position, in the constraint type's storage order.
 	columns: [A::Vec<Word>; ARITY],
-	/// The base-2 logarithm of the instance count, which is the stride of the constraint axis.
-	log_instances: usize,
 }
 
 impl<A: Allocator, const ARITY: usize> OperandColumns<A, ARITY> {
@@ -109,132 +103,12 @@ impl<A: Allocator, const ARITY: usize> OperandColumns<A, ARITY> {
 			.try_into()
 			.unwrap_or_else(|_| unreachable!("the source iterator has ARITY elements"));
 
-		Self {
-			columns,
-			log_instances: table.log_instances(),
-		}
+		Self { columns }
 	}
 
 	/// The columns as plain word slices, dropping whichever allocator produced them.
 	pub fn as_slices(&self) -> [&[Word]; ARITY] {
 		self.columns.each_ref().map(|column| &**column)
-	}
-
-	/// Folds one column over its bit and constraint axes, leaving the instance axis.
-	///
-	/// # Overview
-	///
-	/// A column is constraint-major, so collapsing its two other axes leaves one per instance:
-	///
-	/// ```text
-	/// M[rho] = sum_{local, j} lagrange[j] * r_x_tensor[local] * bit_j(column[local * K + rho])
-	/// ```
-	///
-	/// - The Lagrange weights fold each word over its bit axis at the shared univariate challenge.
-	/// - The constraint tensor folds the constraint axis, and is shared across the operands.
-	///
-	/// Evaluating the result at the operation's instance point gives that operand's oblong claim.
-	///
-	/// A sumcheck can then transport that claim to a point shared with the other operations.
-	///
-	/// # Panics
-	///
-	/// Panics if the constraint tensor does not cover the column's padded constraint axis.
-	pub fn rho_multilinear<P>(
-		&self,
-		operand: usize,
-		lagrange: &[B128],
-		r_x_tensor: &[B128],
-		alloc: &A,
-	) -> FieldVec<P, A>
-	where
-		P: PackedField<Scalar = B128>,
-	{
-		let column = &self.columns[operand];
-
-		// Fold each word's bits at the univariate challenge, giving one scalar per row.
-		// Scalars keep the row indexing flat for the constraint fold below.
-		//
-		// The fold rounds the row count up to a power of two and zero-extends to it, so the
-		// result spans the padded constraint axis even though the column itself stops at the last
-		// real constraint. Only the real rows are folded; the padding is never touched.
-		let folded_rows = BitAxisFolder::new(lagrange).fold::<B128, _>(alloc, column);
-		let folded_rows = folded_rows.as_ref();
-
-		// Invariant: the tensor carries one weight per padded constraint row.
-		assert_eq!(
-			r_x_tensor.len() << self.log_instances,
-			folded_rows.len(),
-			"the constraint tensor must cover the padded constraint axis"
-		);
-
-		// One packed element per parallel task, each lane holding one instance.
-		// Lanes past the instance count are the multilinear's zero padding.
-		let n_instances = 1usize << self.log_instances;
-		let packed_len = 1usize << self.log_instances.saturating_sub(P::LOG_WIDTH);
-		let packed = (0..packed_len)
-			.into_par_iter()
-			.map(|packed_index| {
-				P::from_scalars((0..P::WIDTH).map(|lane| {
-					let instance = (packed_index << P::LOG_WIDTH) | lane;
-					if instance < n_instances {
-						// Constraint `local` of this instance sits at row `local * K + rho`.
-						// So the constraint axis is the strided one.
-						r_x_tensor
-							.iter()
-							.enumerate()
-							.map(|(local, &weight)| {
-								weight * folded_rows[local * n_instances + instance]
-							})
-							.sum()
-					} else {
-						B128::ZERO
-					}
-				}))
-			})
-			.collect_into_alloc_vec(alloc);
-
-		FieldBuffer::new(self.log_instances, packed)
-	}
-}
-
-impl<A: Allocator> OperandColumns<A, 2> {
-	/// Appends the AND check's third column, derived word-by-word from the first two.
-	///
-	/// # Overview
-	///
-	/// The check itself stores only its two input operands.
-	///
-	/// On a satisfying witness the third is their conjunction.
-	/// Deriving it is therefore cheaper than building it from the constraints.
-	///
-	/// Only the re-randomization reads it, so it is materialized on that path alone.
-	///
-	/// # Performance
-	///
-	/// One conjunction per row is a single instruction.
-	///
-	/// The cost is streaming three word columns, two read and one written.
-	pub fn with_derived_and(self, alloc: &A) -> OperandColumns<A, 3> {
-		let Self {
-			columns: [a, b],
-			log_instances,
-		} = self;
-
-		// The parallel zip stops at the shorter of its two sides, and the derived column is sized
-		// to it. Equal input lengths are therefore what make it cover every row.
-		debug_assert_eq!(a.len(), b.len());
-
-		let c = (&a[..], &b[..])
-			.into_par_iter()
-			.with_min_task_bytes::<[Word; 3]>()
-			.map(|(&a_i, &b_i)| a_i & b_i)
-			.collect_into_alloc_vec(alloc);
-
-		OperandColumns {
-			columns: [a, b, c],
-			log_instances,
-		}
 	}
 }
 
@@ -513,7 +387,7 @@ mod tests {
 	use assert_matches::assert_matches;
 	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_core::constraint_system::{AndConstraint, Shift, ShiftVariant, ValueVec};
-	use binius_field::{PackedGhash1x128b, Random, Rijndael8b as B8};
+	use binius_field::{PackedGhash1x128b, Rijndael8b as B8};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
 	use binius_math::{
@@ -529,7 +403,6 @@ mod tests {
 		verify_bitand_reduction,
 	};
 	use proptest::prelude::*;
-	use rand::prelude::*;
 
 	use super::*;
 
@@ -544,114 +417,6 @@ mod tests {
 		let c = and_circuit();
 		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
 		(c, table)
-	}
-
-	#[test]
-	fn with_derived_and_appends_the_conjunction() {
-		// Invariant: the third column is the word-by-word conjunction of the first two.
-		// The two inputs pass through untouched.
-		//
-		// Fixture state: 4 instances, the AND circuit's own constraints.
-		let (c, table) = four_instance_and_table();
-		let and_constraints = table_constraints(&c);
-		let columns =
-			OperandColumns::build(&table, constants(&c), &and_constraints, &GlobalAllocator);
-
-		// Snapshot the inputs, since deriving the third column consumes the value.
-		let [a_before, b_before] = columns.as_slices().map(<[Word]>::to_vec);
-
-		let derived = columns.with_derived_and(&GlobalAllocator);
-		let [a, b, c_column] = derived.as_slices();
-
-		// The two input columns are carried over unchanged.
-		assert_eq!(a, &a_before[..]);
-		assert_eq!(b, &b_before[..]);
-
-		// Every row of the third column is the conjunction of the other two.
-		let expected: Vec<Word> = iter::zip(a, b).map(|(&a_i, &b_i)| a_i & b_i).collect();
-		assert_eq!(c_column, &expected[..]);
-
-		// Sanity: the fixture leaves at least one non-zero row, so the check is not vacuous.
-		assert!(c_column.iter().any(|&word| word != Word::ZERO));
-	}
-
-	#[test]
-	fn rho_multilinear_matches_the_direct_triple_sum() {
-		// Invariant: folding the bit and constraint axes leaves one element per instance.
-		//
-		//     M[rho] = sum_{local, j} lagrange[j] * tensor[local] * bit_j(column[local*K + rho])
-		//
-		// Fixture state: 4 instances, random weights on both folded axes.
-		let (c, table) = four_instance_and_table();
-		let and_constraints = table_constraints(&c);
-		let columns = OperandColumns::<_, 2>::build(
-			&table,
-			constants(&c),
-			&and_constraints,
-			&GlobalAllocator,
-		);
-
-		// The tensor spans the padded constraint axis; the column stops at the last real
-		// constraint.
-		let n_instances = table.n_instances();
-		let n_padded = (columns.as_slices()[0].len() / n_instances).next_power_of_two();
-
-		// Independent weights per axis, so a swapped index cannot pass by coincidence.
-		let mut rng = StdRng::seed_from_u64(0);
-		let lagrange: Vec<B128> = (0..Word::BITS).map(|_| B128::random(&mut rng)).collect();
-		let r_x_tensor: Vec<B128> = (0..n_padded).map(|_| B128::random(&mut rng)).collect();
-
-		for operand in 0..2 {
-			let column = columns.as_slices()[operand];
-			let folded =
-				columns.rho_multilinear::<P>(operand, &lagrange, &r_x_tensor, &GlobalAllocator);
-			let got: Vec<B128> = folded.iter_scalars().collect();
-
-			// One element per instance, each the triple sum over that instance's column entries.
-			assert_eq!(got.len(), n_instances);
-			for (rho, &value) in got.iter().enumerate() {
-				let mut expected = B128::ZERO;
-				for (local, &weight) in r_x_tensor.iter().enumerate() {
-					// A row at or past the last real constraint reads as zero.
-					let word = column
-						.get(local * n_instances + rho)
-						.copied()
-						.unwrap_or(Word::ZERO);
-					for (j, &basis) in lagrange.iter().enumerate() {
-						// A set bit contributes both of its axis weights.
-						if (word.0 >> j) & 1 == 1 {
-							expected += weight * basis;
-						}
-					}
-				}
-				assert_eq!(value, expected, "operand {operand}, instance {rho}");
-			}
-		}
-	}
-
-	#[test]
-	#[should_panic(expected = "the constraint tensor must cover the padded constraint axis")]
-	fn rho_multilinear_rejects_a_tensor_of_the_wrong_width() {
-		let (c, table) = four_instance_and_table();
-		let and_constraints = table_constraints(&c);
-		let columns = OperandColumns::<_, 2>::build(
-			&table,
-			constants(&c),
-			&and_constraints,
-			&GlobalAllocator,
-		);
-
-		// Mutation: one weight short of the padded constraint axis.
-		//
-		//     rows in the column:  n_padded * n_instances
-		//     weights supplied:    n_padded - 1
-		//
-		// The fold indexes the folded rows by the tensor, so a short one would drop constraint
-		// rows.
-		let n_padded = (columns.as_slices()[0].len() / table.n_instances()).next_power_of_two();
-		let lagrange = vec![B128::ZERO; Word::BITS];
-		let short = vec![B128::ZERO; n_padded - 1];
-		let _ = columns.rho_multilinear::<P>(0, &lagrange, &short, &GlobalAllocator);
 	}
 
 	// The univariate-skip domain the AND-check runs over: one dimension above the 64-bit word.
@@ -1051,12 +816,11 @@ mod tests {
 	}
 
 	#[test]
-	fn unpadded_columns_fold_identically_to_padded_ones() {
-		// Invariant: dropping the padding stripes changes nothing a consumer can observe.
+	fn unpadded_columns_are_padded_ones_without_the_zero_tail() {
+		// Invariant: dropping the padding stripes changes no word a consumer reads.
 		//
-		// An `AndConstraint::default()` has empty operands, so its stripe is identically zero —
-		// exactly the padding stripe this module used to materialize. Appending enough of them
-		// reconstructs the old shape, and the two must agree on both the words and the fold.
+		// An `AndConstraint::default()` has empty operands, so its stripe is identically zero, as a
+		// padding stripe is. Appending enough of them pads the constraint axis to a power of two.
 		//
 		// Fixture state: 4 instances, 3 constraints, padded up to 4.
 		let (c, table) = four_instance_and_table();
@@ -1076,11 +840,6 @@ mod tests {
 			&GlobalAllocator,
 		);
 
-		// Random weights on both folded axes, so a coincidence cannot pass for agreement.
-		let mut rng = StdRng::seed_from_u64(0);
-		let lagrange: Vec<B128> = (0..Word::BITS).map(|_| B128::random(&mut rng)).collect();
-		let r_x_tensor: Vec<B128> = (0..n_padded).map(|_| B128::random(&mut rng)).collect();
-
 		for operand in 0..2 {
 			// The unpadded column is the padded one with its zero tail cut off.
 			let short = unpadded.as_slices()[operand];
@@ -1089,17 +848,6 @@ mod tests {
 			assert_eq!(long.len(), n_padded * n_instances);
 			assert_eq!(short, &long[..short.len()]);
 			assert!(long[short.len()..].iter().all(|&word| word == Word::ZERO));
-
-			// Both fold to the same instance-axis multilinear, at the same tensor width.
-			let from_short =
-				unpadded.rho_multilinear::<P>(operand, &lagrange, &r_x_tensor, &GlobalAllocator);
-			let from_long =
-				padded.rho_multilinear::<P>(operand, &lagrange, &r_x_tensor, &GlobalAllocator);
-			assert_eq!(
-				from_short.iter_scalars().collect::<Vec<_>>(),
-				from_long.iter_scalars().collect::<Vec<_>>(),
-				"operand {operand}"
-			);
 		}
 	}
 

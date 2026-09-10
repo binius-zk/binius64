@@ -16,13 +16,18 @@
 //! The batched form erases that arity, because a shift key picks its operation at run time.
 //! There the operation is named by indexing instead: `prepared[key.operation]`.
 
-use std::ops::Index;
+use std::{array, iter, ops::Index};
 
+use binius_core::constraint_system::ConstraintSystem;
 use binius_field::Field;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
-use binius_verifier::protocols::shift::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_MAX_ARITY, LOG_OPERATION_COUNT, ZERO_ARITY,
+use binius_verifier::protocols::{
+	rerand::RerandOutput,
+	shift::{
+		BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, LOG_MAX_ARITY, LOG_OPERATION_COUNT, ZERO_ARITY,
+	},
+	zero,
 };
 
 use super::{Operation, OperatorData, PreparedOperatorData};
@@ -43,6 +48,51 @@ pub struct OperatorClaims<F: Field> {
 }
 
 impl<F: Field> OperatorClaims<F> {
+	/// Assembles the four claims from the output of the BitAnd sumcheck.
+	///
+	/// The sumcheck's point is `r_rho || r_x_star`, instance index low, constraint index high.
+	/// Each operation is claimed at the prefix of `r_x_star` its rows span, so all four share
+	/// `r_rho`. The Zero point comes from [`zero::reduction_point`], which draws any extra
+	/// challenges from `sample`.
+	///
+	/// An operation the constraint system does not use gets a zero claim.
+	///
+	/// # Arguments
+	///
+	/// - `cs`: the constraint system, whose row counts pick each operation's prefix.
+	/// - `log_instances`: the instance variables at the low end of the point.
+	/// - `z_challenge`: the univariate challenge, shared by every operation.
+	/// - `rerand`: the sumcheck's output, with the IntMul operand evaluations before the BinMul
+	///   ones.
+	/// - `sample`: draws the Zero point's extra challenges from the transcript.
+	pub fn from_rerand(
+		cs: &ConstraintSystem,
+		log_instances: usize,
+		z_challenge: F,
+		rerand: &RerandOutput<F>,
+		sample: impl FnMut() -> F,
+	) -> Self {
+		let r_x_star = &rerand.eval_point[log_instances..];
+		let mut evals = iter::chain(rerand.bitand_evals, rerand.operand_evals.iter().copied());
+		// The BitAnd check has no skip branch: an empty AND set reduces over one zero row.
+		let log_n_and = cs.log_and_constraints().unwrap_or(0);
+		let bitand = operation_claim(Some(log_n_and), r_x_star, z_challenge, &mut evals);
+		let intmul = operation_claim(cs.log_imul_constraints(), r_x_star, z_challenge, &mut evals);
+		let binmul = operation_claim(cs.log_bmul_constraints(), r_x_star, z_challenge, &mut evals);
+		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
+		let zero = OperatorData {
+			evals: [F::ZERO],
+			r_zhat_prime: z_challenge,
+			r_x_prime: zero::reduction_point(r_x_star, log_n_zero, sample),
+		};
+		Self {
+			zero,
+			bitand,
+			intmul,
+			binmul,
+		}
+	}
+
 	/// Draws the two batching challenge vectors and folds their weights into the claims.
 	///
 	/// An operation holds one claim per operand, and the reduction proves them all at once.
@@ -84,6 +134,29 @@ impl<F: Field> OperatorClaims<F> {
 			operand_weights,
 		}
 	}
+}
+
+/// An operation's claim at its prefix of `r_x_star`, or a zero claim when it is absent.
+///
+/// A present operation takes its `ARITY` evaluations off the front of `evals`.
+fn operation_claim<F: Field, const ARITY: usize>(
+	log_n_constraints: Option<usize>,
+	r_x_star: &[F],
+	z_challenge: F,
+	evals: &mut impl Iterator<Item = F>,
+) -> OperatorData<F, ARITY> {
+	log_n_constraints.map_or_else(
+		|| OperatorData::zero_claim(z_challenge),
+		|log_n| OperatorData {
+			evals: array::from_fn(|_| {
+				evals
+					.next()
+					.expect("the sumcheck returns one evaluation per operand column")
+			}),
+			r_zhat_prime: z_challenge,
+			r_x_prime: r_x_star[..log_n].to_vec(),
+		},
+	)
 }
 
 /// The claims with their batching weights folded in, as both proving phases read them.

@@ -242,10 +242,7 @@ fn prove_secp256k1_add_incomplete() {
 	prove_once::<Secp256k1AddIncompleteCircuit>("secp256k1_add", log_additions);
 }
 
-// A batch of one instance, with IMUL constraints.
-//
-// The re-randomization still runs here, over no rounds, since a batch of one is still a batch.
-// Nothing else covers that degenerate sumcheck, on either side.
+// A batch of one instance, with IMUL constraints: the instance axis and `r_rho` are empty.
 #[test]
 fn prove_integer_multiplication_single_instance() {
 	prove_once::<ImulCircuit>("imul-1", 0);
