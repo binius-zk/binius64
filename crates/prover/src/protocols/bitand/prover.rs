@@ -15,35 +15,37 @@ use binius_verifier::{
 use super::sumcheck_round_messages;
 use crate::fold_word::BitAxisFolder;
 
-/// Prover for the AND constraint reduction protocol via oblong univariate zerocheck.
+/// Prover for the univariate-skip round of the AND constraint reduction.
+///
+/// It computes the round message over the two operand columns, then folds the columns at the
+/// verifier's challenge into the MLE-check summand.
 ///
 /// See [`binius_verifier::protocols::bitand`] for the protocol specification.
 ///
 /// The columns are generic over their backing store `Data` (anything that dereferences to
 /// `[Word]`), so callers can supply pooled buffers ([`PoolVec`](binius_compute::PoolVec)) or plain
 /// `Vec<Word>` interchangeably.
-pub struct OblongZerocheckProver<FChallenge, Data>
+pub struct UnivariateRoundProver<F, Data>
 where
-	FChallenge: BinaryField,
+	F: BinaryField,
 {
 	log_words: usize,
 	first_col: Data,
 	second_col: Data,
-	big_field_zerocheck_challenges: Vec<FChallenge>,
-	univariate_round_message: [FChallenge; ROWS_PER_HYPERCUBE_VERTEX],
-	univariate_round_message_domain: BinarySubspace<FChallenge>,
+	big_field_zerocheck_challenges: Vec<F>,
+	univariate_round_message: [F; ROWS_PER_HYPERCUBE_VERTEX],
+	univariate_round_message_domain: BinarySubspace<F>,
 }
 
-impl<F, Data> OblongZerocheckProver<F, Data>
+impl<F, Data> UnivariateRoundProver<F, Data>
 where
 	F: BinaryField + From<B8>,
 	Data: Deref<Target = [Word]>,
 {
-	/// Creates a new oblong zerocheck prover for AND constraint reduction.
+	/// Computes the univariate-skip message over the two operand columns.
 	///
-	/// This constructor sets up the prover by precomputing the univariate polynomial evaluations
-	/// that will be sent in the first round. The polynomial encodes the AND constraint verification
-	/// across all values in the oblong dimension.
+	/// The message holds the evaluations of the univariate round polynomial R₀(Z), which encodes
+	/// the AND constraint across the oblong dimension.
 	///
 	/// The C operand of the AND constraint `A & B ^ C = 0` is not an input.
 	/// The prover derives it word-by-word as `A & B`.
@@ -62,8 +64,7 @@ where
 	/// * `log_words` - Base-2 logarithm of the constraint axis's length
 	/// * `first_col` - The oblong multilinear polynomial A in the AND constraint A & B ^ C = 0
 	/// * `second_col` - The oblong multilinear polynomial B in the AND constraint
-	/// * `big_field_zerocheck_challenges` - Challenges Z_{k+1},...,Zₙ in the large field
-	///   `FChallenge`
+	/// * `big_field_zerocheck_challenges` - Challenges Z_{k+1},...,Zₙ in the large field `F`
 	/// * `prover_message_domain` - The domain for evaluating the univariate polynomial
 	///
 	/// The two columns must have equal length, at most `1 << log_words`. A column shorter than the
@@ -72,12 +73,12 @@ where
 	///
 	/// # Implementation Details
 	///
-	/// The constructor:
+	/// This function:
 	/// 1. Computes the equality indicator polynomial from the big field challenges
 	/// 2. Uses the NTT lookup to efficiently compute the univariate polynomial evaluations
 	/// 3. Caches these evaluations for later use in the [`round_message`](Self::round_message)
 	///    method
-	pub fn new(
+	pub fn compute_message(
 		log_words: usize,
 		first_col: Data,
 		second_col: Data,
@@ -105,23 +106,11 @@ where
 		}
 	}
 
-	/// Executes the first phase of the AND reduction protocol by computing the univariate
-	/// polynomial.
+	/// The message to send: R₀(Z) on the extension domain.
 	///
-	/// This method computes the univariate polynomial R₀(Z) that encodes the AND constraint
-	/// verification. The polynomial is evaluated on the extension domain (upper half) and these
-	/// evaluations are sent to the verifier as the first round message.
-	///
-	/// # Returns
-	///
-	/// Returns a reference to the precomputed univariate polynomial evaluations on the extension
-	/// domain. These are exactly `ROWS_PER_HYPERCUBE_VERTEX` field elements that represent
-	/// R₀(Z) for Z in the upper half of the univariate domain.
-	///
-	/// # Note
-	///
-	/// The polynomial evaluations are precomputed in the constructor using the NTT lookup table
-	/// for efficiency. This method simply returns the cached result.
+	/// These are exactly `ROWS_PER_HYPERCUBE_VERTEX` field elements that represent R₀(Z) for Z in
+	/// the upper half of the univariate domain. [`compute_message`](Self::compute_message)
+	/// computes them; this method returns the cached result.
 	pub const fn round_message(&self) -> &[F; ROWS_PER_HYPERCUBE_VERTEX] {
 		&self.univariate_round_message
 	}
@@ -137,43 +126,30 @@ where
 			.extrapolate(&coeffs, &challenge)
 	}
 
-	/// Folds the oblong multilinears at the univariate challenge and creates the sumcheck prover.
+	/// Folds A, B and the derived C = A & B at the univariate challenge.
 	///
-	/// This method performs the transition between Phase 1 (univariate polynomial) and Phase 2
-	/// (multilinear sumcheck) of the AND reduction protocol. It folds the oblong multilinear
-	/// polynomials by fixing X₀ to the challenge value, effectively reducing them to standard
-	/// multilinear polynomials over the remaining variables.
-	///
-	/// # Arguments
-	///
-	/// * `round_message_domain` - The domain for the univariate polynomial (same as used in
-	///   execute)
-	/// * `challenge` - The random challenge z for Z received from the verifier
-	///
-	/// # Returns
-	///
-	/// Returns an MLE-check prover configured to prove the sumcheck claim:
+	/// Returns the MLE-check summand over the ℓ_and constraint variables, at the zerocheck point.
+	/// Fixing Z to `challenge` reduces the oblong multilinears to standard multilinears over the
+	/// remaining variables, and the returned prover proves the sumcheck claim:
 	/// R₀(z) = ∑_{X₀,...,Xₙ₋₁ ∈ {0,1}} (A(z,X₀,...,Xₙ₋₁)·B(z,X₀,...,Xₙ₋₁) -
 	/// C(z,X₀,...,Xₙ₋₁))·eq(X₀,...,Xₙ₋₁; r₀,...,rₙ₋₁)
 	///
+	/// The folded columns are allocated in `alloc`, which the returned prover borrows.
+	///
 	/// # Process
 	///
-	/// 1. Creates a fold lookup table for efficiently folding at the challenge point
+	/// 1. Creates a fold lookup table over the univariate domain of the round message
 	/// 2. Folds A, B, and the derived C = A & B at Z = challenge, in one fused pass
 	/// 3. Combines the zerocheck challenges (small field + big field)
 	/// 4. Evaluates the univariate polynomial at the challenge to get the sumcheck claim
 	/// 5. Constructs the AND reduction sumcheck prover with the folded multilinears
-	pub fn fold_and_send_reduced_prover<
-		'alloc,
-		PChallenge: PackedField<Scalar = F>,
-		A: Allocator,
-	>(
+	pub fn fold<'alloc, PChallenge: PackedField<Scalar = F>, A: Allocator>(
 		self,
-		round_message_domain: &BinarySubspace<F>,
-		challenge: F,
 		alloc: &'alloc A,
+		challenge: F,
 	) -> impl MleCheckProver<F> + 'alloc {
 		let claim = self.univariate_claim(challenge);
+		let round_message_domain = &self.univariate_round_message_domain;
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
 		let lagrange_evals = univariate_domain.lagrange_evals(&challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);

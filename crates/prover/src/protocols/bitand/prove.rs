@@ -13,17 +13,17 @@ use binius_verifier::{
 	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, protocols::bitand::AndCheckOutput,
 };
 
-use super::prover::OblongZerocheckProver;
+use super::prover::UnivariateRoundProver;
 use crate::protocols::rerand::{self, OperandWitness};
 
 /// Proves the AND constraint reduction over the two operand columns `A` and `B`.
 ///
-/// This wraps [`OblongZerocheckProver`], the univariate-skip zerocheck kernel, so both the
+/// This wraps [`UnivariateRoundProver`], the univariate-skip round, so both the
 /// single-instance prover and the M4 batch prover route their AND check through one entry point.
 /// Its multilinear rounds are one sumcheck with the operand-column MLE-checks of `operands`; see
 /// [`rerand::prove`].
 /// The `C` operand is never passed: the reduction derives `C = A & B` word-by-word, which is sound
-/// because folding is F2-linear on word bits (see [`OblongZerocheckProver::new`]).
+/// because folding is F2-linear on word bits (see [`UnivariateRoundProver::compute_message`]).
 ///
 /// The columns are generic over their backing store `Data` (anything that dereferences to
 /// `[Word]`), so pooled buffers and plain `Vec<Word>` are both accepted and moved into the kernel.
@@ -73,7 +73,7 @@ where
 		log_constraint_count.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
 	let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
 
-	let prover = OblongZerocheckProver::<_, _>::new(
+	let prover = UnivariateRoundProver::<_, _>::compute_message(
 		log_constraint_count,
 		a,
 		b,
@@ -85,12 +85,11 @@ where
 	let z_challenge = channel.sample();
 	let claim = prover.univariate_claim(z_challenge);
 
-	let domain = prover_message_domain.isomorphic::<F>();
-	let bitand = tracing::debug_span!("Fold univariate round").in_scope(|| {
-		prover.fold_and_send_reduced_prover::<PChallenge, _>(&domain, z_challenge, alloc)
-	});
+	let bitand = tracing::debug_span!("Fold univariate round")
+		.in_scope(|| prover.fold::<PChallenge, _>(alloc, z_challenge));
 	// The operand columns fold over the 64-point domain: the skip domain less its top dimension.
-	let lagrange = domain
+	let lagrange = prover_message_domain
+		.isomorphic::<F>()
 		.reduce_dim(Word::LOG_BITS)
 		.lagrange_evals(&z_challenge);
 	let rerand =
