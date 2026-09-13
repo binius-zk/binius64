@@ -80,5 +80,5 @@ pub use error::Error;
 pub use shift_ind::evaluate_shift_inds;
 pub use verify::{
 	DeferredWiringClaim, OperationShare, VerifyOutput, WiringEvalClaim, WiringEvalFn,
-	WiringEvalShape, check_eval, constraint_tables, evaluate_words_mle, log_constraints, verify,
+	WiringEvalShape, check_eval, evaluate_words_mle, log_constraint_point, padding_scales, verify,
 };

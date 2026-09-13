@@ -203,8 +203,8 @@ pub fn build_g_from_folded_words<F: BinaryField>(
 			// The batching-weighted partial evaluation tensor for this shifted word.
 			let acc = key.accumulate(
 				&segment.constraint_indices,
+				&prepared.r_x_tensor,
 				&prepared[key.operation],
-				&prepared.operand_weights,
 			);
 
 			let base = key.dense_shift_idx as usize * Word::BITS;
@@ -242,7 +242,8 @@ mod tests {
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{
-			LOG_SHIFT_COUNT, SHIFT_COUNT, check_eval, evaluate_words_mle, log_constraints, verify,
+			LOG_SHIFT_COUNT, SHIFT_COUNT, check_eval, evaluate_words_mle, log_constraint_point,
+			padding_scales, verify,
 		},
 	};
 	use rand::prelude::*;
@@ -335,13 +336,13 @@ mod tests {
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		//
 		// The constraint point is as wide as the widest constraint set, and every operation is
-		// claimed at a prefix of it. The Zero claim's value is zero at any point: a satisfied ZERO
-		// constraint array vanishes identically, so its multilinear extension is the zero
-		// polynomial.
+		// claimed at the whole of it, its matrix padded with empty rows. The Zero claim's value is
+		// zero at any point: a satisfied ZERO constraint array vanishes identically, so its
+		// multilinear extension is the zero polynomial.
 		let domain_subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
-		let log_constraints = log_constraints(&cs);
 		let r_z = B128::random(&mut rng);
-		let r_x = random_scalars::<B128>(&mut rng, log_constraints.into_iter().max().unwrap_or(0));
+		let r_x = random_scalars::<B128>(&mut rng, log_constraint_point(&cs));
+		let [_, bitand_scale, _, _] = padding_scales(&cs, &r_x);
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The hidden witness folded over instances (one FoldedWord per committed word), and the
@@ -350,17 +351,19 @@ mod tests {
 			FoldedWitness::<B128, _>::fold_instances(&table, &r_rho, &GlobalAllocator);
 		let public_words = &cs.constants;
 
-		// The bitand operand evals at (r_z, its prefix of r_x, r_rho); the circuit has no IMUL or
-		// BMUL constraints, so those evals are zero.
+		// The bitand operand evals at (r_z, its prefix of r_x, r_rho), scaled to its padded matrix
+		// at the whole of r_x; the circuit has no IMUL or BMUL constraints, so those evals are
+		// zero.
 		let bitand_evals = evaluate_and_witness::<P>(
 			&table,
 			public_words,
 			&cs.and_constraints,
 			&domain_subspace,
 			r_z,
-			&r_x[..log_constraints[1]],
+			&r_x[..cs.log_and_constraints().unwrap_or(0)],
 			&r_rho,
-		);
+		)
+		.map(|eval| eval * bitand_scale);
 		let intmul_evals = [B128::ZERO; 4];
 
 		// Prove.
@@ -371,7 +374,6 @@ mod tests {
 			&folded_witness,
 			OperatorClaims {
 				r_x: r_x.clone(),
-				log_constraints,
 				r_zhat_prime: r_z,
 				zero: [B128::ZERO],
 				bitand: bitand_evals,
@@ -473,22 +475,24 @@ mod tests {
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
-		let log_constraints = log_constraints(&cs);
 		let r_z = B128::random(&mut rng);
-		let r_x = random_scalars::<B128>(&mut rng, log_constraints.into_iter().max().unwrap_or(0));
+		let r_x = random_scalars::<B128>(&mut rng, log_constraint_point(&cs));
+		let [_, bitand_scale, _, _] = padding_scales(&cs, &r_x);
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
-		// The batched AND-check operand evals at (r_z, its prefix of r_x, r_rho), and the full
-		// folded witness at the same r_rho, so g and the claim agree on the instance point.
+		// The batched AND-check operand evals at (r_z, its prefix of r_x, r_rho), scaled to its
+		// padded matrix at the whole of r_x, and the full folded witness at the same r_rho, so g
+		// and the claim agree on the instance point.
 		let bitand_evals = evaluate_and_witness::<P>(
 			&table,
 			constants,
 			&cs.and_constraints,
 			&domain_subspace,
 			r_z,
-			&r_x[..log_constraints[1]],
+			&r_x[..cs.log_and_constraints().unwrap_or(0)],
 			&r_rho,
-		);
+		)
+		.map(|eval| eval * bitand_scale);
 		// The hidden segment spans value indices `[offset_inout, combined_len)`.
 		let offset = table.layout().offset_inout();
 		let combined = table.layout().combined_len();
@@ -500,7 +504,6 @@ mod tests {
 		// IMUL or BMUL constraints, so those evals are zero, as is the ZERO claim's.
 		let claims = OperatorClaims {
 			r_x,
-			log_constraints,
 			r_zhat_prime: r_z,
 			zero: [B128::ZERO],
 			bitand: bitand_evals,

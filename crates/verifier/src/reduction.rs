@@ -14,6 +14,9 @@
 //! r_rho      the instance, shared by every operation
 //! r_x_star   the constraint; each operation reads the prefix its row count spans
 //! ```
+//!
+//! The shift reduction takes every operation at the same constraint point `r_x`, its matrix padded
+//! with empty rows, so each claim is scaled up from its prefix to the whole point first.
 
 use std::iter;
 
@@ -205,13 +208,25 @@ where
 	let r_x = zero::reduction_point(r_x_star, r_x_len, || channel.sample());
 
 	// The four operations' operand claims, concatenated in the order the shift reduction batches
-	// them.
+	// them. Each is scaled by its padding factor, which lifts it from its prefix of `r_x` to its
+	// padded matrix at the whole point.
+	let [_, bitand_scale, intmul_scale, binmul_scale] = shift::padding_scales(cs, &r_x);
 	let mut operand_evals = operand_evals.into_iter();
 	let operation_claims = [
 		vec![Channel::Elem::zero()],
-		bitand_evals.to_vec(),
-		absent_or_claimed::<_, INTMUL_ARITY>(cs.log_imul_constraints(), &mut operand_evals),
-		absent_or_claimed::<_, BINMUL_ARITY>(cs.log_bmul_constraints(), &mut operand_evals),
+		bitand_evals
+			.map(|eval| eval * bitand_scale.clone())
+			.to_vec(),
+		absent_or_claimed::<_, INTMUL_ARITY>(
+			cs.log_imul_constraints(),
+			&intmul_scale,
+			&mut operand_evals,
+		),
+		absent_or_claimed::<_, BINMUL_ARITY>(
+			cs.log_bmul_constraints(),
+			&binmul_scale,
+			&mut operand_evals,
+		),
 	]
 	.concat();
 
@@ -338,17 +353,18 @@ where
 	Ok(eq_ind_zero(&r_y[log_packed_words..]) * public_eval)
 }
 
-/// An operation's operand evaluations, or zeros when it is absent.
+/// An operation's operand evaluations scaled by its padding factor, or zeros when it is absent.
 ///
 /// A present operation takes its `ARITY` evaluations off the front of `evals`.
 /// An absent operation has an empty constraint set, so the shift finds no key naming it.
 /// Its zero claim therefore contributes nothing.
 fn absent_or_claimed<F: FieldOps, const ARITY: usize>(
 	log_n_constraints: Option<usize>,
+	scale: &F,
 	evals: impl Iterator<Item = F>,
 ) -> Vec<F> {
 	match log_n_constraints {
-		Some(_) => evals.take(ARITY).collect(),
+		Some(_) => evals.take(ARITY).map(|eval| eval * scale.clone()).collect(),
 		None => vec![F::zero(); ARITY],
 	}
 }

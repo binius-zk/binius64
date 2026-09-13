@@ -33,7 +33,7 @@ use super::{
 /// - `key_collection`: the prover's key collection for the constraint system.
 /// - `public_words`: the constants followed by the inout values, as the circuit declares them.
 /// - `hidden_words`: the private values, as the circuit declares them.
-/// - `claims`: the operand evaluation claims, all at prefixes of one constraint point.
+/// - `claims`: the operand evaluation claims, all at one constraint point.
 /// - `domain_subspace`: the univariate evaluation domain.
 /// - `channel`: the prover channel the interactive rounds run over.
 /// - `alloc`: the allocator the intermediate buffers are drawn from.
@@ -64,8 +64,8 @@ where
 		hidden: hidden_words,
 	};
 
-	// One batching coefficient per operation, folded into its prefix of the constraint point's
-	// expansion.
+	// One batching coefficient per operation, folded into its operand weights, and one expansion
+	// of the constraint point shared by every operation.
 	// SOUNDNESS: this must draw in the same order the verifier draws in.
 	let prepared = {
 		let _scope = tracing::debug_span!("Expand tensor queries").entered();

@@ -28,7 +28,7 @@ use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{check_eval, evaluate_words_mle, log_constraints, verify},
+	protocols::shift::{check_eval, evaluate_words_mle, log_constraint_point, verify},
 };
 use itertools::Itertools;
 use rand::{SeedableRng, rngs::StdRng};
@@ -290,12 +290,14 @@ fn compute_binmul_images(constraints: &[BmulConstraint], witness: &ValueVec) -> 
 }
 
 // Evaluate the image of the witness applied to the AND or IMUL constraints
-// Univariate point is `r_zhat_prime`, multilinear point tensor-expanded is `r_x_prime_tensor`
+// Univariate point is `r_zhat_prime`, multilinear point tensor-expanded is `r_x_tensor`.
+//
+// The tensor may span more rows than the image: the rows past it are empty padding.
 fn evaluate_image<F: BinaryField>(
 	subspace: &BinarySubspace<F>,
 	image: &[Word],
 	r_zhat_prime: F,
-	r_x_prime_tensor: &[F],
+	r_x_tensor: &[F],
 ) -> F {
 	let l_tilde = subspace.lagrange_evals_buffer(r_zhat_prime);
 	let univariate = image
@@ -307,7 +309,7 @@ fn evaluate_image<F: BinaryField>(
 				.sum()
 		})
 		.collect::<Vec<_>>();
-	inner_product(r_x_prime_tensor.iter().copied(), univariate.iter().copied())
+	inner_product(r_x_tensor[..univariate.len()].iter().copied(), univariate)
 }
 
 /// Compute inner product of tensor with all bits from words
@@ -344,14 +346,11 @@ fn test_shift_prove_and_verify() {
 		}
 
 		// Sample the one constraint point, as wide as the widest constraint set. Every operation
-		// is claimed at the prefix its own constraint count spans; an empty set spans the empty
-		// prefix.
-		let log_constraints = log_constraints(&cs);
-		let r_x = (0..log_constraints.into_iter().max().unwrap_or(0) as u128)
+		// is claimed at the whole of it, its matrix padded with empty rows.
+		let r_x = (0..log_constraint_point(&cs) as u128)
 			.map(F::new)
 			.collect::<Vec<_>>();
-		let [_, r_x_bitand, r_x_intmul, r_x_binmul] =
-			log_constraints.map(|log_len| &r_x[..log_len]);
+		let r_x_tensor = eq_ind_partial_eval(&r_x);
 
 		// A constraint system may have zero IMUL constraints (e.g. a pure-AND circuit like
 		// SHA-256), or zero BMUL constraints. That operator's claim is then zero, mirroring the
@@ -365,39 +364,21 @@ fn test_shift_prove_and_verify() {
 
 		let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
 
-		let bitand_evals = compute_bitand_images(&cs.and_constraints, &value_vec).map(|image| {
-			evaluate_image(
-				&subspace,
-				&image,
-				r_zhat_prime,
-				eq_ind_partial_eval(r_x_bitand).as_ref(),
-			)
-		});
+		let bitand_evals = compute_bitand_images(&cs.and_constraints, &value_vec)
+			.map(|image| evaluate_image(&subspace, &image, r_zhat_prime, r_x_tensor.as_ref()));
 
 		let intmul_evals: [F; 4] = if intmul_is_empty {
 			[F::ZERO; 4]
 		} else {
-			compute_intmul_images(&cs.imul_constraints, &value_vec).map(|image| {
-				evaluate_image(
-					&subspace,
-					&image,
-					r_zhat_prime,
-					eq_ind_partial_eval(r_x_intmul).as_ref(),
-				)
-			})
+			compute_intmul_images(&cs.imul_constraints, &value_vec)
+				.map(|image| evaluate_image(&subspace, &image, r_zhat_prime, r_x_tensor.as_ref()))
 		};
 
 		let binmul_evals: [F; 6] = if binmul_is_empty {
 			[F::ZERO; 6]
 		} else {
-			compute_binmul_images(&cs.bmul_constraints, &value_vec).map(|image| {
-				evaluate_image(
-					&subspace,
-					&image,
-					r_zhat_prime,
-					eq_ind_partial_eval(r_x_binmul).as_ref(),
-				)
-			})
+			compute_binmul_images(&cs.bmul_constraints, &value_vec)
+				.map(|image| evaluate_image(&subspace, &image, r_zhat_prime, r_x_tensor.as_ref()))
 		};
 
 		// Build prover's constraint system
@@ -412,7 +393,6 @@ fn test_shift_prove_and_verify() {
 			value_vec.non_public(),
 			OperatorClaims {
 				r_x: r_x.clone(),
-				log_constraints,
 				r_zhat_prime,
 				// The Zero claim's value is zero at any point: a satisfied ZERO constraint array
 				// vanishes identically, so its multilinear extension is the zero polynomial.

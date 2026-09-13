@@ -25,7 +25,7 @@ use binius_prover::{
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{log_constraints, verify},
+	protocols::shift::{log_constraint_point, verify},
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sha2::{Digest, Sha256};
@@ -98,9 +98,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		cs.validate().unwrap();
 
 		// Sample the one constraint point, as wide as the widest constraint set. Every operation
-		// is claimed at the prefix its own constraint count spans.
-		let log_constraints = log_constraints(&cs);
-		let r_x = (0..log_constraints.into_iter().max().unwrap_or(0) as u128)
+		// is claimed at the whole of it, its matrix padded with empty rows.
+		let r_x = (0..log_constraint_point(&cs) as u128)
 			.map(F::new)
 			.collect::<Vec<_>>();
 
@@ -114,7 +113,6 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let intmul_evals = [F::ZERO; 4];
 		let claims = || OperatorClaims {
 			r_x: r_x.clone(),
-			log_constraints,
 			r_zhat_prime,
 			zero: zero_evals,
 			bitand: bitand_evals,
@@ -197,8 +195,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	cs.validate().unwrap();
 
 	// The one constraint point, as wide as the widest constraint set.
-	let log_constraints = log_constraints(&cs);
-	let r_x = (0..log_constraints.into_iter().max().unwrap_or(0) as u128)
+	let r_x = (0..log_constraint_point(&cs) as u128)
 		.map(F::new)
 		.collect::<Vec<_>>();
 	// `r_zhat_prime` is shared across the operators.
@@ -220,7 +217,6 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// (`prove.rs` `None` branch).
 	let prepared = OperatorClaims {
 		r_x,
-		log_constraints,
 		r_zhat_prime,
 		zero: zero_evals,
 		bitand: bitand_evals,

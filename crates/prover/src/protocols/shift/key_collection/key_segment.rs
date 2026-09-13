@@ -102,13 +102,13 @@ impl KeySegment {
 
 					// A word can carry several keys, one per operand position it feeds.
 					for key in keys {
-						// Fold this key's accumulator value: the constraint-index tensor,
-						// already carrying the operation's weight, against the operand
-						// weight of each position the key names.
+						// Fold this key's accumulator value: the constraint-index tensor
+						// against the operand weight of each position the key names, which
+						// already carries the operation's weight.
 						let acc = key.accumulate(
 							&self.constraint_indices,
+							&prepared.r_x_tensor,
 							&prepared[key.operation],
-							&prepared.operand_weights,
 						);
 						let acc_packed = P::broadcast(acc);
 
