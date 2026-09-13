@@ -199,10 +199,9 @@ impl IOPProver {
 
 		// [phase] Zero Reduction - linear constraint reduction
 		//
-		// Every operation is claimed at a prefix of one constraint point: the BitAnd sumcheck's
-		// point, extended when the ZERO set is wider. The extension is drawn here, where the
-		// verifier draws it. See `IOPVerifier::verify` for why the
-		// Zero reduction carries no message.
+		// Every operation is claimed at one constraint point: the BitAnd sumcheck's point, extended
+		// when the ZERO set is wider. The extension is drawn here, where the verifier draws it. See
+		// `IOPVerifier::verify` for why the Zero reduction carries no message.
 		let claims = OperatorClaims::from_rerand(cs, 0, z_challenge, &rerand, || channel.sample());
 
 		// The shift reduction folds the bit axis over the 64-point domain, as the verifier's

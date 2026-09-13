@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::array;
+
 use binius_compute::{Allocator, VecLike};
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_field::{BinaryField, PackedField, WideMul};
@@ -13,11 +15,13 @@ use binius_utils::{
 	},
 	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
 };
-use binius_verifier::protocols::shift::LOG_MAX_ARITY;
+use binius_verifier::protocols::shift::{LOG_MAX_ARITY, OPERATION_COUNT};
 use bytes::{Buf, BufMut};
 use tracing::instrument;
 
-use super::{builder, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment};
+use super::{
+	Operation, builder, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment,
+};
 use crate::protocols::shift::{
 	claims::PreparedOperatorClaims, monster::OuterSlotWeights, shift_ind::ShiftChallenge,
 };
@@ -100,16 +104,16 @@ impl KeyCollection {
 		// `SHIFT_COUNT^2`.
 		let outer_weights = OuterSlotWeights::<F>::new(outer);
 
-		// The scalars of one key segment, laid out with the operand index innermost, so a
-		// key's weights form one contiguous chunk its wide accumulation can index by
-		// operand.
+		// The scalars of one key segment for one operation, laid out with the operand index
+		// innermost, so a key's weights form one contiguous chunk its wide accumulation can
+		// index by operand.
 		//
-		// The operand axis is shared by the four operations, so this is one table at the
-		// padded stride rather than one per operation at that operation's arity.
+		// Every operation's operand run has the padded stride, so the four tables share one
+		// layout rather than one per operation at that operation's arity.
 		//
 		// A key's sequence selects itself through an equality indicator over both slots.
 		// The h evaluation is one factor shared by every key.
-		let build_scalars = |dense_shift_enc: &DenseShiftEncoding| {
+		let build_scalars = |dense_shift_enc: &DenseShiftEncoding, operation: Operation| {
 			dense_shift_enc
 				.iter()
 				.flat_map(|[inner_shift, outer_shift]| {
@@ -117,8 +121,7 @@ impl KeyCollection {
 						* r_v_tensor.as_ref()[inner_shift.variant as usize]
 						* r_s_tensor.as_ref()[inner_shift.amount as usize]
 						* outer_weights.weight(outer_shift);
-					prepared
-						.operand_weights
+					prepared[operation]
 						.iter()
 						.map(move |operand_weight| *operand_weight * shift_scalar)
 				})
@@ -127,7 +130,7 @@ impl KeyCollection {
 
 		// The scalar for one word of a segment: the accumulated contribution of all its
 		// keys, summed unreduced and reduced once at the end.
-		let word_scalar = |segment: &KeySegment, scalars: &[F], index: usize| {
+		let word_scalar = |segment: &KeySegment, scalars: &[Vec<F>], index: usize| {
 			let wide = segment
 				.word_keys(index)
 				.iter()
@@ -138,8 +141,9 @@ impl KeyCollection {
 					let base = (key.dense_shift_idx as usize) << LOG_MAX_ARITY;
 					key.accumulate_wide(
 						&segment.constraint_indices,
-						&prepared[key.operation],
-						&scalars[base..base + (1 << LOG_MAX_ARITY)],
+						&prepared.r_x_tensor,
+						&scalars[key.operation.packed_code() as usize]
+							[base..base + (1 << LOG_MAX_ARITY)],
 					)
 				})
 				.sum::<<F as WideMul>::Output>();
@@ -150,8 +154,11 @@ impl KeyCollection {
 		// power-of-two length exactly, the hidden piece is zero-padded up to the hidden
 		// segment length.
 		let build_segment = |segment: &KeySegment, log_len: usize| {
-			// Each segment has its own dense shift encoding, so it has its own scalar table.
-			let scalars = build_scalars(&segment.dense_shift_enc);
+			// Each segment has its own dense shift encoding, so it has its own scalar tables, one
+			// per operation at its packed code.
+			let scalars: [Vec<F>; OPERATION_COUNT] = array::from_fn(|code| {
+				build_scalars(&segment.dense_shift_enc, Operation::from_packed_code(code as u8))
+			});
 			let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 			let n_words = segment.n_words();
 			// Full packed elements: each maps exactly `P::WIDTH` words, so `from_scalars`
