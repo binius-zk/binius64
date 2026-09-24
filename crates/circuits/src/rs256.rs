@@ -102,9 +102,14 @@ impl Rs256Verify {
 		// RSAVP1 (RFC 8017, section 5.2.2) requires the signature representative to lie in
 		// `[0, modulus)`. The exponentiation below only fixes the signature modulo `modulus`, so
 		// without this check `signature + modulus` would verify too whenever it fits in 256 bytes.
+		// Only the signature is truncated to 32 words above, so zero-extend it to the modulus
+		// width: `biguint_lt` needs equal widths, and this compares against the same value the
+		// exponentiation reduces by.
+		let signature_wide =
+			signature_bignum.pad_limbs_to(modulus_bignum.limbs.len(), builder.add_constant_64(0));
 		builder.assert_true(
 			"signature_below_modulus",
-			biguint_lt(builder, &signature_bignum, &modulus_bignum),
+			biguint_lt(builder, &signature_wide, &modulus_bignum),
 		);
 
 		let expected_hash_wires: [Wire; 4] = sha256_varlen(&builder.subcircuit("sha256"), &message);
@@ -571,6 +576,18 @@ mod tests {
 
 		let result = cs.populate_wire_witness(&mut w);
 		assert!(result.is_err(), "Circuit should fail when message doesn't match signature");
+	}
+
+	/// `new` takes a modulus of at least 256 bytes but truncates only the signature to 32 words,
+	/// so the signature range check must not assume both operands have the same width.
+	#[test]
+	fn test_modulus_wider_than_32_words_builds() {
+		let mut builder = CircuitBuilder::new();
+		let signature = ByteVec::new_inout(&builder, 32);
+		let modulus = ByteVec::new_inout(&builder, 33);
+		let message = ByteVec::new_witness(&builder, 8);
+		Rs256Verify::new(&mut builder, message, signature, modulus);
+		builder.build();
 	}
 
 	/// RSASSA-PKCS1-v1_5 verification (RFC 8017 §5.2.2, RSAVP1) rejects a signature
