@@ -5,7 +5,7 @@ use num_integer::Integer;
 
 use super::fixed_byte_vec::ByteVec;
 use crate::{
-	bignum::{BigUint, ModReduce, assert_eq, optimal_mul, optimal_sqr},
+	bignum::{BigUint, ModReduce, assert_eq, biguint_lt, optimal_mul, optimal_sqr},
 	bytes::swap_bytes,
 	sha256::sha256_varlen,
 };
@@ -56,6 +56,7 @@ impl Rs256Verify {
 	/// RS256 uses the public exponent 2^16 + 1 (65537). The circuit verifies
 	/// that the encoded message (EM) has the following properties:
 	///
+	/// - `signature < modulus`
 	/// - `EM = signature^65537 mod modulus`
 	/// - `EM` has a valid PKCS#1 v1.5 prefix
 	/// - The hash stored in `EM` is equal to the SHA-256 hash of the provided message.
@@ -97,6 +98,19 @@ impl Rs256Verify {
 
 		let modulus_bignum = fixedbytevec_le_to_biguint(builder, &modulus);
 		builder.assert_eq("modulus_bytes_len", modulus.len_bytes, builder.add_constant_64(256));
+
+		// RSAVP1 (RFC 8017, section 5.2.2) requires the signature representative to lie in
+		// `[0, modulus)`. The exponentiation below only fixes the signature modulo `modulus`, so
+		// without this check `signature + modulus` would verify too whenever it fits in 256 bytes.
+		// Only the signature is truncated to 32 words above, so zero-extend it to the modulus
+		// width: `biguint_lt` needs equal widths, and this compares against the same value the
+		// exponentiation reduces by.
+		let signature_wide =
+			signature_bignum.pad_limbs_to(modulus_bignum.limbs.len(), builder.add_constant_64(0));
+		builder.assert_true(
+			"signature_below_modulus",
+			biguint_lt(builder, &signature_wide, &modulus_bignum),
+		);
 
 		let expected_hash_wires: [Wire; 4] = sha256_varlen(&builder.subcircuit("sha256"), &message);
 		let expected_hash = BigUint {
@@ -562,5 +576,68 @@ mod tests {
 
 		let result = cs.populate_wire_witness(&mut w);
 		assert!(result.is_err(), "Circuit should fail when message doesn't match signature");
+	}
+
+	/// `new` takes a modulus of at least 256 bytes but truncates only the signature to 32 words,
+	/// so the signature range check must not assume both operands have the same width.
+	#[test]
+	fn test_modulus_wider_than_32_words_builds() {
+		let mut builder = CircuitBuilder::new();
+		let signature = ByteVec::new_inout(&builder, 32);
+		let modulus = ByteVec::new_inout(&builder, 33);
+		let message = ByteVec::new_witness(&builder, 8);
+		Rs256Verify::new(&mut builder, message, signature, modulus);
+		builder.build();
+	}
+
+	/// RSASSA-PKCS1-v1_5 verification (RFC 8017 §5.2.2, RSAVP1) rejects a signature
+	/// representative `s` outside `[0, n)`. `s + n` opens to the same encoded message, so without a
+	/// range check the circuit would accept a second byte string for every signature below
+	/// `2^2048 - n`.
+	#[test]
+	fn test_real_rsa_signature_not_below_modulus_is_rejected() {
+		let private_key = test_rsa_key();
+		let public_key = RsaPublicKey::from(&private_key);
+		let n = BigUint::from_bytes_be(&public_key.n().to_bytes_be());
+		let bound = (BigUint::from(1u8) << 2048) - &n;
+
+		// Find a message whose signature leaves room to add the modulus within 256 bytes.
+		let mut rng = StdRng::seed_from_u64(7);
+		let (message_bytes, signature) = loop {
+			let mut message_bytes = [0u8; 64];
+			rng.try_fill_bytes(&mut message_bytes).unwrap();
+			let digest = Sha256::digest(message_bytes);
+			let signature_bytes = private_key
+				.sign(rsa::Pkcs1v15Sign::new::<Sha256>(), &digest)
+				.expect("failed to sign");
+			let signature = BigUint::from_bytes_be(&signature_bytes);
+			if signature < bound {
+				break (message_bytes, signature);
+			}
+		};
+
+		let mut lifted_bytes = (&signature + &n).to_bytes_be();
+		assert!(lifted_bytes.len() <= 256);
+		lifted_bytes.splice(0..0, std::iter::repeat_n(0u8, 256 - lifted_bytes.len()));
+
+		// A spec-conforming verifier refuses the lifted signature.
+		let digest = Sha256::digest(message_bytes);
+		assert!(
+			public_key
+				.verify(rsa::Pkcs1v15Sign::new::<Sha256>(), &digest, &lifted_bytes)
+				.is_err()
+		);
+
+		let mut builder = CircuitBuilder::new();
+		let circuit = setup_circuit(&mut builder, 8);
+		let cs = builder.build();
+
+		let modulus_bytes = public_key.n().to_bytes_be();
+		let mut w = cs.new_witness_filler();
+		populate_circuit(&circuit, &mut w, &lifted_bytes, &message_bytes, &modulus_bytes);
+
+		let accepted = cs.populate_wire_witness(&mut w).is_ok()
+			&& cs.constraint_system().verify(&w.into_value_vec()).is_ok();
+		assert!(!accepted, "circuit accepted a signature representative not below the modulus");
 	}
 }
