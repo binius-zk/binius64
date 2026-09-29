@@ -61,9 +61,15 @@ impl<F: BinaryField, Data: Deref<Target = [F]>> BinarySubspace<F, Data> {
 	/// - `index`: which subspace element to return, in `0..2^dim`.
 	///
 	/// # Panics
-	/// Panics if `index` is at least `2^dim`.
+	/// Panics if `index` is at least `2^dim`. Once `dim` reaches `usize::BITS`, every `usize`
+	/// is below `2^dim`, so no index can panic.
 	pub fn get(&self, index: usize) -> F {
-		assert!(index < 1 << self.dim(), "precondition: index must be less than 2^dim");
+		// Once the dimension reaches usize::BITS, 2^dim exceeds every usize, so the bound
+		// holds for any index and computing it would overflow.
+		assert!(
+			self.dim() >= usize::BITS as usize || index < 1 << self.dim(),
+			"precondition: index must be less than 2^dim"
+		);
 
 		element_at(&self.basis, index)
 	}
@@ -111,6 +117,9 @@ impl<F: BinaryField> BinarySubspace<F> {
 fn element_at<F: BinaryField>(basis: &[F], index: usize) -> F {
 	basis
 		.iter()
+		// A basis element past the top of the index has no bit to select it, so the sum stops
+		// there. This also keeps the shift below in range without a per-element branch.
+		.take(usize::BITS as usize)
 		.enumerate()
 		// Keep basis_i when bit i of index is set.
 		// Drop it (multiply by 0) otherwise.
@@ -237,7 +246,7 @@ impl<F: BinaryField> Default for BinarySubspace<F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{Field, Ghash128b as B128, Rijndael8b as B8};
+	use binius_field::{ExtensionField, Field, Ghash128b as B128, Rijndael8b as B8};
 
 	use super::*;
 
@@ -249,6 +258,21 @@ mod tests {
 		for i in 0..=255 {
 			assert_eq!(subspace.get(i), B8::new(i as u8));
 		}
+	}
+
+	#[test]
+	fn test_get_on_a_subspace_wider_than_a_usize() {
+		// The default basis of a 128-bit field has 128 elements, so 2^dim does not fit in a
+		// usize. Every index that fits in a usize is still in range and must be selectable.
+		let basis = <B128 as ExtensionField<BinaryField1b>>::basis;
+		let subspace = BinarySubspace::<B128>::default();
+		assert_eq!(subspace.dim(), 128);
+		assert_eq!(subspace.get(0), B128::ZERO);
+		assert_eq!(subspace.get(1), basis(0));
+		assert_eq!(subspace.get(5), basis(0) + basis(2));
+		// The basis elements above bit 63 have no index bit to select them.
+		let low_bits: B128 = (0..usize::BITS as usize).map(basis).sum();
+		assert_eq!(subspace.get(usize::MAX), low_bits);
 	}
 
 	#[test]
