@@ -1,8 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::array;
-
 use binius_compute::{Allocator, VecLike};
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_field::{BinaryField, PackedField, WideMul};
@@ -15,15 +13,12 @@ use binius_utils::{
 	},
 	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
 };
-use binius_verifier::protocols::shift::{LOG_MAX_ARITY, OPERATION_COUNT};
 use bytes::{Buf, BufMut};
 use tracing::instrument;
 
-use super::{
-	Operation, builder, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment,
-};
+use super::{builder, dense_shift_encoding::DenseShiftEncoding, key_segment::KeySegment};
 use crate::protocols::shift::{
-	claims::PreparedOperatorClaims, monster::OuterSlotWeights, shift_ind::ShiftChallenge,
+	claims::PreparedOperandClaims, monster::OuterSlotWeights, shift_ind::ShiftChallenge,
 };
 
 /// The prover's complete view of a constraint system's shift keys, split by value-vector segment.
@@ -84,7 +79,7 @@ impl KeyCollection {
 	pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 		&self,
 		alloc: &A,
-		prepared: &PreparedOperatorClaims<F>,
+		prepared: &PreparedOperandClaims<F>,
 		h_eval: F,
 		inner: &ShiftChallenge<F>,
 		outer: &ShiftChallenge<F>,
@@ -104,16 +99,13 @@ impl KeyCollection {
 		// `SHIFT_COUNT^2`.
 		let outer_weights = OuterSlotWeights::<F>::new(outer);
 
-		// The scalars of one key segment for one operation, laid out with the operand index
-		// innermost, so a key's weights form one contiguous chunk its wide accumulation can
-		// index by operand.
-		//
-		// Every operation's operand run has the padded stride, so the four tables share one
-		// layout rather than one per operation at that operation's arity.
+		// The scalars of one key segment, laid out with the operand column innermost, so a key's
+		// weights form one contiguous chunk its wide accumulation can index by column.
 		//
 		// A key's sequence selects itself through an equality indicator over both slots.
 		// The h evaluation is one factor shared by every key.
-		let build_scalars = |dense_shift_enc: &DenseShiftEncoding, operation: Operation| {
+		let operand_stride = prepared.operand_weights.len();
+		let build_scalars = |dense_shift_enc: &DenseShiftEncoding| {
 			dense_shift_enc
 				.iter()
 				.flat_map(|[inner_shift, outer_shift]| {
@@ -121,7 +113,8 @@ impl KeyCollection {
 						* r_v_tensor.as_ref()[inner_shift.variant as usize]
 						* r_s_tensor.as_ref()[inner_shift.amount as usize]
 						* outer_weights.weight(outer_shift);
-					prepared[operation]
+					prepared
+						.operand_weights
 						.iter()
 						.map(move |operand_weight| *operand_weight * shift_scalar)
 				})
@@ -130,20 +123,18 @@ impl KeyCollection {
 
 		// The scalar for one word of a segment: the accumulated contribution of all its
 		// keys, summed unreduced and reduced once at the end.
-		let word_scalar = |segment: &KeySegment, scalars: &[Vec<F>], index: usize| {
+		let word_scalar = |segment: &KeySegment, scalars: &[F], index: usize| {
 			let wide = segment
 				.word_keys(index)
 				.iter()
 				.map(|key| {
-					// One chunk per shift sequence, at the padded stride. A key reads the
-					// whole chunk whatever its operation's arity is; the slots above that
-					// arity name no operand and are never indexed.
-					let base = (key.dense_shift_idx as usize) << LOG_MAX_ARITY;
+					// One chunk per shift sequence, at the padded stride; the slots past the last
+					// column name no operand and are never indexed.
+					let base = key.dense_shift_idx as usize * operand_stride;
 					key.accumulate_wide(
 						&segment.constraint_indices,
 						&prepared.r_x_tensor,
-						&scalars[key.operation.packed_code() as usize]
-							[base..base + (1 << LOG_MAX_ARITY)],
+						&scalars[base..base + operand_stride],
 					)
 				})
 				.sum::<<F as WideMul>::Output>();
@@ -154,11 +145,8 @@ impl KeyCollection {
 		// power-of-two length exactly, the hidden piece is zero-padded up to the hidden
 		// segment length.
 		let build_segment = |segment: &KeySegment, log_len: usize| {
-			// Each segment has its own dense shift encoding, so it has its own scalar tables, one
-			// per operation at its packed code.
-			let scalars: [Vec<F>; OPERATION_COUNT] = array::from_fn(|code| {
-				build_scalars(&segment.dense_shift_enc, Operation::from_packed_code(code as u8))
-			});
+			// Each segment has its own dense shift encoding, so it has its own scalar table.
+			let scalars = build_scalars(&segment.dense_shift_enc);
 			let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 			let n_words = segment.n_words();
 			// Full packed elements: each maps exactly `P::WIDTH` words, so `from_scalars`
@@ -203,8 +191,9 @@ impl KeyCollection {
 
 impl SerializeBytes for KeyCollection {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
-		// Version for forward compatibility; version 3 introduced the dense shift encoding.
-		const VERSION: u32 = 3;
+		// Version for forward compatibility; version 3 introduced the dense shift encoding, and
+		// version 4 dropped the operation from keys, which now span every operand column.
+		const VERSION: u32 = 4;
 		VERSION.serialize(&mut write_buf)?;
 
 		self.public.serialize(&mut write_buf)?;
@@ -214,7 +203,7 @@ impl SerializeBytes for KeyCollection {
 
 impl DeserializeBytes for KeyCollection {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
-		const VERSION: u32 = 3;
+		const VERSION: u32 = 4;
 		let version = u32::deserialize(&mut read_buf)?;
 		if version != VERSION {
 			return Err(SerializationError::InvalidConstruction {

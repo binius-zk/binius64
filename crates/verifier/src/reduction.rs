@@ -43,12 +43,23 @@ use crate::{
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		rerand::RerandOutput,
-		shift::{self, BINMUL_ARITY, INTMUL_ARITY, WiringEvalClaim},
+		shift::{self, WiringEvalClaim},
 		zero,
 	},
 	ring_switch::{self, RingSwitchVerifyOutput, eval_rs_eq},
 	verify_bitand_reduction,
 };
+
+pub const ZERO_ARITY: usize = 1;
+pub const BITAND_ARITY: usize = 3;
+pub const INTMUL_ARITY: usize = 4;
+pub const BINMUL_ARITY: usize = 6;
+
+/// Each operation's operand arity, in the order the shift reduction's operand columns run.
+///
+/// The shift reduction's operand claims are one flat slice, holding each operation's run of this
+/// many evaluations in this order: `[zero, bitand, intmul, binmul]`.
+pub const OPERATION_ARITIES: [usize; 4] = [ZERO_ARITY, BITAND_ARITY, INTMUL_ARITY, BINMUL_ARITY];
 
 /// What [`reduce_constraints`] leaves for the caller: the claim on the committed trace, and the
 /// wiring claim the constraint system is read through.
@@ -207,13 +218,13 @@ where
 	let r_x_len = r_x_star.len().max(log_n_zero);
 	let r_x = zero::reduction_point(r_x_star, r_x_len, || channel.sample());
 
-	// The four operations' operand claims, concatenated in the order the shift reduction batches
-	// them. Each is scaled by its padding factor, which lifts it from its prefix of `r_x` to its
-	// padded matrix at the whole point.
+	// The four operations' operand claims, one per column in [`OPERATION_ARITIES`] order. Each is
+	// scaled by its padding factor, which lifts it from its prefix of `r_x` to its padded matrix at
+	// the whole point.
 	let [_, bitand_scale, intmul_scale, binmul_scale] = shift::padding_scales(cs, &r_x);
 	let mut operand_evals = operand_evals.into_iter();
-	let operation_claims = [
-		vec![Channel::Elem::zero()],
+	let operand_claims = [
+		vec![Channel::Elem::zero(); ZERO_ARITY],
 		bitand_evals
 			.map(|eval| eval * bitand_scale.clone())
 			.to_vec(),
@@ -229,6 +240,7 @@ where
 		),
 	]
 	.concat();
+	debug_assert_eq!(operand_claims.len(), OPERATION_ARITIES.iter().sum::<usize>());
 
 	// Reduce the operand claims to one witness evaluation.
 	let shift = {
@@ -238,7 +250,7 @@ where
 			perfetto_category = "phase"
 		)
 		.entered();
-		shift::verify::<B128, _>(cs, inout, &operation_claims, channel)?
+		shift::verify::<B128, _>(cs, inout, &operand_claims, channel)?
 	};
 
 	// Tie in the public values through the public-input consistency check.

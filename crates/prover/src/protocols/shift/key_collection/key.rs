@@ -7,36 +7,28 @@ use binius_field::{Field, WideMul};
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
-use super::operation::Operation;
-
-/// One operation's constraints on one witness word, under one fixed sequence of two shifts.
+/// The constraints on one witness word, under one fixed sequence of two shifts.
 ///
 /// # Overview
 ///
-/// - A binary-field IOP paper defines one multilinear polynomial per operation, operand, and shift
+/// - A binary-field IOP paper defines one multilinear polynomial per operand column and shift
 ///   variant.
 /// - That polynomial decomposes into one matrix per bit of a word, and a key identifies one such
 ///   matrix.
+/// - A key spans every operand column, of every operation, that references its word under its
+///   sequence; its constraint indices name the columns.
 /// - The word itself is not stored here: a key is only ever reached by looking up its word first.
-///
-/// # Performance
-///
-/// - The operation and the shift index are stored as separate fields, not merged into one key.
-/// - This costs nothing during proving, since only the operation is extracted per round while the
-///   shift index is used as it stands.
 #[derive(Debug, Clone)]
 pub struct Key {
-	/// The constraint kind this key's constraints belong to.
-	pub operation: Operation,
 	/// Index into the owning segment's dense shift encoding.
 	///
 	/// The encoding decodes this back to the sequence of two shifts applied to the word.
 	pub dense_shift_idx: u16,
 	/// The constraint indices this key covers, as a range into the segment's flattened list.
 	///
-	/// A constraint index in this range names one constraint of this key's operation.
-	/// The word participates in that constraint as the operand the index names, under this key's
-	/// shift sequence.
+	/// A constraint index in this range names one operand column and one constraint of that
+	/// column's operation. The word participates in that constraint as that operand, under this
+	/// key's shift sequence.
 	pub range: Range<u32>,
 }
 
@@ -55,7 +47,7 @@ impl Key {
 	///
 	/// - `constraint_indices`: the segment's full flattened list; this key reads only its range.
 	/// - `r_x_prime_tensor`: the tensor value for each constraint index.
-	/// - `scalars`: one weight per operand index.
+	/// - `scalars`: one weight per operand column.
 	///
 	/// # Returns
 	///
@@ -120,7 +112,6 @@ impl Key {
 
 impl SerializeBytes for Key {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
-		self.operation.serialize(&mut write_buf)?;
 		self.dense_shift_idx.serialize(&mut write_buf)?;
 		self.range.start.serialize(&mut write_buf)?;
 		self.range.end.serialize(write_buf)
@@ -129,7 +120,6 @@ impl SerializeBytes for Key {
 
 impl DeserializeBytes for Key {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
-		let operation = Operation::deserialize(&mut read_buf)?;
 		let dense_shift_idx = u16::deserialize(&mut read_buf)?;
 		let start = u32::deserialize(&mut read_buf)?;
 		let end = u32::deserialize(&mut read_buf)?;
@@ -139,19 +129,19 @@ impl DeserializeBytes for Key {
 			return Err(SerializationError::InvalidConstruction { name: "Key::range" });
 		}
 		Ok(Key {
-			operation,
 			dense_shift_idx,
 			range: start..end,
 		})
 	}
 }
 
-/// One constraint referencing a shifted word, as one operand of one operation.
+/// One constraint referencing a shifted word, as one operand column.
 #[derive(Debug, Clone, Copy)]
 pub struct ConstraintIndex {
-	/// Which operand position of the constraint the word fills.
+	/// Which flat operand column the word fills: its operation's first column plus the operand
+	/// position within the constraint.
 	pub(super) operand_index: u8,
-	/// Which constraint, among the operation's constraints, this is.
+	/// Which constraint, among the column's operation's constraints, this is.
 	pub(super) constraint_index: u32,
 }
 
@@ -199,7 +189,6 @@ mod tests {
 	fn key_rejects_a_reversed_range() {
 		// `accumulate_wide` slices `start..end`, which panics when start runs past end.
 		let reversed = Key {
-			operation: Operation::Zero,
 			dense_shift_idx: 0,
 			range: Range { start: 5, end: 3 },
 		};
@@ -215,7 +204,6 @@ mod tests {
 	fn key_accepts_an_empty_range() {
 		// A key covering no constraints is legitimate: `accumulate_wide` returns early on it.
 		let empty = Key {
-			operation: Operation::Zero,
 			dense_shift_idx: 0,
 			range: Range { start: 3, end: 3 },
 		};
@@ -279,13 +267,12 @@ mod tests {
 			},
 		];
 		let key = Key {
-			operation: Operation::BitwiseAnd,
 			dense_shift_idx: 0,
 			range: 0..constraint_indices.len() as u32,
 		};
 		let r_x_prime_tensor = [f(2), f(3), f(5), f(7), f(11), f(13), f(17), f(19)];
-		// The operand axis is padded to a cube, so it holds more weights than the arity of the
-		// operation the key names. Only the leading ones are ever read.
+		// The operand axis is padded to a cube, so it holds more weights than the columns the key
+		// names. Only those are ever read.
 		let operand_weights = [f(23), f(29), f(31), f(37), f(41), f(43), f(47), f(53)];
 
 		let expected = accumulate_by_operand(&key, &constraint_indices, &r_x_prime_tensor)
@@ -320,7 +307,6 @@ mod tests {
 			},
 		];
 		let non_contiguous_key = Key {
-			operation: Operation::BitwiseAnd,
 			dense_shift_idx: 0,
 			range: 0..non_contiguous_constraint_indices.len() as u32,
 		};
@@ -342,7 +328,6 @@ mod tests {
 		);
 
 		let empty_key = Key {
-			operation: Operation::BitwiseAnd,
 			dense_shift_idx: 0,
 			range: 0..0,
 		};

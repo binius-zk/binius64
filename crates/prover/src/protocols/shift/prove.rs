@@ -9,7 +9,7 @@ use binius_math::{BinarySubspace, univariate::EvaluationDomain};
 
 use super::{
 	SegmentWords,
-	claims::OperatorClaims,
+	claims::OperandClaims,
 	key_collection::KeyCollection,
 	phase_1::prove_phase_1,
 	phase_2::{ShiftOutput, prove_phase_2},
@@ -46,7 +46,7 @@ pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
 	hidden_words: &[Word],
-	claims: OperatorClaims<F>,
+	claims: OperandClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,

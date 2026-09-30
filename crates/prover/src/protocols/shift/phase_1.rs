@@ -21,7 +21,7 @@ use tracing::instrument;
 
 use super::{
 	SegmentWords,
-	claims::PreparedOperatorClaims,
+	claims::PreparedOperandClaims,
 	key_collection::{DenseShiftEncoding, KeyCollection},
 	monster::shift_operator_table,
 	outer::OuterShiftStage,
@@ -50,7 +50,7 @@ use super::{
 pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: SegmentWords<'_>,
-	prepared: &PreparedOperatorClaims<F>,
+	prepared: &PreparedOperandClaims<F>,
 	oblong_weights: &[F],
 	channel: &mut Channel,
 	alloc: &A,

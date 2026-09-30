@@ -18,7 +18,7 @@ use itertools::izip;
 use tracing::instrument;
 
 use super::{
-	super::{claims::PreparedOperatorClaims, phase_1::row_len},
+	super::{claims::PreparedOperandClaims, phase_1::row_len},
 	dense_shift_encoding::DenseShiftEncoding,
 	key::{ConstraintIndex, Key},
 };
@@ -64,7 +64,7 @@ impl KeySegment {
 	pub fn build_g<F: Field, P: PackedField<Scalar = F>>(
 		&self,
 		words: &[Word],
-		prepared: &PreparedOperatorClaims<F>,
+		prepared: &PreparedOperandClaims<F>,
 	) -> Box<[P]> {
 		// One row of `Word::BITS` scalars per shift the segment uses.
 		let row_len = row_len::<P>();
@@ -100,15 +100,14 @@ impl KeySegment {
 				|mut multilinears, (word, Range { start, end })| {
 					let keys = &self.keys[*start as usize..*end as usize];
 
-					// A word can carry several keys, one per operand position it feeds.
+					// A word can carry several keys, one per shift sequence it is read under.
 					for key in keys {
 						// Fold this key's accumulator value: the constraint-index tensor
-						// against the operand weight of each position the key names, which
-						// already carries the operation's weight.
+						// against the operand weight of each column the key names.
 						let acc = key.accumulate(
 							&self.constraint_indices,
 							&prepared.r_x_tensor,
-							&prepared[key.operation],
+							&prepared.operand_weights,
 						);
 						let acc_packed = P::broadcast(acc);
 
@@ -241,7 +240,7 @@ impl DeserializeBytes for KeySegment {
 mod tests {
 	use binius_core::constraint_system::Shift;
 
-	use super::{super::operation::Operation, *};
+	use super::*;
 
 	// Serializes a segment built raw, bypassing `build`, so malformed indices reach the
 	// deserializer.
@@ -258,12 +257,10 @@ mod tests {
 		let segment = KeySegment {
 			keys: vec![
 				Key {
-					operation: Operation::Zero,
 					dense_shift_idx: 0,
 					range: Range { start: 0, end: 2 },
 				},
 				Key {
-					operation: Operation::Zero,
 					dense_shift_idx: 1,
 					range: Range { start: 2, end: 3 },
 				},
@@ -297,7 +294,6 @@ mod tests {
 		// The encoding holds two sequences, so index 2 is one past its end.
 		let segment = KeySegment {
 			keys: vec![Key {
-				operation: Operation::Zero,
 				dense_shift_idx: 2,
 				range: Range { start: 0, end: 1 },
 			}],
@@ -326,7 +322,6 @@ mod tests {
 		// holds one entry against the key's claim of four.
 		let segment = KeySegment {
 			keys: vec![Key {
-				operation: Operation::Zero,
 				dense_shift_idx: 0,
 				range: Range { start: 0, end: 4 },
 			}],
@@ -351,7 +346,6 @@ mod tests {
 		// `word_keys` slices the flattened keys vector, which holds one key against a range of two.
 		let segment = KeySegment {
 			keys: vec![Key {
-				operation: Operation::Zero,
 				dense_shift_idx: 0,
 				range: Range { start: 0, end: 1 },
 			}],
@@ -376,7 +370,6 @@ mod tests {
 		// Slicing `start..end` panics when start runs past end, in bounds or not.
 		let segment = KeySegment {
 			keys: vec![Key {
-				operation: Operation::Zero,
 				dense_shift_idx: 0,
 				range: Range { start: 0, end: 1 },
 			}],

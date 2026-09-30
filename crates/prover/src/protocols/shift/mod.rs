@@ -11,8 +11,8 @@ mod prove;
 mod segment_words;
 mod shift_ind;
 
-pub use claims::{OperatorClaims, PreparedOperatorClaims};
-pub use key_collection::{DenseShiftEncoding, KeyCollection, KeySegment, Operation};
+pub use claims::{OperandClaims, PreparedOperandClaims};
+pub use key_collection::{DenseShiftEncoding, KeyCollection, KeySegment};
 pub use phase_2::ShiftOutput;
 pub use prove::prove;
 pub use segment_words::SegmentWords;

@@ -8,9 +8,7 @@ mod collection;
 mod dense_shift_encoding;
 mod key;
 mod key_segment;
-mod operation;
 
 pub use collection::KeyCollection;
 pub use dense_shift_encoding::DenseShiftEncoding;
 pub use key_segment::KeySegment;
-pub use operation::Operation;

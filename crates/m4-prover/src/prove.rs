@@ -20,7 +20,7 @@ use binius_prover::{
 	protocols::{
 		binmul, bitand, intmul,
 		rerand::OperandWitness,
-		shift::{KeyCollection, OperatorClaims},
+		shift::{KeyCollection, OperandClaims},
 	},
 	ring_switch::{self, RingSwitchOutput},
 };
@@ -208,7 +208,7 @@ impl IOPProver {
 		// `IOPVerifier::verify_chip` does.
 		let log_instances = table.log_instances();
 		let r_rho = rerand.eval_point[..log_instances].to_vec();
-		let claims = OperatorClaims::from_rerand(cs, log_instances, z_challenge, &rerand, || {
+		let claims = OperandClaims::from_rerand(cs, log_instances, z_challenge, &rerand, || {
 			channel.sample()
 		});
 

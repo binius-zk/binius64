@@ -33,42 +33,6 @@ pub const LOG_SHIFT_COUNT: usize = LOG_SHIFT_VARIANT_COUNT + Word::LOG_BITS;
 /// The weight factorizes across the slots, so two tables of this size replace one of that square.
 pub const SHIFT_COUNT: usize = 1 << LOG_SHIFT_COUNT;
 
-pub const ZERO_ARITY: usize = 1;
-pub const BITAND_ARITY: usize = 3;
-pub const INTMUL_ARITY: usize = 4;
-pub const BINMUL_ARITY: usize = 6;
-
-/// The number of operations the shift reduction batches: ZERO, AND, IMUL and BMUL.
-pub const OPERATION_COUNT: usize = 4;
-
-/// Each operation's operand arity, in the order the reduction batches them.
-///
-/// The reduction's operand claims arrive as one flat slice, holding each operation's run of this
-/// many evaluations in this order.
-pub const OPERATION_ARITIES: [usize; OPERATION_COUNT] =
-	[ZERO_ARITY, BITAND_ARITY, INTMUL_ARITY, BINMUL_ARITY];
-
-/// The base-2 logarithm of the operation axis the reduction batches over.
-///
-/// An operation's claims are weighted by the equality indicator of this many challenges, evaluated
-/// at the operation's own index in the order above.
-pub const LOG_OPERATION_COUNT: usize = 2;
-
-/// The base-2 logarithm of the operand axis the reduction batches over.
-///
-/// An operand's claim is weighted by the equality indicator of this many challenges, evaluated at
-/// the operand's position. The four operations share one such axis, padded to a cube: an operation
-/// of lower arity reads a prefix of the same weights, and the slots above its arity name no claim
-/// and contribute nothing.
-pub const LOG_MAX_ARITY: usize = 3;
-
-// The two axes above are cubes, so each has to cover what it indexes.
-const _: () = assert!(OPERATION_COUNT <= 1 << LOG_OPERATION_COUNT);
-const _: () = assert!(ZERO_ARITY <= 1 << LOG_MAX_ARITY);
-const _: () = assert!(BITAND_ARITY <= 1 << LOG_MAX_ARITY);
-const _: () = assert!(INTMUL_ARITY <= 1 << LOG_MAX_ARITY);
-const _: () = assert!(BINMUL_ARITY <= 1 << LOG_MAX_ARITY);
-
 mod monster;
 mod shift_ind;
 
@@ -79,6 +43,6 @@ mod verify;
 pub use error::Error;
 pub use shift_ind::evaluate_shift_inds;
 pub use verify::{
-	DeferredWiringClaim, OperationShare, VerifyOutput, WiringEvalClaim, WiringEvalFn,
-	WiringEvalShape, check_eval, evaluate_words_mle, log_constraint_point, padding_scales, verify,
+	DeferredWiringClaim, VerifyOutput, WiringEvalClaim, WiringEvalFn, WiringEvalShape, check_eval,
+	evaluate_words_mle, log_constraint_point, padding_scales, verify,
 };

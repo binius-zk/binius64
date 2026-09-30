@@ -30,14 +30,13 @@ use super::{
 	dense_shift_encoding::DenseShiftEncoding,
 	key::{ConstraintIndex, Key},
 	key_segment::KeySegment,
-	operation::Operation,
 };
 
 /// The bits a shift sequence's code occupies: one slot's index above the other's.
 const SEQ_BITS: usize = 2 * LOG_SHIFT_COUNT;
 
-/// The bits a key code occupies: the operation above the shift sequence.
-const KEY_CODE_BITS: usize = Operation::PACKED_CODE_BITS + SEQ_BITS;
+/// The bits a key code occupies: the shift sequence alone.
+const KEY_CODE_BITS: usize = SEQ_BITS;
 
 /// The number of key codes the packing spans.
 ///
@@ -64,22 +63,23 @@ const MAX_REFS_PER_CHUNK: usize = 1 << 16;
 /// The identity of the key a reference belongs to.
 ///
 /// ```text
-/// key code = operation << 2*LOG_SHIFT_COUNT | outer index << LOG_SHIFT_COUNT | inner index
+/// key code = outer index << LOG_SHIFT_COUNT | inner index
 /// ```
+///
+/// The operation is not part of it: references to one word under one sequence share a key across
+/// operations, told apart by the operand column their constraint indices carry.
 ///
 /// [`Shift::index`] enumerates the `(variant, amount)` spellings injectively.
 /// So two references share a code exactly when they belong to the same key.
 ///
 /// The sequence is addressed outer-major, as [`DenseShiftEncoding::shift_indices`] is.
 #[inline]
-const fn key_code(operation: Operation, shift_seq: [Shift; 2]) -> u32 {
+const fn key_code(shift_seq: [Shift; 2]) -> u32 {
 	let [inner, outer] = shift_seq;
-	((operation.packed_code() as usize) << SEQ_BITS
-		| outer.index() << LOG_SHIFT_COUNT
-		| inner.index()) as u32
+	(outer.index() << LOG_SHIFT_COUNT | inner.index()) as u32
 }
 
-/// The shift sequence a key code names, inverting the lower half of [`key_code`].
+/// The shift sequence a key code names, inverting [`key_code`].
 #[inline]
 fn decode_shift_seq(key_code: u32) -> [Shift; 2] {
 	let slot = |index: usize| Shift::from_index(index % SHIFT_COUNT);
@@ -89,12 +89,6 @@ fn decode_shift_seq(key_code: u32) -> [Shift; 2] {
 	]
 }
 
-/// The operation a key code names, inverting the upper half of [`key_code`].
-#[inline]
-const fn decode_operation(key_code: u32) -> Operation {
-	Operation::from_packed_code((key_code >> SEQ_BITS) as u8)
-}
-
 /// One shifted-word reference a constraint makes.
 #[derive(Clone, Copy)]
 struct Reference {
@@ -102,29 +96,34 @@ struct Reference {
 	word: usize,
 	/// The key the reference belongs to, as [`key_code`] packs it.
 	key_code: u32,
-	/// The constraint and operand position the reference comes from.
+	/// The constraint and operand column the reference comes from.
 	constraint_index: ConstraintIndex,
 }
 
 /// Visits every shifted reference of a constraint system, in the collection's layout order.
 ///
 /// ```text
-/// operation, in the order Zero, BitwiseAnd, IntegerMul, BinMul
-///   -> operand position
-///     -> constraint index
-///       -> the terms of that operand
+/// operand column: each operation's operand positions, in the order Zero, BitwiseAnd,
+/// IntegerMul, BinMul
+///   -> constraint index
+///     -> the terms of that operand
 /// ```
+///
+/// A key's references therefore arrive grouped by column, which is what its accumulation needs.
 ///
 /// A key segment stores each word's references in exactly this order.
 /// So a stable sort by word is all that separates the walk from the layout.
 #[inline]
 fn for_each_reference(cs: &ConstraintSystem, mut visit: impl FnMut(Reference)) {
+	/// Walks one operation, its operands at the columns from `first_column` on, and returns the
+	/// column after its last.
 	fn walk<C, const ARITY: usize>(
 		cs: &ConstraintSystem,
-		operation: Operation,
+		first_column: usize,
 		constraints: &[C],
 		visit: &mut impl FnMut(Reference),
-	) where
+	) -> usize
+	where
 		C: AsRef<[Operand; ARITY]>,
 	{
 		// The operand position is outermost because a key groups its references by it.
@@ -133,28 +132,29 @@ fn for_each_reference(cs: &ConstraintSystem, mut visit: impl FnMut(Reference)) {
 				for term in &constraint.as_ref()[operand_index] {
 					visit(Reference {
 						word: cs.word_offset(term.value_index),
-						key_code: key_code(operation, term.shift_seq),
+						key_code: key_code(term.shift_seq),
 						constraint_index: ConstraintIndex {
-							operand_index: operand_index as u8,
+							operand_index: (first_column + operand_index) as u8,
 							constraint_index: constraint_index as u32,
 						},
 					});
 				}
 			}
 		}
+		first_column + ARITY
 	}
 
-	walk(cs, Operation::Zero, &cs.zero_constraints, &mut visit);
-	walk(cs, Operation::BitwiseAnd, &cs.and_constraints, &mut visit);
-	walk(cs, Operation::IntegerMul, &cs.imul_constraints, &mut visit);
-	walk(cs, Operation::BinMul, &cs.bmul_constraints, &mut visit);
+	let column = walk(cs, 0, &cs.zero_constraints, &mut visit);
+	let column = walk(cs, column, &cs.and_constraints, &mut visit);
+	let column = walk(cs, column, &cs.imul_constraints, &mut visit);
+	walk(cs, column, &cs.bmul_constraints, &mut visit);
 }
 
 /// One shifted reference, as the scattered array holds it.
 ///
 /// ```text
-///  63     60 59          40 39          32 31                0
-/// [ unused ][ key code    ][ operand pos ][ constraint index ]
+///  63     58 57          40 39          32 31                0
+/// [ unused ][ key code    ][ column      ][ constraint index ]
 /// ```
 ///
 /// The word is not stored.
@@ -185,7 +185,7 @@ impl PackedRef {
 		(self.0 >> CONSTRAINT_INDEX_BITS) as u32
 	}
 
-	/// The constraint and operand position this reference comes from.
+	/// The constraint and operand column this reference comes from.
 	#[inline]
 	const fn constraint_index(self) -> ConstraintIndex {
 		ConstraintIndex {
@@ -193,18 +193,6 @@ impl PackedRef {
 			constraint_index: self.0 as u32,
 		}
 	}
-}
-
-/// The fixed part of every key one dense key id names.
-///
-/// A key's operation and shift index follow from its code alone.
-/// So they are resolved once per id, not once per key.
-#[derive(Clone, Copy)]
-struct KeyTemplate {
-	/// The constraint kind the key's constraints belong to.
-	operation: Operation,
-	/// Where the key's shift sequence sits in its segment's dense encoding.
-	dense_shift_idx: u16,
 }
 
 /// The keys one segment can name, densely numbered.
@@ -217,8 +205,12 @@ struct SegmentKeys {
 	///
 	/// Only the codes the segment names are ever looked up.
 	id_of: Box<[u32]>,
-	/// The template each dense id resolves to, in ascending code order.
-	templates: Box<[KeyTemplate]>,
+	/// Where each dense id's shift sequence sits in the segment's dense encoding, in ascending
+	/// code order.
+	///
+	/// A key's shift index follows from its code alone, so it is resolved once per id, not once
+	/// per key.
+	dense_shift_idxs: Box<[u16]>,
 }
 
 impl SegmentKeys {
@@ -242,20 +234,20 @@ impl SegmentKeys {
 			id_of[code as usize] = id as u32;
 		}
 
-		let templates = codes
+		let dense_shift_idxs = codes
 			.iter()
-			.map(|&code| KeyTemplate {
-				operation: decode_operation(code),
-				dense_shift_idx: dense_shift_enc.dense_idx(decode_shift_seq(code)),
-			})
+			.map(|&code| dense_shift_enc.dense_idx(decode_shift_seq(code)))
 			.collect();
 
-		Self { id_of, templates }
+		Self {
+			id_of,
+			dense_shift_idxs,
+		}
 	}
 
 	/// The number of distinct keys the segment can name.
 	fn len(&self) -> usize {
-		self.templates.len()
+		self.dense_shift_idxs.len()
 	}
 
 	/// The dense id of one key code.
@@ -273,13 +265,8 @@ impl SegmentKeys {
 	/// The key one dense id names, over the references at `range`.
 	#[inline]
 	fn key(&self, id: u32, range: Range<u32>) -> Key {
-		let KeyTemplate {
-			operation,
-			dense_shift_idx,
-		} = self.templates[id as usize];
 		Key {
-			operation,
-			dense_shift_idx,
+			dense_shift_idx: self.dense_shift_idxs[id as usize],
 			range,
 		}
 	}
@@ -669,8 +656,6 @@ mod tests {
 		struct BuilderKey {
 			/// The shift sequence this key's word is referenced under, inner shift first.
 			shift_seq: [Shift; 2],
-			/// The constraint kind this key's constraints belong to.
-			operation: Operation,
 			/// The constraint indices collected so far for this key.
 			constraint_indices: Vec<ConstraintIndex>,
 		}
@@ -684,11 +669,10 @@ mod tests {
 				Self((0..word_count).map(|_| Vec::new()).collect())
 			}
 
-			/// Records one operand's references into the keys of the words they touch.
+			/// Records one operand column's references into the keys of the words they touch.
 			fn update_with_operand(
 				&mut self,
-				operation: Operation,
-				operand_index: usize,
+				column: usize,
 				operand_values: impl Iterator<Item = impl AsRef<Operand>>,
 				cs: &ConstraintSystem,
 			) {
@@ -697,17 +681,16 @@ mod tests {
 						let builder_keys = &mut self.0[cs.word_offset(term.value_index)];
 						let shift_seq = term.shift_seq;
 						let constraint_index = ConstraintIndex {
-							operand_index: operand_index as u8,
+							operand_index: column as u8,
 							constraint_index: constraint_idx as u32,
 						};
 						match builder_keys
 							.iter_mut()
-							.find(|key| key.shift_seq == shift_seq && key.operation == operation)
+							.find(|key| key.shift_seq == shift_seq)
 						{
 							Some(key) => key.constraint_indices.push(constraint_index),
 							None => builder_keys.push(BuilderKey {
 								shift_seq,
-								operation,
 								constraint_indices: vec![constraint_index],
 							}),
 						}
@@ -715,25 +698,27 @@ mod tests {
 				}
 			}
 
-			/// Records every operand of every constraint of one operation.
+			/// Records every operand of every constraint of one operation, its operands at the
+			/// columns from `first_column` on, and returns the column after its last.
 			fn update_with_constraints<C, const ARITY: usize>(
 				&mut self,
-				operation: Operation,
+				first_column: usize,
 				constraints: &[C],
 				cs: &ConstraintSystem,
-			) where
+			) -> usize
+			where
 				C: AsRef<[Operand; ARITY]>,
 			{
 				for operand_index in 0..ARITY {
 					self.update_with_operand(
-						operation,
-						operand_index,
+						first_column + operand_index,
 						constraints
 							.iter()
 							.map(|constraint| &constraint.as_ref()[operand_index]),
 						cs,
 					);
 				}
+				first_column + ARITY
 			}
 		}
 
@@ -760,7 +745,6 @@ mod tests {
 			for builder_key in builder_key_lists.into_iter().flatten() {
 				let BuilderKey {
 					shift_seq,
-					operation,
 					constraint_indices: mut key_constraint_indices,
 				} = builder_key;
 
@@ -772,7 +756,6 @@ mod tests {
 				let end = constraint_indices.len() as u32;
 				keys.push(Key {
 					dense_shift_idx: dense_shift_enc.dense_idx(shift_seq),
-					operation,
 					range: start..end,
 				});
 			}
@@ -791,10 +774,10 @@ mod tests {
 			inout: InoutSegment,
 		) -> KeyCollection {
 			let mut lists = BuilderKeyLists::new(cs.value_vec_len());
-			lists.update_with_constraints(Operation::Zero, &cs.zero_constraints, cs);
-			lists.update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, cs);
-			lists.update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, cs);
-			lists.update_with_constraints(Operation::BinMul, &cs.bmul_constraints, cs);
+			let column = lists.update_with_constraints(0, &cs.zero_constraints, cs);
+			let column = lists.update_with_constraints(column, &cs.and_constraints, cs);
+			let column = lists.update_with_constraints(column, &cs.imul_constraints, cs);
+			lists.update_with_constraints(column, &cs.bmul_constraints, cs);
 
 			let hidden = lists.0.split_off(cs.n_public_words(inout));
 			KeyCollection {
@@ -987,6 +970,30 @@ mod tests {
 	}
 
 	#[test]
+	fn references_under_one_sequence_share_a_key_across_operations() {
+		// One word under one sequence, referenced by an AND operand and a ZERO operand, is one key.
+		// Its constraint indices name the flat columns: ZERO's is column 0, AND's first is column
+		// 1.
+		let hidden = ValueIndex::private(1);
+		let term = ShiftedValueIndex::srl(hidden, 3);
+		let cs = ConstraintSystem {
+			zero_constraints: vec![ZeroConstraint([vec![term]])],
+			..one_constraint_system(vec![term])
+		};
+
+		let collection = build_key_collection(&cs, InoutSegment::Public);
+		let keys = collection.hidden.word_keys(1);
+		assert_eq!(keys.len(), 1);
+		let columns = collection.hidden.constraint_indices[keys[0].range.start as usize..]
+			[..keys[0].range.len()]
+			.iter()
+			.map(|index| index.operand_index)
+			.collect::<Vec<_>>();
+		assert_eq!(columns, [0, 1]);
+		assert_matches_one_pass(&cs);
+	}
+
+	#[test]
 	fn non_canonical_identity_spellings_name_distinct_keys() {
 		// `Slr(0)` and `Sll(0)` leave a word untouched alike, but they are distinct spellings.
 		// `Shift::index` separates them, so they must not collapse into one key.
@@ -1046,21 +1053,12 @@ mod tests {
 	}
 
 	#[test]
-	fn a_key_code_round_trips_through_its_operation_and_sequence() {
+	fn a_key_code_round_trips_through_its_sequence() {
 		// The grouping identifies a key by its code alone.
-		// So the code has to carry both halves back out intact.
-		for operation in [
-			Operation::Zero,
-			Operation::BitwiseAnd,
-			Operation::IntegerMul,
-			Operation::BinMul,
-		] {
-			for inner in shift_alphabet(17) {
-				for outer in shift_alphabet(5) {
-					let code = key_code(operation, [inner, outer]);
-					assert_eq!(decode_operation(code), operation);
-					assert_eq!(decode_shift_seq(code), [inner, outer]);
-				}
+		// So the code has to carry both slots back out intact.
+		for inner in shift_alphabet(17) {
+			for outer in shift_alphabet(5) {
+				assert_eq!(decode_shift_seq(key_code([inner, outer])), [inner, outer]);
 			}
 		}
 	}
