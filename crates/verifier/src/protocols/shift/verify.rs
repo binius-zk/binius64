@@ -806,10 +806,15 @@ mod tests {
 		AndConstraint, BmulConstraint, Shift, ShiftedValueIndex, ValueIndex, ZeroConstraint,
 	};
 	use binius_field::Field;
-	use binius_math::test_utils::random_scalars;
+	use binius_math::{
+		multilinear::sparse::evaluate_sparse_b1_multilinear, test_utils::random_scalars,
+	};
 	use rand::{RngExt, SeedableRng, rngs::StdRng};
 
-	use super::{super::LOG_SHIFT_VARIANT_COUNT, *};
+	use super::{
+		super::{LOG_SHIFT_VARIANT_COUNT, WiringInfo},
+		*,
+	};
 	use crate::config::B128;
 
 	/// A system with constraints in three of the four operations.
@@ -970,6 +975,75 @@ mod tests {
 				+ OperationEvalFn::new(&cs.imul_constraints, 4).contract(weights)
 				+ OperationEvalFn::new(&cs.bmul_constraints, 8).contract(weights);
 			assert_eq!(contracted, whole, "{inout:?}");
+		}
+	}
+
+	#[test]
+	fn the_wiring_bits_evaluate_to_the_constraint_system_walk() {
+		// Invariant: the two bit vectors' extensions, joined on the segment challenge, are the
+		// wiring multilinear the constraint-system walk evaluates.
+		//
+		//     W = (1 - r_seg) · eq0(r_y[log_public..]) · P(point_pub) + r_seg · H(point_hid)
+		let mut rng = StdRng::seed_from_u64(37);
+		let mut cs = three_operation_system(&mut rng);
+		// Terms in every segment, doubly shifted, and in all four operations.
+		let term = |rng: &mut StdRng, value_index| {
+			let random_shift = |rng: &mut StdRng| Shift {
+				variant: [
+					binius_core::ShiftVariant::Sll,
+					binius_core::ShiftVariant::Sar,
+					binius_core::ShiftVariant::Rotr32,
+				][rng.random_range(0..3)],
+				amount: rng.random_range(0..Word::BITS) as u8,
+			};
+			ShiftedValueIndex::new(value_index, [random_shift(rng), random_shift(rng)])
+		};
+		cs.imul_constraints = (0..9)
+			.map(|_| {
+				binius_core::constraint_system::ImulConstraint(array::from_fn(|operand| {
+					vec![
+						term(&mut rng, ValueIndex::constant(operand as u32 % 2)),
+						term(&mut rng, ValueIndex::inout(operand as u32)),
+					]
+				}))
+			})
+			.collect();
+
+		for inout in [InoutSegment::Public, InoutSegment::Hidden] {
+			let shape = WiringEvalShape {
+				inout,
+				log_operands: crate::reduction::LOG_OPERANDS,
+				r_x_len: log_constraint_point(&cs),
+				r_s_len: Word::LOG_BITS,
+				r_v_len: LOG_SHIFT_VARIANT_COUNT,
+				r_y_len: cs.log_segment_words(inout),
+			};
+			let n_inputs =
+				shape.log_operands
+					+ shape.r_x_len + 2 * (shape.r_s_len + shape.r_v_len)
+					+ shape.r_y_len + 1;
+			let vals = random_scalars::<B128>(&mut rng, n_inputs);
+			let walked = FieldFn::<B128>::call::<B128>(&WiringEvalFn::new(&cs, shape), &vals);
+
+			// The old input is `operand | r_x | shifts | r_y | r_seg`; the bits read the point
+			// `operand | shifts | r_y | r_x`.
+			let (operand, rest) = vals.split_at(shape.log_operands);
+			let (r_x, rest) = rest.split_at(shape.r_x_len);
+			let (shifts, rest) = rest.split_at(2 * (shape.r_s_len + shape.r_v_len));
+			let (r_y, r_segment) = rest.split_at(shape.r_y_len);
+			let r_segment = r_segment[0];
+			let log_public_words = cs.log_public_words(inout);
+			let point_hid = [operand, shifts, r_y, r_x].concat();
+			let point_pub = [operand, shifts, &r_y[..log_public_words], r_x].concat();
+
+			let wiring = WiringInfo::new(&cs, inout);
+			let sparse = (B128::ONE - r_segment)
+				* eq_ind_zero(&r_y[log_public_words..])
+				* evaluate_sparse_b1_multilinear(wiring.public_segment(), &point_pub)
+				+ r_segment * evaluate_sparse_b1_multilinear(wiring.hidden_segment(), &point_hid);
+
+			assert_ne!(walked, B128::ZERO);
+			assert_eq!(sparse, walked, "{inout:?}");
 		}
 	}
 

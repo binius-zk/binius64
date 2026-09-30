@@ -34,6 +34,7 @@ use binius_math::{
 	BinarySubspace,
 	multilinear::{eq::eq_ind_zero, evaluate::evaluate_inplace_scalars},
 };
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use crate::{
 	Error,
@@ -60,6 +61,10 @@ pub const BINMUL_ARITY: usize = 6;
 /// The shift reduction's operand claims are one flat slice, holding each operation's run of this
 /// many evaluations in this order: `[zero, bitand, intmul, binmul]`.
 pub const OPERATION_ARITIES: [usize; 4] = [ZERO_ARITY, BITAND_ARITY, INTMUL_ARITY, BINMUL_ARITY];
+
+/// The base-2 logarithm of the operand axis: the operand columns, padded to a power of two.
+pub const LOG_OPERANDS: usize =
+	log2_ceil_usize(ZERO_ARITY + BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
 
 /// What [`reduce_constraints`] leaves for the caller: the claim on the committed trace, and the
 /// wiring claim the constraint system is read through.
