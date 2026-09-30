@@ -18,7 +18,7 @@
 //! The shift reduction takes every operation at the same constraint point `r_x`, its matrix padded
 //! with empty rows, so each claim is scaled up from its prefix to the whole point first.
 
-use std::iter;
+use std::{iter, slice};
 
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
@@ -44,7 +44,7 @@ use crate::{
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		rerand::RerandOutput,
-		shift::{self, WiringEvalClaim},
+		shift::{self, WiringEvalClaim, WiringInfo},
 		zero,
 	},
 	ring_switch::{self, RingSwitchVerifyOutput, eval_rs_eq},
@@ -65,6 +65,56 @@ pub const OPERATION_ARITIES: [usize; 4] = [ZERO_ARITY, BITAND_ARITY, INTMUL_ARIT
 /// The base-2 logarithm of the operand axis: the operand columns, padded to a power of two.
 pub const LOG_OPERANDS: usize =
 	log2_ceil_usize(ZERO_ARITY + BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
+
+/// Each operation's row-variable count, in `[zero, bitand, intmul, binmul]` order.
+///
+/// An empty constraint array reads as zero variables.
+fn log_rows(cs: &ConstraintSystem) -> [usize; 4] {
+	[
+		cs.log_zero_constraints(),
+		cs.log_and_constraints(),
+		cs.log_imul_constraints(),
+		cs.log_bmul_constraints(),
+	]
+	.map(|log_rows| log_rows.unwrap_or(0))
+}
+
+/// The length of the constraint point `r_x`: the widest operation's row-variable count.
+///
+/// Every operation matrix is padded with empty rows up to `2^log_constraint_point(cs)` rows.
+pub fn log_constraint_point(cs: &ConstraintSystem) -> usize {
+	log_rows(cs).into_iter().max().unwrap_or(0)
+}
+
+/// Each operation's padding factor at the constraint point `r_x`, in `[zero, bitand, intmul,
+/// binmul]` order.
+///
+/// The constraint reductions claim an operation of `2^n` rows at the prefix `r_x[..n]`. Its matrix,
+/// padded with empty rows up to the length of `r_x`, evaluates at `r_x` to that claim times
+/// `eq(0, r_x[n..])`: a padding row carries no operand term. Scaled by its factor, every
+/// operation's claim is at the same full point, so one expansion of `r_x` serves them all.
+///
+/// # Soundness
+///
+/// A factor is zero only with negligible probability. A nonzero factor scales the claim and the
+/// multilinear it is about by the same unit, which is a bijection.
+///
+/// # Preconditions
+///
+/// * `r_x` has [`log_constraint_point`] coordinates.
+pub fn padding_scales<E: FieldOps>(cs: &ConstraintSystem, r_x: &[E]) -> [E; 4] {
+	assert_eq!(r_x.len(), log_constraint_point(cs)); // precondition
+
+	// The suffix products of the single-coordinate factors: `eq(0, r_x[n..])` at index `n`.
+	let mut suffix_scales = iter::once(E::one())
+		.chain(r_x.iter().rev().scan(E::one(), |scale, r_x_i| {
+			*scale = scale.clone() * eq_ind_zero(slice::from_ref(r_x_i));
+			Some(scale.clone())
+		}))
+		.collect::<Vec<_>>();
+	suffix_scales.reverse();
+	log_rows(cs).map(|log_rows| suffix_scales[log_rows].clone())
+}
 
 /// What [`reduce_constraints`] leaves for the caller: the claim on the committed trace, and the
 /// wiring claim the constraint system is read through.
@@ -109,6 +159,7 @@ impl<F: Clone> ReductionOutput<'_, F> {
 /// # Arguments
 ///
 /// - `cs`: the single-instance constraint system every instance satisfies.
+/// - `wiring`: `cs`'s wiring matrix, laid out for `inout`.
 /// - `log_instances`: the base-2 logarithm of the instance count, 0 for a single circuit.
 /// - `inout`: which value segment the inout words sit in.
 /// - `public`: the declared public values as the channel carries them, unpadded — the constants,
@@ -127,7 +178,8 @@ impl<F: Clone> ReductionOutput<'_, F> {
 ///
 /// Do not reorder these, and keep the same order in the prover.
 pub fn reduce_constraints<'a, Channel>(
-	cs: &'a ConstraintSystem,
+	cs: &ConstraintSystem,
+	wiring: &'a WiringInfo,
 	log_instances: usize,
 	inout: InoutSegment,
 	public: &[Channel::Word],
@@ -226,7 +278,7 @@ where
 	// The four operations' operand claims, one per column in [`OPERATION_ARITIES`] order. Each is
 	// scaled by its padding factor, which lifts it from its prefix of `r_x` to its padded matrix at
 	// the whole point.
-	let [_, bitand_scale, intmul_scale, binmul_scale] = shift::padding_scales(cs, &r_x);
+	let [_, bitand_scale, intmul_scale, binmul_scale] = padding_scales(cs, &r_x);
 	let mut operand_evals = operand_evals.into_iter();
 	let operand_claims = [
 		vec![Channel::Elem::zero(); ZERO_ARITY],
@@ -255,7 +307,7 @@ where
 			perfetto_category = "phase"
 		)
 		.entered();
-		shift::verify::<B128, _>(cs, inout, &operand_claims, channel)?
+		shift::verify::<B128, _>(cs.log_segment_words(inout), &operand_claims, channel)?
 	};
 
 	// Tie in the public values through the public-input consistency check.
@@ -270,8 +322,7 @@ where
 		.entered();
 		let public_eval = verify_public_eval(cs, inout, public, &shift, channel)?;
 		shift::check_eval::<B128, _>(
-			cs,
-			inout,
+			wiring,
 			public_eval,
 			&r_x,
 			&shift_domain,

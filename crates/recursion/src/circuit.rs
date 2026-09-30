@@ -44,11 +44,7 @@ use binius_frontend::{Circuit, PopulateError, Wire, WitnessFiller};
 use binius_hash::StdHashSuite;
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::VerifierTranscript;
-use binius_verifier::{
-	Verifier,
-	config::StdChallenger,
-	protocols::shift::{DeferredWiringClaim, WiringEvalShape},
-};
+use binius_verifier::{Verifier, config::StdChallenger, protocols::shift::DeferredWiringClaim};
 
 use crate::{Binius64BuilderChannel, Recorded, WitnessFillerChannel, merkle::element_words};
 
@@ -85,7 +81,7 @@ pub enum Error {
 ///
 /// The claim says the wiring multilinear evaluates to a stated value.
 /// Discharging it means evaluating that multilinear.
-/// That walks every constraint of the inner system.
+/// That reads every operand term of the inner system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Discharge {
 	/// Evaluate the claim as constraints, inside the circuit.
@@ -132,11 +128,6 @@ pub struct RecursiveCircuit {
 
 /// A wiring claim a recursive circuit exported rather than checked.
 struct Deferred {
-	/// How the claim's flat input splits back into its sections.
-	///
-	/// Fixed by the inner system, so it travels with the circuit rather than with each proof.
-	shape: WiringEvalShape,
-
 	/// The inout wires carrying the claim: two per element, low half then high half.
 	///
 	/// The claim's inputs come first, in the order the wiring multilinear reads them.
@@ -210,17 +201,12 @@ impl RecursiveCircuit {
 		// Settling the claim later reads that layout back.
 		let statement = builder_channel.bind_public(statement);
 		let deferred = exported.map(|claim| {
-			let DeferredWiringClaim {
-				shape,
-				inputs,
-				claimed,
-			} = claim;
+			let DeferredWiringClaim { inputs, claimed } = claim;
 			let elems = inputs
 				.into_iter()
 				.chain(iter::once(claimed))
 				.collect::<Vec<_>>();
 			Deferred {
-				shape,
 				wires: builder_channel.bind_public_elems(&elems),
 			}
 		});
@@ -309,13 +295,9 @@ impl RecursiveCircuit {
 			.map(|(claimed, inputs)| (inputs.to_vec(), *claimed))
 			.expect("a bound claim holds at least its claimed evaluation");
 
-		let claim = DeferredWiringClaim {
-			shape: deferred.shape,
-			inputs,
-			claimed,
-		};
+		let claim = DeferredWiringClaim { inputs, claimed };
 		claim
-			.check(self.verifier.constraint_system())
+			.check(self.verifier.iop_verifier().wiring())
 			.map_err(binius_verifier::Error::from)?;
 		Ok(())
 	}

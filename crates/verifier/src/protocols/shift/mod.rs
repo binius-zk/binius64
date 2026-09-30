@@ -33,10 +33,8 @@ pub const LOG_SHIFT_COUNT: usize = LOG_SHIFT_VARIANT_COUNT + Word::LOG_BITS;
 /// The weight factorizes across the slots, so two tables of this size replace one of that square.
 pub const SHIFT_COUNT: usize = 1 << LOG_SHIFT_COUNT;
 
-mod monster;
 mod shift_ind;
 
-pub use monster::*;
 mod error;
 mod verify;
 mod wiring;
@@ -44,7 +42,6 @@ mod wiring;
 pub use error::Error;
 pub use shift_ind::evaluate_shift_inds;
 pub use verify::{
-	DeferredWiringClaim, VerifyOutput, WiringEvalClaim, WiringEvalFn, WiringEvalShape, check_eval,
-	evaluate_words_mle, log_constraint_point, padding_scales, verify,
+	DeferredWiringClaim, VerifyOutput, WiringEvalClaim, check_eval, evaluate_words_mle, verify,
 };
 pub use wiring::WiringInfo;

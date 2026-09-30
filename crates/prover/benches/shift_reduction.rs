@@ -24,8 +24,7 @@ use binius_prover::{
 };
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
-	config::StdChallenger,
-	protocols::shift::{log_constraint_point, verify},
+	config::StdChallenger, protocols::shift::verify, reduction::log_constraint_point,
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sha2::{Digest, Sha256};
@@ -165,8 +164,12 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			b.iter(|| {
 				let mut verifier_transcript = setup_verifier_transcript.clone();
 
-				verify(&cs, InoutSegment::Public, &operand_claims, &mut verifier_transcript)
-					.unwrap();
+				verify(
+					cs.log_segment_words(InoutSegment::Public),
+					&operand_claims,
+					&mut verifier_transcript,
+				)
+				.unwrap();
 			});
 		});
 	}
