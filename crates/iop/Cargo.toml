@@ -20,5 +20,3 @@ getset.workspace = true
 itertools.workspace = true
 thiserror.workspace = true
 
-[dev-dependencies]
-proptest.workspace = true
