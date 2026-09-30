@@ -22,7 +22,7 @@ use binius_math::{
 };
 use binius_prover::{
 	fold_word::BitAxisFolder,
-	protocols::shift::{self, KeyCollection, OperatorClaims},
+	protocols::shift::{self, KeyCollection, OperandClaims},
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -384,6 +384,18 @@ fn test_shift_prove_and_verify() {
 		// Build prover's constraint system
 		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 
+		// One claim per operand column, the four operations' runs in order.
+		//
+		// The Zero claim's value is zero at any point: a satisfied ZERO constraint array vanishes
+		// identically, so its multilinear extension is the zero polynomial.
+		let operand_claims = [
+			vec![F::ZERO],
+			bitand_evals.to_vec(),
+			intmul_evals.to_vec(),
+			binmul_evals.to_vec(),
+		]
+		.concat();
+
 		// Create prover transcript and call the prover
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
@@ -391,15 +403,10 @@ fn test_shift_prove_and_verify() {
 			&key_collection,
 			value_vec.public(),
 			value_vec.non_public(),
-			OperatorClaims {
+			OperandClaims {
 				r_x: r_x.clone(),
 				r_zhat_prime,
-				// The Zero claim's value is zero at any point: a satisfied ZERO constraint array
-				// vanishes identically, so its multilinear extension is the zero polynomial.
-				zero: [F::ZERO],
-				bitand: bitand_evals,
-				intmul: intmul_evals,
-				binmul: binmul_evals,
+				evals: operand_claims.clone(),
 			},
 			&subspace,
 			&mut prover_transcript,
@@ -413,16 +420,8 @@ fn test_shift_prove_and_verify() {
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		let operation_claims = [
-			vec![F::ZERO],
-			bitand_evals.to_vec(),
-			intmul_evals.to_vec(),
-			binmul_evals.to_vec(),
-		]
-		.concat();
-
 		let verifier_output =
-			verify(&cs, InoutSegment::Public, &operation_claims, &mut verifier_transcript).unwrap();
+			verify(&cs, InoutSegment::Public, &operand_claims, &mut verifier_transcript).unwrap();
 
 		// The public segment over the shift's whole index space. The full reduction reads this
 		// from the prover and ties it to the public words with a ring-switch; driving the shift

@@ -10,8 +10,6 @@ use binius_utils::rayon::{
 	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
 
-use super::LOG_MAX_ARITY;
-
 /// The evaluation of one operation's monster multilinear polynomial.
 ///
 /// The monster multilinear encodes all `ARITY`-operand constraints of a single operation (Zero,
@@ -25,8 +23,9 @@ use super::LOG_MAX_ARITY;
 ///
 /// where `m_idx` indexes the operand position (0 to `ARITY - 1`), `op` ranges over the shift
 /// variants, `h_op` is the shift selector polynomial, and `M_{m,op}` is the multilinear extension
-/// of the operand values. The operand batching weight is the equality indicator of the operand
-/// axis, which the four operations share.
+/// of the operand values. The operand batching weight is the equality indicator of the one operand
+/// axis every operation's columns share, read at the operand's flat column: the operation's first
+/// column plus `m_idx`.
 ///
 /// Both evaluations read one borrowed weight table per axis, bundled as [`WiringWeights`]. The
 /// tables the four operations share are then built once by the caller and lent to all four, rather
@@ -36,12 +35,23 @@ pub struct OperationEvalFn<'a, C, const ARITY: usize> {
 	/// The operation's constraints, each exposing its `ARITY` operands as an array in storage
 	/// order.
 	constraints: &'a [C],
+	/// The flat operand column of the operation's first operand.
+	first_column: usize,
 }
 
 impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
-	/// Wraps an operation's constraints for monster-multilinear evaluation.
-	pub const fn new(constraints: &'a [C]) -> Self {
-		Self { constraints }
+	/// Wraps an operation's constraints for monster-multilinear evaluation, its operands at the
+	/// `ARITY` flat columns from `first_column` on.
+	pub const fn new(constraints: &'a [C], first_column: usize) -> Self {
+		Self {
+			constraints,
+			first_column,
+		}
+	}
+
+	/// The flat column just past this operation's operands, where the next operation's begin.
+	pub const fn end_column(&self) -> usize {
+		self.first_column + ARITY
 	}
 }
 
@@ -50,7 +60,7 @@ impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 /// The tensor has five axes.
 ///
 /// ```text
-///     constraint index  x  operand position  x  inner slot  x  outer slot  x  value address
+///     constraint index  x  operand column  x  inner slot  x  outer slot  x  value address
 /// ```
 ///
 /// A constraint names a handful of positions and nothing else, which is what makes it sparse.
@@ -58,8 +68,8 @@ impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
 pub struct WiringEntry {
 	/// Which constraint of the operation holds the entry.
 	pub constraint: usize,
-	/// Which of that constraint's operands names it.
-	pub operand: usize,
+	/// The flat operand column naming it: the operation's first column plus the operand position.
+	pub column: usize,
 	/// The inner shift slot's spelling, as a variant-and-amount index.
 	pub inner_shift: usize,
 	/// The outer shift slot's spelling, as a variant-and-amount index.
@@ -74,12 +84,14 @@ pub struct WiringEntry {
 pub struct WiringWeights<'a, E> {
 	/// One entry per constraint index, covering the padded constraint count.
 	pub constraint: &'a [E],
-	/// One entry per inner slot spelling paired with an operand position, the operand innermost:
-	/// `(inner_shift << LOG_MAX_ARITY) | operand`.
+	/// One entry per inner slot spelling paired with a flat operand column, the column innermost:
+	/// `(inner_shift << log_operands) | column`.
 	///
 	/// The operand axis is padded to a cube so that the table is a plain tensor expansion, which
-	/// is why its stride is `1 << LOG_MAX_ARITY` rather than the operation's own arity.
+	/// is why its stride is `1 << log_operands` rather than the column count.
 	pub inner_operand: &'a [E],
+	/// The base-2 logarithm of the operand axis's padded width.
+	pub log_operands: usize,
 	/// One entry per outer slot spelling, `SHIFT_COUNT` of them.
 	pub outer: &'a [E],
 	/// One entry per value address, in three runs: constants, then inout, then private.
@@ -104,10 +116,11 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 	/// Enumerating it is what lets that claim be folded.
 	/// It is also what lets the extension be evaluated away from the run that raised the claim.
 	pub fn entries(&self) -> impl Iterator<Item = WiringEntry> + '_ {
+		let first_column = self.first_column;
 		self.constraints
 			.iter()
 			.enumerate()
-			.flat_map(|(constraint, terms)| {
+			.flat_map(move |(constraint, terms)| {
 				terms
 					.as_ref()
 					.iter()
@@ -115,7 +128,7 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 					.flat_map(move |(operand, operand_terms)| {
 						operand_terms.iter().map(move |svi| WiringEntry {
 							constraint,
-							operand,
+							column: first_column + operand,
 							inner_shift: svi.inner().index(),
 							outer_shift: svi.outer().index(),
 							value: svi.value_index,
@@ -130,7 +143,7 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 	///
 	/// ```text
 	///     sum over nonzeros of
-	///         constraint[i] * inner_operand[(inner << LOG_MAX_ARITY) | a] * outer[o]
+	///         constraint[i] * inner_operand[(inner << log_operands) | column] * outer[o]
 	///             * value[seg][idx]
 	/// ```
 	///
@@ -148,8 +161,8 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 	pub fn contract<E: FieldOps>(&self, weights: WiringWeights<'_, E>) -> E {
 		let mut acc = E::zero();
 		for entry in self.entries() {
-			// Two axes share one table: the inner slot's spelling with the operand innermost.
-			let inner_operand = (entry.inner_shift << LOG_MAX_ARITY) | entry.operand;
+			// Two axes share one table: the inner slot's spelling with the column innermost.
+			let inner_operand = (entry.inner_shift << weights.log_operands) | entry.column;
 			acc += weights.constraint[entry.constraint].clone()
 				* &weights.inner_operand[inner_operand]
 				* &weights.outer[entry.outer_shift]
@@ -171,10 +184,11 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 		for (constraint, constraint_weight) in iter::zip(self.constraints, weights.constraint) {
 			let mut constraint_eval = E::zero();
 			for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
+				let column = self.first_column + operand_id;
 				for svi in operand {
-					// Two axes share one table: the inner slot's spelling with the operand
+					// Two axes share one table: the inner slot's spelling with the column
 					// innermost.
-					let inner_operand = (svi.inner().index() << LOG_MAX_ARITY) | operand_id;
+					let inner_operand = (svi.inner().index() << weights.log_operands) | column;
 					constraint_eval += weights.inner_operand[inner_operand].clone()
 						* &weights.outer[svi.outer().index()]
 						* &weights.value[svi.value_index.segment() as usize]
@@ -214,8 +228,9 @@ impl<C: AsRef<[Operand; ARITY]>, const ARITY: usize> OperationEvalFn<'_, C, ARIT
 			.map(|(constraint, &constraint_weight)| {
 				let mut constraint_eval = F::ZERO;
 				for (operand_id, operand) in constraint.as_ref().iter().enumerate() {
+					let column = self.first_column + operand_id;
 					for svi in operand {
-						let inner_operand = (svi.inner().index() << LOG_MAX_ARITY) | operand_id;
+						let inner_operand = (svi.inner().index() << weights.log_operands) | column;
 						constraint_eval += weights.inner_operand[inner_operand]
 							* weights.outer[svi.outer().index()]
 							* weights.value[svi.value_index.segment() as usize]
@@ -296,8 +311,16 @@ mod tests {
 			.collect()
 	}
 
+	/// The operand axis the fixtures batch over: sixteen columns, as the reduction's fourteen pad
+	/// to.
+	const LOG_OPERANDS: usize = 4;
+
 	/// The width of the inner table, which spans the operand axis as well as the shift axis.
-	const OPERAND_SHIFT_COUNT: usize = SHIFT_COUNT << LOG_MAX_ARITY;
+	const OPERAND_SHIFT_COUNT: usize = SHIFT_COUNT << LOG_OPERANDS;
+
+	/// The fixtures' first column: an AND operation's, behind the one ZERO column, so a walk that
+	/// dropped the offset reads the wrong weights.
+	const FIRST_COLUMN: usize = 1;
 
 	/// The weight tables a run's own reduction reads, one per axis of the wiring tensor.
 	fn run_weights<'a, F: BinaryField>(
@@ -309,6 +332,7 @@ mod tests {
 		WiringWeights {
 			constraint: r_x_prime_tensor,
 			inner_operand,
+			log_operands: LOG_OPERANDS,
 			outer,
 			value,
 		}
@@ -334,7 +358,7 @@ mod tests {
 		let r_x_prime_tensor = eq_ind_partial_eval_scalars(&r_x_prime);
 		let inner_operand = random_scalars::<F>(&mut rng, OPERAND_SHIFT_COUNT);
 
-		let eval_fn = OperationEvalFn::new(&constraints);
+		let eval_fn = OperationEvalFn::new(&constraints, FIRST_COLUMN);
 		let eval_with_outer = |outer: &[F; SHIFT_COUNT]| {
 			eval_fn.call_native(run_weights(&r_x_prime_tensor, &inner_operand, outer, r_y_tensor))
 		};
@@ -369,7 +393,7 @@ mod tests {
 			.collect::<Vec<_>>();
 		assert_eq!(
 			eval_with_outer(&identity_selecting),
-			OperationEvalFn::new(&singly_shifted_only).call_native(run_weights(
+			OperationEvalFn::new(&singly_shifted_only, FIRST_COLUMN).call_native(run_weights(
 				&r_x_prime_tensor,
 				&inner_operand,
 				&identity_selecting,
@@ -400,7 +424,7 @@ mod tests {
 			let hidden = random_scalars::<F>(&mut rng, n_words);
 			let value = [&[][..], &[][..], &hidden[..]];
 
-			let eval_fn = OperationEvalFn::new(&constraints);
+			let eval_fn = OperationEvalFn::new(&constraints, FIRST_COLUMN);
 
 			// Both paths read the same weights, one table per axis.
 			let r_x_prime_tensor = eq_ind_partial_eval_scalars(&r_x_prime);
@@ -425,22 +449,21 @@ mod tests {
 		//
 		// Entries live in characteristic two, so an entry is the nonzero count there, mod two.
 		//
-		//     indicators pick (c, a, inner, outer, v)  ->  contract == count(c,a,inner,outer,v) % 2
+		//     indicators pick (c, m, inner, outer, v)  ->  contract == count(c,m,inner,outer,v) % 2
 		type F = Ghash128b;
 		let mut rng = StdRng::seed_from_u64(13);
 
 		let n_words = 12usize;
 		let n_constraints = 16usize;
 		let constraints = random_and_constraints(&mut rng, n_constraints, n_words);
-		let arity = constraints[0].as_ref().len();
-		let eval_fn = OperationEvalFn::new(&constraints);
+		let eval_fn = OperationEvalFn::new(&constraints, FIRST_COLUMN);
 
 		// Every occupied position, plus one deliberately empty one to show the test can fail.
 		let occupied = eval_fn.entries().collect::<Vec<_>>();
 		assert!(!occupied.is_empty(), "the fixture must produce nonzeros");
 		let empty = WiringEntry {
 			constraint: n_constraints - 1,
-			operand: arity - 1,
+			column: eval_fn.end_column() - 1,
 			inner_shift: SHIFT_COUNT - 1,
 			outer_shift: SHIFT_COUNT - 1,
 			value: ValueIndex::private(n_words as u32 - 1),
@@ -451,7 +474,7 @@ mod tests {
 			let mut constraint = vec![F::ZERO; n_constraints];
 			constraint[target.constraint] = F::ONE;
 			let mut inner_operand = vec![F::ZERO; OPERAND_SHIFT_COUNT];
-			inner_operand[(target.inner_shift << LOG_MAX_ARITY) | target.operand] = F::ONE;
+			inner_operand[(target.inner_shift << LOG_OPERANDS) | target.column] = F::ONE;
 			let mut outer = [F::ZERO; SHIFT_COUNT];
 			outer[target.outer_shift] = F::ONE;
 			let mut hidden = vec![F::ZERO; n_words];
@@ -501,7 +524,7 @@ mod tests {
 			vec![ShiftedValueIndex::new(v1, [s_a, s_b])],
 			vec![],
 		])];
-		let eval_fn = OperationEvalFn::new(&constraints);
+		let eval_fn = OperationEvalFn::new(&constraints, FIRST_COLUMN);
 
 		// The enumeration reports the repeat as two entries: cancellation is the field's doing.
 		let entries = eval_fn.entries().collect::<Vec<_>>();
@@ -509,8 +532,8 @@ mod tests {
 		// The first slot of the sequence is the inner one, the second the outer.
 		assert_eq!(entries[0].inner_shift, s_a.index());
 		assert_eq!(entries[0].outer_shift, s_b.index());
-		assert_eq!(entries[0].operand, 0);
-		assert_eq!(entries[2].operand, 1);
+		assert_eq!(entries[0].column, FIRST_COLUMN);
+		assert_eq!(entries[2].column, FIRST_COLUMN + 1);
 		assert_eq!(entries[0], entries[1], "the repeat sits at one position");
 
 		// Weights of one everywhere: the sum is then the nonzero count mod two, which is one.
@@ -549,7 +572,7 @@ mod tests {
 			let inner_operand = random_scalars::<F>(&mut rng, OPERAND_SHIFT_COUNT);
 			let weights = run_weights(&r_x_prime_tensor, &inner_operand, &outer, r_y_tensor);
 
-			let eval_fn = OperationEvalFn::new(&constraints);
+			let eval_fn = OperationEvalFn::new(&constraints, FIRST_COLUMN);
 			let generic = eval_fn.call::<F>(weights);
 			let native = eval_fn.call_native(weights);
 			assert_eq!(generic, native, "n_constraints = {n_constraints}");
@@ -589,12 +612,12 @@ mod tests {
 		let weights = run_weights(&r_x_prime_tensor, &inner_operand, &outer, r_y_tensor);
 
 		assert_eq!(
-			OperationEvalFn::new(&constraints).call::<F>(weights),
-			OperationEvalFn::new(&padded).call::<F>(weights)
+			OperationEvalFn::new(&constraints, FIRST_COLUMN).call::<F>(weights),
+			OperationEvalFn::new(&padded, FIRST_COLUMN).call::<F>(weights)
 		);
 		assert_eq!(
-			OperationEvalFn::new(&constraints).call_native(weights),
-			OperationEvalFn::new(&padded).call_native(weights)
+			OperationEvalFn::new(&constraints, FIRST_COLUMN).call_native(weights),
+			OperationEvalFn::new(&padded, FIRST_COLUMN).call_native(weights)
 		);
 	}
 }

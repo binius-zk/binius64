@@ -28,7 +28,7 @@ use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
 use super::{
-	SegmentWords, claims::PreparedOperatorClaims, key_collection::KeyCollection,
+	SegmentWords, claims::PreparedOperandClaims, key_collection::KeyCollection,
 	phase_1::Phase1Output,
 };
 use crate::fold_word::BitAxisFolder;
@@ -61,7 +61,7 @@ use crate::fold_word::BitAxisFolder;
 pub fn prove_phase_2<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: SegmentWords<'_>,
-	prepared: &PreparedOperatorClaims<F>,
+	prepared: &PreparedOperandClaims<F>,
 	phase_1_output: Phase1Output<F>,
 	shift_ind_eval: F,
 	epsilon: F,

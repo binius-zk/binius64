@@ -14,7 +14,7 @@ use binius_math::{
 use binius_prover::{
 	fold_word::BitAxisFolder,
 	protocols::shift::{
-		KeyCollection, KeySegment, OperatorClaims, PreparedOperatorClaims, ShiftChallengePoint,
+		KeyCollection, KeySegment, OperandClaims, PreparedOperandClaims, ShiftChallengePoint,
 		ShiftIndOutput, ShiftIndSumcheck, ShiftOutput,
 		phase_1::{Phase1Output, SparseShiftRows},
 		phase_2::run_sumcheck,
@@ -55,7 +55,7 @@ pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
 	folded_witness: &FoldedWitness<F, A>,
-	claims: OperatorClaims<F>,
+	claims: OperandClaims<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 	alloc: &A,
@@ -189,7 +189,7 @@ where
 pub fn build_g_from_folded_words<F: BinaryField>(
 	folded_words: &[FoldedWord<F>],
 	segment: &KeySegment,
-	prepared: &PreparedOperatorClaims<F>,
+	prepared: &PreparedOperandClaims<F>,
 ) -> Box<[F]> {
 	// One zeroed row per shift the segment uses. A key names one such row, so the accumulation
 	// below adds straight into it.
@@ -204,7 +204,7 @@ pub fn build_g_from_folded_words<F: BinaryField>(
 			let acc = key.accumulate(
 				&segment.constraint_indices,
 				&prepared.r_x_tensor,
-				&prepared[key.operation],
+				&prepared.operand_weights,
 			);
 
 			let base = key.dense_shift_idx as usize * Word::BITS;
@@ -364,7 +364,14 @@ mod tests {
 			&r_rho,
 		)
 		.map(|eval| eval * bitand_scale);
-		let intmul_evals = [B128::ZERO; 4];
+		// One claim per operand column: ZERO, then AND, then the absent IMUL and BMUL at zero.
+		let operand_claims = [
+			vec![B128::ZERO],
+			bitand_evals.to_vec(),
+			vec![B128::ZERO; 4],
+			vec![B128::ZERO; 6],
+		]
+		.concat();
 
 		// Prove.
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
@@ -372,13 +379,10 @@ mod tests {
 			&key_collection,
 			public_words,
 			&folded_witness,
-			OperatorClaims {
+			OperandClaims {
 				r_x: r_x.clone(),
 				r_zhat_prime: r_z,
-				zero: [B128::ZERO],
-				bitand: bitand_evals,
-				intmul: intmul_evals,
-				binmul: [B128::ZERO; 6],
+				evals: operand_claims.clone(),
 			},
 			&domain_subspace,
 			&mut prover_transcript,
@@ -391,15 +395,8 @@ mod tests {
 
 		// Verify against the single-instance shift verifier.
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let operation_claims = [
-			vec![B128::ZERO],
-			bitand_evals.to_vec(),
-			intmul_evals.to_vec(),
-			vec![B128::ZERO; 6],
-		]
-		.concat();
 		let verifier_output =
-			verify(&cs, InoutSegment::Hidden, &operation_claims, &mut verifier_transcript).unwrap();
+			verify(&cs, InoutSegment::Hidden, &operand_claims, &mut verifier_transcript).unwrap();
 		// The public segment over the shift's whole index space. The full reduction reads this
 		// from the prover and ties it to the constants with a ring-switch; driving the shift
 		// alone, evaluate it here.
@@ -502,13 +499,16 @@ mod tests {
 
 		// Prepare the operator data: lambda batches the three operand claims. The circuit has no
 		// IMUL or BMUL constraints, so those evals are zero, as is the ZERO claim's.
-		let claims = OperatorClaims {
+		let claims = OperandClaims {
 			r_x,
 			r_zhat_prime: r_z,
-			zero: [B128::ZERO],
-			bitand: bitand_evals,
-			intmul: [B128::ZERO; 4],
-			binmul: [B128::ZERO; 6],
+			evals: [
+				vec![B128::ZERO],
+				bitand_evals.to_vec(),
+				vec![B128::ZERO; 4],
+				vec![B128::ZERO; 6],
+			]
+			.concat(),
 		};
 		let prepared = claims.prepare(&mut ProverTranscript::<StdChallenger>::default());
 

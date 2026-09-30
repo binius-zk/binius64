@@ -16,7 +16,7 @@ use binius_math::{
 use binius_prover::{
 	fold_word::BitAxisFolder,
 	protocols::shift::{
-		self, KeyCollection, OperatorClaims,
+		self, KeyCollection, OperandClaims,
 		monster::shift_operator_table,
 		phase_1::{Phase1Output, SparseShiftRows},
 		phase_2::run_sumcheck,
@@ -108,16 +108,17 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		// SHA256 has no IMUL or BMUL constraints, so those evals are zero, exactly as the real
 		// prover/verifier synthesize them (`prove.rs` / `verify.rs` `None` branch).
-		let zero_evals = [F::random(&mut rng)];
-		let bitand_evals = [F::random(&mut rng); 3];
-		let intmul_evals = [F::ZERO; 4];
-		let claims = || OperatorClaims {
+		let operand_claims = [
+			vec![F::random(&mut rng)],
+			vec![F::random(&mut rng); 3],
+			vec![F::ZERO; 4],
+			vec![F::ZERO; 6],
+		]
+		.concat();
+		let claims = || OperandClaims {
 			r_x: r_x.clone(),
 			r_zhat_prime,
-			zero: zero_evals,
-			bitand: bitand_evals,
-			intmul: intmul_evals,
-			binmul: [F::ZERO; 6],
+			evals: operand_claims.clone(),
 		};
 		let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 		let subspace = BinarySubspace::<Rijndael8b>::with_dim(Word::LOG_BITS).isomorphic();
@@ -160,19 +161,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		let setup_verifier_transcript = prover_transcript.into_verifier();
 
-		let operation_claims = [
-			zero_evals.to_vec(),
-			bitand_evals.to_vec(),
-			intmul_evals.to_vec(),
-			vec![F::ZERO; 6],
-		]
-		.concat();
-
 		group.bench_function("verify", |b| {
 			b.iter(|| {
 				let mut verifier_transcript = setup_verifier_transcript.clone();
 
-				verify(&cs, InoutSegment::Public, &operation_claims, &mut verifier_transcript)
+				verify(&cs, InoutSegment::Public, &operand_claims, &mut verifier_transcript)
 					.unwrap();
 			});
 		});
@@ -200,9 +193,6 @@ fn bench_shift_phases(c: &mut Criterion) {
 		.collect::<Vec<_>>();
 	// `r_zhat_prime` is shared across the operators.
 	let r_zhat_prime = F::random(&mut rng);
-	let zero_evals = [F::random(&mut rng)];
-	let bitand_evals = [F::random(&mut rng); 3];
-	let intmul_evals = [F::ZERO; 4];
 
 	let key_collection = KeyCollection::build(&cs, InoutSegment::Public);
 	// The phase functions take each segment as the circuit declares it: `build_g` zips the
@@ -215,13 +205,16 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// throwaway transcript stands in for the proving one and yields realistic-magnitude data.
 	// SHA256 has no IMUL or BMUL constraints, so those evals are zero, matching the real prover
 	// (`prove.rs` `None` branch).
-	let prepared = OperatorClaims {
+	let prepared = OperandClaims {
 		r_x,
 		r_zhat_prime,
-		zero: zero_evals,
-		bitand: bitand_evals,
-		intmul: intmul_evals,
-		binmul: [F::ZERO; 6],
+		evals: [
+			vec![F::random(&mut rng)],
+			vec![F::random(&mut rng); 3],
+			vec![F::ZERO; 4],
+			vec![F::ZERO; 6],
+		]
+		.concat(),
 	}
 	.prepare(&mut ProverTranscript::<StdChallenger>::default());
 

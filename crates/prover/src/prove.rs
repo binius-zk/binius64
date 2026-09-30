@@ -34,7 +34,7 @@ use crate::{
 	protocols::{
 		binmul, bitand, intmul,
 		rerand::OperandWitness,
-		shift::{self, KeyCollection, OperatorClaims, ShiftOutput},
+		shift::{self, KeyCollection, OperandClaims, ShiftOutput},
 	},
 	ring_switch,
 };
@@ -202,7 +202,7 @@ impl IOPProver {
 		// Every operation is claimed at one constraint point: the BitAnd sumcheck's point, extended
 		// when the ZERO set is wider. The extension is drawn here, where the verifier draws it. See
 		// `IOPVerifier::verify` for why the Zero reduction carries no message.
-		let claims = OperatorClaims::from_rerand(cs, 0, z_challenge, &rerand, || channel.sample());
+		let claims = OperandClaims::from_rerand(cs, 0, z_challenge, &rerand, || channel.sample());
 
 		// The shift reduction folds the bit axis over the 64-point domain, as the verifier's
 		// `shift::check_eval` does.

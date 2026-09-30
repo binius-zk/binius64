@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, iter};
+use std::iter;
 
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment},
@@ -9,7 +9,6 @@ use binius_core::{
 };
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
 use binius_ip::{
-	MultilinearEvalClaim,
 	channel::IPVerifierChannel,
 	sumcheck::{SumcheckOutput, verify as verify_sumcheck},
 };
@@ -26,12 +25,12 @@ use binius_math::{
 	},
 	univariate::EvaluationDomain,
 };
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::Getters;
 use itertools::chain;
 
 use super::{
-	LOG_MAX_ARITY, LOG_OPERATION_COUNT, LOG_SHIFT_COUNT, OPERATION_ARITIES, OPERATION_COUNT,
-	OperationEvalFn, SHIFT_COUNT, SHIFT_LOG_VARS, WiringWeights, error::Error,
+	LOG_SHIFT_COUNT, OperationEvalFn, SHIFT_COUNT, SHIFT_LOG_VARS, WiringWeights, error::Error,
 	shift_ind::evaluate_shift_inds,
 };
 
@@ -69,7 +68,7 @@ where
 /// Each operation's row-variable count, in `[zero, bitand, intmul, binmul]` order.
 ///
 /// An empty constraint array reads as zero variables.
-fn log_rows(cs: &ConstraintSystem) -> [usize; OPERATION_COUNT] {
+fn log_rows(cs: &ConstraintSystem) -> [usize; 4] {
 	[
 		cs.log_zero_constraints(),
 		cs.log_and_constraints(),
@@ -102,7 +101,7 @@ pub fn log_constraint_point(cs: &ConstraintSystem) -> usize {
 /// # Preconditions
 ///
 /// * `r_x` has [`log_constraint_point`] coordinates.
-pub fn padding_scales<E: FieldOps>(cs: &ConstraintSystem, r_x: &[E]) -> [E; OPERATION_COUNT] {
+pub fn padding_scales<E: FieldOps>(cs: &ConstraintSystem, r_x: &[E]) -> [E; 4] {
 	assert_eq!(r_x.len(), log_constraint_point(cs)); // precondition
 	log_rows(cs).map(|log_rows| eq_ind_zero(&r_x[log_rows..]))
 }
@@ -114,11 +113,8 @@ pub fn padding_scales<E: FieldOps>(cs: &ConstraintSystem, r_x: &[E]) -> [E; OPER
 /// verification steps including PCS verification.
 #[derive(Debug, Getters)]
 pub struct VerifyOutput<F> {
-	/// The challenges whose equality indicator weights each operation in the batch (length
-	/// [`LOG_OPERATION_COUNT`]).
-	operation_batch_challenges: Vec<F>,
-	/// The challenges whose equality indicator weights each operand position, shared by the four
-	/// operations (length [`LOG_MAX_ARITY`]).
+	/// The challenges whose equality indicator weights each operand column in the batch (length
+	/// `log2_ceil` of the column count).
 	operand_batch_challenges: Vec<F>,
 	/// Challenge point for the witness bit index (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
@@ -170,8 +166,8 @@ impl<F> VerifyOutput<F> {
 /// Verifies the shift protocol with a single sumcheck.
 ///
 /// # Protocol Overview
-/// 1. **Sampling Phase**: Samples the two challenge vectors whose equality indicators batch the
-///    four operations' evaluation claims across operands.
+/// 1. **Sampling Phase**: Samples the challenge vector whose equality indicator batches the operand
+///    columns' evaluation claims.
 /// 2. **Sumcheck**: Verifies the batched evaluation claim over all `SHIFT_LOG_VARS +
 ///    log_word_count` variables of the claim, degree 2 in each. A shifted value index names two
 ///    shifts applied in sequence, and the rounds peel them from the output end inward: the outer
@@ -187,9 +183,8 @@ impl<F> VerifyOutput<F> {
 /// # Parameters
 /// - `constraint_system`: The constraint system containing AND, IMUL and BMUL constraints
 /// - `inout`: Which segment holds the inout values, which fixes where the two segments split
-/// - `operation_claims`: One evaluation per operand column, the four operations' runs concatenated
-///   in `[zero, bitand, intmul, binmul]` order, each run as long as its operation's arity. The
-///   point they are claimed at is [`check_eval`]'s to read
+/// - `operand_claims`: One evaluation per operand column, in the flat column order [`WiringEvalFn`]
+///   reads the constraint system in. The point they are claimed at is [`check_eval`]'s to read
 /// - `channel`: Interactive channel for challenge sampling and message reading
 ///
 /// # Returns
@@ -203,34 +198,23 @@ impl<F> VerifyOutput<F> {
 pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
 	inout: InoutSegment,
-	operation_claims: &[C::Elem],
+	operand_claims: &[C::Elem],
 	channel: &mut C,
 ) -> Result<VerifyOutput<C::Elem>, Error>
 where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,
 {
-	assert_eq!(operation_claims.len(), OPERATION_ARITIES.iter().sum::<usize>()); // precondition
+	// SOUNDNESS: the prover draws the same number of challenges at the same place.
+	let operand_batch_challenges = channel.sample_many(log2_ceil_usize(operand_claims.len()));
 
-	// SOUNDNESS: the prover draws these in the same order.
-	let operation_batch_challenges = channel.sample_many(LOG_OPERATION_COUNT);
-	let operand_batch_challenges = channel.sample_many(LOG_MAX_ARITY);
-
-	// A claim's batching weight is the product of the two axes' equality indicators, so the two
-	// expansions factor it: the operand tensor batches one operation's own claims, and the
-	// operation tensor combines the four. The operation weights are indexed in the order the four
-	// operations' evals are held. An operation of lower arity reads a prefix of the operand
-	// weights; the slots above its arity name no claim.
-	let operation_weights = eq_ind_partial_eval_scalars(&operation_batch_challenges);
+	// A claim is weighted by the equality indicator of the operand axis at its column. The axis is
+	// padded to a cube; the columns past the last claim name nothing.
 	let operand_weights = eq_ind_partial_eval_scalars(&operand_batch_challenges);
-
-	let mut runs = operation_claims;
-	let operation_evals = OPERATION_ARITIES.map(|arity| {
-		let (evals, rest) = runs.split_at(arity);
-		runs = rest;
-		inner_product(evals.iter().cloned(), operand_weights[..arity].iter().cloned())
-	});
-	let eval = inner_product(operation_weights, operation_evals);
+	let eval = inner_product(
+		operand_claims.iter().cloned(),
+		operand_weights[..operand_claims.len()].iter().cloned(),
+	);
 
 	// The sumcheck runs over the witness as well: the public segment in the low half-cube and
 	// the hidden segment in the high half-cube, selected by the top word-index variable. Each
@@ -267,7 +251,6 @@ where
 	let witness_eval = channel.recv_one()?;
 
 	Ok(VerifyOutput {
-		operation_batch_challenges,
 		operand_batch_challenges,
 		r_j,
 		r_y,
@@ -340,7 +323,6 @@ where
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	let VerifyOutput {
-		operation_batch_challenges,
 		operand_batch_challenges,
 		eval,
 		r_j,
@@ -378,7 +360,7 @@ where
 	let monster_eval = l_tilde_eval * shift_ind_eval * wiring_eval.clone();
 
 	// The function the caller checks the claim with, and the flat input it reads. Every entry is a
-	// public-channel-derived element (the two batching challenge vectors, the constraint point
+	// public-channel-derived element (the batching challenge vector, the constraint point
 	// `r_x`, both shift slots' challenges, `r_y`, and `r_segment` last); the constraint system it
 	// sums over is fixed.
 	let claim = {
@@ -388,7 +370,6 @@ where
 		let r_y_len = r_y.len();
 
 		let inputs: Vec<C::Elem> = chain!(
-			operation_batch_challenges,
 			operand_batch_challenges,
 			r_x,
 			r_s_inner,
@@ -405,6 +386,7 @@ where
 			constraint_system,
 			WiringEvalShape {
 				inout,
+				log_operands: operand_batch_challenges.len(),
 				r_x_len,
 				r_s_len,
 				r_v_len,
@@ -568,8 +550,11 @@ impl<E> WiringEvalClaim<'_, E> {
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// operation_batch_challenges.. | operand_batch_challenges.. | r_x.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y.. | r_segment
+/// operand_batch_challenges.. | r_x.. | r_s_inner.. | r_v_inner.. | r_s_outer.. | r_v_outer.. | r_y.. | r_segment
 /// ```
+///
+/// The operand axis runs over the flat operand columns: the four operations' operands in
+/// `[zero, bitand, intmul, binmul]` order, each operation's in its own operand order.
 ///
 /// The stored lengths recover each variable-length section from that flat slice. Both shift slots
 /// have the same shape, so one pair of lengths covers the two. `r_segment` is the single element
@@ -601,6 +586,8 @@ pub struct WiringEvalFn<'a> {
 pub struct WiringEvalShape {
 	/// Which segment holds the inout values, which fixes where the word-index tensor is cut.
 	inout: InoutSegment,
+	/// Length of the operand batch section: the base-2 logarithm of the padded operand axis.
+	log_operands: usize,
 	/// Length of the `r_x` section, the constraint point every padded operation matrix is read at:
 	/// [`log_constraint_point`].
 	r_x_len: usize,
@@ -610,32 +597,6 @@ pub struct WiringEvalShape {
 	r_v_len: usize,
 	/// Length of the `r_y` section (the column challenges).
 	r_y_len: usize,
-}
-
-/// One operation's share of a wiring claim.
-///
-/// A whole claim covers four operations, each over its own constraint list.
-/// Those are four different multilinears.
-/// Claims combine only when they name the same one, so a share is what folds.
-#[derive(Debug, Clone)]
-pub struct OperationShare<E> {
-	/// This operation's evaluation claim, on its tensor padded with empty rows.
-	///
-	/// The point is the tensor's axis runs concatenated, lowest axis first.
-	///
-	/// ```text
-	///     constraint | operand | inner amount, variant | outer amount, variant | word | segment
-	/// ```
-	///
-	/// The constraint axis spans the padded rows every operation shares, so the four shares are at
-	/// one point. The word and segment axes address the padded value space, not the runs a term
-	/// reads.
-	///
-	/// Every run's width comes from the constraint system, never from a prover message.
-	/// So two proofs of one system give shares that fold side by side.
-	pub claim: MultilinearEvalClaim<E>,
-	/// The weight this evaluation carries into the claim it was batched into.
-	pub weight: E,
 }
 
 impl<'a> WiringEvalFn<'a> {
@@ -656,82 +617,25 @@ impl<'a> WiringEvalFn<'a> {
 	pub const fn shape(&self) -> WiringEvalShape {
 		self.shape
 	}
-
-	/// Takes the claim apart into one evaluation claim per operation.
-	///
-	/// The shares come back in the order the operators are declared.
-	/// An operation with no constraints is still present, reporting a zero evaluation.
-	///
-	/// A holder checks the split without redoing it.
-	///
-	/// ```text
-	///     sum over operations of  weight * eval  ==  the claim's own value
-	/// ```
-	///
-	/// Every term there is derived from the same public input, so none of it is a prover's word.
-	pub fn split_by_operation<E: FieldOps>(
-		&self,
-		vals: &[E],
-	) -> [OperationShare<E>; OPERATION_COUNT] {
-		let inputs = self.wiring_weights(vals, scaled_eq_ind_partial_eval_scalars);
-		let cs = self.constraint_system;
-		let weights = inputs.weights(cs, self.shape.inout);
-
-		let evals = [
-			OperationEvalFn::new(&cs.zero_constraints).call(weights),
-			OperationEvalFn::new(&cs.and_constraints).call(weights),
-			OperationEvalFn::new(&cs.imul_constraints).call(weights),
-			OperationEvalFn::new(&cs.bmul_constraints).call(weights),
-		];
-
-		// Every share is at the same point, which reads the flat input in the order the input
-		// already holds it, less the operation batch and with `r_x` moved to the front.
-		//
-		//     vals:   operation batch | operand batch | r_x | the rest
-		//     point:  r_x | operand batch | the rest
-		let operand_batch = &vals[LOG_OPERATION_COUNT..][..LOG_MAX_ARITY];
-		let (r_x, above_constraints) =
-			vals[LOG_OPERATION_COUNT + LOG_MAX_ARITY..].split_at(self.shape.r_x_len);
-		let point = [r_x, operand_batch, above_constraints].concat();
-
-		let scales = operation_scales(vals);
-		array::from_fn(|operation| OperationShare {
-			claim: MultilinearEvalClaim {
-				eval: evals[operation].clone(),
-				point: point.clone(),
-			},
-			weight: scales[operation].clone(),
-		})
-	}
 }
 
 /// The weight tables [`WiringEvalFn::wiring_weights`] builds from its flat input slice.
 ///
 /// The four operations read every table alike, so each is built once and lent to all four.
-///
-/// The constraint table is the equality indicator of `r_x`, unscaled. An evaluation is linear in
-/// that table, so a batched evaluation multiplies the operation's weight into the operation's
-/// evaluation instead.
 struct WiringInputs<E> {
 	/// The equality indicator of `r_x`, one weight per row of the padded operation matrices.
 	r_x_tensor: Vec<E>,
-	/// The weight of each `(inner shift, operand position)` pair, at
-	/// `(inner_shift << LOG_MAX_ARITY) | operand`.
+	/// The weight of each `(inner shift, operand column)` pair, at
+	/// `(inner_shift << log_operands) | column`.
 	operand_inner_shift_scalars: Vec<E>,
+	/// The base-2 logarithm of the padded operand axis.
+	log_operands: usize,
 	/// The weight of each spelling the outer shift slot can take.
 	outer_shift_scalars: Vec<E>,
 	/// The word-index indicator over the public half of the value vector.
 	public_tensor: Vec<E>,
 	/// The word-index indicator over the hidden half of the value vector.
 	hidden_tensor: Vec<E>,
-}
-
-/// The weight each operation carries into the batch, read off the input's leading section.
-///
-/// It is the equality indicator of the operation axis, at that operation's own index.
-fn operation_scales<E: FieldOps>(vals: &[E]) -> [E; OPERATION_COUNT] {
-	let weights = eq_ind_partial_eval_scalars(&vals[..LOG_OPERATION_COUNT]);
-	array::from_fn(|operation| weights[operation].clone())
 }
 
 impl<E> WiringInputs<E> {
@@ -757,6 +661,7 @@ impl<E> WiringInputs<E> {
 		WiringWeights {
 			constraint: &self.r_x_tensor,
 			inner_operand: &self.operand_inner_shift_scalars,
+			log_operands: self.log_operands,
 			outer: &self.outer_shift_scalars,
 			value,
 		}
@@ -782,10 +687,9 @@ impl WiringEvalFn<'_> {
 		debug_assert_eq!(self.shape.r_x_len, log_constraint_point(self.constraint_system));
 
 		// Split the flat input back into its sections, in the order they were concatenated.
-		// The leading operation batch is read by the caller, which scales the evaluations.
-		let mut off = LOG_OPERATION_COUNT;
-		let operand_batch_v = &vals[off..off + LOG_MAX_ARITY];
-		off += LOG_MAX_ARITY;
+		let log_operands = self.shape.log_operands;
+		let operand_batch_v = &vals[..log_operands];
+		let mut off = log_operands;
 		let r_x_v = &vals[off..off + self.shape.r_x_len];
 		off += self.shape.r_x_len;
 		let r_s_inner_v = &vals[off..off + self.shape.r_s_len];
@@ -828,7 +732,8 @@ impl WiringEvalFn<'_> {
 		// A shift is indexed `variant * Word::BITS + amount`, the amount below the variant, so a
 		// slot's table is the expansion of the amount challenges followed by the variant ones.
 		// The operand batching weight rides below the shift in the inner table, since the
-		// expansion puts the first segment of a point in the low index bits.
+		// expansion puts the first segment of a point in the low index bits. It already weighs
+		// every operand column of every operation, so no operation carries a scale of its own.
 		//
 		// Both are built once, so the Zero, BitAnd, IntMul and BinMul evaluations share them. The
 		// bit-index factors scaling them are left for `check_eval` to multiply in.
@@ -844,6 +749,7 @@ impl WiringEvalFn<'_> {
 		WiringInputs {
 			r_x_tensor,
 			operand_inner_shift_scalars,
+			log_operands,
 			outer_shift_scalars,
 			public_tensor,
 			hidden_tensor,
@@ -854,16 +760,17 @@ impl WiringEvalFn<'_> {
 impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
 		let inputs = self.wiring_weights(vals, scaled_eq_ind_partial_eval_scalars);
-		let cs = &self.constraint_system;
+		let cs = self.constraint_system;
 		let weights = inputs.weights(cs, self.shape.inout);
 
-		let evals = [
-			OperationEvalFn::new(&cs.zero_constraints).call(weights),
-			OperationEvalFn::new(&cs.and_constraints).call(weights),
-			OperationEvalFn::new(&cs.imul_constraints).call(weights),
-			OperationEvalFn::new(&cs.bmul_constraints).call(weights),
-		];
-		inner_product(operation_scales(vals), evals)
+		// The operations take their flat operand columns in `[zero, bitand, intmul, binmul]` order,
+		// the order the reduction hands [`verify`] their claims in.
+		let zero = OperationEvalFn::new(&cs.zero_constraints, 0);
+		let bitand = OperationEvalFn::new(&cs.and_constraints, zero.end_column());
+		let intmul = OperationEvalFn::new(&cs.imul_constraints, bitand.end_column());
+		let binmul = OperationEvalFn::new(&cs.bmul_constraints, intmul.end_column());
+		debug_assert!(binmul.end_column() <= 1 << self.shape.log_operands);
+		zero.call(weights) + bitand.call(weights) + intmul.call(weights) + binmul.call(weights)
 	}
 
 	/// Native fast path: each operation's evaluation defers `WideMul` reductions (see
@@ -874,23 +781,29 @@ impl<F: BinaryField> FieldFn<F> for WiringEvalFn<'_> {
 			// It applies over the base field, which is its own single-element packing.
 			scaled_eq_ind_partial_eval::<F>(point, scale).into_inner()
 		});
-		let cs = &self.constraint_system;
+		let cs = self.constraint_system;
 		let weights = inputs.weights(cs, self.shape.inout);
 
-		let evals = [
-			OperationEvalFn::new(&cs.zero_constraints).call_native(weights),
-			OperationEvalFn::new(&cs.and_constraints).call_native(weights),
-			OperationEvalFn::new(&cs.imul_constraints).call_native(weights),
-			OperationEvalFn::new(&cs.bmul_constraints).call_native(weights),
-		];
-		inner_product(operation_scales(vals), evals)
+		// The operations take their flat operand columns in `[zero, bitand, intmul, binmul]` order,
+		// the order the reduction hands [`verify`] their claims in.
+		let zero = OperationEvalFn::new(&cs.zero_constraints, 0);
+		let bitand = OperationEvalFn::new(&cs.and_constraints, zero.end_column());
+		let intmul = OperationEvalFn::new(&cs.imul_constraints, bitand.end_column());
+		let binmul = OperationEvalFn::new(&cs.bmul_constraints, intmul.end_column());
+		debug_assert!(binmul.end_column() <= 1 << self.shape.log_operands);
+		zero.call_native(weights)
+			+ bitand.call_native(weights)
+			+ intmul.call_native(weights)
+			+ binmul.call_native(weights)
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::array;
+
 	use binius_core::constraint_system::{
-		AndConstraint, Shift, ShiftedValueIndex, ValueIndex, ZeroConstraint,
+		AndConstraint, BmulConstraint, Shift, ShiftedValueIndex, ValueIndex, ZeroConstraint,
 	};
 	use binius_field::Field;
 	use binius_math::test_utils::random_scalars;
@@ -899,10 +812,10 @@ mod tests {
 	use super::{super::LOG_SHIFT_VARIANT_COUNT, *};
 	use crate::config::B128;
 
-	/// A system with constraints in two of the four operations.
+	/// A system with constraints in three of the four operations.
 	///
-	/// The other two are left empty, so a share has to be reported for one that sums nothing.
-	fn two_operation_system(rng: &mut StdRng) -> ConstraintSystem {
+	/// IMUL is left empty, so the columns after it only line up if its run is still skipped.
+	fn three_operation_system(rng: &mut StdRng) -> ConstraintSystem {
 		let n_private = 12usize;
 		let term = |rng: &mut StdRng| {
 			ShiftedValueIndex::new(
@@ -918,7 +831,7 @@ mod tests {
 			constants: vec![Word::ZERO, Word::ONE],
 			n_inout: 4,
 			n_private,
-			// A handful of each, so both operations' tensors carry entries.
+			// A handful of each, so every present operation's tensor carries entries.
 			zero_constraints: (0..5)
 				.map(|_| ZeroConstraint(array::from_fn(|_| vec![term(rng)])))
 				.collect(),
@@ -926,13 +839,15 @@ mod tests {
 				.map(|_| AndConstraint(array::from_fn(|_| vec![term(rng), term(rng)])))
 				.collect(),
 			imul_constraints: Vec::new(),
-			bmul_constraints: Vec::new(),
+			bmul_constraints: (0..3)
+				.map(|_| BmulConstraint(array::from_fn(|_| vec![term(rng)])))
+				.collect(),
 		}
 	}
 
-	/// One share's point, cut back into a weight table per axis.
+	/// The flat input, cut back into a weight table per axis.
 	///
-	/// This reverses the layout a share documents, and it reads nothing but the point.
+	/// This reverses the layout [`WiringEvalFn`] documents, and it reads nothing but the input.
 	struct RebuiltWeights {
 		constraint: Vec<B128>,
 		inner_operand: Vec<B128>,
@@ -942,23 +857,23 @@ mod tests {
 	}
 
 	impl RebuiltWeights {
-		/// Cuts the point into runs and expands each into the table its axis is read with.
-		fn cut(point: &[B128], shape: WiringEvalShape) -> Self {
+		/// Cuts the input into runs and expands each into the table its axis is read with.
+		fn cut(vals: &[B128], shape: WiringEvalShape) -> Self {
 			let mut off = 0;
 			let mut take = |len: usize| {
-				let run = &point[off..off + len];
+				let run = &vals[off..off + len];
 				off += len;
 				run
 			};
+			let operand = take(shape.log_operands);
 			let r_x = take(shape.r_x_len);
-			let operand = take(LOG_MAX_ARITY);
 			let r_s_inner = take(shape.r_s_len);
 			let r_v_inner = take(shape.r_v_len);
 			let r_s_outer = take(shape.r_s_len);
 			let r_v_outer = take(shape.r_v_len);
 			let r_y = take(shape.r_y_len);
 			let r_segment = take(1)[0];
-			assert_eq!(off, point.len(), "the point holds exactly its documented runs");
+			assert_eq!(off, vals.len(), "the input holds exactly its documented runs");
 
 			// The value axis is the padded address space, so one flat indicator covers it whole.
 			//
@@ -1001,6 +916,7 @@ mod tests {
 			WiringWeights {
 				constraint: &self.constraint,
 				inner_operand: &self.inner_operand,
+				log_operands: shape.log_operands,
 				outer: &self.outer,
 				value,
 			}
@@ -1008,89 +924,53 @@ mod tests {
 	}
 
 	#[test]
-	fn splitting_a_claim_by_operation_recombines_into_it() {
-		// Invariant: the shares are the claim, taken apart.
+	fn the_wiring_evaluation_reads_one_operand_axis_across_the_operations() {
+		// Invariant: the evaluation is the wiring tensor contracted against the flat input's
+		// tables, each operation's operands at its run of the one operand axis:
 		//
-		// Two things have to hold, and one equation cannot carry both.
+		//     zero  column 0 | bitand  1..4 | intmul  4..8 | binmul  8..14
 		//
-		//     recombination:   sum over operations of  weight * eval  ==  the claim's own value
-		//     reconstruction:  each share's eval, rebuilt from its point alone
-		//
-		// The recombination never reads a point, so it pins the values and the weights.
-		// The reconstruction reads nothing else, so it pins the axis order.
-		//
-		// A length check would pin neither: swapping two runs of equal width changes no length.
+		// The flat entry walk is a different code path from the grouped evaluation, and the
+		// columns are named here rather than chained, so agreeing is not a tautology.
 		let mut rng = StdRng::seed_from_u64(31);
-		let cs = two_operation_system(&mut rng);
-		let inout = InoutSegment::Public;
+		let cs = three_operation_system(&mut rng);
 
-		let shape = WiringEvalShape {
-			inout,
-			r_x_len: log_constraint_point(&cs),
-			r_s_len: Word::LOG_BITS,
-			r_v_len: LOG_SHIFT_VARIANT_COUNT,
-			r_y_len: cs.log_segment_words(inout),
-		};
-		let eval_fn = WiringEvalFn::new(&cs, shape);
+		for inout in [InoutSegment::Public, InoutSegment::Hidden] {
+			let shape = WiringEvalShape {
+				inout,
+				log_operands: 4,
+				r_x_len: log_constraint_point(&cs),
+				r_s_len: Word::LOG_BITS,
+				r_v_len: LOG_SHIFT_VARIANT_COUNT,
+				r_y_len: cs.log_segment_words(inout),
+			};
+			let eval_fn = WiringEvalFn::new(&cs, shape);
 
-		// The flat input holds every section the shape describes, and the segment challenge last.
-		let n_inputs = LOG_OPERATION_COUNT
-			+ LOG_MAX_ARITY
-			+ shape.r_x_len
-			+ 2 * (shape.r_s_len + shape.r_v_len)
-			+ shape.r_y_len
-			+ 1;
-		let vals = random_scalars::<B128>(&mut rng, n_inputs);
+			// The flat input holds every section the shape describes, and the segment challenge
+			// last.
+			let n_inputs =
+				shape.log_operands
+					+ shape.r_x_len + 2 * (shape.r_s_len + shape.r_v_len)
+					+ shape.r_y_len + 1;
+			let vals = random_scalars::<B128>(&mut rng, n_inputs);
 
-		// Both discharges of the claim, which one seeded builder now serves.
-		let whole = FieldFn::<B128>::call::<B128>(&eval_fn, &vals);
-		assert_eq!(
-			whole,
-			FieldFn::<B128>::call_native(&eval_fn, &vals),
-			"the generic and native discharges must agree"
-		);
-		// A vacuous claim would let a broken split pass unnoticed.
-		assert_ne!(whole, B128::ZERO);
-
-		let shares = eval_fn.split_by_operation(&vals);
-
-		// The two empty operations contribute nothing, and are still reported in position.
-		assert_eq!(shares[2].claim.eval, B128::ZERO);
-		assert_eq!(shares[3].claim.eval, B128::ZERO);
-		// Two of the four must be non-zero, or the reconstruction below proves little.
-		assert_eq!(
-			shares
-				.iter()
-				.filter(|share| share.claim.eval != B128::ZERO)
-				.count(),
-			2
-		);
-
-		let rebuilt: [RebuiltWeights; OPERATION_COUNT] =
-			array::from_fn(|operation| RebuiltWeights::cut(&shares[operation].claim.point, shape));
-		let [zero_w, bitand_w, intmul_w, binmul_w] = &rebuilt;
-
-		// Contract each against its own operation's entries, named as the discharges name them.
-		// The flat entry walk is a different code path from the grouped evaluation that produced
-		// the value, so agreeing with it is not a tautology.
-		let reconstructed = [
-			OperationEvalFn::new(&cs.zero_constraints).contract(zero_w.weights(&cs, shape)),
-			OperationEvalFn::new(&cs.and_constraints).contract(bitand_w.weights(&cs, shape)),
-			OperationEvalFn::new(&cs.imul_constraints).contract(intmul_w.weights(&cs, shape)),
-			OperationEvalFn::new(&cs.bmul_constraints).contract(binmul_w.weights(&cs, shape)),
-		];
-		for (operation, (share, eval)) in iter::zip(&shares, reconstructed).enumerate() {
+			let whole = FieldFn::<B128>::call::<B128>(&eval_fn, &vals);
 			assert_eq!(
-				eval, share.claim.eval,
-				"operation {operation}'s point must reproduce its evaluation"
+				whole,
+				FieldFn::<B128>::call_native(&eval_fn, &vals),
+				"the generic and native discharges must agree"
 			);
-		}
+			// A vacuous claim would let a broken layout pass unnoticed.
+			assert_ne!(whole, B128::ZERO);
 
-		let recombined = shares
-			.iter()
-			.map(|share| share.weight * share.claim.eval)
-			.sum::<B128>();
-		assert_eq!(recombined, whole, "the shares must recombine into the claim");
+			let rebuilt = RebuiltWeights::cut(&vals, shape);
+			let weights = rebuilt.weights(&cs, shape);
+			let contracted = OperationEvalFn::new(&cs.zero_constraints, 0).contract(weights)
+				+ OperationEvalFn::new(&cs.and_constraints, 1).contract(weights)
+				+ OperationEvalFn::new(&cs.imul_constraints, 4).contract(weights)
+				+ OperationEvalFn::new(&cs.bmul_constraints, 8).contract(weights);
+			assert_eq!(contracted, whole, "{inout:?}");
+		}
 	}
 
 	#[test]
