@@ -204,4 +204,46 @@ mod tests {
 		check_collection(&slice, slice);
 		check_collection_get_set(&mut slice, &mut random);
 	}
+
+	#[test]
+	fn check_matrix_vert_slice_subrange() {
+		for log_len in 0..=10 {
+			let inner: &[usize] = &(0..1 << log_len).collect::<Vec<_>>();
+			for log_rows in 0..=log_len {
+				let log_cols = log_len - log_rows;
+				for log_slice in 0..=log_cols {
+					for slice_index in 0..1 << (log_cols - log_slice) {
+						let expected = (0..1 << log_rows)
+							.flat_map(|row| {
+								let start = row << log_cols | slice_index << log_slice;
+								start..start + (1 << log_slice)
+							})
+							.collect::<Vec<_>>();
+						let view = MatrixVertSliceSubrange::new(
+							&inner,
+							log_rows,
+							log_cols,
+							log_slice,
+							slice_index,
+						);
+						check_collection(&view, &expected);
+					}
+				}
+			}
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "matrix dimensions do not match inner sequence")]
+	fn check_matrix_vert_slice_subrange_dimension_mismatch() {
+		let inner: &[usize] = &[0; 8];
+		MatrixVertSliceSubrange::new(&inner, 1, 1, 0, 0);
+	}
+
+	#[test]
+	#[should_panic]
+	fn check_matrix_vert_slice_subrange_slice_index_out_of_range() {
+		let inner: &[usize] = &[0; 8];
+		MatrixVertSliceSubrange::new(&inner, 1, 2, 1, 2);
+	}
 }
