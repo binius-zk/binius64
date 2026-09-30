@@ -10,7 +10,7 @@ use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::multilinear::eq::eq_ind;
 
 use crate::channel::{
-	Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn, merged_log_msg_len,
+	Error, IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn, merged_log_msg_len,
 };
 
 /// A handle to an oracle received through the merging decorator.
@@ -19,35 +19,51 @@ pub struct MergeOracle {
 	index: usize,
 }
 
-/// Records where one constituent oracle lives inside its round's combined oracle.
-#[derive(Clone)]
-struct Mapping<Oracle> {
-	/// The handle the underlying channel returned for the combined oracle.
-	outer: Oracle,
+/// Where one oracle lives inside its round's combined oracle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+	/// The index of the round the oracle is committed in.
+	pub round: usize,
 
-	/// The constituent's position among its round-mates, as a block index.
+	/// The oracle's position among its round-mates, as a block index.
 	///
 	/// Its own `2^n` scalars begin at scalar `block_index * 2^n`.
-	block_index: usize,
+	pub block_index: usize,
 
 	/// The base-2 logarithm of the combined oracle's length.
-	combined_log_len: usize,
+	pub combined_log_len: usize,
 }
 
-/// Tracks one oracle from the moment it is received until its round is flushed.
-struct Record<Oracle> {
-	/// The base-2 logarithm of the oracle's own length.
-	log_msg_len: usize,
+/// Lays out every round of a schedule, returning one placement per oracle in arrival order.
+///
+/// Each round's oracles are sorted largest to smallest and laid end to end.
+///
+/// Every step adds a whole multiple of the next block's size.
+/// So each offset divides evenly by that oracle's own size.
+pub fn place_oracles(schedule: &OracleSchedule) -> Vec<Placement> {
+	let mut placements = Vec::with_capacity(schedule.specs().len());
+	for (round, specs) in schedule.rounds().enumerate() {
+		let combined_log_len = merged_log_msg_len(specs.iter().map(|spec| spec.log_msg_len));
 
-	/// Whether the oracle's contents depend on the witness.
-	///
-	/// Declared by the caller when the oracle is received.
-	is_witness_dependent: bool,
+		let mut order: Vec<usize> = (0..specs.len()).collect();
+		order.sort_by_key(|&k| Reverse(specs[k].log_msg_len));
 
-	/// Where this oracle ends up inside its round's combined oracle.
-	///
-	/// Filled in once that round is flushed.
-	mapping: Option<Mapping<Oracle>>,
+		let mut block_indices = vec![0; specs.len()];
+		let mut offset = 0usize;
+		for k in order {
+			let n_k = specs[k].log_msg_len;
+			block_indices[k] = offset >> n_k;
+			offset += 1 << n_k;
+		}
+
+		placements.extend(block_indices.into_iter().map(|block_index| Placement {
+			round,
+			block_index,
+			combined_log_len,
+		}));
+	}
+	assert_eq!(placements.len(), schedule.specs().len(), "every oracle must be in a closed round");
+	placements
 }
 
 /// A verifier channel decorator that merges one round's oracles into one combined oracle.
@@ -100,12 +116,11 @@ struct Record<Oracle> {
 ///
 /// # Timing
 ///
-/// A round's oracles are committed the moment a challenge is sampled.
-/// Not the moment they arrive.
+/// A round's oracles are committed the moment its last oracle arrives.
 ///
-/// A real Fiat-Shamir transcript works the same way.
-/// A challenge can only be derived after its commitments are absorbed.
-/// So committing cannot wait past the sample that follows a round.
+/// The [`OracleSchedule`] says where each round ends, so no challenge sample is needed to find
+/// the boundary.
+/// A real Fiat-Shamir transcript can therefore absorb the commitment before the next challenge.
 ///
 /// # Opening
 ///
@@ -131,18 +146,22 @@ where
 	/// The underlying channel every oracle and challenge passes through.
 	inner: C,
 
-	/// Fine-grained specs, one per oracle this channel's caller will receive.
-	///
-	/// Not the coarser, one-per-round specs the underlying channel uses.
-	oracle_specs: &'a [OracleSpec],
+	/// The fine-grained oracles this channel's caller will receive, grouped into rounds.
+	schedule: &'a OracleSchedule,
 
-	/// Every oracle received so far, in arrival order.
-	records: Vec<Record<C::Oracle>>,
+	/// Where each oracle of the schedule lands, in arrival order.
+	placements: Vec<Placement>,
 
-	/// How many entries have already been flushed to the underlying channel.
+	/// The handle the underlying channel returned for each committed round.
+	outers: Vec<C::Oracle>,
+
+	/// One spec per round, as the underlying channel receives it.
 	///
-	/// Every later entry belongs to the current, still-open round.
-	flushed: usize,
+	/// A round is masked as a whole, so it is witness-dependent iff its spec is zero-knowledge.
+	round_specs: Vec<OracleSpec>,
+
+	/// How many oracles have been received so far.
+	n_received: usize,
 }
 
 impl<'a, F, C> MergeVerifierChannel<'a, F, C>
@@ -154,89 +173,39 @@ where
 	///
 	/// # Arguments
 	///
-	/// * `inner` — the channel every combined oracle is committed to, already configured with the
-	///   coarser, one-per-round spec list this decorator will produce.
-	/// * `oracle_specs` — the fine-grained specs for every oracle this channel's caller will pass
-	///   through, in arrival order.
-	pub const fn new(inner: C, oracle_specs: &'a [OracleSpec]) -> Self {
-		Self {
-			inner,
-			oracle_specs,
-			records: Vec::new(),
-			flushed: 0,
-		}
-	}
-
-	/// Commits the current round's queued oracles as one combined oracle.
-	///
-	/// Does nothing if every received oracle is already committed.
+	/// * `inner` — the channel every combined oracle is committed to, already configured with
+	///   `schedule.merged_specs()`.
+	/// * `schedule` — every oracle this channel's caller will pass through, grouped into rounds.
 	///
 	/// # Panics
 	///
-	/// Panics if the queued oracles do not all share one witness-dependence.
-	fn flush(&mut self) -> Result<(), Error> {
-		// Nothing new has arrived since the last flush.
-		if self.flushed == self.records.len() {
-			return Ok(());
+	/// Panics if `inner` is not configured with `schedule.merged_specs()`.
+	pub fn new(inner: C, schedule: &'a OracleSchedule) -> Self {
+		let round_specs = schedule.merged_specs();
+		assert_eq!(
+			inner.remaining_oracle_specs(),
+			round_specs,
+			"inner channel must be configured with the schedule's merged specs"
+		);
+		Self {
+			inner,
+			schedule,
+			placements: place_oracles(schedule),
+			outers: Vec::new(),
+			round_specs,
+			n_received: 0,
 		}
-
-		// Order this round largest to smallest.
-		//
-		// This lets every position be a whole number of block sizes.
-		// That holds once every earlier oracle is at least as large.
-		let mut order: Vec<usize> = (self.flushed..self.records.len()).collect();
-		order.sort_by_key(|&i| Reverse(self.records[i].log_msg_len));
-
-		// One commitment is masked as a whole, never partly.
-		//
-		// So the combined oracle is witness-dependent as soon as any constituent is.
-		// A structural oracle sharing the round is masked along with it, which costs
-		// randomness but never correctness.
-		let is_witness_dependent = order.iter().any(|&i| self.records[i].is_witness_dependent);
-
-		// Size the combined oracle to fit every oracle end to end.
-		let combined_log_len =
-			merged_log_msg_len(order.iter().map(|&i| self.records[i].log_msg_len));
-
-		// Commit the whole round as one oracle on the underlying channel.
-		let outer = self
-			.inner
-			.recv_oracle(combined_log_len, is_witness_dependent)?;
-
-		// Walk the sorted order again.
-		// Record where each oracle actually landed.
-		//
-		// Every step adds a whole multiple of the next block's size.
-		// So each offset divides evenly by that oracle's own size.
-		let mut offset = 0usize;
-		for &i in &order {
-			let n_i = self.records[i].log_msg_len;
-			self.records[i].mapping = Some(Mapping {
-				outer: outer.clone(),
-				block_index: offset >> n_i,
-				combined_log_len,
-			});
-			offset += 1 << n_i;
-		}
-
-		self.flushed = self.records.len();
-		Ok(())
 	}
 
-	/// Commits any oracles still queued and returns the underlying channel.
-	///
-	/// # Errors
-	///
-	/// Returns an error if the final round fails to commit.
+	/// Returns the underlying channel.
 	///
 	/// # Panics
 	///
 	/// Panics if any declared oracle has not yet been received.
-	pub fn into_inner(mut self) -> Result<C, Error> {
-		self.flush()?;
-		let n_remaining = self.oracle_specs.len() - self.records.len();
+	pub fn into_inner(self) -> C {
+		let n_remaining = self.placements.len() - self.n_received;
 		assert!(n_remaining == 0, "into_inner called but {n_remaining} oracle specs remaining",);
-		Ok(self.inner)
+		self.inner
 	}
 }
 
@@ -264,12 +233,6 @@ where
 	}
 
 	fn sample(&mut self) -> Self::Elem {
-		// Commit this round before deriving its challenge.
-		//
-		// Sampling cannot return an error.
-		// A flush failure here has nowhere to go.
-		// It stays queued for the next call that can return one.
-		let _ = self.flush();
 		self.inner.sample()
 	}
 
@@ -306,11 +269,6 @@ where
 	}
 
 	fn sample_bits(&mut self, bits: usize) -> Self::Word {
-		// A sampled word is a challenge like any other.
-		//
-		// So this round's commitment must be absorbed before it is drawn.
-		// A flush failure has nowhere to go here, and stays queued for a call that can return one.
-		let _ = self.flush();
 		self.inner.sample_bits(bits)
 	}
 
@@ -327,7 +285,7 @@ where
 	type Oracle = MergeOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs[self.records.len()..]
+		&self.schedule.specs()[self.n_received..]
 	}
 
 	fn recv_oracle(
@@ -341,19 +299,43 @@ where
 		// Do not silently accept an undeclared oracle.
 		let remaining = self.remaining_oracle_specs();
 		assert!(!remaining.is_empty(), "recv_oracle called but no remaining oracle specs");
-		debug_assert_eq!(log_msg_len, remaining[0].log_msg_len);
+		let spec = remaining[0];
+		assert_eq!(log_msg_len, spec.log_msg_len, "oracle size must match its spec");
 
-		// Queue the oracle without touching the underlying channel yet.
+		// A spec is zero-knowledge iff the protocol is and the oracle is witness-dependent.
 		//
-		// It only becomes a real commitment once its round flushes.
-		self.records.push(Record {
-			log_msg_len,
-			is_witness_dependent,
-			mapping: None,
-		});
-		Ok(MergeOracle {
-			index: self.records.len() - 1,
-		})
+		// The protocol-level flag is not known here, so only one direction can be checked.
+		assert!(
+			!spec.is_zk || is_witness_dependent,
+			"a zero-knowledge oracle spec must be received as witness-dependent"
+		);
+
+		let index = self.n_received;
+		self.n_received += 1;
+
+		// The last oracle of its round commits the whole round as one oracle.
+		let Placement {
+			round,
+			combined_log_len,
+			..
+		} = self.placements[index];
+		let is_last_of_round = self
+			.placements
+			.get(index + 1)
+			.is_none_or(|next| next.round != round);
+		if is_last_of_round {
+			// One commitment is masked as a whole, never partly.
+			//
+			// So the combined oracle is witness-dependent as soon as any constituent is.
+			// A structural oracle sharing the round is masked along with it, which costs
+			// randomness but never correctness.
+			let outer = self
+				.inner
+				.recv_oracle(combined_log_len, self.round_specs[round].is_zk)?;
+			self.outers.push(outer);
+		}
+
+		Ok(MergeOracle { index })
 	}
 
 	fn verify_oracle_relation(
@@ -362,19 +344,13 @@ where
 		transparent: TransparentEvalFn<Self::Elem>,
 		claim: Self::Elem,
 	) -> Result<(), Error> {
-		// Every oracle must be received before any oracle is opened.
-		// So this oracle's round is already committed by now.
-		//
-		// Flush anyway, in case no challenge was sampled in between.
-		self.flush()?;
-
-		let record = &self.records[oracle.index];
-		let n_i = record.log_msg_len;
-		let Mapping {
-			outer,
+		let n_i = self.schedule.specs()[oracle.index].log_msg_len;
+		let Placement {
+			round,
 			block_index,
 			combined_log_len,
-		} = record.mapping.clone().expect("flushed above");
+		} = self.placements[oracle.index];
+		let outer = self.outers[round].clone();
 
 		// Build the fixed 0/1 pattern for this oracle's own block.
 		// One bit per high coordinate of the combined opening point.
@@ -413,190 +389,47 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_field::Ghash128b;
-	use binius_utils::checked_arithmetics::log2_ceil_usize;
-	use proptest::prelude::*;
+	use binius_hash::StdDigest;
+	use binius_transcript::{VerifierTranscript, fiat_shamir::HasherChallenger};
 
 	use super::*;
-	use crate::channel::{OracleSchedule, oracle_setup::OracleSetupChannel};
+	use crate::channel::naive::NaiveVerifierChannel;
 
 	type F = Ghash128b;
 
-	/// Runs the given rounds through the merging decorator.
-	///
-	/// Returns the round-shaped spec list its underlying channel recorded.
-	/// Each inner list is one round.
-	/// A round is flushed once a challenge is sampled after it.
-	fn record_rounds(rounds: &[&[usize]], is_zk: bool) -> Vec<OracleSpec> {
-		// Flatten the rounds into one flat list of sizes, in order.
-		let fine_sizes: Vec<usize> = rounds
-			.iter()
-			.flat_map(|round| round.iter().copied())
-			.collect();
-		let fine_specs: Vec<OracleSpec> = fine_sizes
-			.iter()
-			.map(|&n| {
-				if is_zk {
-					OracleSpec::new_zk(n)
-				} else {
-					OracleSpec::new(n)
-				}
-			})
-			.collect();
-
-		// A recording-only channel stands in for a real one here.
-		// It never checks a proof.
-		// It only remembers the shape of every oracle it receives.
-		let mut channel = MergeVerifierChannel::new(OracleSetupChannel::new(is_zk), &fine_specs);
+	/// Builds a schedule from rounds of oracle sizes, in log2.
+	fn schedule(rounds: &[&[usize]]) -> OracleSchedule {
+		let mut schedule = OracleSchedule::new();
 		for sizes in rounds {
 			for &n in *sizes {
-				channel.recv_oracle(n, true).unwrap();
+				schedule.push(OracleSpec::new(n));
 			}
-			// Crossing a round boundary flushes it as one combined oracle.
-			IPVerifierChannel::<F>::sample(&mut channel);
+			schedule.end_round();
 		}
-		channel.into_inner().unwrap().into_oracle_specs()
-	}
-
-	/// Replays the same rounds against a bare setup channel, with no decorator in the way.
-	///
-	/// Returns the schedule that run records.
-	fn record_schedule(rounds: &[&[usize]], is_zk: bool) -> OracleSchedule {
-		let mut channel = OracleSetupChannel::new(is_zk);
-		for sizes in rounds {
-			for &n in *sizes {
-				IOPVerifierChannel::<F>::recv_oracle(&mut channel, n, true).unwrap();
-			}
-			IPVerifierChannel::<F>::sample(&mut channel);
-		}
-		channel.into_oracle_schedule()
-	}
-
-	/// Asserts the schedule predicts exactly what the decorator commits, for one set of rounds.
-	fn assert_schedule_predicts_the_decorator(rounds: &[&[usize]]) {
-		for is_zk in [false, true] {
-			assert_eq!(
-				record_schedule(rounds, is_zk).merged_specs(),
-				record_rounds(rounds, is_zk),
-				"rounds={rounds:?} is_zk={is_zk}"
-			);
-		}
+		schedule
 	}
 
 	#[test]
-	fn the_schedule_predicts_what_the_decorator_commits() {
-		// Two independent routes to the same coarse spec list.
+	fn placements_sort_each_round_largest_first() {
+		// Round 0: 2^2 + 2^4 + 2^2 = 24, rounded up to 2^5.
+		// The 2^4 oracle goes first, then the two 2^2 oracles in arrival order.
 		//
-		//     decorator: merges each round, and its inner channel records what was committed
-		//     schedule : records where the rounds fall, then merges them itself
-		//
-		// They must agree, or the schedule is not a faithful model of the decorator.
-		//
-		// Round shapes below, chosen to hit each case once:
-		//
-		//     [3, 3]    two equal oracles, summing to an exact power of two
-		//     [4, 2, 2] unequal oracles, summing to 24, so one bit of padding
-		//     [5]       a lone oracle, forwarded with no combining at all
-		assert_schedule_predicts_the_decorator(&[&[3, 3], &[4, 2, 2], &[5]]);
-	}
-
-	proptest! {
-		#[test]
-		fn prop_the_schedule_predicts_what_the_decorator_commits(
-			rounds in prop::collection::vec(prop::collection::vec(0usize..6, 1..4), 1..5),
-		) {
-			// Random round shapes reach layouts the fixed case above never does.
-			// Sizes down to 2^0 make the padding and the sort order both non-trivial.
-			let round_refs: Vec<&[usize]> = rounds.iter().map(Vec::as_slice).collect();
-			assert_schedule_predicts_the_decorator(&round_refs);
-		}
-	}
-
-	#[test]
-	fn merges_oracles_within_a_round() {
-		// Three rounds, each a different shape.
-		//
-		// Round 1: two same-size oracles.
-		// 2^3 + 2^3 = 2^4, an exact power of two.
-		//
-		// Round 2: three unequal oracles.
-		// 2^4 + 2^2 + 2^2 = 24, not a power of two.
-		// One extra bit is needed: 2^5 = 32.
-		//
-		// Round 3: a single oracle.
-		// It needs no combining.
-		let coarse = record_rounds(&[&[3, 3], &[4, 2, 2], &[1]], true);
-
-		// One combined oracle per round.
-		//
-		// Every one is still marked zero-knowledge.
-		// Every constituent declared itself zero-knowledge too.
+		// Round 1: a lone oracle, forwarded with no combining at all.
+		let placements = place_oracles(&schedule(&[&[2, 4, 2], &[1]]));
+		let place = |round, block_index, combined_log_len| Placement {
+			round,
+			block_index,
+			combined_log_len,
+		};
 		assert_eq!(
-			coarse,
-			vec![
-				OracleSpec::new_zk(4),
-				OracleSpec::new_zk(5),
-				OracleSpec::new_zk(1)
+			placements,
+			[
+				place(0, 4, 5),
+				place(0, 0, 5),
+				place(0, 5, 5),
+				place(1, 0, 1)
 			]
 		);
-	}
-
-	#[test]
-	fn ties_keep_arrival_order() {
-		// Three equal-size oracles.
-		// 2^2 + 2^2 + 2^2 = 12, rounded up to 2^4 = 16.
-		//
-		// Equal sizes keep the alignment property either way.
-		// This only checks the combined size comes out right.
-		let coarse = record_rounds(&[&[2, 2, 2]], false);
-		assert_eq!(coarse, vec![OracleSpec::new(log2_ceil_usize(3 << 2))]);
-	}
-
-	#[test]
-	fn non_zk_round_records_non_zk_combined_spec() {
-		// Neither constituent depends on the witness.
-		// The combined oracle must not be zero-knowledge either.
-		let coarse = record_rounds(&[&[5, 3]], false);
-		assert_eq!(coarse, vec![OracleSpec::new(6)]);
-	}
-
-	#[test]
-	fn sampling_bits_closes_the_round() {
-		// A word sampled from the transcript is a challenge like any other.
-		//
-		// So the round before it must already be committed.
-		// Otherwise its oracles would leak into the next round's commitment.
-		let fine_specs = [OracleSpec::new(3), OracleSpec::new(3), OracleSpec::new(1)];
-		let mut channel = MergeVerifierChannel::new(OracleSetupChannel::new(false), &fine_specs);
-
-		// Two oracles, then a sampled word closes their round.
-		channel.recv_oracle(3, true).unwrap();
-		channel.recv_oracle(3, true).unwrap();
-		WordIPVerifierChannel::<F>::sample_bits(&mut channel, 4);
-
-		// The third oracle therefore belongs to a round of its own.
-		channel.recv_oracle(1, true).unwrap();
-
-		// 2^3 + 2^3 = 2^4 for the first round, then 2^1 alone.
-		let coarse = channel.into_inner().unwrap().into_oracle_specs();
-		assert_eq!(coarse, vec![OracleSpec::new(4), OracleSpec::new(1)]);
-	}
-
-	#[test]
-	fn mixed_witness_dependence_masks_the_whole_round() {
-		// One oracle depends on the witness.
-		// The other does not.
-		//
-		// One commitment cannot be masked for one and not the other.
-		// So the round as a whole is masked, and the combined spec is zero-knowledge.
-		let fine_specs = [OracleSpec::new(2), OracleSpec::new(2)];
-		let mut channel = MergeVerifierChannel::new(OracleSetupChannel::new(true), &fine_specs);
-		channel.recv_oracle(2, true).unwrap();
-		channel.recv_oracle(2, false).unwrap();
-		let _ = IPVerifierChannel::<F>::sample(&mut channel);
-
-		// 2^2 + 2^2 = 2^3, masked because one constituent carries witness data.
-		let coarse = channel.into_inner().unwrap().into_oracle_specs();
-		assert_eq!(coarse, vec![OracleSpec::new_zk(3)]);
 	}
 
 	#[test]
@@ -606,11 +439,34 @@ mod tests {
 		//
 		// Receiving a second must be rejected.
 		// It must not be silently accepted.
-		let fine_specs = [OracleSpec::new(2)];
-		let mut channel =
-			MergeVerifierChannel::<F, _>::new(OracleSetupChannel::new(false), &fine_specs);
+		let schedule = schedule(&[&[2]]);
+		let merged_specs = schedule.merged_specs();
+		let mut transcript =
+			VerifierTranscript::new(HasherChallenger::<StdDigest>::default(), vec![0; 4 * 16]);
+		let mut channel = MergeVerifierChannel::new(
+			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
+			&schedule,
+		);
 		channel.recv_oracle(2, true).unwrap();
 		channel.recv_oracle(2, true).unwrap();
+	}
+
+	#[test]
+	#[should_panic(expected = "a zero-knowledge oracle spec must be received as witness-dependent")]
+	fn zk_spec_received_as_structural_panics() {
+		// The schedule declares a masked oracle.
+		// Receiving it as independent of the witness contradicts that.
+		let mut schedule = OracleSchedule::new();
+		schedule.push(OracleSpec::new_zk(2));
+		schedule.end_round();
+		let merged_specs = schedule.merged_specs();
+		let mut transcript =
+			VerifierTranscript::new(HasherChallenger::<StdDigest>::default(), Vec::new());
+		let mut channel = MergeVerifierChannel::new(
+			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
+			&schedule,
+		);
+		let _ = channel.recv_oracle(2, false);
 	}
 
 	#[test]
@@ -620,9 +476,14 @@ mod tests {
 		// Only one ever arrives.
 		//
 		// One oracle spec is still outstanding at teardown.
-		let fine_specs = [OracleSpec::new(2), OracleSpec::new(2)];
-		let mut channel =
-			MergeVerifierChannel::<F, _>::new(OracleSetupChannel::new(false), &fine_specs);
+		let schedule = schedule(&[&[2, 2]]);
+		let merged_specs = schedule.merged_specs();
+		let mut transcript =
+			VerifierTranscript::new(HasherChallenger::<StdDigest>::default(), Vec::new());
+		let mut channel = MergeVerifierChannel::new(
+			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
+			&schedule,
+		);
 		channel.recv_oracle(2, true).unwrap();
 		let _ = channel.into_inner();
 	}
