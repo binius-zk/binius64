@@ -22,7 +22,7 @@ use binius_iop_prover::{
 	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
-use binius_math::{FieldSlice, FieldVec, ntt::AdditiveNTT};
+use binius_math::{FieldSlice, FieldVec, StructuredBuffer, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_verifier::IOPVerifier;
 use rand::CryptoRng;
@@ -316,7 +316,7 @@ where
 	fn prove_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
-		transparent: FieldVec<P, A>,
+		transparent: StructuredBuffer<P, A::Vec<P>>,
 		claim: P::Scalar,
 	) {
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier

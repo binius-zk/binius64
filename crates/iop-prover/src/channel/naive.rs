@@ -6,7 +6,7 @@ use binius_compute::GlobalAllocator;
 use binius_field::{Field, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, FieldSlice};
+use binius_math::{FieldBuffer, FieldSlice, StructuredBuffer};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -155,7 +155,7 @@ where
 	fn prove_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
-		transparent: FieldBuffer<P>,
+		transparent: StructuredBuffer<P, Vec<P>>,
 		_claim: P::Scalar,
 	) {
 		// For the naive channel, we write the transparent polynomial to the transcript so the
@@ -172,6 +172,7 @@ where
 		);
 
 		// Write the transparent polynomial to the transcript
+		let transparent = transparent.materialize(&GlobalAllocator);
 		self.transcript
 			.message()
 			.write_scalar_iter(transparent.iter_scalars());

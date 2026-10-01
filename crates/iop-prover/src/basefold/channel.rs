@@ -16,7 +16,7 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
+	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec, StructuredBuffer,
 	inner_product::inner_product_par,
 	line::extrapolate_line,
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
@@ -62,9 +62,17 @@ struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 /// A committed-oracle relation queued for the single batched opening.
 struct QueuedRelation<P: PackedField, Data: Deref<Target = [P]>> {
 	/// The transparent multilinear `t` the message is opened against, backed by the caller's
-	/// allocator.
-	transparent: FieldBuffer<P, Data>,
+	/// allocator. Its zero padding is never written.
+	transparent: StructuredBuffer<P, Data>,
 	/// The claimed inner product `s = <pi, t>`.
+	claim: P::Scalar,
+}
+
+/// One oracle's queued relations, batched into a single relation.
+struct BatchedRelation<P: PackedField, Data: Deref<Target = [P]>> {
+	/// The batched transparent `T`, with every value written out.
+	transparent: FieldBuffer<P, Data>,
+	/// The batched claim `S = <pi, T>`.
 	claim: P::Scalar,
 }
 
@@ -240,7 +248,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 	// Batch each oracle's claims into one, so everything below runs exactly one relation per
 	// committed oracle.
-	let relations = batch_relations_per_oracle::<A, _, _, _>(channel, relations);
+	let relations = batch_relations_per_oracle(channel, relations, alloc);
 
 	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
 	let max_n = oracle_specs
@@ -296,7 +304,8 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	// One prover per committed oracle, in oracle-index order, each padded to `max_n`.
 	let mut sigma_iter = sigmas.into_iter();
 	let provers = izip!(relations, &messages, oracle_specs)
-		.map(|(QueuedRelation { transparent, claim }, message, spec)| {
+		.map(|(relation, message, spec)| {
+			let BatchedRelation { transparent, claim } = relation;
 			let n_i = spec.log_msg_len;
 			assert_eq!(transparent.log_len(), n_i); // pre-condition
 
@@ -413,11 +422,16 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 /// chosen as a function of it. The batched per-oracle claims are then combined again by the
 /// sumcheck's own outer batching coefficient.
 ///
+/// Each zero-padded `t_ij` is accumulated into only its explicit block of `T_i`, so it costs only
+/// that block's size. An oracle whose first transparent is a plain buffer accumulates into that
+/// buffer, and an oracle carrying only that relation folds nothing.
+///
 /// Mirrors [`binius_iop::basefold::channel`]'s verifier-side batching.
 fn batch_relations_per_oracle<A, F, P, Channel>(
 	channel: &mut Channel,
 	relations: Vec<Vec<QueuedRelation<P, A::Vec<P>>>>,
-) -> Vec<QueuedRelation<P, A::Vec<P>>>
+	alloc: &A,
+) -> Vec<BatchedRelation<P, A::Vec<P>>>
 where
 	A: Allocator,
 	F: BinaryField,
@@ -430,28 +444,56 @@ where
 		.into_iter()
 		.map(|relations| {
 			let mut relations = relations.into_iter();
-			let mut batched = relations
+			let QueuedRelation {
+				transparent: first,
+				mut claim,
+			} = relations
 				.next()
 				.expect("pre-condition: every committed oracle carries at least one relation");
 
-			// Powers λ, λ², … scale the oracle's remaining relations into the first. An oracle
-			// carrying a single relation folds nothing.
+			// A plain first transparent becomes the accumulator with no copy.
+			let mut transparent = first.materialize(alloc);
+
+			// Powers λ, λ², … scale the oracle's remaining relations into their blocks.
 			let mut coeff = lambda;
 			for relation in relations {
-				// pre-condition: all of an oracle's transparents match its message length
-				assert_eq!(relation.transparent.log_len(), batched.transparent.log_len());
-
-				accumulate_scaled_buffer(
-					batched.transparent.as_mut_view(),
-					relation.transparent.as_view(),
-					P::broadcast(coeff),
+				accumulate_scaled_structured(
+					transparent.as_mut_view(),
+					relation.transparent,
+					coeff,
 				);
-				batched.claim += coeff * relation.claim;
+				claim += coeff * relation.claim;
 				coeff *= lambda;
 			}
-			batched
+			BatchedRelation { transparent, claim }
 		})
 		.collect()
+}
+
+/// Adds `scalar · src` into `dst`, touching only the block `src` holds explicitly.
+///
+/// ## Preconditions
+///
+/// * `src.log_len() == dst.log_len()`
+fn accumulate_scaled_structured<P: PackedField, Data: Deref<Target = [P]>>(
+	mut dst: FieldSliceMut<'_, P>,
+	src: StructuredBuffer<P, Data>,
+	scalar: P::Scalar,
+) {
+	match src {
+		StructuredBuffer::Buffer(buffer) => {
+			assert_eq!(buffer.log_len(), dst.log_len()); // precondition
+			accumulate_scaled_buffer(dst, buffer.as_view(), P::broadcast(scalar));
+		}
+		StructuredBuffer::ZeroPadded {
+			inner,
+			log_n_blocks,
+			index,
+		} => {
+			let mut block = dst.chunk_mut(dst.log_len() - log_n_blocks, index);
+			accumulate_scaled_structured(block.chunk(), *inner, scalar);
+		}
+	}
 }
 
 /// Adds `scalar · src` into the low `2^src.log_len()` scalars of every `2^log_block`-sized block
@@ -661,18 +703,21 @@ where
 	fn prove_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
-		transparent: FieldVec<P, A>,
+		transparent: StructuredBuffer<P, A::Vec<P>>,
 		claim: P::Scalar,
 	) {
+		let n_committed = self.queue.len();
+		assert!(
+			oracle.index < n_committed,
+			"oracle index {} out of bounds, expected < {n_committed}",
+			oracle.index
+		);
+		let n_i = self.oracle_specs[oracle.index].log_msg_len;
+		assert_eq!(transparent.log_len(), n_i, "transparent log_len must match the oracle's");
+
 		// Queue the relation under its oracle; the actual opening (masking + sumcheck + combined
 		// FRI) happens once, over all committed oracles, in [`Self::finish`].
-		let n_committed = self.queue.len();
-		self.queue
-			.get_mut(oracle.index)
-			.unwrap_or_else(|| {
-				panic!("oracle index {} out of bounds, expected < {n_committed}", oracle.index)
-			})
-			.push(QueuedRelation { transparent, claim });
+		self.queue[oracle.index].push(QueuedRelation { transparent, claim });
 	}
 
 	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
@@ -790,7 +835,7 @@ mod tests {
 		let oracle = prover_channel.send_oracle(buffer.as_view());
 		assert_eq!(oracle.index, 0);
 
-		prover_channel.prove_oracle_relation(oracle, transparent_poly.clone(), eval_claim);
+		prover_channel.prove_oracle_relation(oracle, transparent_poly.clone().into(), eval_claim);
 		prover_channel.finalize_oracle(oracle, buffer);
 		prover_channel.finish();
 
@@ -859,8 +904,16 @@ mod tests {
 		let oracle_1 = prover_channel.send_oracle(buffer_1.as_view());
 		let oracle_2 = prover_channel.send_oracle(buffer_2.as_view());
 
-		prover_channel.prove_oracle_relation(oracle_1, transparent_poly_1.clone(), eval_claim_1);
-		prover_channel.prove_oracle_relation(oracle_2, transparent_poly_2.clone(), eval_claim_2);
+		prover_channel.prove_oracle_relation(
+			oracle_1,
+			transparent_poly_1.clone().into(),
+			eval_claim_1,
+		);
+		prover_channel.prove_oracle_relation(
+			oracle_2,
+			transparent_poly_2.clone().into(),
+			eval_claim_2,
+		);
 		prover_channel.finalize_oracle(oracle_1, buffer_1);
 		prover_channel.finalize_oracle(oracle_2, buffer_2);
 		prover_channel.finish();
@@ -947,7 +1000,7 @@ mod tests {
 			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect();
 		for (oracle, (buffer, transparent, claim)) in iter::zip(oracles, &data) {
-			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
+			prover_channel.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
 			prover_channel.finalize_oracle(oracle, buffer.clone());
 		}
 		prover_channel.finish();
@@ -1036,7 +1089,7 @@ mod tests {
 			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect();
 		for (oracle, (buffer, transparent, claim)) in iter::zip(oracles, &data) {
-			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
+			prover_channel.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
 			prover_channel.finalize_oracle(oracle, buffer.clone());
 		}
 		prover_channel.finish();
@@ -1289,7 +1342,11 @@ mod tests {
 			.collect::<Vec<_>>();
 		for &(index, round) in &arrivals {
 			let (transparent, claim) = &data[index].1[round];
-			prover_channel.prove_oracle_relation(oracles[index], transparent.clone(), *claim);
+			prover_channel.prove_oracle_relation(
+				oracles[index],
+				transparent.clone().into(),
+				*claim,
+			);
 		}
 		for (oracle, (buffer, _)) in iter::zip(&oracles, &data) {
 			prover_channel.finalize_oracle(*oracle, buffer.clone());

@@ -6,11 +6,12 @@
 //! The buffer lives in this file, with its methods and the guard its halving methods hand out.
 //! `SplitMut` is built in exactly one place, so it needs no visibility beyond this module.
 //!
-//! Two groups sit in modules of their own:
+//! The rest sits in modules of their own:
 //!
 //! ```text
-//! chunks  the buffer's chunk methods, and the iterators and guard they hand out
-//! view    the borrowed aliases, which name the buffer rather than being produced by it
+//! chunks      the buffer's chunk methods, and the iterators and guard they hand out
+//! structured  a buffer that may hold one aligned block explicitly, and zero elsewhere
+//! view        the borrowed aliases, which name the buffer rather than being produced by it
 //! ```
 //!
 //! # Why the backing store is a type parameter
@@ -51,9 +52,11 @@ use binius_utils::{
 use bytemuck::zeroed_vec;
 
 mod chunks;
+mod structured;
 mod view;
 
 pub use chunks::{ChunkMut, Chunks, ChunksMut};
+pub use structured::StructuredBuffer;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.

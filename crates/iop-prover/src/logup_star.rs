@@ -120,7 +120,11 @@ where
 	{
 		let m = table.table.log_len();
 		let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point[..m]);
-		channel.prove_oracle_relation(oracle.clone(), transparent, table_output.pushforward_claim);
+		channel.prove_oracle_relation(
+			oracle.clone(),
+			transparent.into(),
+			table_output.pushforward_claim,
+		);
 		channel.finalize_oracle(oracle, pushforward);
 	}
 
@@ -212,10 +216,10 @@ where
 	for (oracle, pushforward, table, open) in izip!(oracles, pushforwards, &tables, &output.tables)
 	{
 		let leaf_eq = eq_ind_partial_eval_in::<A, P>(alloc, &open.pushforward_eval_point);
-		channel.prove_oracle_relation(oracle.clone(), leaf_eq, open.pushforward_eval_claim);
+		channel.prove_oracle_relation(oracle.clone(), leaf_eq.into(), open.pushforward_eval_claim);
 		channel.prove_oracle_relation(
 			oracle.clone(),
-			FieldBuffer::from_view_in(alloc, table.table),
+			FieldBuffer::from_view_in(alloc, table.table).into(),
 			open.product_claim,
 		);
 		channel.finalize_oracle(oracle, pushforward);

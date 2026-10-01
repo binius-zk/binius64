@@ -10,7 +10,7 @@ use binius_compute::Allocator;
 use binius_field::PackedField;
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldSlice, FieldVec};
+use binius_math::{FieldSlice, FieldVec, StructuredBuffer};
 
 /// Channel for IOP provers that extends the IP prover channel with oracle operations.
 ///
@@ -47,6 +47,9 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	/// The relation asserts that `<oracle_poly, transparent> = claim`. An oracle may carry any
 	/// number of relations.
 	///
+	/// The transparent may be zero outside one aligned block, and say so through its structure. A
+	/// channel that understands the structure skips the zeros; any other materializes it.
+	///
 	/// The channel owns the transparent multilinear until the opening runs, so it is drawn from
 	/// the caller's allocator `A` — a pooled buffer stays pooled all the way through the opening.
 	///
@@ -60,7 +63,7 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	fn prove_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
-		transparent: FieldVec<P, A>,
+		transparent: StructuredBuffer<P, A::Vec<P>>,
 		claim: P::Scalar,
 	);
 
