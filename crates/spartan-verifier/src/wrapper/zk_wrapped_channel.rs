@@ -2,7 +2,8 @@
 
 //! ZK-wrapped verifier channel that delegates to a BaseFold ZK channel and an outer IOP verifier.
 //!
-//! [`ZKWrappedVerifierChannel`] wraps a [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
+//! [`ZKWrappedVerifierChannel`] wraps a [`BaseFoldVerifierChannel`], behind a
+//! [`MergeVerifierChannel`] that commits each round's oracles as one, and an [`IOPVerifier`].
 //! Inner-channel values flow through the wrapper as `CircuitElem`s backed by an
 //! [`InstanceGenerator`], which reconstructs the outer constraint system's public-input vector
 //! `[constants | inout | derived]` exactly as the prover's witness generator does — public-derived
@@ -16,8 +17,11 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 use binius_core::word::Word;
 use binius_field::BinaryField;
 use binius_iop::{
-	basefold::channel::{BaseFoldOracle, BaseFoldVerifierChannel},
-	channel::{IOPVerifierChannel, OracleSpec, TransparentEvalFn},
+	basefold::channel::BaseFoldVerifierChannel,
+	channel::{
+		IOPVerifierChannel, OracleSpec, TransparentEvalFn,
+		merge::{MergeOracle, MergeVerifierChannel},
+	},
 	merkle_channel::MerkleIPVerifierChannel,
 };
 use binius_ip::channel::{
@@ -30,7 +34,7 @@ use binius_spartan_frontend::{
 
 use crate::{Error, IOPVerifier, wrapper::circuit_elem::CircuitElem};
 
-/// A verifier channel that wraps a [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
+/// A verifier channel that wraps a merged [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
 ///
 /// `Self::Elem = CircuitElem<F, InstanceGenerator>`. F values received or sampled from the inner
 /// channel are written into the [`InstanceGenerator`]'s public segment as inout wires (in the same
@@ -47,9 +51,9 @@ where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
-	inner_channel: BaseFoldVerifierChannel<'a, F, Channel>,
+	inner_channel: MergeVerifierChannel<'a, F, BaseFoldVerifierChannel<'a, F, Channel>>,
 	outer_verifier: &'a IOPVerifier<F>,
-	precommit_oracle: BaseFoldOracle,
+	precommit_oracle: MergeOracle,
 	/// Reconstructs the outer public-input vector as the channel replays the inner verifier;
 	/// `build()` yields the `[constants | inout | derived]` segment for the outer verify.
 	instance_gen: Rc<RefCell<InstanceGenerator<F>>>,
@@ -89,11 +93,12 @@ where
 	/// Panics if the channel's oracle specs do not match the expected layout
 	/// `[outer_precommit, inner..., outer_private, outer_mask]`.
 	pub fn new(
-		mut inner_channel: BaseFoldVerifierChannel<'a, F, Channel>,
+		mut inner_channel: MergeVerifierChannel<'a, F, BaseFoldVerifierChannel<'a, F, Channel>>,
 		outer_verifier: &'a IOPVerifier<F>,
 		outer_layout: Arc<WitnessLayout<F>>,
 	) -> Result<Self, Error> {
-		let outer_oracle_specs = outer_verifier.oracle_specs();
+		let outer_schedule = outer_verifier.oracle_schedule();
+		let outer_oracle_specs = outer_schedule.specs();
 		let channel_oracle_specs = inner_channel.remaining_oracle_specs();
 
 		let n_outer = outer_oracle_specs.len();
@@ -175,7 +180,7 @@ where
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
 		// the single combined opening over all committed oracles now. `instance_gen` stays alive in
 		// `self` for the duration, so the transparent closures' `Weak` upgrades succeed.
-		inner_channel.finish()?;
+		inner_channel.into_inner().finish()?;
 		Ok(())
 	}
 }
@@ -275,7 +280,7 @@ where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
-	type Oracle = BaseFoldOracle;
+	type Oracle = MergeOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		let all = self.inner_channel.remaining_oracle_specs();

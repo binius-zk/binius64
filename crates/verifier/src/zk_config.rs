@@ -7,7 +7,8 @@
 //! verification into a ZK proof by:
 //!
 //! 1. Symbolically executing the inner verifier to build an outer Spartan constraint system
-//! 2. Combining inner and outer oracle specs into a single BaseFold ZK compiler
+//! 2. Combining inner and outer oracles into a single BaseFold ZK compiler, which commits each
+//!    round's oracles as one
 //! 3. At verification time, running the inner verifier through a [`ZKWrappedVerifierChannel`] that
 //!    records all values as outer public inputs, then finishing with outer Spartan verification
 //!
@@ -23,7 +24,11 @@ use binius_field::Ghash128b as B128;
 use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
-	channel::OracleSpec,
+	channel::{
+		IOPVerifierChannel, OracleSchedule,
+		merge::MergeVerifierChannel,
+		oracle_setup::{DummyElem, OracleSetupChannel},
+	},
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
@@ -56,6 +61,8 @@ pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
 	outer_layout: Arc<WitnessLayout<B128>>,
+	/// Every oracle of the inner and outer proofs, grouped into the rounds each committed as one.
+	oracle_schedule: OracleSchedule,
 	basefold_compiler: BaseFoldVerifierCompiler<B128>,
 	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
 	_hash_marker: PhantomData<H>,
@@ -111,19 +118,31 @@ where
 		let outer_iop_verifier = IronSpartanIOPVerifier::new(outer_cs);
 
 		// Transcript layout: outer precommit oracle first (committed at wrapper construction),
-		// then all inner oracles, then the remaining outer oracles (private, mask).
-		let outer_oracle_specs = outer_iop_verifier.oracle_specs();
-		let oracle_specs: Vec<OracleSpec> = [
-			vec![outer_oracle_specs[0]],
-			inner_iop_verifier.oracle_specs(true),
-			outer_oracle_specs[1..].to_vec(),
-		]
-		.concat();
+		// then all inner oracles, then the remaining outer oracles (private, mask). Replaying that
+		// sequence against one setup channel also records where each round ends, which no
+		// concatenation of the two proofs' own schedules can say.
+		let oracle_schedule = {
+			let mut channel = OracleSetupChannel::new(true);
+			<OracleSetupChannel as IOPVerifierChannel<B128>>::recv_oracle(
+				&mut channel,
+				outer_iop_verifier.constraint_system().log_precommit() as usize,
+				true,
+			)
+			.expect("OracleSetupChannel::recv_oracle is infallible");
+			// Discarded: the setup channel performs no real verification.
+			let _ = inner_iop_verifier.verify(&dummy_inout_words, &mut channel);
+			let public = vec![
+				DummyElem::<B128>::default();
+				1 << outer_iop_verifier.constraint_system().log_public()
+			];
+			let _ = outer_iop_verifier.verify((), &public, &mut channel);
+			channel.into_oracle_schedule()
+		};
 
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 		let basefold_compiler = BaseFoldVerifierCompiler::new(
 			&merkle_scheme,
-			oracle_specs,
+			oracle_schedule.merged_specs(),
 			log_inv_rate,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -133,6 +152,7 @@ where
 			inner_iop_verifier,
 			outer_iop_verifier,
 			outer_layout,
+			oracle_schedule,
 			basefold_compiler,
 			_hash_marker: PhantomData,
 		})
@@ -162,6 +182,11 @@ where
 		Arc::clone(&self.outer_layout)
 	}
 
+	/// Returns the oracle schedule; the BaseFold compiler is configured with its merged specs.
+	pub const fn oracle_schedule(&self) -> &OracleSchedule {
+		&self.oracle_schedule
+	}
+
 	/// Returns the BaseFold ZK verifier compiler.
 	pub const fn basefold_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.basefold_compiler
@@ -188,12 +213,12 @@ where
 		inout: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Create BaseFold channel and wrap with outer verifier.
+		// Create BaseFold channel, merge each round's oracles, and wrap with outer verifier.
 		let channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let mut wrapped_channel = ZKWrappedVerifierChannel::new(
-			channel,
+			MergeVerifierChannel::new(channel, &self.oracle_schedule),
 			&self.outer_iop_verifier,
 			Arc::clone(&self.outer_layout),
 		)?;
