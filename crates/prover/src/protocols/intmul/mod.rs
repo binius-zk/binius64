@@ -2,6 +2,7 @@
 
 mod error;
 pub mod prove;
+mod transpose_bits;
 pub mod witness;
 
 pub use error::Error;
