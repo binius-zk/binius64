@@ -18,7 +18,7 @@ use binius_utils::DeserializeBytes;
 use binius_verifier::{
 	Error, SECURITY_BITS,
 	config::{B1, B128},
-	protocols::shift::WiringEvalClaim,
+	protocols::shift::{WiringEvalClaim, WiringInfo},
 	reduction::reduce_constraints,
 	ring_switch::{self, RingSwitchVerifyOutput},
 };
@@ -54,12 +54,19 @@ pub struct IOPVerifier {
 	cs: ConstraintSystem,
 	/// The committed-multilinear shape of the batch.
 	layout: BatchCommitLayout,
+	/// The constraint system's wiring matrix, with the inout values hidden.
+	wiring: WiringInfo,
 }
 
 impl IOPVerifier {
 	/// Constructs an IOP verifier for `2^log_instances` instances of one circuit.
-	pub const fn new(cs: ConstraintSystem, layout: BatchCommitLayout) -> Self {
-		Self { cs, layout }
+	///
+	/// # Panics
+	///
+	/// Panics if the wiring matrix's addresses do not fit; see [`WiringInfo::new`].
+	pub fn new(cs: ConstraintSystem, layout: BatchCommitLayout) -> Self {
+		let wiring = WiringInfo::new(&cs, InoutSegment::Hidden);
+		Self { cs, layout, wiring }
 	}
 
 	/// The validated constraint system this verifier checks against.
@@ -70,6 +77,11 @@ impl IOPVerifier {
 	/// The committed-multilinear shape this verifier expects.
 	pub const fn layout(&self) -> &BatchCommitLayout {
 		&self.layout
+	}
+
+	/// The wiring matrix, which a wiring claim is settled against.
+	pub const fn wiring(&self) -> &WiringInfo {
+		&self.wiring
 	}
 
 	/// Consumes the IOP verifier and returns the inner constraint system.
@@ -137,6 +149,7 @@ impl IOPVerifier {
 			.collect::<Vec<_>>();
 		let reduction = reduce_constraints(
 			&self.cs,
+			&self.wiring,
 			self.layout.log_instances,
 			InoutSegment::Hidden,
 			&constants,

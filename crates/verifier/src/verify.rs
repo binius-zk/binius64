@@ -28,7 +28,7 @@ use crate::{
 	protocols::{
 		bitand::{AndCheckOutput, UnivariateSkipOutput, verify_univariate_skip},
 		rerand::{self, OperandClaims},
-		shift::WiringEvalClaim,
+		shift::{WiringEvalClaim, WiringInfo},
 	},
 	reduction::reduce_constraints,
 	ring_switch,
@@ -45,16 +45,24 @@ pub const SECURITY_BITS: usize = 96;
 pub struct IOPVerifier {
 	constraint_system: ConstraintSystem,
 	log_public_words: usize,
+	/// The constraint system's wiring matrix.
+	wiring: WiringInfo,
 }
 
 impl IOPVerifier {
 	/// Constructs an IOP verifier for a constraint system.
 	///
 	/// The constraint system must already be validated via [`ConstraintSystem::validate`].
-	pub const fn new(constraint_system: ConstraintSystem, log_public_words: usize) -> Self {
+	///
+	/// # Panics
+	///
+	/// Panics if the wiring matrix's addresses do not fit; see [`WiringInfo::new`].
+	pub fn new(constraint_system: ConstraintSystem, log_public_words: usize) -> Self {
+		let wiring = WiringInfo::new(&constraint_system, InoutSegment::Public);
 		Self {
 			constraint_system,
 			log_public_words,
+			wiring,
 		}
 	}
 
@@ -66,6 +74,11 @@ impl IOPVerifier {
 	/// Consumes the IOP verifier and returns the inner constraint system.
 	pub fn into_constraint_system(self) -> ConstraintSystem {
 		self.constraint_system
+	}
+
+	/// Returns the wiring matrix, which a wiring claim is settled against.
+	pub const fn wiring(&self) -> &WiringInfo {
+		&self.wiring
 	}
 
 	/// Returns log2 of the number of public constants and input/output words.
@@ -180,6 +193,7 @@ impl IOPVerifier {
 		// Reduce every constraint to one claim on the committed trace.
 		let reduction = reduce_constraints(
 			self.constraint_system(),
+			&self.wiring,
 			0,
 			InoutSegment::Public,
 			&public,

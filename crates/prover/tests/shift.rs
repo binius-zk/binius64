@@ -28,7 +28,8 @@ use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
-	protocols::shift::{check_eval, evaluate_words_mle, log_constraint_point, verify},
+	protocols::shift::{WiringInfo, check_eval, evaluate_words_mle, verify},
+	reduction::log_constraint_point,
 };
 use itertools::Itertools;
 use rand::{SeedableRng, rngs::StdRng};
@@ -420,8 +421,12 @@ fn test_shift_prove_and_verify() {
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		let verifier_output =
-			verify(&cs, InoutSegment::Public, &operand_claims, &mut verifier_transcript).unwrap();
+		let verifier_output = verify(
+			cs.log_segment_words(InoutSegment::Public),
+			&operand_claims,
+			&mut verifier_transcript,
+		)
+		.unwrap();
 
 		// The public segment over the shift's whole index space. The full reduction reads this
 		// from the prover and ties it to the public words with a ring-switch; driving the shift
@@ -433,9 +438,9 @@ fn test_shift_prove_and_verify() {
 		);
 
 		// Check consistency with verifier output
+		let wiring = WiringInfo::new(&cs, InoutSegment::Public);
 		let wiring_claim = check_eval(
-			&cs,
-			InoutSegment::Public,
+			&wiring,
 			public_eval,
 			&r_x,
 			&subspace,

@@ -242,9 +242,9 @@ mod tests {
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{
-			LOG_SHIFT_COUNT, SHIFT_COUNT, check_eval, evaluate_words_mle, log_constraint_point,
-			padding_scales, verify,
+			LOG_SHIFT_COUNT, SHIFT_COUNT, WiringInfo, check_eval, evaluate_words_mle, verify,
 		},
+		reduction::{log_constraint_point, padding_scales},
 	};
 	use rand::prelude::*;
 
@@ -395,8 +395,12 @@ mod tests {
 
 		// Verify against the single-instance shift verifier.
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_output =
-			verify(&cs, InoutSegment::Hidden, &operand_claims, &mut verifier_transcript).unwrap();
+		let verifier_output = verify(
+			cs.log_segment_words(InoutSegment::Hidden),
+			&operand_claims,
+			&mut verifier_transcript,
+		)
+		.unwrap();
 		// The public segment over the shift's whole index space. The full reduction reads this
 		// from the prover and ties it to the constants with a ring-switch; driving the shift
 		// alone, evaluate it here.
@@ -406,9 +410,9 @@ mod tests {
 			verifier_output.r_y(),
 		);
 
+		let wiring = WiringInfo::new(&cs, InoutSegment::Hidden);
 		let wiring_claim = check_eval(
-			&cs,
-			InoutSegment::Hidden,
+			&wiring,
 			public_eval,
 			&r_x,
 			&domain_subspace,

@@ -20,8 +20,8 @@ use binius_math::{
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
-	protocols::{rerand::RerandOutput, shift::padding_scales, zero},
-	reduction::{BINMUL_ARITY, INTMUL_ARITY, OPERATION_ARITIES, ZERO_ARITY},
+	protocols::{rerand::RerandOutput, zero},
+	reduction::{BINMUL_ARITY, INTMUL_ARITY, OPERATION_ARITIES, ZERO_ARITY, padding_scales},
 };
 
 /// The operand evaluation claims of every operation, as the shift reduction receives them.
