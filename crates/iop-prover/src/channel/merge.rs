@@ -14,7 +14,7 @@ use binius_iop::channel::{
 	merge::{Placement, place_oracles},
 };
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
-use binius_math::{FieldBuffer, FieldSlice, FieldVec};
+use binius_math::{FieldBuffer, FieldSlice, FieldVec, StructuredBuffer};
 
 use crate::channel::IOPProverChannel;
 
@@ -68,11 +68,12 @@ pub struct MergeOracle {
 ///
 /// This side holds the actual coefficients instead.
 /// A constituent's own transparent polynomial becomes one for the combined oracle.
-/// Write its values into a zero buffer, at the constituent's own position.
-/// Every other position stays zero.
+/// It is the constituent's values at the constituent's own block, and zero everywhere else.
+/// This side forwards it to the underlying channel as a zero-padded structure, never writing the
+/// zeros.
 ///
 /// That placement is the same polynomial a verifier reaches by formula.
-/// One side holds it as explicit values.
+/// One side holds the block as explicit values.
 /// The other evaluates it on demand.
 pub struct MergeProverChannel<'a, P, A, C>
 where
@@ -89,7 +90,7 @@ where
 	/// Where each oracle of the schedule lands, in arrival order.
 	placements: Vec<Placement>,
 
-	/// The allocator this channel draws its combined and padded buffers from.
+	/// The allocator this channel draws its combined buffers from.
 	alloc: A,
 
 	/// The open round's combined buffer, filled in as its oracles arrive.
@@ -117,7 +118,7 @@ where
 	/// * `inner` — the channel every combined oracle is committed to, already configured with
 	///   `schedule.merged_specs()`.
 	/// * `schedule` — every oracle this channel's caller will pass through, grouped into rounds.
-	/// * `alloc` — where this channel draws its combined and padded buffers from.
+	/// * `alloc` — where this channel draws its combined buffers from.
 	///
 	/// # Panics
 	///
@@ -293,7 +294,7 @@ where
 	fn prove_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
-		transparent: FieldVec<P, A>,
+		transparent: StructuredBuffer<P, A::Vec<P>>,
 		claim: P::Scalar,
 	) {
 		let n_i = self.schedule.specs()[oracle.index].log_msg_len;
@@ -309,13 +310,13 @@ where
 			combined_log_len,
 		} = self.placements[oracle.index];
 
-		// Place the constituent's transparent polynomial into a zero buffer.
-		// Use the width of the combined oracle, at this oracle's own block.
-		//
-		// Everywhere outside that block reads as zero.
-		// So the produced inner product equals the original claim exactly.
-		let mut padded = FieldBuffer::zeros_in(&self.alloc, combined_log_len);
-		place_block(&mut padded, transparent.as_view(), block_index);
+		// The constituent's transparent is zero outside the constituent's own block of the
+		// combined oracle. So the inner product equals the original claim exactly.
+		let padded = StructuredBuffer::ZeroPadded {
+			inner: Box::new(transparent),
+			log_n_blocks: combined_log_len - n_i,
+			index: block_index,
+		};
 
 		let outer = self.groups[round].clone();
 		self.inner.prove_oracle_relation(outer, padded, claim);
@@ -335,10 +336,15 @@ mod tests {
 	use binius_field::{
 		BinaryField, Field, Ghash128b, PackedField, PackedGhash1x128b, PackedGhash4x128b,
 	};
-	use binius_hash::StdDigest;
-	use binius_iop::channel::{
-		IOPVerifierChannel, OracleSchedule, OracleSpec, merge::MergeVerifierChannel,
-		naive::NaiveVerifierChannel,
+	use binius_hash::{StdDigest, StdHashSuite};
+	use binius_iop::{
+		basefold::compiler::BaseFoldVerifierCompiler,
+		channel::{
+			IOPVerifierChannel, OracleSchedule, OracleSpec, merge::MergeVerifierChannel,
+			naive::NaiveVerifierChannel,
+		},
+		fri::MinProofSizeStrategy,
+		merkle_tree::BinaryMerkleTreeScheme,
 	};
 	use binius_ip::channel::IPVerifierChannel;
 	use binius_ip_prover::channel::IPProverChannel;
@@ -346,6 +352,7 @@ mod tests {
 		FieldBuffer,
 		inner_product::inner_product_buffers,
 		multilinear::eq::eq_ind_partial_eval,
+		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -353,7 +360,7 @@ mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::{IOPProverChannel, MergeProverChannel};
-	use crate::channel::naive::NaiveProverChannel;
+	use crate::{basefold::compiler::BaseFoldProverCompiler, channel::naive::NaiveProverChannel};
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 
@@ -438,7 +445,7 @@ mod tests {
 		// Then hand back every oracle's own witness data.
 		// That matches the order a real prover would follow.
 		for (&oracle, (_, transparent, claim)) in iter::zip(&oracles, &data) {
-			merge_prover.prove_oracle_relation(oracle, transparent.clone(), *claim);
+			merge_prover.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
 		}
 		for (&oracle, (buffer, _, _)) in iter::zip(&oracles, &data) {
 			merge_prover.finalize_oracle(oracle, buffer.clone());
@@ -585,10 +592,10 @@ mod tests {
 		let oracle_1 = merge_prover.send_oracle(buffer_1.as_view());
 		let oracle_2 = merge_prover.send_oracle(buffer_2.as_view());
 		for (transparent, claim) in &relations_1 {
-			merge_prover.prove_oracle_relation(oracle_1, transparent.clone(), *claim);
+			merge_prover.prove_oracle_relation(oracle_1, transparent.clone().into(), *claim);
 		}
 		for (transparent, claim) in &relations_2 {
-			merge_prover.prove_oracle_relation(oracle_2, transparent.clone(), *claim);
+			merge_prover.prove_oracle_relation(oracle_2, transparent.clone().into(), *claim);
 		}
 		merge_prover.finalize_oracle(oracle_1, buffer_1);
 		merge_prover.finalize_oracle(oracle_2, buffer_2);
@@ -629,6 +636,125 @@ mod tests {
 				.unwrap();
 		}
 		merge_verifier.into_inner().finish();
+	}
+
+	/// Runs a prove-then-verify round trip of the merge channels over BaseFold, rather than the
+	/// naive channel.
+	///
+	/// BaseFold accumulates each forwarded relation into its own block of the combined oracle.
+	/// Every oracle carries two relations, so both the whole-oracle accumulator of a single-oracle
+	/// round and the zero-started accumulator of a merged round are exercised.
+	fn run_merge_over_basefold<P>(rounds: &[&[usize]]) -> bool
+	where
+		P: PackedField<Scalar = Ghash128b>,
+	{
+		type F = Ghash128b;
+		const LOG_INV_RATE: usize = 1;
+		const N_TEST_QUERIES: usize = 32;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let mut schedule = OracleSchedule::new();
+		for sizes in rounds {
+			for &n in *sizes {
+				schedule.push(OracleSpec::new_zk(n));
+			}
+			schedule.end_round();
+		}
+		let data = schedule
+			.specs()
+			.iter()
+			.map(|spec| {
+				let buffer = random_field_buffer::<P>(&mut rng, spec.log_msg_len);
+				let relations = (0..2)
+					.map(|_| {
+						let point = random_scalars::<F>(&mut rng, spec.log_msg_len);
+						let transparent = eq_ind_partial_eval::<P>(&point);
+						let claim = inner_product_buffers(&buffer, &transparent);
+						(transparent, claim)
+					})
+					.collect::<Vec<_>>();
+				(buffer, relations)
+			})
+			.collect::<Vec<_>>();
+
+		let verifier_compiler = BaseFoldVerifierCompiler::new(
+			&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
+			schedule.merged_specs(),
+			LOG_INV_RATE,
+			N_TEST_QUERIES,
+			&MinProofSizeStrategy,
+		);
+		let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(
+			verifier_compiler.max_log_domain_size(),
+		));
+		let prover_compiler =
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
+
+		// Prover side.
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let basefold_prover = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
+				&mut prover_transcript,
+				StdRng::seed_from_u64(1),
+				GlobalAllocator,
+			);
+		let mut merge_prover = MergeProverChannel::new(basefold_prover, &schedule, GlobalAllocator);
+		let mut oracles = Vec::new();
+		let mut data_iter = data.iter();
+		for sizes in rounds {
+			for (buffer, _) in data_iter.by_ref().take(sizes.len()) {
+				oracles.push(merge_prover.send_oracle(buffer.as_view()));
+			}
+			IPProverChannel::sample(&mut merge_prover);
+		}
+		for (&oracle, (_, relations)) in iter::zip(&oracles, &data) {
+			for (transparent, claim) in relations {
+				merge_prover.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
+			}
+		}
+		for (&oracle, (buffer, _)) in iter::zip(&oracles, &data) {
+			merge_prover.finalize_oracle(oracle, buffer.clone());
+		}
+		merge_prover.into_inner().finish();
+
+		// Verifier side.
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let basefold_verifier = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
+		let mut merge_verifier = MergeVerifierChannel::new(basefold_verifier, &schedule);
+		let mut v_oracles = Vec::new();
+		for sizes in rounds {
+			for &n in *sizes {
+				v_oracles.push(merge_verifier.recv_oracle(n, true).unwrap());
+			}
+			IPVerifierChannel::sample(&mut merge_verifier);
+		}
+		for (&oracle, (_, relations)) in iter::zip(&v_oracles, data) {
+			for (transparent, claim) in relations {
+				merge_verifier
+					.verify_oracle_relation(
+						oracle,
+						Box::new(move |point: &[F]| {
+							let eq = eq_ind_partial_eval::<P>(point);
+							inner_product_buffers(&transparent, &eq)
+						}),
+						claim,
+					)
+					.expect("verification only ever queues a relation, it does not check it here");
+			}
+		}
+		merge_verifier.into_inner().finish().is_ok()
+	}
+
+	#[test]
+	fn merge_over_basefold_round_trip() {
+		let rounds: &[&[usize]] = &[&[4, 2, 2], &[5], &[3, 3, 0]];
+		assert!(run_merge_over_basefold::<PackedGhash1x128b>(rounds));
+
+		// Under the wider packing, the size-0 and size-2 blocks are narrower than a packed word.
+		assert!(run_merge_over_basefold::<PackedGhash4x128b>(rounds));
 	}
 
 	proptest! {
