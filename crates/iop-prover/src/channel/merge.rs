@@ -24,26 +24,6 @@ pub struct MergeOracle {
 	index: usize,
 }
 
-/// The combined oracle actually committed for one round.
-///
-/// Kept alive until every constituent oracle is finalized.
-struct Group<P: PackedField, A: Allocator, Oracle> {
-	/// The handle the underlying channel returned for the combined oracle.
-	outer: Oracle,
-
-	/// The combined witness data.
-	///
-	/// Kept until every constituent has been handed back.
-	/// Then forwarded to the underlying channel exactly once, in their place.
-	buffer: Option<FieldVec<P, A>>,
-
-	/// How many constituent oracles make up this round.
-	n_members: usize,
-
-	/// How many of those constituents have been handed back so far.
-	n_finalized: usize,
-}
-
 /// A prover channel decorator that merges one round's oracles into one combined oracle.
 ///
 /// # Overview
@@ -78,6 +58,9 @@ struct Group<P: PackedField, A: Allocator, Oracle> {
 /// The [`OracleSchedule`] says where each round ends, so no challenge sample is needed to find
 /// the boundary.
 /// A real Fiat-Shamir transcript can therefore absorb the commitment before the next challenge.
+///
+/// The combined buffer is finalized on the underlying channel right after it is committed.
+/// So finalizing a constituent oracle here just drops the buffer handed back.
 ///
 /// # Opening
 ///
@@ -117,8 +100,8 @@ where
 	/// How many oracles have been sent so far.
 	n_sent: usize,
 
-	/// Every round committed so far, in commit order.
-	groups: Vec<Group<P, A, C::Oracle>>,
+	/// The underlying channel's handle for every round committed so far, in commit order.
+	groups: Vec<C::Oracle>,
 }
 
 impl<'a, P, A, C> MergeProverChannel<'a, P, A, C>
@@ -297,21 +280,11 @@ where
 				.open
 				.take()
 				.expect("open round buffer was just inserted");
-			let n_members = self.placements[..=index]
-				.iter()
-				.rev()
-				.take_while(|p| p.round == round)
-				.count();
 
-			// The combined data stays alive in its own round record.
-			// It is still needed once every constituent is handed back.
+			// This channel owns the combined buffer, so finalize it on the spot.
 			let outer = self.inner.send_oracle(combined.as_view());
-			self.groups.push(Group {
-				outer,
-				buffer: Some(combined),
-				n_members,
-				n_finalized: 0,
-			});
+			self.inner.finalize_oracle(outer.clone(), combined);
+			self.groups.push(outer);
 		}
 
 		MergeOracle { index }
@@ -344,27 +317,13 @@ where
 		let mut padded = FieldBuffer::zeros_in(&self.alloc, combined_log_len);
 		place_block(&mut padded, transparent.as_view(), block_index);
 
-		let outer = self.groups[round].outer.clone();
+		let outer = self.groups[round].clone();
 		self.inner.prove_oracle_relation(outer, padded, claim);
 	}
 
-	fn finalize_oracle(&mut self, oracle: Self::Oracle, _buffer: FieldVec<P, A>) {
-		// The buffer handed back here must equal the one already sent.
-		// This channel already copied that data at commit time.
+	fn finalize_oracle(&mut self, _oracle: Self::Oracle, _buffer: FieldVec<P, A>) {
+		// The round's combined buffer was already finalized when it was committed.
 		// So the copy handed back now is simply discarded.
-		//
-		// Once every constituent is handed back, the round is done.
-		// Its combined buffer can now reach the underlying channel.
-		let group = &mut self.groups[self.placements[oracle.index].round];
-		group.n_finalized += 1;
-		if group.n_finalized == group.n_members {
-			let combined_buffer = group
-				.buffer
-				.take()
-				.expect("group buffer present until every constituent is finalized");
-			let outer = group.outer.clone();
-			self.inner.finalize_oracle(outer, combined_buffer);
-		}
 	}
 }
 
