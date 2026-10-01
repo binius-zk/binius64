@@ -7,7 +7,7 @@
 
 use std::ops::DerefMut;
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_iop::channel::{
 	OracleSchedule, OracleSpec,
@@ -109,8 +109,10 @@ where
 	/// The allocator this channel draws its combined and padded buffers from.
 	alloc: A,
 
-	/// Buffers received for the open round, not yet sent to the underlying channel.
-	pending: Vec<FieldVec<P, A>>,
+	/// The open round's combined buffer, filled in as its oracles arrive.
+	///
+	/// Allocated on the round's first oracle and committed on its last.
+	open: Option<FieldVec<P, A>>,
 
 	/// How many oracles have been sent so far.
 	n_sent: usize,
@@ -148,63 +150,10 @@ where
 			schedule,
 			placements: place_oracles(schedule),
 			alloc,
-			pending: Vec::new(),
+			open: None,
 			n_sent: 0,
 			groups: Vec::new(),
 		}
-	}
-
-	/// Commits the open round's buffers as one combined oracle.
-	///
-	/// Called once the round's last oracle has arrived.
-	fn flush(&mut self) {
-		let placements = &self.placements[self.n_sent - self.pending.len()..self.n_sent];
-		let combined_log_len = placements[0].combined_log_len;
-
-		// Walk the round in layout order, largest to smallest.
-		let mut order: Vec<usize> = (0..self.pending.len()).collect();
-		order.sort_by_key(|&k| placements[k].block_index << self.pending[k].log_len());
-
-		// A buffer at least one packed word wide occupies whole words, and nothing else.
-		//
-		// Sorted largest first, those buffers are a prefix of the round.
-		// Their word runs therefore concatenate into exactly the combined layout.
-		let n_whole = order
-			.iter()
-			.take_while(|&&k| self.pending[k].log_len() >= P::LOG_WIDTH)
-			.count();
-
-		// Build the combined store by appending each of those runs once.
-		let n_words = 1 << combined_log_len.saturating_sub(P::LOG_WIDTH);
-		let mut words = self.alloc.alloc::<P>(n_words);
-		for &k in &order[..n_whole] {
-			words.extend_from_slice(self.pending[k].as_ref());
-		}
-
-		// Zero whatever the runs did not cover.
-		//
-		// That is the padding past the round's total, plus any word the narrow tail shares.
-		words.resize(n_words, P::zero());
-		let mut combined = FieldBuffer::new(combined_log_len, words);
-
-		// Buffers narrower than a packed word share one, so they cannot be appended.
-		// Place their scalars individually instead.
-		for &k in &order[n_whole..] {
-			place_block(&mut combined, self.pending[k].as_view(), placements[k].block_index);
-		}
-
-		// Commit the whole round as one oracle on the underlying channel.
-		//
-		// The combined data stays alive in its own round record.
-		// It is still needed once every constituent is handed back.
-		let outer = self.inner.send_oracle(combined.as_view());
-		self.groups.push(Group {
-			outer,
-			buffer: Some(combined),
-			n_members: self.pending.len(),
-			n_finalized: 0,
-		});
-		self.pending.clear();
 	}
 
 	/// Returns the underlying channel.
@@ -238,10 +187,18 @@ where
 	let offset = block_index << n;
 	assert!(offset + (1 << n) <= dst.len(), "pre-condition: the block must fit in the destination");
 
-	// Copy every scalar across.
+	// Copy the block across.
 	// Everywhere else in the destination stays as it was.
-	for i in 0..1usize << n {
-		dst.set(offset + i, src.get(i));
+	if n >= P::LOG_WIDTH {
+		// A source at least one packed word wide occupies whole words, so copy them across.
+		let n_words = 1 << (n - P::LOG_WIDTH);
+		let word_offset = block_index * n_words;
+		dst.as_mut()[word_offset..word_offset + n_words].copy_from_slice(src.as_ref());
+	} else {
+		// A source narrower than a packed word shares one, so place its scalars individually.
+		for i in 0..1usize << n {
+			dst.set(offset + i, src.get(i));
+		}
 	}
 }
 
@@ -313,23 +270,48 @@ where
 		assert!(!remaining.is_empty(), "send_oracle called but no remaining oracle specs");
 		assert_eq!(buffer.log_len(), remaining[0].log_msg_len, "oracle size must match its spec");
 
-		// Copy the data into a buffer this channel owns.
+		let index = self.n_sent;
+		self.n_sent += 1;
+		let Placement {
+			round,
+			block_index,
+			combined_log_len,
+		} = self.placements[index];
+
+		// Copy the data straight into its block of the round's combined buffer.
 		//
 		// The caller's buffer is only borrowed for this call.
 		// Its round may not commit until a later oracle arrives.
-		self.pending
-			.push(FieldBuffer::from_view_in(&self.alloc, buffer));
-		let index = self.n_sent;
-		self.n_sent += 1;
+		let combined = self
+			.open
+			.get_or_insert_with(|| FieldBuffer::zeros_in(&self.alloc, combined_log_len));
+		place_block(combined, buffer, block_index);
 
 		// The last oracle of its round commits the whole round as one oracle.
-		let round = self.placements[index].round;
 		let is_last_of_round = self
 			.placements
 			.get(index + 1)
 			.is_none_or(|next| next.round != round);
 		if is_last_of_round {
-			self.flush();
+			let combined = self
+				.open
+				.take()
+				.expect("open round buffer was just inserted");
+			let n_members = self.placements[..=index]
+				.iter()
+				.rev()
+				.take_while(|p| p.round == round)
+				.count();
+
+			// The combined data stays alive in its own round record.
+			// It is still needed once every constituent is handed back.
+			let outer = self.inner.send_oracle(combined.as_view());
+			self.groups.push(Group {
+				outer,
+				buffer: Some(combined),
+				n_members,
+				n_finalized: 0,
+			});
 		}
 
 		MergeOracle { index }
