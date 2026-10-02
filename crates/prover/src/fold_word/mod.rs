@@ -39,6 +39,7 @@ mod word_axis;
 
 use binius_core::word::Word;
 pub use bit_axis::BitAxisFolder;
+pub(crate) use lookup::BitWeightTables;
 pub use word_axis::WordAxisFolder;
 
 use crate::bit_matrix::WEIGHTS_PER_TABLE;
