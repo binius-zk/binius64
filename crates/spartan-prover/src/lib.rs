@@ -40,7 +40,11 @@ use std::{
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash_prover::ParallelHashSuite;
-use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
+use binius_iop::channel::OracleSchedule;
+use binius_iop_prover::{
+	basefold::compiler::BaseFoldProverCompiler,
+	channel::{IOPProverChannel, merge::MergeProverChannel},
+};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{quadratic_mlecheck_prover, zk_mlecheck},
@@ -94,6 +98,8 @@ where
 	H: ParallelHashSuite,
 {
 	iop_prover: IOPProver<P::Scalar>,
+	/// Every oracle the proof commits, grouped into the rounds each committed as one oracle.
+	oracle_schedule: OracleSchedule,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>>,
 	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
 	/// so blocks freed by one `prove` call are reused by the next.
@@ -360,6 +366,7 @@ where
 
 		Ok(Prover {
 			iop_prover,
+			oracle_schedule: verifier.oracle_schedule().clone(),
 			basefold_compiler,
 			pool: BufferPool::new(),
 			_hash_marker: PhantomData,
@@ -402,10 +409,11 @@ where
 		// their nodes from it too.
 		let alloc = &self.pool;
 		// Create ZK channel (owns the RNG for mask generation), commit the precommit oracle,
-		// and delegate to the IOP prover.
-		let mut channel = self
+		// and delegate to the IOP prover. Each round's oracles are committed as one.
+		let channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng, alloc);
+		let mut channel = MergeProverChannel::new(channel, &self.oracle_schedule, alloc);
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _, _>(witness, &mut rng, &mut channel, &alloc);
@@ -419,7 +427,7 @@ where
 			&mut channel,
 			&alloc,
 		)?;
-		channel.finish();
+		channel.into_inner().finish();
 		Ok(())
 	}
 }

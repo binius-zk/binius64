@@ -3,7 +3,8 @@
 //! ZK-wrapped prover channel that runs an inner proof and then proves the outer
 //! wrapper constraint system.
 //!
-//! [`ZKWrappedProverChannel`] wraps a [`BaseFoldProverChannel`] and records all channel values.
+//! [`ZKWrappedProverChannel`] wraps a [`BaseFoldProverChannel`], behind a [`MergeProverChannel`]
+//! that commits each round's oracles as one, and records all channel values.
 //! On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFold channel and records
 //! each value. After the inner proof is run, [`finish`] replays the recorded interaction through
 //! a caller-provided closure to fill the outer witness, then runs the outer IOP prover.
@@ -17,8 +18,11 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{
-	basefold::channel::{BaseFoldOracle, BaseFoldProverChannel},
-	channel::IOPProverChannel,
+	basefold::channel::BaseFoldProverChannel,
+	channel::{
+		IOPProverChannel,
+		merge::{MergeOracle, MergeProverChannel},
+	},
 	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
@@ -29,7 +33,11 @@ use rand::CryptoRng;
 
 use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
 
-/// A prover channel that wraps a [`BaseFoldProverChannel`] and an outer Spartan IOP prover.
+/// The channel the wrapper commits through: BaseFold, with each round's oracles merged into one.
+type MergedBaseFoldChannel<'a, F, P, NTT, Channel, A> =
+	MergeProverChannel<'a, P, A, BaseFoldProverChannel<'a, F, P, NTT, Channel, A>>;
+
+/// A prover channel that wraps a merged [`BaseFoldProverChannel`] and an outer Spartan IOP prover.
 ///
 /// This channel records all channel values. On
 /// `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFold channel and records each
@@ -47,7 +55,7 @@ where
 	Channel: MerkleIPProverChannel<P::Scalar>,
 	A: Allocator,
 {
-	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, Channel, A>,
+	inner_channel: MergedBaseFoldChannel<'a, P::Scalar, P, NTT, Channel, A>,
 	outer_prover: &'a IOPProver<P::Scalar>,
 	/// Allocator for the outer proof's working buffers, borrowed from the owning prover so it
 	/// outlives this per-proof channel. Used in [`Self::finish`].
@@ -61,7 +69,7 @@ where
 	/// (`precommit_packed`) is purely random — it is the one-time-pad encryption key for the
 	/// outer encrypted transcript (to be wired up in a follow-up; for now the outer circuit has
 	/// no precommit wires that reference it).
-	precommit_oracle: BaseFoldOracle,
+	precommit_oracle: MergeOracle,
 	precommit_packed: FieldVec<P, A>,
 	/// Number of outer oracles still to be committed on `inner_channel` during `finish` (the
 	/// outer prover's non-precommit oracles — private and mask).
@@ -97,15 +105,16 @@ where
 	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 	///   replay the inner verification and fill the outer witness
 	pub fn new(
-		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, Channel, A>,
+		mut inner_channel: MergedBaseFoldChannel<'a, F, P, NTT, Channel, A>,
 		outer_prover: &'a IOPProver<F>,
 		outer_layout: Arc<WitnessLayout<F>>,
 		alloc: &'a A,
 		rng: impl CryptoRng,
 		replay_fn: ReplayFn,
 	) -> Self {
-		let outer_oracle_specs =
-			IOPVerifier::new(outer_prover.constraint_system().clone()).oracle_specs();
+		let outer_schedule =
+			IOPVerifier::new(outer_prover.constraint_system().clone()).oracle_schedule();
+		let outer_oracle_specs = outer_schedule.specs();
 		let all_specs = inner_channel.remaining_oracle_specs();
 		let n_outer = outer_oracle_specs.len();
 		assert!(
@@ -149,11 +158,11 @@ where
 	/// inner verifier) contains a matching precommit wire per key that the outer proof uses to
 	/// decrypt.
 	fn commit_transcript_mask(
-		inner_channel: &mut BaseFoldProverChannel<'a, F, P, NTT, Channel, A>,
+		inner_channel: &mut MergedBaseFoldChannel<'a, F, P, NTT, Channel, A>,
 		outer_prover: &IOPProver<F>,
 		alloc: &A,
 		mut rng: impl CryptoRng,
-	) -> (Vec<F>, BaseFoldOracle, FieldVec<P, A>) {
+	) -> (Vec<F>, MergeOracle, FieldVec<P, A>) {
 		let cs = outer_prover.constraint_system();
 		let keys = repeat_with(|| F::random(&mut rng))
 			.take(cs.n_precommit() as usize)
@@ -222,7 +231,7 @@ where
 		)?;
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
 		// the single combined opening over all committed oracles now.
-		inner_channel.finish();
+		inner_channel.into_inner().finish();
 		Ok(())
 	}
 }
@@ -297,7 +306,7 @@ where
 	Channel: MerkleIPProverChannel<F>,
 	A: Allocator,
 {
-	type Oracle = BaseFoldOracle;
+	type Oracle = MergeOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		let remaining = self.inner_channel.remaining_oracle_specs();
