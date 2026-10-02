@@ -65,4 +65,15 @@ impl<F: BinaryField> BitWeightTables<F> {
 			.map(|(byte, table)| table[byte as usize])
 			.fold(F::ZERO, |acc, contribution| acc + contribution)
 	}
+
+	/// The inner product of the low `n_bytes` bytes of `word` with their weights.
+	///
+	/// The bytes above are skipped, so this is [`Self::fold`] for a word known to be zero there,
+	/// at one lookup per byte read.
+	#[inline]
+	pub fn fold_low_bytes(&self, word: u64, n_bytes: usize) -> F {
+		iter::zip(word.to_le_bytes(), &self.tables[..n_bytes])
+			.map(|(byte, table)| table[byte as usize])
+			.fold(F::ZERO, |acc, contribution| acc + contribution)
+	}
 }
