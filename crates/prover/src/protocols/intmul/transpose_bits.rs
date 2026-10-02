@@ -20,10 +20,6 @@ use binius_utils::rayon::{prelude::*, task_size::IndexedParallelIteratorExt};
 /// ## Preconditions
 ///
 /// * `words.len() <= 1 << n_vars`
-#[cfg_attr(
-	not(test),
-	expect(dead_code, reason = "the switchover rewrite calls it")
-)]
 pub fn transpose_bits<A: Allocator>(alloc: &A, words: &[Word], n_vars: usize) -> A::Vec<Word> {
 	assert!(words.len() <= 1 << n_vars, "words.len() must not exceed 2^n_vars");
 
