@@ -6,7 +6,7 @@ use binius_compute::GlobalAllocator;
 use binius_field::{Field, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, FieldSlice, StructuredBuffer};
+use binius_math::{FieldBuffer, StructuredBuffer};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -39,8 +39,10 @@ where
 	transcript: &'a mut ProverTranscript<Challenger_>,
 	/// Oracle specifications.
 	oracle_specs: Vec<OracleSpec>,
-	/// Number of oracles committed so far.
-	n_committed: usize,
+	/// The scalars of every committed oracle, by index, and `None` while the caller has it out.
+	///
+	/// Stored unpacked because the channel is not generic over the packing; a take repacks them.
+	messages: Vec<Option<Vec<F>>>,
 	/// Next oracle index.
 	next_oracle_index: usize,
 	_f: std::marker::PhantomData<F>,
@@ -64,7 +66,7 @@ where
 		Self {
 			transcript,
 			oracle_specs,
-			n_committed: 0,
+			messages: Vec::new(),
 			next_oracle_index: 0,
 			_f: std::marker::PhantomData,
 		}
@@ -124,7 +126,7 @@ where
 		&self.oracle_specs[self.next_oracle_index..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldBuffer<P>) -> Self::Oracle {
 		let index = self.next_oracle_index;
 		assert!(
 			index < self.oracle_specs.len(),
@@ -146,7 +148,7 @@ where
 			.message()
 			.write_scalar_iter(buffer.iter_scalars());
 
-		self.n_committed += 1;
+		self.messages.push(Some(buffer.iter_scalars().collect()));
 		self.next_oracle_index += 1;
 
 		NaiveOracle { index }
@@ -161,7 +163,7 @@ where
 		// For the naive channel, we write the transparent polynomial to the transcript so the
 		// verifier can read it and check the inner product against the message it already read.
 		let index = oracle.index;
-		assert!(index < self.n_committed, "oracle index {index} out of bounds");
+		assert!(index < self.messages.len(), "oracle index {index} out of bounds");
 
 		let log_msg_len = self.oracle_specs[index].log_msg_len;
 		assert_eq!(
@@ -181,9 +183,16 @@ where
 		let _point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
 	}
 
-	/// Drops the buffer.
-	///
-	/// `send_oracle` already wrote the message to the transcript, so this channel needs no copy of
-	/// it to open the oracle.
-	fn finalize_oracle(&mut self, _oracle: Self::Oracle, _buffer: FieldBuffer<P>) {}
+	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldBuffer<P> {
+		let values = self.messages[oracle.index]
+			.take()
+			.unwrap_or_else(|| panic!("oracle {} is already taken", oracle.index));
+		FieldBuffer::from_values(&values)
+	}
+
+	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldBuffer<P>) {
+		let message = &mut self.messages[oracle.index];
+		assert!(message.is_none(), "oracle {} was not taken", oracle.index);
+		*message = Some(buffer.iter_scalars().collect());
+	}
 }
