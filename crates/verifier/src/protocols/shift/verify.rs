@@ -64,7 +64,7 @@ where
 pub struct VerifyOutput<F> {
 	/// The challenges whose equality indicator weights each operand column in the batch (length
 	/// `log2_ceil` of the column count).
-	operand_batch_challenges: Vec<F>,
+	pub operand_batch_challenges: Vec<F>,
 	/// Challenge point for the witness bit index (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
 	/// Challenge point for the inner shift's amount variables (length `Word::LOG_BITS`).
@@ -88,7 +88,7 @@ pub struct VerifyOutput<F> {
 	/// Challenge for the witness's segment selector variable.
 	pub r_segment: F,
 	/// Final evaluation claim from the sumcheck.
-	eval: F,
+	pub eval: F,
 	/// The claimed witness evaluation at the challenge point.
 	#[getset(get = "pub")]
 	pub witness_eval: F,

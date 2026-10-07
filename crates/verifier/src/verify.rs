@@ -28,9 +28,9 @@ use crate::{
 	protocols::{
 		bitand::{AndCheckOutput, UnivariateSkipOutput, verify_univariate_skip},
 		rerand::{self, OperandClaims},
-		shift::{WiringEvalClaim, WiringInfo},
+		shift::{self, WiringEvalClaim, WiringInfo},
 	},
-	reduction::reduce_constraints,
+	reduction::{ReductionOutput, reduce_constraints, verify_public_eval},
 	ring_switch,
 };
 
@@ -199,14 +199,57 @@ impl IOPVerifier {
 			channel.recv_oracle(self.n_witness_elems(), self.log_witness_elems(), true)?;
 
 		// Reduce every constraint to one claim on the committed trace.
-		let reduction = reduce_constraints(
-			self.constraint_system(),
-			&self.wiring,
-			0,
-			InoutSegment::Public,
-			&public,
-			channel,
-		)?;
+		let cs = self.constraint_system();
+		// A single circuit has no instance coordinates, so `r_rho` is empty.
+		let ReductionOutput {
+			r_x,
+			z_challenge,
+			operand_claims,
+			..
+		} = reduce_constraints(cs, 0, channel)?;
+
+		// Reduce the operand claims to one witness evaluation.
+		let shift_output = {
+			let _guard = tracing::info_span!(
+				"[phase] Verify Shift Reduction",
+				phase = "verify_shift_reduction",
+				perfetto_category = "phase"
+			)
+			.entered();
+			shift::verify::<B128, _>(
+				cs.log_segment_words(InoutSegment::Public),
+				&operand_claims,
+				channel,
+			)?
+		};
+		let shift::VerifyOutput {
+			r_j,
+			r_y,
+			witness_eval,
+			..
+		} = &shift_output;
+
+		// Tie in the public values, then close the shift reduction against them.
+		let wiring = {
+			let _guard = tracing::info_span!(
+				"[phase] Verify Public Input",
+				phase = "verify_public_input",
+				perfetto_category = "phase"
+			)
+			.entered();
+			let public_eval =
+				verify_public_eval(cs, InoutSegment::Public, &public, r_j, r_y, channel)?;
+			let shift_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS).isomorphic::<B128>();
+			shift::check_eval::<B128, _>(
+				&self.wiring,
+				public_eval,
+				&r_x,
+				&shift_domain,
+				&z_challenge,
+				&shift_output,
+				channel,
+			)?
+		};
 
 		// [phase] Ring-Switching + Verify PCS Opening
 		let pcs_guard = tracing::info_span!(
@@ -217,11 +260,12 @@ impl IOPVerifier {
 		.entered();
 
 		// Ring-switching verification of the witness claim.
-		let eval_point = reduction.trace_point();
+		// Without instance coordinates, the trace opens at `r_j || r_y`.
+		let eval_point = [r_j.as_slice(), r_y].concat();
 		let ring_switch::RingSwitchVerifyOutput {
 			eq_r_double_prime,
 			sumcheck_claim,
-		} = ring_switch::verify(reduction.shift.witness_eval().clone(), &eval_point, channel)?;
+		} = ring_switch::verify(witness_eval.clone(), &eval_point, channel)?;
 
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = eval_point[log_packing..].to_vec();
@@ -237,7 +281,7 @@ impl IOPVerifier {
 
 		drop(pcs_guard);
 
-		Ok(reduction.wiring)
+		Ok(wiring)
 	}
 
 	/// Observes the statement, verifies against it, and discharges the wiring claim in the field.

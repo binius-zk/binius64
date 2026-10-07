@@ -44,7 +44,6 @@ use crate::{
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		rerand::RerandOutput,
-		shift::{self, WiringEvalClaim, WiringInfo},
 		zero,
 	},
 	ring_switch::{self, RingSwitchVerifyOutput, eval_rs_eq},
@@ -116,59 +115,46 @@ pub fn padding_scales<E: FieldOps>(cs: &ConstraintSystem, r_x: &[E]) -> [E; 4] {
 	log_rows(cs).map(|log_rows| suffix_scales[log_rows].clone())
 }
 
-/// What [`reduce_constraints`] leaves for the caller: the claim on the committed trace, and the
-/// wiring claim the constraint system is read through.
+/// What [`reduce_constraints`] leaves for the caller: every operation's operand claims, all at one
+/// constraint point, for the shift reduction to take.
 #[derive(Debug)]
-pub struct ReductionOutput<'a, F> {
+pub struct ReductionOutput<F> {
 	/// The instance point every operation is claimed at.
 	///
 	/// Empty for a single circuit.
 	pub r_rho: Vec<F>,
-	/// The shift reduction's output, holding the claimed witness evaluation.
-	pub shift: shift::VerifyOutput<F>,
-	/// The prover's wiring evaluation, still to be tied to the constraint system.
-	pub wiring: WiringEvalClaim<'a, F>,
+	/// The constraint point every operation is claimed at, its matrix padded with empty rows.
+	///
+	/// It has [`log_constraint_point`] coordinates.
+	pub r_x: Vec<F>,
+	/// The univariate challenge folding the bit axis, shared by every operation.
+	pub z_challenge: F,
+	/// One evaluation per operand column, the four operations' runs in [`OPERATION_ARITIES`]
+	/// order.
+	pub operand_claims: Vec<F>,
 }
 
-impl<F: Clone> ReductionOutput<'_, F> {
-	/// The point the committed trace is opened at.
-	///
-	/// The trace's bit index is `[bit | instance | wire]`, low to high:
-	///
-	/// ```text
-	/// r_j     the bit within a word
-	/// r_rho   the instance, empty for a single circuit
-	/// r_y     the committed word
-	/// ```
-	///
-	/// Evaluating the instance coordinates at `r_rho` folds the trace over the batch.
-	/// That fold is what the reduction's witness claim is about.
-	pub fn trace_point(&self) -> Vec<F> {
-		[self.shift.r_j(), &self.r_rho, self.shift.r_y()].concat()
-	}
-}
-
-/// Reduces every constraint of `2^log_instances` instances to one claim on the committed trace.
+/// Reduces every constraint of `2^log_instances` instances to operand claims at one point.
 ///
 /// The reductions run in this order, and the order is load-bearing:
 ///
 /// ```text
-/// IntMul -> BinMul -> BitAnd -> Zero -> shift -> public check
+/// IntMul -> BinMul -> BitAnd -> Zero
 /// ```
+///
+/// The caller then runs the shift reduction on the operand claims, reads the public segment's
+/// evaluation with [`verify_public_eval`], and closes the shift with
+/// [`shift::check_eval`](crate::protocols::shift::check_eval).
 ///
 /// # Arguments
 ///
 /// - `cs`: the single-instance constraint system every instance satisfies.
-/// - `wiring`: `cs`'s wiring matrix, laid out for `inout`.
 /// - `log_instances`: the base-2 logarithm of the instance count, 0 for a single circuit.
-/// - `inout`: which value segment the inout words sit in.
-/// - `public`: the declared public values as the channel carries them, unpadded — the constants,
-///   then the inout values.
 /// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.
 ///
 /// # Errors
 ///
-/// Returns an error if any reduction's sumcheck or final consistency check fails.
+/// Returns an error if any reduction's sumcheck fails.
 ///
 /// # Soundness
 ///
@@ -177,25 +163,19 @@ impl<F: Clone> ReductionOutput<'_, F> {
 /// Committing those evaluations first stops a prover choosing them as a function of it.
 ///
 /// Do not reorder these, and keep the same order in the prover.
-pub fn reduce_constraints<'a, Channel>(
+pub fn reduce_constraints<Channel>(
 	cs: &ConstraintSystem,
-	wiring: &'a WiringInfo,
 	log_instances: usize,
-	inout: InoutSegment,
-	public: &[Channel::Word],
 	channel: &mut Channel,
-) -> Result<ReductionOutput<'a, Channel::Elem>, Error>
+) -> Result<ReductionOutput<Channel::Elem>, Error>
 where
-	Channel: IOPVerifierChannel<B128> + WordIPVerifierChannel<B128>,
+	Channel: IOPVerifierChannel<B128>,
 	Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 {
-	// One base domain shared by the AND-check, the shift, and the operand collapse.
 	// The AND-check's univariate-skip domain spans one dimension above the 64-bit word.
 	let andcheck_domain = BinarySubspace::<B8>::default()
 		.isomorphic::<B128>()
 		.reduce_dim(Word::LOG_BITS + 1);
-	// The shift domain drops that extra dimension.
-	let shift_domain = andcheck_domain.reduce_dim(Word::LOG_BITS);
 
 	// The multiplication columns span every instance's constraints.
 	// So each check runs over `log_instances` more row variables than one instance has.
@@ -299,43 +279,11 @@ where
 	.concat();
 	debug_assert_eq!(operand_claims.len(), OPERATION_ARITIES.iter().sum::<usize>());
 
-	// Reduce the operand claims to one witness evaluation.
-	let shift = {
-		let _guard = tracing::info_span!(
-			"[phase] Verify Shift Reduction",
-			phase = "verify_shift_reduction",
-			perfetto_category = "phase"
-		)
-		.entered();
-		shift::verify::<B128, _>(cs.log_segment_words(inout), &operand_claims, channel)?
-	};
-
-	// Tie in the public values through the public-input consistency check.
-	// The reduction reads them over the layout's power-of-two word count.
-	// Their count need not be a power of two, so they are passed unpadded.
-	let wiring = {
-		let _guard = tracing::info_span!(
-			"[phase] Verify Public Input",
-			phase = "verify_public_input",
-			perfetto_category = "phase"
-		)
-		.entered();
-		let public_eval = verify_public_eval(cs, inout, public, &shift, channel)?;
-		shift::check_eval::<B128, _>(
-			wiring,
-			public_eval,
-			&r_x,
-			&shift_domain,
-			&z_challenge,
-			&shift,
-			channel,
-		)?
-	};
-
 	Ok(ReductionOutput {
 		r_rho: r_rho.to_vec(),
-		shift,
-		wiring,
+		r_x,
+		z_challenge,
+		operand_claims,
 	})
 }
 
@@ -359,18 +307,25 @@ where
 ///
 /// # Returns
 ///
-/// The public segment over the shift's whole index space, which is what [`shift::check_eval`]
-/// reconstructs the trace evaluation from: the claim scaled by the eq-zero factors of the
-/// word-index coordinates above the segment's span.
+/// The public segment over the shift's whole index space, which is what
+/// [`shift::check_eval`](crate::protocols::shift::check_eval) reconstructs the trace evaluation
+/// from: the claim scaled by the eq-zero factors of the word-index coordinates above the segment's
+/// span.
 ///
 /// # Preconditions
 ///
 /// * `r_y` must have at least as many coordinates as the packed segment spans words
-fn verify_public_eval<Channel>(
+///
+/// # Errors
+///
+/// Returns an error if the ring-switch, the sumcheck, or its final check against the public words
+/// fails.
+pub fn verify_public_eval<Channel>(
 	cs: &ConstraintSystem,
 	inout: InoutSegment,
 	public: &[Channel::Word],
-	shift: &shift::VerifyOutput<Channel::Elem>,
+	r_j: &[Channel::Elem],
+	r_y: &[Channel::Elem],
 	channel: &mut Channel,
 ) -> Result<Channel::Elem, Error>
 where
@@ -385,8 +340,7 @@ where
 	let log_packed_words = log_public_elems + LOG_WORDS_PER_ELEM;
 
 	// The claimed evaluation's point: the bit within a word, then the words the segment spans.
-	let r_y = shift.r_y();
-	let eval_point = [shift.r_j(), &r_y[..log_packed_words]].concat();
+	let eval_point = [r_j, &r_y[..log_packed_words]].concat();
 
 	let public_eval = channel.recv_one()?;
 	let RingSwitchVerifyOutput {
