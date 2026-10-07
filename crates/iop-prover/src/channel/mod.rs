@@ -10,7 +10,7 @@ use binius_compute::Allocator;
 use binius_field::PackedField;
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldSlice, FieldVec, StructuredBuffer};
+use binius_math::{FieldVec, StructuredBuffer};
 
 /// Channel for IOP provers that extends the IP prover channel with oracle operations.
 ///
@@ -24,8 +24,9 @@ use binius_math::{FieldSlice, FieldVec, StructuredBuffer};
 ///
 /// The caller must call `send_oracle()` exactly `remaining_oracle_specs().len()` times before
 /// calling `prove_oracle_relation()`. Each oracle buffer must match the corresponding
-/// specification. Every committed oracle must be handed back to the channel exactly once with
-/// `finalize_oracle()`.
+/// specification. The channel owns each oracle buffer from the moment it is sent. A caller that
+/// needs a buffer back borrows it with `take_oracle()` and hands it back with `return_oracle()`
+/// before the opening.
 pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Scalar> {
 	type Oracle: Clone;
 
@@ -34,7 +35,7 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	/// This slice shrinks as oracles are committed via `send_oracle()`.
 	fn remaining_oracle_specs(&self) -> &[OracleSpec];
 
-	/// Commits an oracle to the verifier.
+	/// Commits an oracle to the verifier, taking ownership of its buffer.
 	///
 	/// # Preconditions
 	///
@@ -43,7 +44,24 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	///
 	/// Only the first [`OracleSpec::len`] entries of `buffer` are the prover's content. The rest is
 	/// padding the channel may overwrite arbitrarily.
-	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle;
+	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle;
+
+	/// Lends a committed oracle's buffer back to the caller.
+	///
+	/// The buffer is the data as committed, including anything the channel wrote into it.
+	///
+	/// # Panics
+	///
+	/// Panics if the oracle's interaction round is still open, or if its buffer is already out.
+	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A>;
+
+	/// Hands a buffer obtained from [`Self::take_oracle`] back to the channel.
+	///
+	/// # Preconditions
+	///
+	/// * `buffer` must be the one [`Self::take_oracle`] returned for `oracle`, unchanged.
+	/// * Every taken buffer must be returned before the opening runs.
+	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>);
 
 	/// Generates an opening proof for one oracle linear relation.
 	///
@@ -69,16 +87,4 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 		transparent: StructuredBuffer<P, A::Vec<P>>,
 		claim: P::Scalar,
 	);
-
-	/// Gives ownership of the oracle buffer to the channel.
-	///
-	/// The [`Self::send_oracle`] method takes a borrowed reference to an oracle buffer and returns
-	/// a handle to it. In order to prove the oracle relations without unnecessarily cloning the
-	/// buffer, some channel implementations require ownership of the buffer.
-	///
-	/// # Preconditions
-	///
-	/// * `oracle` must be a valid handle returned by `send_oracle()`, not already finalized.
-	/// * `buffer` must equal the buffer previously committed via `send_oracle()`.
-	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>);
 }

@@ -94,10 +94,14 @@ where
 	// Commit every Y before the reduction, so the logUp challenges bind the commitments.
 	let oracles = tracing::debug_span!("Commit pushforwards").in_scope(|| {
 		pushforwards
-			.iter()
-			.map(|pushforward| channel.send_oracle(pushforward.as_view()))
+			.into_iter()
+			.map(|pushforward| channel.send_oracle(pushforward))
 			.collect::<Vec<_>>()
 	});
+	let pushforwards = oracles
+		.iter()
+		.map(|oracle| channel.take_oracle(oracle.clone()))
+		.collect::<Vec<_>>();
 
 	// Run the reduction over the committed pushforwards and the numerators, viewing the channel as
 	// IP.
@@ -125,7 +129,7 @@ where
 			transparent.into(),
 			table_output.pushforward_claim,
 		);
-		channel.finalize_oracle(oracle, pushforward);
+		channel.return_oracle(oracle, pushforward);
 	}
 
 	LogupProof {
@@ -191,10 +195,14 @@ where
 	let (numerators, pushforwards) = witness::combined_lookers::<A, F, P>(alloc, gamma, &tables);
 	let oracles = tracing::debug_span!("Commit pushforwards").in_scope(|| {
 		pushforwards
-			.iter()
-			.map(|pushforward| channel.send_oracle(pushforward.as_view()))
+			.into_iter()
+			.map(|pushforward| channel.send_oracle(pushforward))
 			.collect::<Vec<_>>()
 	});
+	let pushforwards = oracles
+		.iter()
+		.map(|oracle| channel.take_oracle(oracle.clone()))
+		.collect::<Vec<_>>();
 
 	let pushforward_slices = pushforwards
 		.iter()
@@ -222,7 +230,7 @@ where
 			FieldBuffer::from_view_in(alloc, table.table).into(),
 			open.product_claim,
 		);
-		channel.finalize_oracle(oracle, pushforward);
+		channel.return_oracle(oracle, pushforward);
 	}
 
 	LogupTransparentProof {

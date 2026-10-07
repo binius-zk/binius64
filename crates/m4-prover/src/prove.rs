@@ -115,8 +115,10 @@ impl IOPProver {
 		};
 		let trace_oracle = {
 			let _scope = tracing::debug_span!("Commit trace").entered();
-			channel.send_oracle(trace_packed.as_view())
+			channel.send_oracle(trace_packed)
 		};
+		// Take the committed buffer back for the reductions.
+		let trace_packed = channel.take_oracle(trace_oracle.clone());
 
 		// One base domain shared by the AND-check and the shift, consistent by construction.
 		// The AND-check's univariate-skip domain spans one dimension above the 64-bit word.
@@ -271,7 +273,7 @@ impl IOPProver {
 		// Queue the trace opening against the ring-switch's transparent multilinear.
 		// The final call runs the single combined FRI opening and writes it to the transcript.
 		channel.prove_oracle_relation(trace_oracle.clone(), rs_eq_ind.into(), sumcheck_claim);
-		channel.finalize_oracle(trace_oracle, trace_packed);
+		channel.return_oracle(trace_oracle, trace_packed);
 	}
 }
 

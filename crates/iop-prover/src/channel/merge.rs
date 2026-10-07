@@ -44,7 +44,8 @@ pub struct MergeOracle {
 /// So their combined space is a whole multiple of the current oracle's size.
 ///
 /// A round of a single oracle needs no combining.
-/// It is forwarded unchanged, at zero cost.
+/// It is forwarded unchanged, at zero cost: its buffer moves to the underlying channel, and takes
+/// and returns of it pass straight through.
 ///
 /// A round is masked as a whole, never partly.
 ///
@@ -59,8 +60,9 @@ pub struct MergeOracle {
 /// the boundary.
 /// A real Fiat-Shamir transcript can therefore absorb the commitment before the next challenge.
 ///
-/// The combined buffer is finalized on the underlying channel right after it is committed.
-/// So finalizing a constituent oracle here just drops the buffer handed back.
+/// The underlying channel owns the combined buffer once it is committed.
+/// The constituents' own buffers stay with this channel, which takes each one out once and drops it
+/// when it comes back.
 ///
 /// # Opening
 ///
@@ -103,6 +105,11 @@ where
 
 	/// The underlying channel's handle for every round committed so far, in commit order.
 	groups: Vec<C::Oracle>,
+
+	/// Every oracle's own buffer, in arrival order, while this channel holds it.
+	///
+	/// `None` for an oracle forwarded as a round of its own, and for one taken out.
+	originals: Vec<Option<FieldVec<P, A>>>,
 }
 
 impl<'a, P, A, C> MergeProverChannel<'a, P, A, C>
@@ -137,7 +144,14 @@ where
 			open: None,
 			n_sent: 0,
 			groups: Vec::new(),
+			originals: Vec::new(),
 		}
+	}
+
+	/// Whether the oracle was forwarded to the underlying channel as a round of its own.
+	fn is_forwarded(&self, oracle: MergeOracle) -> bool {
+		self.placements[oracle.index].combined_log_len
+			== self.schedule.specs()[oracle.index].log_msg_len
 	}
 
 	/// Returns the underlying channel.
@@ -245,7 +259,7 @@ where
 		&self.schedule.specs()[self.n_sent..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle {
 		// Every oracle this channel will send is declared up front.
 		//
 		// Reject anything past that count.
@@ -262,14 +276,22 @@ where
 			combined_log_len,
 		} = self.placements[index];
 
-		// Copy the data straight into its block of the round's combined buffer.
+		// A round of its own is forwarded unchanged.
+		let oracle = MergeOracle { index };
+		if self.is_forwarded(oracle) {
+			self.groups.push(self.inner.send_oracle(buffer));
+			self.originals.push(None);
+			return oracle;
+		}
+
+		// Copy the data into its block of the round's combined buffer.
 		//
-		// The caller's buffer is only borrowed for this call.
 		// Its round may not commit until a later oracle arrives.
 		let combined = self
 			.open
 			.get_or_insert_with(|| FieldBuffer::zeros_in(&self.alloc, combined_log_len));
-		place_block(combined, buffer, block_index);
+		place_block(combined, buffer.as_view(), block_index);
+		self.originals.push(Some(buffer));
 
 		// The last oracle of its round commits the whole round as one oracle.
 		let is_last_of_round = self
@@ -281,14 +303,10 @@ where
 				.open
 				.take()
 				.expect("open round buffer was just inserted");
-
-			// This channel owns the combined buffer, so finalize it on the spot.
-			let outer = self.inner.send_oracle(combined.as_view());
-			self.inner.finalize_oracle(outer.clone(), combined);
-			self.groups.push(outer);
+			self.groups.push(self.inner.send_oracle(combined));
 		}
 
-		MergeOracle { index }
+		oracle
 	}
 
 	fn prove_oracle_relation(
@@ -322,9 +340,26 @@ where
 		self.inner.prove_oracle_relation(outer, padded, claim);
 	}
 
-	fn finalize_oracle(&mut self, _oracle: Self::Oracle, _buffer: FieldVec<P, A>) {
-		// The round's combined buffer was already finalized when it was committed.
-		// So the copy handed back now is simply discarded.
+	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A> {
+		let round = self.placements[oracle.index].round;
+		assert!(round < self.groups.len(), "oracle {} is in a round still open", oracle.index);
+		if self.is_forwarded(oracle) {
+			// The round was forwarded, so its buffer is the underlying channel's.
+			self.inner.take_oracle(self.groups[round].clone())
+		} else {
+			self.originals[oracle.index]
+				.take()
+				.unwrap_or_else(|| panic!("oracle {} is already taken", oracle.index))
+		}
+	}
+
+	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
+		// A merged oracle's copy in the combined buffer is what gets opened, so its own buffer is
+		// no longer needed and is dropped here.
+		if self.is_forwarded(oracle) {
+			let outer = self.groups[self.placements[oracle.index].round].clone();
+			self.inner.return_oracle(outer, buffer);
+		}
 	}
 }
 
@@ -436,19 +471,19 @@ mod tests {
 		for sizes in rounds {
 			for _ in *sizes {
 				let (buffer, _, _) = &data[index];
-				oracles.push(merge_prover.send_oracle(buffer.as_view()));
+				oracles.push(merge_prover.send_oracle(buffer.clone()));
 				index += 1;
 			}
 			IPProverChannel::sample(&mut merge_prover);
 		}
-		// Prove every oracle's claim first.
-		// Then hand back every oracle's own witness data.
-		// That matches the order a real prover would follow.
+		// Every oracle's buffer comes back as sent, whether its round was forwarded or merged.
+		for (&oracle, (buffer, _, _)) in iter::zip(&oracles, &data) {
+			let taken = merge_prover.take_oracle(oracle);
+			assert_eq!(&taken, buffer);
+			merge_prover.return_oracle(oracle, taken);
+		}
 		for (&oracle, (_, transparent, claim)) in iter::zip(&oracles, &data) {
 			merge_prover.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
-		}
-		for (&oracle, (buffer, _, _)) in iter::zip(&oracles, &data) {
-			merge_prover.finalize_oracle(oracle, buffer.clone());
 		}
 		merge_prover.into_inner().finish();
 
@@ -584,21 +619,19 @@ mod tests {
 		// Prover side.
 		//
 		// Both oracles arrive in the same round.
-		// All four claims are proved before either oracle is finalized.
+		// All four claims are proved before the channel finishes.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let naive_prover = NaiveProverChannel::new(&mut prover_transcript, coarse_specs.clone());
 		let mut merge_prover = MergeProverChannel::new(naive_prover, &schedule, GlobalAllocator);
 
-		let oracle_1 = merge_prover.send_oracle(buffer_1.as_view());
-		let oracle_2 = merge_prover.send_oracle(buffer_2.as_view());
+		let oracle_1 = merge_prover.send_oracle(buffer_1);
+		let oracle_2 = merge_prover.send_oracle(buffer_2);
 		for (transparent, claim) in &relations_1 {
 			merge_prover.prove_oracle_relation(oracle_1, transparent.clone().into(), *claim);
 		}
 		for (transparent, claim) in &relations_2 {
 			merge_prover.prove_oracle_relation(oracle_2, transparent.clone().into(), *claim);
 		}
-		merge_prover.finalize_oracle(oracle_1, buffer_1);
-		merge_prover.finalize_oracle(oracle_2, buffer_2);
 		merge_prover.into_inner().finish();
 
 		// Verifier side.
@@ -703,7 +736,7 @@ mod tests {
 		let mut data_iter = data.iter();
 		for sizes in rounds {
 			for (buffer, _) in data_iter.by_ref().take(sizes.len()) {
-				oracles.push(merge_prover.send_oracle(buffer.as_view()));
+				oracles.push(merge_prover.send_oracle(buffer.clone()));
 			}
 			IPProverChannel::sample(&mut merge_prover);
 		}
@@ -711,9 +744,6 @@ mod tests {
 			for (transparent, claim) in relations {
 				merge_prover.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
 			}
-		}
-		for (&oracle, (buffer, _)) in iter::zip(&oracles, &data) {
-			merge_prover.finalize_oracle(oracle, buffer.clone());
 		}
 		merge_prover.into_inner().finish();
 

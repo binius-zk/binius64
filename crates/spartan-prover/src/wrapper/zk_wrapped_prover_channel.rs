@@ -26,7 +26,7 @@ use binius_iop_prover::{
 	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
-use binius_math::{FieldSlice, FieldVec, StructuredBuffer, ntt::AdditiveNTT};
+use binius_math::{FieldVec, StructuredBuffer, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_verifier::IOPVerifier;
 use rand::CryptoRng;
@@ -65,12 +65,11 @@ where
 	keys: Vec<P::Scalar>,
 	next_key_idx: usize,
 	interaction: Vec<P::Scalar>,
-	/// Handle to the outer precommit oracle committed at construction time. The buffer
-	/// (`precommit_packed`) is purely random — it is the one-time-pad encryption key for the
-	/// outer encrypted transcript (to be wired up in a follow-up; for now the outer circuit has
-	/// no precommit wires that reference it).
+	/// Handle to the outer precommit oracle committed at construction time. Its buffer is purely
+	/// random — it is the one-time-pad encryption key for the outer encrypted transcript (to be
+	/// wired up in a follow-up; for now the outer circuit has no precommit wires that reference
+	/// it).
 	precommit_oracle: MergeOracle,
-	precommit_packed: FieldVec<P, A>,
 	/// Number of outer oracles still to be committed on `inner_channel` during `finish` (the
 	/// outer prover's non-precommit oracles — private and mask).
 	n_outer_suffix_oracles: usize,
@@ -88,7 +87,8 @@ where
 	///
 	/// Commits the outer prover's precommit oracle on the inner channel as part of construction:
 	/// a random [`FieldBuffer<P>`](binius_math::FieldBuffer) the size of the outer precommit oracle
-	/// segment is sent to the channel and kept for use in [`Self::finish`]. This random buffer is
+	/// segment is sent to the channel, which the outer proof takes it back from in
+	/// [`Self::finish`]. This random buffer is
 	/// the one-time-pad encryption key for the (future) outer encrypted transcript.
 	///
 	/// The inner channel's oracle specs are expected to be laid out as
@@ -133,7 +133,7 @@ where
 			"outer private/mask oracle specs must be the final suffix of channel specs",
 		);
 
-		let (keys, precommit_oracle, precommit_packed) = {
+		let (keys, precommit_oracle) = {
 			let _scope = tracing::debug_span!("Commit Transcript Mask").entered();
 			Self::commit_transcript_mask(&mut inner_channel, outer_prover, alloc, rng)
 		};
@@ -148,7 +148,6 @@ where
 			next_key_idx: 0,
 			interaction: Vec::new(),
 			precommit_oracle,
-			precommit_packed,
 			n_outer_suffix_oracles: suffix_len,
 		}
 	}
@@ -162,7 +161,7 @@ where
 		outer_prover: &IOPProver<F>,
 		alloc: &A,
 		mut rng: impl CryptoRng,
-	) -> (Vec<F>, MergeOracle, FieldVec<P, A>) {
+	) -> (Vec<F>, MergeOracle) {
 		let cs = outer_prover.constraint_system();
 		let keys = repeat_with(|| F::random(&mut rng))
 			.take(cs.n_precommit() as usize)
@@ -176,8 +175,8 @@ where
 			&precommit_blinding,
 			&mut rng,
 		);
-		let precommit_oracle = inner_channel.send_oracle(precommit_packed.as_view());
-		(keys, precommit_oracle, precommit_packed)
+		let precommit_oracle = inner_channel.send_oracle(precommit_packed);
+		(keys, precommit_oracle)
 	}
 
 	fn next_key(&mut self) -> F {
@@ -206,7 +205,6 @@ where
 			keys,
 			interaction,
 			precommit_oracle,
-			precommit_packed,
 			..
 		} = self;
 
@@ -224,7 +222,6 @@ where
 		outer_prover.prove::<P, _, _>(
 			&witness,
 			precommit_oracle,
-			precommit_packed,
 			rng,
 			&mut inner_channel,
 			alloc,
@@ -314,7 +311,7 @@ where
 		&remaining[..n_inner_remaining]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"send_oracle called but no inner oracle specs remaining"
@@ -338,7 +335,11 @@ where
 			.prove_oracle_relation(oracle, transparent, claim);
 	}
 
-	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		self.inner_channel.finalize_oracle(oracle, buffer);
+	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A> {
+		self.inner_channel.take_oracle(oracle)
+	}
+
+	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
+		self.inner_channel.return_oracle(oracle, buffer);
 	}
 }

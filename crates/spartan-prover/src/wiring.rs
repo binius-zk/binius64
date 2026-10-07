@@ -477,7 +477,7 @@ mod tests {
 			NaiveProverChannel::<B128, _>::new(&mut prover_transcript, oracle_specs.clone());
 
 		// Send private witness oracle
-		let witness_oracle = prover_channel.send_oracle(private_buf.as_view());
+		let witness_oracle = prover_channel.send_oracle(private_buf);
 
 		// Sample lambda
 		let lambda: B128 = prover_channel.sample();
@@ -505,7 +505,6 @@ mod tests {
 			wiring_poly.clone().into(),
 			trace_claim,
 		);
-		prover_channel.finalize_oracle(witness_oracle, private_buf);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();

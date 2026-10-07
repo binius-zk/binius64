@@ -55,7 +55,7 @@ struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 	/// The Merkle commitment handle for query proofs, owning the committed tree.
 	commitment: C,
 	/// The committed multilinear message `pi_i`, backed by the caller's allocator. Handed over by
-	/// [`IOPProverChannel::finalize_oracle`], and `None` until then.
+	/// [`IOPProverChannel::send_oracle`], and `None` while the caller has it out.
 	message: Option<FieldBuffer<P, Data>>,
 }
 
@@ -234,7 +234,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	);
 
 	// Take ownership of the committed messages π_i, leaving the masks and codewords in place. Every
-	// committed oracle must have been handed back with `finalize_oracle`.
+	// taken oracle must have been handed back with `return_oracle`.
 	let mut messages = committed_oracles
 		.iter_mut()
 		.enumerate()
@@ -242,7 +242,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 			oracle
 				.message
 				.take()
-				.unwrap_or_else(|| panic!("oracle {index} was committed but never finalized"))
+				.unwrap_or_else(|| panic!("oracle {index} was taken but never returned"))
 		})
 		.collect::<Vec<_>>();
 
@@ -640,7 +640,7 @@ where
 		&self.oracle_specs[self.queue.len()..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle {
 		let remaining = self.remaining_oracle_specs();
 		assert!(!remaining.is_empty(), "send_oracle called but no remaining oracle specs");
 
@@ -693,7 +693,7 @@ where
 			mask,
 			codeword,
 			commitment,
-			message: None,
+			message: Some(buffer),
 		});
 		self.queue.push(Vec::new());
 
@@ -720,16 +720,17 @@ where
 		self.queue[oracle.index].push(QueuedRelation { transparent, claim });
 	}
 
-	fn finalize_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		let committed = self
-			.committed_oracles
-			.get_mut(oracle.index)
-			.unwrap_or_else(|| panic!("oracle index {} out of bounds", oracle.index));
-		assert!(
-			committed.message.replace(buffer).is_none(),
-			"oracle {} finalized twice",
-			oracle.index
-		);
+	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A> {
+		self.committed_oracles[oracle.index]
+			.message
+			.take()
+			.unwrap_or_else(|| panic!("oracle {} is already taken", oracle.index))
+	}
+
+	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
+		let message = &mut self.committed_oracles[oracle.index].message;
+		assert!(message.is_none(), "oracle {} was not taken", oracle.index);
+		*message = Some(buffer);
 	}
 }
 
@@ -832,11 +833,10 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		let oracle = prover_channel.send_oracle(buffer.as_view());
+		let oracle = prover_channel.send_oracle(buffer);
 		assert_eq!(oracle.index, 0);
 
 		prover_channel.prove_oracle_relation(oracle, transparent_poly.clone().into(), eval_claim);
-		prover_channel.finalize_oracle(oracle, buffer);
 		prover_channel.finish();
 
 		// === VERIFIER SIDE ===
@@ -903,8 +903,8 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		let oracle_1 = prover_channel.send_oracle(buffer_1.as_view());
-		let oracle_2 = prover_channel.send_oracle(buffer_2.as_view());
+		let oracle_1 = prover_channel.send_oracle(buffer_1);
+		let oracle_2 = prover_channel.send_oracle(buffer_2);
 
 		prover_channel.prove_oracle_relation(
 			oracle_1,
@@ -916,8 +916,6 @@ mod tests {
 			transparent_poly_2.clone().into(),
 			eval_claim_2,
 		);
-		prover_channel.finalize_oracle(oracle_1, buffer_1);
-		prover_channel.finalize_oracle(oracle_2, buffer_2);
 		prover_channel.finish();
 
 		// === VERIFIER SIDE ===
@@ -1003,11 +1001,10 @@ mod tests {
 
 		let oracles: Vec<_> = data
 			.iter()
-			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.clone()))
 			.collect();
-		for (oracle, (buffer, transparent, claim)) in iter::zip(oracles, &data) {
+		for (oracle, (_, transparent, claim)) in iter::zip(oracles, &data) {
 			prover_channel.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
-			prover_channel.finalize_oracle(oracle, buffer.clone());
 		}
 		prover_channel.finish();
 
@@ -1092,11 +1089,10 @@ mod tests {
 
 		let oracles: Vec<_> = data
 			.iter()
-			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.clone()))
 			.collect();
-		for (oracle, (buffer, transparent, claim)) in iter::zip(oracles, &data) {
+		for (oracle, (_, transparent, claim)) in iter::zip(oracles, &data) {
 			prover_channel.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
-			prover_channel.finalize_oracle(oracle, buffer.clone());
 		}
 		prover_channel.finish();
 
@@ -1344,7 +1340,7 @@ mod tests {
 
 		let oracles = data
 			.iter()
-			.map(|(buffer, _)| prover_channel.send_oracle(buffer.as_view()))
+			.map(|(buffer, _)| prover_channel.send_oracle(buffer.clone()))
 			.collect::<Vec<_>>();
 		for &(index, round) in &arrivals {
 			let (transparent, claim) = &data[index].1[round];
@@ -1353,9 +1349,6 @@ mod tests {
 				transparent.clone().into(),
 				*claim,
 			);
-		}
-		for (oracle, (buffer, _)) in iter::zip(&oracles, &data) {
-			prover_channel.finalize_oracle(*oracle, buffer.clone());
 		}
 		prover_channel.finish();
 
