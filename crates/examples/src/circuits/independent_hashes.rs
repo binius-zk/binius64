@@ -248,7 +248,8 @@ impl ExampleCircuit for IndependentKeccakPermutations {
 
 fn next_block(rng: &mut StdRng) -> [u8; 64] {
 	let mut block = [0; 64];
-	for chunk in block.chunks_exact_mut(8) {
+	let (chunks, _) = block.as_chunks_mut::<8>();
+	for chunk in chunks {
 		chunk.copy_from_slice(&rng.next_u64().to_le_bytes());
 	}
 	block

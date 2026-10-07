@@ -531,7 +531,8 @@ mod tests {
 		// composed table the two slots span holds `2^24` entries and is never formed — this walks
 		// the one row per term instead, which is all the inner product reads.
 		let segment_inner_product = |rows: &[B128], enc: &DenseShiftEncoding| {
-			iter::zip(enc.shift_indices(), rows.chunks_exact(Word::BITS))
+			let (row_chunks, _) = rows.as_chunks::<{ Word::BITS }>();
+			iter::zip(enc.shift_indices(), row_chunks)
 				.map(|(quadruple, row)| {
 					let (outer_variant, outer_amount) = decode_shift(quadruple >> LOG_SHIFT_COUNT);
 					let (inner_variant, inner_amount) = decode_shift(quadruple % SHIFT_COUNT);

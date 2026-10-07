@@ -45,6 +45,7 @@ where
 
 	// The packed elements the columns fill whole. `chunks_exact` stops at the last of them, so
 	// every lane this loop packs is a real row.
+	#[allow(clippy::chunks_exact_to_as_chunks)] // `P::WIDTH` is not usable as a const generic arg
 	let (lo_chunks, hi_chunks) = (lo.chunks_exact(P::WIDTH), hi.chunks_exact(P::WIDTH));
 	let (lo_tail, hi_tail) = (lo_chunks.remainder(), hi_chunks.remainder());
 	values.extend(

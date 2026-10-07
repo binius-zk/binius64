@@ -230,7 +230,8 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let inputs: Vec<Wire> = (0..2 * n_gates).map(|_| builder.add_inout()).collect();
 		let filler: Vec<Wire> = (0..n_filler).map(|_| builder.add_witness()).collect();
-		for (gate, pair) in inputs.chunks_exact(2).enumerate() {
+		let (pairs, _) = inputs.as_chunks::<2>();
+		for (gate, pair) in pairs.iter().enumerate() {
 			// The filler rides on the first gate's left operand, so every filler wire is read.
 			let lhs = if gate == 0 {
 				filler

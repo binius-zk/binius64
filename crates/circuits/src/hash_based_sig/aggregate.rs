@@ -281,8 +281,9 @@ impl CommittedMultiSigWires {
 			.map(|&(public_key, _)| public_key)
 			.collect();
 		let digest = signer_set_digest(&public_keys);
-		for (&wire, chunk) in iter::zip(&self.signer_set, digest.chunks_exact(4)) {
-			let word = u32::from_le_bytes(chunk.try_into().expect("a chunk is four bytes"));
+		let (chunks, _) = digest.as_chunks::<4>();
+		for (&wire, &chunk) in iter::zip(&self.signer_set, chunks) {
+			let word = u32::from_le_bytes(chunk);
 			w[wire] = Word::from_u64(word as u64);
 		}
 	}

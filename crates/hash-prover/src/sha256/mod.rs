@@ -123,7 +123,8 @@ fn min_batches_per_task(batch: usize) -> usize {
 #[inline]
 fn be_digest(state: &[u32; 8]) -> Output<Sha256> {
 	let mut digest = Output::<Sha256>::default();
-	for (chunk, word) in digest.chunks_exact_mut(4).zip(state) {
+	let (chunks, _) = digest.as_chunks_mut::<4>();
+	for (chunk, word) in chunks.iter_mut().zip(state) {
 		chunk.copy_from_slice(&word.to_be_bytes());
 	}
 	digest
@@ -149,7 +150,8 @@ fn compress_node_pairs<const N: usize>(
 ) {
 	// Pack each pair into one 64-byte message block: bytes 0..32 left child, 32..64 right child.
 	let mut blocks = [[0u8; BLOCK_LEN]; N];
-	for (block, pair) in blocks.iter_mut().zip(inputs.chunks_exact(2)) {
+	let (pairs, _) = inputs.as_chunks::<2>();
+	for (block, pair) in blocks.iter_mut().zip(pairs) {
 		block[..DIGEST_LEN].copy_from_slice(&pair[0]);
 		block[DIGEST_LEN..].copy_from_slice(&pair[1]);
 	}

@@ -227,7 +227,8 @@ fn broadcast_iv<const N: usize>() -> [[u32; N]; 8] {
 #[inline(always)]
 fn serialize_cv_lane<const N: usize>(cv: &[[u32; N]; 8], lane: usize) -> [u8; OUT_LEN] {
 	let mut digest = [0u8; OUT_LEN];
-	for (w, chunk) in digest.chunks_exact_mut(4).enumerate() {
+	let (chunks, _) = digest.as_chunks_mut::<4>();
+	for (w, chunk) in chunks.iter_mut().enumerate() {
 		chunk.copy_from_slice(&cv[w][lane].to_le_bytes());
 	}
 	digest
@@ -691,7 +692,8 @@ mod tests {
 		// Distinct values are what makes a swapped row or lane show up as a wrong value.
 		let mut blocks = [[0u8; BLOCK_LEN]; 16];
 		for (lane, block) in blocks.iter_mut().enumerate() {
-			for (w, word) in block.chunks_exact_mut(4).enumerate() {
+			let (words, _) = block.as_chunks_mut::<4>();
+			for (w, word) in words.iter_mut().enumerate() {
 				word.copy_from_slice(&((lane * 16 + w) as u32).to_le_bytes());
 			}
 		}

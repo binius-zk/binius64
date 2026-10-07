@@ -507,8 +507,9 @@ mod tests {
 			let mut layer = tree.layer(log_len).unwrap().to_vec();
 			let mut expected_layers = vec![layer.clone()];
 			while layer.len() > 1 {
-				layer = layer
-					.chunks_exact(2)
+				let (pairs, _) = layer.as_chunks::<2>();
+				layer = pairs
+					.iter()
 					.map(|pair| compression.compress([pair[0], pair[1]]))
 					.collect();
 				expected_layers.push(layer.clone());

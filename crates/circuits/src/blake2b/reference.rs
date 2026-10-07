@@ -30,8 +30,9 @@ pub const fn g(v: &mut [u64; 16], a: usize, b: usize, c: usize, d: usize, x: u64
 /// Convert bytes to 64-bit words (little-endian)
 pub fn bytes_to_words(bytes: &[u8]) -> [u64; 16] {
 	let mut words = [0u64; 16];
-	for (i, chunk) in bytes.chunks_exact(8).enumerate() {
-		words[i] = u64::from_le_bytes(chunk.try_into().unwrap());
+	let (chunks, _) = bytes.as_chunks::<8>();
+	for (i, chunk) in chunks.iter().enumerate() {
+		words[i] = u64::from_le_bytes(*chunk);
 	}
 	words
 }

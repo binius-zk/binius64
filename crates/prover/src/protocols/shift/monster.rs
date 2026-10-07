@@ -190,6 +190,8 @@ where
 	) {
 		for (amount, packed_row) in block.chunks_exact_mut(row_packed_len).enumerate() {
 			shift_operator_row(variant, amount, &mut row, psi);
+			#[allow(clippy::chunks_exact_to_as_chunks)]
+			// `P::WIDTH` is not usable as a const generic arg
 			for (slot, chunk) in iter::zip(packed_row, row.chunks_exact(P::WIDTH)) {
 				slot.write(P::from_scalars(chunk.iter().copied()));
 			}
