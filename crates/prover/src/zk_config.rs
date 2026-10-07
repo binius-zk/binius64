@@ -12,7 +12,10 @@ use binius_compute::BufferPool;
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment, ValueVec};
 use binius_field::{Ghash128b as B128, PackedField};
 use binius_hash_prover::ParallelHashSuite;
-use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
+use binius_iop::channel::OracleSchedule;
+use binius_iop_prover::{
+	basefold::compiler::BaseFoldProverCompiler, channel::merge::MergeProverChannel,
+};
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
@@ -44,6 +47,8 @@ where
 	/// Setup skips deep-cloning the layout, and each `prove` shares it with a reference-count
 	/// bump.
 	outer_layout: Arc<WitnessLayout<B128>>,
+	/// Every oracle of the inner and outer proofs, grouped into the rounds each committed as one.
+	oracle_schedule: OracleSchedule,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>>,
 	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
 	/// so blocks freed by one `prove` call are reused by the next. The inner IOP proof and the
@@ -110,6 +115,7 @@ where
 			inner_iop_verifier,
 			outer_iop_prover,
 			outer_layout,
+			oracle_schedule: zk_verifier.oracle_schedule().clone(),
 			basefold_compiler,
 			pool: BufferPool::new(),
 			_hash_marker: PhantomData,
@@ -146,7 +152,7 @@ where
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng, alloc);
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
-			basefold_channel,
+			MergeProverChannel::new(basefold_channel, &self.oracle_schedule, alloc),
 			&self.outer_iop_prover,
 			Arc::clone(&self.outer_layout),
 			&alloc,

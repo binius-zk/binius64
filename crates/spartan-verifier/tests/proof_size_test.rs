@@ -3,7 +3,9 @@
 use binius_field::Ghash128b as B128;
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	channel::{IOPVerifierChannel, size_tracking::SizeTrackingChannel},
+	channel::{
+		IOPVerifierChannel, merge::MergeVerifierChannel, size_tracking::SizeTrackingChannel,
+	},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::channel::IPVerifierChannel;
@@ -45,9 +47,10 @@ fn test_ip_proof_size() {
 	// The size tracker is the Merkle channel, with the real reduction running on top.
 	// So every commitment, branch and leaf the opening asks for is counted as it happens.
 	let merkle_scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
-	let mut channel = verifier
+	let channel = verifier
 		.iop_compiler()
 		.create_channel(SizeTrackingChannel::new(&merkle_scheme));
+	let mut channel = MergeVerifierChannel::new(channel, verifier.oracle_schedule());
 	let public = vec![B128::default(); 1 << cs.log_public()];
 	let public_elems = channel.observe_many(&public);
 	let precommit_oracle = channel
@@ -58,6 +61,7 @@ fn test_ip_proof_size() {
 		.verify(precommit_oracle, &public_elems, &mut channel)
 		.expect("verify with size tracking channel should succeed");
 	let proof_size = channel
+		.into_inner()
 		.finish()
 		.expect("the opening should verify against all-zero values")
 		.proof_size();
@@ -71,11 +75,12 @@ fn test_ip_proof_size() {
 	// The power chain x^2..x^7 is public-derivable (x and y are inout), so those wires are
 	// `Derived` and emit no mul constraints — only `assert_eq(x^7, y)` survives.
 	//
-	// This circuit commits three oracles; FRI opens each against its own commitment.
+	// This circuit commits three oracles with no challenge between them, so they form one round
+	// and are committed and opened as one oracle.
 	//
 	// Both committed segments carry dummy constraints, so this one-constraint circuit pads to
 	// eight multiplication constraints rather than four. That extra variable costs one mulcheck
 	// round. A circuit with real constraints absorbs the two extra ones without moving the
 	// power-of-two rounding at all.
-	assert_eq!(proof_size, 73968, "proof size regression");
+	assert_eq!(proof_size, 61680, "proof size regression");
 }

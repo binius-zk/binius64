@@ -7,11 +7,17 @@ use binius_field::{Field, Ghash128b as B128, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
-	channel::IOPVerifierChannel,
+	channel::{
+		IOPVerifierChannel,
+		merge::MergeVerifierChannel,
+		oracle_setup::{DummyElem, OracleSetupChannel},
+	},
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
+use binius_iop_prover::{
+	basefold::compiler::BaseFoldProverCompiler, channel::merge::MergeProverChannel,
+};
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly};
@@ -87,25 +93,42 @@ fn test_zk_wrapped_prove_verify() {
 	let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
 	let outer_layout = Arc::new(outer_layout.with_blinding(*outer_cs.blinding_info()));
 
-	// === Step 5: Make combined proof compiler (inner + outer oracle specs) ===
+	// === Step 5: Make combined proof compiler (inner + outer oracle schedule) ===
 	let outer_iop_verifier = IOPVerifier::new(outer_cs.clone());
 	let outer_iop_prover = IOPProver::new(outer_cs);
 
 	let merkle_scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
 
 	// Transcript layout: outer precommit oracle first (committed at wrapper construction),
-	// then all inner oracles, then the remaining outer oracles (private, mask).
-	let outer_oracle_specs = outer_iop_verifier.oracle_specs();
-	let combined_oracle_specs = [
-		vec![outer_oracle_specs[0]],
-		inner_iop_verifier.oracle_specs(),
-		outer_oracle_specs[1..].to_vec(),
-	]
-	.concat();
+	// then all inner oracles, then the remaining outer oracles (private, mask). Replaying that
+	// sequence against one setup channel records where each round ends.
+	let inner_log_precommit = inner_cs.log_precommit() as usize;
+	let combined_schedule = {
+		let mut channel = OracleSetupChannel::new(true);
+		for log_precommit in [
+			outer_iop_verifier.constraint_system().log_precommit() as usize,
+			inner_log_precommit,
+		] {
+			<OracleSetupChannel as IOPVerifierChannel<B128>>::recv_oracle(
+				&mut channel,
+				log_precommit,
+				true,
+			)
+			.unwrap();
+		}
+		let inner_public = vec![DummyElem::<B128>::default(); inner_public_size];
+		let _ = inner_iop_verifier.verify((), &inner_public, &mut channel);
+		let outer_public = vec![
+			DummyElem::<B128>::default();
+			1 << outer_iop_verifier.constraint_system().log_public()
+		];
+		let _ = outer_iop_verifier.verify((), &outer_public, &mut channel);
+		channel.into_oracle_schedule()
+	};
 
 	let zk_basefold_compiler = BaseFoldVerifierCompiler::new(
 		&merkle_scheme,
-		combined_oracle_specs,
+		combined_schedule.merged_specs(),
 		log_inv_rate,
 		n_test_queries,
 		&MinProofSizeStrategy,
@@ -144,7 +167,7 @@ fn test_zk_wrapped_prove_verify() {
 			GlobalAllocator,
 		);
 	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
-		basefold_channel,
+		MergeProverChannel::new(basefold_channel, &combined_schedule, GlobalAllocator),
 		&outer_iop_prover,
 		Arc::clone(&outer_layout),
 		&GlobalAllocator,
@@ -198,7 +221,7 @@ fn test_zk_wrapped_prove_verify() {
 	let verifier_channel = zk_basefold_compiler
 		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(&mut verifier_transcript);
 	let mut wrapped_verifier_channel = ZKWrappedVerifierChannel::new(
-		verifier_channel,
+		MergeVerifierChannel::new(verifier_channel, &combined_schedule),
 		&outer_iop_verifier,
 		Arc::clone(&outer_layout),
 	)
@@ -209,7 +232,7 @@ fn test_zk_wrapped_prove_verify() {
 
 	// Run the inner IOP verify through the wrapped channel.
 	let inner_precommit_oracle = wrapped_verifier_channel
-		.recv_oracle(outer_oracle_specs[0].log_msg_len, true)
+		.recv_oracle(inner_log_precommit, true)
 		.unwrap();
 	inner_iop_verifier
 		.verify(inner_precommit_oracle, &inner_public_elems, &mut wrapped_verifier_channel)

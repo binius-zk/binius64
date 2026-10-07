@@ -41,7 +41,8 @@ use binius_iop::{
 	basefold,
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{
-		IOPVerifierChannel, OracleSpec,
+		IOPVerifierChannel, OracleSchedule,
+		merge::MergeVerifierChannel,
 		oracle_setup::{DummyElem, OracleSetupChannel},
 	},
 	fri::{self, MinProofSizeStrategy},
@@ -94,6 +95,8 @@ where
 	H: HashSuite,
 {
 	iop_verifier: IOPVerifier<F>,
+	/// Every oracle the proof commits, grouped into the rounds each committed as one oracle.
+	oracle_schedule: OracleSchedule,
 	/// BaseFold ZK compiler for creating verifier channels.
 	basefold_compiler: BaseFoldVerifierCompiler<F>,
 	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
@@ -110,16 +113,17 @@ impl<F: Field> IOPVerifier<F> {
 		&self.constraint_system
 	}
 
-	/// Returns the oracle specs for the IOP channel.
+	/// Returns the oracle schedule for the IOP channel.
 	///
-	/// These describe the oracles (witness and mask) that the prover commits to.
+	/// This describes the oracles (precommit, witness and mask) that the prover commits to, grouped
+	/// into the rounds they are committed in.
 	///
-	/// The specs are derived by replaying the oracle-receiving sequence against an
+	/// The schedule is derived by replaying the oracle-receiving sequence against an
 	/// [`OracleSetupChannel`] (which records each `recv_oracle` without doing real verification),
 	/// rather than hardcoding it. IronSpartan proofs are always zero-knowledge. The precommit
 	/// oracle is received by the outer [`Verifier::verify`] before it delegates to
 	/// [`Self::verify`], so it is recorded here first to match that order.
-	pub fn oracle_specs(&self) -> Vec<OracleSpec>
+	pub fn oracle_schedule(&self) -> OracleSchedule
 	where
 		F: BinaryField,
 	{
@@ -136,9 +140,9 @@ impl<F: Field> IOPVerifier<F> {
 		.expect("OracleSetupChannel::recv_oracle is infallible");
 		let public = vec![DummyElem::<F>::default(); 1 << cs.log_public()];
 		// Discarded: the setup channel performs no real verification; we only read back the
-		// recorded oracle specs.
+		// recorded oracle schedule.
 		let _ = self.verify((), &public, &mut channel);
-		channel.into_oracle_specs()
+		channel.into_oracle_schedule()
 	}
 
 	/// Verifies a proof using an IOP channel.
@@ -256,14 +260,14 @@ where
 		let constraint_system = ConstraintSystemPadded::new(constraint_system, blinding_info);
 
 		let iop_verifier = IOPVerifier::new(constraint_system);
-		let oracle_specs = iop_verifier.oracle_specs();
+		let oracle_schedule = iop_verifier.oracle_schedule();
 
 		let merkle_scheme = BinaryMerkleTreeScheme::<F, H>::new();
 
 		// Create the BaseFold ZK compiler for IOP verification
 		let basefold_compiler = BaseFoldVerifierCompiler::new(
 			&merkle_scheme,
-			oracle_specs,
+			oracle_schedule.merged_specs(),
 			log_inv_rate,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -271,6 +275,7 @@ where
 
 		Ok(Self {
 			iop_verifier,
+			oracle_schedule,
 			basefold_compiler,
 			_hash_marker: PhantomData,
 		})
@@ -283,6 +288,11 @@ where
 
 	pub const fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		self.iop_verifier.constraint_system()
+	}
+
+	/// Returns the oracle schedule; the BaseFold compiler is configured with its merged specs.
+	pub const fn oracle_schedule(&self) -> &OracleSchedule {
+		&self.oracle_schedule
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
@@ -310,14 +320,16 @@ where
 
 		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify. The
 		// IOP verifier only queues the oracle relations; `finish` runs the single combined opening.
-		let mut channel = self
+		// Each round's oracles are committed as one.
+		let channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
+		let mut channel = MergeVerifierChannel::new(channel, &self.oracle_schedule);
 		let precommit_oracle =
 			channel.recv_oracle(self.constraint_system().log_precommit() as usize, true)?;
 		self.iop_verifier
 			.verify(precommit_oracle, public, &mut channel)?;
-		channel.finish()?;
+		channel.into_inner().finish()?;
 		Ok(())
 	}
 }
