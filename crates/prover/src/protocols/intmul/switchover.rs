@@ -14,7 +14,7 @@ use binius_field::{
 	},
 };
 use binius_math::{
-	FieldBuffer, FieldSliceMut, FieldVec,
+	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
 	bit_reverse::reverse_bits,
 	multilinear::{eq::eq_ind_partial_eval_scalars, fold::fold_highest_var_inplace},
 };
@@ -43,36 +43,32 @@ use crate::fold_word::BitAxisFolder;
 /// `hi_rest` the low `h - r` bits of `hi`. The `2^r` bound rows of `hi_rest` sit at bits
 /// `[g * 2^r, (g + 1) * 2^r)` of word `b` of block `lo`, with `g = bitrev_{h-r}(hi_rest)`, and the
 /// bit at offset `p` there carries the tensor weight `p`.
-#[cfg_attr(
-	not(test),
-	expect(
-		dead_code,
-		reason = "the selector mlecheck switches over to it in BINIUS-679"
-	)
-)]
 pub struct BinarySwitchover<'alloc, P: PackedField, A: Allocator> {
 	alloc: &'alloc A,
 	n_vars: usize,
 	/// The challenges bound so far.
 	challenges: Vec<P::Scalar>,
-	state: SwitchoverState<P, A>,
+	state: SwitchoverState<A::Vec<Word>, FieldVec<P, A>>,
 }
 
-/// The selectors before and after the switchover.
-enum SwitchoverState<P: PackedField, A: Allocator> {
+/// The selectors before and after the switchover, owned or borrowed.
+enum SwitchoverState<Blocks, Folded> {
 	/// One block of `Word::BITS` words per column, from [`transpose_bits`].
-	Pre { blocks: A::Vec<Word> },
+	Pre { blocks: Blocks },
 	/// The partial evaluations of all 64 selectors, element `lo * 64 + b`.
-	Post(FieldVec<P, A>),
+	Post(Folded),
 }
 
-#[cfg_attr(
-	not(test),
-	expect(
-		dead_code,
-		reason = "the selector mlecheck switches over to it in BINIUS-679"
-	)
-)]
+/// A borrowed view of the selectors' current partial evaluations.
+///
+/// Unlike the [`BinarySwitchover`] it borrows from, it is shared across threads whatever the
+/// allocator's buffers are.
+pub struct Selectors<'a, P: PackedField> {
+	n_vars: usize,
+	challenges: &'a [P::Scalar],
+	state: SwitchoverState<&'a [Word], FieldSlice<'a, P>>,
+}
+
 impl<'alloc, F, P, A> BinarySwitchover<'alloc, P, A>
 where
 	F: BinaryField,
@@ -108,98 +104,19 @@ where
 		}
 	}
 
-	/// Writes the two halves of the `chunk_index`-th aligned chunk of `2^chunk_vars` values of
-	/// selector `selector`'s current partial evaluation to `scratch`: its highest variable clear,
-	/// then set.
-	///
-	/// ## Preconditions
-	///
-	/// * `chunk_vars` is at least `Word::LOG_BITS` and below the remaining variable count
-	/// * both scratch buffers hold `2^chunk_vars` values
-	pub fn fill_halves(
-		&self,
-		selector: usize,
-		chunk_vars: usize,
-		chunk_index: usize,
-		scratch: [FieldSliceMut<'_, P>; 2],
-	) {
-		let half_vars = self.n_vars - self.challenges.len() - 1;
-		assert!(Word::LOG_BITS <= chunk_vars && chunk_vars <= half_vars);
-		assert!(scratch.iter().all(|half| half.log_len() == chunk_vars));
-
-		let start = chunk_index << chunk_vars;
-		match &self.state {
-			// Round `r` reads `2^r`-bit groups of a word, so each round has its own underlier.
-			SwitchoverState::Pre { blocks } => match self.challenges.len() {
-				// A one-bit group needs no lookup: its value is the bit itself.
-				0 => {
-					self.fill_groups::<U1, _>(blocks, selector, half_vars, start, scratch, |bit| {
-						if bit.val() == 1 { F::ONE } else { F::ZERO }
-					});
-				}
-				1 => self.fill_lookups::<U2, u8>(blocks, selector, half_vars, start, scratch),
-				2 => self.fill_lookups::<U4, u8>(blocks, selector, half_vars, start, scratch),
-				3 => self.fill_lookups::<u8, u8>(blocks, selector, half_vars, start, scratch),
-				4 => self.fill_lookups::<u16, u16>(blocks, selector, half_vars, start, scratch),
-				5 => self.fill_lookups::<u32, u32>(blocks, selector, half_vars, start, scratch),
-				_ => unreachable!("the switchover runs once Word::LOG_BITS variables are bound"),
+	/// Borrows the selectors' current partial evaluations.
+	pub fn selectors(&self) -> Selectors<'_, P> {
+		let state = match &self.state {
+			SwitchoverState::Pre { blocks } => SwitchoverState::Pre {
+				blocks: &blocks[..],
 			},
-			SwitchoverState::Post(folded) => {
-				let folded = folded.as_view();
-				fill(scratch, start, |index, half| {
-					folded.get((half << half_vars | index) << Word::LOG_BITS | selector)
-				});
-			}
+			SwitchoverState::Post(folded) => SwitchoverState::Post(folded.as_view()),
+		};
+		Selectors {
+			n_vars: self.n_vars,
+			challenges: &self.challenges,
+			state,
 		}
-	}
-
-	/// [`Self::fill_groups`] through a lookup of each group against the tensor of the challenges.
-	///
-	/// `UIn` is the lookup's input, a byte at least, which a sub-byte group widens to.
-	fn fill_lookups<UGroup, UIn>(
-		&self,
-		blocks: &[Word],
-		selector: usize,
-		half_vars: usize,
-		start: usize,
-		scratch: [FieldSliceMut<'_, P>; 2],
-	) where
-		u64: Divisible<UGroup>,
-		UIn: Underlier + Divisible<u8> + From<UGroup>,
-	{
-		let mut weights = eq_ind_partial_eval_scalars(&self.challenges);
-		weights.resize(UIn::BITS, F::ZERO);
-		let lookup = OutputWrappingTransformationFactory::<_, UIn, F>::new(
-			BytewiseLookupTransformationFactory,
-		)
-		.create(&weights);
-		self.fill_groups(blocks, selector, half_vars, start, scratch, |group| {
-			lookup.transform(&UIn::from(group))
-		});
-	}
-
-	/// Writes the halves from the groups of `UGroup` bits of the selector's words.
-	///
-	/// After `r` rounds a word holds `2^(6-r)` groups of `2^r` bits. The two halves are the
-	/// adjacent groups `2g'` and `2g' + 1`, where `g'` is the bit-reversed index within the half.
-	fn fill_groups<UGroup, Value>(
-		&self,
-		blocks: &[Word],
-		selector: usize,
-		half_vars: usize,
-		start: usize,
-		scratch: [FieldSliceMut<'_, P>; 2],
-		value: Value,
-	) where
-		u64: Divisible<UGroup>,
-		Value: Fn(UGroup) -> F + Sync,
-	{
-		let log_cols = self.n_vars - Word::LOG_BITS;
-		fill(scratch, start, |index, half| {
-			let g = reverse_bits(index >> log_cols, (half_vars - log_cols) as u32);
-			let word = blocks[(index & ((1 << log_cols) - 1)) << Word::LOG_BITS | selector];
-			value(Divisible::<UGroup>::get(&word.0, 2 * g + half))
-		});
 	}
 
 	/// Binds the highest remaining variable of every selector to `challenge`.
@@ -234,20 +151,122 @@ where
 	}
 }
 
+impl<F, P> Selectors<'_, P>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+{
+	/// Writes the two halves of the `chunk_index`-th aligned chunk of `2^chunk_vars` values of
+	/// selector `selector`'s current partial evaluation to `scratch`: its highest variable clear,
+	/// then set.
+	///
+	/// ## Preconditions
+	///
+	/// * `chunk_vars` is below the remaining variable count
+	/// * both scratch buffers hold `2^chunk_vars` values
+	pub fn fill_halves(
+		&self,
+		selector: usize,
+		chunk_vars: usize,
+		chunk_index: usize,
+		scratch: [FieldSliceMut<'_, P>; 2],
+	) {
+		let half_vars = self.n_vars - self.challenges.len() - 1;
+		assert!(chunk_vars <= half_vars);
+		assert!(scratch.iter().all(|half| half.log_len() == chunk_vars));
+
+		let start = chunk_index << chunk_vars;
+		match &self.state {
+			// Round `r` reads `2^r`-bit groups of a word, so each round has its own underlier.
+			SwitchoverState::Pre { blocks } => match self.challenges.len() {
+				// A one-bit group needs no lookup: its value is the bit itself.
+				0 => {
+					self.fill_groups::<U1, _>(blocks, selector, half_vars, start, scratch, |bit| {
+						if bit.val() == 1 { F::ONE } else { F::ZERO }
+					});
+				}
+				1 => self.fill_lookups::<U2, u8>(blocks, selector, half_vars, start, scratch),
+				2 => self.fill_lookups::<U4, u8>(blocks, selector, half_vars, start, scratch),
+				3 => self.fill_lookups::<u8, u8>(blocks, selector, half_vars, start, scratch),
+				4 => self.fill_lookups::<u16, u16>(blocks, selector, half_vars, start, scratch),
+				5 => self.fill_lookups::<u32, u32>(blocks, selector, half_vars, start, scratch),
+				_ => unreachable!("the switchover runs once Word::LOG_BITS variables are bound"),
+			},
+			SwitchoverState::Post(folded) => {
+				fill(scratch, start, |index, half| {
+					folded.get((half << half_vars | index) << Word::LOG_BITS | selector)
+				});
+			}
+		}
+	}
+
+	/// [`Self::fill_groups`] through a lookup of each group against the tensor of the challenges.
+	///
+	/// `UIn` is the lookup's input, a byte at least, which a sub-byte group widens to.
+	fn fill_lookups<UGroup, UIn>(
+		&self,
+		blocks: &[Word],
+		selector: usize,
+		half_vars: usize,
+		start: usize,
+		scratch: [FieldSliceMut<'_, P>; 2],
+	) where
+		u64: Divisible<UGroup>,
+		UIn: Underlier + Divisible<u8> + From<UGroup>,
+	{
+		let mut weights = eq_ind_partial_eval_scalars(self.challenges);
+		weights.resize(UIn::BITS, F::ZERO);
+		let lookup = OutputWrappingTransformationFactory::<_, UIn, F>::new(
+			BytewiseLookupTransformationFactory,
+		)
+		.create(&weights);
+		self.fill_groups(blocks, selector, half_vars, start, scratch, |group| {
+			lookup.transform(&UIn::from(group))
+		});
+	}
+
+	/// Writes the halves from the groups of `UGroup` bits of the selector's words.
+	///
+	/// After `r` rounds a word holds `2^(6-r)` groups of `2^r` bits. The two halves are the
+	/// adjacent groups `2g'` and `2g' + 1`, where `g'` is the bit-reversed index within the half.
+	fn fill_groups<UGroup, Value>(
+		&self,
+		blocks: &[Word],
+		selector: usize,
+		half_vars: usize,
+		start: usize,
+		scratch: [FieldSliceMut<'_, P>; 2],
+		value: Value,
+	) where
+		u64: Divisible<UGroup>,
+		Value: Fn(UGroup) -> F + Sync,
+	{
+		let log_cols = self.n_vars.saturating_sub(Word::LOG_BITS);
+		fill(scratch, start, |index, half| {
+			let g = reverse_bits(index >> log_cols, (half_vars - log_cols) as u32);
+			let word = blocks[(index & ((1 << log_cols) - 1)) << Word::LOG_BITS | selector];
+			value(Divisible::<UGroup>::get(&word.0, 2 * g + half))
+		});
+	}
+}
+
 /// Writes `value(start + i, half)` to element `i` of `scratch[half]`.
+///
+/// A scratch buffer narrower than `P` repeats its values across the spare lanes.
 fn fill<P: PackedField>(
 	[mut scratch_0, mut scratch_1]: [FieldSliceMut<'_, P>; 2],
 	start: usize,
 	value: impl Fn(usize, usize) -> P::Scalar + Sync,
 ) {
+	let mask = scratch_0.len() - 1;
 	(scratch_0.as_mut(), scratch_1.as_mut())
 		.into_par_iter()
 		.enumerate()
 		.with_min_task(WorkPerItem::FieldMuls)
 		.for_each(|(i, (packed_0, packed_1))| {
-			let offset = start + i * P::WIDTH;
-			*packed_0 = P::from_fn(|lane| value(offset + lane, 0));
-			*packed_1 = P::from_fn(|lane| value(offset + lane, 1));
+			let index = |lane| start + ((i * P::WIDTH + lane) & mask);
+			*packed_0 = P::from_fn(|lane| value(index(lane), 0));
+			*packed_1 = P::from_fn(|lane| value(index(lane), 1));
 		});
 }
 
@@ -315,13 +334,13 @@ mod tests {
 				return Ok(());
 			}
 
-			for chunk_vars in Word::LOG_BITS..remaining {
+			for chunk_vars in 0..remaining {
 				let mut scratch = [FieldBuffer::zeros(chunk_vars), FieldBuffer::zeros(chunk_vars)];
 				for (b, column) in columns.iter().enumerate() {
 					let (half_0, half_1) = column.split_half();
 					for chunk_index in 0..1 << (remaining - 1 - chunk_vars) {
 						let [scratch_0, scratch_1] = &mut scratch;
-						switchover.fill_halves(
+						switchover.selectors().fill_halves(
 							b,
 							chunk_vars,
 							chunk_index,

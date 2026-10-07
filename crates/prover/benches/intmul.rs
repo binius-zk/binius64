@@ -8,13 +8,7 @@ use binius_iop::{
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
-use binius_ip_prover::{
-	prodcheck::ProdcheckProver,
-	sumcheck::{
-		batch::batch_prove,
-		selector_mle::{Claim, SelectorMlecheckProver},
-	},
-};
+use binius_ip_prover::{prodcheck::ProdcheckProver, sumcheck::batch::batch_prove};
 use binius_math::{
 	FieldBuffer,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
@@ -23,6 +17,7 @@ use binius_math::{
 };
 use binius_prover::protocols::intmul::{
 	prove::IntMulProver,
+	selector_mle::{Claim, SelectorMlecheckProver},
 	witness::{Witness, compute_b_leaves, power_table},
 };
 use binius_transcript::ProverTranscript;
@@ -129,7 +124,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 					(Some(witness.clone()), channel)
 				},
 				|(witness, channel)| {
-					let mut intmul_prover = IntMulProver::new(0, channel, &alloc);
+					let mut intmul_prover = IntMulProver::new(channel, &alloc);
 					intmul_prover.prove(witness.take().expect("set in setup"));
 				},
 				BatchSize::SmallInput,
@@ -151,7 +146,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 						)
 				},
 				|channel| {
-					let mut intmul_prover = IntMulProver::new(0, channel, &alloc);
+					let mut intmul_prover = IntMulProver::new(channel, &alloc);
 					let witness = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 					intmul_prover.prove(witness);
 				},
@@ -185,14 +180,14 @@ fn bench_intmul_phases(c: &mut Criterion) {
 
 	let phase1 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
-		let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
+		let mut prover = IntMulProver::<_, P, _>::new(&mut transcript, &alloc);
 		let w = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 		prover.phase1(&initial_eval_point, w.b_prodcheck, witness.b_leaves.as_view(), exp_eval)
 	};
 	let phase2 = frobenius_twist(Word::LOG_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
 	let phase3 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
-		let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
+		let mut prover = IntMulProver::<_, P, _>::new(&mut transcript, &alloc);
 		// The roots are pooled buffers consumed by phase3; rebuild a witness to source them.
 		let w = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 		prover.phase3(
@@ -207,7 +202,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 	};
 	let phase4 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
-		let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
+		let mut prover = IntMulProver::<_, P, _>::new(&mut transcript, &alloc);
 		let w = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 		prover.phase4(
 			&phase3.eval_point,
@@ -228,7 +223,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			|| witness.b_prodcheck.clone(),
 			|b_prodcheck| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
-				let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
+				let mut prover = IntMulProver::<_, P, _>::new(&mut transcript, &alloc);
 				prover.phase1(
 					&initial_eval_point,
 					b_prodcheck,
@@ -251,7 +246,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			|| (witness.a_root.clone(), [witness.c_lo_root.clone(), witness.c_hi_root.clone()]),
 			|(a_root, c_lo_hi_roots)| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
-				let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
+				let mut prover = IntMulProver::<_, P, _>::new(&mut transcript, &alloc);
 				prover.phase3(
 					&phase2.twisted_eval_points,
 					&phase2.twisted_evals,
@@ -277,7 +272,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			},
 			|(a_prodcheck, c_lo_prodcheck, c_hi_prodcheck)| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
-				let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
+				let mut prover = IntMulProver::<_, P, _>::new(&mut transcript, &alloc);
 				prover.phase4(
 					&phase3.eval_point,
 					(phase3.gpow_a_eval, a_prodcheck),
@@ -306,7 +301,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 					)
 			},
 			|channel| {
-				let mut prover = IntMulProver::<_, P, _>::new(0, channel, &alloc);
+				let mut prover = IntMulProver::<_, P, _>::new(channel, &alloc);
 				prover.phase5(
 					&phase4,
 					witness.b_exponents,
@@ -362,15 +357,13 @@ fn bench_intmul_components(c: &mut Criterion) {
 
 	// The selector sumcheck in phase 3 (constructing and proving the `SelectorMlecheckProver`).
 	// Its input claims come from the phase 2 (Frobenius twist) output, which we derive once here so
-	// the per-iteration setup only clones what `SelectorMlecheckProver::new` consumes. `Word` is
-	// `repr(transparent)` over `u64`, so the exponent bitmasks reinterpret the slice in place.
-	let b_bitmasks: &[u64] = bytemuck::cast_slice(witness.b_exponents);
+	// the per-iteration setup only clones what `SelectorMlecheckProver::new` consumes.
 	let n_vars = witness.b_root.log_len();
 	let initial_eval_point = random_scalars::<F>(&mut rand::rng(), n_vars);
 	let exp_eval = evaluate(&witness.b_root, &initial_eval_point);
 	let phase1 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
-		let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
+		let mut prover = IntMulProver::<_, P, _>::new(&mut transcript, &alloc);
 		let w = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 		prover.phase1(&initial_eval_point, w.b_prodcheck, witness.b_leaves.as_view(), exp_eval)
 	};
@@ -394,8 +387,13 @@ fn bench_intmul_components(c: &mut Criterion) {
 				(witness.a_root.clone(), claims, eq_weights)
 			},
 			|(a_root, claims, eq_weights)| {
-				let selector_prover =
-					SelectorMlecheckProver::new(a_root, claims, b_bitmasks, eq_weights, 0);
+				let selector_prover = SelectorMlecheckProver::new(
+					&alloc,
+					a_root,
+					claims,
+					witness.b_exponents,
+					eq_weights,
+				);
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				batch_prove(vec![selector_prover], &mut transcript)
 			},

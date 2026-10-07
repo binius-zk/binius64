@@ -20,7 +20,6 @@ use binius_ip_prover::{
 		bivariate_product_mle,
 		multilinear_eval::multilinear_eval_prover,
 		quadratic_mlecheck_prover,
-		selector_mle::{Claim, SelectorMlecheckProver},
 	},
 };
 use binius_math::{
@@ -42,6 +41,7 @@ use itertools::izip;
 
 use super::{
 	error::Error,
+	selector_mle::{Claim, SelectorMlecheckProver},
 	witness::{Witness, limb_index, two_valued_field_buffer},
 };
 use crate::fold_word::{BitAxisFolder, WordAxisFolder};
@@ -81,26 +81,24 @@ where
 	let witness = tracing::debug_span!("Build IntMul witness")
 		.in_scope(|| Witness::<_, P>::new(alloc, a, b, lo, hi))?;
 
-	let mut prover = IntMulProver::new(0, channel, alloc);
+	let mut prover = IntMulProver::new(channel, alloc);
 	Ok(prover.prove(witness))
 }
 
-/// A helper structure that encapsulates switchover settings and the prover channel for
-/// the integer multiplication protocol.
+/// A helper structure that encapsulates the prover channel for the integer multiplication
+/// protocol.
 pub struct IntMulProver<'a, 'alloc, A: Allocator, P, Channel> {
 	_p_marker: PhantomData<P>,
 
-	switchover: usize,
 	channel: &'a mut Channel,
 	/// Pool the GKR working buffers are drawn from.
 	alloc: &'alloc A,
 }
 
 impl<'a, 'alloc, A: Allocator, P, Channel> IntMulProver<'a, 'alloc, A, P, Channel> {
-	pub const fn new(switchover: usize, channel: &'a mut Channel, alloc: &'alloc A) -> Self {
+	pub const fn new(channel: &'a mut Channel, alloc: &'alloc A) -> Self {
 		Self {
 			_p_marker: PhantomData,
-			switchover,
 			channel,
 			alloc,
 		}
@@ -516,25 +514,8 @@ where
 		// are fixed against it.
 		let gamma = self.channel.sample_many(Word::LOG_BITS);
 		let eq_weights = eq_ind_partial_eval_scalars(&gamma);
-		// `SelectorMlecheckProver` reads the exponent bits through the `Bitwise` bitmask
-		// abstraction, which is implemented for the primitive integer types. `Word` is
-		// `repr(transparent)` over `u64`, so reinterpret the slice in place.
-		// `SelectorMlecheckProver` requires one bitmask per row of the constraint axis
-		// (`crates/ip-prover/src/sumcheck/selector_mle.rs:73`), so this is the one place the
-		// reduction still needs the columns' padding rows as words. A padding row is `Word::ZERO`,
-		// so its bitmask is zero.
-		//
-		// TODO(BINIUS-391): relax `SelectorMlecheckProver` and `BinarySwitchover` to read a missing
-		// row's bitmask as zero, and drop this copy.
-		let mut b_bitmasks = bytemuck::cast_slice::<_, u64>(b_exponents).to_vec();
-		b_bitmasks.resize(1 << n_vars, 0);
-		let selector_prover = SelectorMlecheckProver::new(
-			selector,
-			selector_claims,
-			&b_bitmasks,
-			eq_weights,
-			self.switchover,
-		);
+		let selector_prover =
+			SelectorMlecheckProver::new(alloc, selector, selector_claims, b_exponents, eq_weights);
 
 		let c_root_sumcheck_prover =
 			bivariate_product_mle::new(alloc, c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval);

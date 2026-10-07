@@ -1,17 +1,19 @@
 // Copyright 2023-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::BufferData;
-use binius_field::{Field, PackedField, WideMul};
+use binius_compute::Allocator;
+use binius_core::word::Word;
+use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
-use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
+use binius_ip_prover::sumcheck::{
+	common::SumcheckProver, eq_tracker::ChunkedEqTracker, round_evals::RoundEvals,
+	round_state::RoundState,
+};
+use binius_math::{FieldBuffer, FieldVec, multilinear::fold::fold_highest_var_inplace};
+use binius_utils::rayon::prelude::*;
 use itertools::izip;
 
-use super::{
-	common::SumcheckProver, eq_tracker::ChunkedEqTracker, round_evals::RoundEvals,
-	round_state::RoundState, switchover::BinarySwitchover,
-};
+use super::switchover::BinarySwitchover;
 
 pub struct Claim<F: Field> {
 	pub point: Vec<F>,
@@ -20,44 +22,42 @@ pub struct Claim<F: Field> {
 
 /// A [`SumcheckProver`] implementation that proves an mlecheck over many compositions of the
 /// form `selected * selector + (1 - selector)`, where `selected` is the shared large field
-/// multilinear and `selector` comes from the set of 1-bit multilinears. Unlike other multi mlecheck
-/// provers however the evaluation point is _not_ shared but is specified per selector.
+/// multilinear and `selector` is one of the `Word::BITS` one-bit multilinears of a word list.
+/// Unlike other multi mlecheck provers however the evaluation point is _not_ shared but is
+/// specified per selector.
 ///
-/// The set of 1-bit multilinears is represented by a power-of-two long slice of bitmasks, and the
-/// multilinear set is constructed by arranging the bitmasks as a 2D matrix in row-major order and
-/// taking vertical slices. This representation is very compact and has no embedding overhead.
-///
-/// To combat memory blowup issues arising from folding 1-bit multilinears, this prover introduces
-/// switchover. See `BinarySwitchover` for more in-depth explanation of the mechanism. Also note
-/// that the need to expand the equality indicator for each multilinear still results in some
+/// Selector `b` is the multilinear whose `i`-th value is bit `b` of word `i`. The bits stay packed
+/// in words until `BinarySwitchover` folds them, which keeps the selectors' memory at the size of
+/// `selected`. The need to expand the equality indicator for each selector still results in some
 /// blowup.
-pub struct SelectorMlecheckProver<'b, P: PackedField, B: Bitwise, Data: BufferData<P> = Vec<P>> {
+pub struct SelectorMlecheckProver<'alloc, P: PackedField, A: Allocator> {
 	last_coeffs_or_sums: RoundState<Vec<RoundCoeffs<P::Scalar>>, Vec<P::Scalar>>,
-	selected: FieldBuffer<P, Data>,
+	selected: FieldVec<P, A>,
 	eq_trackers: Vec<ChunkedEqTracker<P>>,
 	weights: Vec<P::Scalar>,
-	switchover: BinarySwitchover<'b, P, B>,
+	switchover: BinarySwitchover<'alloc, P, A>,
 }
 
-impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise, Data: BufferData<P>>
-	SelectorMlecheckProver<'b, P, B, Data>
+impl<'alloc, F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>
+	SelectorMlecheckProver<'alloc, P, A>
 {
-	/// Constructs a prover, given `bitmasks` as representation of 1-bit columns, `selected` being
-	/// the shared large field multilinear, individual `claims` per selector, `weights` to combine
-	/// the per-selector round polynomials into one (one weight per claim), and `switchover` as the
-	/// round at which 1-bit columns should be folded.
+	/// Constructs a prover, given `selected` being the shared large field multilinear, individual
+	/// `claims` per selector, `words` whose bits are the selectors (missing words read as zero),
+	/// and `weights` to combine the per-selector round polynomials into one (one weight per claim).
 	///
 	/// The prover exposes a single claim — the `weights`-combination `Σ_i weights[i] · C_i` of the
 	/// per-selector claims. Supplying the equality-indicator tensor `eq_k(γ, ·)` as the weights
 	/// batches the claims with `eq_k(γ, i)`.
 	pub fn new(
-		selected: FieldBuffer<P, Data>,
+		alloc: &'alloc A,
+		selected: FieldVec<P, A>,
 		claims: Vec<Claim<F>>,
-		bitmasks: &'b [B],
+		words: &[Word],
 		weights: Vec<F>,
-		switchover: usize,
 	) -> Self {
 		let n_vars = selected.log_len();
+
+		assert_eq!(claims.len(), Word::BITS, "one claim per selector");
 
 		assert!(
 			claims.iter().all(|claim| claim.point.len() == n_vars),
@@ -70,10 +70,9 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise, Data: BufferData<P>>
 			"number of weights must match the number of claims"
 		);
 
-		assert_eq!(
-			bitmasks.len(),
-			selected.len(),
-			"bitmasks slice length must match the selected multilinear length"
+		assert!(
+			words.len() <= selected.len(),
+			"words must not outnumber the selected multilinear's values"
 		);
 
 		const MAX_CHUNK_VARS: usize = 8;
@@ -82,7 +81,7 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise, Data: BufferData<P>>
 			.map(|Claim { point, value }| (ChunkedEqTracker::new(MAX_CHUNK_VARS, &point), value))
 			.collect::<(Vec<_>, Vec<_>)>();
 
-		let switchover = BinarySwitchover::new(sums.len(), switchover.min(n_vars), bitmasks);
+		let switchover = BinarySwitchover::new(alloc, words, n_vars);
 		let last_coeffs_or_sums = RoundState::Claim(sums);
 
 		Self {
@@ -95,12 +94,11 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise, Data: BufferData<P>>
 	}
 }
 
-impl<'b, F, P, B, Data> SumcheckProver<F> for SelectorMlecheckProver<'b, P, B, Data>
+impl<F, P, A> SumcheckProver<F> for SelectorMlecheckProver<'_, P, A>
 where
-	F: Field,
+	F: BinaryField,
 	P: PackedField<Scalar = F>,
-	B: Bitwise,
-	Data: BufferData<P>,
+	A: Allocator,
 {
 	fn n_vars(&self) -> usize {
 		self.selected.log_len()
@@ -130,6 +128,7 @@ where
 		// The fold below reads both halves concurrently from many rayon tasks.
 		// Borrowed halves cross that boundary for any backing store the buffer is built on.
 		let (selected_0, selected_1) = self.selected.split_half();
+		let selectors = self.switchover.selectors();
 
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
@@ -145,24 +144,17 @@ where
 					let selected_0_chunk = selected_0.chunk(chunk_vars, chunk_index);
 					let selected_1_chunk = selected_1.chunk(chunk_vars, chunk_index);
 
-					for (bit_offset, (round_evals, eq_tracker)) in
+					for (selector, (round_evals, eq_tracker)) in
 						izip!(&mut packed_prime_evals, &self.eq_trackers).enumerate()
 					{
 						let eq_chunk = eq_tracker.chunk();
 						let eq_suffix_eval = eq_tracker.suffix().get(chunk_index);
 
-						let selector_0_chunk = self.switchover.get_chunk(
-							&mut binary_chunk_0,
-							bit_offset,
+						selectors.fill_halves(
+							selector,
 							chunk_vars,
 							chunk_index,
-						);
-
-						let selector_1_chunk = self.switchover.get_chunk(
-							&mut binary_chunk_1,
-							bit_offset,
-							chunk_vars,
-							chunk_index | chunk_count,
+							[binary_chunk_0.as_mut_view(), binary_chunk_1.as_mut_view()],
 						);
 
 						// Accumulate `eq_i * composition` in unreduced (wide) form and reduce once
@@ -175,8 +167,8 @@ where
 							eq_chunk.as_ref(),
 							selected_0_chunk.as_ref(),
 							selected_1_chunk.as_ref(),
-							selector_0_chunk.as_ref(),
-							selector_1_chunk.as_ref(),
+							binary_chunk_0.as_ref(),
+							binary_chunk_1.as_ref(),
 						) {
 							let selected_inf_i = selected_0_i + selected_1_i;
 							let selector_inf_i = selector_0_i + selector_1_i;
@@ -246,17 +238,8 @@ where
 	fn finish(self) -> Vec<F> {
 		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
-		let mut multilinear_evals = Vec::with_capacity(self.eq_trackers.len() + 1);
-
-		for selector in self.switchover.finalize() {
-			debug_assert_eq!(selector.log_len(), 0);
-			let eval = selector.get(0);
-			multilinear_evals.push(eval);
-		}
-
-		debug_assert_eq!(self.selected.log_len(), 0);
+		let mut multilinear_evals = self.switchover.finish().to_vec();
 		multilinear_evals.push(self.selected.get(0));
-
 		multilinear_evals
 	}
 }
@@ -265,8 +248,10 @@ where
 mod tests {
 	use std::iter::repeat_with;
 
+	use binius_compute::GlobalAllocator;
 	use binius_field::FieldOps;
 	use binius_ip::sumcheck::verify;
+	use binius_ip_prover::sumcheck::prove_single;
 	use binius_math::{
 		multilinear::{eq::eq_ind, evaluate::evaluate},
 		test_utils::{Packed128b, random_scalars},
@@ -274,9 +259,9 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use itertools::Itertools;
 	use rand::prelude::*;
+	use rstest::rstest;
 
 	use super::*;
-	use crate::sumcheck::prove::prove_single;
 
 	type P = Packed128b;
 	type F = <P as FieldOps>::Scalar;
@@ -287,27 +272,32 @@ mod tests {
 	// evaluations. This mirrors the verifier's selector-sumcheck check (`verify_phase_3` in
 	// `binius-verifier`'s intmul protocol), which recombines per-selector terms
 	// `(selector·(selected − 1) + 1)·eq(point_i, r)` weighted by an equality tensor.
-	#[test]
-	fn test_selector_mlecheck_prove_verify() {
+	//
+	// The word list stops short of `2^n_vars`, so the missing words read as zero.
+	#[rstest]
+	#[case::padded_single_block(3)]
+	#[case::exactly_one_block(6)]
+	#[case::several_blocks(9)]
+	fn test_selector_mlecheck_prove_verify(#[case] n_vars: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let n_vars = 8;
-		let selector_count = 3;
+		let selector_count = Word::BITS;
 
-		let selector_mask = (1u16 << selector_count) - 1;
-		let bitmasks = repeat_with(|| rng.random::<u16>() & selector_mask)
-			.take(1 << n_vars)
+		let words = repeat_with(|| Word::from_u64(rng.random()))
+			.take((1 << n_vars) - 3)
 			.collect_vec();
 
 		let selected_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
 		let selected = FieldBuffer::<P>::from_values(&selected_scalars);
 
-		// The 1-bit selector columns, extracted from the bitmasks.
+		// The 1-bit selector columns, extracted from the words.
 		let selector_columns = (0..selector_count)
-			.map(|i| {
-				bitmasks
-					.iter()
-					.map(|b| if (b >> i) & 1 == 1 { F::ONE } else { F::ZERO })
+			.map(|b| {
+				(0..1 << n_vars)
+					.map(|i| {
+						let bit = words.get(i).is_some_and(|word| word.extract_bit(b));
+						if bit { F::ONE } else { F::ZERO }
+					})
 					.collect_vec()
 			})
 			.collect_vec();
@@ -335,13 +325,12 @@ mod tests {
 		// The prover reduces the per-selector claims to a single weighted sumcheck claim.
 		let claim: F = izip!(&claims, &weights).map(|(c, &w)| c.value * w).sum();
 
-		let switchover = 0;
 		let prover = SelectorMlecheckProver::new(
-			selected.clone(),
+			&GlobalAllocator,
+			FieldBuffer::from_view_in(&GlobalAllocator, selected.as_view()),
 			claims,
-			&bitmasks,
+			&words,
 			weights.clone(),
-			switchover,
 		);
 
 		// Run the prover through the transcript and append the final multilinear evaluations.
