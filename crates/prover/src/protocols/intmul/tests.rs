@@ -81,7 +81,7 @@ fn prove_and_verify() {
 	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 	let mut prover_channel =
 		NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
-	let mut prover = IntMulProver::new(0, &mut prover_channel, &alloc);
+	let mut prover = IntMulProver::new(&mut prover_channel, &alloc);
 	let prove_output = prover.prove(witness);
 	prover_channel.finish();
 

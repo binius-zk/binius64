@@ -12,16 +12,13 @@
 //! coefficient falls in.
 //! So fixing the highest variable pairs the two halves and leaves the result in the first one.
 
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 use binius_compute::{Allocator, BufferData, CollectIntoAllocVec};
-use binius_field::{Field, PackedField};
-use binius_utils::{
-	random_access_sequence::RandomAccessSequence,
-	rayon::{
-		prelude::*,
-		task_size::{IndexedParallelIteratorExt, WorkPerItem},
-	},
+use binius_field::PackedField;
+use binius_utils::rayon::{
+	prelude::*,
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
 };
 
 use crate::{FieldBuffer, FieldVec, line::extrapolate_line};
@@ -98,78 +95,15 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 	FieldBuffer::new(values.log_len() - 1, data)
 }
 
-/// Overwrites a buffer with the high fold of a bit sequence by a tensor.
-///
-/// The bits are the coefficients of a multilinear whose values are all zero or one.
-/// Each output vertex fixes that polynomial's low-indexed variables to that vertex.
-/// What remains is then paired with the tensor.
-///
-/// This runs on one thread.
-///
-/// ## Preconditions
-///
-/// * the bit count must be a power of two
-/// * the bit count must equal the output length times the tensor length
-pub fn binary_fold_high<P, DataOut, DataIn>(
-	values: &mut FieldBuffer<P, DataOut>,
-	tensor: &FieldBuffer<P, DataIn>,
-	bits: &(impl RandomAccessSequence<bool> + Sync),
-) where
-	P: PackedField,
-	DataOut: DerefMut<Target = [P]>,
-	DataIn: Deref<Target = [P]>,
-{
-	assert!(bits.len().is_power_of_two(), "precondition: bits length must be a power of two");
-
-	let values_log_len = values.log_len();
-	// Below one packed word the buffer still occupies a whole word, so only the live lanes count.
-	let width = P::WIDTH.min(values.len());
-
-	assert_eq!(
-		1 << (values_log_len + tensor.log_len()),
-		bits.len(),
-		"precondition: bits length must equal values length times tensor length"
-	);
-
-	values
-		.iter_packed_mut()
-		.enumerate()
-		.for_each(|(i, packed)| {
-			*packed = P::from_scalars((0..width).map(|j| {
-				// The output vertex this lane holds, as an index into the bits' low variables.
-				let scalar_index = i << P::LOG_WIDTH | j;
-				let mut acc = P::Scalar::ZERO;
-
-				// Sum the tensor entries whose bit is set, over the bits' high variables.
-				// Multiplication by a bit is a selection, so no field multiplication is needed.
-				for (k, tensor_packed) in tensor.iter_packed().enumerate() {
-					for (l, tensor_scalar) in tensor_packed.iter().take(tensor.len()).enumerate() {
-						let tensor_scalar_index = k << P::LOG_WIDTH | l;
-						if bits.get(tensor_scalar_index << values_log_len | scalar_index) {
-							acc += tensor_scalar;
-						}
-					}
-				}
-
-				acc
-			}));
-		});
-}
-
 #[cfg(test)]
 mod tests {
-	use std::iter::repeat_with;
-
 	use binius_compute::GlobalAllocator;
 	use binius_utils::rayon::task_size::min_len_for_work;
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::{
-		multilinear::eq::eq_ind_partial_eval,
-		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
-	};
+	use crate::test_utils::{B128, Packed128b, random_field_buffer, random_scalars};
 
 	type P = Packed128b;
 	type F = B128;
@@ -250,37 +184,6 @@ mod tests {
 
 			prop_assert_eq!(out_of_place.log_len(), n_vars - 1);
 			prop_assert_eq!(out_of_place, in_place);
-		}
-
-		#[test]
-		fn the_binary_fold_matches_folding_the_widened_bits(
-			dest_vars in 0..=6usize,
-			tensor_vars in 0..=4usize,
-			seed: u64,
-		) {
-			let mut rng = StdRng::seed_from_u64(seed);
-			let point = random_scalars::<F>(&mut rng, tensor_vars);
-			let tensor = eq_ind_partial_eval::<P>(&point);
-
-			// The bit count is the product of the two lengths, as the precondition demands.
-			let bits = repeat_with(|| rng.random())
-				.take(1 << (dest_vars + tensor_vars))
-				.collect::<Vec<bool>>();
-
-			let mut folded = FieldBuffer::<P>::zeros(dest_vars);
-			binary_fold_high(&mut folded, &tensor, &bits.as_slice());
-
-			// Reference: widen the bits to field elements and fold the tensor's variables off.
-			let scalars = bits
-				.iter()
-				.map(|&bit| if bit { F::ONE } else { F::ZERO })
-				.collect::<Vec<F>>();
-			let mut reference = FieldBuffer::<P>::from_values(&scalars);
-			for &coord in point.iter().rev() {
-				fold_highest_var_inplace(&mut reference, coord);
-			}
-
-			prop_assert_eq!(folded, reference);
 		}
 	}
 }

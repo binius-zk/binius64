@@ -4,13 +4,11 @@
 
 //! Utility modules used in Binius.
 
-pub mod bitwise;
 pub mod checked_arithmetics;
 pub mod iter;
 #[cfg(feature = "platform-diagnostics")]
 pub mod platform_diagnostics;
 pub mod rand;
-pub mod random_access_sequence;
 pub mod rayon;
 pub mod serialization;
 pub mod strided_array;

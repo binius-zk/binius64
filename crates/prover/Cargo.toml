@@ -39,6 +39,7 @@ binius-frontend = { path = "../frontend" }
 binius-math = { path = "../math", features = ["test-utils"] }
 criterion.workspace = true
 proptest.workspace = true
+rstest.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
 sha2.workspace = true
 

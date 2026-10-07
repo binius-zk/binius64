@@ -16,7 +16,6 @@ rand.workspace = true
 rayon.workspace = true
 regex = { workspace = true, optional = true }
 thiserror.workspace = true
-trait-set.workspace = true
 
 [dev-dependencies]
 
