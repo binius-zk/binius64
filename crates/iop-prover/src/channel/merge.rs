@@ -5,7 +5,7 @@
 //! This is the prover-side half of a matching pair.
 //! Whatever it commits here must be received by a matching verifier-side decorator.
 
-use std::ops::DerefMut;
+use std::{cmp::Reverse, ops::DerefMut};
 
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
@@ -37,15 +37,14 @@ pub struct MergeOracle {
 /// It commits them together as one larger oracle.
 /// That cuts the cost to one commitment per round.
 ///
-/// A round's oracles are sorted from largest to smallest, then laid out end to end.
-/// That ordering makes every oracle's position exact.
+/// [`place_oracles`] lays a round out: its largest oracle is the host, and the rest are tenants
+/// placed past the host's content.
 ///
-/// Every earlier oracle is at least as large as the current one.
-/// So their combined space is a whole multiple of the current oracle's size.
+/// When every tenant fits in the host's padding, the host is forwarded: the tenants are written
+/// into the host's own buffer, which moves to the underlying channel, and takes and returns of the
+/// host pass straight through. A round of a single oracle is the case with no tenants.
 ///
-/// A round of a single oracle needs no combining.
-/// It is forwarded unchanged, at zero cost: its buffer moves to the underlying channel, and takes
-/// and returns of it pass straight through.
+/// Otherwise the round is copied into a freshly allocated combined buffer.
 ///
 /// A round is masked as a whole, never partly.
 ///
@@ -61,8 +60,9 @@ pub struct MergeOracle {
 /// A real Fiat-Shamir transcript can therefore absorb the commitment before the next challenge.
 ///
 /// The underlying channel owns the combined buffer once it is committed.
-/// The constituents' own buffers stay with this channel, which takes each one out once and drops it
-/// when it comes back.
+/// Every other constituent's own buffer stays with this channel, which takes each one out once and
+/// drops it when it comes back. A host's buffer comes back with the tenants written into its
+/// padding, as committed.
 ///
 /// # Opening
 ///
@@ -95,10 +95,8 @@ where
 	/// The allocator this channel draws its combined buffers from.
 	alloc: A,
 
-	/// The open round's combined buffer, filled in as its oracles arrive.
-	///
-	/// Allocated on the round's first oracle and committed on its last.
-	open: Option<FieldVec<P, A>>,
+	/// The index of the open round's first oracle.
+	round_start: usize,
 
 	/// How many oracles have been sent so far.
 	n_sent: usize,
@@ -106,9 +104,12 @@ where
 	/// The underlying channel's handle for every round committed so far, in commit order.
 	groups: Vec<C::Oracle>,
 
+	/// For every committed round, the host whose own buffer was forwarded as the round's, if any.
+	forwarded: Vec<Option<usize>>,
+
 	/// Every oracle's own buffer, in arrival order, while this channel holds it.
 	///
-	/// `None` for an oracle forwarded as a round of its own, and for one taken out.
+	/// `None` for a forwarded host, and for an oracle taken out.
 	originals: Vec<Option<FieldVec<P, A>>>,
 }
 
@@ -141,17 +142,61 @@ where
 			schedule,
 			placements: place_oracles(schedule),
 			alloc,
-			open: None,
+			round_start: 0,
 			n_sent: 0,
 			groups: Vec::new(),
+			forwarded: Vec::new(),
 			originals: Vec::new(),
 		}
 	}
 
-	/// Whether the oracle was forwarded to the underlying channel as a round of its own.
+	/// Whether the oracle's own buffer was forwarded to the underlying channel as its round's.
 	fn is_forwarded(&self, oracle: MergeOracle) -> bool {
-		self.placements[oracle.index].combined_log_len
-			== self.schedule.specs()[oracle.index].log_msg_len
+		self.forwarded[self.placements[oracle.index].round] == Some(oracle.index)
+	}
+
+	/// Commits the open round, which holds oracles `round_start..n_sent`.
+	fn commit_round(&mut self) {
+		let round = self.round_start..self.n_sent;
+		self.round_start = self.n_sent;
+
+		// The host is the first of the largest, as `place_oracles` sorts stably.
+		let specs = self.schedule.specs();
+		let host = round
+			.clone()
+			.min_by_key(|&i| Reverse(specs[i].log_msg_len))
+			.expect("a round holds at least one oracle");
+		let tenants = round.filter(|&i| i != host);
+
+		// Write every tenant that fits into the host's padding.
+		//
+		// Tenants start past the host's content, so none overwrites it.
+		let mut host_buffer = self.originals[host].take().expect("host was just sent");
+		for i in tenants.clone() {
+			let block_index = self.placements[i].block_index;
+			if (block_index + 1) << specs[i].log_msg_len <= host_buffer.len() {
+				let tenant = self.originals[i].as_ref().expect("tenant was just sent");
+				place_block(&mut host_buffer, tenant.as_view(), block_index);
+			}
+		}
+
+		let combined_log_len = self.placements[host].combined_log_len;
+		if combined_log_len == host_buffer.log_len() {
+			// Every tenant fits, so the host's buffer is the round's.
+			self.groups.push(self.inner.send_oracle(host_buffer));
+			self.forwarded.push(Some(host));
+		} else {
+			// Some tenant spills past the host, so copy the round into a larger buffer.
+			let mut combined = FieldBuffer::zeros_in(&self.alloc, combined_log_len);
+			place_block(&mut combined, host_buffer.as_view(), 0);
+			for i in tenants {
+				let tenant = self.originals[i].as_ref().expect("tenant was just sent");
+				place_block(&mut combined, tenant.as_view(), self.placements[i].block_index);
+			}
+			self.originals[host] = Some(host_buffer);
+			self.groups.push(self.inner.send_oracle(combined));
+			self.forwarded.push(None);
+		}
 	}
 
 	/// Returns the underlying channel.
@@ -270,43 +315,19 @@ where
 
 		let index = self.n_sent;
 		self.n_sent += 1;
-		let Placement {
-			round,
-			block_index,
-			combined_log_len,
-		} = self.placements[index];
-
-		// A round of its own is forwarded unchanged.
-		let oracle = MergeOracle { index };
-		if self.is_forwarded(oracle) {
-			self.groups.push(self.inner.send_oracle(buffer));
-			self.originals.push(None);
-			return oracle;
-		}
-
-		// Copy the data into its block of the round's combined buffer.
-		//
-		// Its round may not commit until a later oracle arrives.
-		let combined = self
-			.open
-			.get_or_insert_with(|| FieldBuffer::zeros_in(&self.alloc, combined_log_len));
-		place_block(combined, buffer.as_view(), block_index);
 		self.originals.push(Some(buffer));
 
 		// The last oracle of its round commits the whole round as one oracle.
+		let round = self.placements[index].round;
 		let is_last_of_round = self
 			.placements
 			.get(index + 1)
 			.is_none_or(|next| next.round != round);
 		if is_last_of_round {
-			let combined = self
-				.open
-				.take()
-				.expect("open round buffer was just inserted");
-			self.groups.push(self.inner.send_oracle(combined));
+			self.commit_round();
 		}
 
-		oracle
+		MergeOracle { index }
 	}
 
 	fn prove_oracle_relation(
@@ -354,7 +375,7 @@ where
 	}
 
 	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		// A merged oracle's copy in the combined buffer is what gets opened, so its own buffer is
+		// A copied oracle's block of the combined buffer is what gets opened, so its own buffer is
 		// no longer needed and is dropped here.
 		if self.is_forwarded(oracle) {
 			let outer = self.groups[self.placements[oracle.index].round].clone();
@@ -420,7 +441,7 @@ mod tests {
 
 	/// Runs a full prove-then-verify round trip over oracles grouped into rounds.
 	///
-	/// Each inner slice of `rounds` lists one round's oracle sizes, in log2.
+	/// Each inner slice of `rounds` lists one round's oracle sizes, in log2, each all content.
 	/// Every one is sent, or received, before one challenge is sampled.
 	///
 	/// If `tamper` is set, the first oracle's claim is corrupted.
@@ -429,33 +450,42 @@ mod tests {
 	where
 		P: PackedField<Scalar = Ghash128b>,
 	{
+		let rounds: Vec<Vec<OracleSpec>> = rounds
+			.iter()
+			.map(|sizes| sizes.iter().map(|&n| OracleSpec::new(n)).collect())
+			.collect();
+		let round_refs: Vec<&[OracleSpec]> = rounds.iter().map(Vec::as_slice).collect();
+		run_spec_round_trip::<P>(&round_refs, tamper);
+	}
+
+	/// [`run_merge_round_trip`] over full specs, so each oracle carries its own content length.
+	///
+	/// Claims are computed over each buffer as taken back after the commit, since a host's
+	/// padding then holds its tenants.
+	fn run_spec_round_trip<P>(rounds: &[&[OracleSpec]], tamper: bool)
+	where
+		P: PackedField<Scalar = Ghash128b>,
+	{
 		type F = Ghash128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
-
-		// Flatten the rounds into one flat list of sizes, in order.
-		// Both sides' bookkeeping expects that same list.
-		// Generate independent witness data for each one.
-		let fine_sizes: Vec<usize> = rounds
-			.iter()
-			.flat_map(|round| round.iter().copied())
-			.collect();
-		let data: Vec<(FieldBuffer<P>, FieldBuffer<P>, F)> = fine_sizes
-			.iter()
-			.map(|&n| generate_oracle_data::<F, P, _>(&mut rng, n))
-			.collect();
 
 		// The round layout both sides are driven by.
 		//
 		// The underlying channels see one combined oracle per round.
 		let mut schedule = OracleSchedule::new();
-		for sizes in rounds {
-			for &n in *sizes {
-				schedule.push(OracleSpec::new(n));
+		for specs in rounds {
+			for &spec in *specs {
+				schedule.push(spec);
 			}
 			schedule.end_round();
 		}
 		let coarse_specs = schedule.merged_specs();
+		let buffers: Vec<FieldBuffer<P>> = schedule
+			.specs()
+			.iter()
+			.map(|spec| random_field_buffer::<P>(&mut rng, spec.log_msg_len))
+			.collect();
 
 		// Prover side.
 		//
@@ -467,22 +497,30 @@ mod tests {
 		let mut merge_prover = MergeProverChannel::new(naive_prover, &schedule, GlobalAllocator);
 
 		let mut oracles = Vec::new();
-		let mut index = 0;
-		for sizes in rounds {
-			for _ in *sizes {
-				let (buffer, _, _) = &data[index];
+		let mut buffer_iter = buffers.iter();
+		for specs in rounds {
+			for buffer in buffer_iter.by_ref().take(specs.len()) {
 				oracles.push(merge_prover.send_oracle(buffer.clone()));
-				index += 1;
 			}
 			IPProverChannel::sample(&mut merge_prover);
 		}
-		// Every oracle's buffer comes back as sent, whether its round was forwarded or merged.
-		for (&oracle, (buffer, _, _)) in iter::zip(&oracles, &data) {
+
+		// Every oracle's content comes back as sent, whether its round was forwarded or merged.
+		// Its padding is whatever was committed, so the claims are made over that.
+		let mut relations = Vec::new();
+		for ((&oracle, buffer), spec) in iter::zip(iter::zip(&oracles, &buffers), schedule.specs())
+		{
 			let taken = merge_prover.take_oracle(oracle);
-			assert_eq!(&taken, buffer);
+			for i in 0..spec.len {
+				assert_eq!(taken.get(i), buffer.get(i));
+			}
+			let point = random_scalars::<F>(&mut rng, spec.log_msg_len);
+			let transparent = eq_ind_partial_eval::<P>(&point);
+			let claim = inner_product_buffers(&taken, &transparent);
 			merge_prover.return_oracle(oracle, taken);
+			relations.push((transparent, claim));
 		}
-		for (&oracle, (_, transparent, claim)) in iter::zip(&oracles, &data) {
+		for (&oracle, (transparent, claim)) in iter::zip(&oracles, &relations) {
 			merge_prover.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
 		}
 		merge_prover.into_inner().finish();
@@ -496,23 +534,26 @@ mod tests {
 		let mut merge_verifier = MergeVerifierChannel::new(naive_verifier, &schedule);
 
 		let mut v_oracles = Vec::new();
-		for sizes in rounds {
-			for &n in *sizes {
-				v_oracles.push(merge_verifier.recv_oracle(1 << n, n, true).unwrap());
+		for specs in rounds {
+			for spec in *specs {
+				v_oracles.push(
+					merge_verifier
+						.recv_oracle(spec.len, spec.log_msg_len, true)
+						.unwrap(),
+				);
 			}
 			IPVerifierChannel::sample(&mut merge_verifier);
 		}
-		for (position, (&oracle, (_, transparent, claim))) in
-			iter::zip(&v_oracles, &data).enumerate()
+		for (position, (&oracle, (transparent, claim))) in
+			iter::zip(&v_oracles, relations).enumerate()
 		{
-			let transparent = transparent.clone();
 			// Corrupt only the first oracle's claim.
 			// Only do this when tampering is requested.
 			// Every other claim is left untouched.
 			let claim = if tamper && position == 0 {
-				*claim + F::ONE
+				claim + F::ONE
 			} else {
-				*claim
+				claim
 			};
 			merge_verifier
 				.verify_oracle_relation(
@@ -526,6 +567,47 @@ mod tests {
 				.expect("verification only ever queues a relation, it does not check it here");
 		}
 		merge_verifier.into_inner().finish();
+	}
+
+	/// A spec of `2^log_msg_len` entries, only the first `len` of them content.
+	fn spec(log_msg_len: usize, len: usize) -> OracleSpec {
+		OracleSpec {
+			len,
+			..OracleSpec::new(log_msg_len)
+		}
+	}
+
+	#[test]
+	fn spartan_round_shares_the_private_oracle() {
+		// The plain Spartan round: precommit 2^10, private 2^17 filled to 98332, mask 2^9.
+		//
+		// Both tenants fit in the private oracle's padding, so the round stays at 2^17.
+		let round = [spec(10, 1 << 10), spec(17, 98332), spec(9, 1 << 9)];
+		let mut schedule = OracleSchedule::new();
+		for spec in round {
+			schedule.push(spec);
+		}
+		schedule.end_round();
+		assert_eq!(schedule.merged_specs(), [spec(17, 197 << 9)]);
+
+		run_spec_round_trip::<PackedGhash1x128b>(&[&round], false);
+	}
+
+	#[test]
+	fn tenant_before_and_after_host_round_trip() {
+		// The host arriving first and last, with every tenant in its padding.
+		for round in [
+			[spec(4, 9), spec(2, 4), spec(1, 2)],
+			[spec(1, 2), spec(2, 4), spec(4, 9)],
+		] {
+			run_spec_round_trip::<PackedGhash1x128b>(&[&round], false);
+			run_spec_round_trip::<PackedGhash4x128b>(&[&round], false);
+		}
+
+		// One tenant in the host's padding and one spilling past it, so the round is copied.
+		let round = [spec(2, 4), spec(4, 10), spec(3, 8), spec(2, 4)];
+		run_spec_round_trip::<PackedGhash1x128b>(&[&round], false);
+		run_spec_round_trip::<PackedGhash4x128b>(&[&round], false);
 	}
 
 	#[test]
@@ -612,9 +694,9 @@ mod tests {
 			.collect();
 
 		// One round, sized to fit both oracles.
-		// 2^4 + 2^3 = 24, rounded up to 2^5.
+		// 2^4 + 2^3 = 24 entries of content, rounded up to 2^5.
 		let coarse_specs = schedule.merged_specs();
-		assert_eq!(coarse_specs, [OracleSpec::new(5)]);
+		assert_eq!(coarse_specs, [spec(5, 24)]);
 
 		// Prover side.
 		//
@@ -790,20 +872,31 @@ mod tests {
 	proptest! {
 		#[test]
 		fn round_trip_proptest(
-			rounds in prop::collection::vec(prop::collection::vec(0usize..5, 1..5), 1..5),
+			rounds in prop::collection::vec(
+				prop::collection::vec(
+					(0usize..5).prop_flat_map(|n| (Just(n), 0..=1usize << n)),
+					1..5,
+				),
+				1..5,
+			),
 		) {
 			// Random round shapes.
 			//
-			// 1 to 4 rounds, each holding 1 to 4 oracles sized 2^0 to 2^4.
+			// 1 to 4 rounds, each holding 1 to 4 oracles sized 2^0 to 2^4, each with a random
+			// content length.
 			//
 			// This goes far beyond the hand-picked shapes above.
 			// It stress-tests the alignment argument the merge relies on.
-			let round_refs: Vec<&[usize]> = rounds.iter().map(Vec::as_slice).collect();
-			run_merge_round_trip::<PackedGhash1x128b>(&round_refs, false);
+			let rounds: Vec<Vec<OracleSpec>> = rounds
+				.into_iter()
+				.map(|round| round.into_iter().map(|(n, len)| spec(n, len)).collect())
+				.collect();
+			let round_refs: Vec<&[OracleSpec]> = rounds.iter().map(Vec::as_slice).collect();
+			run_spec_round_trip::<PackedGhash1x128b>(&round_refs, false);
 
 			// The wider packing also mixes word-aligned oracles with sub-word ones,
 			// which is where the two placement paths meet.
-			run_merge_round_trip::<PackedGhash4x128b>(&round_refs, false);
+			run_spec_round_trip::<PackedGhash4x128b>(&round_refs, false);
 		}
 	}
 }

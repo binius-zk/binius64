@@ -2,15 +2,13 @@
 
 //! A channel decorator that merges oracles committed within the same interaction round.
 
-use std::cmp::Reverse;
-
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::multilinear::eq::eq_ind;
 
 use crate::channel::{
-	Error, IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn, merged_log_msg_len,
+	Error, IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn, layout_round,
 };
 
 /// A handle to an oracle received through the merging decorator.
@@ -36,30 +34,16 @@ pub struct Placement {
 
 /// Lays out every round of a schedule, returning one placement per oracle in arrival order.
 ///
-/// Each round's oracles are sorted largest to smallest and laid end to end.
-///
-/// Every step adds a whole multiple of the next block's size.
-/// So each offset divides evenly by that oracle's own size.
+/// Each round's largest oracle hosts the rest past its content, as described on
+/// [`MergeVerifierChannel`].
 pub fn place_oracles(schedule: &OracleSchedule) -> Vec<Placement> {
 	let mut placements = Vec::with_capacity(schedule.specs().len());
 	for (round, specs) in schedule.rounds().enumerate() {
-		let combined_log_len = merged_log_msg_len(specs.iter().map(|spec| spec.log_msg_len));
-
-		let mut order: Vec<usize> = (0..specs.len()).collect();
-		order.sort_by_key(|&k| Reverse(specs[k].log_msg_len));
-
-		let mut block_indices = vec![0; specs.len()];
-		let mut offset = 0usize;
-		for k in order {
-			let n_k = specs[k].log_msg_len;
-			block_indices[k] = offset >> n_k;
-			offset += 1 << n_k;
-		}
-
+		let (block_indices, merged) = layout_round(specs);
 		placements.extend(block_indices.into_iter().map(|block_index| Placement {
 			round,
 			block_index,
-			combined_log_len,
+			combined_log_len: merged.log_msg_len,
 		}));
 	}
 	assert_eq!(placements.len(), schedule.specs().len(), "every oracle must be in a closed round");
@@ -81,28 +65,22 @@ pub fn place_oracles(schedule: &OracleSchedule) -> Vec<Placement> {
 ///
 /// # Merging
 ///
-/// A round's oracles are sorted from largest to smallest.
-/// They are laid out end to end.
+/// [`place_oracles`] lays each round out.
 ///
-/// Every oracle's size is a power of two.
-/// Write the sizes as `2^n_1, 2^n_2, ..., 2^n_k`.
-/// Sort them so `n_1 >= n_2 >= ... >= n_k`.
-///
-/// The combined oracle's size is `2^N`.
-/// `N` is the smallest exponent that covers the total.
+/// The largest oracle is the host, at the start of the combined oracle.
+/// The rest are tenants, largest first, each at the first block of its own size past everything
+/// placed before it, starting at the host's content length.
 ///
 /// ```text
 /// combined oracle, size 2^N:
 ///
-///     [ oracle 1 (2^n_1) | oracle 2 (2^n_2) | ... | oracle k (2^n_k) | unused padding ]
-///       offset 0           offset 2^n_1                                total size 2^N
+///     [ host content | tenant 1 | tenant 2 | ... | tenant k | unused padding ]
+///       offset 0       past host.len                          total size 2^N
 /// ```
 ///
-/// Sorting largest to smallest makes this layout exact.
+/// Tenants fill the host's padding first; `N` exceeds the host's size only if they do not fit.
 ///
-/// Every earlier oracle is at least as large as the current one.
-/// So their combined space is a whole multiple of the current oracle's size.
-/// The current oracle therefore starts on a boundary of its own size.
+/// Each tenant starts on a boundary of its own size.
 /// Its position is then a whole number of its-own-size blocks.
 /// That whole number is its block index.
 ///
@@ -138,6 +116,9 @@ pub fn place_oracles(schedule: &OracleSchedule) -> Vec<Placement> {
 /// The check is zero outside the constituent's own block.
 /// So the combined inner product only ever sees this oracle's own data.
 /// It equals the original claim exactly.
+///
+/// A host's block holds its tenants too, in its padding.
+/// Padding is the channel's to fill, so the host's claims already hold over them.
 pub struct MergeVerifierChannel<'a, F, C>
 where
 	F: Field,
@@ -433,6 +414,35 @@ mod tests {
 				place(0, 5, 5),
 				place(1, 0, 1)
 			]
+		);
+	}
+
+	#[test]
+	fn placements_fill_the_host_padding() {
+		// The plain Spartan round: precommit 2^10, private 2^17 filled to 98332, mask 2^9.
+		//
+		// The private oracle hosts: the precommit goes at block ⌈98332 / 2^10⌉ = 97, ending at
+		// 98 * 2^10, and the mask at block 98 * 2 = 196.
+		let mut schedule = OracleSchedule::new();
+		schedule.push(OracleSpec::new(10));
+		schedule.push(OracleSpec {
+			len: 98332,
+			..OracleSpec::new(17)
+		});
+		schedule.push(OracleSpec::new(9));
+		schedule.end_round();
+		let place = |block_index| Placement {
+			round: 0,
+			block_index,
+			combined_log_len: 17,
+		};
+		assert_eq!(place_oracles(&schedule), [place(97), place(0), place(196)]);
+		assert_eq!(
+			schedule.merged_specs(),
+			[OracleSpec {
+				len: 197 << 9,
+				..OracleSpec::new(17)
+			}]
 		);
 	}
 

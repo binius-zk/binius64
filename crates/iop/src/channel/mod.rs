@@ -8,7 +8,7 @@ pub mod naive;
 pub mod oracle_setup;
 pub mod size_tracking;
 
-use std::iter;
+use std::{cmp::Reverse, iter};
 
 use binius_field::Field;
 use binius_ip::channel::IPVerifierChannel;
@@ -72,12 +72,42 @@ impl OracleSpec {
 	}
 }
 
-/// The length of the one oracle a round's oracles are committed as.
+/// Lays out one round's oracles inside the one oracle they are committed as.
 ///
-/// The oracles lie end to end, so this is the smallest power of two covering their total.
-fn merged_log_msg_len(log_msg_lens: impl IntoIterator<Item = usize>) -> usize {
-	let total_len: usize = log_msg_lens.into_iter().map(|n| 1usize << n).sum();
-	log2_ceil_usize(total_len)
+/// Returns each oracle's block index, in the round's arrival order, and the merged spec.
+///
+/// The largest oracle is the host, at block 0. Each smaller one, largest first, goes at the
+/// first block of its own size past everything placed so far, which starts at the host's `len`:
+///
+/// ```text
+/// [ host content | tenant 1 | tenant 2 | ... | padding ]
+///   0              ⌈host.len⌉                  end      2^N
+/// ```
+///
+/// Tenants land in the host's padding while they fit; `N` grows past the host's size only when
+/// they do not. The merged oracle's `len` is `end`, past the last tenant's whole block.
+pub(crate) fn layout_round(specs: &[OracleSpec]) -> (Vec<usize>, OracleSpec) {
+	let mut order: Vec<usize> = (0..specs.len()).collect();
+	order.sort_by_key(|&k| Reverse(specs[k].log_msg_len));
+
+	let host = specs[order[0]];
+	let mut log_msg_len = host.log_msg_len;
+	let mut end = host.len;
+	let mut block_indices = vec![0; specs.len()];
+	for &k in &order[1..] {
+		let n = specs[k].log_msg_len;
+		let block_index = end.div_ceil(1 << n);
+		end = (block_index + 1) << n;
+		log_msg_len = log_msg_len.max(log2_ceil_usize(end));
+		block_indices[k] = block_index;
+	}
+
+	let merged = OracleSpec {
+		len: end,
+		log_msg_len,
+		is_zk: specs.iter().any(|spec| spec.is_zk),
+	};
+	(block_indices, merged)
 }
 
 /// Every oracle an IOP commits, grouped into the rounds they are committed in.
@@ -163,12 +193,7 @@ impl OracleSchedule {
 	///
 	/// A round is masked as a whole, so its oracle is zero-knowledge if any member is.
 	pub fn merged_specs(&self) -> Vec<OracleSpec> {
-		self.rounds()
-			.map(|round| OracleSpec {
-				is_zk: round.iter().any(|spec| spec.is_zk),
-				..OracleSpec::new(merged_log_msg_len(round.iter().map(|spec| spec.log_msg_len)))
-			})
-			.collect()
+		self.rounds().map(|round| layout_round(round).1).collect()
 	}
 }
 
