@@ -3,8 +3,11 @@
 
 use std::marker::PhantomData;
 
-use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
-use binius_field::{ExtensionField, FieldOps};
+use binius_core::{
+	constraint_system::{ConstraintSystem, InoutSegment},
+	word::Word,
+};
+use binius_field::{ExtensionField, FieldOps, Rijndael8b as B8};
 use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
@@ -13,13 +16,14 @@ use binius_iop::{
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::channel::WordIPVerifierChannel;
+use binius_math::BinarySubspace;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::DeserializeBytes;
 use binius_verifier::{
 	Error, SECURITY_BITS,
 	config::{B1, B128},
-	protocols::shift::{WiringEvalClaim, WiringInfo},
-	reduction::reduce_constraints,
+	protocols::shift::{self, WiringEvalClaim, WiringInfo},
+	reduction::{ReductionOutput, reduce_constraints, verify_public_eval},
 	ring_switch::{self, RingSwitchVerifyOutput},
 };
 use digest::Output;
@@ -151,21 +155,44 @@ impl IOPVerifier {
 			.iter()
 			.map(|&word| Channel::Word::from(word))
 			.collect::<Vec<_>>();
-		let reduction = reduce_constraints(
-			&self.cs,
+		let ReductionOutput {
+			r_rho,
+			r_x,
+			z_challenge,
+			operand_claims,
+		} = reduce_constraints(&self.cs, self.layout.log_instances, channel)?;
+		let shift_output = shift::verify::<B128, _>(
+			self.cs.log_segment_words(InoutSegment::Hidden),
+			&operand_claims,
+			channel,
+		)?;
+		let shift::VerifyOutput {
+			r_j,
+			r_y,
+			witness_eval,
+			..
+		} = &shift_output;
+
+		// Tie in the constants, then close the shift reduction against them.
+		let public_eval =
+			verify_public_eval(&self.cs, InoutSegment::Hidden, &constants, r_j, r_y, channel)?;
+		let shift_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS).isomorphic::<B128>();
+		let wiring = shift::check_eval::<B128, _>(
 			&self.wiring,
-			self.layout.log_instances,
-			InoutSegment::Hidden,
-			&constants,
+			public_eval,
+			&r_x,
+			&shift_domain,
+			&z_challenge,
+			&shift_output,
 			channel,
 		)?;
 
-		// Ring-switch the reduced claim onto the committed trace.
-		let trace_point = reduction.trace_point();
+		// Ring-switch the reduced claim onto the committed trace, at `r_j || r_rho || r_y`.
+		let trace_point = [r_j.as_slice(), &r_rho, r_y].concat();
 		let RingSwitchVerifyOutput {
 			eq_r_double_prime,
 			sumcheck_claim,
-		} = ring_switch::verify(reduction.shift.witness_eval.clone(), &trace_point, channel)?;
+		} = ring_switch::verify(witness_eval.clone(), &trace_point, channel)?;
 
 		// Open the trace oracle against the ring-switch's transparent multilinear.
 		// BaseFold reduces to a challenge point where the transparent evaluates as below.
@@ -179,7 +206,7 @@ impl IOPVerifier {
 			sumcheck_claim,
 		)?;
 
-		Ok(reduction.wiring)
+		Ok(wiring)
 	}
 }
 
