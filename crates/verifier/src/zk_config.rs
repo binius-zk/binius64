@@ -12,6 +12,21 @@
 //! 3. At verification time, running the inner verifier through a [`ZKWrappedVerifierChannel`] that
 //!    records all values as outer public inputs, then finishing with outer Spartan verification
 //!
+//! # Limitations
+//!
+//! The wrapper does not hide private words: the words of the value vector outside the public
+//! segment, which are the declared witness values and the internal values that gates create. Every
+//! inner oracle-relation claim is sent outside the wrapper's one-time pad; the trace claim leaks a
+//! verifier-computable linear function of the private words. For a one-element trace with a
+//! nonzero coefficient, it recovers both words. The witness-dependent inner oracles (the trace,
+//! and for circuits with IMUL constraints the logUp* pushforward oracle) also lack the randomizable
+//! support needed to establish hiding for their query openings.
+//! [`ZKVerifier::verify`] and [`ZKVerifier::verify_sig`] return
+//! [`Error::WitnessPrivacyUnavailable`] for any constraint system with private words, as the prover
+//! does. Lifting this needs, at minimum, a one-time-pad key certified by the outer proof for every
+//! inner oracle-relation claim, randomizable support on every witness-dependent inner oracle, and a
+//! zero-knowledge argument for their composition.
+//!
 //! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
 
 use std::{marker::PhantomData, sync::Arc};
@@ -209,11 +224,18 @@ where
 	}
 
 	/// Verifies a ZK proof against the constraint system.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::WitnessPrivacyUnavailable`], without touching `transcript`, if the
+	/// constraint system has private words; see the [limitations](crate::zk_config#limitations).
 	pub fn verify<Challenger_: Challenger>(
 		&self,
 		inout: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		self.reject_private_witness()?;
+
 		// Create BaseFold channel, merge each round's oracles, and wrap with outer verifier.
 		let channel = self
 			.basefold_compiler
@@ -281,14 +303,34 @@ where
 	///
 	/// Binds `message` into the transcript before any other data, then runs the ordinary
 	/// [`Self::verify`] checks. See [`crate::signature`] for details.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::WitnessPrivacyUnavailable`], without touching `transcript`, if the
+	/// constraint system has private words; see the [limitations](crate::zk_config#limitations).
 	pub fn verify_sig<Challenger_: Challenger>(
 		&self,
 		inout: &[Word],
 		message: &[u8],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		// Checked before the message is observed, so that a rejected call leaves the transcript
+		// untouched. `verify` checks again for its own callers.
+		self.reject_private_witness()?;
 		crate::signature::observe_message::<H, _>(&mut transcript.observe(), message);
 		self.verify(inout, transcript)
+	}
+
+	/// Returns [`Error::WitnessPrivacyUnavailable`] if the constraint system has private words.
+	const fn reject_private_witness(&self) -> Result<(), Error> {
+		if self
+			.constraint_system()
+			.n_hidden_words(InoutSegment::Public)
+			> 0
+		{
+			return Err(Error::WitnessPrivacyUnavailable);
+		}
+		Ok(())
 	}
 }
 
@@ -337,4 +379,11 @@ pub enum Error {
 	OuterVerification(#[from] binius_spartan_verifier::Error),
 	#[error("constraint system error: {0}")]
 	ConstraintSystem(#[from] binius_core::ConstraintSystemError),
+	/// The constraint system has private words, which this configuration does not hide; see the
+	/// [limitations](crate::zk_config#limitations).
+	#[error(
+		"zero-knowledge verification is disabled for private words; use `Verifier` if privacy is \
+		 not needed"
+	)]
+	WitnessPrivacyUnavailable,
 }

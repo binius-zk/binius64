@@ -22,9 +22,12 @@
 //!
 //! Signing is only exposed on the zero-knowledge prover and verifier (`ZKProver::prove_sig` and
 //! [`ZKVerifier::verify_sig`](crate::zk_config::ZKVerifier::verify_sig)): a signature of knowledge
-//! should not reveal the witness it is signed under, and only the ZK configuration hides the
-//! witness. The [`observe_message`] helper below is generic over the hash suite and is shared by
-//! both.
+//! should not reveal the witness it is signed under. Both reject constraint systems with private
+//! words, which the ZK configuration does not hide (see its
+//! [limitations](crate::zk_config#limitations)). A constraint system without private words has no
+//! secret, so anyone can produce a signature of knowledge for it: such a signature binds the
+//! message to a true statement but authenticates no signer. The [`observe_message`] helper below is
+//! generic over the hash suite and is shared by both.
 //!
 //! # Security analysis
 //!
