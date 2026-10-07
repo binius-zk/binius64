@@ -341,14 +341,11 @@ pub fn ripemd160_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: us
 	];
 
 	// Process compression blocks
-	padded_message
-		.chunks_exact(16)
+	let (blocks, _) = padded_message.as_chunks::<16>();
+	blocks
+		.iter()
 		.enumerate()
-		.fold(initial_state, |state, (block_idx, block)| {
-			let block_message: [Wire; 16] = block
-				.try_into()
-				.expect("length of padded_message is a multiple of 16 by construction");
-
+		.fold(initial_state, |state, (block_idx, &block_message)| {
 			ripemd160_compress(
 				&builder.subcircuit(format!("ripemd160_compress[{block_idx}]")),
 				state,

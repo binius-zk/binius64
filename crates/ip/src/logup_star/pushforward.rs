@@ -120,8 +120,9 @@ where
 	let evals: Vec<C::Elem> = channel
 		.recv_many(2 * tables.len())
 		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
-	let (pushforward_eval_claims, table_eval_claims): (Vec<_>, Vec<_>) = evals
-		.chunks_exact(2)
+	let (pairs, _) = evals.as_chunks::<2>();
+	let (pushforward_eval_claims, table_eval_claims): (Vec<_>, Vec<_>) = pairs
+		.iter()
 		.map(|pair| (pair[0].clone(), pair[1].clone()))
 		.unzip();
 

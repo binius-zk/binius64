@@ -139,7 +139,8 @@ pub fn wots_public_key_hash(
 	chain_ends: &[Digest; V],
 ) -> Digest {
 	let mut data = [0u8; V * DIGEST_LEN];
-	for (chunk, end) in iter::zip(data.chunks_exact_mut(DIGEST_LEN), chain_ends) {
+	let (chunks, _) = data.as_chunks_mut::<DIGEST_LEN>();
+	for (chunk, end) in iter::zip(chunks, chain_ends) {
 		chunk.copy_from_slice(end);
 	}
 	tweak_hash(public_param, TWEAK_TYPE_WOTS_PK, 0, epoch, &data)
@@ -263,7 +264,8 @@ impl Hint for ChainHashesHint {
 /// Little-endian bytes from 64-bit words.
 fn bytes_from_words<const N: usize>(words: &[Word]) -> [u8; N] {
 	let mut bytes = [0u8; N];
-	for (chunk, word) in iter::zip(bytes.chunks_exact_mut(8), words) {
+	let (chunks, _) = bytes.as_chunks_mut::<8>();
+	for (chunk, word) in iter::zip(chunks, words) {
 		chunk.copy_from_slice(&word.as_u64().to_le_bytes());
 	}
 	bytes
@@ -271,8 +273,9 @@ fn bytes_from_words<const N: usize>(words: &[Word]) -> [u8; N] {
 
 /// The inverse of [`bytes_from_words`].
 fn bytes_to_words(bytes: &[u8], words: &mut [Word]) {
-	for (word, chunk) in iter::zip(words, bytes.chunks_exact(8)) {
-		*word = Word::from_u64(u64::from_le_bytes(chunk.try_into().expect("eight bytes")));
+	let (chunks, _) = bytes.as_chunks::<8>();
+	for (word, &chunk) in iter::zip(words, chunks) {
+		*word = Word::from_u64(u64::from_le_bytes(chunk));
 	}
 }
 

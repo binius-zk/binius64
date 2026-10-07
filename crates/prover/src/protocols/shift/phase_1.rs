@@ -216,6 +216,7 @@ impl<P: PackedField> SparseShiftRows<P> {
 	}
 
 	/// The stored rows, each with the row index it sits at.
+	#[allow(clippy::chunks_exact_to_as_chunks)] // `row_len::<P>()` is not a const generic arg
 	pub(crate) fn rows(&self) -> impl Iterator<Item = (usize, &[P])> {
 		iter::zip(&self.indices, self.values.chunks_exact(row_len::<P>()))
 			.map(|(&index, row)| (index as usize, row))

@@ -613,8 +613,9 @@ fn compress_inner(
 /// The bytes are packed big-endian into 16 32-bit words, one per wire, with the high 32 bits left
 /// zero — matching the precondition on `m` documented in [`sha256_compress`].
 pub fn populate_message_block(w: &mut WitnessFiller<'_>, m: &[Wire; 16], bytes: [u8; 64]) {
-	for (wire, chunk) in m.iter().zip(bytes.chunks_exact(4)) {
-		let word = u32::from_be_bytes(chunk.try_into().unwrap());
+	let (chunks, _) = bytes.as_chunks::<4>();
+	for (wire, &chunk) in m.iter().zip(chunks) {
+		let word = u32::from_be_bytes(chunk);
 		w[*wire] = Word(word as u64);
 	}
 }

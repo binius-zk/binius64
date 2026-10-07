@@ -456,8 +456,8 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 		// Every query then climbs from its own leaf up to that layer.
 		// Two climbs are independent, so they share hash cores, which halves what a level costs.
 		let mut values = Vec::with_capacity(indices.len() * commitment.leaf_size);
-		let mut pairs = indices.chunks_exact(2);
-		for pair in &mut pairs {
+		let (pairs, remainder) = indices.as_chunks::<2>();
+		for pair in pairs {
 			// The tape carries a leaf and a branch per query, whatever shares a core.
 			let openings = [(); 2]
 				.map(|()| self.input_opening(commitment.leaf_size, tree_depth - layer_depth));
@@ -479,7 +479,7 @@ impl MerkleIPVerifierChannel<B128> for Binius64BuilderChannel {
 			}
 		}
 		// An odd query count leaves the last climb with no partner to share cores with.
-		if let [index] = pairs.remainder() {
+		if let [index] = remainder {
 			let (leaf, branch) = self.input_opening(commitment.leaf_size, tree_depth - layer_depth);
 
 			let builder = self.merkle_subcircuit("opening");

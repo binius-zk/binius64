@@ -492,6 +492,7 @@ where
 
 	// The packed elements `exponents` fills whole. Rounding down to a multiple of `P::WIDTH` keeps
 	// every lane of this loop in range, so it packs without a per-lane bounds check.
+	#[allow(clippy::chunks_exact_to_as_chunks)] // `P::WIDTH` is not usable as a const generic arg
 	let mut chunks = exponents.chunks_exact(P::WIDTH);
 	values.extend(
 		chunks

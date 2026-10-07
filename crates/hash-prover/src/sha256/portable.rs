@@ -308,7 +308,8 @@ pub fn sha256_multi<const N: usize>(inputs: [&[u8]; N]) -> [[u8; DIGEST_LEN]; N]
 	// FIPS 180-4 section 6.2.2 emits the state most significant byte first.
 	states.map(|state| {
 		let mut digest = [0u8; DIGEST_LEN];
-		for (chunk, word) in digest.chunks_exact_mut(4).zip(state) {
+		let (chunks, _) = digest.as_chunks_mut::<4>();
+		for (chunk, word) in chunks.iter_mut().zip(state) {
 			chunk.copy_from_slice(&word.to_be_bytes());
 		}
 		digest
@@ -502,7 +503,8 @@ mod tests {
 		// The bytes are written big-endian, since that is the order the loader reads.
 		let mut blocks = [[0u8; BLOCK_LEN]; 16];
 		for (lane, block) in blocks.iter_mut().enumerate() {
-			for (w, word) in block.chunks_exact_mut(4).enumerate() {
+			let (words, _) = block.as_chunks_mut::<4>();
+			for (w, word) in words.iter_mut().enumerate() {
 				word.copy_from_slice(&((lane * 16 + w) as u32).to_be_bytes());
 			}
 		}

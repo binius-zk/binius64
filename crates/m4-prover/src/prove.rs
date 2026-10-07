@@ -818,11 +818,12 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		// Four standalone AND gates on distinct wires — the AND work is not tied to the products.
-		for pair in inputs.chunks_exact(2) {
+		let (pairs, _) = inputs.as_chunks::<2>();
+		for pair in pairs {
 			builder.mark_inout(builder.band(pair[0], pair[1]));
 		}
 		// Two products — fewer IMUL constraints than AND constraints.
-		for pair in inputs.chunks_exact(2).take(2) {
+		for pair in pairs.iter().take(2) {
 			let (hi, lo) = builder.imul(pair[0], pair[1]);
 			builder.mark_inout(hi);
 			builder.mark_inout(lo);
@@ -938,11 +939,12 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		// Four standalone AND gates on distinct wires.
-		for pair in inputs.chunks_exact(2) {
+		let (pairs, _) = inputs.as_chunks::<2>();
+		for pair in pairs {
 			builder.mark_inout(builder.band(pair[0], pair[1]));
 		}
 		// Two integer products — fewer IMUL constraints than AND constraints.
-		for pair in inputs.chunks_exact(2).take(2) {
+		for pair in pairs.iter().take(2) {
 			let (hi, lo) = builder.imul(pair[0], pair[1]);
 			builder.mark_inout(hi);
 			builder.mark_inout(lo);
@@ -1006,10 +1008,11 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		// Three standalone AND gates, three integer products, and three GHASH-field products.
-		for pair in inputs.chunks_exact(2).take(3) {
+		let (pairs, _) = inputs.as_chunks::<2>();
+		for pair in pairs.iter().take(3) {
 			builder.mark_inout(builder.band(pair[0], pair[1]));
 		}
-		for pair in inputs.chunks_exact(2).take(3) {
+		for pair in pairs.iter().take(3) {
 			let (hi, lo) = builder.imul(pair[0], pair[1]);
 			builder.mark_inout(hi);
 			builder.mark_inout(lo);

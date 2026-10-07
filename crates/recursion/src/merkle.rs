@@ -531,12 +531,12 @@ fn fold_to_root(builder: &CircuitBuilder, digests: &[Digest]) -> Digest {
 		let mut parents = Vec::with_capacity(layer.len() / 2);
 
 		// Four digests give two independent parents, which share one two-lane compression.
-		let mut quads = layer.chunks_exact(4);
-		for quad in &mut quads {
+		let (quads, remainder) = layer.as_chunks::<4>();
+		for quad in quads {
 			parents.extend(compress_node_2x(&b, [(quad[0], quad[1]), (quad[2], quad[3])]));
 		}
 		// A layer of exactly two digests has one parent, with no partner to share a core with.
-		if let [left, right] = *quads.remainder() {
+		if let [left, right] = *remainder {
 			parents.push(compress_node(&b, left, right));
 		}
 
@@ -575,11 +575,9 @@ fn leaf_digest_2x(builder: &CircuitBuilder, values: [&[Element]; 2]) -> [Digest;
 	// Both lanes open from SHA-256's initial state, replicated into both halves.
 	let mut state = replicate_lanes(builder, State::iv(builder));
 	// Sixteen message words to a block, and the two lanes consume their blocks in lockstep.
-	for (i, (block_0, block_1)) in padded[0]
-		.chunks_exact(16)
-		.zip(padded[1].chunks_exact(16))
-		.enumerate()
-	{
+	let (blocks_0, _) = padded[0].as_chunks::<16>();
+	let (blocks_1, _) = padded[1].as_chunks::<16>();
+	for (i, (block_0, block_1)) in blocks_0.iter().zip(blocks_1).enumerate() {
 		let b = builder.subcircuit(format!("compress[{i}]"));
 		// Lane 0 low, lane 1 high, merged by XOR since the halves are disjoint.
 		let merged = array::from_fn(|k| b.bxor(block_0[k], b.shl(block_1[k], 32)));

@@ -119,10 +119,7 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 	// Consecutive blocks chain, so each pair runs in the two lanes of one parallel core.
 	// A pair costs ~half the AND count of two single-lane compressions.
 	// A trailing odd block has no partner and is compressed single-lane.
-	let blocks: Vec<[Wire; 16]> = padded_message
-		.chunks_exact(16)
-		.map(|block| block.try_into().unwrap())
-		.collect();
+	let (blocks, _) = padded_message.as_chunks::<16>();
 	let n_blocks = blocks.len();
 
 	let mut state = State::iv(builder);

@@ -221,10 +221,9 @@ fn bench_kernel(c: &mut Criterion) {
 	// exists this arm still uses it, so the delta to `dispatched` is the rounds alone.
 	group.bench_function(BenchmarkId::new("lane_loops", LANES), |b| {
 		b.iter(|| {
-			for chunk in black_box(&blocks).chunks_exact(LANES) {
+			let (batches, _) = black_box(&blocks).as_chunks::<LANES>();
+			for batch in batches {
 				let mut states = [IV; LANES];
-				let batch: &[[u8; 64]; LANES] =
-					chunk.try_into().expect("chunks_exact yields LANES");
 				compress256_multi_portable(&mut states, batch);
 				black_box(states);
 			}
@@ -234,10 +233,9 @@ fn bench_kernel(c: &mut Criterion) {
 	// The dispatched kernel, which is whichever hand-written path this target compiled in.
 	group.bench_function(BenchmarkId::new("dispatched", LANES), |b| {
 		b.iter(|| {
-			for chunk in black_box(&blocks).chunks_exact(LANES) {
+			let (batches, _) = black_box(&blocks).as_chunks::<LANES>();
+			for batch in batches {
 				let mut states = [IV; LANES];
-				let batch: &[[u8; 64]; LANES] =
-					chunk.try_into().expect("chunks_exact yields LANES");
 				compress256_multi(&mut states, batch);
 				black_box(states);
 			}
@@ -249,9 +247,9 @@ fn bench_kernel(c: &mut Criterion) {
 	if LANES != 16 {
 		group.bench_function(BenchmarkId::new("dispatched", 16), |b| {
 			b.iter(|| {
-				for chunk in black_box(&blocks).chunks_exact(16) {
+				let (batches, _) = black_box(&blocks).as_chunks::<16>();
+				for batch in batches {
 					let mut states = [IV; 16];
-					let batch: &[[u8; 64]; 16] = chunk.try_into().expect("chunks_exact yields 16");
 					compress256_multi(&mut states, batch);
 					black_box(states);
 				}

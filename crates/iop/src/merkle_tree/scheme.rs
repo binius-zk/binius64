@@ -79,8 +79,9 @@ impl<T, H: HashSuite> BinaryMerkleTreeScheme<T, H> {
 
 		// The first round reads the caller's slice and writes into fresh space.
 		// That caps the scratch buffer at half the input length.
-		let mut layer = digests
-			.chunks_exact(2)
+		let (pairs, _) = digests.as_chunks::<2>();
+		let mut layer = pairs
+			.iter()
 			.map(|pair| {
 				self.compression
 					.compress([pair[0].clone(), pair[1].clone()])

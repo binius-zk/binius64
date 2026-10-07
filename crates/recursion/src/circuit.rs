@@ -284,8 +284,9 @@ impl RecursiveCircuit {
 		//
 		// They arrive in the order the wiring multilinear reads its input.
 		// The claimed evaluation is the last of them.
-		let elems = outer_inout[self.statement.len()..]
-			.chunks_exact(2)
+		let (pairs, _) = outer_inout[self.statement.len()..].as_chunks::<2>();
+		let elems = pairs
+			.iter()
 			.map(|pair| {
 				B128::new((u128::from(pair[1].as_u64()) << 64) | u128::from(pair[0].as_u64()))
 			})
