@@ -2,6 +2,7 @@
 
 mod error;
 pub mod prove;
+mod switchover;
 mod transpose_bits;
 pub mod witness;
 

@@ -41,4 +41,4 @@ pub use packed_extension::*;
 pub use packed_fields::{sliced::SlicedPackedField, *};
 pub use random::Random;
 pub use transpose::{transpose_square_blocks, transpose_square_blocks_array};
-pub use underlier::{Underlier, UnderlierView};
+pub use underlier::{U1, U2, U4, Underlier, UnderlierView};

@@ -63,6 +63,6 @@ impl<F: BinaryField> BitWeightTables<F> {
 		// word's bit positions, so summing them is the full inner product.
 		iter::zip(Divisible::<u8>::ref_iter(&word.0), &self.tables)
 			.map(|(byte, table)| table[byte as usize])
-			.fold(F::ZERO, |acc, contribution| acc + contribution)
+			.sum()
 	}
 }
