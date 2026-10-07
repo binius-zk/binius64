@@ -19,7 +19,6 @@ use binius_ip_prover::{
 		batch::{BatchSumcheckOutput, batch_prove, batch_prove_and_write_evals},
 		bivariate_product_mle,
 		multilinear_eval::multilinear_eval_prover,
-		quadratic_mlecheck_prover,
 	},
 };
 use binius_math::{
@@ -40,9 +39,11 @@ use either::Either;
 use itertools::izip;
 
 use super::{
+	bit_column_mle::BitColumnMlecheckProver,
 	error::Error,
 	selector_mle::{Claim, SelectorMlecheckProver},
-	witness::{Witness, limb_index, two_valued_field_buffer},
+	switchover::BinarySwitchover,
+	witness::{Witness, limb_index},
 };
 use crate::fold_word::{BitAxisFolder, WordAxisFolder};
 
@@ -345,21 +346,13 @@ where
 			folded_index_claim,
 		));
 
-		// Embed `a_0`, `b_0`, `c_lo_0` bits into field buffers for the overflow zerocheck.
-		let binary_elements = [F::zero(), F::one()];
-
-		// TODO: Use a special 1-bit-optimized MLE-check with switchover to save memory.
-		let a_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, a_exponents, binary_elements);
-		let b_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, b_exponents, binary_elements);
-		let c_lo_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, c_lo_exponents, binary_elements);
-
-		// The overflow parity check binds at the Phase-2 constraint point `b_eval_point` (r_2) —
-		// reused for free from the `b` re-randomization.
-		let overflow_prover = MleToSumCheckDecorator::new(quadratic_mlecheck_prover(
-			alloc,
-			[a_0, b_0, c_lo_0],
-			|[a, b, c]| a * b - c,
-			|[a, b, _c]| a * b,
+		// The overflow parity zerocheck `a_0 · b_0 − c_lo_0` runs over the low bit columns, which
+		// stay packed in words until the switchover. It binds at the Phase-2 constraint point
+		// `b_eval_point` (r_2) — reused for free from the `b` re-randomization.
+		let low_bits = [a_exponents, b_exponents, c_lo_exponents]
+			.map(|exponents| BinarySwitchover::<P, _>::new_bit(alloc, exponents, 0, n_vars));
+		let overflow_prover = MleToSumCheckDecorator::new(BitColumnMlecheckProver::new(
+			low_bits,
 			b_eval_point.to_vec(),
 			F::ZERO,
 		));

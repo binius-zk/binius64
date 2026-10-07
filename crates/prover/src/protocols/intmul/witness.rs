@@ -467,56 +467,6 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 	FieldBuffer::new(a.log_len(), product)
 }
 
-/// Constructs a field buffer with values selected from `elements` based on the bit values
-/// of `exponents`.
-pub fn two_valued_field_buffer<A, F, P>(
-	alloc: &A,
-	bit_offset: usize,
-	exponents: &[Word],
-	elements: [F; 2],
-) -> FieldVec<P, A>
-where
-	A: Allocator,
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	let n_vars = log2_ceil_usize(exponents.len());
-	let packed_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
-
-	// Select `elements[1]` if bit `bit_offset` of the word is set, else `elements[0]`. A row past
-	// the columns' end is `Word::ZERO`, whose bits are all clear, so it selects `elements[0]`.
-	let select = |&word: &Word| elements[word.extract_bit(bit_offset) as usize];
-	let padding = elements[0];
-
-	let mut values = alloc.alloc::<P>(packed_len);
-
-	// The packed elements `exponents` fills whole. Rounding down to a multiple of `P::WIDTH` keeps
-	// every lane of this loop in range, so it packs without a per-lane bounds check.
-	#[allow(clippy::chunks_exact_to_as_chunks)] // `P::WIDTH` is not usable as a const generic arg
-	let mut chunks = exponents.chunks_exact(P::WIDTH);
-	values.extend(
-		chunks
-			.by_ref()
-			.map(|chunk| P::from_scalars(chunk.iter().map(select))),
-	);
-
-	// The columns' trailing words share a packed element with the start of the padding.
-	let tail = chunks.remainder();
-	if !tail.is_empty() {
-		values.push(P::from_scalars(
-			tail.iter()
-				.map(select)
-				.chain(iter::repeat(padding))
-				.take(P::WIDTH),
-		));
-	}
-
-	// The rest of the constraint axis is padding.
-	values.resize(packed_len, P::broadcast(padding));
-
-	FieldBuffer::new(n_vars, values)
-}
-
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;

@@ -283,7 +283,7 @@ where
 	fn finish(self) -> Vec<F> {
 		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
-		let mut multilinear_evals = self.switchover.finish().to_vec();
+		let mut multilinear_evals = self.switchover.finish();
 		multilinear_evals.push(self.selected.get(0));
 		multilinear_evals
 	}
