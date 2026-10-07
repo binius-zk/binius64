@@ -7,7 +7,7 @@ use std::array;
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, Divisible, PackedField, U1, U2, U4, Underlier,
+	BinaryField, Divisible, PackedField, U2, U4, Underlier,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformationFactory, Transformation,
@@ -162,6 +162,7 @@ where
 	///
 	/// ## Preconditions
 	///
+	/// * not [`Self::is_binary`], whose values [`Self::fill_bit_masks`] writes instead
 	/// * `chunk_vars` is below the remaining variable count
 	/// * both scratch buffers hold `2^chunk_vars` values
 	pub fn fill_halves(
@@ -179,12 +180,7 @@ where
 		match &self.state {
 			// Round `r` reads `2^r`-bit groups of a word, so each round has its own underlier.
 			SwitchoverState::Pre { blocks } => match self.challenges.len() {
-				// A one-bit group needs no lookup: its value is the bit itself.
-				0 => {
-					self.fill_groups::<U1, _>(blocks, selector, half_vars, start, scratch, |bit| {
-						if bit.val() == 1 { F::ONE } else { F::ZERO }
-					});
-				}
+				0 => unreachable!("binary selector values are filled as masks"),
 				1 => self.fill_lookups::<U2, u8>(blocks, selector, half_vars, start, scratch),
 				2 => self.fill_lookups::<U4, u8>(blocks, selector, half_vars, start, scratch),
 				3 => self.fill_lookups::<u8, u8>(blocks, selector, half_vars, start, scratch),
@@ -241,12 +237,68 @@ where
 		u64: Divisible<UGroup>,
 		Value: Fn(UGroup) -> F + Sync,
 	{
-		let log_cols = self.n_vars.saturating_sub(Word::LOG_BITS);
 		fill(scratch, start, |index, half| {
-			let g = reverse_bits(index >> log_cols, (half_vars - log_cols) as u32);
-			let word = blocks[(index & ((1 << log_cols) - 1)) << Word::LOG_BITS | selector];
+			let (word, g) = self.group_word(blocks, selector, half_vars, index);
 			value(Divisible::<UGroup>::get(&word.0, 2 * g + half))
 		});
+	}
+
+	/// The word of selector `selector` holding the halves' values at `index`, and the index `g'`
+	/// within the half of their groups, `2g'` and `2g' + 1`.
+	const fn group_word(
+		&self,
+		blocks: &[Word],
+		selector: usize,
+		half_vars: usize,
+		index: usize,
+	) -> (Word, usize) {
+		let log_cols = self.n_vars.saturating_sub(Word::LOG_BITS);
+		let g = reverse_bits(index >> log_cols, (half_vars - log_cols) as u32);
+		let word = blocks[(index & ((1 << log_cols) - 1)) << Word::LOG_BITS | selector];
+		(word, g)
+	}
+
+	/// Whether no variable is bound yet, so every selector value is a bit.
+	pub const fn is_binary(&self) -> bool {
+		self.challenges.is_empty()
+	}
+
+	/// Writes the halves of the chunk [`Self::fill_halves`] would, as lane masks rather than field
+	/// values: `masks[0]` selects the lanes where the selector is 1 with its highest variable set,
+	/// and `masks[1]` the lanes where the two halves differ, i.e. where their sum is 1.
+	///
+	/// ## Preconditions
+	///
+	/// * [`Self::is_binary`]
+	/// * `chunk_vars` is below the remaining variable count
+	/// * both mask buffers hold one mask per packed element of a `2^chunk_vars`-value chunk
+	pub fn fill_bit_masks(
+		&self,
+		selector: usize,
+		chunk_vars: usize,
+		chunk_index: usize,
+		[masks_1, masks_inf]: [&mut [P::Mask]; 2],
+	) {
+		assert!(self.is_binary());
+		let SwitchoverState::Pre { blocks } = &self.state else {
+			unreachable!("the switchover runs after the first fold");
+		};
+		let half_vars = self.n_vars - 1;
+		assert!(chunk_vars <= half_vars);
+
+		let start = chunk_index << chunk_vars;
+		// A chunk narrower than `P` repeats its values across the spare lanes, as `fill` does.
+		let mask = (1 << chunk_vars) - 1;
+		let bits = |index: usize| {
+			let (word, g) = self.group_word(blocks, selector, half_vars, start + (index & mask));
+			let pair = word.0 >> (2 * g);
+			(pair & 2 != 0, pair & 1 != (pair >> 1) & 1)
+		};
+		for (i, (mask_1, mask_inf)) in masks_1.iter_mut().zip(masks_inf).enumerate() {
+			let lanes = || (0..P::WIDTH).map(|lane| bits(i * P::WIDTH + lane));
+			*mask_1 = P::make_mask(lanes().map(|(bit_1, _)| bit_1));
+			*mask_inf = P::make_mask(lanes().map(|(_, bit_inf)| bit_inf));
+		}
 	}
 }
 
@@ -280,7 +332,7 @@ fn padded_tensor<F: BinaryField>(challenges: &[F]) -> Vec<F> {
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::Field;
+	use binius_field::{Field, Maskable};
 	use binius_math::{
 		multilinear::evaluate::evaluate,
 		test_utils::{B128, Packed128b, random_scalars},
@@ -334,13 +386,34 @@ mod tests {
 				return Ok(());
 			}
 
+			let selectors = switchover.selectors();
 			for chunk_vars in 0..remaining {
 				let mut scratch = [FieldBuffer::zeros(chunk_vars), FieldBuffer::zeros(chunk_vars)];
+				let mut masks = [(); 2].map(|_| {
+					vec![P::make_mask(std::iter::empty()); scratch[0].as_ref().len()]
+				});
 				for (b, column) in columns.iter().enumerate() {
 					let (half_0, half_1) = column.split_half();
 					for chunk_index in 0..1 << (remaining - 1 - chunk_vars) {
 						let [scratch_0, scratch_1] = &mut scratch;
-						switchover.selectors().fill_halves(
+						if selectors.is_binary() {
+							// The masks select the ones of `half_1` and of `half_0 + half_1`.
+							let [masks_1, masks_inf] = &mut masks;
+							selectors.fill_bit_masks(b, chunk_vars, chunk_index, [masks_1, masks_inf]);
+							for (scratch, masks) in [(&mut *scratch_0, &masks[0]), (&mut *scratch_1, &masks[1])] {
+								for (value, mask) in scratch.as_mut().iter_mut().zip(masks) {
+									*value = P::broadcast(B128::ONE).select(mask);
+								}
+							}
+							let half_0 = half_0.chunk(chunk_vars, chunk_index);
+							let half_1 = half_1.chunk(chunk_vars, chunk_index);
+							let half_inf = half_0.iter_scalars().zip(half_1.iter_scalars()).map(|(x, y)| x + y).collect::<Vec<_>>();
+							let half_inf = FieldBuffer::<P>::from_values(&half_inf);
+							prop_assert_eq!(scratch[0].as_view(), half_1);
+							prop_assert_eq!(scratch[1].as_view(), half_inf.as_view());
+							continue;
+						}
+						selectors.fill_halves(
 							b,
 							chunk_vars,
 							chunk_index,

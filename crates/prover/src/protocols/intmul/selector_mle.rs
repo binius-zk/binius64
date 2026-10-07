@@ -1,6 +1,8 @@
 // Copyright 2023-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::iter;
+
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, WideMul};
@@ -129,18 +131,27 @@ where
 		// Borrowed halves cross that boundary for any backing store the buffer is built on.
 		let (selected_0, selected_1) = self.selected.split_half();
 		let selectors = self.switchover.selectors();
+		let is_binary = selectors.is_binary();
 
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
 			.fold(
 				|| {
+					let binary_chunk = FieldBuffer::<P>::zeros(chunk_vars);
+					let masks = [(); 2].map(|_| {
+						(0..binary_chunk.as_ref().len())
+							.map(|_| P::make_mask(iter::empty()))
+							.collect::<Vec<_>>()
+					});
 					(
 						vec![RoundEvals::<P, 2>::default(); sums.len()],
-						FieldBuffer::<P>::zeros(chunk_vars),
-						FieldBuffer::<P>::zeros(chunk_vars),
+						binary_chunk.clone(),
+						binary_chunk,
+						masks,
 					)
 				},
-				|(mut packed_prime_evals, mut binary_chunk_0, mut binary_chunk_1), chunk_index| {
+				|(mut packed_prime_evals, mut binary_chunk_0, mut binary_chunk_1, mut masks),
+				 chunk_index| {
 					let selected_0_chunk = selected_0.chunk(chunk_vars, chunk_index);
 					let selected_1_chunk = selected_1.chunk(chunk_vars, chunk_index);
 
@@ -150,36 +161,70 @@ where
 						let eq_chunk = eq_tracker.chunk();
 						let eq_suffix_eval = eq_tracker.suffix().get(chunk_index);
 
-						selectors.fill_halves(
-							selector,
-							chunk_vars,
-							chunk_index,
-							[binary_chunk_0.as_mut_view(), binary_chunk_1.as_mut_view()],
-						);
-
 						// Accumulate `eq_i * composition` in unreduced (wide) form and reduce once
 						// at the end of the chunk. Only the final multiply by `eq_i` is widened;
 						// the `composition` product is reduced as usual because it feeds into that
 						// widening multiply.
 						let mut wide_y_1 = <P as WideMul>::Output::default();
 						let mut wide_y_inf = <P as WideMul>::Output::default();
-						for (&eq_i, &selected_0_i, &selected_1_i, &selector_0_i, &selector_1_i) in izip!(
-							eq_chunk.as_ref(),
-							selected_0_chunk.as_ref(),
-							selected_1_chunk.as_ref(),
-							binary_chunk_0.as_ref(),
-							binary_chunk_1.as_ref(),
-						) {
-							let selected_inf_i = selected_0_i + selected_1_i;
-							let selector_inf_i = selector_0_i + selector_1_i;
-
-							// selected * selector + (1 - selector)
-							// @one: selector * (selected - 1) + 1
-							// @inf: selector * selected (note that lower degree terms are dropped)
-							let y_1_prod = selector_1_i * (selected_1_i - P::one()) + P::one();
-							let y_inf_prod = selector_inf_i * selected_inf_i;
+						let mut accumulate = |eq_i, y_1_prod, y_inf_prod| {
 							wide_y_1 += P::wide_mul(eq_i, y_1_prod);
 							wide_y_inf += P::wide_mul(eq_i, y_inf_prod);
+						};
+						if is_binary {
+							// Every selector value is a bit, so the composition products are
+							// lane selects.
+							let [masks_1, masks_inf] = &mut masks;
+							selectors.fill_bit_masks(
+								selector,
+								chunk_vars,
+								chunk_index,
+								[masks_1, masks_inf],
+							);
+							for (&eq_i, &selected_0_i, &selected_1_i, mask_1, mask_inf) in izip!(
+								eq_chunk.as_ref(),
+								selected_0_chunk.as_ref(),
+								selected_1_chunk.as_ref(),
+								&masks[0],
+								&masks[1],
+							) {
+								// @one: selected if the selector is set, else 1
+								// @inf: selected_inf if the selector halves differ, else 0
+								let y_1_prod = (selected_1_i + P::one()).select(mask_1) + P::one();
+								let y_inf_prod = (selected_0_i + selected_1_i).select(mask_inf);
+								accumulate(eq_i, y_1_prod, y_inf_prod);
+							}
+						} else {
+							selectors.fill_halves(
+								selector,
+								chunk_vars,
+								chunk_index,
+								[binary_chunk_0.as_mut_view(), binary_chunk_1.as_mut_view()],
+							);
+							for (
+								&eq_i,
+								&selected_0_i,
+								&selected_1_i,
+								&selector_0_i,
+								&selector_1_i,
+							) in izip!(
+								eq_chunk.as_ref(),
+								selected_0_chunk.as_ref(),
+								selected_1_chunk.as_ref(),
+								binary_chunk_0.as_ref(),
+								binary_chunk_1.as_ref(),
+							) {
+								let selected_inf_i = selected_0_i + selected_1_i;
+								let selector_inf_i = selector_0_i + selector_1_i;
+
+								// selected * selector + (1 - selector)
+								// @one: selector * (selected - 1) + 1
+								// @inf: selector * selected (note that lower degree terms are
+								// dropped)
+								let y_1_prod = selector_1_i * (selected_1_i - P::one()) + P::one();
+								let y_inf_prod = selector_inf_i * selected_inf_i;
+								accumulate(eq_i, y_1_prod, y_inf_prod);
+							}
 						}
 						let chunk_round_evals = RoundEvals([wide_y_1, wide_y_inf]).reduce::<P>();
 
@@ -188,10 +233,10 @@ where
 						*round_evals += &(chunk_round_evals * eq_suffix_eval);
 					}
 
-					(packed_prime_evals, binary_chunk_0, binary_chunk_1)
+					(packed_prime_evals, binary_chunk_0, binary_chunk_1, masks)
 				},
 			)
-			.map(|(evals, _, _)| evals)
+			.map(|(evals, ..)| evals)
 			// A merge seeded with a partial that already exists never touches a buffer of zeros.
 			// An identity would allocate and zero one accumulator per merge, then add all of it.
 			.reduce_with(|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + &r).collect())
