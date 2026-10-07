@@ -98,7 +98,7 @@ where
 	//     masked.
 	let oracles = table_n_vars
 		.iter()
-		.map(|&n_vars| channel.recv_oracle(n_vars, true))
+		.map(|&n_vars| channel.recv_oracle(1 << n_vars, n_vars, true))
 		.collect::<Result<Vec<_>, _>>()?;
 
 	// Run the bare reduction over the same channel, viewed as an IP channel.
@@ -192,7 +192,7 @@ where
 	let gamma = channel.sample();
 	let oracles = table_n_vars
 		.iter()
-		.map(|&n_vars| channel.recv_oracle(n_vars, true))
+		.map(|&n_vars| channel.recv_oracle(1 << n_vars, n_vars, true))
 		.collect::<Result<Vec<_>, _>>()?;
 
 	let output = reduction::verify_reduction_transparent::<F, C>(&gamma, lookups, channel)?;

@@ -17,8 +17,8 @@ use binius_utils::checked_arithmetics::{checked_log_2, log2_ceil_usize};
 #[derive(Debug, Clone)]
 pub struct ConstraintSystemPadded<F: Field> {
 	inner: ConstraintSystem<F>,
-	log_precommit: u32,
-	log_private: u32,
+	precommit_len: usize,
+	private_len: usize,
 	blinding_info: BlindingInfo,
 	mul_constraints: Vec<MulConstraint<WitnessIndex>>,
 	/// Mask buffer dimensions (m_n, m_d) for the ZK mulcheck mask polynomial.
@@ -36,14 +36,14 @@ impl<F: Field> ConstraintSystemPadded<F> {
 	pub fn new(cs: ConstraintSystem<F>, blinding_info: BlindingInfo) -> Self {
 		let mut mul_constraints = cs.mul_constraints().to_vec();
 
-		/// Adds dummy blinding constraints for a segment and returns its padded log-size.
+		/// Adds dummy blinding constraints for a segment and returns its length with blinding.
 		fn add_blinding_constraints(
 			mul_constraints: &mut Vec<MulConstraint<WitnessIndex>>,
 			make_index: fn(u32) -> WitnessIndex,
 			n_circuit_wires: usize,
 			n_dummy_wires: usize,
 			n_dummy_constraints: usize,
-		) -> u32 {
+		) -> usize {
 			let dummy_base = n_circuit_wires + n_dummy_wires;
 			for i in 0..n_dummy_constraints {
 				let a = make_index((dummy_base + 3 * i) as u32);
@@ -56,20 +56,19 @@ impl<F: Field> ConstraintSystemPadded<F> {
 				});
 			}
 
-			let blinding_size = n_dummy_wires + 3 * n_dummy_constraints;
-			log2_ceil_usize(n_circuit_wires + blinding_size) as u32
+			n_circuit_wires + n_dummy_wires + 3 * n_dummy_constraints
 		}
 
 		// Both committed segments have evaluations revealed in the clear, so both need dummy
 		// constraints to carry randomness into the wiring relation that masks them.
-		let log_precommit = add_blinding_constraints(
+		let precommit_len = add_blinding_constraints(
 			&mut mul_constraints,
 			WitnessIndex::precommit,
 			cs.n_precommit() as usize,
 			blinding_info.n_dummy_wires,
 			blinding_info.n_dummy_constraints,
 		);
-		let log_private = add_blinding_constraints(
+		let private_len = add_blinding_constraints(
 			&mut mul_constraints,
 			WitnessIndex::private,
 			cs.n_private() as usize,
@@ -97,8 +96,8 @@ impl<F: Field> ConstraintSystemPadded<F> {
 
 		Self {
 			inner: cs,
-			log_precommit,
-			log_private,
+			precommit_len,
+			private_len,
 			blinding_info,
 			mul_constraints,
 			mask_dims,
@@ -133,20 +132,30 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		self.inner.one_wire()
 	}
 
+	/// The precommit segment's length with blinding: the entries past it are zero padding.
+	pub const fn precommit_len(&self) -> usize {
+		self.precommit_len
+	}
+
 	pub const fn log_precommit(&self) -> u32 {
-		self.log_precommit
+		log2_ceil_usize(self.precommit_len) as u32
 	}
 
 	pub const fn precommit_size(&self) -> usize {
-		1 << self.log_precommit as usize
+		1 << self.log_precommit() as usize
+	}
+
+	/// The private segment's length with blinding: the entries past it are zero padding.
+	pub const fn private_len(&self) -> usize {
+		self.private_len
 	}
 
 	pub const fn log_private(&self) -> u32 {
-		self.log_private
+		log2_ceil_usize(self.private_len) as u32
 	}
 
 	pub const fn private_size(&self) -> usize {
-		1 << self.log_private as usize
+		1 << self.log_private() as usize
 	}
 
 	pub const fn blinding_info(&self) -> &BlindingInfo {

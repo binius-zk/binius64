@@ -40,6 +40,9 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	///
 	/// * `remaining_oracle_specs()` must be non-empty.
 	/// * `buffer.log_len()` must match the expected length from the next oracle spec.
+	///
+	/// Only the first [`OracleSpec::len`] entries of `buffer` are the prover's content. The rest is
+	/// padding the channel may overwrite arbitrarily.
 	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle;
 
 	/// Generates an opening proof for one oracle linear relation.

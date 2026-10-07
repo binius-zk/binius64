@@ -290,6 +290,7 @@ where
 
 	fn recv_oracle(
 		&mut self,
+		len: usize,
 		log_msg_len: usize,
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {
@@ -301,6 +302,7 @@ where
 		assert!(!remaining.is_empty(), "recv_oracle called but no remaining oracle specs");
 		let spec = remaining[0];
 		assert_eq!(log_msg_len, spec.log_msg_len, "oracle size must match its spec");
+		assert_eq!(len, spec.len, "oracle content length must match its spec");
 
 		// A spec is zero-knowledge iff the protocol is and the oracle is witness-dependent.
 		//
@@ -329,9 +331,11 @@ where
 			// So the combined oracle is witness-dependent as soon as any constituent is.
 			// A structural oracle sharing the round is masked along with it, which costs
 			// randomness but never correctness.
-			let outer = self
-				.inner
-				.recv_oracle(combined_log_len, self.round_specs[round].is_zk)?;
+			let outer = self.inner.recv_oracle(
+				self.round_specs[round].len,
+				combined_log_len,
+				self.round_specs[round].is_zk,
+			)?;
 			self.outers.push(outer);
 		}
 
@@ -447,8 +451,8 @@ mod tests {
 			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
 			&schedule,
 		);
-		channel.recv_oracle(2, true).unwrap();
-		channel.recv_oracle(2, true).unwrap();
+		channel.recv_oracle(1 << 2, 2, true).unwrap();
+		channel.recv_oracle(1 << 2, 2, true).unwrap();
 	}
 
 	#[test]
@@ -466,7 +470,7 @@ mod tests {
 			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
 			&schedule,
 		);
-		let _ = channel.recv_oracle(2, false);
+		let _ = channel.recv_oracle(1 << 2, 2, false);
 	}
 
 	#[test]
@@ -484,7 +488,7 @@ mod tests {
 			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
 			&schedule,
 		);
-		channel.recv_oracle(2, true).unwrap();
+		channel.recv_oracle(1 << 2, 2, true).unwrap();
 		let _ = channel.into_inner();
 	}
 }

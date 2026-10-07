@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -44,6 +45,8 @@ pub struct BatchCommitLayout {
 	/// Two 64-bit words pack into one field element.
 	/// So this is `log_witness_words` minus the words-per-element logarithm.
 	pub log_witness_elems: usize,
+	/// The number of field elements the unpadded rows fill.
+	pub n_witness_elems: usize,
 }
 
 impl BatchCommitLayout {
@@ -65,11 +68,15 @@ impl BatchCommitLayout {
 		// Two words share one field element.
 		let log_witness_elems = log_witness_words - LOG_WORDS_PER_ELEM;
 
+		// The unpadded rows lie first, so they fill a prefix of the committed elements.
+		let n_witness_elems = (hidden_words << log_instances).div_ceil(1 << LOG_WORDS_PER_ELEM);
+
 		Self {
 			log_instances,
 			log_hidden_words,
 			log_witness_words,
 			log_witness_elems,
+			n_witness_elems,
 		}
 	}
 

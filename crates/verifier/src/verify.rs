@@ -110,6 +110,13 @@ impl IOPVerifier {
 		log_segment_words - LOG_WORDS_PER_ELEM
 	}
 
+	/// Returns the number of field elements the committed trace words fill.
+	pub const fn n_witness_elems(&self) -> usize {
+		self.constraint_system
+			.n_hidden_words(InoutSegment::Public)
+			.div_ceil(1 << LOG_WORDS_PER_ELEM)
+	}
+
 	/// Returns log2 of the number of words in the committed trace.
 	pub const fn log_witness_words(&self) -> usize {
 		self.log_witness_elems() + LOG_WORDS_PER_ELEM
@@ -188,7 +195,8 @@ impl IOPVerifier {
 
 		// Receive the trace oracle commitment via channel. The trace is the witness, so it is
 		// witness-dependent (masked in a ZK proof).
-		let trace_oracle = channel.recv_oracle(self.log_witness_elems(), true)?;
+		let trace_oracle =
+			channel.recv_oracle(self.n_witness_elems(), self.log_witness_elems(), true)?;
 
 		// Reduce every constraint to one claim on the committed trace.
 		let reduction = reduce_constraints(

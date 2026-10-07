@@ -396,6 +396,7 @@ where
 
 	fn recv_oracle(
 		&mut self,
+		_len: usize,
 		_log_msg_len: usize,
 		_is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {

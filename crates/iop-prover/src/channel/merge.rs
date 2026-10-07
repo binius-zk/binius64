@@ -463,7 +463,7 @@ mod tests {
 		let mut v_oracles = Vec::new();
 		for sizes in rounds {
 			for &n in *sizes {
-				v_oracles.push(merge_verifier.recv_oracle(n, true).unwrap());
+				v_oracles.push(merge_verifier.recv_oracle(1 << n, n, true).unwrap());
 			}
 			IPVerifierChannel::sample(&mut merge_verifier);
 		}
@@ -609,8 +609,8 @@ mod tests {
 		let naive_verifier = NaiveVerifierChannel::new(&mut verifier_transcript, &coarse_specs);
 		let mut merge_verifier = MergeVerifierChannel::new(naive_verifier, &schedule);
 
-		let v_oracle_1 = merge_verifier.recv_oracle(4, true).unwrap();
-		let v_oracle_2 = merge_verifier.recv_oracle(3, true).unwrap();
+		let v_oracle_1 = merge_verifier.recv_oracle(1 << 4, 4, true).unwrap();
+		let v_oracle_2 = merge_verifier.recv_oracle(1 << 3, 3, true).unwrap();
 		for (transparent, claim) in relations_1 {
 			merge_verifier
 				.verify_oracle_relation(
@@ -727,7 +727,7 @@ mod tests {
 		let mut v_oracles = Vec::new();
 		for sizes in rounds {
 			for &n in *sizes {
-				v_oracles.push(merge_verifier.recv_oracle(n, true).unwrap());
+				v_oracles.push(merge_verifier.recv_oracle(1 << n, n, true).unwrap());
 			}
 			IPVerifierChannel::sample(&mut merge_verifier);
 		}

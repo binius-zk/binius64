@@ -54,7 +54,7 @@ fn test_ip_proof_size() {
 	let public = vec![B128::default(); 1 << cs.log_public()];
 	let public_elems = channel.observe_many(&public);
 	let precommit_oracle = channel
-		.recv_oracle(cs.log_precommit() as usize, true)
+		.recv_oracle(cs.precommit_len(), cs.log_precommit() as usize, true)
 		.expect("recv_oracle on size-tracking channel should succeed");
 	verifier
 		.iop_verifier()

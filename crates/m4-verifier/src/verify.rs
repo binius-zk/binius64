@@ -136,7 +136,11 @@ impl IOPVerifier {
 	{
 		// Receive the trace commitment.
 		// The witness is committed without zero-knowledge.
-		let trace_oracle = channel.recv_oracle(self.layout.log_witness_elems, true)?;
+		let trace_oracle = channel.recv_oracle(
+			self.layout.n_witness_elems,
+			self.layout.log_witness_elems,
+			true,
+		)?;
 
 		// Reduce every instance's constraints to one claim on the committed trace.
 		// A batch hides its inout words, so the public data is the shared constants alone. They are
