@@ -49,6 +49,8 @@ pub struct OracleSpec {
 	///
 	/// ZK oracles interleave the message with a fresh mask and are folded by a shared masking
 	/// challenge γ in the batched BaseFold opening; non-ZK oracles are committed without a mask.
+	/// The mask is not added to the message, so a query still opens the message's own codeword
+	/// symbols, and hiding them needs randomizable support in the message itself.
 	pub is_zk: bool,
 }
 
