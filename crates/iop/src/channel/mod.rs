@@ -32,8 +32,17 @@ pub enum Error {
 }
 
 /// Specification for an oracle to be committed in the IOP.
+///
+/// `len` partitions the oracle's `2^log_msg_len` entries into content and padding:
+///
+/// ```text
+/// [ content: chosen by the prover | padding: chosen arbitrarily by the compiler ]
+///   0                               len                                 2^log_msg_len
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OracleSpec {
+	/// The length of the content section, at most `2^log_msg_len`.
+	pub len: usize,
 	/// Log2 of the message length (number of field elements).
 	pub log_msg_len: usize,
 	/// Whether the oracle is committed with zero-knowledge (hiding) masking.
@@ -44,17 +53,19 @@ pub struct OracleSpec {
 }
 
 impl OracleSpec {
-	/// A non-ZK (unmasked) oracle of the given message length.
+	/// A non-ZK (unmasked) oracle of the given message length, all of it content.
 	pub const fn new(log_msg_len: usize) -> Self {
 		Self {
+			len: 1 << log_msg_len,
 			log_msg_len,
 			is_zk: false,
 		}
 	}
 
-	/// A ZK (masked, hiding) oracle of the given message length.
+	/// A ZK (masked, hiding) oracle of the given message length, all of it content.
 	pub const fn new_zk(log_msg_len: usize) -> Self {
 		Self {
+			len: 1 << log_msg_len,
 			log_msg_len,
 			is_zk: true,
 		}
@@ -154,8 +165,8 @@ impl OracleSchedule {
 	pub fn merged_specs(&self) -> Vec<OracleSpec> {
 		self.rounds()
 			.map(|round| OracleSpec {
-				log_msg_len: merged_log_msg_len(round.iter().map(|spec| spec.log_msg_len)),
 				is_zk: round.iter().any(|spec| spec.is_zk),
+				..OracleSpec::new(merged_log_msg_len(round.iter().map(|spec| spec.log_msg_len)))
 			})
 			.collect()
 	}
@@ -192,15 +203,23 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F, Elem: 'static> {
 
 	/// Receives an oracle commitment from the prover.
 	///
-	/// The caller describes the oracle being received: `log_msg_len` is the log2 of the message
-	/// length, and `is_witness_dependent` is whether the oracle's contents depend on the witness.
-	/// These let a channel record the oracle's [`OracleSpec`] rather than requiring the specs to be
-	/// supplied up front. The resulting oracle is zero-knowledge iff the channel is configured for
-	/// ZK *and* the oracle is witness-dependent — a non-witness-dependent oracle (e.g. a
-	/// pre-indexed commitment to the wiring matrix for succinctness, a planned feature) is never
-	/// masked.
+	/// The caller describes the oracle being received: `len` and `log_msg_len` are its
+	/// [`OracleSpec`] fields, and `is_witness_dependent` is whether the oracle's contents depend on
+	/// the witness. These let a channel record the oracle's [`OracleSpec`] rather than requiring
+	/// the specs to be supplied up front. The resulting oracle is zero-knowledge iff the channel
+	/// is configured for ZK *and* the oracle is witness-dependent — a non-witness-dependent oracle
+	/// (e.g. a pre-indexed commitment to the wiring matrix for succinctness, a planned feature) is
+	/// never masked.
+	///
+	/// Only the first `len` entries are the prover's content. The rest is padding the channel may
+	/// fill arbitrarily, so every later claim must hold over the oracle the channel commits.
+	///
+	/// # Preconditions
+	///
+	/// * `len <= 2^log_msg_len`.
 	fn recv_oracle(
 		&mut self,
+		len: usize,
 		log_msg_len: usize,
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error>;

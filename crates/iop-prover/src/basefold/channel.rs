@@ -846,7 +846,9 @@ mod tests {
 				&mut verifier_transcript,
 			);
 
-		let v_oracle = verifier_channel.recv_oracle(n_vars, true).unwrap();
+		let v_oracle = verifier_channel
+			.recv_oracle(1 << n_vars, n_vars, true)
+			.unwrap();
 
 		verifier_channel
 			.verify_oracle_relation(
@@ -925,8 +927,12 @@ mod tests {
 				&mut verifier_transcript,
 			);
 
-		let v_oracle_1 = verifier_channel.recv_oracle(n_vars_1, true).unwrap();
-		let v_oracle_2 = verifier_channel.recv_oracle(n_vars_2, true).unwrap();
+		let v_oracle_1 = verifier_channel
+			.recv_oracle(1 << n_vars_1, n_vars_1, true)
+			.unwrap();
+		let v_oracle_2 = verifier_channel
+			.recv_oracle(1 << n_vars_2, n_vars_2, true)
+			.unwrap();
 
 		let tp1 = transparent_poly_1;
 		let tp2 = transparent_poly_2;
@@ -1014,7 +1020,7 @@ mod tests {
 
 		let v_oracles: Vec<_> = n_vars_list
 			.iter()
-			.map(|&n| verifier_channel.recv_oracle(n, true).unwrap())
+			.map(|&n| verifier_channel.recv_oracle(1 << n, n, true).unwrap())
 			.collect();
 		for (i, (oracle, (_, transparent, claim))) in iter::zip(v_oracles, &data).enumerate() {
 			let transparent = transparent.clone();
@@ -1102,7 +1108,7 @@ mod tests {
 
 		let v_oracles: Vec<_> = specs
 			.iter()
-			.map(|&(n, _)| verifier_channel.recv_oracle(n, true).unwrap())
+			.map(|&(n, _)| verifier_channel.recv_oracle(1 << n, n, true).unwrap())
 			.collect();
 		for (i, (oracle, (_, transparent, claim))) in iter::zip(v_oracles, &data).enumerate() {
 			let transparent = transparent.clone();
@@ -1362,7 +1368,11 @@ mod tests {
 
 		let v_oracles = specs
 			.iter()
-			.map(|&(n_vars, _, _)| verifier_channel.recv_oracle(n_vars, true).unwrap())
+			.map(|&(n_vars, _, _)| {
+				verifier_channel
+					.recv_oracle(1 << n_vars, n_vars, true)
+					.unwrap()
+			})
 			.collect::<Vec<_>>();
 		for (position, &(index, round)) in arrivals.iter().enumerate() {
 			let (transparent, claim) = &data[index].1[round];

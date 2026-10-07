@@ -146,6 +146,7 @@ where
 
 	fn recv_oracle(
 		&mut self,
+		len: usize,
 		log_msg_len: usize,
 		_is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {
@@ -155,6 +156,7 @@ where
 		);
 
 		let index = self.next_oracle_index;
+		debug_assert_eq!(len, self.oracle_specs[index].len);
 		debug_assert_eq!(log_msg_len, self.oracle_specs[index].log_msg_len);
 
 		let buffer_len = 1 << log_msg_len;

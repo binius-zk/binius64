@@ -157,6 +157,7 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 
 	fn recv_oracle(
 		&mut self,
+		_len: usize,
 		_log_msg_len: usize,
 		_is_witness_dependent: bool,
 	) -> Result<Self::Oracle, binius_iop::channel::Error> {

@@ -105,13 +105,11 @@ fn test_zk_wrapped_prove_verify() {
 	let inner_log_precommit = inner_cs.log_precommit() as usize;
 	let combined_schedule = {
 		let mut channel = OracleSetupChannel::new(true);
-		for log_precommit in [
-			outer_iop_verifier.constraint_system().log_precommit() as usize,
-			inner_log_precommit,
-		] {
+		for cs in [outer_iop_verifier.constraint_system(), &inner_cs] {
 			<OracleSetupChannel as IOPVerifierChannel<B128>>::recv_oracle(
 				&mut channel,
-				log_precommit,
+				cs.precommit_len(),
+				cs.log_precommit() as usize,
 				true,
 			)
 			.unwrap();
@@ -232,7 +230,7 @@ fn test_zk_wrapped_prove_verify() {
 
 	// Run the inner IOP verify through the wrapped channel.
 	let inner_precommit_oracle = wrapped_verifier_channel
-		.recv_oracle(inner_log_precommit, true)
+		.recv_oracle(inner_cs.precommit_len(), inner_log_precommit, true)
 		.unwrap();
 	inner_iop_verifier
 		.verify(inner_precommit_oracle, &inner_public_elems, &mut wrapped_verifier_channel)
