@@ -32,7 +32,8 @@ use super::{
 ///
 /// - `key_collection`: the prover's key collection for the constraint system.
 /// - `public_words`: the constants followed by the inout values, as the circuit declares them.
-/// - `hidden_words`: the private values, as the circuit declares them.
+/// - `hidden_words`: the private values, optionally followed by the committed trace's padding. The
+///   witness evaluation is over these words, so they must match the committed trace.
 /// - `claims`: the operand evaluation claims, all at one constraint point.
 /// - `domain_subspace`: the univariate evaluation domain.
 /// - `channel`: the prover channel the interactive rounds run over.
@@ -57,7 +58,7 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	// The segments are passed as the circuit declares them, at whatever length that is.
+	// The segments are passed at whatever length the caller has them.
 	// Neither phase needs them padded.
 	let words = SegmentWords {
 		public: public_words,

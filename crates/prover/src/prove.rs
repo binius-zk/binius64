@@ -209,6 +209,19 @@ impl IOPProver {
 		// `shift::check_eval` does.
 		let subspace = BinarySubspace::<B8>::with_dim(Word::LOG_BITS).isomorphic();
 
+		// The hidden segment as committed, padding included.
+		//
+		// The channel may fill the trace's padding, and the reduction's final claim is opened
+		// against the committed trace, so it folds these words rather than the circuit's own. No
+		// constraint names a padding word, so the padding never reaches the reduced sum.
+		let committed_words = witness_packed
+			.iter_scalars()
+			.flat_map(|elem| {
+				let val = u128::from(elem);
+				[Word(val as u64), Word((val >> 64) as u64)]
+			})
+			.collect::<Vec<_>>();
+
 		// [phase] Shift Reduction - shift operations
 		let shift_guard = tracing::info_span!(
 			"[phase] Shift Reduction",
@@ -225,7 +238,7 @@ impl IOPProver {
 		} = shift::prove::<_, P, _, _>(
 			&self.key_collection,
 			witness.public(),
-			witness.non_public(),
+			&committed_words,
 			claims,
 			&subspace,
 			&mut *channel,
