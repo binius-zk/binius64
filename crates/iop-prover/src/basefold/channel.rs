@@ -133,8 +133,9 @@ where
 	/// length).
 	///
 	/// The RNG seeds the channel's own generator, whose only output is the ZK masks.
-	/// A mask is what hides a committed witness at the positions the verifier opens.
-	/// Hiding is therefore only as strong as this RNG, so it must be a cryptographic one.
+	/// A mask randomizes the message the opening folds, but not the committed message's own
+	/// codeword symbols at the positions the verifier opens.
+	/// Whatever the masks hide is only as strong as this RNG, so it must be a cryptographic one.
 	pub fn new(
 		channel: Channel,
 		ntt: &'a NTT,

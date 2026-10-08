@@ -14,18 +14,25 @@ use binius_circuits::{
 use binius_core::{
 	constraint_system::{
 		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, InoutSegment,
-		ValueSegment, ValueVec,
+		ShiftedValueIndex, ValueIndex, ValueSegment, ValueVec,
 	},
 	word::Word,
 };
 use binius_field::{Field, Ghash128b, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Options, Wire};
 use binius_hash::StdHashSuite;
-use binius_prover::{Prover, zk_config::ZKProver};
-use binius_transcript::ProverTranscript;
+use binius_prover::{
+	Prover,
+	zk_config::{Error as ZKProverError, ZKProver},
+};
+use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::CanSample};
 use binius_utils::{DeserializeBytes, SerializeBytes};
-use binius_verifier::{Verifier, config::StdChallenger, zk_config::ZKVerifier};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use binius_verifier::{
+	Verifier,
+	config::StdChallenger,
+	zk_config::{Error as ZKVerifierError, ZKVerifier},
+};
+use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
 fn prove_verify(cs: ConstraintSystem, witness: &ValueVec) {
 	const LOG_INV_RATE: usize = 1;
@@ -93,6 +100,174 @@ fn prove_verify_zk_serialized(cs: ConstraintSystem, witness: &ValueVec) {
 		.verify(witness.inout(), &mut verifier_transcript)
 		.unwrap();
 	verifier_transcript.finalize().unwrap();
+}
+
+/// Proof bytes handed to a verifier that must reject before reading any of them.
+const UNREAD_PROOF: [u8; 64] = [0xA5; 64];
+
+/// Asserts that a rejected call neither observed into `transcript` nor wrote to it.
+fn assert_prover_transcript_untouched(mut transcript: ProverTranscript<StdChallenger>) {
+	let mut fresh = ProverTranscript::new(StdChallenger::default());
+	let (sampled, expected): (Ghash128b, Ghash128b) = (transcript.sample(), fresh.sample());
+	assert_eq!(sampled, expected, "the rejected call observed into the challenger");
+	assert!(transcript.finalize().is_empty(), "the rejected call wrote proof bytes");
+}
+
+/// Asserts that a rejected call neither observed into `transcript` nor read from its
+/// [`UNREAD_PROOF`] tape.
+fn assert_verifier_transcript_untouched(mut transcript: VerifierTranscript<StdChallenger>) {
+	let mut fresh = VerifierTranscript::new(StdChallenger::default(), UNREAD_PROOF.to_vec());
+	let (sampled, expected): (Ghash128b, Ghash128b) = (transcript.sample(), fresh.sample());
+	assert_eq!(sampled, expected, "the rejected call observed into the challenger");
+	let mut unread = [0; UNREAD_PROOF.len()];
+	transcript
+		.decommitment()
+		.read_bytes(&mut unread)
+		.expect("the rejected call read proof bytes");
+	assert_eq!(unread, UNREAD_PROOF, "the rejected call read proof bytes");
+	transcript.finalize().unwrap();
+}
+
+/// Asserts that `prove` and `prove_sig` reject `witness` before touching their transcripts.
+fn assert_zk_prover_rejects(
+	zk_prover: &ZKProver<OptimalPackedB128, StdHashSuite>,
+	witness: &ValueVec,
+) {
+	let mut rng = StdRng::seed_from_u64(0);
+
+	let mut transcript = ProverTranscript::new(StdChallenger::default());
+	let result = zk_prover.prove(witness, &mut rng, &mut transcript);
+	assert!(matches!(result, Err(ZKProverError::WitnessPrivacyUnavailable)), "prove: {result:?}");
+	assert_prover_transcript_untouched(transcript);
+
+	let mut transcript = ProverTranscript::new(StdChallenger::default());
+	let result = zk_prover.prove_sig(witness, b"hello world", &mut rng, &mut transcript);
+	assert!(
+		matches!(result, Err(ZKProverError::WitnessPrivacyUnavailable)),
+		"prove_sig: {result:?}"
+	);
+	assert_prover_transcript_untouched(transcript);
+}
+
+/// Asserts that `verify` and `verify_sig` reject before touching their transcripts.
+fn assert_zk_verifier_rejects(zk_verifier: &ZKVerifier<StdHashSuite>, inout: &[Word]) {
+	let mut transcript = VerifierTranscript::new(StdChallenger::default(), UNREAD_PROOF.to_vec());
+	let result = zk_verifier.verify(inout, &mut transcript);
+	assert!(
+		matches!(result, Err(ZKVerifierError::WitnessPrivacyUnavailable)),
+		"verify: {result:?}"
+	);
+	assert_verifier_transcript_untouched(transcript);
+
+	let mut transcript = VerifierTranscript::new(StdChallenger::default(), UNREAD_PROOF.to_vec());
+	let result = zk_verifier.verify_sig(inout, b"hello world", &mut transcript);
+	assert!(
+		matches!(result, Err(ZKVerifierError::WitnessPrivacyUnavailable)),
+		"verify_sig: {result:?}"
+	);
+	assert_verifier_transcript_untouched(transcript);
+}
+
+/// Asserts that every ZK entry point rejects a constraint system with private words, which the ZK
+/// configuration does not hide.
+fn assert_zk_rejects_private_witness(cs: ConstraintSystem, witness: &ValueVec) {
+	const LOG_INV_RATE: usize = 1;
+	assert!(cs.n_hidden_words(InoutSegment::Public) > 0, "the fixture must have private words");
+
+	let zk_verifier = ZKVerifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
+	let zk_prover = ZKProver::<OptimalPackedB128, StdHashSuite>::setup(&zk_verifier).unwrap();
+	assert_zk_prover_rejects(&zk_prover, witness);
+	assert_zk_verifier_rejects(&zk_verifier, witness.inout());
+}
+
+/// A statement of exactly `n_public_words` public words and no private words, which the ZK
+/// configuration accepts.
+///
+/// The inout words are XOR triples `(a, b, a ^ b)` of random words, plus up to two words pinned to
+/// zero to reach the width. Most of the statement is non-zero on purpose: an all-zero statement
+/// matches the placeholder the wrapper circuit is built against, which would hide a statement
+/// baked into that circuit.
+fn public_only_circuit(n_public_words: usize) -> (ConstraintSystem, ValueVec) {
+	let build = |n_inout: usize| {
+		let builder = CircuitBuilder::new();
+		let zero = builder.add_constant(Word::ZERO);
+		let inout = (0..n_inout)
+			.map(|_| builder.add_inout())
+			.collect::<Vec<_>>();
+		let (triples, pad) = inout.split_at(n_inout / 3 * 3);
+		for triple in triples.chunks(3) {
+			builder.assert_eq("xor", builder.bxor(triple[0], triple[1]), triple[2]);
+		}
+		for &wire in pad {
+			builder.assert_eq("pad_is_zero", wire, zero);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		let mut rng = StdRng::seed_from_u64(0);
+		for triple in triples.chunks(3) {
+			let (a, b) = (Word(rng.random()), Word(rng.random()));
+			w[triple[0]] = a;
+			w[triple[1]] = b;
+			w[triple[2]] = a ^ b;
+		}
+		for &wire in pad {
+			w[wire] = Word::ZERO;
+		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+		(circuit.constraint_system().clone(), w.into_value_vec())
+	};
+
+	// The constants come on top of the inout words, so measure them first.
+	let (cs, _) = build(3);
+	let n_const = cs.n_public_words(InoutSegment::Public) - 3;
+	let (cs, witness) = build(n_public_words - n_const);
+	assert_eq!(cs.n_public_words(InoutSegment::Public), n_public_words);
+	assert_eq!(cs.n_hidden_words(InoutSegment::Public), 0);
+	(cs, witness)
+}
+
+/// One AND, one IMUL and one BMUL constraint, all over inout words, so there are no private words.
+///
+/// The frontend's `band`, `imul` and `bmul` gates write their outputs to private wires, so this is
+/// built by hand. It takes the ZK wrapper through the AND, IntMul and BinMul reductions, including
+/// the logUp* pushforward oracles of the IntMul reduction.
+fn public_only_and_imul_bmul_constraint_system() -> (ConstraintSystem, ValueVec) {
+	let operand = |index: u32| vec![ShiftedValueIndex::plain(ValueIndex::inout(index))];
+	let cs = ConstraintSystem {
+		constants: vec![Word::ZERO],
+		n_inout: 13,
+		n_private: 0,
+		zero_constraints: vec![],
+		and_constraints: vec![AndConstraint([operand(0), operand(1), operand(2)])],
+		imul_constraints: vec![ImulConstraint([
+			operand(3),
+			operand(4),
+			operand(5),
+			operand(6),
+		])],
+		bmul_constraints: vec![BmulConstraint([7, 8, 9, 10, 11, 12].map(operand))],
+	};
+	cs.validate().unwrap();
+
+	let mut rng = StdRng::seed_from_u64(0);
+	let (x, y): (u64, u64) = (rng.random(), rng.random());
+	let product = x as u128 * y as u128;
+	let (a, b) = (Ghash128b::random(&mut rng), Ghash128b::random(&mut rng));
+	let ghash_words = |elem: Ghash128b| {
+		let value = u128::from(elem);
+		[value as u64, (value >> 64) as u64]
+	};
+	let inout = [x, y, x & y, x, y, product as u64, (product >> 64) as u64]
+		.into_iter()
+		.chain(ghash_words(a))
+		.chain(ghash_words(b))
+		.chain(ghash_words(a * b))
+		.map(Word)
+		.collect::<Vec<_>>();
+	let witness = cs.value_vec_from_data(&inout, &[]);
+	cs.verify(&witness).unwrap();
+	(cs, witness)
 }
 
 fn sha256_preimage_circuit() -> (ConstraintSystem, ValueVec) {
@@ -188,7 +363,7 @@ fn test_prove_verify_binmul_seventh_power() {
 	let (cs, witness) = binmul_seventh_power_circuit();
 	assert!(cs.n_bmul_constraints() > 0, "circuit should have BMUL constraints");
 	prove_verify(cs.clone(), &witness);
-	prove_verify_zk(cs, &witness);
+	assert_zk_rejects_private_witness(cs, &witness);
 }
 
 /// Builds a circuit whose AND, IMUL and BMUL constraint counts are all non-powers of two, so every
@@ -295,7 +470,7 @@ fn test_prove_verify_non_power_of_two_constraint_counts() {
 		);
 	}
 	prove_verify(cs.clone(), &witness);
-	prove_verify_zk(cs, &witness);
+	assert_zk_rejects_private_witness(cs, &witness);
 }
 
 /// Dropping the operand columns' padding rows moves nothing on the wire.
@@ -345,7 +520,7 @@ fn test_prove_verify_zero_imul_constraints() {
 	let (cs, witness) = sha256_preimage_circuit();
 	assert_eq!(cs.n_imul_constraints(), 0, "SHA-256 circuit should have no IMUL constraints");
 	prove_verify(cs.clone(), &witness);
-	prove_verify_zk(cs, &witness);
+	assert_zk_rejects_private_witness(cs, &witness);
 }
 
 /// Builds a circuit whose linear constraints lower to ZERO constraints: `n_xor` from `bxor` gates,
@@ -421,7 +596,7 @@ fn test_prove_verify_zero_constraints() {
 	assert_eq!(cs.log_zero_constraints(), Some(3));
 	assert_eq!(cs.log_and_constraints(), Some(2));
 	prove_verify(cs.clone(), &witness);
-	prove_verify_zk(cs, &witness);
+	assert_zk_rejects_private_witness(cs, &witness);
 }
 
 /// The ZERO set smaller than the AND set, so the reduction's constraint point is a strict prefix
@@ -497,7 +672,7 @@ fn test_prove_verify_public_wider_than_hidden() {
 		cs.log_public_words(InoutSegment::Public)
 	);
 	prove_verify(cs.clone(), &witness);
-	prove_verify_zk(cs, &witness);
+	assert_zk_rejects_private_witness(cs, &witness);
 }
 
 /// A witness violating one ZERO constraint is rejected. The prover has nothing to send for the
@@ -553,22 +728,69 @@ fn test_prove_verify_rejects_violated_zero_constraint() {
 	);
 }
 
+/// The ZK prover and verifier reject a constraint system with private words, also after a
+/// serialization round trip.
 #[test]
-fn test_zk_prove_verify_sha256_preimage() {
+fn test_zk_rejects_private_sha256_witness() {
+	const LOG_INV_RATE: usize = 1;
 	let (cs, witness) = sha256_preimage_circuit();
+	assert_zk_rejects_private_witness(cs.clone(), &witness);
+
+	let zk_verifier = ZKVerifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
+	let zk_prover = ZKProver::<OptimalPackedB128, StdHashSuite>::setup(&zk_verifier).unwrap();
+	let mut prover_bytes = Vec::new();
+	zk_prover.serialize(&mut prover_bytes).unwrap();
+	let zk_prover =
+		ZKProver::<OptimalPackedB128, StdHashSuite>::deserialize(prover_bytes.as_slice()).unwrap();
+	let mut verifier_bytes = Vec::new();
+	zk_verifier.serialize(&mut verifier_bytes).unwrap();
+	let zk_verifier = ZKVerifier::<StdHashSuite>::deserialize(verifier_bytes.as_slice()).unwrap();
+	assert_zk_prover_rejects(&zk_prover, &witness);
+	assert_zk_verifier_rejects(&zk_verifier, witness.inout());
+}
+
+/// The prover commits whatever private words the witness supplies, so it rejects a witness that
+/// supplies some even when the constraint system declares none. The verifier has no witness and
+/// accepts the constraint system.
+#[test]
+fn test_zk_prover_rejects_undeclared_private_words() {
+	const LOG_INV_RATE: usize = 1;
+	let (cs, witness) = public_only_circuit(8);
+	let witness = cs.value_vec_from_data(witness.inout(), &[Word(0x8F19_7236_4ACD_E50B)]);
+	// The transparent prover accepts this witness, so only the ZK check stops it.
+	prove_verify(cs.clone(), &witness);
+
+	let zk_verifier = ZKVerifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
+	let zk_prover = ZKProver::<OptimalPackedB128, StdHashSuite>::setup(&zk_verifier).unwrap();
+	assert_zk_prover_rejects(&zk_prover, &witness);
+}
+
+#[test]
+fn test_zk_prove_verify_public_only() {
+	let (cs, witness) = public_only_circuit(8);
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
+}
+
+#[test]
+fn test_zk_prove_verify_public_only_and_imul_bmul() {
+	let (cs, witness) = public_only_and_imul_bmul_constraint_system();
+	prove_verify(cs.clone(), &witness);
 	prove_verify_zk(cs, &witness);
 }
 
 #[test]
 fn test_zk_prove_verify_serialized() {
-	let (cs, witness) = sha256_preimage_circuit();
+	let (cs, witness) = public_only_circuit(8);
 	prove_verify_zk_serialized(cs, &witness);
 }
 
 /// Produces a ZK signature-of-knowledge proof over `sign_message`, then verifies it against
 /// `verify_message`. Returns whether verification (including transcript finalization) succeeded.
 ///
-/// Signatures of knowledge are only supported by the ZK prover/verifier.
+/// Signatures of knowledge are only supported by the ZK prover/verifier, which reject private
+/// words, so the tests below sign over a public-only statement. That checks how the message is
+/// bound; such a signature proves knowledge of nothing secret.
 fn sign_verify(
 	cs: ConstraintSystem,
 	witness: &ValueVec,
@@ -605,28 +827,28 @@ fn sign_verify(
 
 #[test]
 fn test_signature_of_knowledge_roundtrip() {
-	let (cs, witness) = sha256_preimage_circuit();
+	let (cs, witness) = public_only_circuit(8);
 	// Signing and verifying with the same message succeeds.
 	assert!(sign_verify(cs, &witness, Some(b"hello world"), Some(b"hello world")));
 }
 
 #[test]
 fn test_signature_of_knowledge_wrong_message_fails() {
-	let (cs, witness) = sha256_preimage_circuit();
+	let (cs, witness) = public_only_circuit(8);
 	// A proof signed over one message must not verify against a different message.
 	assert!(!sign_verify(cs, &witness, Some(b"hello world"), Some(b"goodbye world")));
 }
 
 #[test]
 fn test_signature_of_knowledge_missing_message_fails() {
-	let (cs, witness) = sha256_preimage_circuit();
+	let (cs, witness) = public_only_circuit(8);
 	// A signature of knowledge must not verify as a plain proof of knowledge (no message).
 	assert!(!sign_verify(cs, &witness, Some(b"hello world"), None));
 }
 
 #[test]
 fn test_plain_proof_rejects_message() {
-	let (cs, witness) = sha256_preimage_circuit();
+	let (cs, witness) = public_only_circuit(8);
 	// A plain proof of knowledge must not verify when a message is supplied.
 	assert!(!sign_verify(cs, &witness, None, Some(b"hello world")));
 }
@@ -683,11 +905,15 @@ fn pad_for_public_words(num_signers: usize, n_public: usize) -> usize {
 }
 
 /// A public segment of exactly 2^9 words proves and verifies, plain and ZK.
+///
+/// The aggregate has private words, which the ZK configuration rejects, so the ZK half proves a
+/// public-only statement of the same width.
 #[test]
 fn test_zk_prove_verify_aggregate_public_segment_at_power_of_two() {
 	let (cs, witness) = xmss_aggregate_circuit(1, pad_for_public_words(1, 512));
 	assert_eq!(cs.n_public_words(InoutSegment::Public), 512);
-	prove_verify(cs.clone(), &witness);
+	prove_verify(cs, &witness);
+	let (cs, witness) = public_only_circuit(512);
 	prove_verify_zk(cs, &witness);
 }
 
@@ -697,10 +923,12 @@ fn test_zk_prove_verify_aggregate_public_segment_at_power_of_two() {
 /// constants, so a public segment that crossed 2^9 words disagreed with the one the concrete
 /// channels packed, and the outer Spartan check rejected an honest proof with
 /// `IPChannel(InvalidAssert)`. The only difference from the test above is one inert padding word.
+/// As above, the ZK half proves a public-only statement of the same width.
 #[test]
 fn test_zk_prove_verify_aggregate_public_segment_over_power_of_two() {
 	let (cs, witness) = xmss_aggregate_circuit(1, pad_for_public_words(1, 513));
 	assert_eq!(cs.n_public_words(InoutSegment::Public), 513);
-	prove_verify(cs.clone(), &witness);
+	prove_verify(cs, &witness);
+	let (cs, witness) = public_only_circuit(513);
 	prove_verify_zk(cs, &witness);
 }
