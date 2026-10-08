@@ -1,10 +1,10 @@
 // Copyright 2026 The Binius Developers
 
-//! The partial evaluations of the 64 bit columns of a word list, as a sumcheck binds them.
+//! The partial evaluations of the bit columns of a word list, as a sumcheck binds them.
 
 use std::array;
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{
 	BinaryField, Divisible, PackedField, U2, U4, Underlier,
@@ -26,26 +26,29 @@ use binius_utils::rayon::{
 use super::transpose_bits::transpose_bits;
 use crate::fold_word::BitAxisFolder;
 
-/// The 64 one-bit multilinears of a word list, folded high to low.
+/// The one-bit multilinears of a word list, folded high to low.
 ///
-/// Selector `b` is the multilinear whose `i`-th value is bit `b` of word `i`. The sumcheck binds
-/// its highest variable first.
+/// [`Self::new`] holds all 64 bit columns, selector `b` being the multilinear whose `i`-th value is
+/// bit `b` of word `i`. [`Self::new_bit`] holds a single one, selector 0. The sumcheck binds its
+/// highest variable first.
 ///
 /// For the first `h = min(n_vars, Word::LOG_BITS)` rounds the selectors stay transparent: their
 /// values are read off the bit-transposed words by byte-table lookups against the tensor of the
-/// challenges so far. Round `h` folds every word of [`transpose_bits`] into one buffer, which then
-/// folds as usual. Its element `lo * 64 + b` is selector `b` at index `lo`, so binding the highest
-/// variable binds it for every selector at once.
+/// challenges so far. Round `h` folds every block word into one buffer, which then folds as usual.
+/// With `S` selectors, its element `lo * S + b` is selector `b` at index `lo`, so binding the
+/// highest variable binds it for every selector at once.
 ///
 /// # Lookups
 ///
 /// With `C = 2^(n_vars - h)`, after `r < h` rounds the remaining index is `hi_rest * C + lo`, with
 /// `hi_rest` the low `h - r` bits of `hi`. The `2^r` bound rows of `hi_rest` sit at bits
-/// `[g * 2^r, (g + 1) * 2^r)` of word `b` of block `lo`, with `g = bitrev_{h-r}(hi_rest)`, and the
+/// `[g * 2^r, (g + 1) * 2^r)` of word `lo * S + b`, with `g = bitrev_{h-r}(hi_rest)`, and the
 /// bit at offset `p` there carries the tensor weight `p`.
 pub struct BinarySwitchover<'alloc, P: PackedField, A: Allocator> {
 	alloc: &'alloc A,
 	n_vars: usize,
+	/// The log of the selector count `S`.
+	log_selectors: usize,
 	/// The challenges bound so far.
 	challenges: Vec<P::Scalar>,
 	state: SwitchoverState<A::Vec<Word>, FieldVec<P, A>>,
@@ -53,9 +56,9 @@ pub struct BinarySwitchover<'alloc, P: PackedField, A: Allocator> {
 
 /// The selectors before and after the switchover, owned or borrowed.
 enum SwitchoverState<Blocks, Folded> {
-	/// One block of `Word::BITS` words per column, from [`transpose_bits`].
+	/// One block of `S` words per column, bit-transposed as [`transpose_bits`] lays them out.
 	Pre { blocks: Blocks },
-	/// The partial evaluations of all 64 selectors, element `lo * 64 + b`.
+	/// The partial evaluations of all `S` selectors, element `lo * S + b`.
 	Post(Folded),
 }
 
@@ -65,6 +68,7 @@ enum SwitchoverState<Blocks, Folded> {
 /// allocator's buffers are.
 pub struct Selectors<'a, P: PackedField> {
 	n_vars: usize,
+	log_selectors: usize,
 	challenges: &'a [P::Scalar],
 	state: SwitchoverState<&'a [Word], FieldSlice<'a, P>>,
 }
@@ -99,6 +103,53 @@ where
 		Self {
 			alloc,
 			n_vars,
+			log_selectors: Word::LOG_BITS,
+			challenges: Vec::new(),
+			state,
+		}
+	}
+
+	/// Builds the one selector of bit `bit` of `words`, read as `n_vars`-variate with missing words
+	/// zero.
+	///
+	/// It keeps one word per column where [`Self::new`] keeps 64.
+	///
+	/// ## Preconditions
+	///
+	/// * `words.len() <= 1 << n_vars`
+	pub fn new_bit(alloc: &'alloc A, words: &[Word], bit: usize, n_vars: usize) -> Self {
+		assert!(words.len() <= 1 << n_vars, "words.len() must not exceed 2^n_vars");
+
+		let h = n_vars.min(Word::LOG_BITS);
+		let n_cols = 1 << (n_vars - h);
+		let column_bit = |i: usize| words.get(i).is_some_and(|word| word.extract_bit(bit));
+		let state = if n_vars == 0 {
+			let value = if column_bit(0) { F::ONE } else { F::ZERO };
+			SwitchoverState::Post(FieldBuffer::from_values_in(alloc, &[value]))
+		} else {
+			// The column's one word per block, laid out as `transpose_bits` lays out word `bit`.
+			let mut blocks = alloc.alloc::<Word>(n_cols);
+			blocks.resize(n_cols, Word::ZERO);
+			// A tile of columns reads each row `hi` as one sequential run of words.
+			const TILE: usize = 512;
+			blocks
+				.par_chunks_mut(TILE)
+				.enumerate()
+				.for_each(|(tile_index, tile)| {
+					for hi in 0..1 << h {
+						let row_start = hi * n_cols + tile_index * TILE;
+						let shift = reverse_bits(hi, h as u32);
+						for (offset, block) in tile.iter_mut().enumerate() {
+							block.0 |= (column_bit(row_start + offset) as u64) << shift;
+						}
+					}
+				});
+			SwitchoverState::Pre { blocks }
+		};
+		Self {
+			alloc,
+			n_vars,
+			log_selectors: 0,
 			challenges: Vec::new(),
 			state,
 		}
@@ -114,6 +165,7 @@ where
 		};
 		Selectors {
 			n_vars: self.n_vars,
+			log_selectors: self.log_selectors,
 			challenges: &self.challenges,
 			state,
 		}
@@ -137,17 +189,19 @@ where
 		}
 	}
 
-	/// The 64 selectors' values at the bound point.
+	/// The selectors' values at the bound point.
 	///
 	/// ## Preconditions
 	///
 	/// * every variable has been folded
-	pub fn finish(self) -> [F; Word::BITS] {
+	pub fn finish(self) -> Vec<F> {
 		assert_eq!(self.challenges.len(), self.n_vars, "every variable has been folded");
 		let SwitchoverState::Post(folded) = self.state else {
 			unreachable!("the switchover runs by the last fold");
 		};
-		array::from_fn(|selector| folded.get(selector))
+		(0..1 << self.log_selectors)
+			.map(|selector| folded.get(selector))
+			.collect()
 	}
 }
 
@@ -190,7 +244,7 @@ where
 			},
 			SwitchoverState::Post(folded) => {
 				fill(scratch, start, |index, half| {
-					folded.get((half << half_vars | index) << Word::LOG_BITS | selector)
+					folded.get((half << half_vars | index) << self.log_selectors | selector)
 				});
 			}
 		}
@@ -254,7 +308,7 @@ where
 	) -> (Word, usize) {
 		let log_cols = self.n_vars.saturating_sub(Word::LOG_BITS);
 		let g = reverse_bits(index >> log_cols, (half_vars - log_cols) as u32);
-		let word = blocks[(index & ((1 << log_cols) - 1)) << Word::LOG_BITS | selector];
+		let word = blocks[(index & ((1 << log_cols) - 1)) << self.log_selectors | selector];
 		(word, g)
 	}
 
@@ -367,9 +421,14 @@ mod tests {
 				.collect::<Vec<_>>();
 			let unfolded = columns.clone();
 
+			// A single-bit switchover must agree with the full one on its bit.
+			let bit = rng.random_range(0..Word::BITS);
 			let mut switchover = BinarySwitchover::<P, _>::new(&GlobalAllocator, &words, n_vars);
+			let mut bit_switchover =
+				BinarySwitchover::<P, _>::new_bit(&GlobalAllocator, &words, bit, n_vars);
 			for &challenge in &challenges {
 				switchover.fold(challenge);
+				bit_switchover.fold(challenge);
 				for column in &mut columns {
 					fold_highest_var_inplace(column, challenge);
 				}
@@ -383,16 +442,23 @@ mod tests {
 				for (b, column) in unfolded.iter().enumerate() {
 					prop_assert_eq!(evals[b], evaluate(column, &point), "b={}", b);
 				}
+				prop_assert_eq!(bit_switchover.finish(), vec![evals[bit]]);
 				return Ok(());
 			}
 
-			let selectors = switchover.selectors();
+			// Every selector of the full switchover, then the single-bit one's only selector.
+			let full_selectors = switchover.selectors();
+			let bit_selectors = bit_switchover.selectors();
+			let cases = (0..Word::BITS)
+				.map(|b| (&full_selectors, b, &columns[b]))
+				.chain([(&bit_selectors, 0, &columns[bit])])
+				.collect::<Vec<_>>();
 			for chunk_vars in 0..remaining {
 				let mut scratch = [FieldBuffer::zeros(chunk_vars), FieldBuffer::zeros(chunk_vars)];
 				let mut masks = [(); 2].map(|_| {
 					vec![P::make_mask(std::iter::empty()); scratch[0].as_ref().len()]
 				});
-				for (b, column) in columns.iter().enumerate() {
+				for &(selectors, b, column) in &cases {
 					let (half_0, half_1) = column.split_half();
 					for chunk_index in 0..1 << (remaining - 1 - chunk_vars) {
 						let [scratch_0, scratch_1] = &mut scratch;

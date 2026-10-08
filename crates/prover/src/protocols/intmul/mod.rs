@@ -1,5 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
+mod bit_column_mle;
 mod error;
 pub mod prove;
 pub mod selector_mle;
