@@ -22,7 +22,7 @@ use binius_field::{Field, Ghash128b, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Options, Wire};
 use binius_hash::StdHashSuite;
 use binius_prover::{Prover, zk_config::ZKProver};
-use binius_transcript::ProverTranscript;
+use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use binius_verifier::{Verifier, config::StdChallenger, zk_config::ZKVerifier};
 use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -703,4 +703,55 @@ fn test_zk_prove_verify_aggregate_public_segment_over_power_of_two() {
 	assert_eq!(cs.n_public_words(InoutSegment::Public), 513);
 	prove_verify(cs.clone(), &witness);
 	prove_verify_zk(cs, &witness);
+}
+
+/// A 64-signer aggregate spans multiple 63-bit wiring blocks and verifies in ZK.
+///
+/// The full circuit exceeds wasm32's memory budget; wasm uses the 8-signer case below.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_zk_prove_verify_aggregate_64_signers() {
+	use binius_verifier::{
+		protocols::shift::LOG_SHIFT_COUNT,
+		reduction::{LOG_OPERANDS, log_constraint_point},
+	};
+
+	let (cs, witness) = xmss_aggregate_circuit(64, 0);
+	let wiring_bits = LOG_OPERANDS
+		+ 2 * LOG_SHIFT_COUNT
+		+ cs.log_segment_words(InoutSegment::Public)
+		+ log_constraint_point(&cs);
+	assert!(wiring_bits > 63, "the aggregate must exercise multiple wiring blocks");
+	prove_verify_zk_aggregate_and_reject_wrong_root(cs, &witness);
+}
+
+/// A smaller aggregate exercises ZK verification and root binding within wasm32's memory budget.
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn test_zk_prove_verify_aggregate_8_signers() {
+	let (cs, witness) = xmss_aggregate_circuit(8, 0);
+	prove_verify_zk_aggregate_and_reject_wrong_root(cs, &witness);
+}
+
+fn prove_verify_zk_aggregate_and_reject_wrong_root(cs: ConstraintSystem, witness: &ValueVec) {
+	let verifier = ZKVerifier::<StdHashSuite>::setup(cs, 1).unwrap();
+	let prover = ZKProver::<OptimalPackedB128, StdHashSuite>::setup(&verifier).unwrap();
+	let mut transcript = ProverTranscript::new(StdChallenger::default());
+	prover
+		.prove(witness, StdRng::seed_from_u64(0), &mut transcript)
+		.unwrap();
+	let proof = transcript.finalize();
+
+	let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof.clone());
+	verifier.verify(witness.inout(), &mut transcript).unwrap();
+	transcript.finalize().unwrap();
+
+	// The last public word belongs to the last signer's Merkle root.
+	let mut wrong_root = witness.inout().to_vec();
+	wrong_root.last_mut().unwrap().0 ^= 1;
+	let mut transcript = VerifierTranscript::new(StdChallenger::default(), proof);
+	assert!(
+		verifier.verify(&wrong_root, &mut transcript).is_err(),
+		"a different root for the last signer must not verify"
+	);
 }
