@@ -268,10 +268,9 @@ impl<F: Field> IOPVerifierChannel<F> for OracleSetupChannel {
 		Ok(())
 	}
 
-	fn verify_oracle_relation(
+	fn verify_multi_oracle_relation(
 		&mut self,
-		_oracle: Self::Oracle,
-		_transparent: TransparentEvalFn<Self::Elem>,
+		_operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		_claim: Self::Elem,
 	) -> Result<(), Error> {
 		// Opening an oracle needs every commitment in place, so nothing may still be queued.

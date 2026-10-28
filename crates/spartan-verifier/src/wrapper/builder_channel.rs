@@ -163,10 +163,9 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		Ok(())
 	}
 
-	fn verify_oracle_relation(
+	fn verify_multi_oracle_relation(
 		&mut self,
-		_oracle: Self::Oracle,
-		_transparent: TransparentEvalFn<Self::Elem>,
+		_operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), binius_iop::channel::Error> {
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier

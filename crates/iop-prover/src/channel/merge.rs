@@ -301,35 +301,38 @@ where
 		oracle
 	}
 
-	fn prove_oracle_relation(
+	fn prove_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: StructuredBuffer<P, A::Vec<P>>,
+		operands: impl IntoIterator<Item = (Self::Oracle, StructuredBuffer<P, A::Vec<P>>)>,
 		claim: P::Scalar,
 	) {
-		let n_i = self.schedule.specs()[oracle.index].log_msg_len();
-		assert_eq!(
-			transparent.log_len(),
-			n_i,
-			"transparent log_len mismatch: expected {n_i}, got {}",
-			transparent.log_len()
-		);
-		let Placement {
-			round,
-			block_index,
-			combined_log_len,
-		} = self.placements[oracle.index];
+		let operands = operands
+			.into_iter()
+			.map(|(oracle, transparent)| {
+				let n_i = self.schedule.specs()[oracle.index].log_msg_len();
+				assert_eq!(
+					transparent.log_len(),
+					n_i,
+					"transparent log_len mismatch: expected {n_i}, got {}",
+					transparent.log_len()
+				);
+				let Placement {
+					round,
+					block_index,
+					combined_log_len,
+				} = self.placements[oracle.index];
 
-		// The constituent's transparent is zero outside the constituent's own block of the
-		// combined oracle. So the inner product equals the original claim exactly.
-		let padded = StructuredBuffer::ZeroPadded {
-			inner: Box::new(transparent),
-			log_n_blocks: combined_log_len - n_i,
-			index: block_index,
-		};
-
-		let outer = self.groups[round].clone();
-		self.inner.prove_oracle_relation(outer, padded, claim);
+				// The constituent's transparent is zero outside the constituent's own block of the
+				// combined oracle. So the inner product equals the original one exactly.
+				let padded = StructuredBuffer::ZeroPadded {
+					inner: Box::new(transparent),
+					log_n_blocks: combined_log_len - n_i,
+					index: block_index,
+				};
+				(self.groups[round].clone(), padded)
+			})
+			.collect::<Vec<_>>();
+		self.inner.prove_multi_oracle_relation(operands, claim);
 	}
 }
 
