@@ -349,13 +349,13 @@ mod tests {
 		// The codeword encodes every oracle, so it is at least the encoding of the longest one. A
 		// setup that had handed the compiler one sub-system's specs would fall short of this.
 		let specs = verifier.iop_verifier().oracle_specs();
-		let log_max_msg_len = specs.iter().map(|spec| spec.log_msg_len).max().unwrap();
+		let log_max_msg_len = specs.iter().map(|spec| spec.log_msg_len()).max().unwrap();
 		assert!(verifier.iop_compiler().fri_params().log_len() >= log_max_msg_len + log_inv_rate);
 
 		// The fixture is only worth having if its sub-systems really do differ in size; otherwise
 		// the assertion above would hold however the code was sized.
-		let main_msg_len = verifier.iop_verifier().main().oracle_specs(false)[0].log_msg_len;
-		let chip_msg_len = verifier.iop_verifier().chips()[0].oracle_specs()[0].log_msg_len;
+		let main_msg_len = verifier.iop_verifier().main().oracle_specs(false)[0].log_msg_len();
+		let chip_msg_len = verifier.iop_verifier().chips()[0].oracle_specs()[0].log_msg_len();
 		assert_ne!(main_msg_len, chip_msg_len);
 	}
 

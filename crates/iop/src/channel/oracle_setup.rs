@@ -258,14 +258,11 @@ impl<F: Field> IOPVerifierChannel<F> for OracleSetupChannel {
 	fn recv_oracle(
 		&mut self,
 		len: usize,
-		log_msg_len: usize,
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {
 		// A non-witness-dependent oracle is never masked, whatever the protocol-level flag says.
-		assert!(len <= 1 << log_msg_len, "oracle content must fit its message");
 		self.schedule.push(OracleSpec {
 			len,
-			log_msg_len,
 			is_zk: self.is_zk && is_witness_dependent,
 		});
 		Ok(())
@@ -298,7 +295,7 @@ mod tests {
 
 	/// Receives one witness-carrying oracle of the given length.
 	fn recv(channel: &mut OracleSetupChannel, log_msg_len: usize) {
-		IOPVerifierChannel::<F>::recv_oracle(channel, 1 << log_msg_len, log_msg_len, true)
+		IOPVerifierChannel::<F>::recv_oracle(channel, 1 << log_msg_len, true)
 			.expect("the setup channel never fails");
 	}
 
@@ -322,8 +319,8 @@ mod tests {
 		assert_eq!(
 			schedule.rounds().collect::<Vec<_>>(),
 			vec![
-				[OracleSpec::new(3), OracleSpec::new(3)].as_slice(),
-				[OracleSpec::new(4)].as_slice(),
+				[OracleSpec::new(1 << 3), OracleSpec::new(1 << 3)].as_slice(),
+				[OracleSpec::new(1 << 4)].as_slice(),
 			]
 		);
 	}
@@ -340,7 +337,7 @@ mod tests {
 
 		let schedule = channel.into_oracle_schedule();
 		assert_eq!(schedule.n_rounds(), 2);
-		assert_eq!(schedule.rounds().last(), Some([OracleSpec::new(5)].as_slice()));
+		assert_eq!(schedule.rounds().last(), Some([OracleSpec::new(1 << 5)].as_slice()));
 	}
 
 	#[test]
@@ -404,12 +401,12 @@ mod tests {
 		//     round 0: [structural 2^3, witness 2^3] -> 2^4, masked because one member is
 		//     round 1: [structural 2^2]              -> 2^2, nothing to hide
 		let mut channel = OracleSetupChannel::new(true);
-		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 3, 3, false).unwrap();
-		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 3, 3, true).unwrap();
+		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 3, false).unwrap();
+		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 3, true).unwrap();
 		sample(&mut channel);
-		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 2, 2, false).unwrap();
+		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 2, false).unwrap();
 
 		let merged = channel.into_oracle_schedule().merged_specs();
-		assert_eq!(merged, vec![OracleSpec::new_zk(4), OracleSpec::new(2)]);
+		assert_eq!(merged, vec![OracleSpec::new_zk(1 << 4), OracleSpec::new(1 << 2)]);
 	}
 }

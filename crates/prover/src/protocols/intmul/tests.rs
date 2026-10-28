@@ -75,7 +75,7 @@ fn prove_and_verify() {
 	let witness = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 
 	// The one oracle in the protocol is the logup* pushforward, over the table variables.
-	let oracle_specs = [OracleSpec::new(LIMB_BITS)];
+	let oracle_specs = [OracleSpec::new(1 << LIMB_BITS)];
 
 	// Run prover
 	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
@@ -153,7 +153,7 @@ fn unpadded_columns_prove_identically_to_padded_ones() {
 
 		// One proof per shape, each on a fresh transcript over the same challenger seed.
 		let run = |columns: [&[Word]; 4]| {
-			let oracle_specs = [OracleSpec::new(LIMB_BITS)];
+			let oracle_specs = [OracleSpec::new(1 << LIMB_BITS)];
 			let mut transcript = ProverTranscript::<StdChallenger>::default();
 			let mut channel =
 				NaiveProverChannel::<F, _>::new(&mut transcript, oracle_specs.to_vec());
@@ -168,7 +168,7 @@ fn unpadded_columns_prove_identically_to_padded_ones() {
 		assert_eq!(unpadded_output, padded_output, "claims differ at n = {n}");
 		assert_eq!(unpadded_proof, padded_proof, "transcript differs at n = {n}");
 
-		let oracle_specs = [OracleSpec::new(LIMB_BITS)];
+		let oracle_specs = [OracleSpec::new(1 << LIMB_BITS)];
 		let mut verifier_transcript =
 			VerifierTranscript::new(StdChallenger::default(), unpadded_proof);
 		let mut verifier_channel =

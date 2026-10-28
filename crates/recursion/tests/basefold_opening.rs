@@ -151,7 +151,7 @@ impl Shape {
 		// That means one interleaved batch dimension, and a code dimension of `n_vars`.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
 			&scheme,
-			&[OracleSpec::new_zk(self.n_vars)],
+			&[OracleSpec::new_zk(1 << self.n_vars)],
 			self.log_inv_rate,
 			self.n_test_queries,
 		);

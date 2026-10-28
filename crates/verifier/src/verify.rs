@@ -195,8 +195,8 @@ impl IOPVerifier {
 
 		// Receive the trace oracle commitment via channel. The trace is the witness, so it is
 		// witness-dependent (masked in a ZK proof).
-		let trace_oracle =
-			channel.recv_oracle(self.n_witness_elems(), self.log_witness_elems(), true)?;
+		// TODO: declare `n_witness_elems` once the ring-switch handles a shorter oracle.
+		let trace_oracle = channel.recv_oracle(1 << self.log_witness_elems(), true)?;
 
 		// Reduce every constraint to one claim on the committed trace.
 		let cs = self.constraint_system();
@@ -343,7 +343,7 @@ where
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 
 		// Pick the proof-size-optimal FRI fold arity for this codeword length.
-		let log_code_len = oracle_specs[0].log_msg_len + log_inv_rate;
+		let log_code_len = oracle_specs[0].log_msg_len() + log_inv_rate;
 		let fri_arity =
 			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
 				.arity;

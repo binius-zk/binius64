@@ -26,7 +26,7 @@ use binius_iop_prover::{
 	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
-use binius_math::{FieldVec, StructuredBuffer, ntt::AdditiveNTT};
+use binius_math::{FieldSlice, FieldVec, StructuredBuffer, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_verifier::IOPVerifier;
 use rand::CryptoRng;
@@ -70,6 +70,9 @@ where
 	/// wired up in a follow-up; for now the outer circuit has no precommit wires that reference
 	/// it).
 	precommit_oracle: MergeOracle,
+	/// The packed outer precommit buffer committed as [`Self::precommit_oracle`], which the outer
+	/// proof reads in [`Self::finish`].
+	precommit_packed: FieldVec<P, A>,
 	/// Number of outer oracles still to be committed on `inner_channel` during `finish` (the
 	/// outer prover's non-precommit oracles — private and mask).
 	n_outer_suffix_oracles: usize,
@@ -133,7 +136,7 @@ where
 			"outer private/mask oracle specs must be the final suffix of channel specs",
 		);
 
-		let (keys, precommit_oracle) = {
+		let (keys, precommit_oracle, precommit_packed) = {
 			let _scope = tracing::debug_span!("Commit Transcript Mask").entered();
 			Self::commit_transcript_mask(&mut inner_channel, outer_prover, alloc, rng)
 		};
@@ -148,6 +151,7 @@ where
 			next_key_idx: 0,
 			interaction: Vec::new(),
 			precommit_oracle,
+			precommit_packed,
 			n_outer_suffix_oracles: suffix_len,
 		}
 	}
@@ -161,7 +165,7 @@ where
 		outer_prover: &IOPProver<F>,
 		alloc: &A,
 		mut rng: impl CryptoRng,
-	) -> (Vec<F>, MergeOracle) {
+	) -> (Vec<F>, MergeOracle, FieldVec<P, A>) {
 		let cs = outer_prover.constraint_system();
 		let keys = repeat_with(|| F::random(&mut rng))
 			.take(cs.n_precommit() as usize)
@@ -175,8 +179,8 @@ where
 			&precommit_blinding,
 			&mut rng,
 		);
-		let precommit_oracle = inner_channel.send_oracle(precommit_packed);
-		(keys, precommit_oracle)
+		let precommit_oracle = inner_channel.send_oracle(precommit_packed.as_view());
+		(keys, precommit_oracle, precommit_packed)
 	}
 
 	fn next_key(&mut self) -> F {
@@ -205,6 +209,7 @@ where
 			keys,
 			interaction,
 			precommit_oracle,
+			precommit_packed,
 			..
 		} = self;
 
@@ -222,6 +227,7 @@ where
 		outer_prover.prove::<P, _, _>(
 			&witness,
 			precommit_oracle,
+			precommit_packed.as_view(),
 			rng,
 			&mut inner_channel,
 			alloc,
@@ -311,7 +317,7 @@ where
 		&remaining[..n_inner_remaining]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"send_oracle called but no inner oracle specs remaining"
@@ -333,13 +339,5 @@ where
 
 		self.inner_channel
 			.prove_oracle_relation(oracle, transparent, claim);
-	}
-
-	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A> {
-		self.inner_channel.take_oracle(oracle)
-	}
-
-	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		self.inner_channel.return_oracle(oracle, buffer);
 	}
 }

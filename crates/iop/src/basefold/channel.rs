@@ -165,7 +165,7 @@ where
 	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
 	let max_n = oracle_specs
 		.iter()
-		.map(|spec| spec.log_msg_len)
+		.map(|spec| spec.log_msg_len())
 		.max()
 		.expect("at least one oracle");
 
@@ -215,7 +215,7 @@ where
 	// Reduce the batched claim: each oracle contributes α_i · T_i(ρ_i) · eq(0^extra, padding).
 	let contributions = izip!(relations, oracle_specs, &alphas)
 		.map(|(relation, spec, alpha_i)| {
-			let (eval_coords, padding_coords) = point.split_at(spec.log_msg_len);
+			let (eval_coords, padding_coords) = point.split_at(spec.log_msg_len());
 			let pad_eq = eq_ind_zero(padding_coords);
 			let transparent_eval = (relation.transparent)(eval_coords);
 			alpha_i.clone() * transparent_eval * pad_eq
@@ -237,7 +237,7 @@ where
 	// 1).
 	let s_prime = izip!(fri_params.input_oracles(), oracle_specs, eq_tensor, alphas)
 		.map(|(fri_oracle, spec, eq_i, alpha_i)| {
-			let n_i = spec.log_msg_len;
+			let n_i = spec.log_msg_len();
 			let log_lift = fri_oracle.log_lift;
 			eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift])
 		})
@@ -397,10 +397,9 @@ where
 	fn recv_oracle(
 		&mut self,
 		_len: usize,
-		_log_msg_len: usize,
 		_is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {
-		// A BaseFold commitment is a fixed-size Merkle digest, so `log_msg_len` is not needed here;
+		// A BaseFold commitment is a fixed-size Merkle digest, so `len` is not needed here;
 		// the per-oracle specs (used for the FRI opening) are supplied at channel construction.
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
@@ -422,7 +421,7 @@ where
 		let spec = &self.oracle_specs[index];
 		assert_eq!(
 			fri_oracle.log_batch_size() + depth - self.fri_params.rs_code().log_inv_rate(),
-			spec.log_msg_len + usize::from(spec.is_zk),
+			spec.log_msg_len() + usize::from(spec.is_zk),
 			"invariant: the FRI commitment shape must be consistent with the oracle spec's \
 			 log_msg_len"
 		);

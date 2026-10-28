@@ -440,7 +440,7 @@ where
 	let committed: Vec<(usize, Option<usize>)> = oracles
 		.iter()
 		.map(|oracle| {
-			let committed_log_msg_len = oracle.log_msg_len + usize::from(oracle.is_zk);
+			let committed_log_msg_len = oracle.log_msg_len() + usize::from(oracle.is_zk);
 			let log_batch_size = oracle.is_zk.then_some(1);
 			(committed_log_msg_len, log_batch_size)
 		})
@@ -873,23 +873,23 @@ mod tests {
 		// exercise different branches of the selection.
 		let mut batches: Vec<Vec<OracleSpec>> = Vec::new();
 		for log_msg_len in [0, 1, 4, 8, 12, 16, 20] {
-			batches.push(vec![OracleSpec::new(log_msg_len)]);
-			batches.push(vec![OracleSpec::new_zk(log_msg_len)]);
+			batches.push(vec![OracleSpec::new(1 << log_msg_len)]);
+			batches.push(vec![OracleSpec::new_zk(1 << log_msg_len)]);
 		}
 		batches.extend([
-			vec![OracleSpec::new(16), OracleSpec::new(16)],
-			vec![OracleSpec::new(16), OracleSpec::new(12)],
-			vec![OracleSpec::new_zk(11), OracleSpec::new(16)],
+			vec![OracleSpec::new(1 << 16), OracleSpec::new(1 << 16)],
+			vec![OracleSpec::new(1 << 16), OracleSpec::new(1 << 12)],
+			vec![OracleSpec::new_zk(1 << 11), OracleSpec::new(1 << 16)],
 			vec![
-				OracleSpec::new_zk(9),
-				OracleSpec::new_zk(11),
-				OracleSpec::new(16),
+				OracleSpec::new_zk(1 << 9),
+				OracleSpec::new_zk(1 << 11),
+				OracleSpec::new(1 << 16),
 			],
 			vec![
-				OracleSpec::new(20),
-				OracleSpec::new_zk(15),
-				OracleSpec::new(8),
-				OracleSpec::new_zk(4),
+				OracleSpec::new(1 << 20),
+				OracleSpec::new_zk(1 << 15),
+				OracleSpec::new(1 << 8),
+				OracleSpec::new_zk(1 << 4),
 			],
 		]);
 
@@ -931,9 +931,9 @@ mod tests {
 		// The ZK oracle pins its batch size at 1, taking the fixed-batch-size branch of selection.
 		// The shorter non-ZK oracle beside it exercises lifting.
 		let batches: [(&str, Vec<OracleSpec>); 3] = [
-			("single/17", vec![OracleSpec::new(17)]),
-			("single/24", vec![OracleSpec::new(24)]),
-			("zk/24+21", vec![OracleSpec::new_zk(24), OracleSpec::new(21)]),
+			("single/17", vec![OracleSpec::new(1 << 17)]),
+			("single/24", vec![OracleSpec::new(1 << 24)]),
+			("zk/24+21", vec![OracleSpec::new_zk(1 << 24), OracleSpec::new(1 << 21)]),
 		];
 
 		let observed = batches
@@ -973,7 +973,7 @@ mod tests {
 		let merkle_scheme = test_merkle_scheme();
 
 		for log_msg_len in [17, 20, 24] {
-			let oracles = [OracleSpec::new(log_msg_len)];
+			let oracles = [OracleSpec::new(1 << log_msg_len)];
 			let priced = LOG_INV_RATES
 				.map(|log_inv_rate| proof_size_at_rate(&merkle_scheme, &oracles, log_inv_rate));
 			let smallest = priced
@@ -1098,9 +1098,9 @@ mod tests {
 		// oracle with a flexible batch size (committed length 16). The ZK oracles lower-bound the
 		// reduced dimension; the flexible oracle folds down to it.
 		let oracles = vec![
-			OracleSpec::new_zk(9),
-			OracleSpec::new_zk(11),
-			OracleSpec::new(16),
+			OracleSpec::new_zk(1 << 9),
+			OracleSpec::new_zk(1 << 11),
+			OracleSpec::new(1 << 16),
 		];
 
 		let (fri_params, proof_size) =
@@ -1119,7 +1119,7 @@ mod tests {
 		for (spec, oracle) in fri_params.input_oracles.iter().zip(&oracles) {
 			// A ZK oracle interleaves the message with an equal-length mask, so its committed
 			// message length is `log_msg_len + 1`; a non-ZK oracle commits the bare message.
-			let committed_log_msg_len = oracle.log_msg_len + usize::from(oracle.is_zk);
+			let committed_log_msg_len = oracle.log_msg_len() + usize::from(oracle.is_zk);
 			// The committed codeword (dimension `committed_log_msg_len - log_batch_size`) is lifted
 			// to the reduced dimension, recovering the committed message length.
 			let oracle_log_dim = reduced_log_dim - spec.log_lift;

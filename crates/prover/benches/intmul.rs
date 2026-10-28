@@ -51,7 +51,7 @@ fn basefold_compiler()
 -> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GaoMateerPreExpanded<F>>> {
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
 		&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
-		vec![OracleSpec::new(LIMB_BITS)],
+		vec![OracleSpec::new(1 << LIMB_BITS)],
 		LOG_INV_RATE,
 		N_TEST_QUERIES,
 		&MinProofSizeStrategy,

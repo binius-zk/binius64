@@ -102,14 +102,12 @@ fn test_zk_wrapped_prove_verify() {
 	// Transcript layout: outer precommit oracle first (committed at wrapper construction),
 	// then all inner oracles, then the remaining outer oracles (private, mask). Replaying that
 	// sequence against one setup channel records where each round ends.
-	let inner_log_precommit = inner_cs.log_precommit() as usize;
 	let combined_schedule = {
 		let mut channel = OracleSetupChannel::new(true);
 		for cs in [outer_iop_verifier.constraint_system(), &inner_cs] {
 			<OracleSetupChannel as IOPVerifierChannel<B128>>::recv_oracle(
 				&mut channel,
 				cs.precommit_len(),
-				cs.log_precommit() as usize,
 				true,
 			)
 			.unwrap();
@@ -187,16 +185,18 @@ fn test_zk_wrapped_prove_verify() {
 	wrapped_prover_channel.observe_many(&public);
 
 	// Commit the inner precommit oracle on the wrapped channel, then run the inner proof.
-	let inner_precommit_oracle = inner_iop_prover.commit_precommit::<OptimalPackedB128, _, _>(
-		&inner_witness,
-		&mut rng,
-		&mut wrapped_prover_channel,
-		&GlobalAllocator,
-	);
+	let (inner_precommit_oracle, inner_precommit_packed) = inner_iop_prover
+		.commit_precommit::<OptimalPackedB128, _, _>(
+			&inner_witness,
+			&mut rng,
+			&mut wrapped_prover_channel,
+			&GlobalAllocator,
+		);
 	inner_iop_prover
 		.prove::<OptimalPackedB128, _, _>(
 			&inner_witness,
 			inner_precommit_oracle,
+			inner_precommit_packed.as_view(),
 			&mut rng,
 			&mut wrapped_prover_channel,
 			&GlobalAllocator,
@@ -228,7 +228,7 @@ fn test_zk_wrapped_prove_verify() {
 
 	// Run the inner IOP verify through the wrapped channel.
 	let inner_precommit_oracle = wrapped_verifier_channel
-		.recv_oracle(inner_cs.precommit_len(), inner_log_precommit, true)
+		.recv_oracle(inner_cs.precommit_len(), true)
 		.unwrap();
 	inner_iop_verifier
 		.verify(inner_precommit_oracle, &inner_public_elems, &mut wrapped_verifier_channel)
