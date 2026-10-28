@@ -43,15 +43,15 @@ pub struct Placement {
 pub fn place_oracles(schedule: &OracleSchedule) -> Vec<Placement> {
 	let mut placements = Vec::with_capacity(schedule.specs().len());
 	for (round, specs) in schedule.rounds().enumerate() {
-		let combined_log_len = merged_log_msg_len(specs.iter().map(|spec| spec.log_msg_len));
+		let combined_log_len = merged_log_msg_len(specs.iter().map(|spec| spec.log_msg_len()));
 
 		let mut order: Vec<usize> = (0..specs.len()).collect();
-		order.sort_by_key(|&k| Reverse(specs[k].log_msg_len));
+		order.sort_by_key(|&k| Reverse(specs[k].log_msg_len()));
 
 		let mut block_indices = vec![0; specs.len()];
 		let mut offset = 0usize;
 		for k in order {
-			let n_k = specs[k].log_msg_len;
+			let n_k = specs[k].log_msg_len();
 			block_indices[k] = offset >> n_k;
 			offset += 1 << n_k;
 		}
@@ -291,7 +291,6 @@ where
 	fn recv_oracle(
 		&mut self,
 		len: usize,
-		log_msg_len: usize,
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {
 		// Every oracle this channel will receive is declared up front.
@@ -301,7 +300,6 @@ where
 		let remaining = self.remaining_oracle_specs();
 		assert!(!remaining.is_empty(), "recv_oracle called but no remaining oracle specs");
 		let spec = remaining[0];
-		assert_eq!(log_msg_len, spec.log_msg_len, "oracle size must match its spec");
 		assert_eq!(len, spec.len, "oracle content length must match its spec");
 
 		// A spec is zero-knowledge iff the protocol is and the oracle is witness-dependent.
@@ -316,11 +314,7 @@ where
 		self.n_received += 1;
 
 		// The last oracle of its round commits the whole round as one oracle.
-		let Placement {
-			round,
-			combined_log_len,
-			..
-		} = self.placements[index];
+		let round = self.placements[index].round;
 		let is_last_of_round = self
 			.placements
 			.get(index + 1)
@@ -331,11 +325,9 @@ where
 			// So the combined oracle is witness-dependent as soon as any constituent is.
 			// A structural oracle sharing the round is masked along with it, which costs
 			// randomness but never correctness.
-			let outer = self.inner.recv_oracle(
-				self.round_specs[round].len,
-				combined_log_len,
-				self.round_specs[round].is_zk,
-			)?;
+			let outer = self
+				.inner
+				.recv_oracle(self.round_specs[round].len, self.round_specs[round].is_zk)?;
 			self.outers.push(outer);
 		}
 
@@ -348,7 +340,7 @@ where
 		transparent: TransparentEvalFn<Self::Elem>,
 		claim: Self::Elem,
 	) -> Result<(), Error> {
-		let n_i = self.schedule.specs()[oracle.index].log_msg_len;
+		let n_i = self.schedule.specs()[oracle.index].log_msg_len();
 		let Placement {
 			round,
 			block_index,
@@ -406,7 +398,7 @@ mod tests {
 		let mut schedule = OracleSchedule::new();
 		for sizes in rounds {
 			for &n in *sizes {
-				schedule.push(OracleSpec::new(n));
+				schedule.push(OracleSpec::new(1 << n));
 			}
 			schedule.end_round();
 		}
@@ -451,8 +443,8 @@ mod tests {
 			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
 			&schedule,
 		);
-		channel.recv_oracle(1 << 2, 2, true).unwrap();
-		channel.recv_oracle(1 << 2, 2, true).unwrap();
+		channel.recv_oracle(1 << 2, true).unwrap();
+		channel.recv_oracle(1 << 2, true).unwrap();
 	}
 
 	#[test]
@@ -461,7 +453,7 @@ mod tests {
 		// The schedule declares a masked oracle.
 		// Receiving it as independent of the witness contradicts that.
 		let mut schedule = OracleSchedule::new();
-		schedule.push(OracleSpec::new_zk(2));
+		schedule.push(OracleSpec::new_zk(1 << 2));
 		schedule.end_round();
 		let merged_specs = schedule.merged_specs();
 		let mut transcript =
@@ -470,7 +462,7 @@ mod tests {
 			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
 			&schedule,
 		);
-		let _ = channel.recv_oracle(1 << 2, 2, false);
+		let _ = channel.recv_oracle(1 << 2, false);
 	}
 
 	#[test]
@@ -488,7 +480,7 @@ mod tests {
 			NaiveVerifierChannel::<F, _>::new(&mut transcript, &merged_specs),
 			&schedule,
 		);
-		channel.recv_oracle(1 << 2, 2, true).unwrap();
+		channel.recv_oracle(1 << 2, true).unwrap();
 		let _ = channel.into_inner();
 	}
 }

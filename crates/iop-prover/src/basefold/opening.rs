@@ -170,7 +170,7 @@ mod test {
 		// n_vars`).
 		let (fri_params, _) = binius_iop::fri::FRIParams::optimal_for_batch(
 			merkle_prover.scheme(),
-			&[OracleSpec::new_zk(n_vars)],
+			&[OracleSpec::new_zk(1 << n_vars)],
 			LOG_INV_RATE,
 			32,
 		);

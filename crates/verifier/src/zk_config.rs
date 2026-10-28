@@ -126,7 +126,6 @@ where
 			<OracleSetupChannel as IOPVerifierChannel<B128>>::recv_oracle(
 				&mut channel,
 				outer_iop_verifier.constraint_system().precommit_len(),
-				outer_iop_verifier.constraint_system().log_precommit() as usize,
 				true,
 			)
 			.expect("OracleSetupChannel::recv_oracle is infallible");

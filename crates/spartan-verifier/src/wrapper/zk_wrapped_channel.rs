@@ -118,11 +118,7 @@ where
 			"outer private/mask oracle specs must be the final suffix of channel specs"
 		);
 
-		let precommit_oracle = inner_channel.recv_oracle(
-			outer_oracle_specs[0].len,
-			outer_oracle_specs[0].log_msg_len,
-			true,
-		)?;
+		let precommit_oracle = inner_channel.recv_oracle(outer_oracle_specs[0].len, true)?;
 
 		Ok(Self {
 			inner_channel,
@@ -294,15 +290,13 @@ where
 	fn recv_oracle(
 		&mut self,
 		len: usize,
-		log_msg_len: usize,
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, binius_iop::channel::Error> {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"recv_oracle called but no remaining inner oracle specs"
 		);
-		self.inner_channel
-			.recv_oracle(len, log_msg_len, is_witness_dependent)
+		self.inner_channel.recv_oracle(len, is_witness_dependent)
 	}
 
 	fn verify_oracle_relation(

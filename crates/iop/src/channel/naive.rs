@@ -147,7 +147,6 @@ where
 	fn recv_oracle(
 		&mut self,
 		len: usize,
-		log_msg_len: usize,
 		_is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {
 		assert!(
@@ -157,9 +156,8 @@ where
 
 		let index = self.next_oracle_index;
 		debug_assert_eq!(len, self.oracle_specs[index].len);
-		debug_assert_eq!(log_msg_len, self.oracle_specs[index].log_msg_len);
 
-		let buffer_len = 1 << log_msg_len;
+		let buffer_len = 1 << self.oracle_specs[index].log_msg_len();
 
 		// Read all polynomial coefficients from the transcript
 		let values = self
@@ -185,7 +183,7 @@ where
 		assert!(index < self.stored_polynomials.len(), "oracle index {index} out of bounds");
 
 		// Extract spec data before mutable borrow of transcript
-		let log_msg_len = self.oracle_specs[index].log_msg_len;
+		let log_msg_len = self.oracle_specs[index].log_msg_len();
 
 		// Read the transparent polynomial from the transcript (prover wrote it in
 		// prove_oracle_relation)

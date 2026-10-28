@@ -111,9 +111,8 @@ impl IOPProver {
 		// [phase] Witness Commit - witness generation and commitment
 		let witness_commit_guard = tracing::info_span!("Commit witness").entered();
 
-		// Commit witness via channel, and take the committed buffer back for the reductions.
-		let trace_oracle = channel.send_oracle(witness_packed);
-		let witness_packed = channel.take_oracle(trace_oracle.clone());
+		// Commit witness via channel.
+		let trace_oracle = channel.send_oracle(witness_packed.as_view());
 
 		drop(witness_commit_guard);
 
@@ -264,8 +263,7 @@ impl IOPProver {
 
 		// Prove oracle relations via channel (runs BaseFold internally). The intmul pushforward
 		// relation, when the IntMul reduction ran, was already queued inside phase 5.
-		channel.prove_oracle_relation(trace_oracle.clone(), rs_eq_ind.into(), sumcheck_claim);
-		channel.return_oracle(trace_oracle, witness_packed);
+		channel.prove_oracle_relation(trace_oracle, rs_eq_ind.into(), sumcheck_claim);
 
 		drop(pcs_guard);
 

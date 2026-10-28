@@ -105,11 +105,6 @@ where
 
 	/// The underlying channel's handle for every round committed so far, in commit order.
 	groups: Vec<C::Oracle>,
-
-	/// Every oracle's own buffer, in arrival order, while this channel holds it.
-	///
-	/// `None` for an oracle forwarded as a round of its own, and for one taken out.
-	originals: Vec<Option<FieldVec<P, A>>>,
 }
 
 impl<'a, P, A, C> MergeProverChannel<'a, P, A, C>
@@ -144,14 +139,13 @@ where
 			open: None,
 			n_sent: 0,
 			groups: Vec::new(),
-			originals: Vec::new(),
 		}
 	}
 
 	/// Whether the oracle was forwarded to the underlying channel as a round of its own.
 	fn is_forwarded(&self, oracle: MergeOracle) -> bool {
 		self.placements[oracle.index].combined_log_len
-			== self.schedule.specs()[oracle.index].log_msg_len
+			== self.schedule.specs()[oracle.index].log_msg_len()
 	}
 
 	/// Returns the underlying channel.
@@ -259,14 +253,14 @@ where
 		&self.schedule.specs()[self.n_sent..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		// Every oracle this channel will send is declared up front.
 		//
 		// Reject anything past that count.
 		// Do not silently accept an undeclared oracle.
 		let remaining = self.remaining_oracle_specs();
 		assert!(!remaining.is_empty(), "send_oracle called but no remaining oracle specs");
-		assert_eq!(buffer.log_len(), remaining[0].log_msg_len, "oracle size must match its spec");
+		assert_eq!(buffer.log_len(), remaining[0].log_msg_len(), "oracle size must match its spec");
 
 		let index = self.n_sent;
 		self.n_sent += 1;
@@ -279,8 +273,7 @@ where
 		// A round of its own is forwarded unchanged.
 		let oracle = MergeOracle { index };
 		if self.is_forwarded(oracle) {
-			self.groups.push(self.inner.send_oracle(buffer));
-			self.originals.push(None);
+			self.groups.push(self.inner.send_oracle(buffer.as_view()));
 			return oracle;
 		}
 
@@ -290,8 +283,7 @@ where
 		let combined = self
 			.open
 			.get_or_insert_with(|| FieldBuffer::zeros_in(&self.alloc, combined_log_len));
-		place_block(combined, buffer.as_view(), block_index);
-		self.originals.push(Some(buffer));
+		place_block(combined, buffer, block_index);
 
 		// The last oracle of its round commits the whole round as one oracle.
 		let is_last_of_round = self
@@ -303,7 +295,7 @@ where
 				.open
 				.take()
 				.expect("open round buffer was just inserted");
-			self.groups.push(self.inner.send_oracle(combined));
+			self.groups.push(self.inner.send_oracle(combined.as_view()));
 		}
 
 		oracle
@@ -315,7 +307,7 @@ where
 		transparent: StructuredBuffer<P, A::Vec<P>>,
 		claim: P::Scalar,
 	) {
-		let n_i = self.schedule.specs()[oracle.index].log_msg_len;
+		let n_i = self.schedule.specs()[oracle.index].log_msg_len();
 		assert_eq!(
 			transparent.log_len(),
 			n_i,
@@ -338,28 +330,6 @@ where
 
 		let outer = self.groups[round].clone();
 		self.inner.prove_oracle_relation(outer, padded, claim);
-	}
-
-	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A> {
-		let round = self.placements[oracle.index].round;
-		assert!(round < self.groups.len(), "oracle {} is in a round still open", oracle.index);
-		if self.is_forwarded(oracle) {
-			// The round was forwarded, so its buffer is the underlying channel's.
-			self.inner.take_oracle(self.groups[round].clone())
-		} else {
-			self.originals[oracle.index]
-				.take()
-				.unwrap_or_else(|| panic!("oracle {} is already taken", oracle.index))
-		}
-	}
-
-	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		// A merged oracle's copy in the combined buffer is what gets opened, so its own buffer is
-		// no longer needed and is dropped here.
-		if self.is_forwarded(oracle) {
-			let outer = self.groups[self.placements[oracle.index].round].clone();
-			self.inner.return_oracle(outer, buffer);
-		}
 	}
 }
 
@@ -451,7 +421,7 @@ mod tests {
 		let mut schedule = OracleSchedule::new();
 		for sizes in rounds {
 			for &n in *sizes {
-				schedule.push(OracleSpec::new(n));
+				schedule.push(OracleSpec::new(1 << n));
 			}
 			schedule.end_round();
 		}
@@ -471,16 +441,10 @@ mod tests {
 		for sizes in rounds {
 			for _ in *sizes {
 				let (buffer, _, _) = &data[index];
-				oracles.push(merge_prover.send_oracle(buffer.clone()));
+				oracles.push(merge_prover.send_oracle(buffer.as_view()));
 				index += 1;
 			}
 			IPProverChannel::sample(&mut merge_prover);
-		}
-		// Every oracle's buffer comes back as sent, whether its round was forwarded or merged.
-		for (&oracle, (buffer, _, _)) in iter::zip(&oracles, &data) {
-			let taken = merge_prover.take_oracle(oracle);
-			assert_eq!(&taken, buffer);
-			merge_prover.return_oracle(oracle, taken);
 		}
 		for (&oracle, (_, transparent, claim)) in iter::zip(&oracles, &data) {
 			merge_prover.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
@@ -498,7 +462,7 @@ mod tests {
 		let mut v_oracles = Vec::new();
 		for sizes in rounds {
 			for &n in *sizes {
-				v_oracles.push(merge_verifier.recv_oracle(1 << n, n, true).unwrap());
+				v_oracles.push(merge_verifier.recv_oracle(1 << n, true).unwrap());
 			}
 			IPVerifierChannel::sample(&mut merge_verifier);
 		}
@@ -588,8 +552,8 @@ mod tests {
 		// Each carries two independent claims, rather than just one.
 		let mut rng = StdRng::seed_from_u64(0);
 		let mut schedule = OracleSchedule::new();
-		schedule.push(OracleSpec::new(4));
-		schedule.push(OracleSpec::new(3));
+		schedule.push(OracleSpec::new(1 << 4));
+		schedule.push(OracleSpec::new(1 << 3));
 		schedule.end_round();
 		let (buffer_1, _, _) = generate_oracle_data::<F, P, _>(&mut rng, 4);
 		let (buffer_2, _, _) = generate_oracle_data::<F, P, _>(&mut rng, 3);
@@ -614,7 +578,7 @@ mod tests {
 		// One round, sized to fit both oracles.
 		// 2^4 + 2^3 = 24, rounded up to 2^5.
 		let coarse_specs = schedule.merged_specs();
-		assert_eq!(coarse_specs, [OracleSpec::new(5)]);
+		assert_eq!(coarse_specs, [OracleSpec::new(1 << 5)]);
 
 		// Prover side.
 		//
@@ -624,8 +588,8 @@ mod tests {
 		let naive_prover = NaiveProverChannel::new(&mut prover_transcript, coarse_specs.clone());
 		let mut merge_prover = MergeProverChannel::new(naive_prover, &schedule, GlobalAllocator);
 
-		let oracle_1 = merge_prover.send_oracle(buffer_1);
-		let oracle_2 = merge_prover.send_oracle(buffer_2);
+		let oracle_1 = merge_prover.send_oracle(buffer_1.as_view());
+		let oracle_2 = merge_prover.send_oracle(buffer_2.as_view());
 		for (transparent, claim) in &relations_1 {
 			merge_prover.prove_oracle_relation(oracle_1, transparent.clone().into(), *claim);
 		}
@@ -642,8 +606,8 @@ mod tests {
 		let naive_verifier = NaiveVerifierChannel::new(&mut verifier_transcript, &coarse_specs);
 		let mut merge_verifier = MergeVerifierChannel::new(naive_verifier, &schedule);
 
-		let v_oracle_1 = merge_verifier.recv_oracle(1 << 4, 4, true).unwrap();
-		let v_oracle_2 = merge_verifier.recv_oracle(1 << 3, 3, true).unwrap();
+		let v_oracle_1 = merge_verifier.recv_oracle(1 << 4, true).unwrap();
+		let v_oracle_2 = merge_verifier.recv_oracle(1 << 3, true).unwrap();
 		for (transparent, claim) in relations_1 {
 			merge_verifier
 				.verify_oracle_relation(
@@ -689,7 +653,7 @@ mod tests {
 		let mut schedule = OracleSchedule::new();
 		for sizes in rounds {
 			for &n in *sizes {
-				schedule.push(OracleSpec::new_zk(n));
+				schedule.push(OracleSpec::new_zk(1 << n));
 			}
 			schedule.end_round();
 		}
@@ -697,10 +661,10 @@ mod tests {
 			.specs()
 			.iter()
 			.map(|spec| {
-				let buffer = random_field_buffer::<P>(&mut rng, spec.log_msg_len);
+				let buffer = random_field_buffer::<P>(&mut rng, spec.log_msg_len());
 				let relations = (0..2)
 					.map(|_| {
-						let point = random_scalars::<F>(&mut rng, spec.log_msg_len);
+						let point = random_scalars::<F>(&mut rng, spec.log_msg_len());
 						let transparent = eq_ind_partial_eval::<P>(&point);
 						let claim = inner_product_buffers(&buffer, &transparent);
 						(transparent, claim)
@@ -736,7 +700,7 @@ mod tests {
 		let mut data_iter = data.iter();
 		for sizes in rounds {
 			for (buffer, _) in data_iter.by_ref().take(sizes.len()) {
-				oracles.push(merge_prover.send_oracle(buffer.clone()));
+				oracles.push(merge_prover.send_oracle(buffer.as_view()));
 			}
 			IPProverChannel::sample(&mut merge_prover);
 		}
@@ -757,7 +721,7 @@ mod tests {
 		let mut v_oracles = Vec::new();
 		for sizes in rounds {
 			for &n in *sizes {
-				v_oracles.push(merge_verifier.recv_oracle(1 << n, n, true).unwrap());
+				v_oracles.push(merge_verifier.recv_oracle(1 << n, true).unwrap());
 			}
 			IPVerifierChannel::sample(&mut merge_verifier);
 		}

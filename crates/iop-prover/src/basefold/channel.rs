@@ -16,7 +16,7 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec, StructuredBuffer,
+	FieldBuffer, FieldSlice, FieldSliceMut, StructuredBuffer,
 	inner_product::inner_product_par,
 	line::extrapolate_line,
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
@@ -54,9 +54,9 @@ struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 	codeword: FieldBuffer<P, Data>,
 	/// The Merkle commitment handle for query proofs, owning the committed tree.
 	commitment: C,
-	/// The committed multilinear message `pi_i`, backed by the caller's allocator. Handed over by
-	/// [`IOPProverChannel::send_oracle`], and `None` while the caller has it out.
-	message: Option<FieldBuffer<P, Data>>,
+	/// The committed multilinear message `pi_i`, copied from [`IOPProverChannel::send_oracle`]'s
+	/// argument into the caller's allocator.
+	message: FieldBuffer<P, Data>,
 }
 
 /// A committed-oracle relation queued for the single batched opening.
@@ -233,19 +233,6 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 		"expects at least one relation per committed oracle",
 	);
 
-	// Take ownership of the committed messages π_i, leaving the masks and codewords in place. Every
-	// taken oracle must have been handed back with `return_oracle`.
-	let mut messages = committed_oracles
-		.iter_mut()
-		.enumerate()
-		.map(|(index, oracle)| {
-			oracle
-				.message
-				.take()
-				.unwrap_or_else(|| panic!("oracle {index} was taken but never returned"))
-		})
-		.collect::<Vec<_>>();
-
 	// Batch each oracle's claims into one, so everything below runs exactly one relation per
 	// committed oracle.
 	let relations = batch_relations_per_oracle(channel, relations, alloc);
@@ -253,7 +240,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
 	let max_n = oracle_specs
 		.iter()
-		.map(|spec| spec.log_msg_len)
+		.map(|spec| spec.log_msg_len())
 		.max()
 		.expect("at least one oracle");
 
@@ -282,12 +269,13 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 	// Blind each ZK oracle's message in place: π_i' = (1-γ)π_i + γω_i. A non-ZK oracle's message
 	// passes through unmasked.
-	for (message, spec, committed) in izip!(&mut messages, oracle_specs, &committed_oracles) {
-		let n_i = spec.log_msg_len;
+	for (committed, spec) in izip!(&mut committed_oracles, oracle_specs) {
+		let CommittedOracleData { message, mask, .. } = committed;
+		let n_i = spec.log_msg_len();
 		assert_eq!(message.log_len(), n_i); // pre-condition
 
 		if spec.is_zk {
-			let mask = committed.mask.as_ref().expect("ZK oracle carries a mask");
+			let mask = mask.as_ref().expect("ZK oracle carries a mask");
 			let gamma_broadcast = P::broadcast(gamma.expect("γ sampled when ZK oracles present"));
 
 			let _scope = tracing::debug_span!("Fold message and ZK mask", log_len = n_i).entered();
@@ -303,10 +291,10 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	// === Phase A: batched sumcheck on the masked claims ⟨π_i', T_i⟩ = s_i' ===
 	// One prover per committed oracle, in oracle-index order, each padded to `max_n`.
 	let mut sigma_iter = sigmas.into_iter();
-	let provers = izip!(relations, &messages, oracle_specs)
-		.map(|(relation, message, spec)| {
+	let provers = izip!(relations, &committed_oracles, oracle_specs)
+		.map(|(relation, committed, spec)| {
 			let BatchedRelation { transparent, claim } = relation;
-			let n_i = spec.log_msg_len;
+			let n_i = spec.log_msg_len();
 			assert_eq!(transparent.log_len(), n_i); // pre-condition
 
 			// ZK oracle: mask the claim with σ_i.
@@ -320,7 +308,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 			};
 
 			let mut store = MleStore::new(n_i, alloc);
-			let message_col = store.push(message.as_view());
+			let message_col = store.push(committed.message.as_view());
 			let transparent_col = store.push_owned(transparent);
 			let inner = SharedSumcheckProver::new(
 				store,
@@ -365,9 +353,10 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 		let mut combined = FieldBuffer::zeros_in(alloc, max_n);
 		let mut s_prime = F::ZERO;
-		for (fri_oracle, witness_prime, eq_i, alpha_i) in
-			izip!(fri_params.input_oracles(), messages, eq_tensor, alphas)
+		for (fri_oracle, committed, eq_i, alpha_i) in
+			izip!(fri_params.input_oracles(), &committed_oracles, eq_tensor, alphas)
 		{
+			let witness_prime = &committed.message;
 			let n_i = witness_prime.log_len();
 			// Each oracle occupies the low 2^{n_i} of every 2^{log_lift}·2^{n_i}-sized lift block,
 			// and that block is *repeated* across the 2^{log_repeat} high dims so the small
@@ -640,7 +629,7 @@ where
 		&self.oracle_specs[self.queue.len()..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		let remaining = self.remaining_oracle_specs();
 		assert!(!remaining.is_empty(), "send_oracle called but no remaining oracle specs");
 
@@ -650,9 +639,9 @@ where
 		// ZK channel expects raw witness buffer (NOT doubled).
 		assert_eq!(
 			buffer.log_len(),
-			spec.log_msg_len,
+			spec.log_msg_len(),
 			"oracle buffer log_len mismatch: expected {}, got {}",
-			spec.log_msg_len,
+			spec.log_msg_len(),
 			buffer.log_len()
 		);
 
@@ -693,7 +682,7 @@ where
 			mask,
 			codeword,
 			commitment,
-			message: Some(buffer),
+			message: FieldBuffer::from_view_in(&self.alloc, buffer),
 		});
 		self.queue.push(Vec::new());
 
@@ -712,25 +701,12 @@ where
 			"oracle index {} out of bounds, expected < {n_committed}",
 			oracle.index
 		);
-		let n_i = self.oracle_specs[oracle.index].log_msg_len;
+		let n_i = self.oracle_specs[oracle.index].log_msg_len();
 		assert_eq!(transparent.log_len(), n_i, "transparent log_len must match the oracle's");
 
 		// Queue the relation under its oracle; the actual opening (masking + sumcheck + combined
 		// FRI) happens once, over all committed oracles, in [`Self::finish`].
 		self.queue[oracle.index].push(QueuedRelation { transparent, claim });
-	}
-
-	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A> {
-		self.committed_oracles[oracle.index]
-			.message
-			.take()
-			.unwrap_or_else(|| panic!("oracle {} is already taken", oracle.index))
-	}
-
-	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		let message = &mut self.committed_oracles[oracle.index].message;
-		assert!(message.is_none(), "oracle {} was not taken", oracle.index);
-		*message = Some(buffer);
 	}
 }
 
@@ -809,7 +785,7 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![OracleSpec::new_zk(n_vars)];
+		let oracle_specs = vec![OracleSpec::new_zk(1 << n_vars)];
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&make_merkle_scheme(),
@@ -833,7 +809,7 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		let oracle = prover_channel.send_oracle(buffer);
+		let oracle = prover_channel.send_oracle(buffer.as_view());
 		assert_eq!(oracle.index, 0);
 
 		prover_channel.prove_oracle_relation(oracle, transparent_poly.clone().into(), eval_claim);
@@ -846,9 +822,7 @@ mod tests {
 				&mut verifier_transcript,
 			);
 
-		let v_oracle = verifier_channel
-			.recv_oracle(1 << n_vars, n_vars, true)
-			.unwrap();
+		let v_oracle = verifier_channel.recv_oracle(1 << n_vars, true).unwrap();
 
 		verifier_channel
 			.verify_oracle_relation(
@@ -879,7 +853,10 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![OracleSpec::new_zk(n_vars_1), OracleSpec::new_zk(n_vars_2)];
+		let oracle_specs = vec![
+			OracleSpec::new_zk(1 << n_vars_1),
+			OracleSpec::new_zk(1 << n_vars_2),
+		];
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&make_merkle_scheme(),
@@ -903,8 +880,8 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		let oracle_1 = prover_channel.send_oracle(buffer_1);
-		let oracle_2 = prover_channel.send_oracle(buffer_2);
+		let oracle_1 = prover_channel.send_oracle(buffer_1.as_view());
+		let oracle_2 = prover_channel.send_oracle(buffer_2.as_view());
 
 		prover_channel.prove_oracle_relation(
 			oracle_1,
@@ -925,12 +902,8 @@ mod tests {
 				&mut verifier_transcript,
 			);
 
-		let v_oracle_1 = verifier_channel
-			.recv_oracle(1 << n_vars_1, n_vars_1, true)
-			.unwrap();
-		let v_oracle_2 = verifier_channel
-			.recv_oracle(1 << n_vars_2, n_vars_2, true)
-			.unwrap();
+		let v_oracle_1 = verifier_channel.recv_oracle(1 << n_vars_1, true).unwrap();
+		let v_oracle_2 = verifier_channel.recv_oracle(1 << n_vars_2, true).unwrap();
 
 		let tp1 = transparent_poly_1;
 		let tp2 = transparent_poly_2;
@@ -974,8 +947,10 @@ mod tests {
 			.collect();
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
-		let oracle_specs: Vec<OracleSpec> =
-			n_vars_list.iter().map(|&n| OracleSpec::new_zk(n)).collect();
+		let oracle_specs: Vec<OracleSpec> = n_vars_list
+			.iter()
+			.map(|&n| OracleSpec::new_zk(1 << n))
+			.collect();
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&make_merkle_scheme(),
@@ -1001,7 +976,7 @@ mod tests {
 
 		let oracles: Vec<_> = data
 			.iter()
-			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.clone()))
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect();
 		for (oracle, (_, transparent, claim)) in iter::zip(oracles, &data) {
 			prover_channel.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
@@ -1017,7 +992,7 @@ mod tests {
 
 		let v_oracles: Vec<_> = n_vars_list
 			.iter()
-			.map(|&n| verifier_channel.recv_oracle(1 << n, n, true).unwrap())
+			.map(|&n| verifier_channel.recv_oracle(1 << n, true).unwrap())
 			.collect();
 		for (i, (oracle, (_, transparent, claim))) in iter::zip(v_oracles, &data).enumerate() {
 			let transparent = transparent.clone();
@@ -1059,9 +1034,9 @@ mod tests {
 			.iter()
 			.map(|&(n, is_zk)| {
 				if is_zk {
-					OracleSpec::new_zk(n)
+					OracleSpec::new_zk(1 << n)
 				} else {
-					OracleSpec::new(n)
+					OracleSpec::new(1 << n)
 				}
 			})
 			.collect();
@@ -1089,7 +1064,7 @@ mod tests {
 
 		let oracles: Vec<_> = data
 			.iter()
-			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.clone()))
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect();
 		for (oracle, (_, transparent, claim)) in iter::zip(oracles, &data) {
 			prover_channel.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
@@ -1104,7 +1079,7 @@ mod tests {
 
 		let v_oracles: Vec<_> = specs
 			.iter()
-			.map(|&(n, _)| verifier_channel.recv_oracle(1 << n, n, true).unwrap())
+			.map(|&(n, _)| verifier_channel.recv_oracle(1 << n, true).unwrap())
 			.collect();
 		for (i, (oracle, (_, transparent, claim))) in iter::zip(v_oracles, &data).enumerate() {
 			let transparent = transparent.clone();
@@ -1309,9 +1284,9 @@ mod tests {
 			.iter()
 			.map(|&(n_vars, is_zk, _)| {
 				if is_zk {
-					OracleSpec::new_zk(n_vars)
+					OracleSpec::new_zk(1 << n_vars)
 				} else {
-					OracleSpec::new(n_vars)
+					OracleSpec::new(1 << n_vars)
 				}
 			})
 			.collect::<Vec<_>>();
@@ -1340,7 +1315,7 @@ mod tests {
 
 		let oracles = data
 			.iter()
-			.map(|(buffer, _)| prover_channel.send_oracle(buffer.clone()))
+			.map(|(buffer, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect::<Vec<_>>();
 		for &(index, round) in &arrivals {
 			let (transparent, claim) = &data[index].1[round];
@@ -1361,11 +1336,7 @@ mod tests {
 
 		let v_oracles = specs
 			.iter()
-			.map(|&(n_vars, _, _)| {
-				verifier_channel
-					.recv_oracle(1 << n_vars, n_vars, true)
-					.unwrap()
-			})
+			.map(|&(n_vars, _, _)| verifier_channel.recv_oracle(1 << n_vars, true).unwrap())
 			.collect::<Vec<_>>();
 		for (position, &(index, round)) in arrivals.iter().enumerate() {
 			let (transparent, claim) = &data[index].1[round];

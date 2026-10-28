@@ -94,14 +94,10 @@ where
 	// Commit every Y before the reduction, so the logUp challenges bind the commitments.
 	let oracles = tracing::debug_span!("Commit pushforwards").in_scope(|| {
 		pushforwards
-			.into_iter()
-			.map(|pushforward| channel.send_oracle(pushforward))
+			.iter()
+			.map(|pushforward| channel.send_oracle(pushforward.as_view()))
 			.collect::<Vec<_>>()
 	});
-	let pushforwards = oracles
-		.iter()
-		.map(|oracle| channel.take_oracle(oracle.clone()))
-		.collect::<Vec<_>>();
 
 	// Run the reduction over the committed pushforwards and the numerators, viewing the channel as
 	// IP.
@@ -119,17 +115,10 @@ where
 	//
 	// A table's own point is the first m coordinates of the shared reduced point.
 	let _open_guard = tracing::debug_span!("Open pushforward relations").entered();
-	for (oracle, pushforward, table, table_output) in
-		izip!(oracles, pushforwards, &tables, &output.tables)
-	{
+	for (oracle, table, table_output) in izip!(oracles, &tables, &output.tables) {
 		let m = table.table.log_len();
 		let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point[..m]);
-		channel.prove_oracle_relation(
-			oracle.clone(),
-			transparent.into(),
-			table_output.pushforward_claim,
-		);
-		channel.return_oracle(oracle, pushforward);
+		channel.prove_oracle_relation(oracle, transparent.into(), table_output.pushforward_claim);
 	}
 
 	LogupProof {
@@ -195,14 +184,10 @@ where
 	let (numerators, pushforwards) = witness::combined_lookers::<A, F, P>(alloc, gamma, &tables);
 	let oracles = tracing::debug_span!("Commit pushforwards").in_scope(|| {
 		pushforwards
-			.into_iter()
-			.map(|pushforward| channel.send_oracle(pushforward))
+			.iter()
+			.map(|pushforward| channel.send_oracle(pushforward.as_view()))
 			.collect::<Vec<_>>()
 	});
-	let pushforwards = oracles
-		.iter()
-		.map(|oracle| channel.take_oracle(oracle.clone()))
-		.collect::<Vec<_>>();
 
 	let pushforward_slices = pushforwards
 		.iter()
@@ -221,16 +206,14 @@ where
 	// weighs Y against a copy of the table drawn from the caller's allocator, since the channel
 	// owns its transparents until the opening runs.
 	let _open_guard = tracing::debug_span!("Open pushforward relations").entered();
-	for (oracle, pushforward, table, open) in izip!(oracles, pushforwards, &tables, &output.tables)
-	{
+	for (oracle, table, open) in izip!(oracles, &tables, &output.tables) {
 		let leaf_eq = eq_ind_partial_eval_in::<A, P>(alloc, &open.pushforward_eval_point);
 		channel.prove_oracle_relation(oracle.clone(), leaf_eq.into(), open.pushforward_eval_claim);
 		channel.prove_oracle_relation(
-			oracle.clone(),
+			oracle,
 			FieldBuffer::from_view_in(alloc, table.table).into(),
 			open.product_claim,
 		);
-		channel.return_oracle(oracle, pushforward);
 	}
 
 	LogupTransparentProof {
@@ -503,7 +486,7 @@ mod tests {
 		// One oracle per table: pushforward Y, of message length 2^m, in table order.
 		let specs = tables
 			.iter()
-			.map(|table| OracleSpec::new(table.values.log_len()))
+			.map(|table| OracleSpec::new(1 << table.values.log_len()))
 			.collect::<Vec<_>>();
 
 		// Prove: commit every Y, run the reduction, then open them as the caller would.
@@ -536,7 +519,7 @@ mod tests {
 		// One oracle per table still: the pushforward Y. A transparent table commits nothing.
 		let specs = tables
 			.iter()
-			.map(|table| OracleSpec::new(table.values.log_len()))
+			.map(|table| OracleSpec::new(1 << table.values.log_len()))
 			.collect::<Vec<_>>();
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -631,7 +614,7 @@ mod tests {
 	#[test]
 	fn test_verifier_rejects_wrong_eval_claim() {
 		let mut tables = random_instance::<F, P>(&[(3, vec![5])], 3);
-		let specs = vec![OracleSpec::new(3)];
+		let specs = vec![OracleSpec::new(1 << 3)];
 
 		// Prove a false statement by perturbing the looked-up evaluation.
 		tables[0].lookers[0].eval_claim += F::ONE;
@@ -668,7 +651,7 @@ mod tests {
 		let n_test_queries = SECURITY_BITS.div_ceil(LOG_INV_RATE);
 		let oracle_specs = tables
 			.iter()
-			.map(|table| OracleSpec::new_zk(table.values.log_len()))
+			.map(|table| OracleSpec::new_zk(1 << table.values.log_len()))
 			.collect::<Vec<_>>();
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
@@ -723,7 +706,7 @@ mod tests {
 		let n_test_queries = SECURITY_BITS.div_ceil(LOG_INV_RATE);
 		let oracle_specs = tables
 			.iter()
-			.map(|table| OracleSpec::new_zk(table.values.log_len()))
+			.map(|table| OracleSpec::new_zk(1 << table.values.log_len()))
 			.collect::<Vec<_>>();
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(

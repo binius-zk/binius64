@@ -135,7 +135,6 @@ impl<F: Field> IOPVerifier<F> {
 		<OracleSetupChannel as IOPVerifierChannel<F>>::recv_oracle(
 			&mut channel,
 			cs.precommit_len(),
-			cs.log_precommit() as usize,
 			true,
 		)
 		.expect("OracleSetupChannel::recv_oracle is infallible");
@@ -185,10 +184,9 @@ impl<F: Field> IOPVerifier<F> {
 		// The private witness is witness-dependent.
 		// The mask is a fresh random draw, not witness data.
 		// It is still flagged witness-dependent so the protocol keeps treating it as secret.
-		let private_oracle =
-			channel.recv_oracle(cs.private_len(), cs.log_private() as usize, true)?;
+		let private_oracle = channel.recv_oracle(cs.private_len(), true)?;
 		let (m_n, m_d) = cs.mask_dims();
-		let mask_oracle = channel.recv_oracle(1 << (m_n + m_d), m_n + m_d, true)?;
+		let mask_oracle = channel.recv_oracle(1 << (m_n + m_d), true)?;
 
 		// Verify the multiplication constraints.
 		let MulcheckOutput {
@@ -328,8 +326,7 @@ where
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let mut channel = MergeVerifierChannel::new(channel, &self.oracle_schedule);
 		let cs = self.constraint_system();
-		let precommit_oracle =
-			channel.recv_oracle(cs.precommit_len(), cs.log_precommit() as usize, true)?;
+		let precommit_oracle = channel.recv_oracle(cs.precommit_len(), true)?;
 		self.iop_verifier
 			.verify(precommit_oracle, public, &mut channel)?;
 		channel.into_inner().finish()?;
