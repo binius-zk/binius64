@@ -393,7 +393,10 @@ fn build_command<E: ExampleCircuit>(name: &'static str) -> Command {
 		.arg(
 			Arg::new("zk")
 				.long("zk")
-				.help("Use the zero-knowledge proving config")
+				.help(
+					"Use the zero-knowledge proving config, which rejects any circuit with private \
+					 words, including every bundled example",
+				)
 				.action(clap::ArgAction::SetTrue),
 		)
 		.arg(
@@ -403,7 +406,8 @@ fn build_command<E: ExampleCircuit>(name: &'static str) -> Command {
 				.requires("zk")
 				.help(
 					"Produce a zero-knowledge signature of knowledge over this message \
-					 instead of a plain proof of knowledge (requires --zk)",
+					 instead of a plain proof of knowledge (requires --zk, so it rejects any circuit \
+					 with private words, including every bundled example)",
 				),
 		)
 		.arg(
@@ -444,7 +448,10 @@ fn build_prove_subcommand<E: ExampleCircuit>() -> Command {
 		.arg(
 			Arg::new("zk")
 				.long("zk")
-				.help("Use the zero-knowledge proving config")
+				.help(
+					"Use the zero-knowledge proving config, which rejects any circuit with private \
+					 words, including every bundled example",
+				)
 				.action(clap::ArgAction::SetTrue),
 		)
 		.arg(
@@ -454,7 +461,8 @@ fn build_prove_subcommand<E: ExampleCircuit>() -> Command {
 				.requires("zk")
 				.help(
 					"Produce a zero-knowledge signature of knowledge over this message \
-					 instead of a plain proof of knowledge (requires --zk)",
+					 instead of a plain proof of knowledge (requires --zk, so it rejects any circuit \
+					 with private words, including every bundled example)",
 				),
 		)
 		.arg(
@@ -605,7 +613,10 @@ fn build_verify_subcommand<E: ExampleCircuit>() -> Command {
 		.arg(
 			Arg::new("zk")
 				.long("zk")
-				.help("Use the zero-knowledge verifier config")
+				.help(
+					"Use the zero-knowledge verifier config, which rejects any circuit with private \
+					 words, including every bundled example",
+				)
 				.action(clap::ArgAction::SetTrue),
 		)
 		.arg(
@@ -615,7 +626,8 @@ fn build_verify_subcommand<E: ExampleCircuit>() -> Command {
 				.requires("zk")
 				.help(
 					"Verify a zero-knowledge signature of knowledge over this message \
-					 (requires --zk)",
+					 (requires --zk, so it rejects any circuit with private words, including every \
+					 bundled example)",
 				),
 		);
 	cmd = E::Params::augment_args(cmd);

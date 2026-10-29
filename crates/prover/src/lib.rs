@@ -3,9 +3,10 @@
 
 //! High-level proof generation for Binius64 constraint systems.
 //!
-//! This crate provides the main [`Prover`] struct for generating zero-knowledge proofs
-//! that a witness satisfies a constraint system. It is the prover-side counterpart to
-//! `binius_verifier`.
+//! This crate provides the main [`Prover`] struct for generating proofs that a witness satisfies a
+//! constraint system. It is the prover-side counterpart to `binius_verifier`. The zero-knowledge
+//! configuration in [`zk_config`] rejects constraint systems with private words; see its
+//! [limitations](zk_config#limitations).
 //!
 //! # When to use this crate
 //!

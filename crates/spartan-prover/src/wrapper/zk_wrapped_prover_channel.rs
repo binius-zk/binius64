@@ -48,6 +48,14 @@ type MergedBaseFoldChannel<'a, F, P, NTT, Channel, A> =
 /// The `ReplayFn` closure is called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 /// replay the inner verification and fill the outer witness. This allows the channel to be generic
 /// over different inner verification protocols.
+///
+/// # Security
+///
+/// This channel does not hide the inner witness.
+/// [`IOPProverChannel::prove_oracle_relation`] sends each inner oracle-relation claim outside the
+/// one-time pad, and the witness-dependent inner oracles lack the randomizable support needed to
+/// establish hiding for their query openings. `binius_prover::zk_config::ZKProver` therefore
+/// rejects private words.
 pub struct ZKWrappedProverChannel<'a, P, NTT, Channel, ReplayFn, A>
 where
 	P: PackedField<Scalar: BinaryField>,

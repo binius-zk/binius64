@@ -93,7 +93,9 @@ pub struct MaskedCodeword<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 /// This is used for zero-knowledge FRI commitments. The function generates a random mask of
 /// equal length to the input message, concatenates `message || mask` as the interleaved message
 /// (with `log_batch_size = 1`), and performs Reed-Solomon encoding. The returned codeword is
-/// committed by sending it over a Merkle channel, like [`encode_interleaved`]'s.
+/// committed by sending it over a Merkle channel, like [`encode_interleaved`]'s. The mask is
+/// interleaved with the message rather than added to it, so every opened position also reveals the
+/// message's own codeword symbol there.
 ///
 /// ## Arguments
 ///

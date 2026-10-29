@@ -3,9 +3,10 @@
 
 //! High-level proof verification for Binius64 constraint systems.
 //!
-//! This crate provides the main [`Verifier`] struct for verifying zero-knowledge proofs
-//! that a witness satisfies a constraint system. It is the verifier-side counterpart to
-//! `binius_prover`.
+//! This crate provides the main [`Verifier`] struct for verifying proofs that a witness satisfies
+//! a constraint system. It is the verifier-side counterpart to `binius_prover`. The
+//! zero-knowledge configuration in [`zk_config`] rejects constraint systems with private words;
+//! see its [limitations](zk_config#limitations).
 //!
 //! # When to use this crate
 //!

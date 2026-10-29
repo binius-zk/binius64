@@ -5,6 +5,21 @@
 //! This module provides [`ZKProver`], which wraps the Binius64 IOP prover with a
 //! Spartan-based zero-knowledge wrapper. The prover counterpart to
 //! [`binius_verifier::zk_config::ZKVerifier`].
+//!
+//! # Limitations
+//!
+//! [`ZKProver`] does not hide private words: the words of the value vector outside the public
+//! segment, which are the declared witness values and the internal values that gates create. Every
+//! inner oracle-relation claim is sent outside the wrapper's one-time pad; the trace claim leaks a
+//! verifier-computable linear function of the private words. For a one-element trace with a
+//! nonzero coefficient, it recovers both words. The witness-dependent inner oracles (the trace,
+//! and for circuits with IMUL constraints the logUp* pushforward oracle) also lack the randomizable
+//! support needed to establish hiding for their query openings.
+//! [`ZKProver::prove`] and [`ZKProver::prove_sig`] return [`Error::WitnessPrivacyUnavailable`] for
+//! any constraint system with private words, and for any witness that supplies some. Lifting this
+//! needs, at minimum, a one-time-pad key certified by the outer proof for every inner
+//! oracle-relation claim, randomizable support on every witness-dependent inner oracle, and a
+//! zero-knowledge argument for their composition.
 
 use std::{marker::PhantomData, sync::Arc};
 
@@ -133,12 +148,20 @@ where
 	}
 
 	/// Generates a ZK proof for a witness.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::WitnessPrivacyUnavailable`], without touching `transcript`, if the
+	/// constraint system has private words or `witness` supplies any; see the
+	/// [limitations](crate::zk_config#limitations).
 	pub fn prove<Challenger_: Challenger>(
 		&self,
 		witness: &ValueVec,
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		self.reject_private_witness(witness)?;
+
 		// The replay closure captures the public words as a borrowed slice.
 		let inout_words = witness.inout();
 
@@ -208,6 +231,12 @@ where
 	///
 	/// Binds `message` into the transcript before any other data, then runs the ordinary
 	/// [`Self::prove`] logic. See [`binius_verifier::signature`] for details.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::WitnessPrivacyUnavailable`], without touching `transcript`, if the
+	/// constraint system has private words or `witness` supplies any; see the
+	/// [limitations](crate::zk_config#limitations).
 	pub fn prove_sig<Challenger_: Challenger>(
 		&self,
 		witness: &ValueVec,
@@ -215,8 +244,26 @@ where
 		rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		// Checked before the message is observed, so that a rejected call leaves the transcript
+		// untouched. `prove` checks again for its own callers.
+		self.reject_private_witness(witness)?;
 		binius_verifier::signature::observe_message::<H, _>(&mut transcript.observe(), message);
 		self.prove(witness, rng, transcript)
+	}
+
+	/// Returns [`Error::WitnessPrivacyUnavailable`] if the constraint system has private words or
+	/// `witness` supplies any.
+	///
+	/// The witness is checked as well as the constraint system because the trace commits
+	/// `witness.non_public()` whatever the constraint system declares.
+	fn reject_private_witness(&self, witness: &ValueVec) -> Result<(), Error> {
+		let constraint_system = self.inner_iop_prover.constraint_system();
+		if constraint_system.n_hidden_words(InoutSegment::Public) > 0
+			|| !witness.non_public().is_empty()
+		{
+			return Err(Error::WitnessPrivacyUnavailable);
+		}
+		Ok(())
 	}
 }
 
@@ -275,4 +322,10 @@ pub enum Error {
 	InnerProving(#[from] crate::error::Error),
 	#[error("outer proving error: {0}")]
 	OuterProving(#[from] binius_spartan_prover::Error),
+	/// The constraint system has private words, or the witness supplies some, and this
+	/// configuration does not hide them; see the [limitations](crate::zk_config#limitations).
+	#[error(
+		"zero-knowledge proving is disabled for private words; use `Prover` if privacy is not needed"
+	)]
+	WitnessPrivacyUnavailable,
 }
