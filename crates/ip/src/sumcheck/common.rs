@@ -250,6 +250,19 @@ impl<F: FieldOps> RoundProof<F> {
 		coeffs.push(last_coeff);
 		RoundCoeffs(coeffs)
 	}
+
+	/// Recovers all coefficients from a round proof whose claim is $s = r_i(0) + r_i(\infty)$.
+	///
+	/// This is the counterpart of [`Self::recover`] for a sumcheck over $\{0, \infty\}^n$.
+	/// Here $r_i(\infty)$ is the leading coefficient $a_d$ and $r_i(0) = a_0$, so the truncated
+	/// coefficient is $a_d = s - a_0$.
+	pub fn recover_infinity(self, sum: F) -> RoundCoeffs<F> {
+		let Self(RoundCoeffs(mut coeffs)) = self;
+		// a_0, or zero for the degenerate empty proof.
+		let first_coeff = coeffs.first().cloned().unwrap_or_else(F::zero);
+		coeffs.push(sum - first_coeff);
+		RoundCoeffs(coeffs)
+	}
 }
 
 #[cfg(test)]
