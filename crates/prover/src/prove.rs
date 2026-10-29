@@ -263,7 +263,7 @@ impl IOPProver {
 
 		// Prove oracle relations via channel (runs BaseFold internally). The intmul pushforward
 		// relation, when the IntMul reduction ran, was already queued inside phase 5.
-		channel.prove_oracle_relation(trace_oracle, rs_eq_ind.into(), sumcheck_claim);
+		channel.prove_oracle_relation(trace_oracle, rs_eq_ind, sumcheck_claim);
 
 		drop(pcs_guard);
 

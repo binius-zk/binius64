@@ -2,7 +2,7 @@
 
 //! Verifying a whole [`ConstraintSystemM4`]: the main chip and every numbered chip.
 
-use std::marker::PhantomData;
+use std::{iter, marker::PhantomData};
 
 use binius_core::{
 	Word,
@@ -12,7 +12,7 @@ use binius_field::FieldOps;
 use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleSpec},
+	channel::{IOPVerifierChannel, OracleSchedule},
 	fri::{MinProofSizeStrategy, calculate_n_test_queries},
 };
 use binius_ip::channel::WordIPVerifierChannel;
@@ -88,26 +88,30 @@ impl IOPVerifierM4 {
 		&self.chips
 	}
 
-	/// Returns the oracle specs the prover commits to, over the whole system.
+	/// Returns the oracles the prover commits to over the whole system, grouped into rounds.
 	///
-	/// Each sub-verifier derives its own specs by replaying its verification against an
+	/// Each sub-verifier derives its own schedule by replaying its verification against an
 	/// [`OracleSetupChannel`](binius_iop::channel::oracle_setup::OracleSetupChannel), so no list is
-	/// hand-maintained. Concatenating them in the order [`Self::verify`] runs the sub-proofs gives
-	/// the sequence one composite proof commits.
+	/// hand-maintained. Concatenating their rounds in the order [`Self::verify`] runs the
+	/// sub-proofs gives the sequence one composite proof commits. A round never spans two
+	/// sub-proofs, which at worst commits one more round oracle than a single replay would.
 	///
-	/// The specs come from the sub-verifiers rather than from one replay of [`Self::verify`]
+	/// The schedules come from the sub-verifiers rather than from one replay of [`Self::verify`]
 	/// because a replay stops at the first sub-proof that errors, and the Binius64 verifier's own
 	/// replay tolerates such an error rather than reporting it. Composing the replays would
 	/// therefore silently truncate the list, and the FRI parameters derived from it would be sized
 	/// for only part of the system.
 	///
 	/// A composite proof is transparent, so no oracle is masked.
-	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
-		self.main
-			.oracle_specs(false)
-			.into_iter()
-			.chain(self.chips.iter().flat_map(IOPVerifier::oracle_specs))
-			.collect()
+	pub fn oracle_schedule(&self) -> OracleSchedule {
+		let schedules = iter::once(self.main.oracle_schedule(false))
+			.chain(self.chips.iter().map(IOPVerifier::oracle_schedule))
+			.collect::<Vec<_>>();
+		OracleSchedule::from_rounds(
+			schedules
+				.iter()
+				.flat_map(|schedule| schedule.rounds().map(|round| round.iter().copied())),
+		)
 	}
 
 	/// Verifies one composite proof using an IOP channel.
@@ -186,14 +190,14 @@ where
 		// One channel commits every sub-system's oracles into one codeword, and sizing that
 		// codeword is the compiler's job: it batches the specs over all of them. So nothing here
 		// needs to know which sub-system commits the longest oracle.
-		let oracle_specs = iop_verifier.oracle_specs();
+		let oracle_schedule = iop_verifier.oracle_schedule();
 
 		// The query count is fixed by the rate and the soundness target.
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
 			&Scheme::<H>::new(),
-			oracle_specs,
+			oracle_schedule,
 			log_inv_rate,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -331,13 +335,13 @@ mod tests {
 
 		// The composite list is main's specs followed by each chip's, so nothing is dropped or
 		// duplicated.
-		let expected = iop_verifier.main().oracle_specs(false).len()
+		let expected = iop_verifier.main().oracle_schedule(false).specs().len()
 			+ iop_verifier
 				.chips()
 				.iter()
-				.map(|chip| chip.oracle_specs().len())
+				.map(|chip| chip.oracle_schedule().specs().len())
 				.sum::<usize>();
-		assert_eq!(iop_verifier.oracle_specs().len(), expected);
+		assert_eq!(iop_verifier.oracle_schedule().specs().len(), expected);
 	}
 
 	#[test]
@@ -348,14 +352,25 @@ mod tests {
 
 		// The codeword encodes every oracle, so it is at least the encoding of the longest one. A
 		// setup that had handed the compiler one sub-system's specs would fall short of this.
-		let specs = verifier.iop_verifier().oracle_specs();
-		let log_max_msg_len = specs.iter().map(|spec| spec.log_msg_len()).max().unwrap();
+		let schedule = verifier.iop_verifier().oracle_schedule();
+		let log_max_msg_len = schedule
+			.specs()
+			.iter()
+			.map(|spec| spec.log_msg_len())
+			.max()
+			.unwrap();
 		assert!(verifier.iop_compiler().fri_params().log_len() >= log_max_msg_len + log_inv_rate);
 
 		// The fixture is only worth having if its sub-systems really do differ in size; otherwise
 		// the assertion above would hold however the code was sized.
-		let main_msg_len = verifier.iop_verifier().main().oracle_specs(false)[0].log_msg_len();
-		let chip_msg_len = verifier.iop_verifier().chips()[0].oracle_specs()[0].log_msg_len();
+		let main_msg_len = verifier
+			.iop_verifier()
+			.main()
+			.oracle_schedule(false)
+			.specs()[0]
+			.log_msg_len();
+		let chip_msg_len =
+			verifier.iop_verifier().chips()[0].oracle_schedule().specs()[0].log_msg_len();
 		assert_ne!(main_msg_len, chip_msg_len);
 	}
 

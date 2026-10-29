@@ -9,15 +9,12 @@ use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{
 		IOPVerifierChannel,
-		merge::MergeVerifierChannel,
 		oracle_setup::{DummyElem, OracleSetupChannel},
 	},
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_iop_prover::{
-	basefold::compiler::BaseFoldProverCompiler, channel::merge::MergeProverChannel,
-};
+use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly};
@@ -124,7 +121,7 @@ fn test_zk_wrapped_prove_verify() {
 
 	let zk_basefold_compiler = BaseFoldVerifierCompiler::new(
 		&merkle_scheme,
-		combined_schedule.merged_specs(),
+		combined_schedule,
 		log_inv_rate,
 		n_test_queries,
 		&MinProofSizeStrategy,
@@ -163,7 +160,7 @@ fn test_zk_wrapped_prove_verify() {
 			GlobalAllocator,
 		);
 	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
-		MergeProverChannel::new(basefold_channel, &combined_schedule, GlobalAllocator),
+		basefold_channel,
 		&outer_iop_prover,
 		Arc::clone(&outer_layout),
 		&GlobalAllocator,
@@ -217,7 +214,7 @@ fn test_zk_wrapped_prove_verify() {
 	let verifier_channel = zk_basefold_compiler
 		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(&mut verifier_transcript);
 	let mut wrapped_verifier_channel = ZKWrappedVerifierChannel::new(
-		MergeVerifierChannel::new(verifier_channel, &combined_schedule),
+		verifier_channel,
 		&outer_iop_verifier,
 		Arc::clone(&outer_layout),
 	)

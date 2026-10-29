@@ -118,7 +118,7 @@ where
 	for (oracle, table, table_output) in izip!(oracles, &tables, &output.tables) {
 		let m = table.table.log_len();
 		let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point[..m]);
-		channel.prove_oracle_relation(oracle, transparent.into(), table_output.pushforward_claim);
+		channel.prove_oracle_relation(oracle, transparent, table_output.pushforward_claim);
 	}
 
 	LogupProof {
@@ -208,10 +208,10 @@ where
 	let _open_guard = tracing::debug_span!("Open pushforward relations").entered();
 	for (oracle, table, open) in izip!(oracles, &tables, &output.tables) {
 		let leaf_eq = eq_ind_partial_eval_in::<A, P>(alloc, &open.pushforward_eval_point);
-		channel.prove_oracle_relation(oracle.clone(), leaf_eq.into(), open.pushforward_eval_claim);
+		channel.prove_oracle_relation(oracle.clone(), leaf_eq, open.pushforward_eval_claim);
 		channel.prove_oracle_relation(
 			oracle,
-			FieldBuffer::from_view_in(alloc, table.table).into(),
+			FieldBuffer::from_view_in(alloc, table.table),
 			open.product_claim,
 		);
 	}
@@ -238,7 +238,7 @@ mod tests {
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
 		basefold::compiler::BaseFoldVerifierCompiler,
-		channel::{OracleSpec, naive::NaiveVerifierChannel},
+		channel::{OracleSchedule, OracleSpec, naive::NaiveVerifierChannel},
 		fri::MinProofSizeStrategy,
 		logup_star::{self as verify_logup, TransparentTableLookup},
 		merkle_tree::BinaryMerkleTreeScheme,
@@ -651,12 +651,11 @@ mod tests {
 		let n_test_queries = SECURITY_BITS.div_ceil(LOG_INV_RATE);
 		let oracle_specs = tables
 			.iter()
-			.map(|table| OracleSpec::new_zk(1 << table.values.log_len()))
-			.collect::<Vec<_>>();
+			.map(|table| OracleSpec::new_zk(1 << table.values.log_len()));
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
-			oracle_specs,
+			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -706,12 +705,11 @@ mod tests {
 		let n_test_queries = SECURITY_BITS.div_ceil(LOG_INV_RATE);
 		let oracle_specs = tables
 			.iter()
-			.map(|table| OracleSpec::new_zk(1 << table.values.log_len()))
-			.collect::<Vec<_>>();
+			.map(|table| OracleSpec::new_zk(1 << table.values.log_len()));
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
-			oracle_specs,
+			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
 			&MinProofSizeStrategy,

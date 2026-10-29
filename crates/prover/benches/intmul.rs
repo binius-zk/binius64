@@ -4,7 +4,9 @@ use binius_core::word::Word;
 use binius_field::{Field, Ghash128b, PackedGhash1x128b};
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	basefold::compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::MinProofSizeStrategy,
+	basefold::compiler::BaseFoldVerifierCompiler,
+	channel::{OracleSchedule, OracleSpec},
+	fri::MinProofSizeStrategy,
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
@@ -51,7 +53,7 @@ fn basefold_compiler()
 -> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GaoMateerPreExpanded<F>>> {
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
 		&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
-		vec![OracleSpec::new(1 << LIMB_BITS)],
+		OracleSchedule::from_rounds([[OracleSpec::new(1 << LIMB_BITS)]]),
 		LOG_INV_RATE,
 		N_TEST_QUERIES,
 		&MinProofSizeStrategy,

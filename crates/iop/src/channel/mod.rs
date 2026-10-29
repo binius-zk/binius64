@@ -3,7 +3,6 @@
 //! Channel abstraction for interactive oracle protocol (IOP) verifiers.
 
 pub mod grinding;
-pub mod merge;
 pub mod naive;
 pub mod oracle_setup;
 pub mod size_tracking;
@@ -68,14 +67,6 @@ impl OracleSpec {
 	}
 }
 
-/// The length of the one oracle a round's oracles are committed as.
-///
-/// The oracles lie end to end, so this is the smallest power of two covering their total.
-fn merged_log_msg_len(log_msg_lens: impl IntoIterator<Item = usize>) -> usize {
-	let total_len: usize = log_msg_lens.into_iter().map(|n| 1usize << n).sum();
-	log2_ceil_usize(total_len)
-}
-
 /// Every oracle an IOP commits, grouped into the rounds they are committed in.
 ///
 /// A round is the run of oracles sent between two challenge samples.
@@ -92,7 +83,7 @@ fn merged_log_msg_len(log_msg_lens: impl IntoIterator<Item = usize>) -> usize {
 ///
 /// A flat spec list cannot say where those boundaries fall.
 ///
-/// A caller that commits a whole round as one oracle needs them.
+/// BaseFold commits each round as one oracle, so it needs them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OracleSchedule {
 	/// Every oracle, in arrival order, across all rounds.
@@ -113,6 +104,18 @@ impl OracleSchedule {
 			specs: Vec::new(),
 			ends: Vec::new(),
 		}
+	}
+
+	/// Builds a schedule of closed rounds, each listing its oracles in commit order.
+	pub fn from_rounds(
+		rounds: impl IntoIterator<Item = impl IntoIterator<Item = OracleSpec>>,
+	) -> Self {
+		let mut schedule = Self::new();
+		for round in rounds {
+			schedule.specs.extend(round);
+			schedule.end_round();
+		}
+		schedule
 	}
 
 	/// Appends one oracle to the round currently open.
@@ -151,22 +154,6 @@ impl OracleSchedule {
 	pub fn rounds(&self) -> impl Iterator<Item = &[OracleSpec]> {
 		let starts = iter::once(0).chain(self.ends.iter().copied());
 		iter::zip(starts, self.ends.iter().copied()).map(|(start, end)| &self.specs[start..end])
-	}
-
-	/// One spec per round: the oracle that round's oracles are committed as.
-	///
-	/// This is the coarser list an underlying channel is configured with.
-	///
-	/// A round is masked as a whole, so its oracle is zero-knowledge if any member is.
-	pub fn merged_specs(&self) -> Vec<OracleSpec> {
-		self.rounds()
-			.map(|round| OracleSpec {
-				is_zk: round.iter().any(|spec| spec.is_zk),
-				..OracleSpec::new(
-					1 << merged_log_msg_len(round.iter().map(|spec| spec.log_msg_len())),
-				)
-			})
-			.collect()
 	}
 }
 

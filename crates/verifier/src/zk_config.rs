@@ -25,8 +25,7 @@ use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{
-		IOPVerifierChannel, OracleSchedule,
-		merge::MergeVerifierChannel,
+		IOPVerifierChannel,
 		oracle_setup::{DummyElem, OracleSetupChannel},
 	},
 	fri::{self, MinProofSizeStrategy},
@@ -61,8 +60,6 @@ pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
 	outer_layout: Arc<WitnessLayout<B128>>,
-	/// Every oracle of the inner and outer proofs, grouped into the rounds each committed as one.
-	oracle_schedule: OracleSchedule,
 	basefold_compiler: BaseFoldVerifierCompiler<B128>,
 	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
 	_hash_marker: PhantomData<H>,
@@ -142,7 +139,7 @@ where
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 		let basefold_compiler = BaseFoldVerifierCompiler::new(
 			&merkle_scheme,
-			oracle_schedule.merged_specs(),
+			oracle_schedule,
 			log_inv_rate,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -152,7 +149,6 @@ where
 			inner_iop_verifier,
 			outer_iop_verifier,
 			outer_layout,
-			oracle_schedule,
 			basefold_compiler,
 			_hash_marker: PhantomData,
 		})
@@ -182,11 +178,6 @@ where
 		Arc::clone(&self.outer_layout)
 	}
 
-	/// Returns the oracle schedule; the BaseFold compiler is configured with its merged specs.
-	pub const fn oracle_schedule(&self) -> &OracleSchedule {
-		&self.oracle_schedule
-	}
-
 	/// Returns the BaseFold ZK verifier compiler.
 	pub const fn basefold_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.basefold_compiler
@@ -213,12 +204,12 @@ where
 		inout: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Create BaseFold channel, merge each round's oracles, and wrap with outer verifier.
+		// Create BaseFold channel and wrap with outer verifier.
 		let channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let mut wrapped_channel = ZKWrappedVerifierChannel::new(
-			MergeVerifierChannel::new(channel, &self.oracle_schedule),
+			channel,
 			&self.outer_iop_verifier,
 			Arc::clone(&self.outer_layout),
 		)?;

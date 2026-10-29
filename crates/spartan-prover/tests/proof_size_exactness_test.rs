@@ -3,9 +3,7 @@
 use binius_field::{Ghash128b as B128, PackedField, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	channel::{
-		IOPVerifierChannel, merge::MergeVerifierChannel, size_tracking::SizeTrackingChannel,
-	},
+	channel::{IOPVerifierChannel, size_tracking::SizeTrackingChannel},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::channel::IPVerifierChannel;
@@ -73,10 +71,9 @@ fn size_tracking_matches_real_proof_bytes() {
 
 		// The model path: the same verifier, driven over the size-tracking channel.
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
-		let channel = verifier
+		let mut channel = verifier
 			.iop_compiler()
 			.create_channel(SizeTrackingChannel::new(&merkle_scheme));
-		let mut channel = MergeVerifierChannel::new(channel, verifier.oracle_schedule());
 		let public = vec![B128::default(); 1 << cs.log_public()];
 		let public_elems = channel.observe_many(&public);
 		let precommit_oracle = channel
@@ -87,7 +84,6 @@ fn size_tracking_matches_real_proof_bytes() {
 			.verify(precommit_oracle, &public_elems, &mut channel)
 			.expect("verify over the size-tracking channel should succeed");
 		let modelled_size = channel
-			.into_inner()
 			.finish()
 			.expect("the opening should verify against all-zero values")
 			.proof_size();

@@ -42,7 +42,6 @@ use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{
 		IOPVerifierChannel, OracleSchedule,
-		merge::MergeVerifierChannel,
 		oracle_setup::{DummyElem, OracleSetupChannel},
 	},
 	fri::{self, MinProofSizeStrategy},
@@ -95,8 +94,6 @@ where
 	H: HashSuite,
 {
 	iop_verifier: IOPVerifier<F>,
-	/// Every oracle the proof commits, grouped into the rounds each committed as one oracle.
-	oracle_schedule: OracleSchedule,
 	/// BaseFold ZK compiler for creating verifier channels.
 	basefold_compiler: BaseFoldVerifierCompiler<F>,
 	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
@@ -260,14 +257,12 @@ where
 		let constraint_system = ConstraintSystemPadded::new(constraint_system, blinding_info);
 
 		let iop_verifier = IOPVerifier::new(constraint_system);
-		let oracle_schedule = iop_verifier.oracle_schedule();
-
 		let merkle_scheme = BinaryMerkleTreeScheme::<F, H>::new();
 
 		// Create the BaseFold ZK compiler for IOP verification
 		let basefold_compiler = BaseFoldVerifierCompiler::new(
 			&merkle_scheme,
-			oracle_schedule.merged_specs(),
+			iop_verifier.oracle_schedule(),
 			log_inv_rate,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -275,7 +270,6 @@ where
 
 		Ok(Self {
 			iop_verifier,
-			oracle_schedule,
 			basefold_compiler,
 			_hash_marker: PhantomData,
 		})
@@ -288,11 +282,6 @@ where
 
 	pub const fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		self.iop_verifier.constraint_system()
-	}
-
-	/// Returns the oracle schedule; the BaseFold compiler is configured with its merged specs.
-	pub const fn oracle_schedule(&self) -> &OracleSchedule {
-		&self.oracle_schedule
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
@@ -320,16 +309,14 @@ where
 
 		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify. The
 		// IOP verifier only queues the oracle relations; `finish` runs the single combined opening.
-		// Each round's oracles are committed as one.
-		let channel = self
+		let mut channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
-		let mut channel = MergeVerifierChannel::new(channel, &self.oracle_schedule);
 		let cs = self.constraint_system();
 		let precommit_oracle = channel.recv_oracle(cs.precommit_len(), true)?;
 		self.iop_verifier
 			.verify(precommit_oracle, public, &mut channel)?;
-		channel.into_inner().finish()?;
+		channel.finish()?;
 		Ok(())
 	}
 }
