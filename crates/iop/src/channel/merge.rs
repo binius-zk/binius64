@@ -334,12 +334,34 @@ where
 		Ok(MergeOracle { index })
 	}
 
-	fn verify_oracle_relation(
+	fn verify_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: TransparentEvalFn<Self::Elem>,
+		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), Error> {
+		// The claim itself is unchanged.
+		//
+		// Each combined oracle agrees with its constituent on the constituent's block.
+		// So the same inner products hold there.
+		let operands = operands
+			.into_iter()
+			.map(|(oracle, transparent)| self.place_operand(oracle, transparent))
+			.collect::<Vec<_>>();
+		self.inner.verify_multi_oracle_relation(operands, claim)
+	}
+}
+
+impl<F, C> MergeVerifierChannel<'_, F, C>
+where
+	F: Field,
+	C: IOPVerifierChannel<F>,
+{
+	/// Maps one operand onto its round's combined oracle.
+	fn place_operand(
+		&self,
+		oracle: MergeOracle,
+		transparent: TransparentEvalFn<C::Elem>,
+	) -> (C::Oracle, TransparentEvalFn<C::Elem>) {
 		let n_i = self.schedule.specs()[oracle.index].log_msg_len();
 		let Placement {
 			round,
@@ -354,12 +376,12 @@ where
 		// A round of one oracle has no high coordinates at all.
 		// The pattern is then empty, and the check below is always one.
 		let padding_len = combined_log_len - n_i;
-		let block_pattern: Vec<Self::Elem> = (0..padding_len)
+		let block_pattern: Vec<C::Elem> = (0..padding_len)
 			.map(|bit| {
 				if (block_index >> bit) & 1 == 1 {
-					Self::Elem::one()
+					C::Elem::one()
 				} else {
-					Self::Elem::zero()
+					C::Elem::zero()
 				}
 			})
 			.collect();
@@ -368,17 +390,12 @@ where
 		//
 		// The result is zero outside this oracle's own block.
 		// Inside it, the result is the original transparent polynomial.
-		let padded_transparent: TransparentEvalFn<Self::Elem> = Box::new(move |point| {
+		let padded_transparent: TransparentEvalFn<C::Elem> = Box::new(move |point| {
 			let (low, high) = point.split_at(n_i);
 			eq_ind(high, &block_pattern) * transparent(low)
 		});
 
-		// The claim itself is unchanged.
-		//
-		// The combined oracle agrees with this one on that block.
-		// So the same inner product holds there.
-		self.inner
-			.verify_oracle_relation(outer, padded_transparent, claim)
+		(outer, padded_transparent)
 	}
 }
 

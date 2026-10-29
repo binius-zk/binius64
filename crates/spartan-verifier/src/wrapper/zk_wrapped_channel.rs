@@ -299,10 +299,9 @@ where
 		self.inner_channel.recv_oracle(len, is_witness_dependent)
 	}
 
-	fn verify_oracle_relation(
+	fn verify_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: TransparentEvalFn<Self::Elem>,
+		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), binius_iop::channel::Error> {
 		// For each oracle opening, the prover sends the decrypted evaluation. Allocate it as an
@@ -326,20 +325,23 @@ where
 		// `claim == decrypted_claim`, with the transparent evaluation performed out of circuit.
 		// This F->CircuitElem->F bridge should eventually be replaced by an F-level transparent
 		// evaluator.
-		let eval_fn = move |vals: &[F]| {
-			let wrapped_vals = vals
-				.iter()
-				.map(|val| CircuitElem::Constant(*val))
-				.collect::<Vec<_>>();
+		let operands = operands.into_iter().map(|(oracle, transparent)| {
+			let eval_fn = move |vals: &[F]| {
+				let wrapped_vals = vals
+					.iter()
+					.map(|val| CircuitElem::Constant(*val))
+					.collect::<Vec<_>>();
 
-			match transparent(&wrapped_vals) {
-				CircuitElem::Constant(val) => val,
-				CircuitElem::Wire { wire, .. } => wire.value().expect(
-					"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)",
-				),
-			}
-		};
+				match transparent(&wrapped_vals) {
+					CircuitElem::Constant(val) => val,
+					CircuitElem::Wire { wire, .. } => wire.value().expect(
+						"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)",
+					),
+				}
+			};
+			(oracle, Box::new(eval_fn) as TransparentEvalFn<F>)
+		});
 		self.inner_channel
-			.verify_oracle_relation(oracle, Box::new(eval_fn), decrypted_value)
+			.verify_multi_oracle_relation(operands, decrypted_value)
 	}
 }

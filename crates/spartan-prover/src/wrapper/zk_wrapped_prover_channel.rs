@@ -325,10 +325,9 @@ where
 		self.inner_channel.send_oracle(buffer)
 	}
 
-	fn prove_oracle_relation(
+	fn prove_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: StructuredBuffer<P, A::Vec<P>>,
+		operands: impl IntoIterator<Item = (Self::Oracle, StructuredBuffer<P, A::Vec<P>>)>,
 		claim: P::Scalar,
 	) {
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
@@ -338,6 +337,6 @@ where
 		self.interaction.push(claim);
 
 		self.inner_channel
-			.prove_oracle_relation(oracle, transparent, claim);
+			.prove_multi_oracle_relation(operands, claim);
 	}
 }

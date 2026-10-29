@@ -216,19 +216,36 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F, Elem: 'static> {
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error>;
 
-	/// Queues one oracle linear relation to be opened.
+	/// Queues one linear relation over committed oracles to be opened.
+	///
+	/// The relation asserts that `Σ_i <oracle_i, transparent_i> = claim` over its operands. An
+	/// oracle may appear in any number of relations, and more than once in one.
 	///
 	/// Implementations may either verify the relation immediately, or queue it and defer the
-	/// actual opening (masking + sumcheck + FRI) to `finish()`. Either way, the relation asserts
-	/// that `<oracle_poly, transparent> = claim`. An oracle may carry any number of relations.
+	/// actual opening (masking + sumcheck + FRI) to `finish()`.
+	///
+	/// Each transparent is a multilinear in its oracle's `log_msg_len` variables that vanishes on
+	/// every index at or above the oracle's [`OracleSpec::len`], so the relation does not depend
+	/// on the channel's padding.
 	///
 	/// # Preconditions
 	///
-	/// * `oracle` must be a valid handle returned by `recv_oracle()`.
+	/// * Every operand's oracle must be a valid handle returned by `recv_oracle()`.
+	fn verify_multi_oracle_relation(
+		&mut self,
+		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
+		claim: Self::Elem,
+	) -> Result<(), Error>;
+
+	/// Queues one oracle linear relation `<oracle, transparent> = claim` to be opened.
+	///
+	/// This is [`Self::verify_multi_oracle_relation`] with a single operand.
 	fn verify_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
 		transparent: TransparentEvalFn<Self::Elem>,
 		claim: Self::Elem,
-	) -> Result<(), Error>;
+	) -> Result<(), Error> {
+		self.verify_multi_oracle_relation([(oracle, transparent)], claim)
+	}
 }

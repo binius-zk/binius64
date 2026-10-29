@@ -45,28 +45,41 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	/// * `oracle.log_len()` must equal [`OracleSpec::log_msg_len`] of the next oracle spec.
 	fn send_oracle(&mut self, oracle: FieldSlice<'_, P>) -> Self::Oracle;
 
-	/// Generates an opening proof for one oracle linear relation.
+	/// Generates an opening proof for one linear relation over committed oracles.
 	///
-	/// The relation asserts that `<oracle_poly, transparent> = claim`. An oracle may carry any
-	/// number of relations.
+	/// The relation asserts that `Σ_i <oracle_i, transparent_i> = claim` over its operands. An
+	/// oracle may appear in any number of relations, and more than once in one.
 	///
-	/// The transparent may be zero outside one aligned block, and say so through its structure. A
-	/// channel that understands the structure skips the zeros; any other materializes it.
+	/// Each transparent must vanish on every index at or above its oracle's [`OracleSpec::len`],
+	/// so the relation does not depend on the channel's padding. A transparent may also be zero
+	/// outside one aligned block, and say so through its structure. A channel that understands the
+	/// structure skips the zeros; any other materializes it.
 	///
-	/// The channel owns the transparent multilinear until the opening runs, so it is drawn from
-	/// the caller's allocator `A` — a pooled buffer stays pooled all the way through the opening.
+	/// The channel owns the transparents until the opening runs, so they are drawn from the
+	/// caller's allocator `A` — a pooled buffer stays pooled all the way through the opening.
 	///
 	/// # Preconditions
 	///
 	/// * `remaining_oracle_specs()` must be empty (all oracles committed).
-	/// * `oracle` must be a valid handle returned by `send_oracle()`.
-	/// * `transparent.log_len()` must match the oracle's message length.
+	/// * Every operand's oracle must be a valid handle returned by `send_oracle()`.
+	/// * Every operand's `transparent.log_len()` must match its oracle's message length.
 	/// * The claim must already be bound to the transcript, since the coefficient that batches the
 	///   queued relations is drawn only after the queue closes.
+	fn prove_multi_oracle_relation(
+		&mut self,
+		operands: impl IntoIterator<Item = (Self::Oracle, StructuredBuffer<P, A::Vec<P>>)>,
+		claim: P::Scalar,
+	);
+
+	/// Generates an opening proof for one oracle linear relation `<oracle, transparent> = claim`.
+	///
+	/// This is [`Self::prove_multi_oracle_relation`] with a single operand.
 	fn prove_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
 		transparent: StructuredBuffer<P, A::Vec<P>>,
 		claim: P::Scalar,
-	);
+	) {
+		self.prove_multi_oracle_relation([(oracle, transparent)], claim);
+	}
 }

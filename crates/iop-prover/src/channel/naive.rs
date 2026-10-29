@@ -148,32 +148,33 @@ where
 		NaiveOracle { index }
 	}
 
-	fn prove_oracle_relation(
+	fn prove_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: StructuredBuffer<P, Vec<P>>,
+		operands: impl IntoIterator<Item = (Self::Oracle, StructuredBuffer<P, Vec<P>>)>,
 		_claim: P::Scalar,
 	) {
-		// For the naive channel, we write the transparent polynomial to the transcript so the
-		// verifier can read it and check the inner product against the message it already read.
-		let index = oracle.index;
-		assert!(index < self.next_oracle_index, "oracle index {index} out of bounds");
+		// For the naive channel, we write each transparent polynomial to the transcript so the
+		// verifier can read it and check the inner products against the messages it already read.
+		for (oracle, transparent) in operands {
+			let index = oracle.index;
+			assert!(index < self.next_oracle_index, "oracle index {index} out of bounds");
 
-		let log_msg_len = self.oracle_specs[index].log_msg_len();
-		assert_eq!(
-			transparent.log_len(),
-			log_msg_len,
-			"transparent log_len mismatch: expected {log_msg_len}, got {}",
-			transparent.log_len()
-		);
+			let log_msg_len = self.oracle_specs[index].log_msg_len();
+			assert_eq!(
+				transparent.log_len(),
+				log_msg_len,
+				"transparent log_len mismatch: expected {log_msg_len}, got {}",
+				transparent.log_len()
+			);
 
-		// Write the transparent polynomial to the transcript
-		let transparent = transparent.materialize(&GlobalAllocator);
-		self.transcript
-			.message()
-			.write_scalar_iter(transparent.iter_scalars());
+			// Write the transparent polynomial to the transcript
+			let transparent = transparent.materialize(&GlobalAllocator);
+			self.transcript
+				.message()
+				.write_scalar_iter(transparent.iter_scalars());
 
-		// Sample evaluation point challenges (verifier will sample the same)
-		let _point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
+			// Sample evaluation point challenges (verifier will sample the same)
+			let _point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
+		}
 	}
 }

@@ -173,46 +173,38 @@ where
 		Ok(NaiveOracle { index })
 	}
 
-	fn verify_oracle_relation(
+	fn verify_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: TransparentEvalFn<F>,
+		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<F>)>,
 		claim: F,
 	) -> Result<(), Error> {
-		let index = oracle.index;
-		assert!(index < self.stored_polynomials.len(), "oracle index {index} out of bounds");
+		let mut actual_sum = F::ZERO;
+		for (oracle, transparent) in operands {
+			let index = oracle.index;
+			assert!(index < self.stored_polynomials.len(), "oracle index {index} out of bounds");
 
-		// Extract spec data before mutable borrow of transcript
-		let log_msg_len = self.oracle_specs[index].log_msg_len();
+			let log_msg_len = self.oracle_specs[index].log_msg_len();
 
-		// Read the transparent polynomial from the transcript (prover wrote it in
-		// prove_oracle_relation)
-		let transparent_len = 1 << log_msg_len;
-		let transparent_values = self
-			.transcript
-			.message()
-			.read_scalar_slice(transparent_len)
-			.map_err(|_| Error::ProofEmpty)?;
-		let transparent_poly = FieldBuffer::from_values(&transparent_values);
+			// Read the transparent polynomial from the transcript (prover wrote it in
+			// prove_oracle_relation)
+			let transparent_values = self
+				.transcript
+				.message()
+				.read_scalar_slice(1 << log_msg_len)
+				.map_err(|_| Error::ProofEmpty)?;
+			let transparent_poly = FieldBuffer::from_values(&transparent_values);
+
+			actual_sum += inner_product_buffers(&self.stored_polynomials[index], &transparent_poly);
+
+			// Sample evaluation point challenges (same as prover sampled), and check the
+			// transcript's transparent against the closure there.
+			let point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
+			let transparent_eval = transparent(&point);
+			self.assert_zero(transparent_eval - evaluate_inplace(transparent_poly, &point))?;
+		}
 
 		// Verify the inner product claim directly
-		let stored_poly = &self.stored_polynomials[index];
-		let witness_poly = stored_poly.as_view();
-		let actual_inner_product: F = inner_product_buffers(&witness_poly, &transparent_poly);
-
-		assert_eq!(
-			actual_inner_product, claim,
-			"NaiveVerifierChannel: inner product verification failed"
-		);
-
-		// Sample evaluation point challenges (same as prover sampled)
-		let point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
-
-		// Evaluate the transparent closure at the challenge point
-		let transparent_eval = transparent(&point);
-
-		// Verify the transparent evaluation matches using assert_zero
-		self.assert_zero(transparent_eval - evaluate_inplace(transparent_poly, &point))?;
+		assert_eq!(actual_sum, claim, "NaiveVerifierChannel: inner product verification failed");
 
 		Ok(())
 	}
