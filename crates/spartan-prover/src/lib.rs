@@ -40,11 +40,7 @@ use std::{
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash_prover::ParallelHashSuite;
-use binius_iop::channel::OracleSchedule;
-use binius_iop_prover::{
-	basefold::compiler::BaseFoldProverCompiler,
-	channel::{IOPProverChannel, merge::MergeProverChannel},
-};
+use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{quadratic_mlecheck_prover, zk_mlecheck},
@@ -98,8 +94,6 @@ where
 	H: ParallelHashSuite,
 {
 	iop_prover: IOPProver<P::Scalar>,
-	/// Every oracle the proof commits, grouped into the rounds each committed as one oracle.
-	oracle_schedule: OracleSchedule,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>>,
 	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
 	/// so blocks freed by one `prove` call are reused by the next.
@@ -318,13 +312,9 @@ impl<F: Field> IOPProver<F> {
 			zk_mlecheck::expand_libra_eval::<A, P>(alloc, &r_x, n_vars, mask_degree, m_n, m_d);
 
 		// Prove all oracle relations.
-		channel.prove_oracle_relation(
-			precommit_oracle,
-			precommit_wiring_poly.into(),
-			precommit_claim,
-		);
-		channel.prove_oracle_relation(private_oracle, private_wiring_poly.into(), private_claim);
-		channel.prove_oracle_relation(mask_oracle, libra_eval_tensor.into(), mask_eval);
+		channel.prove_oracle_relation(precommit_oracle, precommit_wiring_poly, precommit_claim);
+		channel.prove_oracle_relation(private_oracle, private_wiring_poly, private_claim);
+		channel.prove_oracle_relation(mask_oracle, libra_eval_tensor, mask_eval);
 
 		Ok(())
 	}
@@ -349,7 +339,7 @@ where
 			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and
+		// Create the BaseFold ZK compiler from verifier compiler (reuses the oracle schedule and
 		// fri_params)
 		let basefold_compiler =
 			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
@@ -358,7 +348,6 @@ where
 
 		Ok(Prover {
 			iop_prover,
-			oracle_schedule: verifier.oracle_schedule().clone(),
 			basefold_compiler,
 			pool: BufferPool::new(),
 			_hash_marker: PhantomData,
@@ -401,11 +390,10 @@ where
 		// their nodes from it too.
 		let alloc = &self.pool;
 		// Create ZK channel (owns the RNG for mask generation), commit the precommit oracle,
-		// and delegate to the IOP prover. Each round's oracles are committed as one.
-		let channel = self
+		// and delegate to the IOP prover.
+		let mut channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng, alloc);
-		let mut channel = MergeProverChannel::new(channel, &self.oracle_schedule, alloc);
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _, _>(witness, &mut rng, &mut channel, &alloc);
@@ -419,7 +407,7 @@ where
 			&mut channel,
 			&alloc,
 		)?;
-		channel.into_inner().finish();
+		channel.finish();
 		Ok(())
 	}
 }

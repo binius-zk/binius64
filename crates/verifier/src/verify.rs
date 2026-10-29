@@ -11,7 +11,7 @@ use binius_field::{BinaryField, ExtensionField, FieldOps, Rijndael8b as B8};
 use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel},
+	channel::{IOPVerifierChannel, OracleSchedule, oracle_setup::OracleSetupChannel},
 };
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::{BinarySubspace, univariate::EvaluationDomain};
@@ -122,28 +122,29 @@ impl IOPVerifier {
 		self.log_witness_elems() + LOG_WORDS_PER_ELEM
 	}
 
-	/// Returns the oracle specs for the IOP channel.
+	/// Returns the oracle schedule for the IOP channel.
 	///
-	/// These describe the oracles (the witness) that the prover commits to.
+	/// This describes the oracles (the witness) that the prover commits to, grouped into the rounds
+	/// they are committed in.
 	///
 	/// `is_zk` is the protocol-level zero-knowledge flag: in a ZK proof the witness oracle is
 	/// masked, in a transparent proof it is not. The flag is taken per call so that a non-ZK
 	/// oracle can still participate in a ZK protocol (e.g. indexed relation openings).
 	///
-	/// The specs are derived by running [`Self::verify`] against an [`OracleSetupChannel`], which
+	/// The schedule is derived by running [`Self::verify`] against an [`OracleSetupChannel`], which
 	/// records each oracle received (via `recv_oracle`) without performing any real verification.
-	/// This keeps the spec sequence automatically in lockstep with the `recv_oracle` calls in
+	/// This keeps the schedule automatically in lockstep with the `recv_oracle` calls in
 	/// `verify`, rather than duplicating it here.
-	pub fn oracle_specs(&self, is_zk: bool) -> Vec<OracleSpec> {
+	pub fn oracle_schedule(&self, is_zk: bool) -> OracleSchedule {
 		let mut channel = OracleSetupChannel::new(is_zk);
 		// The setup channel carries concrete words, so the statement it verifies against is just
 		// words — handing them through `observe_words` to get them back buys nothing.
 		let inout = vec![Word::ZERO; self.constraint_system.n_inout];
 		// The result is discarded: the setup channel performs no real verification (all `recv_*`
-		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle specs.
-		// Its wiring claim goes with it, since discharging one records no oracle.
+		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle
+		// schedule. Its wiring claim goes with it, since discharging one records no oracle.
 		let _ = self.verify(&inout, &mut channel);
-		channel.into_oracle_specs()
+		channel.into_oracle_schedule()
 	}
 
 	/// Verifies a proof using an IOP channel.
@@ -338,12 +339,12 @@ where
 
 		// A plain `Verifier` produces a transparent (non-ZK) proof, so the witness oracle is not
 		// masked.
-		let oracle_specs = iop_verifier.oracle_specs(false);
+		let oracle_schedule = iop_verifier.oracle_schedule(false);
 
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 
 		// Pick the proof-size-optimal FRI fold arity for this codeword length.
-		let log_code_len = oracle_specs[0].log_msg_len() + log_inv_rate;
+		let log_code_len = oracle_schedule.specs()[0].log_msg_len() + log_inv_rate;
 		let fri_arity =
 			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
 				.arity;
@@ -353,7 +354,7 @@ where
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
 			&merkle_scheme,
-			oracle_specs,
+			oracle_schedule,
 			log_inv_rate,
 			n_test_queries,
 			&ConstantArityStrategy::new(fri_arity),

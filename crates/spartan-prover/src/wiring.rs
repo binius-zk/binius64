@@ -500,11 +500,7 @@ mod tests {
 		);
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relation(
-			witness_oracle,
-			wiring_poly.clone().into(),
-			trace_claim,
-		);
+		prover_channel.prove_oracle_relation(witness_oracle, wiring_poly.clone(), trace_claim);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();

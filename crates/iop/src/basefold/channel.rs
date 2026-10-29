@@ -12,15 +12,15 @@ use binius_ip::{
 };
 use binius_math::{
 	line::extrapolate_line,
-	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+	multilinear::eq::{eq_ind, eq_ind_partial_eval_scalars, eq_ind_zero},
 	univariate::evaluate_univariate,
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
 
 use crate::{
-	basefold,
-	channel::{Error, IOPVerifierChannel, OracleSpec, TransparentEvalFn},
+	basefold::{self, layout::RoundLayout},
+	channel::{Error, IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn},
 	fri::FRIParams,
 	merkle_channel::MerkleIPVerifierChannel,
 };
@@ -28,21 +28,28 @@ use crate::{
 /// Oracle handle returned by [`BaseFoldVerifierChannel::recv_oracle`].
 #[derive(Debug, Clone, Copy)]
 pub struct BaseFoldOracle {
-	index: usize,
+	/// The round whose oracle this one is committed in.
+	round: usize,
+	/// The oracle's block within its round oracle, in units of its own length.
+	block_offset: usize,
+	/// The oracle's own `log_msg_len`.
+	log_len: usize,
 }
 
-/// One oracle's operand in a queued relation.
+/// One round oracle's operand in a queued relation.
 struct QueuedOperand<Elem> {
 	/// Index of the relation, into [`BaseFoldVerifierChannel::claims`].
 	relation: usize,
-	/// Evaluates the transparent multilinear `t` at the point the opening reduces to.
+	/// Evaluates the transparent multilinear, over the round oracle's variables, at the point the
+	/// opening reduces to.
 	transparent: TransparentEvalFn<Elem>,
 }
 
 /// A verifier channel that uses ZK BaseFold for all oracle commitments and openings.
 ///
-/// This channel always applies zero-knowledge blinding. The FRI parameters must be set up
-/// with `log_batch_size = 1` and `log_msg_len = witness_log_len + 1` to account for the mask.
+/// Each round of the schedule is committed as one round oracle, laid out by
+/// [`layout_rounds`](basefold::layout::layout_rounds), whose commitment arrives with the round's
+/// last oracle. The opening runs over the round oracles.
 ///
 /// # Type Parameters
 ///
@@ -57,12 +64,17 @@ where
 	/// The Merkle channel carrying all prover interaction: field elements, challenges,
 	/// commitments, and openings.
 	channel: Channel,
-	oracle_specs: &'a [OracleSpec],
+	schedule: &'a OracleSchedule,
+	layouts: &'a [RoundLayout],
 	fri_params: &'a FRIParams<F>,
+	/// One commitment per round committed so far, so its length is also the open round's index.
 	oracle_commitments: Vec<Channel::Commitment>,
+	/// How many oracles have been received so far.
+	n_received: usize,
+	/// How many of the open round's oracles have been received so far.
+	n_in_round: usize,
 	/// Operands of the relations queued by [`IOPVerifierChannel::verify_multi_oracle_relation`],
-	/// indexed by oracle index and opened together in [`Self::finish`]. One entry per received
-	/// oracle, so its length is also the number of oracles received so far.
+	/// indexed by round and opened together in [`Self::finish`]. One entry per committed round.
 	queue: Vec<Vec<QueuedOperand<Channel::Elem>>>,
 	/// The claim of each queued relation, in queue order.
 	claims: Vec<Channel::Elem>,
@@ -80,14 +92,18 @@ where
 	/// length).
 	pub const fn new(
 		channel: Channel,
-		oracle_specs: &'a [OracleSpec],
+		schedule: &'a OracleSchedule,
+		layouts: &'a [RoundLayout],
 		fri_params: &'a FRIParams<F>,
 	) -> Self {
 		Self {
 			channel,
-			oracle_specs,
+			schedule,
+			layouts,
 			fri_params,
 			oracle_commitments: Vec::new(),
+			n_received: 0,
+			n_in_round: 0,
 			queue: Vec::new(),
 			claims: Vec::new(),
 		}
@@ -109,20 +125,23 @@ where
 	pub fn finish(self) -> Result<Channel, Error> {
 		let Self {
 			mut channel,
-			oracle_specs,
+			schedule,
+			layouts,
 			fri_params,
 			oracle_commitments,
+			n_received,
+			n_in_round: _,
 			queue,
 			claims,
 		} = self;
 
-		let n_remaining = oracle_specs.len() - queue.len();
+		let n_remaining = schedule.specs().len() - n_received;
 		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
 
 		if !claims.is_empty() {
 			verify_batch_zk_basefold(
 				&mut channel,
-				oracle_specs,
+				layouts,
 				fri_params,
 				&oracle_commitments,
 				queue,
@@ -134,7 +153,7 @@ where
 	}
 }
 
-/// Verifies the combined ZK BaseFold opening over all committed oracles.
+/// Verifies the combined ZK BaseFold opening over all committed round oracles.
 ///
 /// This drives `channel` — the Merkle channel taken from the destructured
 /// [`BaseFoldVerifierChannel`] — through its [`MerkleIPVerifierChannel`] interface: it batches the
@@ -142,9 +161,9 @@ where
 /// masked claim to a point `r`, then opens all committed oracles together with a single combined
 /// FRI over the piecewise-concatenated oracle.
 ///
-/// Everything per oracle runs in oracle-index order: `operands` arrives indexed by oracle, as do
-/// `oracle_specs`, `oracle_commitments`, the masking inner products σ_i and the reduced
-/// evaluations α_i.
+/// Everything per oracle runs in round order: `operands` arrives indexed by round, as do
+/// `layouts`, `oracle_commitments`, the masking inner products σ_i and the reduced evaluations
+/// α_i.
 ///
 /// Phase B collapses the oracle-index variables up front at sampled batching challenges `r'`: the
 /// combined target is `s' = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j)` with `e` the indicator expanded at
@@ -152,7 +171,7 @@ where
 /// codewords.
 fn verify_batch_zk_basefold<F, Channel>(
 	channel: &mut Channel,
-	oracle_specs: &[OracleSpec],
+	layouts: &[RoundLayout],
 	fri_params: &FRIParams<F>,
 	oracle_commitments: &[Channel::Commitment],
 	operands: Vec<Vec<QueuedOperand<Channel::Elem>>>,
@@ -166,9 +185,9 @@ where
 	assert_eq!(operands.len(), n_committed);
 
 	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
-	let max_n = oracle_specs
+	let max_n = layouts
 		.iter()
-		.map(|spec| spec.log_msg_len())
+		.map(|layout| layout.log_len)
 		.max()
 		.expect("at least one oracle");
 
@@ -178,7 +197,7 @@ where
 	// === Masking step ===
 	// Only ZK oracles are masked: read their σ_i (one per ZK oracle) and sample the single shared
 	// γ. With no ZK oracle, γ is never sampled.
-	let n_zk = oracle_specs.iter().filter(|spec| spec.is_zk).count();
+	let n_zk = layouts.iter().filter(|layout| layout.is_zk).count();
 	let sigmas = channel.recv_many(n_zk)?;
 	let gamma = (!sigmas.is_empty()).then(|| channel.sample());
 
@@ -190,10 +209,10 @@ where
 		Some(gamma) => {
 			let sigma_sum = sigmas.into_iter().sum::<Channel::Elem>();
 			let non_zk_weight = Channel::Elem::one() - gamma.clone();
-			let weights = oracle_specs
+			let weights = layouts
 				.iter()
-				.map(|spec| {
-					if spec.is_zk {
+				.map(|layout| {
+					if layout.is_zk {
 						Channel::Elem::one()
 					} else {
 						non_zk_weight.clone()
@@ -219,9 +238,9 @@ where
 	point.reverse();
 
 	// Reduce the claim: each oracle contributes w_i · α_i · T_i(ρ_i) · eq(0^extra, padding).
-	let expected = izip!(transparents, oracle_specs, &alphas, weights)
-		.map(|(transparent, spec, alpha_i, weight)| {
-			let (eval_coords, padding_coords) = point.split_at(spec.log_msg_len());
+	let expected = izip!(transparents, layouts, &alphas, weights)
+		.map(|(transparent, layout, alpha_i, weight)| {
+			let (eval_coords, padding_coords) = point.split_at(layout.log_len);
 			let pad_eq = eq_ind_zero(padding_coords);
 			weight * alpha_i.clone() * transparent(eval_coords) * pad_eq
 		})
@@ -239,9 +258,9 @@ where
 	// over the remaining `log_repeat = max_n - n_i - log_lift` high dims, so its evaluation at
 	// `point` picks up the eq-to-zero factor over the lift dims only (the repeat dims contribute
 	// 1).
-	let s_prime = izip!(fri_params.input_oracles(), oracle_specs, eq_tensor, alphas)
-		.map(|(fri_oracle, spec, eq_i, alpha_i)| {
-			let n_i = spec.log_msg_len();
+	let s_prime = izip!(fri_params.input_oracles(), layouts, eq_tensor, alphas)
+		.map(|(fri_oracle, layout, eq_i, alpha_i)| {
+			let n_i = layout.log_len;
 			let log_lift = fri_oracle.log_lift;
 			eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift])
 		})
@@ -385,22 +404,41 @@ where
 	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs[self.queue.len()..]
+		&self.schedule.specs()[self.n_received..]
 	}
 
 	fn recv_oracle(
 		&mut self,
-		_len: usize,
-		_is_witness_dependent: bool,
+		len: usize,
+		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error> {
-		// A BaseFold commitment is a fixed-size Merkle digest, so `len` is not needed here;
-		// the per-oracle specs (used for the FRI opening) are supplied at channel construction.
+		let spec = *self
+			.remaining_oracle_specs()
+			.first()
+			.expect("recv_oracle called but no remaining oracle specs");
+		assert_eq!(len, spec.len, "oracle content length must match its spec");
+		// A spec is zero-knowledge iff the protocol is and the oracle is witness-dependent. The
+		// protocol-level flag is not known here, so only one direction can be checked.
 		assert!(
-			!self.remaining_oracle_specs().is_empty(),
-			"recv_oracle called but no remaining oracle specs"
+			!spec.is_zk || is_witness_dependent,
+			"a zero-knowledge oracle spec must be received as witness-dependent"
 		);
 
-		let index = self.queue.len();
+		let index = self.oracle_commitments.len();
+		let layout = &self.layouts[index];
+		let oracle = BaseFoldOracle {
+			round: index,
+			block_offset: layout.block_offsets[self.n_in_round],
+			log_len: spec.log_msg_len(),
+		};
+		self.n_received += 1;
+		self.n_in_round += 1;
+
+		// The round's last oracle brings the commitment to the whole round oracle.
+		if self.n_in_round < layout.block_offsets.len() {
+			return Ok(oracle);
+		}
+		self.n_in_round = 0;
 
 		// Receive the commitment with its Merkle tree shape, matching the prover-side commit: the
 		// oracle's codeword has dimension `log_dim - log_lift` and one interleaved coset of
@@ -410,14 +448,12 @@ where
 			+ self.fri_params.rs_code().log_inv_rate();
 
 		// The committed message length implied by this shape is `log_batch_size + depth -
-		// log_inv_rate`; it must cover the spec's message plus, for a ZK oracle, the equal-length
+		// log_inv_rate`; it must cover the round oracle plus, for a ZK one, the equal-length
 		// interleaved mask.
-		let spec = &self.oracle_specs[index];
 		assert_eq!(
 			fri_oracle.log_batch_size() + depth - self.fri_params.rs_code().log_inv_rate(),
-			spec.log_msg_len() + usize::from(spec.is_zk),
-			"invariant: the FRI commitment shape must be consistent with the oracle spec's \
-			 log_msg_len"
+			layout.log_len + usize::from(layout.is_zk),
+			"invariant: the FRI commitment shape must be consistent with the round oracle's length"
 		);
 
 		let commitment = self
@@ -427,7 +463,7 @@ where
 		self.oracle_commitments.push(commitment);
 		self.queue.push(Vec::new());
 
-		Ok(BaseFoldOracle { index })
+		Ok(oracle)
 	}
 
 	fn verify_multi_oracle_relation(
@@ -435,20 +471,38 @@ where
 		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), Error> {
-		// Queue each operand under its oracle; the actual opening (masking + sumcheck + combined
-		// FRI) happens once, over all committed oracles, in [`Self::finish`].
+		// Queue each operand under its round; the actual opening (masking + sumcheck + combined
+		// FRI) happens once, over all committed round oracles, in [`Self::finish`].
 		let relation = self.claims.len();
 		let n_committed = self.queue.len();
 		for (oracle, transparent) in operands {
-			self.queue
-				.get_mut(oracle.index)
-				.unwrap_or_else(|| {
-					panic!("oracle index {} out of bounds, expected < {n_committed}", oracle.index)
+			let BaseFoldOracle {
+				round,
+				block_offset,
+				log_len,
+			} = oracle;
+			assert!(round < n_committed, "oracle's round {round} is not committed yet");
+
+			// On the round oracle, the operand is `t(v) · eq(b, u)`: the oracle's own
+			// transparent over its low variables, and zero outside its block `b` over the high.
+			let block_bits = (0..self.layouts[round].log_len - log_len)
+				.map(|bit| {
+					if (block_offset >> bit) & 1 == 1 {
+						Channel::Elem::one()
+					} else {
+						Channel::Elem::zero()
+					}
 				})
-				.push(QueuedOperand {
-					relation,
-					transparent,
-				});
+				.collect::<Vec<_>>();
+			let transparent = Box::new(move |point: &[Channel::Elem]| {
+				let (low, high) = point.split_at(log_len);
+				eq_ind(high, &block_bits) * transparent(low)
+			});
+
+			self.queue[round].push(QueuedOperand {
+				relation,
+				transparent,
+			});
 		}
 		self.claims.push(claim);
 		Ok(())

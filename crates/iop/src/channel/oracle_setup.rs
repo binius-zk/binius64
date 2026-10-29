@@ -144,7 +144,7 @@ impl<F: Field> FieldOps for DummyElem<F> {
 ///
 /// A round closes wherever a challenge could be drawn.
 ///
-/// That is where a decorator committing a round as one oracle stops taking members.
+/// That is where BaseFold, committing each round as one oracle, stops taking members.
 #[derive(Debug, Default, Clone)]
 pub struct OracleSetupChannel {
 	is_zk: bool,
@@ -391,21 +391,5 @@ mod tests {
 
 		let flat = channel.clone().into_oracle_specs();
 		assert_eq!(channel.into_oracle_schedule().into_specs(), flat);
-	}
-
-	#[test]
-	fn a_round_is_masked_if_any_of_its_oracles_is() {
-		// Protocol-level zero-knowledge is on, but not every oracle carries witness data.
-		//
-		//     round 0: [structural 2^3, witness 2^3] -> 2^4, masked because one member is
-		//     round 1: [structural 2^2]              -> 2^2, nothing to hide
-		let mut channel = OracleSetupChannel::new(true);
-		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 3, false).unwrap();
-		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 3, true).unwrap();
-		sample(&mut channel);
-		IOPVerifierChannel::<F>::recv_oracle(&mut channel, 1 << 2, false).unwrap();
-
-		let merged = channel.into_oracle_schedule().merged_specs();
-		assert_eq!(merged, vec![OracleSpec::new_zk(1 << 4), OracleSpec::new(1 << 2)]);
 	}
 }

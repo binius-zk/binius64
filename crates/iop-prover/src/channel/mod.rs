@@ -3,14 +3,13 @@
 //! Channel abstraction for interactive oracle protocol (IOP) provers.
 
 pub mod grinding;
-pub mod merge;
 pub mod naive;
 
 use binius_compute::Allocator;
 use binius_field::PackedField;
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldSlice, StructuredBuffer};
+use binius_math::{FieldBuffer, FieldSlice};
 
 /// Channel for IOP provers that extends the IP prover channel with oracle operations.
 ///
@@ -51,9 +50,7 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	/// oracle may appear in any number of relations, and more than once in one.
 	///
 	/// Each transparent must vanish on every index at or above its oracle's [`OracleSpec::len`],
-	/// so the relation does not depend on the channel's padding. A transparent may also be zero
-	/// outside one aligned block, and say so through its structure. A channel that understands the
-	/// structure skips the zeros; any other materializes it.
+	/// so the relation does not depend on the channel's padding.
 	///
 	/// The channel owns the transparents until the opening runs, so they are drawn from the
 	/// caller's allocator `A` — a pooled buffer stays pooled all the way through the opening.
@@ -67,7 +64,7 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	///   queued relations is drawn only after the queue closes.
 	fn prove_multi_oracle_relation(
 		&mut self,
-		operands: impl IntoIterator<Item = (Self::Oracle, StructuredBuffer<P, A::Vec<P>>)>,
+		operands: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P, A::Vec<P>>)>,
 		claim: P::Scalar,
 	);
 
@@ -77,7 +74,7 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	fn prove_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
-		transparent: StructuredBuffer<P, A::Vec<P>>,
+		transparent: FieldBuffer<P, A::Vec<P>>,
 		claim: P::Scalar,
 	) {
 		self.prove_multi_oracle_relation([(oracle, transparent)], claim);
