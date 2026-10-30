@@ -7,10 +7,10 @@
 use binius_compute::BufferData;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, inner_product::inner_product_par};
-use binius_utils::rayon::{
-	prelude::*,
-	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+use binius_math::{
+	FieldBuffer,
+	inner_product::inner_product_par,
+	multilinear::hypercube::{InfCube, fold_highest_var_inplace},
 };
 
 use super::batch::BatchSumcheckOutput;
@@ -136,17 +136,8 @@ where
 	fn fold(&mut self, round_coeffs: &RoundCoeffs<F>, challenge: F) {
 		self.claim = round_coeffs.evaluate(&challenge);
 
-		let broadcast_challenge = P::broadcast(challenge);
 		for table in &mut self.tables {
-			{
-				let mut split = table.split_half_mut();
-				let (mut lo, mut hi) = split.halves();
-				(lo.as_mut(), hi.as_mut())
-					.into_par_iter()
-					.with_min_task(WorkPerItem::FieldMuls)
-					.for_each(|(lo_i, hi_i)| *lo_i += broadcast_challenge * *hi_i);
-			}
-			table.truncate(table.log_len() - 1);
+			fold_highest_var_inplace::<InfCube, _, _>(table, challenge);
 		}
 	}
 
@@ -160,8 +151,7 @@ mod tests {
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
 	use binius_ip::sumcheck::infinity::batch_verify;
 	use binius_math::{
-		multilinear::hypercube::{InfCube, eq_ind_partial_eval},
-		test_utils::random_field_buffer,
+		multilinear::hypercube::eq_ind_partial_eval, test_utils::random_field_buffer,
 		univariate::evaluate_univariate,
 	};
 	use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
