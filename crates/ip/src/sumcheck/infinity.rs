@@ -18,7 +18,7 @@
 //! A claim on fewer variables than the batch needs no padding factor: summing out a coordinate the
 //! summand does not depend on leaves the claim unchanged.
 
-use binius_field::Field;
+use binius_field::{Field, field::FieldOps};
 use binius_math::univariate::evaluate_univariate;
 
 use crate::{
@@ -89,10 +89,45 @@ where
 	})
 }
 
+/// Translates a point $\rho$ of a sumcheck over $\{0, \infty\}^n$ to the Boolean hypercube.
+///
+/// In characteristic 2, whenever no $\rho_j = 1$, the multilinear $u^\infty$ with monomial
+/// coefficients $u$ and the multilinear extension $\tilde{u}$ of $u$ agree up to a scale:
+///
+/// $$
+/// u^\infty(\rho_{<k}) = \prod_{j < k} (1 + \rho_j) \cdot \tilde{u}(\sigma_{<k}), \qquad
+/// \sigma_j = \frac{\rho_j}{1 + \rho_j}
+/// $$
+///
+/// Returns $\sigma$ and the scales $\prod_{j < k} (1 + \rho_j)$ for every $k = 0, \ldots, n$.
+///
+/// A coordinate $\rho_j = 1$ has no translation. It maps to $\sigma_j = 0$ and zeroes every scale
+/// past it, and occurs with probability $n / |F|$ over a uniform $\rho$.
+pub fn to_mle_point<F: FieldOps>(point: &[F]) -> (Vec<F>, Vec<F>) {
+	let mut scales = Vec::with_capacity(point.len() + 1);
+	scales.push(F::one());
+	let sigma = point
+		.iter()
+		.map(|rho_j| {
+			let one_plus_rho = F::one() + rho_j;
+			let scale = scales.last().expect("scales starts non-empty").clone() * &one_plus_rho;
+			scales.push(scale);
+			rho_j.clone() * one_plus_rho.invert_or_zero()
+		})
+		.collect();
+	(sigma, scales)
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_field::arch::OptimalB128 as B128;
-	use binius_math::test_utils::random_scalars;
+	use binius_math::{
+		multilinear::{
+			eq::eq_ind_partial_eval_scalars,
+			hypercube::{InfCube, eq_ind_partial_eval_scalars as monomials},
+		},
+		test_utils::random_scalars,
+	};
 	use rand::prelude::*;
 
 	use super::*;
@@ -105,6 +140,21 @@ mod tests {
 			// R(0) + R(∞) is the constant plus the leading coefficient.
 			let sum = coeffs[0] + coeffs[degree];
 			assert_eq!(coeffs.clone().truncate().recover_infinity(sum), coeffs);
+		}
+	}
+
+	#[test]
+	fn to_mle_point_matches_the_monomial_evaluation() {
+		let mut rng = StdRng::seed_from_u64(0);
+		let n_vars = 4;
+		let point = random_scalars::<B128>(&mut rng, n_vars);
+		let (sigma, scales) = to_mle_point(&point);
+		for k in 0..=n_vars {
+			let u = random_scalars::<B128>(&mut rng, 1 << k);
+			let dot = |basis: Vec<B128>| u.iter().zip(basis).map(|(u, b)| *u * b).sum::<B128>();
+			let monomial_eval = dot(monomials::<InfCube, B128>(&point[..k]));
+			let mle_eval = dot(eq_ind_partial_eval_scalars(&sigma[..k]));
+			assert_eq!(monomial_eval, scales[k] * mle_eval, "k={k}");
 		}
 	}
 }
