@@ -8,7 +8,7 @@
 //! $g(r) = \langle g', \textsf{libra-eval}_r \rangle$ is a linear query on the committed table.
 
 use binius_field::{field::FieldOps, util::powers};
-use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
+use binius_math::multilinear::hypercube::{Hypercube, eq_ind_partial_eval_scalars};
 
 /// Returns `(m_n, m_d)` dimensions for a mask polynomial buffer.
 ///
@@ -40,15 +40,18 @@ pub fn mask_buffer_dimensions(n_vars: usize, degree: usize, n_extra_dof: usize) 
 	(m_n, m_d)
 }
 
-/// Evaluates the MLE of the libra_eval polynomial at a query point.
+/// Evaluates the multilinear with coefficients `libra_eval_r` over `Cube` at a query point.
 ///
-/// Computes the multilinear extension of `libra_eval_r` at the query point `(query_j, query_k)`:
+/// Computes, at the query point `(query_j, query_k)`,
 ///
 /// ```text
 /// Σⱼ Σₖ eq(j, query_j) · eq(k, query_k) · r[j]^k
 /// ```
 ///
-/// for `j < n_vars` and `k ≤ degree`, where `eq` is the equality indicator polynomial.
+/// for `j < n_vars` and `k ≤ degree`, where `eq` is `Cube`'s equality indicator. Over
+/// [`OneCube`](binius_math::multilinear::hypercube::OneCube) this is the multilinear extension of
+/// the table; over [`InfCube`](binius_math::multilinear::hypercube::InfCube) it is the multilinear
+/// whose monomial coefficients are the table.
 ///
 /// # Arguments
 ///
@@ -57,15 +60,15 @@ pub fn mask_buffer_dimensions(n_vars: usize, degree: usize, n_extra_dof: usize) 
 /// * `query_k` - Query point for the power index (length `m_d`)
 /// * `n_vars` - Number of variables in the mask polynomial
 /// * `degree` - Degree of each univariate in the mask polynomial
-pub fn libra_eval<F: FieldOps>(
+pub fn libra_eval<Cube: Hypercube, F: FieldOps>(
 	challenge_point: &[F],
 	query_j: &[F],
 	query_k: &[F],
 	n_vars: usize,
 	degree: usize,
 ) -> F {
-	let eq_j = eq_ind_partial_eval_scalars(query_j);
-	let eq_k = eq_ind_partial_eval_scalars(query_k);
+	let eq_j = eq_ind_partial_eval_scalars::<Cube, F>(query_j);
+	let eq_k = eq_ind_partial_eval_scalars::<Cube, F>(query_k);
 
 	eq_j.iter()
 		.take(n_vars)

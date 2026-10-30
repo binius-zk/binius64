@@ -4,6 +4,7 @@
 
 use std::cmp::Reverse;
 
+use binius_ip::libra::mask_buffer_dimensions;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use crate::channel::{OracleSchedule, OracleSpec};
@@ -47,6 +48,30 @@ impl RoundLayout {
 /// power of two, the blocks lie end to end.
 pub fn layout_rounds(schedule: &OracleSchedule) -> Vec<RoundLayout> {
 	schedule.rounds().map(layout_round).collect()
+}
+
+/// The degree of each univariate of the opening's Libra mask, that of its summand.
+pub const LIBRA_DEGREE: usize = 2;
+
+/// The layout of the round the compiler commits the Libra oracle in, if the opening is masked.
+///
+/// The mask covers the batch sumcheck over `ℓ = max_r ℓ_r` of the schedule's `layouts`, and is
+/// only needed when some round is zero-knowledge. Its coefficient table is a round of its own.
+pub fn libra_layout(layouts: &[RoundLayout]) -> Option<RoundLayout> {
+	if !layouts.iter().any(|layout| layout.is_zk) {
+		return None;
+	}
+	let n_vars = layouts
+		.iter()
+		.map(|layout| layout.log_len)
+		.max()
+		.expect("a ZK layout exists");
+	let (m_n, m_d) = mask_buffer_dimensions(n_vars, LIBRA_DEGREE, 0);
+	Some(RoundLayout {
+		log_len: m_n + m_d,
+		is_zk: true,
+		block_offsets: vec![0],
+	})
 }
 
 fn layout_round(specs: &[OracleSpec]) -> RoundLayout {
