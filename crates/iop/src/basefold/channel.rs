@@ -5,10 +5,10 @@
 use std::rc::Rc;
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, FieldOps, util::powers};
+use binius_field::{BinaryField, FieldOps, arithmetic_traits::InvertOrZero, util::powers};
 use binius_ip::{
 	channel::{IPVerifierChannel, WordIPVerifierChannel},
-	sumcheck::{self, SumcheckOutput},
+	sumcheck::{self, BatchSumcheckOutput, SumcheckOutput},
 };
 use binius_math::{
 	line::extrapolate_line,
@@ -19,7 +19,7 @@ use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
 
 use crate::{
-	basefold::{self, layout::RoundLayout},
+	basefold::{self, layout::RoundLayout, libra},
 	channel::{Error, IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn},
 	fri::FRIParams,
 	merkle_channel::MerkleIPVerifierChannel,
@@ -109,34 +109,70 @@ where
 		}
 	}
 
+	/// Receives the commitment to the next round oracle, the one at index
+	/// `oracle_commitments.len()`.
+	fn recv_round_commitment(&mut self) -> Result<(), Error> {
+		let index = self.oracle_commitments.len();
+		let layout = &self.layouts[index];
+		// Receive the commitment with its Merkle tree shape, matching the prover-side commit: the
+		// oracle's codeword has dimension `log_dim - log_lift` and one interleaved coset of
+		// `2^log_batch_size` scalars per leaf.
+		let fri_oracle = &self.fri_params.input_oracles()[index];
+		let depth = (self.fri_params.rs_code().log_dim() - fri_oracle.log_lift)
+			+ self.fri_params.rs_code().log_inv_rate();
+
+		// The committed message length implied by this shape is `log_batch_size + depth -
+		// log_inv_rate`; it must cover the round oracle plus, for a ZK one, the equal-length
+		// interleaved mask.
+		assert_eq!(
+			fri_oracle.log_batch_size() + depth - self.fri_params.rs_code().log_inv_rate(),
+			layout.log_len + usize::from(layout.is_zk),
+			"invariant: the FRI commitment shape must be consistent with the round oracle's length"
+		);
+
+		let commitment = self
+			.channel
+			.recv_merkle_commitment(1 << fri_oracle.log_batch_size(), depth)?;
+
+		self.oracle_commitments.push(commitment);
+
+		Ok(())
+	}
+
 	/// Consumes the channel and verifies the single combined opening over **all** committed
 	/// oracles.
 	///
 	/// All oracle relations queued by
 	/// [`verify_multi_oracle_relation`](IOPVerifierChannel::verify_multi_oracle_relation) across
-	/// every call are processed here in one batch: batching into one relation, masking, one
-	/// sumcheck reducing the masked claim to a shared point `r`, then one combined FRI opening
-	/// over every committed oracle (in oracle-index order). Because the whole opening is deferred
-	/// to this point, every oracle is committed and there is a single sumcheck point, so the
-	/// precomputed combined `FRIParams` (`optimal_for_batch` over all oracle specs) serves the
-	/// opening.
+	/// every call are processed here in one batch: batching into one relation, the Libra-masked
+	/// sumcheck and its rerandomization reducing it to evaluations at prefixes of one point, then
+	/// one combined FRI opening over every committed oracle (in oracle-index order). Because the
+	/// whole opening is deferred to this point, every oracle is committed and there is a single
+	/// sumcheck point, so the precomputed combined `FRIParams` (`optimal_for_batch` over all
+	/// oracle specs) serves the opening.
 	///
 	/// Returns the Merkle channel, so a caller can still reach what it accumulated.
-	pub fn finish(self) -> Result<Channel, Error> {
+	pub fn finish(mut self) -> Result<Channel, Error> {
+		let n_remaining = self.schedule.specs().len() - self.n_received;
+		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
+
+		// A masked opening commits the Libra oracle, in the round after the schedule's.
+		let has_libra = self.layouts.len() > self.oracle_commitments.len();
+		if !self.claims.is_empty() && has_libra {
+			self.recv_round_commitment()?;
+		}
+
 		let Self {
 			mut channel,
-			schedule,
+			schedule: _,
 			layouts,
 			fri_params,
 			oracle_commitments,
-			n_received,
+			n_received: _,
 			n_in_round: _,
 			queue,
 			claims,
 		} = self;
-
-		let n_remaining = schedule.specs().len() - n_received;
-		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
 
 		if !claims.is_empty() {
 			verify_batch_zk_basefold(
@@ -156,19 +192,20 @@ where
 /// Verifies the combined ZK BaseFold opening over all committed round oracles.
 ///
 /// This drives `channel` — the Merkle channel taken from the destructured
-/// [`BaseFoldVerifierChannel`] — through its [`MerkleIPVerifierChannel`] interface: it batches the
-/// queued relations into one, reads the masked inner products σ_i, runs one sumcheck reducing the
-/// masked claim to a point `r`, then opens all committed oracles together with a single combined
-/// FRI over the piecewise-concatenated oracle.
+/// [`BaseFoldVerifierChannel`] — through its [`MerkleIPVerifierChannel`] interface, in three
+/// phases (binius.xyz#128, "Batched ZK BaseFold opening"):
 ///
-/// Everything per oracle runs in round order: `operands` arrives indexed by round, as do
-/// `layouts`, `oracle_commitments`, the masking inner products σ_i and the reduced evaluations
-/// α_i.
+/// * Phase A batches the queued relations into one and sumchecks it over `{0, ∞}^ℓ`, masked by the
+///   Libra oracle when the opening is zero-knowledge. It leaves each round oracle's monomial
+///   evaluation `α_r = M_r^∞(ρ_{<ℓ_r})` and the Libra query `β = h(ρ)`.
+/// * Phase A′, for a masked opening only, reduces those claims to evaluations at prefixes of one
+///   point `ρ''` with an unmasked sumcheck over the Libra round's `m` variables.
+/// * Phase B translates them into multilinear-extension claims at `σ_j = ρ''_j / (1 + ρ''_j)` and
+///   opens every committed oracle with one combined FRI, after the interleave round that samples
+///   the mask fold γ.
 ///
-/// Phase B collapses the oracle-index variables up front at sampled batching challenges `r'`: the
-/// combined target is `s' = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j)` with `e` the indicator expanded at
-/// `r'`, and the single combined FRI (`fri_params`) opens all `k` committed `[π_i ‖ ω_i]`
-/// codewords.
+/// Everything per oracle runs in round order: `operands` arrives indexed by schedule round, and
+/// `layouts` and `oracle_commitments` carry the Libra round last when the opening is masked.
 fn verify_batch_zk_basefold<F, Channel>(
 	channel: &mut Channel,
 	layouts: &[RoundLayout],
@@ -182,75 +219,106 @@ where
 	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
 	let n_committed = oracle_commitments.len();
-	assert_eq!(operands.len(), n_committed);
+	assert_eq!(layouts.len(), n_committed);
+	let n_rounds = operands.len();
+	let libra_layout = layouts[n_rounds..].first();
 
-	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
-	let max_n = layouts
+	// `ℓ = max_r ℓ_r` over the schedule's rounds, the variable count of Phase A.
+	let n_vars = layouts[..n_rounds]
 		.iter()
 		.map(|layout| layout.log_len)
 		.max()
 		.expect("at least one oracle");
 
-	// Batch the relations into the single relation `Σ_i <π_i, T_i> = S`.
+	// === Phase A: the Libra-masked batch sumcheck over {0, ∞}^ℓ ===
 	let (transparents, claim) = batch_relations(channel, operands, claims);
 
-	// === Masking step ===
-	// Only ZK oracles are masked: read their σ_i (one per ZK oracle) and sample the single shared
-	// γ. With no ZK oracle, γ is never sampled.
-	let n_zk = layouts.iter().filter(|layout| layout.is_zk).count();
-	let sigmas = channel.recv_many(n_zk)?;
-	let gamma = (!sigmas.is_empty()).then(|| channel.sample());
-
-	// The sumcheck runs over `Σ_i w_i·<π_i', T_i>`. A ZK oracle's message is masked to
-	// π_i' = (1-γ)·π_i + γ·ω_i and has weight 1; a non-ZK oracle's is unmasked and has weight 1-γ.
-	// Every term then carries the same (1-γ) on its share of S, so the masked claim is
-	// S' = (1-γ)·S + γ·Σ_i σ_i.
-	let (sum_prime, weights) = match &gamma {
-		Some(gamma) => {
-			let sigma_sum = sigmas.into_iter().sum::<Channel::Elem>();
-			let non_zk_weight = Channel::Elem::one() - gamma.clone();
-			let weights = layouts
-				.iter()
-				.map(|layout| {
-					if layout.is_zk {
-						Channel::Elem::one()
-					} else {
-						non_zk_weight.clone()
-					}
-				})
-				.collect::<Vec<_>>();
-			(extrapolate_line(claim, sigma_sum, gamma.clone()), weights)
+	// The mask's claim `s_h` blends in at a sampled α. An unmasked opening samples no α.
+	let libra_alpha = match libra_layout {
+		Some(_) => {
+			let s_h = channel.recv_one()?;
+			Some((channel.sample(), s_h))
 		}
-		None => (claim, vec![Channel::Elem::one(); n_committed]),
+		None => None,
 	};
-
-	// === Phase A: one sumcheck on the masked claim (degree 2, sum of bivariate products) ===
-	let SumcheckOutput {
-		eval: sumcheck_reduced_eval,
-		challenges: sumcheck_challenges,
-	} = sumcheck::verify::<F, _>(max_n, 2, sum_prime, channel)?;
-
-	// Receive the evaluation of each oracle at the challenge point.
-	let alphas = channel.recv_many(n_committed)?;
+	let sum = match &libra_alpha {
+		Some((alpha, s_h)) => claim + alpha.clone() * s_h,
+		None => claim,
+	};
+	let SumcheckOutput { eval, challenges } =
+		sumcheck::infinity::verify::<F, _>(n_vars, 2, sum, channel)?;
 
 	// `verify` returns binding-order challenges; reverse to variable-indexed (low-to-high).
-	let mut point = sumcheck_challenges;
+	let mut point = challenges;
 	point.reverse();
 
-	// Reduce the claim: each oracle contributes w_i · α_i · T_i(ρ_i) · eq(0^extra, padding).
-	let expected = izip!(transparents, layouts, &alphas, weights)
-		.map(|(transparent, layout, alpha_i, weight)| {
-			let (eval_coords, padding_coords) = point.split_at(layout.log_len);
-			let pad_eq = eq_ind_zero(padding_coords);
-			weight * alpha_i.clone() * transparent(eval_coords) * pad_eq
+	// Strip the mask's share `α · β` to leave `f* = f(ρ)`.
+	let (f_star, beta) = match libra_alpha {
+		Some((alpha, _)) => {
+			let beta = channel.recv_one()?;
+			(eval - alpha * &beta, Some(beta))
+		}
+		None => (eval, None),
+	};
+
+	// `f(ρ) = Σ_r M_r^∞(ρ_{<ℓ_r}) · T_r^∞(ρ_{<ℓ_r})`. The operands evaluate multilinear
+	// extensions, so each `T_r^∞` comes from its extension at the translated point.
+	let alphas = channel.recv_many(n_rounds)?;
+	let (sigma, scales) = sumcheck::infinity::to_mle_point(&point);
+	let expected = izip!(&transparents, layouts, &alphas)
+		.map(|(transparent, layout, alpha_r)| {
+			let n_r = layout.log_len;
+			alpha_r.clone() * transparent(&sigma[..n_r]) * &scales[n_r]
 		})
 		.sum::<Channel::Elem>();
-	channel.assert_zero(sumcheck_reduced_eval - expected)?;
+	channel.assert_zero(f_star - expected)?;
+
+	// === Phase A′: rerandomize the claims onto prefixes of one point ===
+	let (point, evals) = match (libra_layout, beta) {
+		(Some(libra_layout), Some(beta)) => {
+			let m = libra_layout.log_len;
+			let sums = alphas.into_iter().chain([beta]).collect::<Vec<_>>();
+			let BatchSumcheckOutput {
+				batch_coeff,
+				eval,
+				challenges,
+			} = sumcheck::infinity::batch_verify::<F, _>(m, 2, &sums, channel)?;
+			let mut point_prime = challenges;
+			point_prime.reverse();
+
+			// Round `r` was summed against `e_ρ(Y) = Π_j (1 + ρ_j Y_j)` over its own
+			// `min(m, ℓ_r)` low variables, and the Libra oracle against `libra-eval_ρ`.
+			let evals = channel.recv_many(n_committed)?;
+			let weights = layouts[..n_rounds]
+				.iter()
+				.map(|layout| {
+					let n = m.min(layout.log_len);
+					izip!(&point[..n], &point_prime[..n])
+						.map(|(rho_j, rho_prime_j)| {
+							Channel::Elem::one() + rho_j.clone() * rho_prime_j
+						})
+						.product::<Channel::Elem>()
+				})
+				.chain([libra::libra_eval_monomial(&point, &point_prime)]);
+			let composed = izip!(&evals, weights)
+				.map(|(eval, weight)| eval.clone() * weight)
+				.collect::<Vec<_>>();
+			channel.assert_zero(eval - evaluate_univariate(&composed, &batch_coeff))?;
+
+			// `ρ'' = (ρ', ρ_{≥m})`.
+			point_prime.extend(point.into_iter().skip(m));
+			(point_prime, evals)
+		}
+		_ => (point, alphas),
+	};
 
 	// === Phase B: single combined-FRI MLE-check over the piecewise-concatenated oracle ===
-	// Collapse the oracle-index variables up front at sampled batching challenges `r'`: the
-	// combined multilinear is 𝛑(X) = Σ_i e[i]·π_i^↑(X) with e = eq(·, r'), and the combined target
-	// is s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
+	// Translate each claim `M_r^∞(ρ''_{<ℓ_r}) = α'_r` into `M̃_r(σ_{<ℓ_r}) = a_r`.
+	let (point, scales) = sumcheck::infinity::to_mle_point(&point);
+
+	// Collapse the oracle-index variables at challenges `r'` sampled after the `a_r` are fixed:
+	// the combined multilinear is 𝛑(X) = Σ_i e[i]·π_i^↑(X) with e = eq(·, r'), and the combined
+	// target is s' = 𝛑(σ) = Σ_i e[i]·a_i·∏_{j≥n_i}(1 - σ_j).
 	let log_n_oracles = log2_ceil_usize(n_committed);
 	let outer_challenges = channel.sample_many(log_n_oracles);
 	let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
@@ -258,13 +326,27 @@ where
 	// over the remaining `log_repeat = max_n - n_i - log_lift` high dims, so its evaluation at
 	// `point` picks up the eq-to-zero factor over the lift dims only (the repeat dims contribute
 	// 1).
-	let s_prime = izip!(fri_params.input_oracles(), layouts, eq_tensor, alphas)
-		.map(|(fri_oracle, layout, eq_i, alpha_i)| {
+	let s_prime = izip!(fri_params.input_oracles(), layouts, eq_tensor, evals)
+		.map(|(fri_oracle, layout, eq_i, eval_i)| {
 			let n_i = layout.log_len;
 			let log_lift = fri_oracle.log_lift;
-			eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift])
+			eq_i * eval_i
+				* scales[n_i].clone().invert_or_zero()
+				* eq_ind_zero(&point[n_i..][..log_lift])
 		})
 		.sum::<Channel::Elem>();
+
+	// The interleave round: the claim is on the messages, at `Y = 0` of `(1 - Y)·M_r + Y·ω_r`. The
+	// prover sends the round polynomial's value at `Y = 1`, and γ folds the pair. Only a masked
+	// opening has the interleave variable.
+	let (s_prime, gamma) = match libra_layout {
+		Some(_) => {
+			let s_one = channel.recv_one()?;
+			let gamma = channel.sample();
+			(extrapolate_line(s_prime, s_one, gamma.clone()), Some(gamma))
+		}
+		None => (s_prime, None),
+	};
 
 	// The opening routine asserts the final FRI/MLE-check consistency internally.
 	basefold::verify_mlecheck_basefold(
@@ -440,27 +522,7 @@ where
 		}
 		self.n_in_round = 0;
 
-		// Receive the commitment with its Merkle tree shape, matching the prover-side commit: the
-		// oracle's codeword has dimension `log_dim - log_lift` and one interleaved coset of
-		// `2^log_batch_size` scalars per leaf.
-		let fri_oracle = &self.fri_params.input_oracles()[index];
-		let depth = (self.fri_params.rs_code().log_dim() - fri_oracle.log_lift)
-			+ self.fri_params.rs_code().log_inv_rate();
-
-		// The committed message length implied by this shape is `log_batch_size + depth -
-		// log_inv_rate`; it must cover the round oracle plus, for a ZK one, the equal-length
-		// interleaved mask.
-		assert_eq!(
-			fri_oracle.log_batch_size() + depth - self.fri_params.rs_code().log_inv_rate(),
-			layout.log_len + usize::from(layout.is_zk),
-			"invariant: the FRI commitment shape must be consistent with the round oracle's length"
-		);
-
-		let commitment = self
-			.channel
-			.recv_merkle_commitment(1 << fri_oracle.log_batch_size(), depth)?;
-
-		self.oracle_commitments.push(commitment);
+		self.recv_round_commitment()?;
 		self.queue.push(Vec::new());
 
 		Ok(oracle)
@@ -471,7 +533,7 @@ where
 		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), Error> {
-		// Queue each operand under its round; the actual opening (masking + sumcheck + combined
+		// Queue each operand under its round; the actual opening (sumchecks + combined
 		// FRI) happens once, over all committed round oracles, in [`Self::finish`].
 		let relation = self.claims.len();
 		let n_committed = self.queue.len();

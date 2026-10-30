@@ -14,6 +14,7 @@ use crate::{
 	basefold::{
 		channel::BaseFoldVerifierChannel,
 		layout::{RoundLayout, layout_rounds},
+		libra::libra_layout,
 	},
 	channel::OracleSchedule,
 	fri::{AritySelectionStrategy, FRIParams},
@@ -62,7 +63,9 @@ where
 			!schedule.specs().is_empty(),
 			"BaseFoldVerifierCompiler requires at least one oracle spec"
 		);
-		let layouts = layout_rounds(&schedule);
+		// A masked opening commits its Libra oracle in a round of its own, after the schedule's.
+		let mut layouts = layout_rounds(&schedule);
+		layouts.extend(libra_layout(&layouts));
 		let round_specs = layouts.iter().map(RoundLayout::spec).collect::<Vec<_>>();
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
@@ -84,7 +87,7 @@ where
 		&self.schedule
 	}
 
-	/// Returns the layout of each round oracle.
+	/// Returns the layout of each round oracle, the Libra oracle's last if the opening is masked.
 	pub fn layouts(&self) -> &[RoundLayout] {
 		&self.layouts
 	}
@@ -135,5 +138,41 @@ where
 		Output<H::LeafHash>: DeserializeBytes,
 	{
 		self.create_channel(VerifierMerkleTranscriptChannel::new(transcript))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::Ghash128b;
+	use binius_hash::StdHashSuite;
+
+	use super::*;
+	use crate::{channel::OracleSpec, fri::MinProofSizeStrategy};
+
+	fn compile(specs: [OracleSpec; 2]) -> BaseFoldVerifierCompiler<Ghash128b> {
+		BaseFoldVerifierCompiler::new(
+			&BinaryMerkleTreeScheme::<Ghash128b, StdHashSuite>::new(),
+			OracleSchedule::from_rounds(specs.map(|spec| [spec])),
+			1,
+			32,
+			&MinProofSizeStrategy,
+		)
+	}
+
+	#[test]
+	fn a_masked_opening_commits_the_libra_oracle_last() {
+		// `ℓ = 9`, so the table has `2^{⌈log2 9⌉ + 2} = 2^6` entries.
+		let compiler = compile([OracleSpec::new(1 << 9), OracleSpec::new_zk(1 << 6)]);
+		let layouts = compiler.layouts();
+		assert_eq!(layouts.len(), 3);
+		assert_eq!(layouts[2].spec(), OracleSpec::new_zk(1 << 6));
+		assert_eq!(compiler.fri_params().input_oracles().len(), 3);
+	}
+
+	#[test]
+	fn an_unmasked_opening_commits_no_libra_oracle() {
+		let compiler = compile([OracleSpec::new(1 << 9), OracleSpec::new(1 << 6)]);
+		assert_eq!(compiler.layouts().len(), 2);
+		assert_eq!(compiler.fri_params().input_oracles().len(), 2);
 	}
 }
