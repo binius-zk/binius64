@@ -11,17 +11,16 @@
 //! Coefficients are stored with the highest variable selecting which half of the buffer a
 //! coefficient falls in.
 //! So fixing the highest variable pairs the two halves and leaves the result in the first one.
+//!
+//! Every routine here specializes a generic hypercube routine to the basis `(1 - X, X)`.
 
 use std::ops::Deref;
 
-use binius_compute::{Allocator, BufferData, CollectIntoAllocVec};
+use binius_compute::{Allocator, BufferData};
 use binius_field::PackedField;
-use binius_utils::rayon::{
-	prelude::*,
-	task_size::{IndexedParallelIteratorExt, WorkPerItem},
-};
 
-use crate::{FieldBuffer, FieldVec, line::extrapolate_line};
+use super::hypercube::{self, OneCube};
+use crate::{FieldBuffer, FieldVec};
 
 /// Fixes the highest variable of a multilinear to a value, in place.
 ///
@@ -39,35 +38,12 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: BufferData<P>>(
 	values: &mut FieldBuffer<P, Data>,
 	scalar: P::Scalar,
 ) {
-	// Each scalar of the result costs one multiplication.
-	// Broadcasting the challenge once lets every packed word reuse the same multiplier.
-	let broadcast_scalar = P::broadcast(scalar);
-	{
-		// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
-		let mut split = values.split_half_mut();
-		let (mut lo, mut hi) = split.halves();
-		// Interpolate the line through each pair at the challenge, overwriting the low half.
-		(lo.as_mut(), hi.as_mut())
-			.into_par_iter()
-			.with_min_task(WorkPerItem::FieldMuls)
-			.for_each(|(lo_i, hi_i)| {
-				*lo_i = extrapolate_line(*lo_i, *hi_i, broadcast_scalar);
-			});
-	}
-
-	// The result occupies a prefix, so the truncation drops the scalars past it.
-	values.truncate(values.log_len() - 1);
+	hypercube::fold_highest_var_inplace::<OneCube, P, Data>(values, scalar);
 }
 
 /// Fixes the highest variable of a multilinear to a value, writing into memory from an allocator.
 ///
-/// ```text
-/// g(X_0, ..., X_{n-2}) = f(X_0, ..., X_{n-2}, r)
-/// ```
-///
-/// Each output coefficient interpolates the line through one pair of input coefficients.
 /// The input is left untouched.
-///
 /// Use this when the input is borrowed or must be preserved.
 /// Otherwise prefer the form that overwrites the input.
 ///
@@ -79,31 +55,21 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 	values: &FieldBuffer<P, Data>,
 	scalar: P::Scalar,
 ) -> FieldVec<P, A> {
-	assert!(values.log_len() > 0, "precondition: buffer must have at least one variable");
-
-	// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
-	let broadcast_scalar = P::broadcast(scalar);
-	let (lo, hi) = values.split_half();
-
-	// Interpolate the line through each pair at the challenge directly into a fresh buffer
-	// drawn from the allocator.
-	let data = (lo.as_ref(), hi.as_ref())
-		.into_par_iter()
-		.with_min_task(WorkPerItem::FieldMuls)
-		.map(|(&lo_i, &hi_i)| extrapolate_line(lo_i, hi_i, broadcast_scalar))
-		.collect_into_alloc_vec(alloc);
-	FieldBuffer::new(values.log_len() - 1, data)
+	hypercube::fold_highest_var::<OneCube, A, P, Data>(alloc, values, scalar)
 }
 
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_utils::rayon::task_size::min_len_for_work;
+	use binius_utils::rayon::task_size::{WorkPerItem, min_len_for_work};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b, random_field_buffer, random_scalars};
+	use crate::{
+		line::extrapolate_line,
+		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
+	};
 
 	type P = Packed128b;
 	type F = B128;
