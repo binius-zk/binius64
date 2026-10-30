@@ -5,6 +5,7 @@
 
 pub mod channel;
 pub mod compiler;
+mod libra;
 mod opening;
 
 pub use opening::*;

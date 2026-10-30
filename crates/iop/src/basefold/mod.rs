@@ -24,6 +24,7 @@ pub mod channel;
 pub mod compiler;
 mod error;
 pub mod layout;
+pub mod libra;
 mod opening;
 
 pub use error::*;
