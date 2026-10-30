@@ -8,6 +8,7 @@ pub mod common;
 mod drive;
 pub mod eq_tracker;
 pub mod factored_multilinear;
+pub mod infinity;
 pub mod mle_store;
 mod mle_to_sumcheck;
 pub mod multilinear_eval;
