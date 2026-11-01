@@ -29,6 +29,7 @@
 pub mod channel;
 pub mod claim_fold;
 pub mod fracaddcheck;
+pub mod libra;
 pub mod logup_star;
 pub mod prodcheck;
 pub mod sumcheck;
