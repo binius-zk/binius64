@@ -43,6 +43,7 @@ use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
 	channel::IPProverChannel,
+	libra,
 	sumcheck::{quadratic_mlecheck_prover, zk_mlecheck},
 };
 use binius_math::{
@@ -263,7 +264,7 @@ impl<F: Field> IOPProver<F> {
 		let mask_oracle = channel.send_oracle(masks_buffer.as_view());
 
 		let mulcheck_mask =
-			zk_mlecheck::Mask::new(log_mul_constraints, mask_degree, masks_buffer.as_view());
+			libra::Mask::new(log_mul_constraints, mask_degree, masks_buffer.as_view());
 
 		// Prove the multiplication constraints
 		let (mulcheck_evals, mask_eval, r_x) = prove_mulcheck::<F, P, _, _>(
@@ -309,7 +310,7 @@ impl<F: Field> IOPProver<F> {
 		// Compute the mask folding polynomial (libra_eval tensor)
 		let n_vars = r_x.len();
 		let libra_eval_tensor =
-			zk_mlecheck::expand_libra_eval::<A, P>(alloc, &r_x, n_vars, mask_degree, m_n, m_d);
+			libra::expand_libra_eval::<A, P>(alloc, &r_x, n_vars, mask_degree, m_n, m_d);
 
 		// Prove all oracle relations.
 		channel.prove_oracle_relation(precommit_oracle, precommit_wiring_poly, precommit_claim);
@@ -417,7 +418,7 @@ fn prove_mulcheck<F, P, Channel, A>(
 	public: &[F],
 	precommit_packed: FieldSlice<'_, P>,
 	private_packed: FieldSlice<'_, P>,
-	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
+	mask: libra::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> ([F; 3], F, Vec<F>)

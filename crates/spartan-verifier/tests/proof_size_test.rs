@@ -78,5 +78,8 @@ fn test_ip_proof_size() {
 	// eight multiplication constraints rather than four. That extra variable costs one mulcheck
 	// round. A circuit with real constraints absorbs the two extra ones without moving the
 	// power-of-two rounding at all.
-	assert_eq!(proof_size, 61680, "proof size regression");
+	//
+	// The opening is masked, so the compiler also commits and opens its Libra oracle, a second
+	// round oracle. At this size its query openings are most of the 15520 bytes it adds.
+	assert_eq!(proof_size, 77200, "proof size regression");
 }

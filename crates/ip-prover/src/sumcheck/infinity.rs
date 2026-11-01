@@ -85,7 +85,10 @@ where
 }
 
 /// The state of one claim $\sum_x u^\infty(x) \cdot w^\infty(x) = s$.
-struct ProductProver<P: PackedField, Data: BufferData<P>> {
+///
+/// [`batch_prove`] drives these with random batching weights. A caller that needs another
+/// combination of the round polynomials drives them itself.
+pub struct ProductProver<P: PackedField, Data: BufferData<P>> {
 	tables: [FieldBuffer<P, Data>; 2],
 	claim: P::Scalar,
 }
@@ -96,7 +99,12 @@ where
 	P: PackedField<Scalar = F>,
 	Data: BufferData<P>,
 {
-	fn new(tables: [FieldBuffer<P, Data>; 2]) -> Self {
+	/// Creates the prover of $\langle u, w \rangle$ for the tables `[u, w]`.
+	///
+	/// ## Preconditions
+	///
+	/// * the two tables must have the same number of variables
+	pub fn new(tables: [FieldBuffer<P, Data>; 2]) -> Self {
 		let [u, w] = &tables;
 		assert_eq!(
 			u.log_len(),
@@ -107,8 +115,14 @@ where
 		Self { tables, claim }
 	}
 
-	const fn n_vars(&self) -> usize {
+	/// The number of variables not yet bound.
+	pub const fn n_vars(&self) -> usize {
 		self.tables[0].log_len()
+	}
+
+	/// The current claim $s$, the sum over the unbound variables.
+	pub const fn claim(&self) -> F {
+		self.claim
 	}
 
 	/// The round polynomial in the top variable $X$.
@@ -122,7 +136,7 @@ where
 	/// $$
 	///
 	/// and $R(0) = s - R(\infty)$ comes from the claim.
-	fn round_coeffs(&self) -> RoundCoeffs<F> {
+	pub fn round_coeffs(&self) -> RoundCoeffs<F> {
 		let [u, w] = &self.tables;
 		let (u_0, u_1) = u.split_half();
 		let (w_0, w_1) = w.split_half();
@@ -133,7 +147,7 @@ where
 	}
 
 	/// Binds the top variable to `challenge` $r$: $u'(v) = u(v, 0) + r \cdot u(v, 1)$.
-	fn fold(&mut self, round_coeffs: &RoundCoeffs<F>, challenge: F) {
+	pub fn fold(&mut self, round_coeffs: &RoundCoeffs<F>, challenge: F) {
 		self.claim = round_coeffs.evaluate(&challenge);
 
 		for table in &mut self.tables {
@@ -141,7 +155,8 @@ where
 		}
 	}
 
-	fn finish(self) -> Vec<F> {
+	/// The evaluations $[u^\infty(r), w^\infty(r)]$ once every variable is bound.
+	pub fn finish(self) -> Vec<F> {
 		self.tables.iter().map(|table| table.get(0)).collect()
 	}
 }

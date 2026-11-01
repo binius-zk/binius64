@@ -29,6 +29,7 @@
 pub mod batch_eval;
 pub mod channel;
 pub mod fracaddcheck;
+pub mod libra;
 pub mod logup_star;
 pub mod mlecheck;
 pub mod prodcheck;

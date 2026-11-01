@@ -47,8 +47,11 @@ use binius_iop::{
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
-use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
+use binius_ip::{channel::IPVerifierChannel, libra, mlecheck, sumcheck};
+use binius_math::{
+	multilinear::{eq::eq_ind_partial_eval_scalars, hypercube::OneCube},
+	univariate::evaluate_univariate,
+};
 use binius_spartan_frontend::constraint_system::{ConstraintSystem, WitnessSegment};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
@@ -372,7 +375,7 @@ fn mask_transparent<F: Field, E: FieldOps + 'static>(
 		// Split into query_k (low-order bits) and query_j (high-order bits).
 		let (query_k, query_j) = point.split_at(m_d);
 
-		mlecheck::libra_eval(&r_x, query_j, query_k, n_vars, mask_degree)
+		libra::libra_eval::<OneCube, _>(&r_x, query_j, query_k, n_vars, mask_degree)
 	})
 }
 
