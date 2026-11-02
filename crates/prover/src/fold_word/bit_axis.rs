@@ -3,20 +3,23 @@
 
 //! Contracting the bit axis: one field element per word.
 
-use std::{array, hint::assert_unchecked, iter};
+use std::{array, iter, mem::MaybeUninit};
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_math::FieldBuffer;
 use binius_utils::rayon::prelude::*;
 
-use super::{lookup::BitWeightTables, output::PackedOutput};
+use super::{
+	kernel::{BitFold, WORDS_PER_BATCH},
+	output::PackedOutput,
+};
 
 /// Minimum words one parallel task folds along the bit axis.
 ///
-/// A packed element is the unit of work here, and it holds as few as one word.
-/// Left unbounded, the split reaches one task per word, and the handoff costs more than the fold.
+/// A batch is the unit of work here, and a batch is a fixed 64 words.
+/// Left unbounded, the split reaches one task per batch, and the handoff costs more than the fold.
 ///
 /// A floor also caps how far a loop can divide.
 /// A list of `n` words splits into at most `n / floor` tasks.
@@ -29,15 +32,15 @@ const MIN_WORDS_PER_TASK: usize = 1 << 12;
 
 /// A reusable folder over a fixed vector of bit-index scalars.
 ///
-/// The one-shot function above rebuilds its lookup tables on every call.
-/// A caller folding several word-lists against the same scalar vector builds them once here, and
-/// reuses them across folds.
+/// The one-shot function above rebuilds its kernel on every call.
+/// A caller folding several word-lists against the same scalar vector builds it once here, and
+/// reuses it across folds.
 ///
 /// The word axis has a folder of its own, built the same way.
 #[derive(Debug)]
 pub struct BitAxisFolder<F: BinaryField> {
-	/// The subset-sum tables built from the bit-index scalars, shared by every fold.
-	tables: BitWeightTables<F>,
+	/// The fold built from the bit-index scalars, shared by every fold call.
+	kernel: BitFold<F>,
 }
 
 impl<F: BinaryField> BitAxisFolder<F> {
@@ -47,7 +50,7 @@ impl<F: BinaryField> BitAxisFolder<F> {
 	/// * `vec` contains exactly one scalar per bit of a word
 	pub fn new(vec: &[F]) -> Self {
 		Self {
-			tables: BitWeightTables::new(vec),
+			kernel: BitFold::new(vec),
 		}
 	}
 
@@ -59,35 +62,35 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		P: PackedField<Scalar = F>,
 		A: Allocator,
 	{
+		let slots_per_batch = slots_per_batch::<P>();
 		let mut out = PackedOutput::for_words(alloc, words.len());
 
-		// Partition the words into whole packed-width chunks and a short tail.
+		// Partition the words into whole batches and a short tail.
 		//
-		//     words:  [ chunk 0 | chunk 1 | ... | chunk n-1 | tail (< P::WIDTH) ]
-		let n_chunks = words.len() / P::WIDTH;
-		let (words_aligned, words_remaining) = words.split_at(n_chunks * P::WIDTH);
+		//     words:  [ batch 0 | batch 1 | ... | batch n-1 | tail (< WORDS_PER_BATCH) ]
+		let n_batches = words.len() / WORDS_PER_BATCH;
+		let (words_aligned, words_remaining) = words.split_at(n_batches * WORDS_PER_BATCH);
 
-		let slots = out.chunk_slots(n_chunks);
-		let word_chunks = words_aligned.par_chunks_exact(P::WIDTH);
-		assert_eq!(slots.len(), word_chunks.len());
+		let slots = out.chunk_slots(n_batches * slots_per_batch);
+		let slot_groups = slots.par_chunks_exact_mut(slots_per_batch);
+		let word_batches = words_aligned.par_chunks_exact(WORDS_PER_BATCH);
+		assert_eq!(slot_groups.len(), word_batches.len());
 
-		(slots, word_chunks)
+		(slot_groups, word_batches)
 			.into_par_iter()
-			// One item is one packed element, so the floor converts from words to items.
-			.with_min_len(MIN_WORDS_PER_TASK.div_ceil(P::WIDTH))
-			.for_each(|(slot, word_chunk)| {
-				// Safety:
-				// - words_aligned has length that is a multiple of P::WIDTH
-				// - words_aligned is split into P::WIDTH chunks
-				unsafe { assert_unchecked(word_chunk.len() == P::WIDTH) };
-				slot.write(P::from_scalars(word_chunk.iter().map(|&word| self.tables.fold(word))));
+			// One item is one batch, so the floor converts from words to items.
+			.with_min_len(MIN_WORDS_PER_TASK.div_ceil(WORDS_PER_BATCH))
+			.for_each(|(slot_group, word_batch)| {
+				write_batch(slot_group, self.kernel.fold_batch(as_batch(word_batch)));
 			});
 
-		// Safety: the loop above writes every one of the n_chunks slots exactly once.
-		unsafe { out.commit_chunks(n_chunks) };
+		// Safety: the loop above writes every one of the slots handed out exactly once, because
+		// the two iterators are equal in length and each item writes its whole group.
+		unsafe { out.commit_chunks(n_batches * slots_per_batch) };
 
+		// The tail is under one batch, so it folds as a single zero-padded batch.
 		if !words_remaining.is_empty() {
-			out.push(P::from_scalars(words_remaining.iter().map(|&word| self.tables.fold(word))));
+			push_tail(&mut out, self.kernel.fold_prefix(words_remaining), words_remaining.len());
 		}
 
 		out.finish()
@@ -120,7 +123,7 @@ impl<F: BinaryField> BitAxisFolder<F> {
 	///
 	/// - Two input streams instead of three.
 	/// - Two register ANDs per word pair replace one memory stream.
-	/// - The bytewise lookup tables stay hot across all three outputs.
+	/// - The kernel's working set stays hot across all three outputs.
 	///
 	/// # Preconditions
 	///
@@ -145,65 +148,127 @@ impl<F: BinaryField> BitAxisFolder<F> {
 		let [mut a_out, mut b_out, mut c_out] =
 			array::from_fn(|_| PackedOutput::for_words(alloc, a_words.len()));
 
-		// Phase 1: partition the inputs into full packed-width chunks and a short tail.
+		// Phase 1: partition the inputs into whole batches and a short tail.
 		//
-		//     words:  [ chunk 0 | chunk 1 | ... | chunk n-1 | tail (< P::WIDTH) ]
-		let n_chunks = a_words.len() / P::WIDTH;
-		let (a_aligned, a_remaining) = a_words.split_at(n_chunks * P::WIDTH);
-		let (b_aligned, b_remaining) = b_words.split_at(n_chunks * P::WIDTH);
+		//     words:  [ batch 0 | batch 1 | ... | batch n-1 | tail (< WORDS_PER_BATCH) ]
+		let slots_per_batch = slots_per_batch::<P>();
+		let n_batches = a_words.len() / WORDS_PER_BATCH;
+		let (a_aligned, a_remaining) = a_words.split_at(n_batches * WORDS_PER_BATCH);
+		let (b_aligned, b_remaining) = b_words.split_at(n_batches * WORDS_PER_BATCH);
 
-		let a_slots = a_out.chunk_slots(n_chunks);
-		let b_slots = b_out.chunk_slots(n_chunks);
-		let c_slots = c_out.chunk_slots(n_chunks);
+		let n_slots = n_batches * slots_per_batch;
+		let a_slots = a_out
+			.chunk_slots(n_slots)
+			.par_chunks_exact_mut(slots_per_batch);
+		let b_slots = b_out
+			.chunk_slots(n_slots)
+			.par_chunks_exact_mut(slots_per_batch);
+		let c_slots = c_out
+			.chunk_slots(n_slots)
+			.par_chunks_exact_mut(slots_per_batch);
 
-		// Phase 2: fold the aligned chunks in parallel.
-		// Each task owns one chunk of both inputs and writes one packed element per output.
+		// Phase 2: fold the aligned batches in parallel.
+		// Each task owns one batch of both inputs and writes one slot group per output.
 		(
 			a_slots,
 			b_slots,
 			c_slots,
-			a_aligned.par_chunks_exact(P::WIDTH),
-			b_aligned.par_chunks_exact(P::WIDTH),
+			a_aligned.par_chunks_exact(WORDS_PER_BATCH),
+			b_aligned.par_chunks_exact(WORDS_PER_BATCH),
 		)
 			.into_par_iter()
-			// One item is one packed element of each output, so the floor converts from words.
-			.with_min_len(MIN_WORDS_PER_TASK.div_ceil(P::WIDTH))
-			.for_each(|(a_i, b_i, c_i, a_chunk, b_chunk)| {
-				// Safety:
-				// - both aligned slices have length n_chunks * P::WIDTH
-				// - both are split into P::WIDTH chunks
-				unsafe {
-					assert_unchecked(a_chunk.len() == P::WIDTH);
-					assert_unchecked(b_chunk.len() == P::WIDTH);
-				}
-				// Fold each stored column by bytewise table lookup.
-				a_i.write(P::from_scalars(a_chunk.iter().map(|&word| self.tables.fold(word))));
-				b_i.write(P::from_scalars(b_chunk.iter().map(|&word| self.tables.fold(word))));
-				// Derive the third column in registers, then fold it the same way.
-				c_i.write(P::from_scalars(
-					iter::zip(a_chunk, b_chunk).map(|(&a, &b)| self.tables.fold(a & b)),
-				));
+			// One item is one batch of each output, so the floor converts from words.
+			.with_min_len(MIN_WORDS_PER_TASK.div_ceil(WORDS_PER_BATCH))
+			.for_each(|(a_group, b_group, c_group, a_batch, b_batch)| {
+				let a_batch = as_batch(a_batch);
+				let b_batch = as_batch(b_batch);
+				// Derive the third column in registers, so it is never read from memory.
+				let c_batch = array::from_fn(|i| a_batch[i] & b_batch[i]);
+
+				// One kernel per column, all three against the same shared fold.
+				write_batch(a_group, self.kernel.fold_batch(a_batch));
+				write_batch(b_group, self.kernel.fold_batch(b_batch));
+				write_batch(c_group, self.kernel.fold_batch(&c_batch));
 			});
 
-		// Safety: the loop above writes every one of the n_chunks slots of each output exactly
-		// once.
+		// Safety: the loop above writes every one of the slots handed out by each output exactly
+		// once, because the iterators are equal in length and each item writes its whole group.
 		unsafe {
-			a_out.commit_chunks(n_chunks);
-			b_out.commit_chunks(n_chunks);
-			c_out.commit_chunks(n_chunks);
+			a_out.commit_chunks(n_slots);
+			b_out.commit_chunks(n_slots);
+			c_out.commit_chunks(n_slots);
 		}
 
-		// Phase 3: fold the short tail into one final packed element per output.
-		if !a_remaining.is_empty() {
-			a_out.push(P::from_scalars(a_remaining.iter().map(|&word| self.tables.fold(word))));
-			b_out.push(P::from_scalars(b_remaining.iter().map(|&word| self.tables.fold(word))));
-			c_out.push(P::from_scalars(
-				iter::zip(a_remaining, b_remaining).map(|(&a, &b)| self.tables.fold(a & b)),
-			));
+		// Phase 3: fold the short tail, which is under one batch of each column.
+		let n_remaining = a_remaining.len();
+		if n_remaining > 0 {
+			let mut c_remaining = [Word::ZERO; WORDS_PER_BATCH];
+			for (c, (&a, &b)) in iter::zip(&mut c_remaining, iter::zip(a_remaining, b_remaining)) {
+				*c = a & b;
+			}
+			push_tail(&mut a_out, self.kernel.fold_prefix(a_remaining), n_remaining);
+			push_tail(&mut b_out, self.kernel.fold_prefix(b_remaining), n_remaining);
+			let c_remaining = &c_remaining[..n_remaining];
+			push_tail(&mut c_out, self.kernel.fold_prefix(c_remaining), n_remaining);
 		}
 
 		// Phase 4: each output zero-pads itself up to the power-of-two capacity.
 		[a_out, b_out, c_out].map(PackedOutput::finish)
+	}
+}
+
+/// Packed elements one batch of folded words fills.
+///
+/// The batch is a power of two and at least as wide as any packing of a 128-bit scalar, so it
+/// divides evenly and one batch never straddles a slot.
+#[inline]
+const fn slots_per_batch<P: PackedField>() -> usize {
+	const {
+		assert!(
+			WORDS_PER_BATCH.is_multiple_of(P::WIDTH),
+			"a batch must be a whole number of packed elements"
+		);
+	}
+	WORDS_PER_BATCH / P::WIDTH
+}
+
+/// Views a chunk the batch loop produced as a fixed-size batch.
+///
+/// The parallel iterator is built from `par_chunks_exact`, so every chunk it yields has exactly
+/// this length; the conversion cannot fail.
+#[inline]
+fn as_batch(chunk: &[Word]) -> &[Word; WORDS_PER_BATCH] {
+	chunk
+		.try_into()
+		.expect("par_chunks_exact yields chunks of exactly WORDS_PER_BATCH words")
+}
+
+/// Packs one batch of folded scalars into its slot group.
+///
+/// # Panics
+///
+/// Panics unless the group holds exactly the batch's worth of packed elements.
+#[inline]
+fn write_batch<P: PackedField>(slots: &mut [MaybeUninit<P>], folded: [P::Scalar; WORDS_PER_BATCH]) {
+	assert_eq!(slots.len(), slots_per_batch::<P>());
+	for (slot, scalars) in iter::zip(slots, folded.chunks_exact(P::WIDTH)) {
+		slot.write(P::from_scalars(scalars.iter().copied()));
+	}
+}
+
+/// Appends the packed elements the short tail folds to.
+///
+/// The batched fold zero-fills past the tail's end, and `from_scalars` zero-fills the last packed
+/// element, so both kinds of padding read as zero — which is what the buffer's contract promises
+/// for words past the end of the list.
+#[inline]
+fn push_tail<P: PackedField, V: VecLike<P>>(
+	out: &mut PackedOutput<P, V>,
+	folded: [P::Scalar; WORDS_PER_BATCH],
+	n_words: usize,
+) {
+	for scalars in folded[..n_words].chunks(P::WIDTH) {
+		out.push(P::from_scalars(scalars.iter().copied()));
 	}
 }
 
