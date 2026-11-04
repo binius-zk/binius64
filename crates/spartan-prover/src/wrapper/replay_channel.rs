@@ -196,10 +196,9 @@ impl<F: Field> IOPVerifierChannel<F> for ReplayChannel<F> {
 		_operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), binius_iop::channel::Error> {
-		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
-		// checks in the circuit equality of this value with the expected expression over encrypted
-		// values.
-		let decrypted_claim = self.next_inout_elem();
+		// Mirror `IronSpartanBuilderChannel::verify_multi_oracle_relation`: the target arrives
+		// encrypted under its own key.
+		let decrypted_claim = self.recv_one()?;
 		self.assert_zero(claim - decrypted_claim)?;
 		Ok(())
 	}

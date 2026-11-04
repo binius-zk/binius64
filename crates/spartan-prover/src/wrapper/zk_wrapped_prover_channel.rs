@@ -11,7 +11,10 @@
 //! [`BaseFoldProverChannel`]: binius_iop_prover::basefold::channel::BaseFoldProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
-use std::{iter::repeat_with, sync::Arc};
+use std::{
+	iter::{self, repeat_with},
+	sync::Arc,
+};
 
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
@@ -322,13 +325,22 @@ where
 		operands: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P, A::Vec<P>>)>,
 		claim: P::Scalar,
 	) {
-		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
-		// checks in the circuit equality of this value with the expected expression over encrypted
-		// values.
-		self.inner_channel.send_one(claim);
-		self.interaction.push(claim);
+		// The target is a linear image of the witness, so it is sent as the ciphertext `c = s + k`
+		// under a fresh key `k`. The outer circuit decrypts it, and the compiler is handed the
+		// relation `<π, t> + <z_pre, e_k> = c`, which reads `k` from the precommit oracle at the
+		// key's index.
+		let key_index = self.next_key_idx;
+		let ciphertext = claim + self.next_key();
+		self.inner_channel.send_one(ciphertext);
+		self.interaction.push(ciphertext);
 
-		self.inner_channel
-			.prove_multi_oracle_relation(operands, claim);
+		let mut key_indicator = FieldBuffer::zeros_in(self.alloc, self.precommit_packed.log_len());
+		key_indicator.set(key_index, P::Scalar::ONE);
+		self.inner_channel.prove_multi_oracle_relation(
+			operands
+				.into_iter()
+				.chain(iter::once((self.precommit_oracle, key_indicator))),
+			ciphertext,
+		);
 	}
 }
