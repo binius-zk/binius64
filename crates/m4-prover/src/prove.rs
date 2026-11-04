@@ -31,7 +31,7 @@ use digest::Output;
 
 use crate::{
 	shift::prove as prove_shift,
-	value_table::pack_table,
+	value_table::{commit_layout, pack_table},
 	witness::{FoldedWitness, OperandColumns},
 };
 
@@ -268,7 +268,7 @@ impl IOPProver {
 			ring_switch::prove(
 				alloc,
 				trace_packed.as_view(),
-				1 << trace_packed.log_len(),
+				commit_layout(table).n_witness_elems,
 				&trace_point,
 				channel,
 			)

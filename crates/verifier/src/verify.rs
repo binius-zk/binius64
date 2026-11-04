@@ -90,10 +90,9 @@ impl IOPVerifier {
 	///
 	/// The trace oracle commits only the witness's hidden segment; the public segment is a
 	/// verifier-known polynomial. The shift reduction claims that segment over the shared
-	/// word-index space, which spans the wider of the two segments, so the oracle covers
-	/// `log_segment_words` words. That is the hidden segment's own length for every system
-	/// whose private values outnumber its public ones, and the committed words above the
-	/// hidden segment are zero.
+	/// word-index space, which spans the wider of the two segments, so the claim is over
+	/// `log_segment_words` words. The oracle itself holds only the [`Self::n_witness_elems`] the
+	/// hidden words fill, and the ring-switch accounts for the coordinates in between.
 	///
 	/// ## Preconditions
 	/// * the wider segment spans at least one field element's worth of words, which every system
@@ -196,8 +195,7 @@ impl IOPVerifier {
 
 		// Receive the trace oracle commitment via channel. The trace is the witness, so it is
 		// witness-dependent (masked in a ZK proof).
-		// TODO: declare `n_witness_elems` once the ring-switch handles a shorter oracle.
-		let trace_oracle = channel.recv_oracle(1 << self.log_witness_elems(), true)?;
+		let trace_oracle = channel.recv_oracle(self.n_witness_elems(), true)?;
 
 		// Reduce every constraint to one claim on the committed trace.
 		let cs = self.constraint_system();
@@ -271,7 +269,7 @@ impl IOPVerifier {
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = eval_point[log_packing..].to_vec();
 
-		let n_witness_elems = 1 << self.log_witness_elems();
+		let n_witness_elems = self.n_witness_elems();
 		let transparent = Box::new(move |point: &[Channel::Elem]| {
 			ring_switch::eval_rs_eq(
 				n_witness_elems,

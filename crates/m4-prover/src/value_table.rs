@@ -12,6 +12,7 @@ use binius_core::{ValueTable, word::Word};
 use binius_field::PackedField;
 use binius_m4_verifier::BatchCommitLayout;
 use binius_math::FieldVec;
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::config::B128;
 
 /// The committed-multilinear layout for a batch.
@@ -36,10 +37,15 @@ where
 	Data: Deref<Target = [Word]>,
 {
 	// The stored buffer is already the committed word sequence, wire-major.
-	// The base packer zero-pads it up to `2^log_witness_elems` elements.
+	// The base packer zero-pads it up to the `2^⌈log2 n_witness_elems⌉` prefix view the oracle is
+	// sent as.
 	let layout = commit_layout(table);
-	binius_prover::pack_witness::<P, A>(alloc, layout.log_witness_elems, table.as_words())
-		.expect("the hidden buffer fits in 2^log_witness_elems field elements by construction")
+	binius_prover::pack_witness::<P, A>(
+		alloc,
+		log2_ceil_usize(layout.n_witness_elems),
+		table.as_words(),
+	)
+	.expect("the hidden buffer fills n_witness_elems field elements by construction")
 }
 
 #[cfg(test)]
