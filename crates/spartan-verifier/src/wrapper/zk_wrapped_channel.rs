@@ -11,7 +11,7 @@
 //!
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, iter, rc::Rc, sync::Arc};
 
 use binius_core::word::Word;
 use binius_field::BinaryField;
@@ -148,11 +148,12 @@ where
 		}
 	}
 
-	/// Allocates the next precommit wire (value-less to the verifier) as an element.
-	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, InstanceGenerator<F>> {
+	/// Allocates the next precommit wire (value-less to the verifier) as an element, with its index
+	/// in the precommit segment.
+	fn alloc_precommit_elem(&mut self) -> (CircuitElem<F, InstanceGenerator<F>>, usize) {
 		let wire = self.precommit_alloc.alloc();
 		let public_wire = self.instance_gen.borrow_mut().placeholder_precommit(wire);
-		CircuitElem::wire(&self.instance_gen, public_wire)
+		(CircuitElem::wire(&self.instance_gen, public_wire), wire.id() as usize)
 	}
 
 	/// Consumes the channel and runs the outer verifier.
@@ -195,7 +196,7 @@ where
 		// wire.
 		let val = self.inner_channel.recv_one()?;
 		let inout = self.alloc_inout_elem(val);
-		let key = self.alloc_precommit_elem();
+		let (key, _) = self.alloc_precommit_elem();
 		Ok(inout - key)
 	}
 
@@ -300,15 +301,30 @@ where
 		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), binius_iop::channel::Error> {
-		// For each oracle opening, the prover sends the decrypted evaluation. Allocate it as an
-		// inout wire (written into the public segment) and attest `claim == decrypted_claim`,
-		// exactly as the symbolic `IronSpartanBuilderChannel` does. The assertion is a no-op on
-		// values here, but evaluating `claim - decrypted_claim` keeps the instance generator's
-		// wire allocation aligned with the symbolic constraint system. The relation is passed on
-		// to the inner channel with the decrypted value.
-		let decrypted_value = self.inner_channel.recv_one()?;
-		let decrypted_claim = self.alloc_inout_elem(decrypted_value);
-		self.assert_zero(claim - decrypted_claim)?;
+		// The prover sends the target as the ciphertext `c = s + k` under a fresh key, exactly as
+		// `recv_one` reads any value, and the symbolic `IronSpartanBuilderChannel` attests
+		// `claim == c - k`. The assertion is a no-op on values here, but evaluating it keeps the
+		// instance generator's wire allocation aligned with the symbolic constraint system. The
+		// relation is passed on to the inner channel against `c`, with the key's operand
+		// `<z_pre, e_k>` added, so that it holds iff the decrypted target does.
+		let ciphertext = self.inner_channel.recv_one()?;
+		let ciphertext_elem = self.alloc_inout_elem(ciphertext);
+		let (key, key_index) = self.alloc_precommit_elem();
+		self.assert_zero(claim - (ciphertext_elem - key))?;
+		// `e_k`: the equality indicator of the key's index, over the precommit oracle's variables.
+		let key_indicator = Box::new(move |point: &[F]| {
+			point
+				.iter()
+				.enumerate()
+				.map(|(j, &x_j)| {
+					if (key_index >> j) & 1 == 1 {
+						x_j
+					} else {
+						F::ONE - x_j
+					}
+				})
+				.product()
+		}) as TransparentEvalFn<F>;
 
 		// Wrap the sumcheck challenge coordinates for the transparent closure (which expects
 		// `CircuitElem`s). The closure can do further arithmetic; results are required to be
@@ -337,7 +353,9 @@ where
 			};
 			(oracle, Box::new(eval_fn) as TransparentEvalFn<F>)
 		});
-		self.inner_channel
-			.verify_multi_oracle_relation(operands, decrypted_value)
+		self.inner_channel.verify_multi_oracle_relation(
+			operands.chain(iter::once((self.precommit_oracle, key_indicator))),
+			ciphertext,
+		)
 	}
 }

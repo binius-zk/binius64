@@ -168,10 +168,11 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		_operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), binius_iop::channel::Error> {
-		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
-		// checks in the circuit equality of this value with the expected expression over encrypted
-		// values.
-		let decrypted_claim = self.alloc_inout_elem();
+		// The target of a relation is a linear image of the witness, so the prover sends it
+		// encrypted under its own key, like any other value. The circuit decrypts it and checks it
+		// against the claim; the compiler checks the relation against the ciphertext, with the key
+		// read from the precommit oracle.
+		let decrypted_claim = self.recv_one()?;
 		self.assert_zero(claim - decrypted_claim)?;
 		Ok(())
 	}
