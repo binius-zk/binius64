@@ -195,10 +195,11 @@ impl IOPVerifier {
 		// BaseFold reduces to a challenge point where the transparent evaluates as below.
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = trace_point[log_packing..].to_vec();
+		let n_witness_elems = 1 << self.layout.log_witness_elems;
 		channel.verify_oracle_relation(
 			trace_oracle,
 			Box::new(move |pt: &[Channel::Elem]| {
-				ring_switch::eval_rs_eq(&eval_point_high, pt, &eq_r_double_prime)
+				ring_switch::eval_rs_eq(n_witness_elems, &eval_point_high, pt, &eq_r_double_prime)
 			}),
 			sumcheck_claim,
 		)?;

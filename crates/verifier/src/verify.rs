@@ -271,8 +271,14 @@ impl IOPVerifier {
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = eval_point[log_packing..].to_vec();
 
+		let n_witness_elems = 1 << self.log_witness_elems();
 		let transparent = Box::new(move |point: &[Channel::Elem]| {
-			ring_switch::eval_rs_eq(&eval_point_high, point, eq_r_double_prime.as_ref())
+			ring_switch::eval_rs_eq(
+				n_witness_elems,
+				&eval_point_high,
+				point,
+				eq_r_double_prime.as_ref(),
+			)
 		});
 
 		// Verify oracle relations (runs BaseFold internally and verifies the product check). The

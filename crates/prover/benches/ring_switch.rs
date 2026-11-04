@@ -76,8 +76,13 @@ fn bench_suffix_tensor_pipeline(c: &mut Criterion) {
 				let eq_lo = eq_ind_partial_eval::<B128>(suffix_lo);
 				let eq_hi = eq_ind_partial_eval::<B128>(suffix_hi);
 				let s_hat_v = fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi);
-				let rs_eq_ind =
-					rs_eq_ind_from_factors::<_, P>(&alloc, &eq_lo, &eq_hi, &row_batch_query);
+				let rs_eq_ind = rs_eq_ind_from_factors::<_, P>(
+					&alloc,
+					1 << log_len,
+					&eq_lo,
+					&eq_hi,
+					&row_batch_query,
+				);
 				(s_hat_v, rs_eq_ind)
 			});
 		});
