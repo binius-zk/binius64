@@ -13,7 +13,7 @@ use digest::Output;
 use crate::{
 	basefold::{
 		channel::BaseFoldVerifierChannel,
-		layout::{RoundLayout, layout_rounds, libra_layout},
+		layout::{RoundLayout, layout_rounds},
 	},
 	channel::OracleSchedule,
 	fri::{AritySelectionStrategy, FRIParams},
@@ -63,8 +63,7 @@ where
 			"BaseFoldVerifierCompiler requires at least one oracle spec"
 		);
 		// A masked opening commits its Libra oracle in a round of its own, after the schedule's.
-		let mut layouts = layout_rounds(&schedule);
-		layouts.extend(libra_layout(&layouts));
+		let layouts = layout_rounds(&schedule, n_test_queries);
 		let round_specs = layouts.iter().map(RoundLayout::spec).collect::<Vec<_>>();
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
@@ -160,11 +159,13 @@ mod tests {
 
 	#[test]
 	fn a_masked_opening_commits_the_libra_oracle_last() {
-		// `ℓ = 9`, so the table has `2^{⌈log2 9⌉ + 2} = 2^6` entries.
+		// `ℓ = 9`, so the table has `2^{⌈log2 9⌉ + 2} = 2^6` entries, and with the pad of
+		// `32 + 2·7 + 2` entries the Libra round has `2^7`. The ZK round's pad grows it to `2^7`.
 		let compiler = compile([OracleSpec::new(1 << 9), OracleSpec::new_zk(1 << 6)]);
 		let layouts = compiler.layouts();
 		assert_eq!(layouts.len(), 3);
-		assert_eq!(layouts[2].spec(), OracleSpec::new_zk(1 << 6));
+		assert_eq!(layouts[1].log_len, 7);
+		assert_eq!(layouts[2].spec(), OracleSpec::new_zk(1 << 7));
 		assert_eq!(compiler.fri_params().input_oracles().len(), 3);
 	}
 

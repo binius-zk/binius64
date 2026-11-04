@@ -81,5 +81,8 @@ fn test_ip_proof_size() {
 	//
 	// The opening is masked, so the compiler also commits and opens its Libra oracle, a second
 	// round oracle. At this size its query openings are most of the 15520 bytes it adds.
-	assert_eq!(proof_size, 77200, "proof size regression");
+	//
+	// Each masked round also carries a ZK pad of `q + 2m + 2` uniform entries. On a circuit this
+	// small the pad outweighs the round's content and grows the round oracles, adding 23152 bytes.
+	assert_eq!(proof_size, 100352, "proof size regression");
 }
