@@ -140,8 +140,7 @@ impl IOPVerifier {
 	{
 		// Receive the trace commitment.
 		// The witness is committed without zero-knowledge.
-		// TODO: declare `n_witness_elems` once the ring-switch handles a shorter oracle.
-		let trace_oracle = channel.recv_oracle(1 << self.layout.log_witness_elems, true)?;
+		let trace_oracle = channel.recv_oracle(self.layout.n_witness_elems, true)?;
 
 		// Reduce every instance's constraints to one claim on the committed trace.
 		// A batch hides its inout words, so the public data is the shared constants alone. They are
@@ -195,7 +194,7 @@ impl IOPVerifier {
 		// BaseFold reduces to a challenge point where the transparent evaluates as below.
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = trace_point[log_packing..].to_vec();
-		let n_witness_elems = 1 << self.layout.log_witness_elems;
+		let n_witness_elems = self.layout.n_witness_elems;
 		channel.verify_oracle_relation(
 			trace_oracle,
 			Box::new(move |pt: &[Channel::Elem]| {
