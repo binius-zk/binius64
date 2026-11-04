@@ -20,6 +20,7 @@ use binius_math::{
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{
 	SerializeBytes,
+	checked_arithmetics::log2_ceil_usize,
 	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
 };
 use binius_verifier::{
@@ -50,18 +51,18 @@ type ProverNTT<F> = NeighborsLastMultiThread<GaoMateerPreExpanded<F>>;
 #[derive(Debug)]
 pub struct IOPProver {
 	constraint_system: ConstraintSystem,
-	log_witness_elems: usize,
+	n_witness_elems: usize,
 	key_collection: KeyCollection,
 }
 
 impl IOPProver {
 	/// Constructs an IOP prover from an IOP verifier and pre-computed keys.
 	pub fn new(iop_verifier: IOPVerifier, key_collection: KeyCollection) -> Self {
-		let log_witness_elems = iop_verifier.log_witness_elems();
+		let n_witness_elems = iop_verifier.n_witness_elems();
 		let constraint_system = iop_verifier.into_constraint_system();
 		Self {
 			constraint_system,
-			log_witness_elems,
+			n_witness_elems,
 			key_collection,
 		}
 	}
@@ -100,8 +101,12 @@ impl IOPProver {
 		// Only the non-public words are committed as the trace oracle; the public segment is a
 		// verifier-known polynomial.
 		let setup_guard = tracing::debug_span!("Prepare witness").entered();
-		let witness_packed =
-			pack_witness::<P, _>(alloc, self.log_witness_elems, witness.non_public())?;
+		// The oracle is the `n_witness_elems` the words fill, sent as its `2^⌈log2 n⌉` prefix view.
+		let witness_packed = pack_witness::<P, _>(
+			alloc,
+			log2_ceil_usize(self.n_witness_elems),
+			witness.non_public(),
+		)?;
 		drop(setup_guard);
 
 		// Observe the inout words, which includes them in Fiat-Shamir. The constants are fixed by
@@ -259,7 +264,13 @@ impl IOPProver {
 		let ring_switch::RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
-		} = ring_switch::prove(alloc, witness_packed.as_view(), witness_point, &mut *channel);
+		} = ring_switch::prove(
+			alloc,
+			witness_packed.as_view(),
+			self.n_witness_elems,
+			witness_point,
+			&mut *channel,
+		);
 
 		// Prove oracle relations via channel (runs BaseFold internally). The intmul pushforward
 		// relation, when the IntMul reduction ran, was already queued inside phase 5.

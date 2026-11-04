@@ -367,7 +367,8 @@ where
 		.take(1 << log_public_elems)
 		.collect::<Vec<_>>();
 	let packed_eval = evaluate_inplace_scalars(packed_public, &r_public);
-	let rs_eq_eval = eval_rs_eq(&eval_point[log_packing..], &r_public, &eq_r_double_prime);
+	let rs_eq_eval =
+		eval_rs_eq(1 << r_public.len(), &eval_point[log_packing..], &r_public, &eq_r_double_prime);
 	channel.assert_zero(packed_eval * rs_eq_eval - eval)?;
 
 	// Extend the claim from the segment's own span to the shift's whole word-index space. Every
