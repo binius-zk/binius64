@@ -31,7 +31,7 @@ use digest::Output;
 
 use crate::{
 	shift::prove as prove_shift,
-	value_table::pack_table,
+	value_table::{commit_layout, pack_table},
 	witness::{FoldedWitness, OperandColumns},
 };
 
@@ -265,7 +265,13 @@ impl IOPProver {
 			// The point is `r_j || r_rho || r_y`.
 			// Its instance coordinates fold the trace at `r_rho`.
 			let trace_point = [r_j, r_rho.as_slice(), r_y].concat();
-			ring_switch::prove(alloc, trace_packed.as_view(), &trace_point, channel)
+			ring_switch::prove(
+				alloc,
+				trace_packed.as_view(),
+				commit_layout(table).n_witness_elems,
+				&trace_point,
+				channel,
+			)
 		};
 
 		// Queue the trace opening against the ring-switch's transparent multilinear.
