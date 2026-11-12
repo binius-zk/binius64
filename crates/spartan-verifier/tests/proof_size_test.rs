@@ -79,7 +79,7 @@ fn test_ip_proof_size() {
 	// round. A circuit with real constraints absorbs the two extra ones without moving the
 	// power-of-two rounding at all.
 	//
-	// The opening is masked, so the compiler also commits and opens its Libra oracle, a second
-	// round oracle. At this size its query openings are most of the 15520 bytes it adds.
+	// The opening is masked, so it also sends the mask claim and runs one sumcheck round per
+	// oracle-index variable, but commits no mask oracle of its own.
 	assert_eq!(proof_size, 61520, "proof size regression");
 }
