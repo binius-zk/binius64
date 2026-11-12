@@ -81,5 +81,5 @@ fn test_ip_proof_size() {
 	//
 	// The opening is masked, so the compiler also commits and opens its Libra oracle, a second
 	// round oracle. At this size its query openings are most of the 15520 bytes it adds.
-	assert_eq!(proof_size, 77200, "proof size regression");
+	assert_eq!(proof_size, 61520, "proof size regression");
 }

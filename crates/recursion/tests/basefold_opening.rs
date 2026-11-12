@@ -48,11 +48,11 @@ use binius_field::{Ghash128b as B128, PackedGhash1x128b};
 use binius_frontend::{CircuitStat, MAX_ASSERTION_FAILURES, PopulateError, Wire};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::{
-	basefold::verify_mlecheck_basefold, channel::OracleSpec, fri::FRIParams,
+	basefold::verify_sumcheck_basefold, channel::OracleSpec, fri::FRIParams,
 	merkle_channel::MerkleIPVerifierChannel, merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::{
-	basefold::prove_mlecheck_basefold,
+	basefold::prove_sumcheck_basefold,
 	fri::{self, FRIFoldProver, MaskedCodeword},
 	merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
 	merkle_tree::prover::BinaryMerkleTreeProver,
@@ -62,7 +62,7 @@ use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::{
 	inner_product::inner_product_buffers,
 	line::extrapolate_line,
-	multilinear::eq::eq_ind_partial_eval,
+	multilinear::eq::{eq_ind, eq_ind_partial_eval},
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{random_field_buffer, random_scalars},
 };
@@ -235,12 +235,11 @@ fn prove(shape: &Shape, setup: &Setup, seed: u64) -> Opening {
 	// both.
 	let fri_folder =
 		FRIFoldProver::new_batch(&setup.fri_params, &setup.ntt, vec![(codeword, commitment)]);
-	prove_mlecheck_basefold(
+	prove_sumcheck_basefold(
 		witness_prime,
-		&eval_point,
+		eq_ind_partial_eval::<P>(&eval_point),
 		eval_claim,
 		Some(gamma),
-		&[],
 		fri_folder,
 		&mut channel,
 		&GlobalAllocator,
@@ -290,13 +289,13 @@ fn record(shape: &Shape, setup: &Setup) -> VerifierCircuit {
 
 	// Every check the verifier makes becomes a constraint rather than a comparison.
 	// So the call cannot fail while the circuit is being built.
-	verify_mlecheck_basefold(
+	verify_sumcheck_basefold(
 		&setup.fri_params,
 		&[commitment],
 		eval_claim,
-		&eval_point,
+		shape.n_vars,
 		Some(gamma),
-		&[],
+		|rho, _| eq_ind(rho, &eval_point),
 		&mut channel,
 	)
 	.expect("the builder channel records rather than checks, so it cannot fail");
@@ -346,13 +345,13 @@ impl VerifierCircuit {
 		let claim = channel.observe_words(&statement[shape.n_vars * ELEMENT_WORDS..]);
 		let eval_claim = channel.pack_words(&claim)[0];
 
-		verify_mlecheck_basefold(
+		verify_sumcheck_basefold(
 			&setup.fri_params,
 			&[commitment],
 			eval_claim,
-			&eval_point,
+			shape.n_vars,
 			Some(gamma),
-			&[],
+			|rho, _| eq_ind(rho, &eval_point),
 			&mut channel,
 		)
 		.expect("the replay generates a witness rather than judging one");

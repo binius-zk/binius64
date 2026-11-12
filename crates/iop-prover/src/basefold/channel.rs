@@ -7,28 +7,14 @@ use std::ops::Deref;
 use binius_compute::Allocator;
 use binius_field::{BinaryField, Field, PackedField, util::powers};
 use binius_iop::{
-	basefold::layout::{LIBRA_DEGREE, RoundLayout},
+	basefold::layout::RoundLayout,
 	channel::{OracleSchedule, OracleSpec},
 	fri::FRIParams,
 };
-use binius_ip::{
-	libra::mask_buffer_dimensions,
-	sumcheck::{RoundCoeffs, infinity::to_mle_point},
-};
-use binius_ip_prover::{
-	channel::{IPProverChannel, WordIPProverChannel},
-	libra::{Mask, expand_libra_eval},
-	sumcheck::{self, infinity::ProductProver},
-};
+use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
-	inner_product::inner_product_par,
-	line::extrapolate_line,
-	multilinear::{
-		eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars, eq_ind_zero},
-		hypercube::{self, InfCube},
-	},
-	ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, FieldSliceMut, inner_product::inner_product_par,
+	line::extrapolate_line, ntt::AdditiveNTT,
 };
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
@@ -41,7 +27,7 @@ use itertools::izip;
 use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	basefold::prove_mlecheck_basefold,
+	basefold::prove_sumcheck_basefold,
 	channel::IOPProverChannel,
 	fri::{self, FRIFoldProver, MaskedCodeword},
 	merkle_channel::MerkleIPProverChannel,
@@ -230,34 +216,18 @@ where
 	///
 	/// All oracle relations queued by
 	/// [`prove_multi_oracle_relation`](IOPProverChannel::prove_multi_oracle_relation) across every
-	/// call are processed here in one batch: batching into one relation, the Libra-masked sumcheck
-	/// and its rerandomization reducing it to evaluations at prefixes of one point, then one
-	/// combined FRI opening over every committed oracle (in oracle-index order). Mirrors
+	/// call are processed here in one batch: batching into one relation, then one BaseFold sumcheck
+	/// opening over every committed oracle (in oracle-index order). Mirrors
 	/// [`BaseFoldVerifierChannel::finish`].
 	///
 	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold::channel::BaseFoldVerifierChannel::finish
-	pub fn finish(mut self) {
+	pub fn finish(self) {
 		let n_remaining = self.schedule.specs().len() - self.n_sent;
 		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
 
 		if self.n_relations == 0 {
 			return;
 		}
-
-		// A masked opening commits the Libra oracle, in the round after the schedule's.
-		let n_rounds = self.committed_oracles.len();
-		let libra_mask = self.layouts.get(n_rounds).map(|libra_layout| {
-			let n_vars = max_log_len(&self.layouts[..n_rounds]);
-			let values = (0..1 << libra_layout.log_len)
-				.map(|_| F::random(&mut self.rng))
-				.collect::<Vec<_>>();
-			let mask = Mask::new(n_vars, LIBRA_DEGREE, FieldBuffer::from_values(&values));
-			self.commit_round_oracle(FieldBuffer::from_view_in(
-				&self.alloc,
-				mask.as_ref().as_view(),
-			));
-			mask
-		});
 
 		let Self {
 			mut channel,
@@ -283,7 +253,6 @@ where
 			committed_oracles,
 			queue,
 			n_relations,
-			libra_mask.as_ref(),
 			&alloc,
 		);
 	}
@@ -301,12 +270,13 @@ fn max_log_len(layouts: &[RoundLayout]) -> usize {
 /// Proves the combined ZK BaseFold opening over all committed round oracles.
 ///
 /// This drives `channel` — the Merkle channel taken from the destructured
-/// [`BaseFoldProverChannel`] — through its [`MerkleIPProverChannel`] interface, in the three phases
-/// of [`binius_iop::basefold::channel::BaseFoldVerifierChannel::finish`], which it mirrors.
+/// [`BaseFoldProverChannel`] — through its [`MerkleIPProverChannel`] interface, in the steps of
+/// [`binius_iop::basefold::channel::BaseFoldVerifierChannel::finish`], which it mirrors:
+/// batch the relations, send the mask claim `s' = Σ_r <ω_r, T_r>` and fold with γ if some round is
+/// masked, then run one BaseFold sumcheck on `<G, T>`.
 ///
 /// Everything per oracle runs in round order: `operands` arrives indexed by schedule round, and the
-/// per-round data (`layouts`, `fri_params`, `committed_oracles`) carry the Libra round last when
-/// `libra_mask` is present.
+/// per-round data (`layouts`, `fri_params`, `committed_oracles`) is indexed the same way.
 #[allow(clippy::too_many_arguments)]
 fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	channel: &mut Channel,
@@ -316,7 +286,6 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	mut committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment, A::Vec<P>>>,
 	operands: Vec<Vec<QueuedOperand<P, A::Vec<P>>>>,
 	n_relations: usize,
-	libra_mask: Option<&Mask<P, Vec<P>>>,
 	alloc: &A,
 ) where
 	A: Allocator,
@@ -325,241 +294,97 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
 {
-	let n_committed = committed_oracles.len();
-	assert_eq!(layouts.len(), n_committed);
-	let n_rounds = operands.len();
-	let round_layouts = &layouts[..n_rounds];
+	assert_eq!(layouts.len(), committed_oracles.len());
+	assert_eq!(layouts.len(), operands.len());
 
-	// `ℓ = max_r ℓ_r` over the schedule's rounds, the variable count of Phase A.
-	let n_vars = max_log_len(round_layouts);
+	// `ℓ = max_r ℓ_r`, the variable count of the opening.
+	let n_vars = max_log_len(layouts);
+	let log_n_oracles = log2_ceil_usize(layouts.len());
 
-	// === Phase A: the Libra-masked batch sumcheck over {0, ∞}^ℓ ===
-	let transparents = batch_relations(channel, round_layouts, operands, n_relations, alloc);
+	let transparents = batch_relations(channel, layouts, operands, n_relations, alloc);
 
-	let alpha = libra_mask.map(|mask| {
-		channel.send_one(mask.sum_over_infinity_cube());
-		channel.sample()
-	});
-
-	// One prover of `Σ_x M_r^∞(x) · T_r^∞(x) = <M_r, T_r>` per round. The provers fold their
-	// tables, so each takes a copy of its round oracle.
-	// ponytail: one copy per round oracle; fold the first round out of place if it shows in
-	// profiles.
-	let mut provers = izip!(transparents, &committed_oracles)
-		.map(|(transparent, committed)| {
-			let message = FieldBuffer::from_view_in(alloc, committed.message.as_view());
-			ProductProver::new([message, transparent])
-		})
-		.collect::<Vec<_>>();
-
-	let mut challenges = Vec::with_capacity(n_vars);
-	{
-		let _scope =
-			tracing::debug_span!("Reduce linear relations to committed openings").entered();
-		for round in 0..n_vars {
-			let n_vars_remaining = n_vars - round;
-			let round_coeffs = provers
-				.iter()
-				.map(|prover| {
-					if prover.n_vars() == n_vars_remaining {
-						prover.round_coeffs()
-					} else {
-						// The summand does not depend on this variable, so R(X) is the claim.
-						RoundCoeffs(vec![prover.claim()])
-					}
-				})
-				.collect::<Vec<_>>();
-
-			let mut batched = round_coeffs.iter().cloned().sum::<RoundCoeffs<F>>();
-			if let (Some(mask), Some(alpha)) = (libra_mask, alpha) {
-				batched += &(mask.infinity_round_coeffs(&challenges) * alpha);
-			}
-			channel.send_many(batched.truncate().coeffs());
-
-			let challenge = channel.sample();
-			challenges.push(challenge);
-			for (prover, coeffs) in izip!(&mut provers, &round_coeffs) {
-				if prover.n_vars() == n_vars_remaining {
-					prover.fold(coeffs, challenge);
-				}
-			}
-		}
-	}
-
-	// The sumcheck yields binding-order challenges; reverse to variable-indexed (low-to-high).
-	challenges.reverse();
-	let point = challenges;
-
-	let beta = libra_mask.map(|mask| {
-		let beta = mask.evaluate(&point);
-		channel.send_one(beta);
-		beta
-	});
-
-	// `α_r = M_r^∞(ρ_{<ℓ_r})`, one per round.
-	let alphas = provers
-		.into_iter()
-		.map(|prover| prover.finish()[0])
-		.collect::<Vec<_>>();
-	channel.send_many(&alphas);
-
-	// === Phase A′: rerandomize the claims onto prefixes of one point ===
-	let (point, evals) = match (libra_mask, beta) {
-		(Some(mask), Some(_)) => {
-			let m = layouts[n_rounds].log_len;
-
-			// Round `r`'s claim is `Σ_y M_r^∞(y, ρ_{m ≤ · < ℓ_r}) · e_ρ(y)` over its own
-			// `min(m, ℓ_r)` low variables, and the Libra query is `Σ_y h'^∞(y) ·
-			// libra-eval_ρ^∞(y)`.
-			let mut pairs = izip!(&committed_oracles, round_layouts)
-				.map(|(committed, layout)| {
-					let n = m.min(layout.log_len);
-					[
-						fold_high_monomial(
-							alloc,
-							committed.message.as_view(),
-							&point[n..layout.log_len],
-						),
-						hypercube::eq_ind_partial_eval_in::<InfCube, _, P>(alloc, &point[..n]),
-					]
-				})
-				.collect::<Vec<_>>();
-			let (m_n, m_d) = mask_buffer_dimensions(n_vars, LIBRA_DEGREE, 0);
-			pairs.push([
-				FieldBuffer::from_view_in(alloc, mask.as_ref().as_view()),
-				expand_libra_eval(alloc, &point, n_vars, LIBRA_DEGREE, m_n, m_d),
-			]);
-
-			let output = sumcheck::infinity::batch_prove(pairs, channel);
-			let evals = output
-				.multilinear_evals
-				.iter()
-				.map(|evals| evals[0])
-				.collect::<Vec<_>>();
-			channel.send_many(&evals);
-
-			// `ρ'' = (ρ', ρ_{≥m})`.
-			let mut point_prime = output.challenges;
-			point_prime.reverse();
-			point_prime.extend(point.into_iter().skip(m));
-			(point_prime, evals)
-		}
-		_ => (point, alphas),
-	};
-
-	// === Phase B: single combined-FRI MLE-check over the piecewise-concatenated oracle ===
-	// Translate each claim `M_r^∞(ρ''_{<ℓ_r}) = α'_r` into `M̃_r(σ_{<ℓ_r}) = a_r`.
-	let (point, scales) = to_mle_point(&point);
-	let point = &point;
-	let log_n_oracles = log2_ceil_usize(n_committed);
-	let outer_challenges = channel.sample_many(log_n_oracles);
-	let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
-
-	// Each oracle occupies the low 2^{n_i} of every 2^{log_lift}·2^{n_i}-sized lift block, and that
-	// block is *repeated* across the 2^{log_repeat} high dims so the small oracle is constant along
-	// them (matching the FRI lift/repeat structure). Repeat dims contribute 1; only the lift dims
-	// contribute an eq-to-zero factor.
-	let weights = izip!(fri_params.input_oracles(), layouts, &eq_tensor)
-		.map(|(fri_oracle, layout, &eq_i)| {
-			eq_i * eq_ind_zero(&point[layout.log_len..][..fri_oracle.log_lift])
-		})
-		.collect::<Vec<_>>();
-	let s_prime = izip!(&weights, layouts, &evals)
-		.map(|(&weight, layout, &eval)| weight * eval * scales[layout.log_len].invert_or_zero())
+	// The claim `s = Σ_r <M_r, T_r>`, which the verifier holds as the batched claim.
+	let s = izip!(&committed_oracles, &transparents)
+		.map(|(committed, transparent)| inner_product_par(&committed.message, transparent))
 		.sum::<F>();
 
-	// The interleave round: the claim is at `Y = 0` of `(1 - Y)·M_r + Y·ω_r`. Send the round
-	// polynomial's value at `Y = 1`, where a masked oracle contributes `ω̃_r(σ)` and an unmasked
-	// one, constant in `Y`, its own claim. Then blind each masked message in place to
-	// `(1 - γ)·M_r + γ·ω_r`, the fold the FRI opens.
-	let (s_prime, gamma) = match libra_mask {
-		Some(_) => {
-			let _scope = tracing::debug_span!("Interleave round").entered();
-			let s_one = izip!(&weights, layouts, &evals, &committed_oracles)
-				.map(|(&weight, layout, &eval, committed)| {
-					let n_i = layout.log_len;
-					let value = committed.mask.as_ref().map_or_else(
-						|| eval * scales[n_i].invert_or_zero(),
-						|mask| inner_product_par(mask, &eq_ind_partial_eval::<P>(&point[..n_i])),
-					);
-					weight * value
-				})
-				.sum::<F>();
-			channel.send_one(s_one);
-			let gamma = channel.sample();
+	// A masked opening sends the mask claim `s' = Σ_r <ω_r, T_r>`, then folds each masked message
+	// to `(1 - γ)·M_r + γ·ω_r`, the fold the FRI opens, and targets `lerp(γ, s, s')`. An unmasked
+	// round has `ω_r = M_r`, so its fold is a no-op and it contributes its own claim to `s'`.
+	let (target, gamma) = if layouts.iter().any(|layout| layout.is_zk) {
+		let _scope = tracing::debug_span!("Mask fold").entered();
+		let s_prime = izip!(&committed_oracles, &transparents)
+			.map(|(committed, transparent)| {
+				let omega = committed.mask.as_ref().unwrap_or(&committed.message);
+				inner_product_par(omega, transparent)
+			})
+			.sum::<F>();
+		channel.send_one(s_prime);
+		let gamma = channel.sample();
 
-			let gamma_broadcast = P::broadcast(gamma);
-			for committed in &mut committed_oracles {
-				let CommittedOracleData { message, mask, .. } = committed;
-				if let Some(mask) = mask {
-					(message.as_mut(), mask.as_ref())
-						.into_par_iter()
-						.with_min_task(WorkPerItem::FieldMuls)
-						.for_each(|(message_i, &mask_i)| {
-							*message_i = extrapolate_line(*message_i, mask_i, gamma_broadcast);
-						});
-				}
+		let gamma_broadcast = P::broadcast(gamma);
+		for committed in &mut committed_oracles {
+			let CommittedOracleData { message, mask, .. } = committed;
+			if let Some(mask) = mask {
+				(message.as_mut(), mask.as_ref())
+					.into_par_iter()
+					.with_min_task(WorkPerItem::FieldMuls)
+					.for_each(|(message_i, &mask_i)| {
+						*message_i = extrapolate_line(*message_i, mask_i, gamma_broadcast);
+					});
 			}
-			(extrapolate_line(s_prime, s_one, gamma), Some(gamma))
 		}
-		None => (s_prime, None),
+		(extrapolate_line(s, s_prime, gamma), Some(gamma))
+	} else {
+		(s, None)
 	};
 
-	let combined = {
+	// `G` and `T` over `X` (low) and `Z` (high). The sumcheck binds `Z` high to low, but the FRI's
+	// outer tensor takes its first challenge as the low bit of the oracle index, so oracle `r`
+	// sits at chunk `bit_reverse(r)`.
+	let chunk_index = |r: usize| r.reverse_bits() >> (usize::BITS as usize - log_n_oracles);
+	let (combined, multiplicand) = {
 		let _scope = tracing::debug_span!("Compute batched witness").entered();
-		let max_n = point.len();
-		let mut combined = FieldBuffer::zeros_in(alloc, max_n);
-		for (fri_oracle, committed, &eq_i) in
-			izip!(fri_params.input_oracles(), &committed_oracles, &eq_tensor)
+		let mut combined = FieldBuffer::zeros_in(alloc, n_vars + log_n_oracles);
+		let mut multiplicand = FieldBuffer::zeros_in(alloc, n_vars + log_n_oracles);
+		for (r, (fri_oracle, committed, transparent)) in
+			izip!(fri_params.input_oracles(), &committed_oracles, &transparents).enumerate()
 		{
-			let n_i = committed.message.log_len();
-			// Repeat placement: add scalar · π_i' into the first 2^{n_i} entries of each of the
-			// 2^{log_repeat} chunks of size 2^{n_i + log_lift}.
+			let n_r = committed.message.log_len();
+			let index = if log_n_oracles == 0 {
+				0
+			} else {
+				chunk_index(r)
+			};
+
+			// `M^γ_r↑`: the message in the low `2^{n_r}` of each lift block, repeated across the
+			// high dims so it is constant along them, as the FRI lifts and repeats its codeword.
 			place_repeated(
-				combined.as_mut_view(),
+				combined.chunk_mut(n_vars, index).chunk(),
 				committed.message.as_view(),
-				eq_i,
-				n_i + fri_oracle.log_lift,
+				F::ONE,
+				n_r + fri_oracle.log_lift,
+			);
+			// `T_r↑`: supported only where the coordinates above `n_r` are zero, so that the sum
+			// of `M^γ_r↑ · T_r↑` over `X` is `<M^γ_r, T_r>`.
+			place_repeated(
+				multiplicand.chunk_mut(n_vars, index).chunk(),
+				transparent.as_view(),
+				F::ONE,
+				n_vars,
 			);
 		}
-		combined
+		(combined, multiplicand)
 	};
 
-	// Codeword commitments in oracle-index order, matching `open_fri_params.input_oracles()`.
+	// Codeword commitments in oracle-index order, matching `fri_params.input_oracles()`.
 	let committed_codewords = committed_oracles
 		.into_iter()
 		.map(|committed| (committed.codeword, committed.commitment))
 		.collect();
 
 	let fri_folder = FRIFoldProver::new_batch(fri_params, ntt, committed_codewords);
-	prove_mlecheck_basefold(
-		combined,
-		point,
-		s_prime,
-		gamma,
-		&outer_challenges,
-		fri_folder,
-		channel,
-		alloc,
-	);
-}
-
-/// The coefficient table of `u^∞(·, coords)`: `u`'s monomial coefficients with its top
-/// variables bound to `coords`, low-to-high, so `v ↦ Σ_w u(v, w) · coords^w`.
-fn fold_high_monomial<F, P, A>(alloc: &A, u: FieldSlice<'_, P>, coords: &[F]) -> FieldVec<P, A>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-	A: Allocator,
-{
-	let Some((&top, rest)) = coords.split_last() else {
-		return FieldBuffer::from_view_in(alloc, u);
-	};
-	let mut folded = hypercube::fold_highest_var::<InfCube, _, _, _>(alloc, &u, top);
-	for &coord in rest.iter().rev() {
-		hypercube::fold_highest_var_inplace::<InfCube, _, _>(&mut folded, coord);
-	}
-	folded
+	prove_sumcheck_basefold(combined, multiplicand, target, gamma, fri_folder, channel, alloc);
 }
 
 /// Batches the queued relations into the single relation `Σ_i <π_i, T_i> = S`.
@@ -1346,21 +1171,29 @@ mod tests {
 	}
 
 	/// A masked opening over `[(8, false), (6, true)]` writes, in order: the two round
-	/// commitments and the Libra oracle's, then `s_h`, the `ℓ = 8` rounds of two coefficients, β,
-	/// and the `α_r`. A digest is 32 bytes and a field element 16.
-	const S_H_OFFSET: usize = 3 * 32;
-	const ALPHA_0_OFFSET: usize = S_H_OFFSET + 16 + 8 * 2 * 16 + 16;
+	/// commitments, then the mask claim `s'`, then the sumcheck round polynomials of two
+	/// coefficients each, the first of which is over the oracle-index variable `Z`. A digest is 32
+	/// bytes and a field element 16.
+	const S_PRIME_OFFSET: usize = 2 * 32;
+	const Z_ROUND_OFFSET: usize = S_PRIME_OFFSET + 16;
 
 	#[test]
-	fn test_basefold_channel_tampered_s_h_is_rejected() {
+	fn test_basefold_channel_tampered_s_prime_is_rejected() {
 		let specs = [(8, false), (6, true)];
-		assert!(!run_mixed_channel::<PackedGhash1x128b>(&specs, false, Some(S_H_OFFSET)));
+		assert!(!run_mixed_channel::<PackedGhash1x128b>(&specs, false, Some(S_PRIME_OFFSET)));
 	}
 
 	#[test]
-	fn test_basefold_channel_tampered_alpha_is_rejected() {
+	fn test_basefold_channel_tampered_z_round_is_rejected() {
 		let specs = [(8, false), (6, true)];
-		assert!(!run_mixed_channel::<PackedGhash1x128b>(&specs, false, Some(ALPHA_0_OFFSET)));
+		assert!(!run_mixed_channel::<PackedGhash1x128b>(&specs, false, Some(Z_ROUND_OFFSET)));
+	}
+
+	#[test]
+	fn test_basefold_channel_untampered_mixed_is_accepted() {
+		// The offsets above flip a byte; with none flipped the same opening verifies.
+		let specs = [(8, false), (6, true)];
+		assert!(run_mixed_channel::<PackedGhash1x128b>(&specs, false, None));
 	}
 
 	#[test]
