@@ -22,7 +22,19 @@ thiserror.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]
+criterion = { workspace = true }
 rand = { workspace = true, features = ["thread_rng"] }
 proptest = { workspace = true }
 insta = { workspace = true }
 trybuild = { workspace = true }
+
+[lib]
+bench = false
+
+[[bench]]
+name = "build"
+harness = false
+
+[[bench]]
+name = "witness"
+harness = false
