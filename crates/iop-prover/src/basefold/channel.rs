@@ -57,16 +57,9 @@ struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 	message: FieldBuffer<P, Data>,
 }
 
-/// One oracle's operand in a queued relation.
-struct QueuedOperand<P: PackedField, Data: Deref<Target = [P]>> {
-	/// Index of the relation, in queue order.
-	relation: usize,
-	/// The oracle's block within its round oracle, in units of the transparent's length.
-	block_offset: usize,
-	/// The transparent multilinear `t` the oracle is opened against, backed by the caller's
-	/// allocator. Only the oracle's own block of the round oracle is ever written.
-	transparent: FieldBuffer<P, Data>,
-}
+/// A relation queued by [`IOPProverChannel::prove_multi_oracle_relation`]: its operands, each an
+/// oracle with the transparent multilinear it is opened against, backed by the caller's allocator.
+type Relation<P, Data> = Vec<(BaseFoldOracle, FieldBuffer<P, Data>)>;
 
 /// A prover channel that uses ZK BaseFold for all oracle commitments and openings.
 ///
@@ -113,11 +106,9 @@ where
 	n_sent: usize,
 	/// How many of the open round's oracles have been sent so far.
 	n_in_round: usize,
-	/// Operands of the relations queued by [`IOPProverChannel::prove_multi_oracle_relation`],
-	/// indexed by round and opened together in [`Self::finish`]. One entry per committed round.
-	queue: Vec<Vec<QueuedOperand<P, A::Vec<P>>>>,
-	/// The number of queued relations.
-	n_relations: usize,
+	/// The relations queued by [`IOPProverChannel::prove_multi_oracle_relation`], opened together
+	/// in [`Self::finish`].
+	relations: Vec<Relation<P, A::Vec<P>>>,
 	rng: StdRng,
 	/// The allocator every codeword, mask and encode temporary is drawn from.
 	alloc: A,
@@ -159,8 +150,7 @@ where
 			open: None,
 			n_sent: 0,
 			n_in_round: 0,
-			queue: Vec::new(),
-			n_relations: 0,
+			relations: Vec::new(),
 			rng: StdRng::from_rng(&mut rng),
 			alloc,
 		}
@@ -225,7 +215,7 @@ where
 		let n_remaining = self.schedule.specs().len() - self.n_sent;
 		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
 
-		if self.n_relations == 0 {
+		if self.relations.is_empty() {
 			return;
 		}
 
@@ -239,8 +229,7 @@ where
 			open: _,
 			n_sent: _,
 			n_in_round: _,
-			queue,
-			n_relations,
+			relations,
 			rng: _,
 			alloc,
 		} = self;
@@ -251,8 +240,7 @@ where
 			layouts,
 			&fri_params,
 			committed_oracles,
-			queue,
-			n_relations,
+			relations,
 			&alloc,
 		);
 	}
@@ -275,8 +263,8 @@ fn max_log_len(layouts: &[RoundLayout]) -> usize {
 /// batch the relations, send the mask claim `s' = Σ_r <ω_r, T_r>` and fold with γ if some round is
 /// masked, then run one BaseFold sumcheck on `<G, T>`.
 ///
-/// Everything per oracle runs in round order: `operands` arrives indexed by schedule round, and the
-/// per-round data (`layouts`, `fri_params`, `committed_oracles`) is indexed the same way.
+/// Everything per oracle runs in round order: the per-round data (`layouts`, `fri_params`,
+/// `committed_oracles`) is indexed by round.
 #[allow(clippy::too_many_arguments)]
 fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	channel: &mut Channel,
@@ -284,8 +272,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	layouts: &[RoundLayout],
 	fri_params: &FRIParams<F>,
 	mut committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment, A::Vec<P>>>,
-	operands: Vec<Vec<QueuedOperand<P, A::Vec<P>>>>,
-	n_relations: usize,
+	relations: Vec<Relation<P, A::Vec<P>>>,
 	alloc: &A,
 ) where
 	A: Allocator,
@@ -295,13 +282,12 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	Channel: MerkleIPProverChannel<F>,
 {
 	assert_eq!(layouts.len(), committed_oracles.len());
-	assert_eq!(layouts.len(), operands.len());
 
 	// `ℓ = max_r ℓ_r`, the variable count of the opening.
 	let n_vars = max_log_len(layouts);
 	let log_n_oracles = log2_ceil_usize(layouts.len());
 
-	let transparents = batch_relations(channel, layouts, operands, n_relations, alloc);
+	let transparents = batch_relations(channel, layouts, relations, alloc);
 
 	// The claim `s = Σ_r <M_r, T_r>`, which the verifier holds as the batched claim.
 	let s = izip!(&committed_oracles, &transparents)
@@ -411,8 +397,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 fn batch_relations<A, F, P, Channel>(
 	channel: &mut Channel,
 	layouts: &[RoundLayout],
-	operands: Vec<Vec<QueuedOperand<P, A::Vec<P>>>>,
-	n_relations: usize,
+	relations: Vec<Relation<P, A::Vec<P>>>,
 	alloc: &A,
 ) -> Vec<FieldBuffer<P, A::Vec<P>>>
 where
@@ -422,27 +407,26 @@ where
 	Channel: MerkleIPProverChannel<F>,
 {
 	let mu = channel.sample();
-	let mu_powers = powers(mu).take(n_relations).collect::<Vec<_>>();
 
-	izip!(operands, layouts)
-		.map(|(operands, layout)| {
-			let mut operands = operands.into_iter().peekable();
-			let mut transparent = match operands.next_if(|operand| {
-				operand.relation == 0 && operand.transparent.log_len() == layout.log_len
-			}) {
-				Some(first) => first.transparent,
-				None => FieldBuffer::zeros_in(alloc, layout.log_len),
-			};
-			for operand in operands {
-				let mut block =
-					transparent.chunk_mut(operand.transparent.log_len(), operand.block_offset);
-				accumulate_scaled_buffer(
-					block.chunk(),
-					operand.transparent.as_view(),
-					P::broadcast(mu_powers[operand.relation]),
-				);
+	let mut accumulators = layouts.iter().map(|_| None).collect::<Vec<_>>();
+	for (j, (mu_j, operands)) in izip!(powers(mu), relations).enumerate() {
+		for (oracle, transparent) in operands {
+			let log_len = layouts[oracle.round].log_len;
+			let slot = &mut accumulators[oracle.round];
+			if slot.is_none() && j == 0 && transparent.log_len() == log_len {
+				// Weight 1 and spans the whole round oracle: take it as the accumulator.
+				*slot = Some(transparent);
+				continue;
 			}
-			transparent
+			let accumulator = slot.get_or_insert_with(|| FieldBuffer::zeros_in(alloc, log_len));
+			let mut block = accumulator.chunk_mut(transparent.log_len(), oracle.block_offset);
+			accumulate_scaled_buffer(block.chunk(), transparent.as_view(), P::broadcast(mu_j));
+		}
+	}
+
+	izip!(accumulators, layouts)
+		.map(|(accumulator, layout)| {
+			accumulator.unwrap_or_else(|| FieldBuffer::zeros_in(alloc, layout.log_len))
 		})
 		.collect()
 }
@@ -649,7 +633,6 @@ where
 		};
 		self.n_in_round = 0;
 		self.commit_round_oracle(message);
-		self.queue.push(Vec::new());
 
 		oracle
 	}
@@ -659,37 +642,33 @@ where
 		operands: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P, A::Vec<P>>)>,
 		_claim: P::Scalar,
 	) {
-		// Queue each operand under its round; the actual opening (sumchecks + combined
+		// Queue the relation; the actual opening (sumchecks + combined
 		// FRI) happens once, over all committed round oracles, in [`Self::finish`].
-		let relation = self.n_relations;
-		let n_committed = self.queue.len();
-		for (oracle, transparent) in operands {
-			let BaseFoldOracle {
-				round,
-				block_offset,
-				spec,
-			} = oracle;
-			assert!(round < n_committed, "oracle's round {round} is not committed yet");
-			assert_eq!(
-				transparent.log_len(),
-				spec.log_msg_len(),
-				"transparent log_len must match the oracle's"
-			);
-			debug_assert!(
-				transparent
-					.iter_scalars()
-					.skip(spec.len)
-					.all(|value| value == F::ZERO),
-				"an operand's transparent must vanish above its oracle's length"
-			);
-
-			self.queue[round].push(QueuedOperand {
-				relation,
-				block_offset,
-				transparent,
-			});
-		}
-		self.n_relations += 1;
+		let n_committed = self.committed_oracles.len();
+		let operands = operands
+			.into_iter()
+			.map(|(oracle, transparent)| {
+				assert!(
+					oracle.round < n_committed,
+					"oracle's round {} is not committed yet",
+					oracle.round
+				);
+				assert_eq!(
+					transparent.log_len(),
+					oracle.spec.log_msg_len(),
+					"transparent log_len must match the oracle's"
+				);
+				debug_assert!(
+					transparent
+						.iter_scalars()
+						.skip(oracle.spec.len)
+						.all(|value| value == F::ZERO),
+					"an operand's transparent must vanish above its oracle's length"
+				);
+				(oracle, transparent)
+			})
+			.collect();
+		self.relations.push(operands);
 	}
 }
 

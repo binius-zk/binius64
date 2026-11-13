@@ -30,12 +30,10 @@ pub struct BaseFoldOracle {
 	log_len: usize,
 }
 
-/// One round oracle's operand in a queued relation.
+/// One operand in a queued relation: an oracle and the transparent multilinear it is paired with,
+/// over the oracle's own variables.
 struct Operand<Elem> {
-	/// The round whose oracle this is an operand on.
-	round: usize,
-	/// Evaluates the transparent multilinear, over the round oracle's variables, at the point the
-	/// opening reduces to.
+	oracle: BaseFoldOracle,
 	transparent: TransparentEvalFn<Elem>,
 }
 
@@ -183,7 +181,7 @@ where
 /// [`BaseFoldVerifierChannel`] — through its [`MerkleIPVerifierChannel`] interface, in the steps of
 /// binius.xyz#128, "Batched ZK BaseFold opening":
 ///
-/// 1. Batch the queued relations into `T_r = Σ_j α^j t_{j,r}` and `s = Σ_j α^j s_j`.
+/// 1. Batch the queued relations into `T_r = Σ_j μ^j t_{j,r}` and `s = Σ_j μ^j s_j`.
 /// 2. If some round is masked, receive the mask claim `s' = Σ_r <ω_r, T_r>`.
 /// 3. Sample the mask fold γ and take the target `lerp(γ, s, s')`. An unmasked round has `ω_r =
 ///    M_r`, so folding it is a no-op.
@@ -233,13 +231,30 @@ where
 		(claim, None)
 	};
 
-	// `T_r(ρ) = Σ_j μ^j Σ_{operands of relation j on round r} t(ρ_{<ℓ_r})`.
+	// `T_r(ρ) = Σ_j μ^j Σ_{operands of relation j on round r} t(ρ_{<ℓ_o}) · eq(b, ρ_{ℓ_o..ℓ_r})`.
+	// On the round oracle, an operand is the oracle's own transparent `t` over its low variables,
+	// and zero outside its block `b` over the high ones.
 	let multiplicand_eval = move |rho: &[Channel::Elem], zeta: &[Channel::Elem]| {
 		let mut round_evals = vec![Channel::Elem::zero(); layouts.len()];
 		for (mu_j, relation) in izip!(powers(mu), &relations) {
-			for operand in &relation.operands {
-				let n_r = layouts[operand.round].log_len;
-				round_evals[operand.round] += mu_j.clone() * (operand.transparent)(&rho[..n_r]);
+			for Operand {
+				oracle,
+				transparent,
+			} in &relation.operands
+			{
+				let n_r = layouts[oracle.round].log_len;
+				let (low, high) = rho[..n_r].split_at(oracle.log_len);
+				let block_bits = (0..high.len())
+					.map(|bit| {
+						if (oracle.block_offset >> bit) & 1 == 1 {
+							Channel::Elem::one()
+						} else {
+							Channel::Elem::zero()
+						}
+					})
+					.collect::<Vec<_>>();
+				round_evals[oracle.round] +=
+					mu_j.clone() * eq_ind(high, &block_bits) * transparent(low);
 			}
 		}
 
@@ -387,37 +402,21 @@ where
 		// Queue the relation; the actual opening (sumchecks + combined
 		// FRI) happens once, over all committed round oracles, in [`Self::finish`].
 		let n_committed = self.oracle_commitments.len();
-		let mut queued = Vec::new();
-		for (oracle, transparent) in operands {
-			let BaseFoldOracle {
-				round,
-				block_offset,
-				log_len,
-			} = oracle;
-			assert!(round < n_committed, "oracle's round {round} is not committed yet");
-
-			// On the round oracle, the operand is `t(v) · eq(b, u)`: the oracle's own
-			// transparent over its low variables, and zero outside its block `b` over the high.
-			let block_bits = (0..self.layouts[round].log_len - log_len)
-				.map(|bit| {
-					if (block_offset >> bit) & 1 == 1 {
-						Channel::Elem::one()
-					} else {
-						Channel::Elem::zero()
-					}
-				})
-				.collect::<Vec<_>>();
-			let transparent = Box::new(move |point: &[Channel::Elem]| {
-				let (low, high) = point.split_at(log_len);
-				eq_ind(high, &block_bits) * transparent(low)
-			});
-
-			queued.push(Operand { round, transparent });
-		}
-		self.relations.push(Relation {
-			claim,
-			operands: queued,
-		});
+		let operands = operands
+			.into_iter()
+			.map(|(oracle, transparent)| {
+				assert!(
+					oracle.round < n_committed,
+					"oracle's round {} is not committed yet",
+					oracle.round
+				);
+				Operand {
+					oracle,
+					transparent,
+				}
+			})
+			.collect();
+		self.relations.push(Relation { claim, operands });
 		Ok(())
 	}
 }
