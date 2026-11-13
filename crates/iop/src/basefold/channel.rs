@@ -2,8 +2,6 @@
 
 //! BaseFold ZK implementation of the IOP verifier channel.
 
-use std::rc::Rc;
-
 use binius_core::word::Word;
 use binius_field::{BinaryField, FieldOps, util::powers};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
@@ -33,12 +31,19 @@ pub struct BaseFoldOracle {
 }
 
 /// One round oracle's operand in a queued relation.
-struct QueuedOperand<Elem> {
-	/// Index of the relation, into [`BaseFoldVerifierChannel::claims`].
-	relation: usize,
+struct Operand<Elem> {
+	/// The round whose oracle this is an operand on.
+	round: usize,
 	/// Evaluates the transparent multilinear, over the round oracle's variables, at the point the
 	/// opening reduces to.
 	transparent: TransparentEvalFn<Elem>,
+}
+
+/// A relation queued by [`IOPVerifierChannel::verify_multi_oracle_relation`]: its claim and the
+/// operands whose inner products with their oracles sum to it.
+struct Relation<Elem> {
+	claim: Elem,
+	operands: Vec<Operand<Elem>>,
 }
 
 /// A verifier channel that uses ZK BaseFold for all oracle commitments and openings.
@@ -69,11 +74,9 @@ where
 	n_received: usize,
 	/// How many of the open round's oracles have been received so far.
 	n_in_round: usize,
-	/// Operands of the relations queued by [`IOPVerifierChannel::verify_multi_oracle_relation`],
-	/// indexed by round and opened together in [`Self::finish`]. One entry per committed round.
-	queue: Vec<Vec<QueuedOperand<Channel::Elem>>>,
-	/// The claim of each queued relation, in queue order.
-	claims: Vec<Channel::Elem>,
+	/// The relations queued by [`IOPVerifierChannel::verify_multi_oracle_relation`], opened
+	/// together in [`Self::finish`].
+	relations: Vec<Relation<Channel::Elem>>,
 }
 
 impl<'a, F, Channel> BaseFoldVerifierChannel<'a, F, Channel>
@@ -100,8 +103,7 @@ where
 			oracle_commitments: Vec::new(),
 			n_received: 0,
 			n_in_round: 0,
-			queue: Vec::new(),
-			claims: Vec::new(),
+			relations: Vec::new(),
 		}
 	}
 
@@ -158,18 +160,16 @@ where
 			oracle_commitments,
 			n_received: _,
 			n_in_round: _,
-			queue,
-			claims,
+			relations,
 		} = self;
 
-		if !claims.is_empty() {
+		if !relations.is_empty() {
 			verify_batch_zk_basefold(
 				&mut channel,
 				layouts,
 				fri_params,
 				&oracle_commitments,
-				queue,
-				&claims,
+				relations,
 			)?;
 		}
 
@@ -201,15 +201,13 @@ fn verify_batch_zk_basefold<F, Channel>(
 	layouts: &[RoundLayout],
 	fri_params: &FRIParams<F>,
 	oracle_commitments: &[Channel::Commitment],
-	operands: Vec<Vec<QueuedOperand<Channel::Elem>>>,
-	claims: &[Channel::Elem],
+	relations: Vec<Relation<Channel::Elem>>,
 ) -> Result<(), Error>
 where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 {
 	assert_eq!(layouts.len(), oracle_commitments.len());
-	assert_eq!(layouts.len(), operands.len());
 
 	// `ℓ = max_r ℓ_r`, the variable count of the opening.
 	let n_vars = layouts
@@ -218,7 +216,13 @@ where
 		.max()
 		.expect("at least one oracle");
 
-	let (transparents, claim) = batch_relations(channel, operands, claims);
+	// Batch the relations at one sampled μ: the combined claim is `s = Σ_j μ^j · s_j`.
+	let mu = channel.sample();
+	let claims = relations
+		.iter()
+		.map(|relation| relation.claim.clone())
+		.collect::<Vec<_>>();
+	let claim = evaluate_univariate(&claims, &mu);
 
 	// A masked opening receives the mask claim and folds with γ.
 	let (target, gamma) = if layouts.iter().any(|layout| layout.is_zk) {
@@ -229,13 +233,19 @@ where
 		(claim, None)
 	};
 
-	let multiplicand_eval = |rho: &[Channel::Elem], zeta: &[Channel::Elem]| {
+	// `T_r(ρ) = Σ_j μ^j Σ_{operands of relation j on round r} t(ρ_{<ℓ_r})`.
+	let multiplicand_eval = move |rho: &[Channel::Elem], zeta: &[Channel::Elem]| {
+		let mut round_evals = vec![Channel::Elem::zero(); layouts.len()];
+		for (mu_j, relation) in izip!(powers(mu), &relations) {
+			for operand in &relation.operands {
+				let n_r = layouts[operand.round].log_len;
+				round_evals[operand.round] += mu_j.clone() * (operand.transparent)(&rho[..n_r]);
+			}
+		}
+
 		let eq_tensor = eq_ind_partial_eval_scalars(zeta);
-		izip!(&transparents, layouts, eq_tensor)
-			.map(|(transparent, layout, eq_r)| {
-				let n_r = layout.log_len;
-				eq_r * transparent(&rho[..n_r]) * eq_ind_zero(&rho[n_r..])
-			})
+		izip!(round_evals, layouts, eq_tensor)
+			.map(|(eval, layout, eq_r)| eq_r * eval * eq_ind_zero(&rho[layout.log_len..]))
 			.sum::<Channel::Elem>()
 	};
 
@@ -250,54 +260,6 @@ where
 	)?;
 
 	Ok(())
-}
-
-/// Batches the queued relations into the single relation `Σ_i <π_i, T_i> = S`.
-///
-/// Relation `j`, `Σ_i <π_i, t_ji> = s_j`, is weighted by `μ^j` for one sampled challenge μ:
-///
-/// ```text
-/// T_i = Σ_j μ^j · t_ji     the combined transparent of oracle i
-/// S   = Σ_j μ^j · s_j      the combined claim
-/// ```
-///
-/// The inner product is linear in the transparent, so the combined relation holds exactly when
-/// every relation does, except with probability at most `(k - 1) / |F|` over μ for `k` relations.
-/// μ is drawn after every claim it combines is already bound to the transcript, so no claim can be
-/// chosen as a function of it. An oracle in no relation gets `T_i = 0`.
-///
-/// Returns the evaluator of each `T_i`, in oracle-index order, and `S`.
-///
-/// Mirrors the prover-side batching in `binius_iop_prover::basefold::channel`.
-fn batch_relations<F, Channel>(
-	channel: &mut Channel,
-	operands: Vec<Vec<QueuedOperand<Channel::Elem>>>,
-	claims: &[Channel::Elem],
-) -> (Vec<TransparentEvalFn<Channel::Elem>>, Channel::Elem)
-where
-	F: BinaryField,
-	Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
-{
-	let mu = channel.sample();
-	let claim = evaluate_univariate(claims, &mu);
-	let mu_powers = Rc::new(powers(mu).take(claims.len()).collect::<Vec<_>>());
-
-	let transparents = operands
-		.into_iter()
-		.map(|operands| {
-			let mu_powers = Rc::clone(&mu_powers);
-			Box::new(move |point: &[Channel::Elem]| {
-				operands
-					.iter()
-					.map(|operand| {
-						mu_powers[operand.relation].clone() * (operand.transparent)(point)
-					})
-					.sum()
-			}) as TransparentEvalFn<_>
-		})
-		.collect();
-
-	(transparents, claim)
 }
 
 impl<F, Channel> IPVerifierChannel<F> for BaseFoldVerifierChannel<'_, F, Channel>
@@ -413,7 +375,6 @@ where
 		self.n_in_round = 0;
 
 		self.recv_round_commitment()?;
-		self.queue.push(Vec::new());
 
 		Ok(oracle)
 	}
@@ -423,10 +384,10 @@ where
 		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), Error> {
-		// Queue each operand under its round; the actual opening (sumchecks + combined
+		// Queue the relation; the actual opening (sumchecks + combined
 		// FRI) happens once, over all committed round oracles, in [`Self::finish`].
-		let relation = self.claims.len();
-		let n_committed = self.queue.len();
+		let n_committed = self.oracle_commitments.len();
+		let mut queued = Vec::new();
 		for (oracle, transparent) in operands {
 			let BaseFoldOracle {
 				round,
@@ -451,12 +412,12 @@ where
 				eq_ind(high, &block_bits) * transparent(low)
 			});
 
-			self.queue[round].push(QueuedOperand {
-				relation,
-				transparent,
-			});
+			queued.push(Operand { round, transparent });
 		}
-		self.claims.push(claim);
+		self.relations.push(Relation {
+			claim,
+			operands: queued,
+		});
 		Ok(())
 	}
 }
