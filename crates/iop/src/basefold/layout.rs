@@ -2,7 +2,7 @@
 
 //! Placement of each round's oracles inside the one oracle the round is committed as.
 
-use std::cmp::Reverse;
+use std::{cmp::Reverse, ops::Range};
 
 use binius_ip::libra::mask_buffer_dimensions;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -78,27 +78,26 @@ fn layout_round(specs: &[OracleSpec]) -> RoundLayout {
 	let mut order = (0..specs.len()).collect::<Vec<_>>();
 	order.sort_by_key(|&i| Reverse(specs[i].log_msg_len()));
 
-	// Every placed extent, as a half-open scalar range.
-	let mut extents = Vec::<(usize, usize)>::with_capacity(specs.len());
+	// Every placed extent as a half-open scalar range, kept sorted and disjoint.
+	let mut extents = Vec::<Range<usize>>::with_capacity(specs.len());
 	let mut block_offsets = vec![0; specs.len()];
 	let mut end = 1;
 	for i in order {
 		let log_block = specs[i].log_msg_len();
-		let avoids_extents = |offset: usize| {
-			let (start, end) = (offset << log_block, (offset + 1) << log_block);
-			extents.iter().all(|&(lo, hi)| hi <= start || end <= lo)
-		};
 
-		// The lowest free block either starts at zero or right after some extent, rounded up to
-		// the block size.
-		let offset = std::iter::once(0)
-			.chain(extents.iter().map(|&(_, hi)| hi.div_ceil(1 << log_block)))
-			.filter(|&offset| avoids_extents(offset))
-			.min()
-			.expect("a block past every extent avoids them all");
+		// Scan the extents in order for the lowest block that fits before the next one, hopping
+		// past each extent that it would overlap.
+		let mut offset = 0;
+		for extent in &extents {
+			if (offset + 1) << log_block <= extent.start {
+				break;
+			}
+			offset = offset.max(extent.end.div_ceil(1 << log_block));
+		}
 
 		let start = offset << log_block;
-		extents.push((start, start + specs[i].len));
+		let extent = start..start + specs[i].len;
+		extents.insert(extents.partition_point(|e| e.start < start), extent);
 		end = end.max((offset + 1) << log_block);
 		block_offsets[i] = offset;
 	}
