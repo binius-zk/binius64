@@ -7,7 +7,8 @@ use binius_math::{
 	multilinear::{
 		eq::eq_ind_zero,
 		sparse::{
-			SparseBitVector, evaluate_sparse_b1_multilinear, evaluate_sparse_b1_multilinear_native,
+			PartitionedSparseBitVector, evaluate_partitioned_sparse_b1_multilinear,
+			evaluate_partitioned_sparse_b1_multilinear_native,
 		},
 	},
 };
@@ -19,8 +20,8 @@ use crate::reduction::{LOG_OPERANDS, log_constraint_point};
 /// The address bits below the word index: the operand column, then the inner and outer shift.
 const LOG_TERM_BITS: usize = LOG_OPERANDS + 2 * LOG_SHIFT_COUNT;
 
-/// The wiring matrix as two bit vectors, one per committed segment, with the widths of the point
-/// they are read at.
+/// The wiring matrix as two partitioned bit vectors, one per committed segment, with the widths of
+/// the point they are read at.
 ///
 /// Each set bit is one operand term, at the address
 ///
@@ -36,6 +37,8 @@ const LOG_TERM_BITS: usize = LOG_OPERANDS + 2 * LOG_SHIFT_COUNT;
 ///
 /// The bit order is the order of the point the shift reduction evaluates the vectors at, so this
 /// is the one place that fixes the layout.
+/// Addresses wider than 63 bits use their high constraint bits to select a block. Only the low
+/// 63 bits are stored per term; every block shares the same low-coordinate evaluation tensors.
 ///
 /// # The wiring multilinear
 ///
@@ -57,10 +60,10 @@ const LOG_TERM_BITS: usize = LOG_OPERANDS + 2 * LOG_SHIFT_COUNT;
 pub struct WiringInfo {
 	/// The terms whose word lies in the public segment.
 	#[getset(get = "pub")]
-	public_segment: SparseBitVector,
+	public_segment: PartitionedSparseBitVector,
 	/// The terms whose word lies in the hidden segment.
 	#[getset(get = "pub")]
-	hidden_segment: SparseBitVector,
+	hidden_segment: PartitionedSparseBitVector,
 	/// The word-index variables the public segment spans.
 	#[getset(get_copy = "pub")]
 	log_public_words: usize,
@@ -76,27 +79,32 @@ pub struct WiringInfo {
 impl WiringInfo {
 	/// Lays out the wiring matrix of `cs`, with its inout values in `inout`.
 	///
-	/// # Panics
+	/// # Preconditions
 	///
-	/// Panics if the hidden address does not fit a `u64` index below `2^63`: that is,
-	/// `LOG_OPERANDS + 18 + log_constraint_point + log_segment_words < 64`, or
-	/// `log_constraint_point + log_segment_words ≤ 41`.
+	/// The constraint system must be valid, and its word and operand/shift coordinates must fit
+	/// in one 63-bit block. The constraint coordinate can extend across any number of blocks.
 	pub fn new(cs: &ConstraintSystem, inout: InoutSegment) -> Self {
 		let log_public_words = cs.log_public_words(inout);
 		let log_segment_words = cs.log_segment_words(inout);
 		let log_constraint_point = log_constraint_point(cs);
 		let log_words = [log_public_words, log_segment_words];
 		let log_lens = log_words.map(|log_words| LOG_TERM_BITS + log_words + log_constraint_point);
-		assert!(
-			log_lens[1] < u64::BITS as usize,
-			"the wiring address needs {} bits; at most 63 fit",
-			log_lens[1]
-		);
+		let log_block_len = PartitionedSparseBitVector::LOG_BLOCK_LEN;
+		assert!(LOG_TERM_BITS + log_segment_words <= log_block_len);
 
 		// Each operand term's segment and address, in the column order the reduction batches.
 		let n_public_words = cs.n_public_words(inout);
-		let mut indices = [Vec::new(), Vec::new()];
+		let mut indices = log_lens
+			.map(|log_len| vec![Vec::new(); 1usize << log_len.saturating_sub(log_block_len)]);
 		let mut push = |column: usize, constraint_index: usize, terms: &Operand| {
+			let rows = log_words.map(|log_words| {
+				let row_offset = LOG_TERM_BITS + log_words;
+				let log_block_rows = log_block_len - row_offset;
+				let row = constraint_index as u64;
+				let block = (row >> log_block_rows) as usize;
+				let local_row = (row & ((1u64 << log_block_rows) - 1)) << row_offset;
+				(block, local_row)
+			});
 			for term in terms {
 				let word = cs.word_offset(term.value_index);
 				let (segment, word) = if word < n_public_words {
@@ -104,12 +112,13 @@ impl WiringInfo {
 				} else {
 					(1, word - n_public_words)
 				};
+				let (block, local_row) = rows[segment];
 				let index = column as u64
 					| (term.inner().index() as u64) << LOG_OPERANDS
 					| (term.outer().index() as u64) << (LOG_OPERANDS + LOG_SHIFT_COUNT)
 					| (word as u64) << LOG_TERM_BITS
-					| (constraint_index as u64) << (LOG_TERM_BITS + log_words[segment]);
-				indices[segment].push(index);
+					| local_row;
+				indices[segment][block].push(index);
 			}
 		};
 
@@ -136,8 +145,8 @@ impl WiringInfo {
 		let [public, hidden] = indices;
 		let [public_log_len, hidden_log_len] = log_lens;
 		Self {
-			public_segment: SparseBitVector::new(public_log_len, public),
-			hidden_segment: SparseBitVector::new(hidden_log_len, hidden),
+			public_segment: PartitionedSparseBitVector::new(public_log_len, public),
+			hidden_segment: PartitionedSparseBitVector::new(hidden_log_len, hidden),
 			log_public_words,
 			log_segment_words,
 			log_constraint_point,
@@ -145,7 +154,11 @@ impl WiringInfo {
 	}
 
 	/// Joins the two segments' evaluations at `r_segment`, each vector read by `eval`.
-	fn eval<E: FieldOps>(&self, vals: &[E], eval: impl Fn(&SparseBitVector, &[E]) -> E) -> E {
+	fn eval<E: FieldOps>(
+		&self,
+		vals: &[E],
+		eval: impl Fn(&PartitionedSparseBitVector, &[E]) -> E,
+	) -> E {
 		let (r_segment, point_hid) = vals.split_first().expect("the input leads with r_segment");
 		assert_eq!(point_hid.len(), self.hidden_segment.log_len());
 
@@ -161,11 +174,11 @@ impl WiringInfo {
 
 impl<F: BinaryField> FieldFn<F> for WiringInfo {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
-		self.eval(vals, evaluate_sparse_b1_multilinear)
+		self.eval(vals, evaluate_partitioned_sparse_b1_multilinear)
 	}
 
 	fn call_native(&self, vals: &[F]) -> F {
-		self.eval(vals, evaluate_sparse_b1_multilinear_native)
+		self.eval(vals, evaluate_partitioned_sparse_b1_multilinear_native)
 	}
 }
 
@@ -312,8 +325,8 @@ mod tests {
 		let mut cs = empty_system(0, 2);
 		cs.and_constraints = vec![AndConstraint([vec![term, term], vec![term], vec![]])];
 		let wiring = WiringInfo::new(&cs, InoutSegment::Public);
-		assert!(wiring.public_segment().indices().is_empty());
-		assert_eq!(wiring.hidden_segment().indices().len(), 1);
+		assert!(wiring.public_segment().blocks()[0].indices().is_empty());
+		assert_eq!(wiring.hidden_segment().blocks()[0].indices().len(), 1);
 	}
 
 	/// A system of `2^log_constraints` empty ZERO constraints over `2^log_words` private words.
@@ -330,14 +343,48 @@ mod tests {
 	}
 
 	#[test]
-	fn the_widest_address_that_fits_is_63_bits() {
-		let wiring = WiringInfo::new(&empty_system(15, 26), InoutSegment::Public);
-		assert_eq!(wiring.hidden_segment().log_len(), 63);
+	fn wide_wiring_uses_63_bit_local_indices() {
+		for (log_constraints, log_words) in [(15, 26), (16, 26), (17, 26), (21, 26)] {
+			check_wide_wiring(log_constraints, log_words);
+		}
 	}
 
-	#[test]
-	#[should_panic(expected = "the wiring address needs 64 bits")]
-	fn a_system_whose_address_does_not_fit_is_rejected() {
-		let _ = WiringInfo::new(&empty_system(16, 26), InoutSegment::Public);
+	fn check_wide_wiring(log_constraints: usize, log_words: usize) {
+		let mut cs = empty_system(log_constraints, log_words);
+		let term = ShiftedValueIndex::plain(ValueIndex::private((1 << log_words) - 1));
+		cs.zero_constraints.last_mut().unwrap().0[0] = vec![term];
+		cs.validate().unwrap();
+		let wiring = WiringInfo::new(&cs, InoutSegment::Public);
+		let log_len = LOG_TERM_BITS + log_words + log_constraints;
+		let hidden = wiring.hidden_segment();
+		assert_eq!(hidden.log_len(), log_len);
+		assert_eq!(hidden.blocks().len(), 1 << log_len.saturating_sub(63));
+		assert_eq!(
+			hidden.blocks().last().unwrap().indices(),
+			&[(1u64 << 63) - (1 << LOG_TERM_BITS)]
+		);
+		assert!(hidden.blocks().iter().all(|block| block.log_len() == 63));
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let point = random_scalars::<B128>(&mut rng, 1 + log_len);
+		let term_weight = eq_ind_zero(&point[1..1 + LOG_TERM_BITS])
+			* point[1 + LOG_TERM_BITS..].iter().copied().product::<B128>();
+		let expected = point[0] * term_weight;
+		assert_ne!(expected, B128::ZERO);
+		assert_eq!(FieldFn::<B128>::call::<B128>(&wiring, &point), expected);
+		assert_eq!(FieldFn::<B128>::call_native(&wiring, &point), expected);
+
+		// The same large address also occurs in the public segment, whose block selector
+		// must use its own word-coordinate width.
+		cs.n_inout = cs.n_private;
+		cs.n_private = 0;
+		cs.zero_constraints.last_mut().unwrap().0[0] = vec![ShiftedValueIndex::plain(
+			ValueIndex::inout((1 << log_words) - 1),
+		)];
+		cs.validate().unwrap();
+		let wiring = WiringInfo::new(&cs, InoutSegment::Public);
+		let expected = (B128::ONE + point[0]) * term_weight;
+		assert_eq!(FieldFn::<B128>::call::<B128>(&wiring, &point), expected);
+		assert_eq!(FieldFn::<B128>::call_native(&wiring, &point), expected);
 	}
 }
