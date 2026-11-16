@@ -36,8 +36,11 @@ impl<F: BinaryField> Compute<F> for ReferenceCompute {
 		v
 	}
 
-	fn to_host<'a>(&self, cols: Vec<Vec<F>>) -> Lazy<'a, Vec<Vec<F>>> {
-		Box::new(move || cols)
+	fn to_host<'a>(&self, v: &'a [F]) -> Lazy<'a, Vec<F>>
+	where
+		Self: 'a,
+	{
+		Box::new(move || v.to_vec())
 	}
 
 	fn tensor_expand<'a>(&self, point: &'a [F]) -> Lazy<'a, Vec<F>> {
@@ -63,7 +66,10 @@ impl<F: BinaryField> Compute<F> for ReferenceCompute {
 		Box::new(move || scalar::fold_words(words, &weights))
 	}
 
-	fn fold_highest_var<'a>(&self, mut cols: Vec<Vec<F>>, r: F) -> Lazy<'a, Vec<Vec<F>>> {
+	fn fold_highest_var<'a>(&self, cols: &'a mut [Vec<F>], r: F) -> Lazy<'a, &'a mut [Vec<F>]>
+	where
+		Self: 'a,
+	{
 		Box::new(move || {
 			cols.iter_mut()
 				.for_each(|col| scalar::fold_highest_var(col, r));
@@ -71,15 +77,26 @@ impl<F: BinaryField> Compute<F> for ReferenceCompute {
 		})
 	}
 
-	fn pair_map_reduce<'a, K: PairKernel<F> + 'a>(
+	fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(
 		&self,
-		cols: Vec<Vec<F>>,
+		cols: &'a mut [Vec<F>],
+		r: Option<F>,
 		kernel: &'a K,
-	) -> Lazy<'a, (Vec<Vec<F>>, Vec<F>)> {
+	) -> Lazy<'a, Vec<F>>
+	where
+		Self: 'a,
+	{
 		Box::new(move || {
+			let log_lens: Vec<usize> = cols.iter().map(|c| c.len().ilog2() as usize).collect();
+			let n = scalar::round_log_len(&log_lens, r.is_some());
+			if let Some(r) = r {
+				let before = 1 << (n + 1);
+				cols.iter_mut()
+					.filter(|c| c.len() == before)
+					.for_each(|col| scalar::fold_highest_var(col, r));
+			}
 			let views: Vec<&[F]> = cols.iter().map(Vec::as_slice).collect();
-			let sums = scalar::pair_map_reduce(&views, kernel);
-			(cols, sums)
+			scalar::pair_map_reduce(&views, kernel)
 		})
 	}
 
@@ -89,6 +106,10 @@ impl<F: BinaryField> Compute<F> for ReferenceCompute {
 		b: Lazy<'a, B>,
 	) -> Lazy<'a, (A, B)> {
 		Box::new(move || (a(), b()))
+	}
+
+	fn join_all<'a, T: Send + 'a>(&self, futures: Vec<Lazy<'a, T>>) -> Lazy<'a, Vec<T>> {
+		Box::new(move || futures.into_iter().map(|f| f()).collect())
 	}
 
 	fn then<'a, A: Send + 'a, B: Send + 'a>(

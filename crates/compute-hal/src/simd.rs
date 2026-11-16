@@ -43,7 +43,8 @@ where
 	K: PairKernel<P::Scalar>,
 {
 	assert_eq!(cols.len(), K::N_IN);
-	let log_n = cols.iter().map(|c| c.log_len()).max().unwrap();
+	let log_lens: Vec<usize> = cols.iter().map(|c| c.log_len()).collect();
+	let log_n = scalar::round_log_len(&log_lens, false);
 	if log_n - 1 < P::LOG_WIDTH {
 		let scalars: Vec<Vec<P::Scalar>> =
 			cols.iter().map(|c| c.iter_scalars().collect()).collect();
@@ -100,8 +101,11 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 		v
 	}
 
-	fn to_host<'a>(&self, cols: Vec<FieldBuffer<P>>) -> Lazy<'a, Vec<Vec<P::Scalar>>> {
-		Box::new(move || cols.iter().map(|c| c.iter_scalars().collect()).collect())
+	fn to_host<'a>(&self, v: FieldSlice<'a, P>) -> Lazy<'a, Vec<P::Scalar>>
+	where
+		Self: 'a,
+	{
+		Box::new(move || v.iter_scalars().collect())
 	}
 
 	fn tensor_expand<'a>(&self, point: &'a [P::Scalar]) -> Lazy<'a, FieldBuffer<P>> {
@@ -138,9 +142,12 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 
 	fn fold_highest_var<'a>(
 		&self,
-		mut cols: Vec<FieldBuffer<P>>,
+		cols: &'a mut [FieldBuffer<P>],
 		r: P::Scalar,
-	) -> Lazy<'a, Vec<FieldBuffer<P>>> {
+	) -> Lazy<'a, &'a mut [FieldBuffer<P>]>
+	where
+		Self: 'a,
+	{
 		Box::new(move || {
 			cols.iter_mut()
 				.for_each(|col| fold_highest_var_inplace(col, r));
@@ -148,14 +155,24 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 		})
 	}
 
-	fn pair_map_reduce<'a, K: PairKernel<P::Scalar> + 'a>(
+	fn fold_pair_map_reduce<'a, K: PairKernel<P::Scalar> + 'a>(
 		&self,
-		cols: Vec<FieldBuffer<P>>,
+		cols: &'a mut [FieldBuffer<P>],
+		r: Option<P::Scalar>,
 		kernel: &'a K,
-	) -> Lazy<'a, (Vec<FieldBuffer<P>>, Vec<P::Scalar>)> {
+	) -> Lazy<'a, Vec<P::Scalar>>
+	where
+		Self: 'a,
+	{
 		Box::new(move || {
-			let sums = pair_map_reduce(&cols, kernel);
-			(cols, sums)
+			let log_lens: Vec<usize> = cols.iter().map(|c| c.log_len()).collect();
+			let n = scalar::round_log_len(&log_lens, r.is_some());
+			if let Some(r) = r {
+				cols.iter_mut()
+					.filter(|c| c.log_len() == n + 1)
+					.for_each(|col| fold_highest_var_inplace(col, r));
+			}
+			pair_map_reduce(cols, kernel)
 		})
 	}
 
@@ -165,6 +182,10 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 		b: Lazy<'a, B>,
 	) -> Lazy<'a, (A, B)> {
 		Box::new(move || rayon::join(a, b))
+	}
+
+	fn join_all<'a, T: Send + 'a>(&self, futures: Vec<Lazy<'a, T>>) -> Lazy<'a, Vec<T>> {
+		Box::new(move || futures.into_par_iter().map(|f| f()).collect())
 	}
 
 	fn then<'a, A: Send + 'a, B: Send + 'a>(

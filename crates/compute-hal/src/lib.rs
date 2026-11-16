@@ -72,10 +72,8 @@ pub type Lazy<'a, T> = Box<dyn FnOnce() -> T + Send + 'a>;
 /// The trait is generic over the field (not an associated type) so a backend can implement it for
 /// several fields, e.g. a SIMD backend per packed type.
 ///
-/// Column data is owned by value and threaded through futures (`fold_highest_var` and
-/// `pair_map_reduce` take and return the columns). A `&mut` slice cannot be held by an unexecuted
-/// future while a later future reads it, so ownership threading is the only way to express
-/// fold-then-evaluate in one pipeline.
+/// Columns are owned by the host and borrowed by futures: read-only ops take a `FieldSlice<'a>`,
+/// and ops that change columns take `&'a mut [FieldVec]`.
 pub trait Compute<F: BinaryField>: Sync {
 	/// An owned buffer of `2^log_len` field elements.
 	type FieldVec: Send;
@@ -97,8 +95,10 @@ pub trait Compute<F: BinaryField>: Sync {
 	/// Borrows a word buffer.
 	fn as_word_slice<'a>(&self, v: &'a Self::WordVec) -> Self::WordSlice<'a>;
 
-	/// Downloads columns to the host. The only way host code can observe field data.
-	fn to_host<'a>(&self, cols: Vec<Self::FieldVec>) -> Self::Future<'a, Vec<Vec<F>>>;
+	/// Downloads a column to the host. The only way host code can observe field data.
+	fn to_host<'a>(&self, v: Self::FieldSlice<'a>) -> Self::Future<'a, Vec<F>>
+	where
+		Self: 'a;
 	/// The equality-indicator tensor of `point` (`eq_ind_partial_eval`).
 	fn tensor_expand<'a>(&self, point: &'a [F]) -> Self::Future<'a, Self::FieldVec>;
 	/// Sum of pointwise products.
@@ -111,8 +111,8 @@ pub trait Compute<F: BinaryField>: Sync {
 		Self: 'a;
 	/// Evaluates the multilinear `mle` at `point`.
 	///
-	/// A required op rather than `tensor_expand` + `inner_product`: the temporary tensor cannot be
-	/// borrowed by a future that outlives the closure that built it.
+	/// A required op rather than `tensor_expand` + `inner_product` via `then`: `inner_product` takes
+	/// slices, and the tensor is owned by the `then` closure, so no slice of it outlives the closure.
 	fn evaluate<'a>(&self, mle: Self::FieldSlice<'a>, point: &'a [F]) -> Self::Future<'a, F>;
 	/// `out[i] = sum_b bit_b(words[i]) * weights[b]`, zero-padded to a power of two.
 	fn fold_words<'a>(
@@ -122,23 +122,32 @@ pub trait Compute<F: BinaryField>: Sync {
 	) -> Self::Future<'a, Self::FieldVec>
 	where
 		Self: 'a;
-	/// Binds the highest variable of every column to `r`; each column loses one variable.
+	/// Binds the highest variable of every column to `r`; each column loses one variable. Returns
+	/// the columns, so a following `then` can read them.
 	fn fold_highest_var<'a>(
 		&self,
-		cols: Vec<Self::FieldVec>,
+		cols: &'a mut [Self::FieldVec],
 		r: F,
-	) -> Self::Future<'a, Vec<Self::FieldVec>>;
-	/// For every `i < 2^(n-1)` maps the pair `(col[i], col[i + 2^(n-1)])` of all columns through
-	/// `kernel` and sums the outputs. Returns the columns and the `K::N_OUT` sums.
+	) -> Self::Future<'a, &'a mut [Self::FieldVec]>
+	where
+		Self: 'a;
+	/// One sumcheck round in one op: folds the columns by `r` (if `Some`), then, for every
+	/// `i < 2^(n-1)`, maps the pair `(col[i], col[i + 2^(n-1)])` of all columns through `kernel` and
+	/// sums the outputs. Returns the `K::N_OUT` sums.
 	///
-	/// `n` is the largest `log_len` among the columns. A column with `log_len == n - 1` is broadcast:
-	/// its pair is `(col[i], col[i])`. This carries an equality-indicator tensor over the remaining
-	/// variables.
-	fn pair_map_reduce<'a, K: PairKernel<F> + 'a>(
+	/// Let `m` be the largest `log_len` among the columns. Columns of `log_len == m` are folded
+	/// (when `r` is `Some`) and `n = m - 1`; without `r`, `n = m`. After folding, every column must
+	/// have `log_len` `n` or `n - 1`, else this panics. A column of `n - 1` is broadcast (its pair is
+	/// `(col[i], col[i])`) and is never folded; it carries an equality-indicator tensor over the
+	/// remaining variables.
+	fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(
 		&self,
-		cols: Vec<Self::FieldVec>,
+		cols: &'a mut [Self::FieldVec],
+		r: Option<F>,
 		kernel: &'a K,
-	) -> Self::Future<'a, (Vec<Self::FieldVec>, Vec<F>)>;
+	) -> Self::Future<'a, Vec<F>>
+	where
+		Self: 'a;
 
 	/// Runs both futures; a device may overlap them.
 	fn join<'a, A: Send + 'a, B: Send + 'a>(
@@ -146,12 +155,20 @@ pub trait Compute<F: BinaryField>: Sync {
 		a: Self::Future<'a, A>,
 		b: Self::Future<'a, B>,
 	) -> Self::Future<'a, (A, B)>;
+	/// Runs all futures; a device may overlap them.
+	fn join_all<'a, T: Send + 'a>(
+		&self,
+		futures: Vec<Self::Future<'a, T>>,
+	) -> Self::Future<'a, Vec<T>>;
 	/// Monadic bind: runs `f` on the result of `a` and continues with the future it returns.
 	///
 	/// Over handle-valued futures (`FieldVec`s) this is free on a device: the backend enqueues `a`,
 	/// calls `f` with the handles, and keeps enqueuing, so the chain is one submission. A bind whose
 	/// closure consumes a device-computed scalar (e.g. the `F` of `inner_product`) forces a hidden
 	/// device-to-host sync inside `exec`. `FakeDeviceCompute` counts those.
+	///
+	/// `f` is opaque until its input exists: the backend can enqueue back-to-back but cannot fuse
+	/// across it. Fusion needs an explicit op, such as `fold_pair_map_reduce`.
 	fn then<'a, A: Send + 'a, B: Send + 'a>(
 		&self,
 		a: Self::Future<'a, A>,
@@ -192,11 +209,28 @@ pub(crate) mod scalar {
 		acc
 	}
 
-	/// Sums `kernel` over the pairs of the given columns (see [`Compute::pair_map_reduce`]).
+	/// The `log_len` `n` of the pairs a round reduces after folding. Panics if a column has the wrong
+	/// length (see [`Compute::fold_pair_map_reduce`]).
+	pub fn round_log_len(log_lens: &[usize], fold: bool) -> usize {
+		let max = log_lens.iter().copied().max().expect("no columns");
+		assert!(max > usize::from(fold), "columns are too short to reduce");
+		let n = max - usize::from(fold);
+		for &log_len in log_lens {
+			let after = if fold && log_len == max { n } else { log_len };
+			assert!(
+				after == n || after + 1 == n,
+				"column log_len {log_len} is not {n} or {}",
+				n - 1
+			);
+		}
+		n
+	}
+
+	/// Sums `kernel` over the pairs of the given (already folded) columns.
 	pub fn pair_map_reduce<F: Field, K: PairKernel<F>>(cols: &[&[F]], kernel: &K) -> Vec<F> {
 		assert_eq!(cols.len(), K::N_IN);
-		let n = cols.iter().map(|c| c.len()).max().unwrap();
-		assert!(n >= 2);
+		let log_lens: Vec<usize> = cols.iter().map(|c| c.len().ilog2() as usize).collect();
+		let n = 1 << round_log_len(&log_lens, false);
 		reduce_pairs(kernel, 0..n / 2, |c, i| {
 			let col = cols[c];
 			if col.len() == n {

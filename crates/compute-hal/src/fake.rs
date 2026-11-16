@@ -168,13 +168,16 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 		}
 	}
 
-	fn to_host<'a>(&self, cols: Vec<FakeVec>) -> Lazy<'a, Vec<Vec<F>>> {
+	fn to_host<'a>(&self, v: FakeSlice<'a>) -> Lazy<'a, Vec<F>>
+	where
+		Self: 'a,
+	{
 		let arena = self.arena.clone();
 		Box::new(move || {
 			let mut arena = arena.lock().unwrap();
-			let out: Vec<Vec<F>> = cols.iter().map(|c| arena.fields[c.id].clone()).collect();
+			let out = arena.fields[v.id].clone();
 			arena.stats.d2h_calls += 1;
-			arena.stats.d2h_elems += out.iter().map(Vec::len).sum::<usize>();
+			arena.stats.d2h_elems += out.len();
 			arena.pending_scalars += 1;
 			out
 		})
@@ -227,30 +230,42 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 		})
 	}
 
-	fn fold_highest_var<'a>(&self, cols: Vec<FakeVec>, r: F) -> Lazy<'a, Vec<FakeVec>> {
+	fn fold_highest_var<'a>(&self, cols: &'a mut [FakeVec], r: F) -> Lazy<'a, &'a mut [FakeVec]>
+	where
+		Self: 'a,
+	{
 		let arena = self.arena.clone();
 		Box::new(move || {
 			let mut arena = launch(&arena);
-			cols.into_iter()
-				.map(|col| {
-					scalar::fold_highest_var(&mut arena.fields[col.id], r);
-					FakeVec {
-						id: col.id,
-						log_len: col.log_len - 1,
-					}
-				})
-				.collect()
+			for col in cols.iter_mut() {
+				scalar::fold_highest_var(&mut arena.fields[col.id], r);
+				col.log_len -= 1;
+			}
+			cols
 		})
 	}
 
-	fn pair_map_reduce<'a, K: PairKernel<F> + 'a>(
+	fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(
 		&self,
-		cols: Vec<FakeVec>,
+		cols: &'a mut [FakeVec],
+		r: Option<F>,
 		kernel: &'a K,
-	) -> Lazy<'a, (Vec<FakeVec>, Vec<F>)> {
+	) -> Lazy<'a, Vec<F>>
+	where
+		Self: 'a,
+	{
 		let arena = self.arena.clone();
 		Box::new(move || {
 			let mut arena = launch(&arena);
+			assert_eq!(cols.len(), K::N_IN);
+			let log_lens: Vec<usize> = cols.iter().map(|c| c.log_len).collect();
+			let log_n = scalar::round_log_len(&log_lens, r.is_some());
+			if let Some(r) = r {
+				for col in cols.iter_mut().filter(|c| c.log_len == log_n + 1) {
+					scalar::fold_highest_var(&mut arena.fields[col.id], r);
+					col.log_len -= 1;
+				}
+			}
 			// Trace the kernel once, then interpret the graph for every pair.
 			let lo: Vec<Sym<F>> = (0..K::N_IN).map(|i| Sym::new(Node::Lo(i))).collect();
 			let hi: Vec<Sym<F>> = (0..K::N_IN).map(|i| Sym::new(Node::Hi(i))).collect();
@@ -258,7 +273,7 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 			let mut scratch = vec![Sym::zero(); K::SCRATCH];
 			kernel.map(&lo, &hi, &mut scratch, &mut graph);
 
-			let n = cols.iter().map(|c| arena.fields[c.id].len()).max().unwrap();
+			let n = 1 << log_n;
 			let (mut lo, mut hi) = (vec![F::ZERO; K::N_IN], vec![F::ZERO; K::N_IN]);
 			let mut sums = vec![F::ZERO; K::N_OUT];
 			for i in 0..n / 2 {
@@ -277,7 +292,7 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 			arena.stats.d2h_calls += 1;
 			arena.stats.d2h_elems += K::N_OUT;
 			arena.pending_scalars += 1;
-			(cols, sums)
+			sums
 		})
 	}
 
@@ -287,6 +302,10 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 		b: Lazy<'a, B>,
 	) -> Lazy<'a, (A, B)> {
 		Box::new(move || (a(), b()))
+	}
+
+	fn join_all<'a, T: Send + 'a>(&self, futures: Vec<Lazy<'a, T>>) -> Lazy<'a, Vec<T>> {
+		Box::new(move || futures.into_iter().map(|f| f()).collect())
 	}
 
 	fn then<'a, A: Send + 'a, B: Send + 'a>(

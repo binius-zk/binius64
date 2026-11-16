@@ -15,7 +15,7 @@ use crate::{Composition, Compute, PairKernel};
 /// Evaluation points of the round polynomial a [`RoundKernel`] reports: `1, b_1, ..., b_{d-1}`.
 ///
 /// The leading coefficient at infinity is not used because a composition need not be homogeneous.
-fn eval_points<F: BinaryField>(degree: usize) -> impl Iterator<Item = F> {
+pub(crate) fn eval_points<F: BinaryField>(degree: usize) -> impl Iterator<Item = F> {
 	iter::once(F::ONE).chain((1..degree).map(<F as ExtensionField<BinaryField1b>>::basis))
 }
 
@@ -45,7 +45,7 @@ impl<F: BinaryField, C: Composition<F>> PairKernel<F> for RoundKernel<'_, C> {
 }
 
 /// Lagrange interpolation: the coefficients of the polynomial through `(xs[i], ys[i])`.
-fn interpolate<F: BinaryField>(xs: &[F], ys: &[F]) -> Vec<F> {
+pub(crate) fn interpolate<F: BinaryField>(xs: &[F], ys: &[F]) -> Vec<F> {
 	let mut coeffs = vec![F::ZERO; xs.len()];
 	for (i, (&xi, &yi)) in iter::zip(xs, ys).enumerate() {
 		// numerator = prod_{j != i} (X - x_j), denominator = prod_{j != i} (x_i - x_j)
@@ -97,14 +97,8 @@ where
 	let mut challenges = Vec::with_capacity(n_vars);
 
 	for _ in 0..n_vars {
-		let round = match challenges.last() {
-			None => compute.pair_map_reduce(cols, &kernel),
-			Some(&r) => compute.then(compute.fold_highest_var(cols, r), |cols| {
-				compute.pair_map_reduce(cols, &kernel)
-			}),
-		};
-		let (next_cols, evals) = compute.exec(round);
-		cols = next_cols;
+		let round = compute.fold_pair_map_reduce(&mut cols, challenges.last().copied(), &kernel);
+		let evals = compute.exec(round);
 
 		// The claim fixes R(0) = sum - R(1).
 		let ys: Vec<F> = iter::once(sum + evals[0]).chain(evals).collect();
@@ -117,10 +111,28 @@ where
 		challenges.push(r);
 	}
 
-	let last = *challenges.last().expect("n_vars > 0");
-	let finals = compute
-		.exec(compute.then(compute.fold_highest_var(cols, last), |cols| compute.to_host(cols)));
-	(challenges, finals.into_iter().map(|col| col[0]).collect())
+	let finals = read_folded(compute, &mut cols, *challenges.last().expect("n_vars > 0"));
+	(challenges, finals)
+}
+
+/// Folds `cols` by `r` and reads their (constant) values, in one `exec`.
+fn read_folded<F: BinaryField, C: Compute<F>>(
+	compute: &C,
+	cols: &mut [C::FieldVec],
+	r: F,
+) -> Vec<F> {
+	compute
+		.exec(compute.then(compute.fold_highest_var(cols, r), |cols| {
+			let cols = &*cols;
+			let reads = cols
+				.iter()
+				.map(|col| compute.to_host(compute.as_slice(col)))
+				.collect();
+			compute.join_all(reads)
+		}))
+		.into_iter()
+		.map(|col| col[0])
+		.collect()
 }
 
 /// Proves `sum_x eq(point, x) * comp(cols(x)) = claim` as an MLE-check with Gruen's eq factoring.
@@ -137,7 +149,7 @@ pub fn prove_mlecheck<F, C, Comp, Ch>(
 	compute: &C,
 	comp: &Comp,
 	point: &[F],
-	mut cols: Vec<C::FieldVec>,
+	cols: Vec<C::FieldVec>,
 	claim: F,
 	transcript: &mut ProverTranscript<Ch>,
 ) -> (Vec<F>, Vec<F>)
@@ -156,22 +168,22 @@ where
 	let mut sum = claim;
 	let mut challenges = Vec::with_capacity(n_vars);
 
+	// Slot 0 holds the eq tensor over the variables left after the round.
+	let eq = compute.exec(compute.tensor_expand(&point[..n_vars - 1]));
+	let mut all: Vec<C::FieldVec> = iter::once(eq).chain(cols).collect();
+
 	for (round, &alpha) in point.iter().rev().enumerate() {
-		// eq over the variables left after this round binds one more.
-		let eq = compute.tensor_expand(&point[..n_vars - 1 - round]);
-		let with_eq = |eq, cols: Vec<C::FieldVec>| {
-			compute.pair_map_reduce(iter::once(eq).chain(cols).collect(), &kernel)
+		let evals = match challenges.last().copied() {
+			None => compute.exec(compute.fold_pair_map_reduce(&mut all, None, &kernel)),
+			Some(r) => {
+				let next_eq = compute.tensor_expand(&point[..n_vars - 1 - round]);
+				let (all, kernel) = (&mut all, &kernel);
+				compute.exec(compute.then(next_eq, move |eq| {
+					all[0] = eq;
+					compute.fold_pair_map_reduce(all, Some(r), kernel)
+				}))
+			}
 		};
-		let pipeline = match challenges.last() {
-			None => compute.then(eq, |eq| with_eq(eq, cols)),
-			Some(&r) => compute
-				.then(compute.join(eq, compute.fold_highest_var(cols, r)), |(eq, cols)| {
-					with_eq(eq, cols)
-				}),
-		};
-		let (mut all, evals) = compute.exec(pipeline);
-		all.remove(0);
-		cols = all;
 
 		// The claim is (1 - alpha) R'(0) + alpha R'(1).
 		let y0 = (sum - alpha * evals[0]) * (F::ONE - alpha).invert_or_zero();
@@ -185,8 +197,6 @@ where
 		challenges.push(r);
 	}
 
-	let last = *challenges.last().expect("n_vars > 0");
-	let finals = compute
-		.exec(compute.then(compute.fold_highest_var(cols, last), |cols| compute.to_host(cols)));
-	(challenges, finals.into_iter().map(|col| col[0]).collect())
+	let finals = read_folded(compute, &mut all[1..], *challenges.last().expect("n_vars > 0"));
+	(challenges, finals)
 }
