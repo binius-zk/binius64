@@ -2,14 +2,13 @@
 
 //! The packed, multi-threaded backend over `FieldBuffer<P>`.
 //!
-//! Gap: compositions are evaluated over `P`, so they cannot use `WideMul` unreduced accumulation.
 //! `fold_words` calls the prover's `BitAxisFolder`.
 
 use std::marker::PhantomData;
 
 use binius_compute::GlobalAllocator;
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	FieldBuffer, FieldSlice,
 	inner_product::inner_product_par,
@@ -36,46 +35,113 @@ impl<P> Default for SimdCompute<P> {
 	}
 }
 
+/// Log2 of the scalars per chunk of the eq-weighted pass (64 KiB of columns at 128 bits).
+const MAX_CHUNK_VARS: usize = 12;
+
 /// Sums `kernel` over the pairs of `cols`, packed when a half spans at least one packed element.
-fn pair_map_reduce<P, K>(cols: &[FieldBuffer<P>], kernel: &K) -> Vec<P::Scalar>
+///
+/// Without eq the sums are plain `P` sums. With `eq_point`, like `SharedMleCheckProver::execute`:
+/// only the eq tensor over the low `chunk_vars` coordinates is built. Each chunk accumulates
+/// `wide_mul(kernel_out, eq)` unreduced and reduces once; the remaining (suffix) coordinates are
+/// folded in while combining chunk results, `lo + z * (hi - lo)`.
+fn pair_map_reduce<P, K>(
+	cols: &[FieldBuffer<P>],
+	eq_point: Option<&[P::Scalar]>,
+	kernel: &K,
+) -> Vec<P::Scalar>
 where
 	P: PackedField<Scalar: BinaryField>,
 	K: PairKernel<P::Scalar>,
 {
-	assert_eq!(cols.len(), K::N_IN);
+	assert_eq!(cols.len(), kernel.n_in());
 	let log_lens: Vec<usize> = cols.iter().map(|c| c.log_len()).collect();
 	let log_n = scalar::round_log_len(&log_lens, false);
+	if let Some(p) = eq_point {
+		assert_eq!(p.len() + 1, log_n, "eq_point must have n - 1 coordinates");
+	}
 	if log_n - 1 < P::LOG_WIDTH {
 		let scalars: Vec<Vec<P::Scalar>> =
 			cols.iter().map(|c| c.iter_scalars().collect()).collect();
 		let views: Vec<&[P::Scalar]> = scalars.iter().map(Vec::as_slice).collect();
-		return scalar::pair_map_reduce(&views, kernel);
+		return scalar::pair_map_reduce(&views, eq_point, kernel);
 	}
-	// Lengths in packed elements; a broadcast column is half as long.
+	// Lengths in packed elements. Bind the halves once, outside the element loop.
 	let n = 1 << (log_n - P::LOG_WIDTH);
-	let get = |c: usize, i: usize| {
-		let col = cols[c].as_ref();
-		if col.len() == n {
-			(col[i], col[i + n / 2])
-		} else {
-			(col[i], col[i])
-		}
-	};
-	// One set of kernel buffers per chunk of pairs.
-	const CHUNK: usize = 256;
-	let sums = (0..(n / 2).div_ceil(CHUNK))
-		.into_par_iter()
-		.map(|k| {
-			scalar::reduce_pairs::<_, P, _>(kernel, k * CHUNK..((k + 1) * CHUNK).min(n / 2), get)
-		})
-		.reduce(
-			|| vec![P::zero(); K::N_OUT],
-			|mut a, b| {
-				a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
-				a
-			},
-		);
+	let los: Vec<&[P]> = cols.iter().map(|c| &c.as_ref()[..n / 2]).collect();
+	let his: Vec<&[P]> = cols.iter().map(|c| &c.as_ref()[n / 2..]).collect();
+	let get = |c: usize, i: usize| (los[c][i], his[c][i]);
+
+	let sums = eq_point.map_or_else(
+		|| {
+			// shortcut: plain P sums, no wide accumulation; the weighted path is the hot one.
+			const CHUNK: usize = 256;
+			(0..(n / 2).div_ceil(CHUNK))
+				.into_par_iter()
+				.map(|k| {
+					scalar::reduce_pairs::<_, P, _>(
+						kernel,
+						k * CHUNK..((k + 1) * CHUNK).min(n / 2),
+						get,
+						None,
+					)
+				})
+				.reduce(
+					|| vec![P::zero(); kernel.n_out()],
+					|mut a, b| {
+						a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
+						a
+					},
+				)
+		},
+		|p| {
+			let chunk_vars = (log_n - 1).min(MAX_CHUNK_VARS);
+			let eq_chunk = eq_ind_partial_eval::<P>(&p[..chunk_vars]);
+			let chunk_len = 1 << (chunk_vars - P::LOG_WIDTH);
+			let map = |k: usize| {
+				let eq = eq_chunk.as_ref();
+				let n_in = kernel.n_in();
+				let (mut lo, mut hi) = (vec![P::zero(); n_in], vec![P::zero(); n_in]);
+				let mut scratch = vec![P::zero(); kernel.scratch()];
+				let mut out = vec![P::zero(); kernel.n_out()];
+				let mut wide = vec![<P as WideMul>::Output::default(); kernel.n_out()];
+				for (j, &eq_i) in eq.iter().enumerate() {
+					for c in 0..n_in {
+						(lo[c], hi[c]) = get(c, k * chunk_len + j);
+					}
+					kernel.map(&lo, &hi, &mut scratch, &mut out);
+					for (w, &o) in wide.iter_mut().zip(&out) {
+						*w += P::wide_mul(o, eq_i);
+					}
+				}
+				wide.into_iter().map(P::reduce).collect::<Vec<P>>()
+			};
+			reduce_tree(0, log_n - 1 - chunk_vars, chunk_vars, p, &map)
+		},
+	);
 	sums.iter().map(|p| p.iter().sum()).collect()
+}
+
+/// Maps chunks `first..first + 2^depth` and combines them, folding eq coordinate
+/// `p[chunk_vars + depth - 1]` at each level of the bisection.
+fn reduce_tree<P: PackedField>(
+	first: usize,
+	depth: usize,
+	chunk_vars: usize,
+	p: &[P::Scalar],
+	map: &(impl Fn(usize) -> Vec<P> + Sync),
+) -> Vec<P> {
+	if depth == 0 {
+		return map(first);
+	}
+	let (mut lhs, rhs) = rayon::join(
+		|| reduce_tree(first, depth - 1, chunk_vars, p, map),
+		|| reduce_tree(first + (1 << (depth - 1)), depth - 1, chunk_vars, p, map),
+	);
+	let z = P::broadcast(p[chunk_vars + depth - 1]);
+	for (lo, hi) in lhs.iter_mut().zip(rhs) {
+		*lo += z * (hi - *lo);
+	}
+	lhs
 }
 
 impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> {
@@ -159,6 +225,7 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 		&self,
 		cols: &'a mut [FieldBuffer<P>],
 		r: Option<P::Scalar>,
+		eq_point: Option<&'a [P::Scalar]>,
 		kernel: &'a K,
 	) -> Lazy<'a, Vec<P::Scalar>>
 	where
@@ -172,7 +239,7 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 					.filter(|c| c.log_len() == n + 1)
 					.for_each(|col| fold_highest_var_inplace(col, r));
 			}
-			pair_map_reduce(cols, kernel)
+			pair_map_reduce(cols, eq_point, kernel)
 		})
 	}
 

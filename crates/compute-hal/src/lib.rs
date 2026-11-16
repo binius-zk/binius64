@@ -11,7 +11,7 @@
 //!
 //! Key types:
 //! - [`Compute`]: the backend trait.
-//! - [`Composition`] / [`PairKernel`]: the per-element math handed to a backend.
+//! - [`Composition`] / [`PairKernel`] / [`Elem`]: the per-element math handed to a backend.
 //! - [`ReferenceCompute`], [`SimdCompute`], [`FakeDeviceCompute`]: the backends.
 //! - [`sumcheck::prove`]: the shared mini-prover.
 //!
@@ -24,44 +24,98 @@ pub mod sumcheck;
 #[cfg(test)]
 mod tests;
 
-use std::ops::Mul;
+use std::ops::{Add, Mul, Sub};
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, FieldOps};
+use binius_field::{BinaryField, PackedField};
 pub use fake::{ExecStats, FakeDeviceCompute, Stats};
 pub use reference::ReferenceCompute;
 pub use simd::SimdCompute;
+
+/// What a kernel needs of an element: a scalar, a packed field, or a traced expression node.
+pub trait Elem<F>:
+	Clone
+	+ Default
+	+ Send
+	+ Sync
+	+ Add<Output = Self>
+	+ Sub<Output = Self>
+	+ Mul<Output = Self>
+	+ Mul<F, Output = Self>
+{
+}
+
+// Every `Field` is a `PackedField` of width 1, so this covers scalars too.
+impl<P: PackedField> Elem<P::Scalar> for P {}
 
 /// A multivariate polynomial applied to the columns of a sumcheck, element by element.
 pub trait Composition<F>: Sync {
 	/// Number of input columns.
 	const N_IN: usize;
-	/// Degree of the composition along a line, i.e. in one folded variable. Columns the backend
-	/// broadcasts (see [`Compute::pair_map_reduce`]) are constant on the line and add no degree.
+	/// Degree of the composition along a line, i.e. in one folded variable.
 	const DEGREE: usize;
 
-	/// Evaluates on one element per column. `T` is a scalar, a packed field, or a traced
-	/// expression node.
-	fn eval<T: FieldOps<Scalar = F> + Mul<F, Output = T>>(&self, x: &[T]) -> T;
+	/// Evaluates on one element per column.
+	fn eval<T: Elem<F>>(&self, x: &[T]) -> T;
+	/// The homogeneous part of degree `DEGREE` (e.g. `a * b` for `a * b - c`): the leading
+	/// coefficient of the composition along a line with direction `x`.
+	fn eval_infinity<T: Elem<F>>(&self, x: &[T]) -> T;
 }
 
-/// The per-pair work of [`Compute::pair_map_reduce`].
+/// The per-pair work of [`Compute::fold_pair_map_reduce`]. Every kernel sees all columns; kernels
+/// that share a pass pick their columns by index.
 pub trait PairKernel<F>: Sync {
 	/// Number of input columns.
-	const N_IN: usize;
+	fn n_in(&self) -> usize;
 	/// Number of outputs, each summed over all pairs.
-	const N_OUT: usize;
+	fn n_out(&self) -> usize;
 	/// Length of the `scratch` slice `map` needs. The backend allocates it once per worker.
-	const SCRATCH: usize;
+	fn scratch(&self) -> usize;
 
-	/// Maps the low and high half entries of one pair of every column to `N_OUT` values.
-	fn map<T: FieldOps<Scalar = F> + Mul<F, Output = T>>(
-		&self,
-		lo: &[T],
-		hi: &[T],
-		scratch: &mut [T],
-		out: &mut [T],
-	);
+	/// Maps the low and high half entries of one pair of every column to `n_out` values.
+	fn map<T: Elem<F>>(&self, lo: &[T], hi: &[T], scratch: &mut [T], out: &mut [T]);
+}
+
+/// Two kernels in one pass; outputs are concatenated.
+impl<F, A: PairKernel<F>, B: PairKernel<F>> PairKernel<F> for (A, B) {
+	fn n_in(&self) -> usize {
+		self.0.n_in()
+	}
+	fn n_out(&self) -> usize {
+		self.0.n_out() + self.1.n_out()
+	}
+	fn scratch(&self) -> usize {
+		self.0.scratch() + self.1.scratch()
+	}
+	fn map<T: Elem<F>>(&self, lo: &[T], hi: &[T], scratch: &mut [T], out: &mut [T]) {
+		assert_eq!(self.0.n_in(), self.1.n_in());
+		let (s0, s1) = scratch.split_at_mut(self.0.scratch());
+		let (o0, o1) = out.split_at_mut(self.0.n_out());
+		self.0.map(lo, hi, s0, o0);
+		self.1.map(lo, hi, s1, o1);
+	}
+}
+
+/// Any number of kernels of one type in one pass; outputs are concatenated.
+impl<F, K: PairKernel<F>> PairKernel<F> for Vec<K> {
+	fn n_in(&self) -> usize {
+		self[0].n_in()
+	}
+	fn n_out(&self) -> usize {
+		self.iter().map(|k| k.n_out()).sum()
+	}
+	fn scratch(&self) -> usize {
+		self.iter().map(|k| k.scratch()).sum()
+	}
+	fn map<T: Elem<F>>(&self, lo: &[T], hi: &[T], mut scratch: &mut [T], mut out: &mut [T]) {
+		for k in self {
+			assert_eq!(k.n_in(), self[0].n_in());
+			let (s, rest_s) = scratch.split_at_mut(k.scratch());
+			let (o, rest_o) = out.split_at_mut(k.n_out());
+			k.map(lo, hi, s, o);
+			(scratch, out) = (rest_s, rest_o);
+		}
+	}
 }
 
 /// The future type every backend in this crate uses: a boxed closure run by `exec`.
@@ -133,17 +187,17 @@ pub trait Compute<F: BinaryField>: Sync {
 		Self: 'a;
 	/// One sumcheck round in one op: folds the columns by `r` (if `Some`), then, for every
 	/// `i < 2^(n-1)`, maps the pair `(col[i], col[i + 2^(n-1)])` of all columns through `kernel` and
-	/// sums the outputs. Returns the `K::N_OUT` sums.
+	/// sums the outputs. Returns the `kernel.n_out()` sums.
 	///
-	/// Let `m` be the largest `log_len` among the columns. Columns of `log_len == m` are folded
-	/// (when `r` is `Some`) and `n = m - 1`; without `r`, `n = m`. After folding, every column must
-	/// have `log_len` `n` or `n - 1`, else this panics. A column of `n - 1` is broadcast (its pair is
-	/// `(col[i], col[i])`) and is never folded; it carries an equality-indicator tensor over the
-	/// remaining variables.
+	/// All columns must have the same `log_len` (else this panics); `n` is that length after the
+	/// fold. With `eq_point = Some(p)` (`p.len() == n - 1`) each pair's outputs are weighted by
+	/// `eq(p, i)`, where bit `k` of `i` pairs with `p[k]`. How eq is realized is up to the backend:
+	/// SIMD never materializes the full tensor.
 	fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(
 		&self,
 		cols: &'a mut [Self::FieldVec],
 		r: Option<F>,
+		eq_point: Option<&'a [F]>,
 		kernel: &'a K,
 	) -> Self::Future<'a, Vec<F>>
 	where
@@ -181,64 +235,59 @@ pub trait Compute<F: BinaryField>: Sync {
 /// Scalar reference implementations shared by the backends.
 pub(crate) mod scalar {
 	use binius_field::Field;
+	use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
 
 	use super::*;
 
-	/// Sums `kernel` over the pairs `range`, with `get(col, i)` giving the `(lo, hi)` entries.
-	/// Buffers are allocated once per call.
-	pub fn reduce_pairs<F: Field, T, K>(
+	/// Sums `kernel` over the pairs `range`, with `get(col, i)` giving the `(lo, hi)` entries. Each
+	/// output is weighted by `eq[i]` if given. Buffers are allocated once per call.
+	pub fn reduce_pairs<F: Field, T: Elem<F>, K: PairKernel<F>>(
 		kernel: &K,
 		range: std::ops::Range<usize>,
 		get: impl Fn(usize, usize) -> (T, T),
-	) -> Vec<T>
-	where
-		T: FieldOps<Scalar = F> + Mul<F, Output = T>,
-		K: PairKernel<F>,
-	{
-		let (mut lo, mut hi) = (vec![T::zero(); K::N_IN], vec![T::zero(); K::N_IN]);
-		let mut scratch = vec![T::zero(); K::SCRATCH];
-		let mut out = vec![T::zero(); K::N_OUT];
-		let mut acc = vec![T::zero(); K::N_OUT];
+		eq: Option<&[F]>,
+	) -> Vec<T> {
+		let (mut lo, mut hi) =
+			(vec![T::default(); kernel.n_in()], vec![T::default(); kernel.n_in()]);
+		let mut scratch = vec![T::default(); kernel.scratch()];
+		let mut out = vec![T::default(); kernel.n_out()];
+		let mut acc = vec![T::default(); kernel.n_out()];
 		for i in range {
-			for c in 0..K::N_IN {
+			for c in 0..kernel.n_in() {
 				(lo[c], hi[c]) = get(c, i);
 			}
 			kernel.map(&lo, &hi, &mut scratch, &mut out);
-			acc.iter_mut().zip(&out).for_each(|(a, o)| *a += o);
+			for (a, o) in acc.iter_mut().zip(&out) {
+				*a = a.clone() + eq.map_or_else(|| o.clone(), |eq| o.clone() * eq[i]);
+			}
 		}
 		acc
 	}
 
-	/// The `log_len` `n` of the pairs a round reduces after folding. Panics if a column has the wrong
+	/// The `log_len` `n` of the pairs a round reduces after folding. Panics if the columns differ in
 	/// length (see [`Compute::fold_pair_map_reduce`]).
 	pub fn round_log_len(log_lens: &[usize], fold: bool) -> usize {
 		let max = log_lens.iter().copied().max().expect("no columns");
 		assert!(max > usize::from(fold), "columns are too short to reduce");
-		let n = max - usize::from(fold);
-		for &log_len in log_lens {
-			let after = if fold && log_len == max { n } else { log_len };
-			assert!(
-				after == n || after + 1 == n,
-				"column log_len {log_len} is not {n} or {}",
-				n - 1
-			);
-		}
-		n
+		assert!(log_lens.iter().all(|&l| l == max), "columns have different log_len: {log_lens:?}");
+		max - usize::from(fold)
 	}
 
-	/// Sums `kernel` over the pairs of the given (already folded) columns.
-	pub fn pair_map_reduce<F: Field, K: PairKernel<F>>(cols: &[&[F]], kernel: &K) -> Vec<F> {
-		assert_eq!(cols.len(), K::N_IN);
+	/// Sums `kernel` over the pairs of the given (already folded) columns, eq-weighted if given.
+	pub fn pair_map_reduce<F: Field, K: PairKernel<F>>(
+		cols: &[&[F]],
+		eq_point: Option<&[F]>,
+		kernel: &K,
+	) -> Vec<F> {
+		assert_eq!(cols.len(), kernel.n_in());
 		let log_lens: Vec<usize> = cols.iter().map(|c| c.len().ilog2() as usize).collect();
-		let n = 1 << round_log_len(&log_lens, false);
-		reduce_pairs(kernel, 0..n / 2, |c, i| {
-			let col = cols[c];
-			if col.len() == n {
-				(col[i], col[i + n / 2])
-			} else {
-				(col[i], col[i])
-			}
-		})
+		let log_n = round_log_len(&log_lens, false);
+		let n = 1 << log_n;
+		let eq = eq_point.map(|p| {
+			assert_eq!(p.len() + 1, log_n, "eq_point must have n - 1 coordinates");
+			eq_ind_partial_eval_scalars(p)
+		});
+		reduce_pairs(kernel, 0..n / 2, |c, i| (cols[c][i], cols[c][i + n / 2]), eq.as_deref())
 	}
 
 	/// Binds the highest variable of `col` to `r`.

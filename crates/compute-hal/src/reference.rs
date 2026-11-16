@@ -81,6 +81,7 @@ impl<F: BinaryField> Compute<F> for ReferenceCompute {
 		&self,
 		cols: &'a mut [Vec<F>],
 		r: Option<F>,
+		eq_point: Option<&'a [F]>,
 		kernel: &'a K,
 	) -> Lazy<'a, Vec<F>>
 	where
@@ -96,7 +97,7 @@ impl<F: BinaryField> Compute<F> for ReferenceCompute {
 					.for_each(|col| scalar::fold_highest_var(col, r));
 			}
 			let views: Vec<&[F]> = cols.iter().map(Vec::as_slice).collect();
-			scalar::pair_map_reduce(&views, kernel)
+			scalar::pair_map_reduce(&views, eq_point, kernel)
 		})
 	}
 

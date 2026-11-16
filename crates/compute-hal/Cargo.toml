@@ -18,6 +18,12 @@ binius-transcript = { path = "../transcript" }
 rayon.workspace = true
 
 [dev-dependencies]
+binius-ip-prover = { path = "../ip-prover" }
+criterion.workspace = true
 binius-math = { path = "../math", features = ["test-utils"] }
 rand.workspace = true
 sha2.workspace = true
+
+[[bench]]
+name = "mlecheck"
+harness = false

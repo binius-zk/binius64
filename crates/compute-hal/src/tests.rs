@@ -1,9 +1,7 @@
 // Copyright 2026 The Binius Developers
 
-use std::ops::Mul;
-
 use binius_core::word::Word;
-use binius_field::{Field, FieldOps, Ghash128b as B128, arch::OptimalPackedB128};
+use binius_field::{Field, Ghash128b as B128, arch::OptimalPackedB128};
 use binius_ip::sumcheck::verify;
 use binius_math::{
 	FieldBuffer,
@@ -14,7 +12,8 @@ use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	Composition, Compute, ExecStats, FakeDeviceCompute, ReferenceCompute, SimdCompute, scalar,
+	Composition, Compute, Elem, ExecStats, FakeDeviceCompute, PairKernel, ReferenceCompute,
+	SimdCompute, scalar,
 	sumcheck::{self, RoundKernel},
 };
 
@@ -39,32 +38,60 @@ impl Composition<B128> for Product {
 	const N_IN: usize = 2;
 	const DEGREE: usize = 2;
 
-	fn eval<T: FieldOps<Scalar = B128> + Mul<B128, Output = T>>(&self, x: &[T]) -> T {
-		x[0].clone() * &x[1]
+	fn eval<T: Elem<B128>>(&self, x: &[T]) -> T {
+		x[0].clone() * x[1].clone()
+	}
+	fn eval_infinity<T: Elem<B128>>(&self, x: &[T]) -> T {
+		self.eval(x)
 	}
 }
 
-/// `eq * (a * b - c)`.
+/// `eq * (a * b - c)` with eq as an ordinary column.
 struct MleCheck;
 
 impl Composition<B128> for MleCheck {
 	const N_IN: usize = 4;
 	const DEGREE: usize = 3;
 
-	fn eval<T: FieldOps<Scalar = B128> + Mul<B128, Output = T>>(&self, x: &[T]) -> T {
-		x[0].clone() * (x[1].clone() * &x[2] - &x[3])
+	fn eval<T: Elem<B128>>(&self, x: &[T]) -> T {
+		x[0].clone() * (x[1].clone() * x[2].clone() - x[3].clone())
+	}
+	fn eval_infinity<T: Elem<B128>>(&self, x: &[T]) -> T {
+		x[0].clone() * x[1].clone() * x[2].clone()
 	}
 }
 
-/// `eq * (a * b - c)` where `eq` is broadcast (constant along each line): degree 2.
-struct EqMleCheck;
+/// `a * b - c`.
+struct AndC;
 
-impl Composition<B128> for EqMleCheck {
-	const N_IN: usize = 4;
+impl Composition<B128> for AndC {
+	const N_IN: usize = 3;
 	const DEGREE: usize = 2;
 
-	fn eval<T: FieldOps<Scalar = B128> + Mul<B128, Output = T>>(&self, x: &[T]) -> T {
-		x[0].clone() * (x[1].clone() * &x[2] - &x[3])
+	fn eval<T: Elem<B128>>(&self, x: &[T]) -> T {
+		x[0].clone() * x[1].clone() - x[2].clone()
+	}
+	fn eval_infinity<T: Elem<B128>>(&self, x: &[T]) -> T {
+		x[0].clone() * x[1].clone()
+	}
+}
+
+/// Outputs `lo[j]` and `hi[j]` of column `j`: their sums are the two halves' sums.
+struct HalfSums(usize);
+
+impl PairKernel<B128> for HalfSums {
+	fn n_in(&self) -> usize {
+		3
+	}
+	fn n_out(&self) -> usize {
+		2
+	}
+	fn scratch(&self) -> usize {
+		0
+	}
+	fn map<T: Elem<B128>>(&self, lo: &[T], hi: &[T], _: &mut [T], out: &mut [T]) {
+		out[0] = lo[self.0].clone();
+		out[1] = hi[self.0].clone();
 	}
 }
 
@@ -114,22 +141,24 @@ fn check_fold_highest_var<C: Compute<B128>>(c: &C) {
 	}
 }
 
-/// `fold_pair_map_reduce` of `[eq, a, b, c]` (eq broadcast, degree 2) against a direct sum over
-/// the hypercube, for post-fold sizes `n` in `log_ns`, with and without a fold.
+/// `fold_pair_map_reduce` of `[a, b, c]` against a direct sum over the hypercube, for post-fold
+/// sizes `n` in `log_ns`, with and without a fold and with and without eq.
 fn check_fold_pair_map_reduce<C: Compute<B128>>(c: &C, log_ns: std::ops::RangeInclusive<usize>) {
 	let mut rng = rng();
 	let r = random_scalars::<B128>(&mut rng, 1)[0];
-	let points: Vec<B128> = sumcheck::eval_points(2).collect();
 	for n in log_ns {
-		for fold in [false, true] {
+		for (fold, weighted) in [(false, false), (false, true), (true, false), (true, true)] {
 			let len = 1 << (n + usize::from(fold));
-			let eq = random_scalars::<B128>(&mut rng, 1 << (n - 1));
 			let [a, b, cc] = [0, 1, 2].map(|_| random_scalars::<B128>(&mut rng, len));
-			let mut dev: Vec<C::FieldVec> = [&eq, &a, &b, &cc]
-				.map(|col| c.copy_field_from_host(col))
-				.into();
-			let r_opt = fold.then_some(r);
-			let got = c.exec(c.fold_pair_map_reduce(&mut dev, r_opt, &RoundKernel(&EqMleCheck)));
+			let point = random_scalars::<B128>(&mut rng, n - 1);
+			let mut dev: Vec<C::FieldVec> =
+				[&a, &b, &cc].map(|col| c.copy_field_from_host(col)).into();
+			let got = c.exec(c.fold_pair_map_reduce(
+				&mut dev,
+				fold.then_some(r),
+				weighted.then_some(point.as_slice()),
+				&RoundKernel(&AndC),
+			));
 
 			let folded = |col: &Vec<B128>| -> Vec<B128> {
 				if !fold {
@@ -142,20 +171,41 @@ fn check_fold_pair_map_reduce<C: Compute<B128>>(c: &C, log_ns: std::ops::RangeIn
 			};
 			let [a, b, cc] = [a, b, cc].map(|col| folded(&col));
 			let half = a.len() / 2;
-			let want: Vec<B128> = points
-				.iter()
-				.map(|&x| {
-					let line = |col: &[B128], i: usize| col[i] + x * (col[i] + col[i + half]);
-					(0..half)
-						.map(|i| eq[i] * (line(&a, i) * line(&b, i) - line(&cc, i)))
-						.sum()
-				})
-				.collect();
-			assert_eq!(got, want, "n = {n}, fold = {fold}");
-			if fold {
-				assert_eq!(download(c, &dev[1]), a);
-				assert_eq!(download(c, &dev[0]), eq, "broadcast column is not folded");
+			let eq = binius_math::multilinear::eq::eq_ind_partial_eval_scalars(&point);
+			let (mut y1, mut y_inf) = (B128::ZERO, B128::ZERO);
+			for i in 0..half {
+				let w = if weighted { eq[i] } else { B128::ONE };
+				y1 += w * (a[i + half] * b[i + half] - cc[i + half]);
+				y_inf += w * (a[i] + a[i + half]) * (b[i] + b[i + half]);
 			}
+			assert_eq!(got, [y1, y_inf], "n = {n}, fold = {fold}, weighted = {weighted}");
+			if fold {
+				assert_eq!(download(c, &dev[0]), a);
+			}
+		}
+	}
+}
+
+/// Two kernels (a pair, and a `Vec`) in one pass give the concatenated single-kernel outputs.
+fn check_multi_kernel<C: Compute<B128>>(c: &C) {
+	let mut rng = rng();
+	let n = 8;
+	let cols: Vec<Vec<B128>> = (0..3).map(|_| random_scalars(&mut rng, 1 << n)).collect();
+	let point = random_scalars::<B128>(&mut rng, n - 1);
+	let mut dev: Vec<C::FieldVec> = cols.iter().map(|col| c.copy_field_from_host(col)).collect();
+	let kernel = (RoundKernel(&AndC), (0..3).map(HalfSums).collect::<Vec<_>>());
+	for eq in [None, Some(point.as_slice())] {
+		let got = c.exec(c.fold_pair_map_reduce(&mut dev, None, eq, &kernel));
+		assert_eq!(got.len(), 2 + 6);
+		let eq_vals = eq.map(binius_math::multilinear::eq::eq_ind_partial_eval_scalars);
+		let w = |i: usize| eq_vals.as_ref().map_or(B128::ONE, |e| e[i]);
+		for j in 0..3 {
+			let half = 1 << (n - 1);
+			let (lo, hi): (B128, B128) = (
+				(0..half).map(|i| w(i) * cols[j][i]).sum(),
+				(0..half).map(|i| w(i) * cols[j][i + half]).sum(),
+			);
+			assert_eq!(got[2 + 2 * j..4 + 2 * j], [lo, hi]);
 		}
 	}
 }
@@ -163,25 +213,18 @@ fn check_fold_pair_map_reduce<C: Compute<B128>>(c: &C, log_ns: std::ops::RangeIn
 /// A column of the wrong length must panic, not be treated as broadcast.
 fn wrong_length_column<C: Compute<B128>>(c: &C) {
 	let mut cols = [8, 2].map(|len| c.copy_field_from_host(&vec![B128::ONE; len]));
-	c.exec(c.fold_pair_map_reduce(&mut cols, None, &RoundKernel(&Product)));
+	c.exec(c.fold_pair_map_reduce(&mut cols, None, None, &RoundKernel(&Product)));
 }
 
-/// Evaluates `Comp` along a line at `DEGREE + 2` points and checks the degree is exactly `DEGREE`.
-/// The `broadcast` columns have `lo == hi`.
-fn check_degree<Comp: Composition<B128>>(comp: &Comp, broadcast: &[usize]) {
+/// Evaluates `Comp` along a line at `DEGREE + 2` points and checks the degree is exactly `DEGREE`
+/// and the leading coefficient is `eval_infinity` at the direction `lo + hi`.
+fn check_degree<Comp: Composition<B128>>(comp: &Comp) {
 	let mut rng = rng();
 	let lo = random_scalars::<B128>(&mut rng, Comp::N_IN);
-	let hi: Vec<B128> = (0..Comp::N_IN)
-		.map(|i| {
-			if broadcast.contains(&i) {
-				lo[i]
-			} else {
-				random_scalars::<B128>(&mut rng, 1)[0]
-			}
-		})
-		.collect();
-	let xs: Vec<B128> = std::iter::once(B128::ZERO)
-		.chain(sumcheck::eval_points(Comp::DEGREE + 1))
+	let hi = random_scalars::<B128>(&mut rng, Comp::N_IN);
+	let xs: Vec<B128> = [B128::ZERO, B128::ONE]
+		.into_iter()
+		.chain(sumcheck::extra_points(Comp::DEGREE + 2))
 		.collect();
 	let ys: Vec<B128> = xs
 		.iter()
@@ -194,14 +237,16 @@ fn check_degree<Comp: Composition<B128>>(comp: &Comp, broadcast: &[usize]) {
 		.collect();
 	let coeffs = sumcheck::interpolate(&xs, &ys);
 	assert_eq!(coeffs[Comp::DEGREE + 1], B128::ZERO, "degree exceeds DEGREE");
+	let dir: Vec<B128> = (0..Comp::N_IN).map(|i| lo[i] + hi[i]).collect();
 	assert_ne!(coeffs[Comp::DEGREE], B128::ZERO, "degree is below DEGREE");
+	assert_eq!(coeffs[Comp::DEGREE], comp.eval_infinity(&dir));
 }
 
 #[test]
 fn composition_degrees() {
-	check_degree(&Product, &[]);
-	check_degree(&MleCheck, &[]);
-	check_degree(&EqMleCheck, &[0]);
+	check_degree(&Product);
+	check_degree(&MleCheck);
+	check_degree(&AndC);
 }
 
 fn run_ops<C: Compute<B128>>(c: &C) {
@@ -210,6 +255,7 @@ fn run_ops<C: Compute<B128>>(c: &C) {
 	check_fold_words(c);
 	check_fold_highest_var(c);
 	check_fold_pair_map_reduce(c, 1..=6);
+	check_multi_kernel(c);
 }
 
 #[test]
@@ -226,6 +272,8 @@ fn ops_simd() {
 fn simd_log_width_boundary() {
 	let width = OptimalPackedB128::LOG_WIDTH;
 	check_fold_pair_map_reduce(&Simd::new(), 1..=width + 3);
+	// Past the chunk size, so the eq suffix is folded by the reduce tree.
+	check_fold_pair_map_reduce(&Simd::new(), 13..=15);
 }
 
 #[test]
@@ -333,7 +381,7 @@ fn gruen_mlecheck<C: Compute<B128>>(c: &C) {
 
 	let mut transcript = Transcript::new(Default::default());
 	let (challenges, evals) =
-		sumcheck::prove_mlecheck(c, &EqMleCheck, &point, cols, claim, &mut transcript);
+		sumcheck::prove_mlecheck(c, &AndC, &point, cols, claim, &mut transcript);
 	transcript.message().write_scalar_slice(&evals);
 	let mut verifier = transcript.into_verifier();
 	let output = binius_ip::mlecheck::verify(&point, 2, claim, &mut verifier).unwrap();
@@ -402,13 +450,11 @@ fn sumcheck_fake_device_counts() {
 	let device = FakeDeviceCompute::<B128>::default();
 	gruen_mlecheck(&device);
 	let s = device.stats();
-	// Setup expands eq once. Then each round is tensor_expand + fold_pair_map_reduce (the first
-	// round reuses the setup eq).
-	assert_eq!(s.execs, n + 2);
-	assert_eq!(s.per_exec[0].launches, 1);
+	// Eq lives inside the op: one launch per round, like the plain sumcheck.
+	assert_eq!(s.execs, n + 1);
 	assert_eq!((s.h2d_calls, s.h2d_elems), (3, 3 << n));
 	assert_eq!(s.d2h_elems, n * 2 + 3);
-	assert_rounds(&s.per_exec[1..], 1, 2);
+	assert_rounds(&s.per_exec, 1, 1);
 	println!("gruen mlecheck: {s:?}");
 }
 

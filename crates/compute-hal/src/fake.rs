@@ -7,20 +7,16 @@
 #![allow(clippy::significant_drop_tightening)]
 
 use std::{
-	iter::{Product, Sum},
 	marker::PhantomData,
-	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+	ops::{Add, Mul, Sub},
 	sync::{Arc, Mutex},
 };
 
 use binius_core::word::Word;
-use binius_field::{
-	BinaryField, Field, FieldOps,
-	arithmetic_traits::{InvertOrZero, Square},
-};
+use binius_field::{BinaryField, Field};
 use binius_math::{inner_product::inner_product, multilinear::eq::eq_ind_partial_eval_scalars};
 
-use crate::{Compute, Lazy, PairKernel, scalar};
+use crate::{Compute, Elem, Lazy, PairKernel, scalar};
 
 /// Host/device traffic and dispatch counters.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -249,6 +245,7 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 		&self,
 		cols: &'a mut [FakeVec],
 		r: Option<F>,
+		eq_point: Option<&'a [F]>,
 		kernel: &'a K,
 	) -> Lazy<'a, Vec<F>>
 	where
@@ -257,7 +254,7 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 		let arena = self.arena.clone();
 		Box::new(move || {
 			let mut arena = launch(&arena);
-			assert_eq!(cols.len(), K::N_IN);
+			assert_eq!(cols.len(), kernel.n_in());
 			let log_lens: Vec<usize> = cols.iter().map(|c| c.log_len).collect();
 			let log_n = scalar::round_log_len(&log_lens, r.is_some());
 			if let Some(r) = r {
@@ -267,30 +264,28 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 				}
 			}
 			// Trace the kernel once, then interpret the graph for every pair.
-			let lo: Vec<Sym<F>> = (0..K::N_IN).map(|i| Sym::new(Node::Lo(i))).collect();
-			let hi: Vec<Sym<F>> = (0..K::N_IN).map(|i| Sym::new(Node::Hi(i))).collect();
-			let mut graph = vec![Sym::zero(); K::N_OUT];
-			let mut scratch = vec![Sym::zero(); K::SCRATCH];
+			let lo: Vec<Sym<F>> = (0..kernel.n_in()).map(|i| Sym::new(Node::Lo(i))).collect();
+			let hi: Vec<Sym<F>> = (0..kernel.n_in()).map(|i| Sym::new(Node::Hi(i))).collect();
+			let mut graph = vec![Sym::default(); kernel.n_out()];
+			let mut scratch = vec![Sym::default(); kernel.scratch()];
 			kernel.map(&lo, &hi, &mut scratch, &mut graph);
 
 			let n = 1 << log_n;
-			let (mut lo, mut hi) = (vec![F::ZERO; K::N_IN], vec![F::ZERO; K::N_IN]);
-			let mut sums = vec![F::ZERO; K::N_OUT];
+			// The fake materializes eq; only SIMD avoids the full tensor.
+			let eq = eq_point.map(eq_ind_partial_eval_scalars);
+			let (mut lo, mut hi) = (vec![F::ZERO; kernel.n_in()], vec![F::ZERO; kernel.n_in()]);
+			let mut sums = vec![F::ZERO; kernel.n_out()];
 			for i in 0..n / 2 {
 				for (c, col) in cols.iter().enumerate() {
 					let col = &arena.fields[col.id];
-					(lo[c], hi[c]) = if col.len() == n {
-						(col[i], col[i + n / 2])
-					} else {
-						(col[i], col[i])
-					};
+					(lo[c], hi[c]) = (col[i], col[i + n / 2]);
 				}
 				for (sum, g) in sums.iter_mut().zip(&graph) {
-					*sum += g.eval(&lo, &hi);
+					*sum += g.eval(&lo, &hi) * eq.as_ref().map_or(F::ONE, |eq| eq[i]);
 				}
 			}
 			arena.stats.d2h_calls += 1;
-			arena.stats.d2h_elems += K::N_OUT;
+			arena.stats.d2h_elems += kernel.n_out();
 			arena.pending_scalars += 1;
 			sums
 		})
@@ -342,14 +337,11 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 
 enum Node<F> {
 	Zero,
-	One,
 	Lo(usize),
 	Hi(usize),
 	Add(Sym<F>, Sym<F>),
 	Mul(Sym<F>, Sym<F>),
 	Scale(Sym<F>, F),
-	Square(Sym<F>),
-	Inv(Sym<F>),
 }
 
 /// A traced field element: a node of an expression graph over a pair's `lo` and `hi` entries.
@@ -369,52 +361,37 @@ impl<F: Field> Sym<F> {
 	fn eval(&self, lo: &[F], hi: &[F]) -> F {
 		match &*self.0 {
 			Node::Zero => F::ZERO,
-			Node::One => F::ONE,
 			Node::Lo(i) => lo[*i],
 			Node::Hi(i) => hi[*i],
 			Node::Add(a, b) => a.eval(lo, hi) + b.eval(lo, hi),
 			Node::Mul(a, b) => a.eval(lo, hi) * b.eval(lo, hi),
 			Node::Scale(a, c) => a.eval(lo, hi) * *c,
-			Node::Square(a) => Square::square(a.eval(lo, hi)),
-			Node::Inv(a) => a.eval(lo, hi).invert_or_zero(),
 		}
 	}
 }
 
-macro_rules! sym_binop {
-	($trait:ident, $method:ident, $assign_trait:ident, $assign:ident, $node:ident) => {
-		impl<F: Field> $trait for Sym<F> {
-			type Output = Self;
-			fn $method(self, rhs: Self) -> Self {
-				Sym::new(Node::$node(self, rhs))
-			}
-		}
-		impl<F: Field> $trait<&Sym<F>> for Sym<F> {
-			type Output = Self;
-			fn $method(self, rhs: &Self) -> Self {
-				Sym::new(Node::$node(self, rhs.clone()))
-			}
-		}
-		impl<F: Field> $assign_trait for Sym<F> {
-			fn $assign(&mut self, rhs: Self) {
-				*self = Sym::new(Node::$node(self.clone(), rhs));
-			}
-		}
-		impl<F: Field> $assign_trait<&Sym<F>> for Sym<F> {
-			fn $assign(&mut self, rhs: &Self) {
-				*self = Sym::new(Node::$node(self.clone(), rhs.clone()));
-			}
-		}
-	};
+impl<F: Field> Add for Sym<F> {
+	type Output = Self;
+	fn add(self, rhs: Self) -> Self {
+		Sym::new(Node::Add(self, rhs))
+	}
 }
 
-sym_binop!(Add, add, AddAssign, add_assign, Add);
-// Subtraction is addition in characteristic 2.
-#[allow(clippy::suspicious_arithmetic_impl, clippy::suspicious_op_assign_impl)]
-const _: () = {
-	sym_binop!(Sub, sub, SubAssign, sub_assign, Add);
-};
-sym_binop!(Mul, mul, MulAssign, mul_assign, Mul);
+impl<F: Field> Sub for Sym<F> {
+	type Output = Self;
+	// Subtraction is addition in characteristic 2.
+	#[allow(clippy::suspicious_arithmetic_impl)]
+	fn sub(self, rhs: Self) -> Self {
+		Sym::new(Node::Add(self, rhs))
+	}
+}
+
+impl<F: Field> Mul for Sym<F> {
+	type Output = Self;
+	fn mul(self, rhs: Self) -> Self {
+		Sym::new(Node::Mul(self, rhs))
+	}
+}
 
 impl<F: Field> Mul<F> for Sym<F> {
 	type Output = Self;
@@ -423,64 +400,10 @@ impl<F: Field> Mul<F> for Sym<F> {
 	}
 }
 
-impl<F: Field> Neg for Sym<F> {
-	type Output = Self;
-	fn neg(self) -> Self {
-		self
-	}
-}
-
-impl<F: Field> Sum for Sym<F> {
-	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(Self::zero(), |a, b| a + b)
-	}
-}
-
-impl<'a, F: Field> Sum<&'a Sym<F>> for Sym<F> {
-	fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(Self::zero(), |a, b| a + b)
-	}
-}
-
-impl<F: Field> Product for Sym<F> {
-	fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(Self::one(), |a, b| a * b)
-	}
-}
-
-impl<'a, F: Field> Product<&'a Sym<F>> for Sym<F> {
-	fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(Self::one(), |a, b| a * b)
-	}
-}
-
-impl<F: Field> Square for Sym<F> {
-	fn square(self) -> Self {
-		Sym::new(Node::Square(self))
-	}
-}
-
-impl<F: Field> InvertOrZero for Sym<F> {
-	fn invert_or_zero(self) -> Self {
-		Sym::new(Node::Inv(self))
-	}
-}
-
-impl<F: Field> FieldOps for Sym<F> {
-	type Scalar = F;
-
-	fn zero() -> Self {
+impl<F: Field> Default for Sym<F> {
+	fn default() -> Self {
 		Sym::new(Node::Zero)
 	}
-
-	fn one() -> Self {
-		Sym::new(Node::One)
-	}
-
-	fn square_transpose<FSub: Field>(_elems: &mut [Self])
-	where
-		F: binius_field::ExtensionField<FSub>,
-	{
-		unimplemented!("a traced element has no subfield structure to transpose")
-	}
 }
+
+impl<F: Field> Elem<F> for Sym<F> {}
