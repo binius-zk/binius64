@@ -87,17 +87,21 @@ fn layout_round(specs: &[OracleSpec]) -> RoundLayout {
 
 		// Scan the extents in order for the lowest block that fits before the next one, hopping
 		// past each extent that it would overlap.
+		// Because the extents are sorted, the offset only moves forward, and the break index is
+		// also where the new extent is inserted.
 		let mut offset = 0;
-		for extent in &extents {
+		let mut pos = extents.len();
+		for (j, extent) in extents.iter().enumerate() {
 			if (offset + 1) << log_block <= extent.start {
+				pos = j;
 				break;
 			}
-			offset = offset.max(extent.end.div_ceil(1 << log_block));
+			offset = extent.end.div_ceil(1 << log_block);
 		}
 
 		let start = offset << log_block;
 		let extent = start..start + specs[i].len;
-		extents.insert(extents.partition_point(|e| e.start < start), extent);
+		extents.insert(pos, extent);
 		end = end.max((offset + 1) << log_block);
 		block_offsets[i] = offset;
 	}
