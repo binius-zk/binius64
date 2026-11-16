@@ -12,8 +12,10 @@ use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	Composition, Compute, Elem, ExecStats, FakeDeviceCompute, PairKernel, ReferenceCompute,
-	SimdCompute, scalar,
+	Column, Composition, Compute, Elem, ExecStats, FakeDeviceCompute, PairKernel, ReferenceCompute,
+	SimdCompute,
+	mlecheck::{ComputeMleCheckProver, quadratic},
+	scalar,
 	sumcheck::{self, RoundKernel},
 };
 
@@ -25,6 +27,16 @@ fn rng() -> StdRng {
 
 fn download<C: Compute<B128>>(c: &C, v: &C::FieldVec) -> Vec<B128> {
 	c.exec(c.to_host(c.as_slice(v)))
+}
+
+/// Uploads `cols` as owned columns.
+fn upload<'s, C: Compute<B128>>(
+	c: &C,
+	cols: &[&Vec<B128>],
+) -> Vec<Column<C::FieldVec, C::FieldSlice<'s>>> {
+	cols.iter()
+		.map(|col| Column::Owned(c.copy_field_from_host(col)))
+		.collect()
 }
 
 fn random_words(rng: &mut StdRng, n: usize) -> Vec<Word> {
@@ -131,10 +143,10 @@ fn check_fold_highest_var<C: Compute<B128>>(c: &C) {
 	let mut rng = rng();
 	let r = random_scalars::<B128>(&mut rng, 1)[0];
 	let cols: Vec<Vec<B128>> = (0..2).map(|_| random_scalars(&mut rng, 1 << 6)).collect();
-	let mut dev: Vec<C::FieldVec> = cols.iter().map(|col| c.copy_field_from_host(col)).collect();
+	let mut dev = upload(c, &cols.iter().collect::<Vec<_>>());
 	c.exec(c.fold_highest_var(&mut dev, r));
 	for (col, dev) in cols.into_iter().zip(&dev) {
-		let got = download(c, dev);
+		let got = download(c, dev.owned());
 		let mut want = col;
 		scalar::fold_highest_var(&mut want, r);
 		assert_eq!(got, want);
@@ -151,8 +163,7 @@ fn check_fold_pair_map_reduce<C: Compute<B128>>(c: &C, log_ns: std::ops::RangeIn
 			let len = 1 << (n + usize::from(fold));
 			let [a, b, cc] = [0, 1, 2].map(|_| random_scalars::<B128>(&mut rng, len));
 			let point = random_scalars::<B128>(&mut rng, n - 1);
-			let mut dev: Vec<C::FieldVec> =
-				[&a, &b, &cc].map(|col| c.copy_field_from_host(col)).into();
+			let mut dev = upload(c, &[&a, &b, &cc]);
 			let got = c.exec(c.fold_pair_map_reduce(
 				&mut dev,
 				fold.then_some(r),
@@ -180,7 +191,7 @@ fn check_fold_pair_map_reduce<C: Compute<B128>>(c: &C, log_ns: std::ops::RangeIn
 			}
 			assert_eq!(got, [y1, y_inf], "n = {n}, fold = {fold}, weighted = {weighted}");
 			if fold {
-				assert_eq!(download(c, &dev[0]), a);
+				assert_eq!(download(c, dev[0].owned()), a);
 			}
 		}
 	}
@@ -192,7 +203,7 @@ fn check_multi_kernel<C: Compute<B128>>(c: &C) {
 	let n = 8;
 	let cols: Vec<Vec<B128>> = (0..3).map(|_| random_scalars(&mut rng, 1 << n)).collect();
 	let point = random_scalars::<B128>(&mut rng, n - 1);
-	let mut dev: Vec<C::FieldVec> = cols.iter().map(|col| c.copy_field_from_host(col)).collect();
+	let mut dev = upload(c, &cols.iter().collect::<Vec<_>>());
 	let kernel = (RoundKernel(&AndC), (0..3).map(HalfSums).collect::<Vec<_>>());
 	for eq in [None, Some(point.as_slice())] {
 		let got = c.exec(c.fold_pair_map_reduce(&mut dev, None, eq, &kernel));
@@ -212,7 +223,7 @@ fn check_multi_kernel<C: Compute<B128>>(c: &C) {
 
 /// A column of the wrong length must panic, not be treated as broadcast.
 fn wrong_length_column<C: Compute<B128>>(c: &C) {
-	let mut cols = [8, 2].map(|len| c.copy_field_from_host(&vec![B128::ONE; len]));
+	let mut cols = upload(c, &[&vec![B128::ONE; 8], &vec![B128::ONE; 2]]);
 	c.exec(c.fold_pair_map_reduce(&mut cols, None, None, &RoundKernel(&Product)));
 }
 
@@ -377,11 +388,18 @@ fn gruen_mlecheck<C: Compute<B128>>(c: &C) {
 	let [a, b, cc] = [0, 1, 2].map(|_| random_scalars::<B128>(&mut rng, 1 << n));
 	let eq = binius_math::multilinear::eq::eq_ind_partial_eval_scalars(&point);
 	let claim: B128 = (0..1 << n).map(|i| eq[i] * (a[i] * b[i] - cc[i])).sum();
-	let cols = [&a, &b, &cc].map(|col| c.copy_field_from_host(col)).into();
+	let kernel = quadratic(&AndC, 3, vec![0, 1, 2]);
+	let prover = ComputeMleCheckProver::new(
+		c,
+		upload(c, &[&a, &b, &cc]),
+		kernel,
+		vec![(claim, 2)],
+		point.clone(),
+	);
 
 	let mut transcript = Transcript::new(Default::default());
-	let (challenges, evals) =
-		sumcheck::prove_mlecheck(c, &AndC, &point, cols, claim, &mut transcript);
+	let output = binius_ip_prover::sumcheck::prove_single_mlecheck(prover, &mut transcript);
+	let (challenges, evals) = (output.challenges, output.multilinear_evals);
 	transcript.message().write_scalar_slice(&evals);
 	let mut verifier = transcript.into_verifier();
 	let output = binius_ip::mlecheck::verify(&point, 2, claim, &mut verifier).unwrap();

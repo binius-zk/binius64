@@ -18,6 +18,7 @@
 //! Related crates: `binius-math` (multilinear helpers), `binius-ip` (the sumcheck verifier).
 
 mod fake;
+pub mod mlecheck;
 mod reference;
 mod simd;
 pub mod sumcheck;
@@ -88,7 +89,6 @@ impl<F, A: PairKernel<F>, B: PairKernel<F>> PairKernel<F> for (A, B) {
 		self.0.scratch() + self.1.scratch()
 	}
 	fn map<T: Elem<F>>(&self, lo: &[T], hi: &[T], scratch: &mut [T], out: &mut [T]) {
-		assert_eq!(self.0.n_in(), self.1.n_in());
 		let (s0, s1) = scratch.split_at_mut(self.0.scratch());
 		let (o0, o1) = out.split_at_mut(self.0.n_out());
 		self.0.map(lo, hi, s0, o0);
@@ -99,7 +99,8 @@ impl<F, A: PairKernel<F>, B: PairKernel<F>> PairKernel<F> for (A, B) {
 /// Any number of kernels of one type in one pass; outputs are concatenated.
 impl<F, K: PairKernel<F>> PairKernel<F> for Vec<K> {
 	fn n_in(&self) -> usize {
-		self[0].n_in()
+		// An empty `Vec` adds no kernels, so it constrains nothing.
+		self.first().map_or(0, K::n_in)
 	}
 	fn n_out(&self) -> usize {
 		self.iter().map(|k| k.n_out()).sum()
@@ -118,6 +119,27 @@ impl<F, K: PairKernel<F>> PairKernel<F> for Vec<K> {
 	}
 }
 
+/// A column of a sumcheck: owned by the host, or lent for the whole proof.
+///
+/// A lent column is read in place; its first fold writes a fresh half-size [`Column::Owned`] buffer
+/// instead of copying the column up front (the real prover's `Column::Borrowed`).
+pub enum Column<V, S> {
+	/// A buffer the backend may overwrite.
+	Owned(V),
+	/// A read-only view of the caller's buffer.
+	Borrowed(S),
+}
+
+impl<V, S> Column<V, S> {
+	/// The owned buffer. Panics on a lent column, which no fold has replaced yet.
+	pub fn owned(&self) -> &V {
+		match self {
+			Self::Owned(v) => v,
+			Self::Borrowed(_) => panic!("column is still borrowed; fold it first"),
+		}
+	}
+}
+
 /// The future type every backend in this crate uses: a boxed closure run by `exec`.
 pub type Lazy<'a, T> = Box<dyn FnOnce() -> T + Send + 'a>;
 
@@ -127,7 +149,8 @@ pub type Lazy<'a, T> = Box<dyn FnOnce() -> T + Send + 'a>;
 /// several fields, e.g. a SIMD backend per packed type.
 ///
 /// Columns are owned by the host and borrowed by futures: read-only ops take a `FieldSlice<'a>`,
-/// and ops that change columns take `&'a mut [FieldVec]`.
+/// and ops that change columns take `&'a mut [Column<..>]`, so they can fold a lent column into a
+/// fresh buffer.
 pub trait Compute<F: BinaryField>: Sync {
 	/// An owned buffer of `2^log_len` field elements.
 	type FieldVec: Send;
@@ -165,8 +188,9 @@ pub trait Compute<F: BinaryField>: Sync {
 		Self: 'a;
 	/// Evaluates the multilinear `mle` at `point`.
 	///
-	/// A required op rather than `tensor_expand` + `inner_product` via `then`: `inner_product` takes
-	/// slices, and the tensor is owned by the `then` closure, so no slice of it outlives the closure.
+	/// A required op rather than `tensor_expand` + `inner_product` via `then`: `inner_product`
+	/// takes slices, and the tensor is owned by the `then` closure, so no slice of it outlives the
+	/// closure.
 	fn evaluate<'a>(&self, mle: Self::FieldSlice<'a>, point: &'a [F]) -> Self::Future<'a, F>;
 	/// `out[i] = sum_b bit_b(words[i]) * weights[b]`, zero-padded to a power of two.
 	fn fold_words<'a>(
@@ -176,26 +200,28 @@ pub trait Compute<F: BinaryField>: Sync {
 	) -> Self::Future<'a, Self::FieldVec>
 	where
 		Self: 'a;
-	/// Binds the highest variable of every column to `r`; each column loses one variable. Returns
-	/// the columns, so a following `then` can read them.
-	fn fold_highest_var<'a>(
+	/// Binds the highest variable of every column to `r`; each column loses one variable and is
+	/// [`Column::Owned`] afterwards. Returns the columns, so a following `then` can read them.
+	#[allow(clippy::type_complexity)] // the column slice type is spelled out in full
+	fn fold_highest_var<'a, 's: 'a>(
 		&self,
-		cols: &'a mut [Self::FieldVec],
+		cols: &'a mut [Column<Self::FieldVec, Self::FieldSlice<'s>>],
 		r: F,
-	) -> Self::Future<'a, &'a mut [Self::FieldVec]>
+	) -> Self::Future<'a, &'a mut [Column<Self::FieldVec, Self::FieldSlice<'s>>]>
 	where
 		Self: 'a;
 	/// One sumcheck round in one op: folds the columns by `r` (if `Some`), then, for every
-	/// `i < 2^(n-1)`, maps the pair `(col[i], col[i + 2^(n-1)])` of all columns through `kernel` and
-	/// sums the outputs. Returns the `kernel.n_out()` sums.
+	/// `i < 2^(n-1)`, maps the pair `(col[i], col[i + 2^(n-1)])` of all columns through `kernel`
+	/// and sums the outputs. Returns the `kernel.n_out()` sums. A [`Column::Borrowed`] is read in
+	/// place and replaced by its folded copy.
 	///
 	/// All columns must have the same `log_len` (else this panics); `n` is that length after the
 	/// fold. With `eq_point = Some(p)` (`p.len() == n - 1`) each pair's outputs are weighted by
 	/// `eq(p, i)`, where bit `k` of `i` pairs with `p[k]`. How eq is realized is up to the backend:
 	/// SIMD never materializes the full tensor.
-	fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(
+	fn fold_pair_map_reduce<'a, 's: 'a, K: PairKernel<F> + 'a>(
 		&self,
-		cols: &'a mut [Self::FieldVec],
+		cols: &'a mut [Column<Self::FieldVec, Self::FieldSlice<'s>>],
 		r: Option<F>,
 		eq_point: Option<&'a [F]>,
 		kernel: &'a K,
@@ -217,9 +243,9 @@ pub trait Compute<F: BinaryField>: Sync {
 	/// Monadic bind: runs `f` on the result of `a` and continues with the future it returns.
 	///
 	/// Over handle-valued futures (`FieldVec`s) this is free on a device: the backend enqueues `a`,
-	/// calls `f` with the handles, and keeps enqueuing, so the chain is one submission. A bind whose
-	/// closure consumes a device-computed scalar (e.g. the `F` of `inner_product`) forces a hidden
-	/// device-to-host sync inside `exec`. `FakeDeviceCompute` counts those.
+	/// calls `f` with the handles, and keeps enqueuing, so the chain is one submission. A bind
+	/// whose closure consumes a device-computed scalar (e.g. the `F` of `inner_product`) forces a
+	/// hidden device-to-host sync inside `exec`. `FakeDeviceCompute` counts those.
 	///
 	/// `f` is opaque until its input exists: the backend can enqueue back-to-back but cannot fuse
 	/// across it. Fusion needs an explicit op, such as `fold_pair_map_reduce`.
@@ -264,8 +290,8 @@ pub(crate) mod scalar {
 		acc
 	}
 
-	/// The `log_len` `n` of the pairs a round reduces after folding. Panics if the columns differ in
-	/// length (see [`Compute::fold_pair_map_reduce`]).
+	/// The `log_len` `n` of the pairs a round reduces after folding. Panics if the columns differ
+	/// in length (see [`Compute::fold_pair_map_reduce`]).
 	pub fn round_log_len(log_lens: &[usize], fold: bool) -> usize {
 		let max = log_lens.iter().copied().max().expect("no columns");
 		assert!(max > usize::from(fold), "columns are too short to reduce");

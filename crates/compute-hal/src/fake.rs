@@ -16,7 +16,7 @@ use binius_core::word::Word;
 use binius_field::{BinaryField, Field};
 use binius_math::{inner_product::inner_product, multilinear::eq::eq_ind_partial_eval_scalars};
 
-use crate::{Compute, Elem, Lazy, PairKernel, scalar};
+use crate::{Column, Compute, Elem, Lazy, PairKernel, scalar};
 
 /// Host/device traffic and dispatch counters.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -118,6 +118,28 @@ fn launch<F: Field>(arena: &Mutex<Arena<F>>) -> std::sync::MutexGuard<'_, Arena<
 	guard.stats.launches += 1;
 	guard.cur.launches += 1;
 	guard
+}
+
+const fn id(col: &Column<FakeVec, FakeSlice<'_>>) -> usize {
+	match col {
+		Column::Owned(v) => v.id,
+		Column::Borrowed(s) => s.id,
+	}
+}
+
+/// Binds the highest variable of `col`; a borrowed column becomes a fresh owned device buffer.
+fn fold_col<F: Field>(arena: &mut Arena<F>, col: &mut Column<FakeVec, FakeSlice<'_>>, r: F) {
+	match col {
+		Column::Owned(v) => {
+			scalar::fold_highest_var(&mut arena.fields[v.id], r);
+			v.log_len -= 1;
+		}
+		Column::Borrowed(s) => {
+			let mut values = arena.fields[s.id].clone();
+			scalar::fold_highest_var(&mut values, r);
+			*col = Column::Owned(push(arena, values));
+		}
+	}
 }
 
 /// Stores `values` as a new device buffer (a device-side result, no transfer).
@@ -226,24 +248,25 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 		})
 	}
 
-	fn fold_highest_var<'a>(&self, cols: &'a mut [FakeVec], r: F) -> Lazy<'a, &'a mut [FakeVec]>
+	fn fold_highest_var<'a, 's: 'a>(
+		&self,
+		cols: &'a mut [Column<FakeVec, FakeSlice<'s>>],
+		r: F,
+	) -> Lazy<'a, &'a mut [Column<FakeVec, FakeSlice<'s>>]>
 	where
 		Self: 'a,
 	{
 		let arena = self.arena.clone();
 		Box::new(move || {
 			let mut arena = launch(&arena);
-			for col in cols.iter_mut() {
-				scalar::fold_highest_var(&mut arena.fields[col.id], r);
-				col.log_len -= 1;
-			}
+			cols.iter_mut().for_each(|col| fold_col(&mut arena, col, r));
 			cols
 		})
 	}
 
-	fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(
+	fn fold_pair_map_reduce<'a, 's: 'a, K: PairKernel<F> + 'a>(
 		&self,
-		cols: &'a mut [FakeVec],
+		cols: &'a mut [Column<FakeVec, FakeSlice<'s>>],
 		r: Option<F>,
 		eq_point: Option<&'a [F]>,
 		kernel: &'a K,
@@ -255,13 +278,13 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 		Box::new(move || {
 			let mut arena = launch(&arena);
 			assert_eq!(cols.len(), kernel.n_in());
-			let log_lens: Vec<usize> = cols.iter().map(|c| c.log_len).collect();
+			let log_lens: Vec<usize> = cols
+				.iter()
+				.map(|c| arena.fields[id(c)].len().ilog2() as usize)
+				.collect();
 			let log_n = scalar::round_log_len(&log_lens, r.is_some());
 			if let Some(r) = r {
-				for col in cols.iter_mut().filter(|c| c.log_len == log_n + 1) {
-					scalar::fold_highest_var(&mut arena.fields[col.id], r);
-					col.log_len -= 1;
-				}
+				cols.iter_mut().for_each(|col| fold_col(&mut arena, col, r));
 			}
 			// Trace the kernel once, then interpret the graph for every pair.
 			let lo: Vec<Sym<F>> = (0..kernel.n_in()).map(|i| Sym::new(Node::Lo(i))).collect();
@@ -277,7 +300,7 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 			let mut sums = vec![F::ZERO; kernel.n_out()];
 			for i in 0..n / 2 {
 				for (c, col) in cols.iter().enumerate() {
-					let col = &arena.fields[col.id];
+					let col = &arena.fields[id(col)];
 					(lo[c], hi[c]) = (col[i], col[i + n / 2]);
 				}
 				for (sum, g) in sums.iter_mut().zip(&graph) {

@@ -1,9 +1,12 @@
 // Copyright 2026 The Binius Developers
 
-//! Gruen MLE-check of `a * b - c`: the real `SharedMleCheckProver` against the HAL driver.
+//! Gruen MLE-check of `a * b - c`: the real `SharedMleCheckProver` against the HAL prover.
 
 use binius_compute::BufferPool;
-use binius_compute_hal::{Composition, Compute, Elem, SimdCompute, sumcheck::prove_mlecheck};
+use binius_compute_hal::{
+	Column, Composition, Compute, Elem, SimdCompute,
+	mlecheck::{ComputeMleCheckProver, quadratic},
+};
 use binius_field::{FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip_prover::sumcheck::{
 	self, mle_store::MleStore, quadratic_mle_evaluator::QuadraticMleEvaluator,
@@ -99,8 +102,18 @@ fn bench_mlecheck(criterion: &mut Criterion) {
 							.into(),
 					)
 				},
-				|(mut transcript, cols)| {
-					prove_mlecheck(&compute, &AndC, &eval_point, cols, eval_claim, &mut transcript)
+				|(mut transcript, cols): (_, Vec<_>)| {
+					let cols = cols.into_iter().map(Column::Owned).collect();
+					let kernel = quadratic(&AndC, 3, vec![0, 1, 2]);
+					let claims = vec![(eval_claim, 2)];
+					let prover = ComputeMleCheckProver::new(
+						&compute,
+						cols,
+						kernel,
+						claims,
+						eval_point.clone(),
+					);
+					sumcheck::prove_single_mlecheck(prover, &mut transcript)
 				},
 				BatchSize::PerIteration,
 			);

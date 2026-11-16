@@ -12,12 +12,16 @@ use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	FieldBuffer, FieldSlice,
 	inner_product::inner_product_par,
-	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate, fold::fold_highest_var_inplace},
+	multilinear::{
+		eq::eq_ind_partial_eval,
+		evaluate::evaluate,
+		fold::{fold_highest_var, fold_highest_var_inplace},
+	},
 };
 use binius_prover::fold_word::BitAxisFolder;
 use rayon::prelude::*;
 
-use crate::{Compute, Lazy, PairKernel, scalar};
+use crate::{Column, Compute, Lazy, PairKernel, scalar};
 
 /// Packed backend using rayon for parallelism.
 pub struct SimdCompute<P>(PhantomData<fn() -> P>);
@@ -35,6 +39,14 @@ impl<P> Default for SimdCompute<P> {
 	}
 }
 
+/// Binds the highest variable of `col`; a borrowed column becomes a fresh owned one.
+fn fold_col<P: PackedField>(col: &mut Column<FieldBuffer<P>, FieldSlice<'_, P>>, r: P::Scalar) {
+	match col {
+		Column::Owned(v) => fold_highest_var_inplace(v, r),
+		Column::Borrowed(s) => *col = Column::Owned(fold_highest_var(&GlobalAllocator, s, r)),
+	}
+}
+
 /// Log2 of the scalars per chunk of the eq-weighted pass (64 KiB of columns at 128 bits).
 const MAX_CHUNK_VARS: usize = 12;
 
@@ -45,7 +57,7 @@ const MAX_CHUNK_VARS: usize = 12;
 /// `wide_mul(kernel_out, eq)` unreduced and reduces once; the remaining (suffix) coordinates are
 /// folded in while combining chunk results, `lo + z * (hi - lo)`.
 fn pair_map_reduce<P, K>(
-	cols: &[FieldBuffer<P>],
+	cols: &[FieldSlice<'_, P>],
 	eq_point: Option<&[P::Scalar]>,
 	kernel: &K,
 ) -> Vec<P::Scalar>
@@ -206,24 +218,23 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 		})
 	}
 
-	fn fold_highest_var<'a>(
+	fn fold_highest_var<'a, 's: 'a>(
 		&self,
-		cols: &'a mut [FieldBuffer<P>],
+		cols: &'a mut [Column<FieldBuffer<P>, FieldSlice<'s, P>>],
 		r: P::Scalar,
-	) -> Lazy<'a, &'a mut [FieldBuffer<P>]>
+	) -> Lazy<'a, &'a mut [Column<FieldBuffer<P>, FieldSlice<'s, P>>]>
 	where
 		Self: 'a,
 	{
 		Box::new(move || {
-			cols.iter_mut()
-				.for_each(|col| fold_highest_var_inplace(col, r));
+			cols.iter_mut().for_each(|col| fold_col(col, r));
 			cols
 		})
 	}
 
-	fn fold_pair_map_reduce<'a, K: PairKernel<P::Scalar> + 'a>(
+	fn fold_pair_map_reduce<'a, 's: 'a, K: PairKernel<P::Scalar> + 'a>(
 		&self,
-		cols: &'a mut [FieldBuffer<P>],
+		cols: &'a mut [Column<FieldBuffer<P>, FieldSlice<'s, P>>],
 		r: Option<P::Scalar>,
 		eq_point: Option<&'a [P::Scalar]>,
 		kernel: &'a K,
@@ -232,14 +243,17 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 		Self: 'a,
 	{
 		Box::new(move || {
-			let log_lens: Vec<usize> = cols.iter().map(|c| c.log_len()).collect();
-			let n = scalar::round_log_len(&log_lens, r.is_some());
 			if let Some(r) = r {
-				cols.iter_mut()
-					.filter(|c| c.log_len() == n + 1)
-					.for_each(|col| fold_highest_var_inplace(col, r));
+				cols.iter_mut().for_each(|col| fold_col(col, r));
 			}
-			pair_map_reduce(cols, eq_point, kernel)
+			let views: Vec<_> = cols
+				.iter()
+				.map(|col| match col {
+					Column::Owned(v) => v.as_view(),
+					Column::Borrowed(s) => s.as_view(),
+				})
+				.collect();
+			pair_map_reduce(&views, eq_point, kernel)
 		})
 	}
 

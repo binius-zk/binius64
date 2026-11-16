@@ -10,7 +10,7 @@ use binius_field::{BinaryField, BinaryField1b, ExtensionField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 
-use crate::{Composition, Compute, Elem, PairKernel};
+use crate::{Column, Composition, Compute, Elem, PairKernel};
 
 /// The finite evaluation points of the round polynomial a [`RoundKernel`] reports, after `X = 1`:
 /// `b_1, ..., b_{d-2}`. The round polynomial is also sampled at `X = infinity`.
@@ -79,7 +79,7 @@ pub(crate) fn interpolate<F: BinaryField>(xs: &[F], ys: &[F]) -> Vec<F> {
 ///
 /// Subtracting `R(inf) X^d` leaves a degree `d - 1` polynomial, which the `d` finite points fix.
 /// (`binius_ip_prover`'s `RoundEvals` does the same for `d <= 2` only.)
-fn round_coeffs<F: BinaryField>(y0: F, evals: &[F]) -> RoundCoeffs<F> {
+pub(crate) fn round_coeffs<F: BinaryField>(y0: F, evals: &[F]) -> RoundCoeffs<F> {
 	let d = evals.len();
 	let y_inf = evals[1];
 	let xs: Vec<F> = [F::ZERO, F::ONE]
@@ -108,7 +108,7 @@ pub fn prove<F, C, Comp, Ch>(
 	compute: &C,
 	comp: &Comp,
 	n_vars: usize,
-	mut cols: Vec<C::FieldVec>,
+	cols: Vec<C::FieldVec>,
 	claim: F,
 	transcript: &mut ProverTranscript<Ch>,
 ) -> (Vec<F>, Vec<F>)
@@ -119,6 +119,7 @@ where
 	Ch: Challenger,
 {
 	assert!(n_vars > 0);
+	let mut cols: Vec<_> = cols.into_iter().map(Column::Owned).collect();
 	let kernel = RoundKernel(comp);
 	let mut sum = claim;
 	let mut challenges = Vec::with_capacity(n_vars);
@@ -143,9 +144,9 @@ where
 }
 
 /// Folds `cols` by `r` and reads their (constant) values, in one `exec`.
-fn read_folded<F: BinaryField, C: Compute<F>>(
+pub(crate) fn read_folded<'s, F: BinaryField, C: Compute<F>>(
 	compute: &C,
-	cols: &mut [C::FieldVec],
+	cols: &mut [Column<C::FieldVec, C::FieldSlice<'s>>],
 	r: F,
 ) -> Vec<F> {
 	compute
@@ -153,62 +154,11 @@ fn read_folded<F: BinaryField, C: Compute<F>>(
 			let cols = &*cols;
 			let reads = cols
 				.iter()
-				.map(|col| compute.to_host(compute.as_slice(col)))
+				.map(|col| compute.to_host(compute.as_slice(col.owned())))
 				.collect();
 			compute.join_all(reads)
 		}))
 		.into_iter()
 		.map(|col| col[0])
 		.collect()
-}
-
-/// Proves `sum_x eq(point, x) * comp(cols(x)) = claim` as an MLE-check with Gruen's eq factoring.
-///
-/// Each round computes the prime polynomial `R'(X) = sum_x' eq(point_rest, x') comp(line(X, x'))`
-/// and the verifier supplies the factor `eq(point_k, X)` itself. The backend applies the eq weights
-/// (`eq_point = point[..n - 1 - round]`); the driver never sees an eq column.
-///
-/// Returns the challenges (highest variable first) and the final evaluation of every column.
-pub fn prove_mlecheck<F, C, Comp, Ch>(
-	compute: &C,
-	comp: &Comp,
-	point: &[F],
-	mut cols: Vec<C::FieldVec>,
-	claim: F,
-	transcript: &mut ProverTranscript<Ch>,
-) -> (Vec<F>, Vec<F>)
-where
-	F: BinaryField,
-	C: Compute<F>,
-	Comp: Composition<F>,
-	Ch: Challenger,
-{
-	let n_vars = point.len();
-	assert!(n_vars > 0);
-	let kernel = RoundKernel(comp);
-	let mut sum = claim;
-	let mut challenges = Vec::with_capacity(n_vars);
-
-	for (round, &alpha) in point.iter().rev().enumerate() {
-		let eq_point = &point[..n_vars - 1 - round];
-		let evals = compute.exec(compute.fold_pair_map_reduce(
-			&mut cols,
-			challenges.last().copied(),
-			Some(eq_point),
-			&kernel,
-		));
-
-		// The claim is (1 - alpha) R'(0) + alpha R'(1).
-		let y0 = (sum - alpha * evals[0]) * (F::ONE - alpha).invert_or_zero();
-		let coeffs = round_coeffs(y0, &evals);
-		transcript
-			.message()
-			.write_scalar_slice(binius_ip::mlecheck::RoundProof::truncate(coeffs.clone()).coeffs());
-		let r = binius_transcript::fiat_shamir::CanSample::sample(transcript);
-		sum = coeffs.evaluate(&r);
-		challenges.push(r);
-	}
-
-	let finals = read_folded(compute, &mut cols, *challenges.last().expect("n_vars > 0"));
-	(challenges, finals)
 }

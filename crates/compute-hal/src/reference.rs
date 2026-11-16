@@ -6,7 +6,25 @@ use binius_core::word::Word;
 use binius_field::BinaryField;
 use binius_math::{inner_product::inner_product, multilinear::eq::eq_ind_partial_eval_scalars};
 
-use crate::{Compute, Lazy, PairKernel, scalar};
+use crate::{Column, Compute, Lazy, PairKernel, scalar};
+
+fn view<'x, F>(col: &'x Column<Vec<F>, &[F]>) -> &'x [F] {
+	match col {
+		Column::Owned(v) => v,
+		Column::Borrowed(s) => s,
+	}
+}
+
+/// Binds the highest variable of `col`; a borrowed column becomes a fresh owned one.
+fn fold_col<F: BinaryField>(col: &mut Column<Vec<F>, &[F]>, r: F) {
+	match col {
+		Column::Owned(v) => scalar::fold_highest_var(v, r),
+		Column::Borrowed(s) => {
+			let (s, half) = (*s, s.len() / 2);
+			*col = Column::Owned((0..half).map(|i| s[i] + r * (s[i + half] - s[i])).collect());
+		}
+	}
+}
 
 /// Scalar, single-threaded backend. Futures are closures run on `exec`.
 #[derive(Clone, Copy, Debug, Default)]
@@ -66,20 +84,23 @@ impl<F: BinaryField> Compute<F> for ReferenceCompute {
 		Box::new(move || scalar::fold_words(words, &weights))
 	}
 
-	fn fold_highest_var<'a>(&self, cols: &'a mut [Vec<F>], r: F) -> Lazy<'a, &'a mut [Vec<F>]>
+	fn fold_highest_var<'a, 's: 'a>(
+		&self,
+		cols: &'a mut [Column<Vec<F>, &'s [F]>],
+		r: F,
+	) -> Lazy<'a, &'a mut [Column<Vec<F>, &'s [F]>]>
 	where
 		Self: 'a,
 	{
 		Box::new(move || {
-			cols.iter_mut()
-				.for_each(|col| scalar::fold_highest_var(col, r));
+			cols.iter_mut().for_each(|col| fold_col(col, r));
 			cols
 		})
 	}
 
-	fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(
+	fn fold_pair_map_reduce<'a, 's: 'a, K: PairKernel<F> + 'a>(
 		&self,
-		cols: &'a mut [Vec<F>],
+		cols: &'a mut [Column<Vec<F>, &'s [F]>],
 		r: Option<F>,
 		eq_point: Option<&'a [F]>,
 		kernel: &'a K,
@@ -88,15 +109,15 @@ impl<F: BinaryField> Compute<F> for ReferenceCompute {
 		Self: 'a,
 	{
 		Box::new(move || {
-			let log_lens: Vec<usize> = cols.iter().map(|c| c.len().ilog2() as usize).collect();
-			let n = scalar::round_log_len(&log_lens, r.is_some());
+			let log_lens: Vec<usize> = cols
+				.iter()
+				.map(|c| view(c).len().ilog2() as usize)
+				.collect();
+			scalar::round_log_len(&log_lens, r.is_some());
 			if let Some(r) = r {
-				let before = 1 << (n + 1);
-				cols.iter_mut()
-					.filter(|c| c.len() == before)
-					.for_each(|col| scalar::fold_highest_var(col, r));
+				cols.iter_mut().for_each(|col| fold_col(col, r));
 			}
-			let views: Vec<&[F]> = cols.iter().map(Vec::as_slice).collect();
+			let views: Vec<&[F]> = cols.iter().map(|c| view(c)).collect();
 			scalar::pair_map_reduce(&views, eq_point, kernel)
 		})
 	}

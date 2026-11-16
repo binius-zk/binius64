@@ -6,18 +6,19 @@ Ops return `Self::Future<'a, T>` (a description of work). `join`, `join_all` and
 only, not a replayable command buffer (a `then` closure needs the real result to continue).
 
 Columns are owned by the host and borrowed by futures: read-only ops take `FieldSlice<'a>`, and column
-changing ops take `&'a mut [FieldVec]`. No owned-column threading. The sumcheck round is ONE op,
+changing ops take `&'a mut [Column<..>]` (owned or lent). No owned-column threading. The sumcheck round is ONE op,
 `fold_pair_map_reduce(cols, Option<r>, Option<eq_point>, kernel)`, mirroring the real prover's `map_reduce_with_fold`.
 
-## Size (`wc -l`, rustfmt'd, incl. docs)
+## Size (`wc -l`, incl. docs)
 
 | file | LOC |
 |---|---|
-| `lib.rs` (trait, `Elem`, `Composition`, `PairKernel` + tuple/`Vec` impls, scalar helpers) | 317 |
-| `sumcheck.rs` (`prove`, `prove_mlecheck`, `RoundKernel`, `interpolate`) | 214 |
-| `reference.rs` / `simd.rs` / `fake.rs` | 127 / 269 / 409 |
-| `tests.rs` (12 tests) | 477 |
-| `benches/mlecheck.rs` | 114 |
+| `lib.rs` (trait, `Column`, `Elem`, `Composition`, `PairKernel` + tuple/`Vec` impls, scalar helpers) | 343 |
+| `mlecheck.rs` (`ComputeMleCheckProver`, `Pick`, `quadratic`, `multilinear_eval`) | 194 |
+| `sumcheck.rs` (`prove`, `RoundKernel`, `interpolate`) | 164 |
+| `reference.rs` / `simd.rs` / `fake.rs` | 148 / 283 / 432 |
+| `tests.rs` (12 tests) / `tests/mlecheck.rs` (7 tests) | 495 / 279 |
+| `benches/mlecheck.rs` | 127 |
 
 ## API (phase 2)
 
@@ -35,8 +36,10 @@ pub trait PairKernel<F>: Sync {
 	fn n_in(&self) -> usize; fn n_out(&self) -> usize; fn scratch(&self) -> usize;
 	fn map<T: Elem<F>>(&self, lo: &[T], hi: &[T], scratch: &mut [T], out: &mut [T]);
 }
-fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(&self, cols: &'a mut [FieldVec], r: Option<F>,
-	eq_point: Option<&'a [F]>, kernel: &'a K) -> Future<'a, Vec<F>>;
+pub enum Column<V, S> { Owned(V), Borrowed(S) }   // Borrowed: read in place, folded into a fresh Owned
+fn fold_pair_map_reduce<'a, 's: 'a, K: PairKernel<F> + 'a>(&self, cols: &'a mut [Column<FieldVec, FieldSlice<'s>>],
+	r: Option<F>, eq_point: Option<&'a [F]>, kernel: &'a K) -> Future<'a, Vec<F>>;
+fn fold_highest_var<'a, 's: 'a>(&self, cols: &'a mut [Column<..>], r: F) -> Future<'a, &'a mut [Column<..>]>;
 ```
 
 `out[j] = sum_i eq(eq_point, i) * kernel(lo_i, hi_i)[j]` over the halved hypercube (bit `k` of `i` pairs with
@@ -44,39 +47,72 @@ fn fold_pair_map_reduce<'a, K: PairKernel<F> + 'a>(&self, cols: &'a mut [FieldVe
 
 - **Eq behind the backend.** Reference/Fake materialize the tensor. SIMD copies `SharedMleCheckProver::execute`:
   eq over the low `chunk_vars` (12) coordinates only, a rayon bisection tree over chunks, and a level-aware
-  combine `lo + z (hi - lo)` with `z = eq_point[level]`. The driver passes `point[..n - 1 - round]` and no eq
-  column. The broadcast-column semantic and the per-round `tensor_expand` are gone (the op stays for setup).
+  combine `lo + z (hi - lo)` with `z = eq_point[level]`. The driver passes `point[..n - 1 - round]`.
 - **Wide accumulation** (SIMD, eq path): per chunk `P::wide_mul(kernel_out, eq)` summed in `<P as WideMul>::Output`,
-  one `P::reduce` per chunk. `PairKernel` stays in plain `T`. The unweighted path sums plain `P`s (no eq multiply to
-  widen, so nothing to gain).
-- **Point at infinity.** `RoundKernel` outputs `R(1), R(inf), R(b_1), ..., R(b_{d-2})` (the order of
-  `round_evals`): `R(1) = comp(hi)`, `R(inf) = eval_infinity(lo + hi)` (char 2: `hi - lo = hi + lo`). The host
-  subtracts `R(inf) X^d` and Lagrange-interpolates the rest, so any degree works. `RoundEvals` is
-  public but handles `D <= 2` only, so the local `interpolate` stays. `DEGREE >= 2` is asserted.
-- **Multiple kernels, one pass.** `PairKernel` is implemented for `(A, B)` and `Vec<K>`: outputs concatenated,
-  scratch split. Every kernel sees ALL columns and picks its own by index (same `n_in`, asserted). Static, no dyn.
-  The port runs one `RoundKernel` plus N multilinear-eval kernels as `(RoundKernel<..>, Vec<EvalKernel>)`.
-- `PairKernel`'s consts became methods, because `Vec<K>` has a runtime count.
+  one `P::reduce` per chunk. `PairKernel` stays in plain `T`; the unweighted path sums plain `P`s.
+- **Point at infinity.** `RoundKernel` outputs `R(1), R(inf), R(b_1), ..., R(b_{d-2})`: `R(1) = comp(hi)`,
+  `R(inf) = eval_infinity(lo + hi)`. The host subtracts `R(inf) X^d` and Lagrange-interpolates the rest, so any
+  degree works (`RoundEvals` handles `D <= 2` only, so the local `interpolate` stays). `DEGREE >= 2` is asserted.
+- **Multiple kernels, one pass.** `PairKernel` is implemented for `(A, B)` and `Vec<K>`: outputs concatenated. Every kernel sees ALL columns and picks its own by index (`Pick`). Static, no dyn. An empty `Vec`
+  constrains nothing (`n_in` 0), so `(quad, vec![])` is a valid kernel; the per-pair `n_in` assert was dropped.
 
 ## The drivers protocol authors write
 
 Plain sumcheck round: one op, one sync, nothing to thread.
 
 ```rust
-let round = compute.fold_pair_map_reduce(&mut cols, challenges.last().copied(), &kernel);
+let round = compute.fold_pair_map_reduce(&mut cols, challenges.last().copied(), None, &kernel);
 let evals = compute.exec(round);
 ```
 
-Gruen-factored MLE-check round (`prove_mlecheck`, verified by `binius_ip::mlecheck::verify`): the same single
-op with `eq_point`, so the round is one launch and one sync, like the plain one.
+Gruen-factored MLE-check round (inside `ComputeMleCheckProver::execute`, verified by `binius_ip::mlecheck::verify`):
+the same single op with `eq_point`, so the round is one launch and one sync, like the plain one.
 
 ```rust
 let eq_point = &point[..n_vars - 1 - round];
 let evals = compute.exec(compute.fold_pair_map_reduce(&mut cols, last_r, Some(eq_point), &kernel));
-// R'(0) = (sum - alpha R'(1)) / (1 - alpha); round_coeffs, send, sample r, sum = R'(r)
+// R'(0) = (claim - alpha R'(1)) / (1 - alpha); interpolate per claim; the driver sends and samples r
 ```
 
-Final exec of both: `then(fold_highest_var(cols, r), |cols| join_all(cols.map(to_host)))`.
+## The port: `mlecheck::ComputeMleCheckProver`
+
+Implements `binius_ip_prover::sumcheck::common::MleCheckProver<F>` exactly, so `prove_single_mlecheck`,
+`batch_prove_mle`, `MleToSumCheckDecorator`, `PaddedSumcheckDecorator`, `Either` and
+`batch_prove_and_write_evals` take it unchanged (no bound rejected it). `SharedMleCheckProver`'s pieces map as:
+
+| real | here |
+|---|---|
+| `MleStore` columns | `Vec<Column<FieldVec, FieldSlice<'a>>>`, owned or lent |
+| `EvaluatorGroup` + evaluators | one `PairKernel` (tuple/`Vec` composition) + `claims: Vec<(F, degree)>` |
+| `QuadraticMleEvaluator` | `quadratic(&comp, n_in, cols)` = `Pick<RoundKernel>`, `C::DEGREE` slots |
+| `MultilinearEvalEvaluator` | `multilinear_eval(n_in, col)` = `Pick<HiKernel>`, 1 slot |
+| `RoundState`, `buffered_challenge` | the same `RoundState`; `challenge: Option<F>` applied by the next fused op |
+| `interpolate_eq` | local: degree 1 is `[y0, y1 - y0]`; degree >= 2 reuses `round_coeffs` (same as `RoundEvals` at 2) |
+
+`execute` = one `exec`; `fold` = bookkeeping only; `finish` = one `exec` (fold + read of the one-element columns).
+
+### Borrowed columns: the API change
+
+`Column<V, S>` is passed to `fold_pair_map_reduce` and `fold_highest_var`. A `Borrowed` column is read in place by
+the kernel; its first fold writes a fresh half-size `Owned` buffer into the same slot (the real `Column::Borrowed`).
+Round 1 has no fold, so a lent column is never copied before round 2. The slice lifetime `'s: 'a` is separate from
+the op's borrow of the column slice: a GAT slice behind `&'a mut` is invariant, so `'s = 'a` would freeze the
+columns for the whole proof.
+
+Rejected: a read-only first-round op (`pair_map_reduce(&[FieldSlice])`) plus an out-of-place `fold_into` op. The
+round-2 op needs the fresh buffers as `&mut` input to the same pass; chaining via `then` makes the closure own the
+buffers while the next future borrows them (no lifetime works), and the other way costs a second `exec`.
+`prove` still takes `Vec<FieldVec>` and wraps it.
+
+## Transcript equality vs the real prover (`tests/mlecheck.rs`, all three backends)
+
+Same inputs, `HasherChallenger<Sha256>`; asserts equal `finalize()` bytes, final evals and challenges.
+- (a) single quadratic `a*b - c`, owned columns, n = 2, 8, 10 (below and above the SIMD width): equal.
+- (b) quadratic + 3 `MultilinearEval` claims, last column lent (n = 1, 3, 8, 10, and n = 10 owned): equal;
+  the lent column is unchanged afterwards.
+- (c) `Either<quadratic, evals>` through `MleToSumCheckDecorator` + `PaddedSumcheckDecorator` (2 extra vars) +
+  `batch_prove_and_write_evals`: equal for real/real, hal/hal, hal/real and real/hal.
+- `prove_single_mlecheck` accepts one claim only; multi-claim (b) runs through `batch_prove_mle`.
 
 ## FakeDevice counts (n = 10)
 
@@ -88,68 +124,56 @@ pending (`inner_product`, `evaluate`, reduction sums, `to_host`). Hidden syncs w
 | bivariate product (deg 2) | 11 | 1 (every round) | 1 | 0 | 22 | 2048 |
 | eq as a column (deg 3) | 13 (2 setup) | 1 | 1 | 0 | 2082 | 3072 |
 | Gruen mle-check (deg 2) | 11 | 1 (every round) | 1 | 0 | 23 | 3072 |
+| port: quadratic + 3 evals, one lent column | 11 | 1 (every round, incl. the borrowed fold) | 1 | 0 | 53 | 3072 |
 
-Per round the host receives `DEGREE` scalars. Gruen's second launch (the eq `tensor_expand`) is gone. The 2082 of
-the eq-column run is the `c = a*b` host round trip in setup. `fake_device_counts_hidden_sync` shows the
-counter firing on `then(inner_product, ..)`.
+Per round the host receives `DEGREE` scalars (`n_out` for the port); the eq-column run's 2082 is the setup
+round trip of `c = a*b`. `fake_device_counts_hidden_sync` shows the hidden-sync counter firing.
 
 ## What laziness buys when Fiat-Shamir forces a sync per round: little
 
-- Syncs per sumcheck are `n + 1` regardless. An eager API with one blocking read per round has the same.
-- Fusion is NOT something `then` provides: a `then` closure is opaque until its input exists, so a backend
-  can enqueue back-to-back but not fuse across it. Fusion needs an explicit op, which is why
-  `fold_pair_map_reduce` exists. With it, a round is one launch.
-- What futures still buy: independent work in one pipeline (`join`/`join_all`: setup, final reads).
-- `then` stays for routing handles (`tensor_expand` -> the eq slot, `fold` -> reads). Over handles it is
-  free on a device; over a device scalar it is a hidden sync (counted).
+Syncs are `n + 1` regardless. `then` cannot fuse (its closure is opaque until its input exists), so fusion needs an
+explicit op, `fold_pair_map_reduce`. Futures still pay for `join`/`join_all` (setup, final reads), and `then` routes
+handles for free on a device (over a device scalar it is a hidden sync, counted).
 
 ## Benchmark: `cargo bench -p binius-compute-hal --bench mlecheck`
 
 `a * b - c` Gruen MLE-check, `OptimalPackedB128`, bench profile (thin LTO), no extra RUSTFLAGS (as the existing
 benches). `ip_prover` is `SharedMleCheckProver` + `QuadraticMleEvaluator` (BufferPool); `hal_simd` is
-`prove_mlecheck` on `SimdCompute`. Median of criterion's estimate, same transcript type.
+`ComputeMleCheckProver` (`quadratic` kernel) on `SimdCompute`, both through `prove_single_mlecheck`.
+Median of criterion's estimate, same transcript type.
 
 | n_vars | ip_prover | hal_simd | ratio |
 |---|---|---|---|
-| 16 | 10.4 ms | 15.8 ms | 1.52x |
-| 20 | 63.0 ms | 79.8 ms | 1.27x |
-| 22 | 222.8 ms | 242.5 ms | 1.09x |
+| 16 | 10.7 ms | 16.4 ms | 1.54x |
+| 20 | 63.0 ms | 80.8 ms | 1.28x |
+| 22 | 219.6 ms | 246.7 ms | 1.12x |
 
-Not profiled (within 1.3x at 20/22). Likely causes of the gap, by size: HAL folds in a separate pass
-(`fold_highest_var_inplace`, a second read/write of every column per round) where the real prover fuses the
-fold into the map read (`map_reduce_with_fold`); at n = 16 the fixed per-round cost (kernel buffers per chunk,
-`Vec` outputs, `then`/`exec` boxes, `eq_ind_partial_eval`) dominates; and the pair gather is per element
-(`get(c, i)` over pre-bound slices, vs the real evaluator's fixed-size stack arrays).
+The port costs about nothing over the old driver (15.8 / 79.8 / 242.5 ms before): `Pick` copies the selected pair
+into scratch per element, below noise.
+
+Not profiled. Likely causes of the gap: the separate fold pass (the real prover fuses it into the map read), fixed
+per-round cost at n = 16, and the per-element pair gather.
 
 ## Pain points
 
-1. **GAT early/late lifetime binding (E0195).** `Self::FieldSlice<'a>` params make `'a` early-bound in the
-   trait and late-bound in impls using `&'a [F]`. Fix: `where Self: 'a` on `inner_product`, `fold_words`,
-   `to_host`, `fold_highest_var`, `fold_pair_map_reduce` in the trait and every impl.
-2. **`evaluate` could not become a default method.** `then(tensor_expand, |eq| inner_product(.., eq))`
-   needs a slice of `eq`, which the closure owns, so the future cannot outlive it. It stays a required op.
-3. **Futures borrowing `&mut` columns work** when returned through the future
-   (`fold_highest_var` returns `&'a mut [FieldVec]` so a `then` can read them). No HRTB errors.
-4. `then` is a host closure; "does not read data" is a convention (only counted in the fake).
-5. Closures must be `Send`, forcing `PairKernel: Sync`, `Composition: Sync`, backends `Sync`.
+1. **GAT early/late lifetime binding (E0195):** `where Self: 'a` on every op taking a `FieldSlice<'a>`.
+2. **`evaluate` stays a required op:** the `then` closure owns the eq tensor, so no slice of it outlives it.
+3. `then` is a host closure ("does not read data" is a convention); closures must be `Send`, so kernels are `Sync`.
 
 ## Deviations from the spec
 
-- `interpolate` is local: `RoundEvals` covers only `D <= 2`.
-- Dropped as unused: `alloc_*`, `copy_words_to_host`, `WordSliceMut`, `FieldSliceMut`, `ready`, `map`.
-  `pair_map_reduce` is now `fold_pair_map_reduce` with `r = None`.
-- `Compute<F: BinaryField>` has `F` as a type parameter so `SimdCompute<P>` implements `Compute<P::Scalar>`.
-- SIMD calls `BitAxisFolder` (adds a `binius-prover` dependency) and re-pads to a power of two.
+- `prove_mlecheck` is gone, superseded by the port.
+- Dropped as unused: `alloc_*`, `copy_words_to_host`, `WordSliceMut`, `FieldSliceMut`, `ready`, `map`; `pair_map_reduce`
+  is `fold_pair_map_reduce` with `r = None`.
+- `Compute<F>` has `F` as a type parameter; SIMD calls `BitAxisFolder` (`binius-prover` dependency).
+- `binius-ip-prover` is a regular dependency now (the port implements its trait).
 
 ## Known gaps before migration
 
-- Fold is a separate pass from the map (not fused like `map_reduce_with_fold`); per-pair gather, no chunk kernels.
-- Multi-kernel is static (`(A, B)`, `Vec<K>`); `SharedSumcheckProver`'s heterogeneous `Vec<Box<dyn ..>>` needs nesting.
-- Eq is rebuilt per round (chunk part only on SIMD); no `EqTracker` truncation.
-- `InfCube` folds and the {0, infinity} sumcheck are not covered.
+- `Column::SplitHalf` is not ported: a third `Column` variant and a half-view in every backend, over 30 lines.
+- `into_shared_sumcheck`, `add_evaluator`, `store_mut` (growing the store after construction) are not ported.
+- Fold is a separate pass from the map (not fused like `map_reduce_with_fold`); per-pair gather; eq rebuilt per round.
+- Multi-kernel is static; `SharedSumcheckProver`'s heterogeneous `Vec<Box<dyn ..>>` needs nesting. `InfCube` is not covered.
 - `SimdCompute<P, A: Allocator>` should use `BufferPool`; buffers are plain `Vec`s now.
-- Traced constants are baked into the graph: per-proof batching coefficients would recompile CUDA kernels;
-  lift them into a uniform table.
-- Bespoke ops for shift, univariate skip, intmul switchover and sparse-dense are not in the op list.
-- Merkle/FRI digest memory and indexed readback are not modelled.
-- The small-n tail runs on the host inside the backend (SIMD falls back to scalars below one packed word).
+- Traced constants are baked into the graph (per-proof batching coefficients would recompile CUDA kernels).
+- Bespoke ops (shift, univariate skip, intmul switchover, sparse-dense) and Merkle/FRI memory are not modelled.
