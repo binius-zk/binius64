@@ -9,38 +9,59 @@ because reduction results (`Vec<F>`) have to exist at record time for `then` clo
 
 | file | LOC |
 |---|---|
-| `lib.rs` trait + `Composition`/`PairKernel` (lines 1-145) | ~145 |
-| `sumcheck.rs` mini-prover (`prove`, `RoundKernel`, `interpolate`) | 120 |
-| `reference.rs` / `simd.rs` / `fake.rs` | 105 / 177 / 417 (fake: ~150 is the traced `Sym` type) |
-| `tests.rs` (ops x3 backends, 2 sumchecks x3 backends, count asserts) | 250 |
+| `lib.rs` (trait, `Composition`, `PairKernel`, shared scalar kernels) | 234 (trait itself ~150) |
+| `sumcheck.rs` (`prove`, `prove_mlecheck`, `RoundKernel`, `interpolate`) | 192 |
+| `reference.rs` / `simd.rs` / `fake.rs` | 105 / 181 / 467 (fake: ~150 traced `Sym`, ~60 counters) |
+| `tests.rs` (ops x3 backends, 3 sumchecks x3 backends, counts) | 333 |
 
-## The driver protocol authors write
+## The drivers protocol authors write
+
+Plain sumcheck round (the eq-as-column check is the same with 4 columns, degree 3):
 
 ```rust
-for _ in 0..n_vars {
-	let round = match challenges.last() {
-		None => compute.pair_map_reduce(cols, &kernel),
-		Some(&r) => compute.then(compute.fold_highest_var(cols, r), |cols| {
-			compute.pair_map_reduce(cols, &kernel)
-		}),
+let round = match challenges.last() {
+	None => compute.pair_map_reduce(cols, &kernel),
+	Some(&r) => compute.then(compute.fold_highest_var(cols, r), |cols| {
+		compute.pair_map_reduce(cols, &kernel)
+	}),
+};
+let (next_cols, evals) = compute.exec(round);   // the one sync point per round
+```
+
+Gruen-factored MLE-check round (`prove_mlecheck`; verified by `binius_ip::mlecheck::verify`):
+
+```rust
+for (round, &alpha) in point.iter().rev().enumerate() {
+	let eq = compute.tensor_expand(&point[..n_vars - 1 - round]);
+	let with_eq = |eq, cols: Vec<C::FieldVec>| {
+		compute.pair_map_reduce(iter::once(eq).chain(cols).collect(), &kernel)
 	};
-	let (next_cols, evals) = compute.exec(round);   // the one sync point per round
-	cols = next_cols;
-	// interpolate R from evals + the claim, write to transcript, sample r, sum = R(r)
+	let pipeline = match challenges.last() {
+		None => compute.then(eq, |eq| with_eq(eq, cols)),
+		Some(&r) => compute.then(compute.join(eq, compute.fold_highest_var(cols, r)),
+			|(eq, cols)| with_eq(eq, cols)),
+	};
+	let (mut all, evals) = compute.exec(pipeline);
+	all.remove(0); cols = all;
+	// R'(0) = (sum - alpha R'(1)) / (1 - alpha); interpolate, send, sample r, sum = R'(r)
 }
-// final: exec(then(fold_highest_var(cols, last), |cols| to_host(cols)))
 ```
 
 ## FakeDevice counts (n = 10 variables)
 
-| run | execs | launches | d2h calls / elems | h2d calls / elems |
-|---|---|---|---|---|
-| bivariate product (degree 2) | 11 | 20 | 11 / 22 | 2 / 2048 |
-| mle-check (degree 3, incl. setup) | 13 | 23 | 12 / 2082 | 5 / 5120 |
+Syncs = execs (each exec is one sync at its return). Hidden syncs are `then` closures run while a
+device-computed scalar is pending (`inner_product`, `evaluate`, `pair_map_reduce` sums, `to_host`).
 
-Sumcheck: `n + 1` execs and `2n` launches. Per round the host receives `DEGREE` scalars in one call.
-The 2082 for mle-check is 2 x 2^10 for the `c = a*b` host round-trip in setup, plus `3n + 4`.
-Setup is one `exec` that `join`s `tensor_expand` with both `fold_words`.
+| sumcheck | execs | launches per round exec | final exec | hidden syncs | d2h elems | h2d elems |
+|---|---|---|---|---|---|---|
+| bivariate product (deg 2) | 11 | 1, then 2 | 1 | 0 | 22 | 2048 |
+| eq as a column (deg 3) | 13 incl. 2 setup | 1, then 2 | 1 | 0 | 2082 | 5120 |
+| Gruen mle-check (deg 2 prime) | 11 | 2, then 3 | 1 | 0 | 23 | 3072 |
+
+Round = one sync, zero hidden syncs, per-round host traffic is `DEGREE` scalars. A round exec holds fold
+and evaluate (and, for Gruen, the eq `tensor_expand`) as 2-3 launches. `fake_device_counts_hidden_sync`
+shows the counter firing on `then(inner_product, ..)`. Setup of the eq-as-column run is one `exec`
+joining `tensor_expand` with both `fold_words`; its 2082 d2h includes the `c = a*b` host round trip.
 
 ## What laziness buys when Fiat-Shamir forces a sync per round: little
 
@@ -56,6 +77,23 @@ Setup is one `exec` that `join`s `tensor_expand` with both `fold_words`.
 - Cost: the API is shaped by ownership threading and by `then` (below). Protocol code reads worse than
   eager calls.
 
+## Does PairKernel survive the Gruen hot path? Yes: no signature change for the Gruen shape
+
+The only change for Gruen was a semantic extension of `pair_map_reduce`: a column one variable shorter than
+the longest is broadcast (`lo = hi = col[i]`). It carries the eq tensor, so the kernel and `RoundKernel`
+are unchanged and the composition just lists eq as input 0. `Composition::DEGREE` is now "degree along a
+line", so eq adds none (prime degree 2). Eq is re-expanded each round with `tensor_expand` on a prefix of
+the point (geometric total, no truncate op), and the driver, not the backend, keeps it out of the fold.
+Counting changes from the first prototype: `Compute` trait: 0 new ops, 1 doc/semantic change
+(`pair_map_reduce` broadcast); `PairKernel`: 1 signature change, from round 2 item 3 (`SCRATCH` +
+`scratch` arg); new driver code (~70 lines). Not covered: split-eq (Gruen's `eq` over the low half
+only), packed WideMul accumulation, and the dedicated BitAnd evaluator's three-columns-from-two trick.
+
+Scratch: `reduce_pairs` allocates `lo`, `hi`, `scratch`, `out`, `acc` once per call; the SIMD backend calls it
+once per 256-pair chunk under rayon, the reference once per round. `RoundKernel::map` is allocation-free.
+No interpolation helper exists in `binius-math` or `binius-ip` (only domain `lagrange_evals`), so
+`interpolate` stays.
+
 ## Pain points (what I hit)
 
 1. **Ownership instead of `&mut` slices.** A future holding `&mut cols` for the fold cannot coexist with a
@@ -63,10 +101,10 @@ Setup is one `exec` that `join`s `tensor_expand` with both `fold_words`.
    `fold_highest_var` and `pair_map_reduce` take `Vec<FieldVec>` and return it. `FieldSliceMut` is gone
    (unused) and `FieldSlice` serves only the read-only ops. A CPU backend cannot express the borrowed form
    at all; only a handle-based device could.
-2. **`then` is a host closure.** Needed to chain (`fold` result -> `pair_map_reduce` input). It only builds
-   the next future from opaque handles, but on a real device that closure runs at submit time, so it must
-   not read data. This is a convention, not enforced. I dropped `map` and `ready` (host closures on data,
-   unused). A cleaner variant is ops that accept `Future<Vec<FieldVec>>` inputs directly.
+2. **`then` is a host closure.** Needed to chain (`fold` result -> `pair_map_reduce` input). Over handles
+   it is free on a device; over a device-computed scalar it is a hidden sync. That distinction is a
+   convention the types do not enforce; `FakeDevice` only counts it (conservatively: any pending host-typed
+   result counts). `map` is gone; `ready` was never needed.
 3. **GAT lifetime early/late binding (E0195).** `inner_product<'a>(a: Self::FieldSlice<'a>, ..)` has `'a`
    only inside projections, so it is early-bound in the trait and late-bound in impls that use `&'a [F]`.
    Fix: `where Self: 'a` on those methods in the trait and every impl. No HRTB errors otherwise.
@@ -86,5 +124,5 @@ Setup is one `exec` that `join`s `tensor_expand` with both `fold_words`.
 - `Compute<F: BinaryField>` has `F` as a type parameter so `SimdCompute<P>` implements `Compute<P::Scalar>`.
 - SIMD calls `BitAxisFolder` (adds a `binius-prover` dependency) and re-pads to a power of two.
 - Fake uploads (`copy_*_from_host`) are eager and counted; reductions' scalar results count as d2h.
-- Gaps: SIMD compositions can't use `WideMul` unreduced accumulation; `RoundKernel::map` allocates `Vec`s
-  per pair (untuned); the fake arena never frees buffers.
+- Gaps: SIMD compositions can't use `WideMul` unreduced accumulation; the fake arena never frees buffers.
+- The fake runs ops at `exec`, so its "op log" is counters only, not a replayable command buffer.

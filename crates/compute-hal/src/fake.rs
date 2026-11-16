@@ -23,7 +23,7 @@ use binius_math::{inner_product::inner_product, multilinear::eq::eq_ind_partial_
 use crate::{Compute, Lazy, PairKernel, scalar};
 
 /// Host/device traffic and dispatch counters.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
 	/// Host-to-device copy calls.
 	pub h2d_calls: usize,
@@ -37,12 +37,29 @@ pub struct Stats {
 	pub execs: usize,
 	/// Kernel launches.
 	pub launches: usize,
+	/// `then` closures that ran while device-computed scalars were pending: each would force a
+	/// device-to-host sync in the middle of a pipeline.
+	pub hidden_syncs: usize,
+	/// One entry per `exec`, in order.
+	pub per_exec: Vec<ExecStats>,
+}
+
+/// What one `exec` did. Each `exec` is itself one sync, at its return.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExecStats {
+	/// Kernel launches (op nodes executed).
+	pub launches: usize,
+	/// Hidden syncs inside the pipeline.
+	pub hidden_syncs: usize,
 }
 
 struct Arena<F> {
 	fields: Vec<Vec<F>>,
 	words: Vec<Vec<Word>>,
 	stats: Stats,
+	cur: ExecStats,
+	/// Host-typed results of device data produced since the last sync.
+	pending_scalars: usize,
 }
 
 /// An opaque device buffer of `2^log_len` field elements.
@@ -77,6 +94,8 @@ impl<F> Default for FakeDeviceCompute<F> {
 			fields: vec![],
 			words: vec![],
 			stats: Stats::default(),
+			cur: ExecStats::default(),
+			pending_scalars: 0,
 		};
 		Self {
 			arena: Arc::new(Mutex::new(arena)),
@@ -87,7 +106,7 @@ impl<F> Default for FakeDeviceCompute<F> {
 impl<F: Field> FakeDeviceCompute<F> {
 	/// The counters so far.
 	pub fn stats(&self) -> Stats {
-		self.arena.lock().unwrap().stats
+		self.arena.lock().unwrap().stats.clone()
 	}
 
 	fn upload(&self, values: Vec<F>) -> FakeVec {
@@ -101,6 +120,7 @@ impl<F: Field> FakeDeviceCompute<F> {
 fn launch<F: Field>(arena: &Mutex<Arena<F>>) -> std::sync::MutexGuard<'_, Arena<F>> {
 	let mut guard = arena.lock().unwrap();
 	guard.stats.launches += 1;
+	guard.cur.launches += 1;
 	guard
 }
 
@@ -155,6 +175,7 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 			let out: Vec<Vec<F>> = cols.iter().map(|c| arena.fields[c.id].clone()).collect();
 			arena.stats.d2h_calls += 1;
 			arena.stats.d2h_elems += out.iter().map(Vec::len).sum::<usize>();
+			arena.pending_scalars += 1;
 			out
 		})
 	}
@@ -176,6 +197,7 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 			let mut arena = launch(&arena);
 			arena.stats.d2h_calls += 1;
 			arena.stats.d2h_elems += 1;
+			arena.pending_scalars += 1;
 			inner_product(arena.fields[a.id].iter().copied(), arena.fields[b.id].iter().copied())
 		})
 	}
@@ -186,6 +208,7 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 			let mut arena = launch(&arena);
 			arena.stats.d2h_calls += 1;
 			arena.stats.d2h_elems += 1;
+			arena.pending_scalars += 1;
 			let eq = eq_ind_partial_eval_scalars(point);
 			inner_product(arena.fields[mle.id].iter().copied(), eq)
 		})
@@ -232,19 +255,28 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 			let lo: Vec<Sym<F>> = (0..K::N_IN).map(|i| Sym::new(Node::Lo(i))).collect();
 			let hi: Vec<Sym<F>> = (0..K::N_IN).map(|i| Sym::new(Node::Hi(i))).collect();
 			let mut graph = vec![Sym::zero(); K::N_OUT];
-			kernel.map(&lo, &hi, &mut graph);
+			let mut scratch = vec![Sym::zero(); K::SCRATCH];
+			kernel.map(&lo, &hi, &mut scratch, &mut graph);
 
-			let half = arena.fields[cols[0].id].len() / 2;
-			let sums = (0..half).fold(vec![F::ZERO; K::N_OUT], |mut acc, i| {
-				let lo: Vec<F> = cols.iter().map(|c| arena.fields[c.id][i]).collect();
-				let hi: Vec<F> = cols.iter().map(|c| arena.fields[c.id][i + half]).collect();
-				acc.iter_mut()
-					.zip(&graph)
-					.for_each(|(a, g)| *a += g.eval(&lo, &hi));
-				acc
-			});
+			let n = cols.iter().map(|c| arena.fields[c.id].len()).max().unwrap();
+			let (mut lo, mut hi) = (vec![F::ZERO; K::N_IN], vec![F::ZERO; K::N_IN]);
+			let mut sums = vec![F::ZERO; K::N_OUT];
+			for i in 0..n / 2 {
+				for (c, col) in cols.iter().enumerate() {
+					let col = &arena.fields[col.id];
+					(lo[c], hi[c]) = if col.len() == n {
+						(col[i], col[i + n / 2])
+					} else {
+						(col[i], col[i])
+					};
+				}
+				for (sum, g) in sums.iter_mut().zip(&graph) {
+					*sum += g.eval(&lo, &hi);
+				}
+			}
 			arena.stats.d2h_calls += 1;
 			arena.stats.d2h_elems += K::N_OUT;
+			arena.pending_scalars += 1;
 			(cols, sums)
 		})
 	}
@@ -262,12 +294,30 @@ impl<F: BinaryField> Compute<F> for FakeDeviceCompute<F> {
 		a: Lazy<'a, A>,
 		f: impl FnOnce(A) -> Lazy<'a, B> + Send + 'a,
 	) -> Lazy<'a, B> {
-		Box::new(move || f(a())())
+		let arena = self.arena.clone();
+		Box::new(move || {
+			let a = a();
+			{
+				let mut arena = arena.lock().unwrap();
+				if arena.pending_scalars > 0 {
+					arena.pending_scalars = 0;
+					arena.stats.hidden_syncs += 1;
+					arena.cur.hidden_syncs += 1;
+				}
+			}
+			f(a)()
+		})
 	}
 
 	fn exec<'a, T: Send + 'a>(&self, f: Lazy<'a, T>) -> T {
-		self.arena.lock().unwrap().stats.execs += 1;
-		f()
+		self.arena.lock().unwrap().cur = ExecStats::default();
+		let out = f();
+		let mut arena = self.arena.lock().unwrap();
+		arena.stats.execs += 1;
+		arena.pending_scalars = 0;
+		let cur = arena.cur;
+		arena.stats.per_exec.push(cur);
+		out
 	}
 }
 

@@ -43,26 +43,30 @@ where
 	K: PairKernel<P::Scalar>,
 {
 	assert_eq!(cols.len(), K::N_IN);
-	if cols[0].log_len() - 1 < P::LOG_WIDTH {
+	let log_n = cols.iter().map(|c| c.log_len()).max().unwrap();
+	if log_n - 1 < P::LOG_WIDTH {
 		let scalars: Vec<Vec<P::Scalar>> =
 			cols.iter().map(|c| c.iter_scalars().collect()).collect();
 		let views: Vec<&[P::Scalar]> = scalars.iter().map(Vec::as_slice).collect();
 		return scalar::pair_map_reduce(&views, kernel);
 	}
-	let half = cols[0].as_ref().len() / 2;
-	let sums = (0..half)
+	// Lengths in packed elements; a broadcast column is half as long.
+	let n = 1 << (log_n - P::LOG_WIDTH);
+	let get = |c: usize, i: usize| {
+		let col = cols[c].as_ref();
+		if col.len() == n {
+			(col[i], col[i + n / 2])
+		} else {
+			(col[i], col[i])
+		}
+	};
+	// One set of kernel buffers per chunk of pairs.
+	const CHUNK: usize = 256;
+	let sums = (0..(n / 2).div_ceil(CHUNK))
 		.into_par_iter()
-		.fold(
-			|| vec![P::zero(); K::N_OUT],
-			|mut acc, i| {
-				let lo: Vec<P> = cols.iter().map(|c| c.as_ref()[i]).collect();
-				let hi: Vec<P> = cols.iter().map(|c| c.as_ref()[i + half]).collect();
-				let mut out = vec![P::zero(); K::N_OUT];
-				kernel.map(&lo, &hi, &mut out);
-				acc.iter_mut().zip(out).for_each(|(a, o)| *a += o);
-				acc
-			},
-		)
+		.map(|k| {
+			scalar::reduce_pairs::<_, P, _>(kernel, k * CHUNK..((k + 1) * CHUNK).min(n / 2), get)
+		})
 		.reduce(
 			|| vec![P::zero(); K::N_OUT],
 			|mut a, b| {

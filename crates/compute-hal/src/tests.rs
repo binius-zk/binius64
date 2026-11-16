@@ -14,7 +14,7 @@ use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	Composition, Compute, FakeDeviceCompute, ReferenceCompute, SimdCompute, scalar,
+	Composition, Compute, ExecStats, FakeDeviceCompute, ReferenceCompute, SimdCompute, scalar,
 	sumcheck::{self, RoundKernel},
 };
 
@@ -50,6 +50,18 @@ struct MleCheck;
 impl Composition<B128> for MleCheck {
 	const N_IN: usize = 4;
 	const DEGREE: usize = 3;
+
+	fn eval<T: FieldOps<Scalar = B128> + Mul<B128, Output = T>>(&self, x: &[T]) -> T {
+		x[0].clone() * (x[1].clone() * &x[2] - &x[3])
+	}
+}
+
+/// `eq * (a * b - c)` where `eq` is broadcast (constant along each line): degree 2.
+struct EqMleCheck;
+
+impl Composition<B128> for EqMleCheck {
+	const N_IN: usize = 4;
+	const DEGREE: usize = 2;
 
 	fn eval<T: FieldOps<Scalar = B128> + Mul<B128, Output = T>>(&self, x: &[T]) -> T {
 		x[0].clone() * (x[1].clone() * &x[2] - &x[3])
@@ -213,16 +225,55 @@ fn mlecheck<C: Compute<B128>>(c: &C) {
 	assert_eq!(evals[2], evaluate(&FieldBuffer::<B128>::from_values(&ab[1]), &rho));
 }
 
+/// Gruen-factored MLE-check of `sum_x eq(point, x) (a b - c)` with a random, unsatisfied `c`.
+fn gruen_mlecheck<C: Compute<B128>>(c: &C) {
+	let n = 10;
+	let mut rng = rng();
+	let point = random_scalars::<B128>(&mut rng, n);
+	let [a, b, cc] = [0, 1, 2].map(|_| random_scalars::<B128>(&mut rng, 1 << n));
+	let eq = binius_math::multilinear::eq::eq_ind_partial_eval_scalars(&point);
+	let claim: B128 = (0..1 << n).map(|i| eq[i] * (a[i] * b[i] - cc[i])).sum();
+	let cols = [&a, &b, &cc].map(|col| c.copy_field_from_host(col)).into();
+
+	let mut transcript = Transcript::new(Default::default());
+	let (challenges, evals) =
+		sumcheck::prove_mlecheck(c, &EqMleCheck, &point, cols, claim, &mut transcript);
+	transcript.message().write_scalar_slice(&evals);
+	let mut verifier = transcript.into_verifier();
+	let output = binius_ip::mlecheck::verify(&point, 2, claim, &mut verifier).unwrap();
+	assert_eq!(output.challenges, challenges);
+	let mut rho = challenges;
+	rho.reverse();
+
+	// The verifier's eval has the eq factor stripped.
+	assert_eq!(output.eval, evals[0] * evals[1] - evals[2]);
+	for (col, eval) in [&a, &b, &cc].into_iter().zip(&evals) {
+		assert_eq!(*eval, evaluate(&FieldBuffer::<B128>::from_values(col), &rho));
+	}
+}
+
 #[test]
 fn sumcheck_reference() {
 	bivariate_product(&ReferenceCompute);
 	mlecheck(&ReferenceCompute);
+	gruen_mlecheck(&ReferenceCompute);
 }
 
 #[test]
 fn sumcheck_simd() {
 	bivariate_product(&Simd::new());
 	mlecheck(&Simd::new());
+	gruen_mlecheck(&Simd::new());
+}
+
+/// Asserts one sync per round, no hidden syncs, and `launches` launches in every round exec
+/// after the first (`first` in the first), and in the final fold exec (1).
+fn assert_rounds(per_exec: &[ExecStats], first: usize, rest: usize) {
+	let (last, rounds) = per_exec.split_last().unwrap();
+	assert!(per_exec.iter().all(|e| e.hidden_syncs == 0), "{per_exec:?}");
+	assert_eq!(rounds[0].launches, first);
+	assert!(rounds[1..].iter().all(|e| e.launches == rest), "{per_exec:?}");
+	assert_eq!(last.launches, 1);
 }
 
 #[test]
@@ -236,6 +287,7 @@ fn sumcheck_fake_device_counts() {
 	assert_eq!(s.execs, n + 1);
 	assert_eq!(s.launches, 2 * n);
 	assert_eq!((s.d2h_calls, s.d2h_elems), (n + 1, n * 2 + 2));
+	assert_rounds(&s.per_exec, 1, 2);
 	println!("bivariate product: {s:?}");
 
 	let device = FakeDeviceCompute::<B128>::default();
@@ -246,5 +298,36 @@ fn sumcheck_fake_device_counts() {
 	assert_eq!((s.h2d_calls, s.h2d_elems), (5, (2 << n) + (3 << n)));
 	assert_eq!(s.execs, 2 + n + 1);
 	assert_eq!(s.d2h_elems, (2 << n) + n * 3 + 4);
+	// Execs 0 (setup) and 1 (download) precede the sumcheck.
+	assert_eq!(s.per_exec[0].launches, 3);
+	assert_rounds(&s.per_exec[2..], 1, 2);
 	println!("mlecheck: {s:?}");
+
+	let device = FakeDeviceCompute::<B128>::default();
+	gruen_mlecheck(&device);
+	let s = device.stats();
+	// Per round: tensor_expand + fold + pair_map_reduce (the first round has no fold).
+	assert_eq!(s.execs, n + 1);
+	assert_eq!((s.h2d_calls, s.h2d_elems), (3, 3 << n));
+	assert_eq!(s.d2h_elems, n * 2 + 3);
+	assert_rounds(&s.per_exec, 2, 3);
+	println!("gruen mlecheck: {s:?}");
+}
+
+#[test]
+fn fake_device_counts_hidden_sync() {
+	let device = FakeDeviceCompute::<B128>::default();
+	let col = device.copy_field_from_host(&[B128::ONE; 4]);
+	let ip = device.inner_product(device.as_slice(&col), device.as_slice(&col));
+	// The closure runs while the inner product's scalar is pending on the device.
+	device.exec(device.then(ip, |_| device.to_host(vec![])));
+	let s = device.stats();
+	assert_eq!(s.hidden_syncs, 1);
+	assert_eq!(
+		s.per_exec[0],
+		ExecStats {
+			launches: 1,
+			hidden_syncs: 1
+		}
+	);
 }

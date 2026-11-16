@@ -28,7 +28,7 @@ use std::ops::Mul;
 
 use binius_core::word::Word;
 use binius_field::{BinaryField, FieldOps};
-pub use fake::{FakeDeviceCompute, Stats};
+pub use fake::{ExecStats, FakeDeviceCompute, Stats};
 pub use reference::ReferenceCompute;
 pub use simd::SimdCompute;
 
@@ -36,7 +36,8 @@ pub use simd::SimdCompute;
 pub trait Composition<F>: Sync {
 	/// Number of input columns.
 	const N_IN: usize;
-	/// Total degree of the composition.
+	/// Degree of the composition along a line, i.e. in one folded variable. Columns the backend
+	/// broadcasts (see [`Compute::pair_map_reduce`]) are constant on the line and add no degree.
 	const DEGREE: usize;
 
 	/// Evaluates on one element per column. `T` is a scalar, a packed field, or a traced
@@ -50,9 +51,17 @@ pub trait PairKernel<F>: Sync {
 	const N_IN: usize;
 	/// Number of outputs, each summed over all pairs.
 	const N_OUT: usize;
+	/// Length of the `scratch` slice `map` needs. The backend allocates it once per worker.
+	const SCRATCH: usize;
 
 	/// Maps the low and high half entries of one pair of every column to `N_OUT` values.
-	fn map<T: FieldOps<Scalar = F> + Mul<F, Output = T>>(&self, lo: &[T], hi: &[T], out: &mut [T]);
+	fn map<T: FieldOps<Scalar = F> + Mul<F, Output = T>>(
+		&self,
+		lo: &[T],
+		hi: &[T],
+		scratch: &mut [T],
+		out: &mut [T],
+	);
 }
 
 /// The future type every backend in this crate uses: a boxed closure run by `exec`.
@@ -121,6 +130,10 @@ pub trait Compute<F: BinaryField>: Sync {
 	) -> Self::Future<'a, Vec<Self::FieldVec>>;
 	/// For every `i < 2^(n-1)` maps the pair `(col[i], col[i + 2^(n-1)])` of all columns through
 	/// `kernel` and sums the outputs. Returns the columns and the `K::N_OUT` sums.
+	///
+	/// `n` is the largest `log_len` among the columns. A column with `log_len == n - 1` is broadcast:
+	/// its pair is `(col[i], col[i])`. This carries an equality-indicator tensor over the remaining
+	/// variables.
 	fn pair_map_reduce<'a, K: PairKernel<F> + 'a>(
 		&self,
 		cols: Vec<Self::FieldVec>,
@@ -133,8 +146,12 @@ pub trait Compute<F: BinaryField>: Sync {
 		a: Self::Future<'a, A>,
 		b: Self::Future<'a, B>,
 	) -> Self::Future<'a, (A, B)>;
-	/// Sequences `f` after `a`. `f` only builds the next future from the (opaque) result of `a`;
-	/// it must not read device data, so on a device the whole chain stays in one submission.
+	/// Monadic bind: runs `f` on the result of `a` and continues with the future it returns.
+	///
+	/// Over handle-valued futures (`FieldVec`s) this is free on a device: the backend enqueues `a`,
+	/// calls `f` with the handles, and keeps enqueuing, so the chain is one submission. A bind whose
+	/// closure consumes a device-computed scalar (e.g. the `F` of `inner_product`) forces a hidden
+	/// device-to-host sync inside `exec`. `FakeDeviceCompute` counts those.
 	fn then<'a, A: Send + 'a, B: Send + 'a>(
 		&self,
 		a: Self::Future<'a, A>,
@@ -150,18 +167,43 @@ pub(crate) mod scalar {
 
 	use super::*;
 
-	/// Sums `kernel` over the pairs of the given columns.
+	/// Sums `kernel` over the pairs `range`, with `get(col, i)` giving the `(lo, hi)` entries.
+	/// Buffers are allocated once per call.
+	pub fn reduce_pairs<F: Field, T, K>(
+		kernel: &K,
+		range: std::ops::Range<usize>,
+		get: impl Fn(usize, usize) -> (T, T),
+	) -> Vec<T>
+	where
+		T: FieldOps<Scalar = F> + Mul<F, Output = T>,
+		K: PairKernel<F>,
+	{
+		let (mut lo, mut hi) = (vec![T::zero(); K::N_IN], vec![T::zero(); K::N_IN]);
+		let mut scratch = vec![T::zero(); K::SCRATCH];
+		let mut out = vec![T::zero(); K::N_OUT];
+		let mut acc = vec![T::zero(); K::N_OUT];
+		for i in range {
+			for c in 0..K::N_IN {
+				(lo[c], hi[c]) = get(c, i);
+			}
+			kernel.map(&lo, &hi, &mut scratch, &mut out);
+			acc.iter_mut().zip(&out).for_each(|(a, o)| *a += o);
+		}
+		acc
+	}
+
+	/// Sums `kernel` over the pairs of the given columns (see [`Compute::pair_map_reduce`]).
 	pub fn pair_map_reduce<F: Field, K: PairKernel<F>>(cols: &[&[F]], kernel: &K) -> Vec<F> {
 		assert_eq!(cols.len(), K::N_IN);
-		let half = cols[0].len() / 2;
-		assert!(half > 0);
-		(0..half).fold(vec![F::ZERO; K::N_OUT], |mut acc, i| {
-			let lo: Vec<F> = cols.iter().map(|c| c[i]).collect();
-			let hi: Vec<F> = cols.iter().map(|c| c[i + half]).collect();
-			let mut out = vec![F::ZERO; K::N_OUT];
-			kernel.map(&lo, &hi, &mut out);
-			acc.iter_mut().zip(out).for_each(|(a, o)| *a += o);
-			acc
+		let n = cols.iter().map(|c| c.len()).max().unwrap();
+		assert!(n >= 2);
+		reduce_pairs(kernel, 0..n / 2, |c, i| {
+			let col = cols[c];
+			if col.len() == n {
+				(col[i], col[i + n / 2])
+			} else {
+				(col[i], col[i])
+			}
 		})
 	}
 
