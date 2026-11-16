@@ -179,8 +179,13 @@ fn check_single<C: Compute<F>>(c: &C) {
 		(8, true, true),
 	]
 	.into_iter()
-	.chain([(10, false, false), (10, true, true), (10, true, false)])
-	{
+	.chain([
+		(10, false, false),
+		(10, true, true),
+		(10, true, false),
+		(14, true, true),
+		(14, false, false),
+	]) {
 		let i = inst(n, n as u64);
 		let b = bufs(&i);
 		let dev = c.copy_field_from_host(&i.cols[2]);

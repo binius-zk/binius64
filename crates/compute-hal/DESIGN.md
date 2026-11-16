@@ -144,15 +144,21 @@ Median of criterion's estimate, same transcript type.
 
 | n_vars | ip_prover | hal_simd | ratio |
 |---|---|---|---|
-| 16 | 10.7 ms | 16.4 ms | 1.54x |
-| 20 | 63.0 ms | 80.8 ms | 1.28x |
-| 22 | 219.6 ms | 246.7 ms | 1.12x |
+| 16 | 10.5 ms | 11.1 ms | 1.06x |
+| 20 | 63.8 ms | 66.5 ms | 1.04x |
+| 22 | 219.5 ms | 226.7 ms | 1.03x |
+
+Before fusing the fold into the map: 1.54x / 1.28x / 1.12x (16.4 / 80.8 / 246.7 ms).
 
 The port costs about nothing over the old driver (15.8 / 79.8 / 242.5 ms before): `Pick` copies the selected pair
 into scratch per element, below noise.
 
-Not profiled. Likely causes of the gap: the separate fold pass (the real prover fuses it into the map read), fixed
-per-round cost at n = 16, and the per-element pair gather.
+The fold is fused into the map's read as in `MleStore::map_reduce_with_fold` (`fold_pair_map_reduce_fused`): each
+column is a deferred `[lo, hi]` pair of segments split alongside the chunk tree, folded in place (owned, then truncated)
+or into a fresh buffer (borrowed, which becomes owned). Chunking matches the real prover (`MAX_CHUNK_VARS = 12`,
+`chunk_vars = (n - 1).min(12.max(LOG_WIDTH))`, rayon bisection, one accumulator Vec per chunk). It fell back to
+fold-then-map below `LOG_WIDTH`. That one change bought the whole gain. The residual 3-4% is likely the per-element
+`Pick` copy and kernel gather, not profiled.
 
 ## Pain points
 
@@ -172,7 +178,7 @@ per-round cost at n = 16, and the per-element pair gather.
 
 - `Column::SplitHalf` is not ported: a third `Column` variant and a half-view in every backend, over 30 lines.
 - `into_shared_sumcheck`, `add_evaluator`, `store_mut` (growing the store after construction) are not ported.
-- Fold is a separate pass from the map (not fused like `map_reduce_with_fold`); per-pair gather; eq rebuilt per round.
+- Per-pair gather in `Pick`; eq chunk rebuilt per round. The fused fold needs `eq_point`; without it fold and map are two passes.
 - Multi-kernel is static; `SharedSumcheckProver`'s heterogeneous `Vec<Box<dyn ..>>` needs nesting. `InfCube` is not covered.
 - `SimdCompute<P, A: Allocator>` should use `BufferPool`; buffers are plain `Vec`s now.
 - Traced constants are baked into the graph (per-proof batching coefficients would recompile CUDA kernels).

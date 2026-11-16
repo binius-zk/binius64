@@ -12,6 +12,7 @@ use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	FieldBuffer, FieldSlice,
 	inner_product::inner_product_par,
+	line::extrapolate_line,
 	multilinear::{
 		eq::eq_ind_partial_eval,
 		evaluate::evaluate,
@@ -81,7 +82,6 @@ where
 	let n = 1 << (log_n - P::LOG_WIDTH);
 	let los: Vec<&[P]> = cols.iter().map(|c| &c.as_ref()[..n / 2]).collect();
 	let his: Vec<&[P]> = cols.iter().map(|c| &c.as_ref()[n / 2..]).collect();
-	let get = |c: usize, i: usize| (los[c][i], his[c][i]);
 
 	let sums = eq_point.map_or_else(
 		|| {
@@ -93,7 +93,7 @@ where
 					scalar::reduce_pairs::<_, P, _>(
 						kernel,
 						k * CHUNK..((k + 1) * CHUNK).min(n / 2),
-						get,
+						|c, i| (los[c][i], his[c][i]),
 						None,
 					)
 				})
@@ -106,54 +106,225 @@ where
 				)
 		},
 		|p| {
-			let chunk_vars = (log_n - 1).min(MAX_CHUNK_VARS);
+			let chunk_vars = (log_n - 1).min(MAX_CHUNK_VARS.max(P::LOG_WIDTH));
 			let eq_chunk = eq_ind_partial_eval::<P>(&p[..chunk_vars]);
 			let chunk_len = 1 << (chunk_vars - P::LOG_WIDTH);
 			let map = |k: usize| {
-				let eq = eq_chunk.as_ref();
-				let n_in = kernel.n_in();
-				let (mut lo, mut hi) = (vec![P::zero(); n_in], vec![P::zero(); n_in]);
-				let mut scratch = vec![P::zero(); kernel.scratch()];
-				let mut out = vec![P::zero(); kernel.n_out()];
-				let mut wide = vec![<P as WideMul>::Output::default(); kernel.n_out()];
-				for (j, &eq_i) in eq.iter().enumerate() {
-					for c in 0..n_in {
-						(lo[c], hi[c]) = get(c, k * chunk_len + j);
-					}
-					kernel.map(&lo, &hi, &mut scratch, &mut out);
-					for (w, &o) in wide.iter_mut().zip(&out) {
-						*w += P::wide_mul(o, eq_i);
-					}
-				}
-				wide.into_iter().map(P::reduce).collect::<Vec<P>>()
+				let range = k * chunk_len..(k + 1) * chunk_len;
+				let lo: Vec<&[P]> = los.iter().map(|c| &c[range.clone()]).collect();
+				let hi: Vec<&[P]> = his.iter().map(|c| &c[range.clone()]).collect();
+				chunk_map(kernel, eq_chunk.as_ref(), &lo, &hi)
 			};
-			reduce_tree(0, log_n - 1 - chunk_vars, chunk_vars, p, &map)
+			reduce_tree(0, log_n - 1 - chunk_vars, chunk_vars, p, &split_chunks, &map)
 		},
 	);
 	sums.iter().map(|p| p.iter().sum()).collect()
 }
 
-/// Maps chunks `first..first + 2^depth` and combines them, folding eq coordinate
+/// The eq-weighted sum of `kernel` over one chunk: the packed elements of `lo[c]`/`hi[c]` pair with
+/// `eq`. Accumulates `wide_mul` unreduced and reduces once.
+fn chunk_map<P, K>(kernel: &K, eq: &[P], lo: &[&[P]], hi: &[&[P]]) -> Vec<P>
+where
+	P: PackedField<Scalar: BinaryField>,
+	K: PairKernel<P::Scalar>,
+{
+	let n_in = kernel.n_in();
+	let (mut l, mut h) = (vec![P::zero(); n_in], vec![P::zero(); n_in]);
+	let mut scratch = vec![P::zero(); kernel.scratch()];
+	let mut out = vec![P::zero(); kernel.n_out()];
+	let mut wide = vec![<P as WideMul>::Output::default(); kernel.n_out()];
+	for (j, &eq_i) in eq.iter().enumerate() {
+		for c in 0..n_in {
+			(l[c], h[c]) = (lo[c][j], hi[c][j]);
+		}
+		kernel.map(&l, &h, &mut scratch, &mut out);
+		for (w, &o) in wide.iter_mut().zip(&out) {
+			*w += P::wide_mul(o, eq_i);
+		}
+	}
+	wide.into_iter().map(P::reduce).collect()
+}
+
+/// Splits chunks `first..first + 2^depth` in two.
+const fn split_chunks(first: usize, depth: usize) -> [usize; 2] {
+	[first, first + (1 << (depth - 1))]
+}
+
+/// Maps the `2^depth` chunks of `state` and combines them, folding eq coordinate
 /// `p[chunk_vars + depth - 1]` at each level of the bisection.
-fn reduce_tree<P: PackedField>(
-	first: usize,
+fn reduce_tree<P: PackedField, S: Send>(
+	state: S,
 	depth: usize,
 	chunk_vars: usize,
 	p: &[P::Scalar],
-	map: &(impl Fn(usize) -> Vec<P> + Sync),
+	split: &(impl Fn(S, usize) -> [S; 2] + Sync),
+	map: &(impl Fn(S) -> Vec<P> + Sync),
 ) -> Vec<P> {
 	if depth == 0 {
-		return map(first);
+		return map(state);
 	}
+	let [a, b] = split(state, depth);
 	let (mut lhs, rhs) = rayon::join(
-		|| reduce_tree(first, depth - 1, chunk_vars, p, map),
-		|| reduce_tree(first + (1 << (depth - 1)), depth - 1, chunk_vars, p, map),
+		|| reduce_tree(a, depth - 1, chunk_vars, p, split, map),
+		|| reduce_tree(b, depth - 1, chunk_vars, p, split, map),
 	);
 	let z = P::broadcast(p[chunk_vars + depth - 1]);
 	for (lo, hi) in lhs.iter_mut().zip(rhs) {
 		*lo += z * (hi - *lo);
 	}
 	lhs
+}
+
+/// One half (`lo` or `hi`) of a column's folded output, deferred: `a` and `b` are the old column's
+/// matching segments on the highest variable. In place overwrites `a`; out of place fills `dst`.
+enum Seg<'a, P> {
+	InPlace {
+		a: &'a mut [P],
+		b: &'a [P],
+	},
+	OutOfPlace {
+		dst: &'a mut [P],
+		a: &'a [P],
+		b: &'a [P],
+	},
+}
+
+impl<'a, P: PackedField> Seg<'a, P> {
+	const fn split_half(self) -> [Self; 2] {
+		match self {
+			Self::InPlace { a, b } => {
+				let (a0, a1) = a.split_at_mut(a.len() / 2);
+				let (b0, b1) = b.split_at(b.len() / 2);
+				[
+					Self::InPlace { a: a0, b: b0 },
+					Self::InPlace { a: a1, b: b1 },
+				]
+			}
+			Self::OutOfPlace { dst, a, b } => {
+				let (d0, d1) = dst.split_at_mut(dst.len() / 2);
+				let (a0, a1) = a.split_at(a.len() / 2);
+				let (b0, b1) = b.split_at(b.len() / 2);
+				[
+					Self::OutOfPlace {
+						dst: d0,
+						a: a0,
+						b: b0,
+					},
+					Self::OutOfPlace {
+						dst: d1,
+						a: a1,
+						b: b1,
+					},
+				]
+			}
+		}
+	}
+
+	/// Writes `a + r * (b - a)` and returns it.
+	fn fold(self, r: P) -> &'a [P] {
+		match self {
+			Self::InPlace { a, b } => {
+				for (x, &y) in a.iter_mut().zip(b) {
+					*x = extrapolate_line(*x, y, r);
+				}
+				a
+			}
+			Self::OutOfPlace { dst, a, b } => {
+				for (d, (&x, &y)) in dst.iter_mut().zip(a.iter().zip(b)) {
+					*d = extrapolate_line(x, y, r);
+				}
+				dst
+			}
+		}
+	}
+}
+
+/// Bisects every column's `[lo, hi]` pair on its highest remaining variable.
+fn split_cols<P: PackedField>(
+	cols: Vec<[Seg<'_, P>; 2]>,
+	_depth: usize,
+) -> [Vec<[Seg<'_, P>; 2]>; 2] {
+	let (c0, c1) = cols
+		.into_iter()
+		.map(|[lo, hi]| {
+			let ([lo0, lo1], [hi0, hi1]) = (lo.split_half(), hi.split_half());
+			([lo0, hi0], [lo1, hi1])
+		})
+		.unzip();
+	[c0, c1]
+}
+
+/// `pair_map_reduce` of the columns folded by `r`, with the fold fused into the map's read, like
+/// `MleStore::map_reduce_with_fold`. Owned columns fold in place and truncate; borrowed ones fold
+/// into a fresh buffer and become owned. Needs `chunk_vars >= P::LOG_WIDTH` (the caller checks).
+fn fold_pair_map_reduce_fused<P, K>(
+	cols: &mut [Column<FieldBuffer<P>, FieldSlice<'_, P>>],
+	r: P::Scalar,
+	p: &[P::Scalar],
+	kernel: &K,
+) -> Vec<P::Scalar>
+where
+	P: PackedField<Scalar: BinaryField>,
+	K: PairKernel<P::Scalar>,
+{
+	let n = p.len(); // folded log_len minus one: the variable the chunks and tree split
+	let half = 1 << (n + 1 - P::LOG_WIDTH); // old column = [a, b], `half` packed elements each
+	let mut dsts: Vec<Option<FieldBuffer<P>>> = cols
+		.iter()
+		.map(|c| matches!(c, Column::Borrowed(_)).then(|| FieldBuffer::zeros(n + 1)))
+		.collect();
+	let segs: Vec<[Seg<'_, P>; 2]> = cols
+		.iter_mut()
+		.zip(&mut dsts)
+		.map(|(col, dst)| match (col, dst) {
+			(Column::Owned(v), _) => {
+				let (a, b) = v.as_mut().split_at_mut(half);
+				let (a0, a1) = a.split_at_mut(half / 2);
+				let (b0, b1) = b.split_at(half / 2);
+				[Seg::InPlace { a: a0, b: b0 }, Seg::InPlace { a: a1, b: b1 }]
+			}
+			(Column::Borrowed(s), Some(dst)) => {
+				let s: &FieldSlice<'_, P> = s;
+				let (a, b) = s.as_ref().split_at(half);
+				let (d0, d1) = dst.as_mut().split_at_mut(half / 2);
+				let (a0, a1) = a.split_at(half / 2);
+				let (b0, b1) = b.split_at(half / 2);
+				[
+					Seg::OutOfPlace {
+						dst: d0,
+						a: a0,
+						b: b0,
+					},
+					Seg::OutOfPlace {
+						dst: d1,
+						a: a1,
+						b: b1,
+					},
+				]
+			}
+			(Column::Borrowed(_), None) => unreachable!(),
+		})
+		.collect();
+
+	let chunk_vars = n.min(MAX_CHUNK_VARS.max(P::LOG_WIDTH));
+	let eq_chunk = eq_ind_partial_eval::<P>(&p[..chunk_vars]);
+	let r = P::broadcast(r);
+	let map = |cols: Vec<[Seg<'_, P>; 2]>| {
+		let (lo, hi): (Vec<_>, Vec<_>) = cols
+			.into_iter()
+			.map(|[l, h]| (l.fold(r), h.fold(r)))
+			.unzip();
+		chunk_map(kernel, eq_chunk.as_ref(), &lo, &hi)
+	};
+	let sums = reduce_tree(segs, n - chunk_vars, chunk_vars, p, &split_cols, &map);
+
+	for (col, dst) in cols.iter_mut().zip(dsts) {
+		match (col, dst) {
+			(Column::Owned(v), _) => v.truncate(n + 1),
+			(col, dst) => *col = Column::Owned(dst.expect("borrowed columns get a destination")),
+		}
+	}
+	sums.iter().map(|p| p.iter().sum()).collect()
 }
 
 impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> {
@@ -243,6 +414,20 @@ impl<P: PackedField<Scalar: BinaryField>> Compute<P::Scalar> for SimdCompute<P> 
 		Self: 'a,
 	{
 		Box::new(move || {
+			if let (Some(r), Some(p)) = (r, eq_point) {
+				let log_lens: Vec<usize> = cols
+					.iter()
+					.map(|c| match c {
+						Column::Owned(v) => v.log_len(),
+						Column::Borrowed(s) => s.log_len(),
+					})
+					.collect();
+				let n = scalar::round_log_len(&log_lens, true);
+				// Below packing width the columns are cache-resident: fold, then map.
+				if n > P::LOG_WIDTH {
+					return fold_pair_map_reduce_fused(cols, r, p, kernel);
+				}
+			}
 			if let Some(r) = r {
 				cols.iter_mut().for_each(|col| fold_col(col, r));
 			}
