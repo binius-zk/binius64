@@ -75,7 +75,7 @@ fn layout_round(specs: &[OracleSpec], pad_len: usize) -> RoundLayout {
 
 	// Every placed extent as a half-open scalar range, kept sorted and disjoint.
 	let mut extents = Vec::<Range<usize>>::with_capacity(items.len());
-	let mut block_offsets = vec![0; items.len()];
+	let mut block_offsets = vec![0; specs.len()];
 	let mut pad = 0..0;
 	let mut end = 1;
 	for i in order {
@@ -97,14 +97,14 @@ fn layout_round(specs: &[OracleSpec], pad_len: usize) -> RoundLayout {
 
 		let start = offset << log_block;
 		let extent = start..start + len;
-		if is_zk && i == specs.len() {
+		if i < specs.len() {
+			block_offsets[i] = offset;
+		} else {
 			pad = extent.clone();
 		}
 		extents.insert(pos, extent);
 		end = end.max((offset + 1) << log_block);
-		block_offsets[i] = offset;
 	}
-	block_offsets.truncate(specs.len());
 
 	RoundLayout {
 		log_len: log2_ceil_usize(end),
@@ -118,8 +118,8 @@ fn layout_round(specs: &[OracleSpec], pad_len: usize) -> RoundLayout {
 mod tests {
 	use super::*;
 
-	/// The pad length of the tests, `q = n_test_queries · 2^η`.
-	const PAD_LEN: usize = 232 * 4;
+	/// The pad length of the tests, `q = 2 · n_test_queries`.
+	const PAD_LEN: usize = 2 * 232;
 
 	fn layout(specs: &[OracleSpec]) -> RoundLayout {
 		let schedule = OracleSchedule::from_rounds([specs.iter().copied()]);
@@ -140,7 +140,7 @@ mod tests {
 		assert_eq!(layout.log_len, 17);
 		assert!(layout.is_zk);
 		assert_eq!(layout.block_offsets, [97, 0, 193]);
-		// The precommit block is the last extent, ending at 98 · 2^10.
+		// The pad takes the first free 2^10-aligned block, right after the precommit at 98 · 2^10.
 		assert_eq!(layout.pad, 100352..100352 + PAD_LEN);
 		assert!(layout.pad.end <= 1 << 17);
 	}

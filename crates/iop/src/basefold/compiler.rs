@@ -23,6 +23,9 @@ use crate::{
 
 /// A compiler that creates BaseFold ZK verifier channels with precomputed parameters.
 ///
+/// The base-2 logarithm of the arity of a ZK oracle's first fold.
+const ZK_LOG_FIRST_ARITY: usize = 1;
+
 /// This compiler commits each round of the schedule as one oracle, laid out by [`layout_rounds`],
 /// and builds a single combined FRI over the round oracles. ZK round oracles configure FRI
 /// parameters for zero-knowledge mode (`log_msg_len + 1` as the message length and
@@ -62,9 +65,10 @@ where
 			!schedule.specs().is_empty(),
 			"BaseFoldVerifierCompiler requires at least one oracle spec"
 		);
-		// The ZK pad covers the codeword symbols the query phase opens. Each query opens two: one
-		// element of the padded message and one of the mask.
-		let layouts = layout_rounds(&schedule, 2 * n_test_queries);
+		// The ZK pad covers the `q = n_test_queries · 2^η` opened codeword symbols. A ZK oracle's
+		// first fold has arity two, `η = 1`, as `optimal_for_batch` fixes `log_batch_size = 1` for
+		// it. This is an invariant of the compiler, so the layout needs no fixed point.
+		let layouts = layout_rounds(&schedule, n_test_queries << ZK_LOG_FIRST_ARITY);
 		let round_specs = layouts.iter().map(RoundLayout::spec).collect::<Vec<_>>();
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
