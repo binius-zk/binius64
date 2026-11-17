@@ -26,7 +26,9 @@ use crate::{
 /// This compiler commits each round of the schedule as one oracle, laid out by [`layout_rounds`],
 /// and builds a single combined FRI over the round oracles. ZK round oracles configure FRI
 /// parameters for zero-knowledge mode (`log_msg_len + 1` as the message length and
-/// `log_batch_size = 1`); non-ZK ones take a flexible batch size with no mask.
+/// `log_batch_size = 1`); non-ZK ones take a flexible batch size with no mask. Each ZK round also
+/// reserves a ZK pad of one coordinate per test query, which hides the codeword symbols the query
+/// phase opens.
 #[derive(Clone)]
 pub struct BaseFoldVerifierCompiler<F>
 where
@@ -62,7 +64,7 @@ where
 			!schedule.specs().is_empty(),
 			"BaseFoldVerifierCompiler requires at least one oracle spec"
 		);
-		let layouts = layout_rounds(&schedule);
+		let layouts = layout_rounds(&schedule, n_test_queries);
 		let round_specs = layouts.iter().map(RoundLayout::spec).collect::<Vec<_>>();
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
