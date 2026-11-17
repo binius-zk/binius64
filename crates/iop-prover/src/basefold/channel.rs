@@ -685,7 +685,6 @@ mod tests {
 	use binius_iop::{
 		basefold::compiler::BaseFoldVerifierCompiler,
 		channel::{IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn},
-		fri::MinProofSizeStrategy,
 		merkle_tree::BinaryMerkleTreeScheme,
 	};
 	use binius_ip::channel::IPVerifierChannel;
@@ -767,7 +766,6 @@ mod tests {
 			oracle_schedule,
 			LOG_INV_RATE,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		// === PROVER SIDE ===
@@ -831,7 +829,6 @@ mod tests {
 			oracle_schedule,
 			LOG_INV_RATE,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		// === PROVER SIDE ===
@@ -900,7 +897,6 @@ mod tests {
 			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		// === PROVER SIDE ===
@@ -981,7 +977,6 @@ mod tests {
 			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		let ntt = make_ntt(verifier_compiler.max_log_domain_size());
@@ -1251,7 +1246,6 @@ mod tests {
 			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		// === PROVER SIDE ===
@@ -1369,7 +1363,6 @@ mod tests {
 			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		// === PROVER SIDE ===
@@ -1496,7 +1489,6 @@ mod tests {
 			schedule,
 			LOG_INV_RATE,
 			calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE),
-			&MinProofSizeStrategy,
 		);
 		let ntt = make_ntt(verifier_compiler.max_log_domain_size());
 		let prover_compiler =

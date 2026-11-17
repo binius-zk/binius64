@@ -11,7 +11,7 @@ use binius_iop::{
 		IOPVerifierChannel, OracleSpec,
 		oracle_setup::{DummyElem, OracleSetupChannel},
 	},
-	fri::{self, MinProofSizeStrategy},
+	fri,
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
@@ -178,7 +178,6 @@ fn test_zk_wrapped_prove_verify() {
 		combined_schedule,
 		log_inv_rate,
 		n_test_queries,
-		&MinProofSizeStrategy,
 	);
 
 	let domain_context = GaoMateerOnTheFly::generate(zk_basefold_compiler.max_log_domain_size());

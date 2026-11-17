@@ -6,7 +6,6 @@ use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{OracleSchedule, OracleSpec},
-	fri::MinProofSizeStrategy,
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
@@ -56,7 +55,6 @@ fn basefold_compiler()
 		OracleSchedule::from_rounds([[OracleSpec::new(1 << LIMB_BITS)]]),
 		LOG_INV_RATE,
 		N_TEST_QUERIES,
-		&MinProofSizeStrategy,
 	);
 	let domain_context = GaoMateerPreExpanded::generate(verifier_compiler.max_log_domain_size());
 	let ntt = NeighborsLastSingleThread::new(domain_context);

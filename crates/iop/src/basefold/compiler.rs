@@ -16,7 +16,7 @@ use crate::{
 		layout::{RoundLayout, layout_rounds},
 	},
 	channel::OracleSchedule,
-	fri::{AritySelectionStrategy, FRIParams},
+	fri::FRIParams,
 	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
@@ -47,16 +47,14 @@ where
 	/// parameters; it is not stored. Each round oracle's batch size is derived from its ZK flag: a
 	/// ZK oracle fixes `log_batch_size = 1` (message ‖ equal-length mask), a non-ZK oracle takes a
 	/// flexible batch size. Requires at least one oracle.
-	pub fn new<H, Strategy>(
+	pub fn new<H>(
 		merkle_scheme: &BinaryMerkleTreeScheme<F, H>,
 		schedule: OracleSchedule,
 		log_inv_rate: usize,
 		n_test_queries: usize,
-		_arity_strategy: &Strategy,
 	) -> Self
 	where
 		H: HashSuite,
-		Strategy: AritySelectionStrategy,
 	{
 		assert!(
 			!schedule.specs().is_empty(),
@@ -66,8 +64,7 @@ where
 		let round_specs = layouts.iter().map(RoundLayout::spec).collect::<Vec<_>>();
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
-		// arities to minimize proof size, so `_arity_strategy` is not consulted here. It derives
-		// each oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message
+		// arities to minimize proof size. It derives each oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message
 		// ‖ mask), non-ZK oracles take a flexible batch size.
 		let (fri_params, _) =
 			FRIParams::optimal_for_batch(merkle_scheme, &round_specs, log_inv_rate, n_test_queries);
