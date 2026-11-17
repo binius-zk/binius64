@@ -81,5 +81,5 @@ fn test_ip_proof_size() {
 	//
 	// The opening is masked, so it also sends the mask claim and runs one sumcheck round per
 	// oracle-index variable, but commits no mask oracle of its own.
-	assert_eq!(proof_size, 61520, "proof size regression");
+	assert_eq!(proof_size, 77168, "proof size regression");
 }

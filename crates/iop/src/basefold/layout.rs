@@ -20,6 +20,9 @@ pub struct RoundLayout {
 	/// Constituent `i` of `2^ℓ_i` entries occupies `M_r[b_i · 2^ℓ_i .. (b_i + 1) · 2^ℓ_i]`, and
 	/// only its first `len_i` entries carry content.
 	pub block_offsets: Vec<usize>,
+	/// The ZK pad: coordinates outside every extent that the prover fills with uniform elements.
+	/// Empty for a round that is not zero-knowledge.
+	pub pad: Range<usize>,
 }
 
 impl RoundLayout {
@@ -39,17 +42,23 @@ impl RoundLayout {
 /// placed block, so a constituent may nest in the slack above another's content:
 ///
 /// ```text
-/// [ private: 98332 of 2^17 | mask 2^9 | precommit 2^10 | unused ]
-///   0                        98816      99328            100352   2^17
+/// [ private: 98332 of 2^17 | mask 2^9 | precommit 2^10 | pad | unused ]
+///   0                        98816      99328            100352      2^17
 /// ```
 ///
-/// The round oracle is the least power of two holding every block. With every `len_i` a full
-/// power of two, the blocks lie end to end.
-pub fn layout_rounds(schedule: &OracleSchedule) -> Vec<RoundLayout> {
-	schedule.rounds().map(layout_round).collect()
+/// A zero-knowledge round reserves a ZK pad of `pad_len` coordinates right after its last extent
+/// (binius.xyz#128, "ZK pad"). The caller passes `pad_len = q = n_test_queries · 2^η`, the
+/// codeword symbols the query phase opens, `2^η` being the first fold's arity. The round oracle is
+/// the least power of two holding every block and the pad. With every `len_i` a full power of two,
+/// the blocks lie end to end.
+pub fn layout_rounds(schedule: &OracleSchedule, pad_len: usize) -> Vec<RoundLayout> {
+	schedule
+		.rounds()
+		.map(|specs| layout_round(specs, pad_len))
+		.collect()
 }
 
-fn layout_round(specs: &[OracleSpec]) -> RoundLayout {
+fn layout_round(specs: &[OracleSpec], pad_len: usize) -> RoundLayout {
 	let mut order = (0..specs.len()).collect::<Vec<_>>();
 	order.sort_by_key(|&i| Reverse(specs[i].log_msg_len()));
 
@@ -81,10 +90,22 @@ fn layout_round(specs: &[OracleSpec]) -> RoundLayout {
 		block_offsets[i] = offset;
 	}
 
+	let is_zk = specs.iter().any(|spec| spec.is_zk);
+	let pad = if is_zk {
+		// shortcut: the spec's pad-independence lemma is deferred and constrains where the compiler
+		// places the pad. Right after the last extent is not proven to satisfy it yet.
+		let start = extents.last().map_or(0, |extent| extent.end);
+		start..start + pad_len
+	} else {
+		0..0
+	};
+	end = end.max(pad.end);
+
 	RoundLayout {
 		log_len: log2_ceil_usize(end),
-		is_zk: specs.iter().any(|spec| spec.is_zk),
+		is_zk,
 		block_offsets,
+		pad,
 	}
 }
 
@@ -92,9 +113,12 @@ fn layout_round(specs: &[OracleSpec]) -> RoundLayout {
 mod tests {
 	use super::*;
 
+	/// The pad length of the tests, `q = n_test_queries · 2^η`.
+	const PAD_LEN: usize = 232 * 4;
+
 	fn layout(specs: &[OracleSpec]) -> RoundLayout {
 		let schedule = OracleSchedule::from_rounds([specs.iter().copied()]);
-		let mut layouts = layout_rounds(&schedule);
+		let mut layouts = layout_rounds(&schedule, PAD_LEN);
 		assert_eq!(layouts.len(), 1);
 		layouts.pop().unwrap()
 	}
@@ -111,20 +135,22 @@ mod tests {
 		assert_eq!(layout.log_len, 17);
 		assert!(layout.is_zk);
 		assert_eq!(layout.block_offsets, [97, 0, 193]);
+		// The precommit block is the last extent, ending at 98 · 2^10.
+		assert_eq!(layout.pad, 100352..100352 + PAD_LEN);
+		assert!(layout.pad.end <= 1 << 17);
 	}
 
 	#[test]
 	fn a_tenant_nests_in_another_tenants_slack() {
 		// The 2^4 oracle holds 9 entries and sits in the 2^5 one's slack at 16. The 2^2 oracle
-		// finds no room in the 2^5 one's slack, and nests in the 2^4 one's at 28. It alone is
-		// masked, which masks the whole round.
+		// finds no room in the 2^5 one's slack, and nests in the 2^4 one's at 28.
 		let layout = layout(&[
 			OracleSpec::new(15),
 			OracleSpec::new(9),
-			OracleSpec::new_zk(1 << 2),
+			OracleSpec::new(1 << 2),
 		]);
 		assert_eq!(layout.log_len, 5);
-		assert!(layout.is_zk);
+		assert!(!layout.is_zk);
 		assert_eq!(layout.block_offsets, [0, 1, 7]);
 	}
 
@@ -143,8 +169,22 @@ mod tests {
 
 	#[test]
 	fn a_lone_oracle_is_its_own_round() {
-		let layout = layout(&[OracleSpec::new_zk(5)]);
-		assert_eq!(layout.spec(), OracleSpec::new_zk(1 << 3));
+		let layout = layout(&[OracleSpec::new(5)]);
+		assert_eq!(layout.spec(), OracleSpec::new(1 << 3));
 		assert_eq!(layout.block_offsets, [0]);
+	}
+
+	#[test]
+	fn a_non_zk_round_carries_no_pad() {
+		let layout = layout(&[OracleSpec::new(1 << 10)]);
+		assert_eq!(layout.log_len, 10);
+		assert!(layout.pad.is_empty());
+	}
+
+	#[test]
+	fn a_zk_round_with_no_slack_grows_by_one_for_its_pad() {
+		let layout = layout(&[OracleSpec::new_zk(1 << 10)]);
+		assert_eq!(layout.log_len, 11);
+		assert_eq!(layout.pad, 1 << 10..(1 << 10) + PAD_LEN);
 	}
 }

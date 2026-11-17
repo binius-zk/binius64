@@ -611,9 +611,11 @@ where
 		self.n_sent += 1;
 		self.n_in_round += 1;
 
-		// A lone oracle is its round oracle, padding included. Any other is copied into its block,
-		// content only, since a round-mate may nest in the slack above it.
-		let message = if layout.block_offsets.len() == 1 {
+		// A lone oracle the round does not outgrow is its round oracle, padding included. Any other
+		// is copied into its block, content only, since a round-mate or the ZK pad may sit in the
+		// slack above it.
+		let mut message = if layout.block_offsets.len() == 1 && layout.log_len == spec.log_msg_len()
+		{
 			FieldBuffer::from_view_in(&self.alloc, buffer)
 		} else {
 			let message = self
@@ -632,6 +634,12 @@ where
 				.expect("the open round oracle was just written")
 		};
 		self.n_in_round = 0;
+
+		// Fill the ZK pad with uniform elements. No operand touches it, since every operand
+		// vanishes outside its oracle's extent.
+		for i in layout.pad.clone() {
+			message.set(i, F::random(&mut self.rng));
+		}
 		self.commit_round_oracle(message);
 
 		oracle
