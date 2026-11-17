@@ -164,7 +164,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Ghash128b as B128, PackedGhash1x128b};
+	use binius_field::PackedGhash1x128b;
 	use binius_iop::fri::FRIParams;
 	use binius_math::{
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
