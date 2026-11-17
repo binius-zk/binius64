@@ -21,10 +21,6 @@ use crate::{
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 
-/// The log arity of the first fold of a ZK oracle, its message ‖ mask batch. `optimal_for_batch`
-/// fixes `log_batch_size = 1` for a ZK oracle.
-const ZK_FIRST_FOLD_LOG_ARITY: usize = 1;
-
 /// A compiler that creates BaseFold ZK verifier channels with precomputed parameters.
 ///
 /// This compiler commits each round of the schedule as one oracle, laid out by [`layout_rounds`],
@@ -66,11 +62,9 @@ where
 			!schedule.specs().is_empty(),
 			"BaseFoldVerifierCompiler requires at least one oracle spec"
 		);
-		// The ZK pad covers the `q = n_test_queries · 2^η` opened codeword symbols, `2^η` being the
-		// first fold's arity. For a ZK oracle `η = 1` always, a BaseFold compiler invariant ensured
-		// by `FRIParams::optimal_for_batch`, so the layout does not depend on the chosen
-		// parameters.
-		let layouts = layout_rounds(&schedule, n_test_queries << ZK_FIRST_FOLD_LOG_ARITY);
+		// The ZK pad covers the codeword symbols the query phase opens. Each query opens two: one
+		// element of the padded message and one of the mask.
+		let layouts = layout_rounds(&schedule, 2 * n_test_queries);
 		let round_specs = layouts.iter().map(RoundLayout::spec).collect::<Vec<_>>();
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
