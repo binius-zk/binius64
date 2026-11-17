@@ -11,7 +11,7 @@ use binius_field::{ExtensionField, FieldOps, Rijndael8b as B8};
 use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleSpec, oracle_setup::OracleSetupChannel},
+	channel::{IOPVerifierChannel, OracleSchedule, oracle_setup::OracleSetupChannel},
 	fri::{ConstantArityStrategy, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
@@ -93,14 +93,14 @@ impl IOPVerifier {
 		self.cs
 	}
 
-	/// Returns the oracle specs the prover commits to: the trace, plus the IntMul logup*
-	/// pushforward when the circuit has IMUL constraints.
+	/// Returns the oracles the prover commits to, grouped into rounds: the trace, plus the IntMul
+	/// logup* pushforward when the circuit has IMUL constraints.
 	///
-	/// The specs are derived by replaying the oracle-receiving sequence against an
+	/// The schedule is derived by replaying the oracle-receiving sequence against an
 	/// [`OracleSetupChannel`] — which records each `recv_oracle` without doing real verification —
 	/// rather than hand-maintaining the list. M4 commits its oracles without zero-knowledge, so the
 	/// setup channel is constructed with `is_zk = false`.
-	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
+	pub fn oracle_schedule(&self) -> OracleSchedule {
 		let mut channel = OracleSetupChannel::new(false);
 		// The setup channel performs no real verification — every `recv_*` / `sample` /
 		// `assert_zero` is a no-op — so `verify` cannot fail here; it only records the
@@ -110,7 +110,7 @@ impl IOPVerifier {
 		let _ = self
 			.verify_chip(&mut channel)
 			.expect("verifying against the no-op OracleSetupChannel cannot fail");
-		channel.into_oracle_specs()
+		channel.into_oracle_schedule()
 	}
 
 	/// Verifies one M4 proof using an IOP channel.
@@ -140,11 +140,7 @@ impl IOPVerifier {
 	{
 		// Receive the trace commitment.
 		// The witness is committed without zero-knowledge.
-		let trace_oracle = channel.recv_oracle(
-			self.layout.n_witness_elems,
-			self.layout.log_witness_elems,
-			true,
-		)?;
+		let trace_oracle = channel.recv_oracle(self.layout.n_witness_elems, true)?;
 
 		// Reduce every instance's constraints to one claim on the committed trace.
 		// A batch hides its inout words, so the public data is the shared constants alone. They are
@@ -198,10 +194,11 @@ impl IOPVerifier {
 		// BaseFold reduces to a challenge point where the transparent evaluates as below.
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = trace_point[log_packing..].to_vec();
+		let n_witness_elems = self.layout.n_witness_elems;
 		channel.verify_oracle_relation(
 			trace_oracle,
 			Box::new(move |pt: &[Channel::Elem]| {
-				ring_switch::eval_rs_eq(&eval_point_high, pt, &eq_r_double_prime)
+				ring_switch::eval_rs_eq(n_witness_elems, &eval_point_high, pt, &eq_r_double_prime)
 			}),
 			sumcheck_claim,
 		)?;
@@ -250,7 +247,7 @@ where
 		// when the circuit has IMUL constraints. Derived by replaying the verifier's
 		// oracle-receiving sequence against an `OracleSetupChannel`, so the list can never drift
 		// out of sync with the oracles the checks actually commit.
-		let oracle_specs = iop_verifier.oracle_specs();
+		let oracle_schedule = iop_verifier.oracle_schedule();
 
 		// Pick the proof-size-optimal FRI fold arity for this codeword length.
 		let log_code_len = layout.log_witness_elems + log_inv_rate;
@@ -264,7 +261,7 @@ where
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
 			&merkle_scheme,
-			oracle_specs,
+			oracle_schedule,
 			log_inv_rate,
 			n_test_queries,
 			&ConstantArityStrategy::new(fri_arity),

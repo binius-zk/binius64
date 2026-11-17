@@ -3,6 +3,7 @@
 mod batch;
 pub mod common;
 mod error;
+pub mod infinity;
 mod verify;
 
 pub use batch::*;

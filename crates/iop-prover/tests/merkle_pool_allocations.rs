@@ -148,8 +148,12 @@ fn a_pooled_encode_stops_allocating_the_codeword_globally() {
 	let merkle_prover = BinaryMerkleTreeProver::<B128, StdHashSuite>::new();
 	let domain_context = GaoMateerOnTheFly::generate(LOG_DIM + 1 + 1);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
-	let (params, _) =
-		FRIParams::optimal_for_batch(merkle_prover.scheme(), &[OracleSpec::new_zk(LOG_DIM)], 1, 32);
+	let (params, _) = FRIParams::optimal_for_batch(
+		merkle_prover.scheme(),
+		&[OracleSpec::new_zk(1 << LOG_DIM)],
+		1,
+		32,
+	);
 	let message = random_field_buffer::<PackedGhash1x128b>(&mut rng, LOG_DIM);
 
 	// Warm both paths, so neither count includes one-off setup unrelated to the allocator.

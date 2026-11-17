@@ -40,13 +40,10 @@ use std::{
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash_prover::ParallelHashSuite;
-use binius_iop::channel::OracleSchedule;
-use binius_iop_prover::{
-	basefold::compiler::BaseFoldProverCompiler,
-	channel::{IOPProverChannel, merge::MergeProverChannel},
-};
+use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
 	channel::IPProverChannel,
+	libra,
 	sumcheck::{quadratic_mlecheck_prover, zk_mlecheck},
 };
 use binius_math::{
@@ -98,8 +95,6 @@ where
 	H: ParallelHashSuite,
 {
 	iop_prover: IOPProver<P::Scalar>,
-	/// Every oracle the proof commits, grouped into the rounds each committed as one oracle.
-	oracle_schedule: OracleSchedule,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>>,
 	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
 	/// so blocks freed by one `prove` call are reused by the next.
@@ -134,17 +129,17 @@ impl<F: Field> IOPProver<F> {
 
 	/// Packs and commits the precommit segment of a witness on the channel.
 	///
-	/// This must be called before [`Self::prove`], and the returned oracle handle must be passed
-	/// into `prove`. Callers that wrap the IOP (e.g. the ZK wrapper) can
-	/// invoke this separately so the precommit oracle handle is available before the rest of
-	/// the protocol runs.
+	/// This must be called before [`Self::prove`], and the returned oracle handle and packed
+	/// precommit buffer must be passed into `prove`. Callers that wrap the IOP (e.g. the ZK
+	/// wrapper) can invoke this separately so the precommit oracle handle is available before the
+	/// rest of the protocol runs.
 	pub fn commit_precommit<P, Channel, A>(
 		&self,
 		witness: &Witness<F>,
 		rng: &mut impl CryptoRng,
 		channel: &mut Channel,
 		alloc: &A,
-	) -> Channel::Oracle
+	) -> (Channel::Oracle, FieldVec<P, A>)
 	where
 		F: BinaryField,
 		P: PackedField<Scalar = F>,
@@ -161,7 +156,8 @@ impl<F: Field> IOPProver<F> {
 			&precommit_blinding,
 			rng,
 		);
-		channel.send_oracle(precommit_packed)
+		let precommit_oracle = channel.send_oracle(precommit_packed.as_view());
+		(precommit_oracle, precommit_packed)
 	}
 
 	/// Proves using an IOP channel interface.
@@ -173,6 +169,7 @@ impl<F: Field> IOPProver<F> {
 	///
 	/// * `witness` - The witness values for the constraint system
 	/// * `precommit_oracle` - Oracle handle obtained from [`Self::commit_precommit`]
+	/// * `precommit_packed` - Packed precommit buffer obtained from [`Self::commit_precommit`]
 	/// * `rng` - Random number generator for blinding
 	/// * `channel` - The IOP prover channel (public input must be observed on transcript before
 	///   creating the channel; the precommit oracle must already have been committed on it via
@@ -181,6 +178,7 @@ impl<F: Field> IOPProver<F> {
 		&self,
 		witness: &Witness<F>,
 		precommit_oracle: Channel::Oracle,
+		precommit_packed: FieldSlice<'_, P>,
 		mut rng: impl CryptoRng,
 		channel: &mut Channel,
 		alloc: &A,
@@ -262,22 +260,17 @@ impl<F: Field> IOPProver<F> {
 
 		// Send the private and mask oracles to the channel. The precommit oracle was committed
 		// by the caller via `commit_precommit` and passed in as `precommit_oracle`.
-		let private_oracle = channel.send_oracle(private_packed);
-		let mask_oracle = channel.send_oracle(masks_buffer);
-
-		// Take the committed buffers back for the reductions.
-		let precommit_packed = channel.take_oracle(precommit_oracle.clone());
-		let private_packed = channel.take_oracle(private_oracle.clone());
-		let masks_buffer = channel.take_oracle(mask_oracle.clone());
+		let private_oracle = channel.send_oracle(private_packed.as_view());
+		let mask_oracle = channel.send_oracle(masks_buffer.as_view());
 
 		let mulcheck_mask =
-			zk_mlecheck::Mask::new(log_mul_constraints, mask_degree, masks_buffer.as_view());
+			libra::Mask::new(log_mul_constraints, mask_degree, masks_buffer.as_view());
 
 		// Prove the multiplication constraints
 		let (mulcheck_evals, mask_eval, r_x) = prove_mulcheck::<F, P, _, _>(
 			cs.mul_constraints(),
 			witness.public(),
-			precommit_packed.as_view(),
+			precommit_packed,
 			private_packed.as_view(),
 			mulcheck_mask,
 			&mut *channel,
@@ -317,24 +310,12 @@ impl<F: Field> IOPProver<F> {
 		// Compute the mask folding polynomial (libra_eval tensor)
 		let n_vars = r_x.len();
 		let libra_eval_tensor =
-			zk_mlecheck::expand_libra_eval::<A, P>(alloc, &r_x, n_vars, mask_degree, m_n, m_d);
+			libra::expand_libra_eval::<A, P>(alloc, &r_x, n_vars, mask_degree, m_n, m_d);
 
-		// Prove all oracle relations, returning each committed buffer to the channel for the
-		// combined opening.
-		channel.prove_oracle_relation(
-			precommit_oracle.clone(),
-			precommit_wiring_poly.into(),
-			precommit_claim,
-		);
-		channel.return_oracle(precommit_oracle, precommit_packed);
-		channel.prove_oracle_relation(
-			private_oracle.clone(),
-			private_wiring_poly.into(),
-			private_claim,
-		);
-		channel.return_oracle(private_oracle, private_packed);
-		channel.prove_oracle_relation(mask_oracle.clone(), libra_eval_tensor.into(), mask_eval);
-		channel.return_oracle(mask_oracle, masks_buffer);
+		// Prove all oracle relations.
+		channel.prove_oracle_relation(precommit_oracle, precommit_wiring_poly, precommit_claim);
+		channel.prove_oracle_relation(private_oracle, private_wiring_poly, private_claim);
+		channel.prove_oracle_relation(mask_oracle, libra_eval_tensor, mask_eval);
 
 		Ok(())
 	}
@@ -359,7 +340,7 @@ where
 			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and
+		// Create the BaseFold ZK compiler from verifier compiler (reuses the oracle schedule and
 		// fri_params)
 		let basefold_compiler =
 			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
@@ -368,7 +349,6 @@ where
 
 		Ok(Prover {
 			iop_prover,
-			oracle_schedule: verifier.oracle_schedule().clone(),
 			basefold_compiler,
 			pool: BufferPool::new(),
 			_hash_marker: PhantomData,
@@ -411,19 +391,24 @@ where
 		// their nodes from it too.
 		let alloc = &self.pool;
 		// Create ZK channel (owns the RNG for mask generation), commit the precommit oracle,
-		// and delegate to the IOP prover. Each round's oracles are committed as one.
-		let channel = self
+		// and delegate to the IOP prover.
+		let mut channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng, alloc);
-		let mut channel = MergeProverChannel::new(channel, &self.oracle_schedule, alloc);
-		let precommit_oracle =
+		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _, _>(witness, &mut rng, &mut channel, &alloc);
 		// The IOP prover only queues the oracle relations; `finish` runs the single combined
 		// opening.
-		self.iop_prover
-			.prove::<P, _, _>(witness, precommit_oracle, rng, &mut channel, &alloc)?;
-		channel.into_inner().finish();
+		self.iop_prover.prove::<P, _, _>(
+			witness,
+			precommit_oracle,
+			precommit_packed.as_view(),
+			rng,
+			&mut channel,
+			&alloc,
+		)?;
+		channel.finish();
 		Ok(())
 	}
 }
@@ -433,7 +418,7 @@ fn prove_mulcheck<F, P, Channel, A>(
 	public: &[F],
 	precommit_packed: FieldSlice<'_, P>,
 	private_packed: FieldSlice<'_, P>,
-	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
+	mask: libra::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
 	alloc: &A,
 ) -> ([F; 3], F, Vec<F>)

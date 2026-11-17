@@ -3,7 +3,6 @@
 //! Channel abstraction for interactive oracle protocol (IOP) verifiers.
 
 pub mod grinding;
-pub mod merge;
 pub mod naive;
 pub mod oracle_setup;
 pub mod size_tracking;
@@ -33,7 +32,8 @@ pub enum Error {
 
 /// Specification for an oracle to be committed in the IOP.
 ///
-/// `len` partitions the oracle's `2^log_msg_len` entries into content and padding:
+/// The oracle is a multilinear over `log_msg_len() = ⌈log2 len⌉` variables, whose first `len`
+/// entries are the prover's content:
 ///
 /// ```text
 /// [ content: chosen by the prover | padding: chosen arbitrarily by the compiler ]
@@ -41,10 +41,8 @@ pub enum Error {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OracleSpec {
-	/// The length of the content section, at most `2^log_msg_len`.
+	/// The length of the content section.
 	pub len: usize,
-	/// Log2 of the message length (number of field elements).
-	pub log_msg_len: usize,
 	/// Whether the oracle is committed with zero-knowledge (hiding) masking.
 	///
 	/// ZK oracles interleave the message with a fresh mask and are folded by a shared masking
@@ -53,31 +51,20 @@ pub struct OracleSpec {
 }
 
 impl OracleSpec {
-	/// A non-ZK (unmasked) oracle of the given message length, all of it content.
-	pub const fn new(log_msg_len: usize) -> Self {
-		Self {
-			len: 1 << log_msg_len,
-			log_msg_len,
-			is_zk: false,
-		}
+	/// A non-ZK (unmasked) oracle of `len` content entries.
+	pub const fn new(len: usize) -> Self {
+		Self { len, is_zk: false }
 	}
 
-	/// A ZK (masked, hiding) oracle of the given message length, all of it content.
-	pub const fn new_zk(log_msg_len: usize) -> Self {
-		Self {
-			len: 1 << log_msg_len,
-			log_msg_len,
-			is_zk: true,
-		}
+	/// A ZK (masked, hiding) oracle of `len` content entries.
+	pub const fn new_zk(len: usize) -> Self {
+		Self { len, is_zk: true }
 	}
-}
 
-/// The length of the one oracle a round's oracles are committed as.
-///
-/// The oracles lie end to end, so this is the smallest power of two covering their total.
-fn merged_log_msg_len(log_msg_lens: impl IntoIterator<Item = usize>) -> usize {
-	let total_len: usize = log_msg_lens.into_iter().map(|n| 1usize << n).sum();
-	log2_ceil_usize(total_len)
+	/// Log2 of the message length (number of field elements), `⌈log2 len⌉`.
+	pub const fn log_msg_len(&self) -> usize {
+		log2_ceil_usize(self.len)
+	}
 }
 
 /// Every oracle an IOP commits, grouped into the rounds they are committed in.
@@ -96,7 +83,7 @@ fn merged_log_msg_len(log_msg_lens: impl IntoIterator<Item = usize>) -> usize {
 ///
 /// A flat spec list cannot say where those boundaries fall.
 ///
-/// A caller that commits a whole round as one oracle needs them.
+/// BaseFold commits each round as one oracle, so it needs them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OracleSchedule {
 	/// Every oracle, in arrival order, across all rounds.
@@ -117,6 +104,18 @@ impl OracleSchedule {
 			specs: Vec::new(),
 			ends: Vec::new(),
 		}
+	}
+
+	/// Builds a schedule of closed rounds, each listing its oracles in commit order.
+	pub fn from_rounds(
+		rounds: impl IntoIterator<Item = impl IntoIterator<Item = OracleSpec>>,
+	) -> Self {
+		let mut schedule = Self::new();
+		for round in rounds {
+			schedule.specs.extend(round);
+			schedule.end_round();
+		}
+		schedule
 	}
 
 	/// Appends one oracle to the round currently open.
@@ -156,20 +155,6 @@ impl OracleSchedule {
 		let starts = iter::once(0).chain(self.ends.iter().copied());
 		iter::zip(starts, self.ends.iter().copied()).map(|(start, end)| &self.specs[start..end])
 	}
-
-	/// One spec per round: the oracle that round's oracles are committed as.
-	///
-	/// This is the coarser list an underlying channel is configured with.
-	///
-	/// A round is masked as a whole, so its oracle is zero-knowledge if any member is.
-	pub fn merged_specs(&self) -> Vec<OracleSpec> {
-		self.rounds()
-			.map(|round| OracleSpec {
-				is_zk: round.iter().any(|spec| spec.is_zk),
-				..OracleSpec::new(merged_log_msg_len(round.iter().map(|spec| spec.log_msg_len)))
-			})
-			.collect()
-	}
 }
 
 /// A boxed closure that evaluates a transparent MLE at a given point.
@@ -203,40 +188,51 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F, Elem: 'static> {
 
 	/// Receives an oracle commitment from the prover.
 	///
-	/// The caller describes the oracle being received: `len` and `log_msg_len` are its
-	/// [`OracleSpec`] fields, and `is_witness_dependent` is whether the oracle's contents depend on
-	/// the witness. These let a channel record the oracle's [`OracleSpec`] rather than requiring
-	/// the specs to be supplied up front. The resulting oracle is zero-knowledge iff the channel
-	/// is configured for ZK *and* the oracle is witness-dependent — a non-witness-dependent oracle
-	/// (e.g. a pre-indexed commitment to the wiring matrix for succinctness, a planned feature) is
-	/// never masked.
+	/// The caller describes the oracle being received: `len` is its [`OracleSpec::len`], and
+	/// `is_witness_dependent` is whether the oracle's contents depend on the witness. These let a
+	/// channel record the oracle's [`OracleSpec`] rather than requiring the specs to be supplied up
+	/// front. The resulting oracle is zero-knowledge iff the channel is configured for ZK *and* the
+	/// oracle is witness-dependent — a non-witness-dependent oracle (e.g. a pre-indexed commitment
+	/// to the wiring matrix for succinctness, a planned feature) is never masked.
 	///
 	/// Only the first `len` entries are the prover's content. The rest is padding the channel may
 	/// fill arbitrarily, so every later claim must hold over the oracle the channel commits.
-	///
-	/// # Preconditions
-	///
-	/// * `len <= 2^log_msg_len`.
 	fn recv_oracle(
 		&mut self,
 		len: usize,
-		log_msg_len: usize,
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, Error>;
 
-	/// Queues one oracle linear relation to be opened.
+	/// Queues one linear relation over committed oracles to be opened.
+	///
+	/// The relation asserts that `Σ_i <oracle_i, transparent_i> = claim` over its operands. An
+	/// oracle may appear in any number of relations, and more than once in one.
 	///
 	/// Implementations may either verify the relation immediately, or queue it and defer the
-	/// actual opening (masking + sumcheck + FRI) to `finish()`. Either way, the relation asserts
-	/// that `<oracle_poly, transparent> = claim`. An oracle may carry any number of relations.
+	/// actual opening (masking + sumcheck + FRI) to `finish()`.
+	///
+	/// Each transparent is a multilinear in its oracle's `log_msg_len` variables that vanishes on
+	/// every index at or above the oracle's [`OracleSpec::len`], so the relation does not depend
+	/// on the channel's padding.
 	///
 	/// # Preconditions
 	///
-	/// * `oracle` must be a valid handle returned by `recv_oracle()`.
+	/// * Every operand's oracle must be a valid handle returned by `recv_oracle()`.
+	fn verify_multi_oracle_relation(
+		&mut self,
+		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
+		claim: Self::Elem,
+	) -> Result<(), Error>;
+
+	/// Queues one oracle linear relation `<oracle, transparent> = claim` to be opened.
+	///
+	/// This is [`Self::verify_multi_oracle_relation`] with a single operand.
 	fn verify_oracle_relation(
 		&mut self,
 		oracle: Self::Oracle,
 		transparent: TransparentEvalFn<Self::Elem>,
 		claim: Self::Elem,
-	) -> Result<(), Error>;
+	) -> Result<(), Error> {
+		self.verify_multi_oracle_relation([(oracle, transparent)], claim)
+	}
 }

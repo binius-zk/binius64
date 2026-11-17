@@ -162,10 +162,11 @@ where
 	///
 	/// 1. the shared mask challenge `gamma`, once, if any oracle is ZK (the inner unbatch round);
 	/// 2. the `log_n_oracles` outer batching challenges (the oracle-combine rounds);
-	/// 3. one challenge per MLE-check round over the combined oracle's variables.
+	/// 3. one challenge per BaseFold sumcheck round over the combined oracle's variables.
 	///
-	/// Steps 1 and 2 are fed up front.
-	/// Step 3 is interleaved with the fold rounds: one challenge after each fold.
+	/// Step 1 is fed up front.
+	/// Steps 2 and 3 are sumcheck rounds, interleaved with the fold rounds: one challenge after
+	/// each fold, the oracle-index variables first.
 	/// The total number of challenges must equal the number of fold rounds.
 	pub fn receive_challenge(&mut self, challenge: F) {
 		self.unprocessed_challenges.push(challenge);

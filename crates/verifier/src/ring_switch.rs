@@ -1,11 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
-
 use binius_field::{BinaryField, ExtensionField, FieldOps, PackedField};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
-	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate_inplace_scalars},
+	multilinear::{
+		eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+		eq_prefix::eq_ind_prefix_eval_tensor_algebra,
+		evaluate::evaluate_inplace_scalars,
+	},
 	tensor_algebra::TensorAlgebra,
 };
 
@@ -84,41 +86,41 @@ where
 /// Evaluate the ring switching equality indicator at a given point.
 ///
 /// The ring switching equality indicator is the multilinear function $A$ from [DP24],
-/// Construction 3.1. It is evaluated succinctly by computing the equality indicator over the
-/// tensor algebra, where the first components live in the vertical subring and the later
-/// components live in the vertical subring. Then we apply row-batching to the tensor algebra
-/// element.
+/// Construction 3.1, generalized to an oracle of `n_pack` entries rather than a power of two
+/// (binius.xyz#128, §Ring-Switching): its cell factor is the prefix indicator
+/// $\mathrm{eq}_{<n}(z, y)$, so $A$ vanishes above the oracle. It is evaluated succinctly by
+/// computing that indicator over the tensor algebra, where the first components live in the
+/// vertical subring and the later components live in the horizontal subring. Then we apply
+/// row-batching to the tensor algebra element.
+///
+/// `z_vals` may have more coordinates than `query`, when the claim spans a wider word-index space
+/// than the oracle. The oracle is zero there, so those surplus coordinates contribute
+/// $c = \prod_j (1 - z_j)$. The row-batching map is only $\mathbb{F}_2$-linear, so $c$ enters
+/// through the vertical subring rather than as a scalar on the result.
 ///
 /// ## Arguments
 ///
-/// * `z_vals` - the vertical evaluation point, with $\ell'$ components
-/// * `query` - the horizontal evaluation point
+/// * `n_pack` - the oracle's length
+/// * `z_vals` - the vertical evaluation point
+/// * `query` - the horizontal evaluation point, over the oracle's variables
 /// * `expanded_row_batch_query` - the scaling elements for row-batching
 ///
 /// ## Pre-conditions
 ///
-/// * the lengths of `z_vals` and `query` are equal
+/// * `z_vals` has at least as many components as `query`
+/// * `n_pack` is at most `2^query.len()`
 /// * the length of `expanded_row_batch_query` must equal `FE::DEGREE`
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>
-pub fn eval_rs_eq<F>(z_vals: &[F], query: &[F], expanded_row_batch_query: &[F]) -> F
+pub fn eval_rs_eq<F>(n_pack: usize, z_vals: &[F], query: &[F], expanded_row_batch_query: &[F]) -> F
 where
 	F: FieldOps<Scalar: BinaryField>,
 {
-	assert_eq!(z_vals.len(), query.len()); // pre-condition
+	assert!(z_vals.len() >= query.len()); // pre-condition
 	assert_eq!(expanded_row_batch_query.len(), F::Scalar::DEGREE,); // pre-condition
 
-	let tensor_eval = iter::zip(z_vals, query).fold(
-		TensorAlgebra::<B1, F>::from_vertical(F::one()),
-		|eval, (vert_i, hztl_i)| {
-			// This formula is specific to characteristic 2 fields
-			// Here we know that $h v + (1 - h) (1 - v) = 1 + h + v$.
-			let vert_scaled = eval.clone().scale_vertical(vert_i);
-			let hztl_scaled = eval.clone().scale_horizontal(hztl_i);
-
-			eval + &vert_scaled + &hztl_scaled
-		},
-	);
-
-	tensor_eval.fold_vertical(expanded_row_batch_query)
+	let (z_vals, surplus) = z_vals.split_at(query.len());
+	eq_ind_prefix_eval_tensor_algebra::<B1, F>(n_pack, z_vals, query)
+		.scale_vertical(&eq_ind_zero(surplus))
+		.fold_vertical(expanded_row_batch_query)
 }

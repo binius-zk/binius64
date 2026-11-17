@@ -10,7 +10,6 @@
 //!
 //! ```text
 //! chunks      the buffer's chunk methods, and the iterators and guard they hand out
-//! structured  a buffer that may hold one aligned block explicitly, and zero elsewhere
 //! view        the borrowed aliases, which name the buffer rather than being produced by it
 //! ```
 //!
@@ -52,11 +51,9 @@ use binius_utils::{
 use bytemuck::zeroed_vec;
 
 mod chunks;
-mod structured;
 mod view;
 
 pub use chunks::{ChunkMut, Chunks, ChunksMut};
-pub use structured::StructuredBuffer;
 pub use view::{FieldSlice, FieldSliceData, FieldSliceMut, FieldVec};
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.

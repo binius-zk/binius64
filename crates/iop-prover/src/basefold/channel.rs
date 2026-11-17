@@ -5,22 +5,16 @@
 use std::ops::Deref;
 
 use binius_compute::Allocator;
-use binius_field::{BinaryField, Field, PackedField};
-use binius_iop::{channel::OracleSpec, fri::FRIParams};
-use binius_ip_prover::{
-	channel::{IPProverChannel, WordIPProverChannel},
-	sumcheck::{
-		self, PaddedSumcheckDecorator, batch::BatchSumcheckOutput,
-		bivariate_product_evaluator::BivariateProductEvaluator, mle_store::MleStore,
-		round_evaluator::SharedSumcheckProver,
-	},
+use binius_field::{BinaryField, Field, PackedField, util::powers};
+use binius_iop::{
+	basefold::layout::RoundLayout,
+	channel::{OracleSchedule, OracleSpec},
+	fri::FRIParams,
 };
+use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec, StructuredBuffer,
-	inner_product::inner_product_par,
-	line::extrapolate_line,
-	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
-	ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, FieldSliceMut, inner_product::inner_product_par,
+	line::extrapolate_line, ntt::AdditiveNTT,
 };
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
@@ -33,7 +27,7 @@ use itertools::izip;
 use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	basefold::prove_mlecheck_basefold,
+	basefold::prove_sumcheck_basefold,
 	channel::IOPProverChannel,
 	fri::{self, FRIFoldProver, MaskedCodeword},
 	merkle_channel::MerkleIPProverChannel,
@@ -42,10 +36,14 @@ use crate::{
 /// Oracle handle returned by [`BaseFoldProverChannel::send_oracle`].
 #[derive(Debug, Clone, Copy)]
 pub struct BaseFoldOracle {
-	index: usize,
+	/// The round whose oracle this one is committed in.
+	round: usize,
+	/// The oracle's block within its round oracle, in units of its own length.
+	block_offset: usize,
+	spec: OracleSpec,
 }
 
-/// Committed oracle data stored internally.
+/// Committed round oracle data stored internally.
 struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 	/// The mask buffer generated during [`fri::encode_masked`] for a ZK oracle, held by the
 	/// channel because it is the only party that knows it. `None` for a non-ZK (unmasked) oracle.
@@ -54,29 +52,20 @@ struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 	codeword: FieldBuffer<P, Data>,
 	/// The Merkle commitment handle for query proofs, owning the committed tree.
 	commitment: C,
-	/// The committed multilinear message `pi_i`, backed by the caller's allocator. Handed over by
-	/// [`IOPProverChannel::send_oracle`], and `None` while the caller has it out.
-	message: Option<FieldBuffer<P, Data>>,
+	/// The committed round oracle `pi_i`, holding each constituent sent by
+	/// [`IOPProverChannel::send_oracle`] in its block, in the caller's allocator.
+	message: FieldBuffer<P, Data>,
 }
 
-/// A committed-oracle relation queued for the single batched opening.
-struct QueuedRelation<P: PackedField, Data: Deref<Target = [P]>> {
-	/// The transparent multilinear `t` the message is opened against, backed by the caller's
-	/// allocator. Its zero padding is never written.
-	transparent: StructuredBuffer<P, Data>,
-	/// The claimed inner product `s = <pi, t>`.
-	claim: P::Scalar,
-}
-
-/// One oracle's queued relations, batched into a single relation.
-struct BatchedRelation<P: PackedField, Data: Deref<Target = [P]>> {
-	/// The batched transparent `T`, with every value written out.
-	transparent: FieldBuffer<P, Data>,
-	/// The batched claim `S = <pi, T>`.
-	claim: P::Scalar,
-}
+/// A relation queued by [`IOPProverChannel::prove_multi_oracle_relation`]: its operands, each an
+/// oracle with the transparent multilinear it is opened against, backed by the caller's allocator.
+type Relation<P, Data> = Vec<(BaseFoldOracle, FieldBuffer<P, Data>)>;
 
 /// A prover channel that uses ZK BaseFold for all oracle commitments and openings.
+///
+/// Each round of the schedule is committed as one round oracle, laid out by
+/// [`layout_rounds`](binius_iop::basefold::layout::layout_rounds): every oracle is copied into its
+/// block as it arrives, and the round oracle is encoded and committed with the round's last one.
 ///
 /// This channel owns an [`StdRng`] and generates random masks internally during
 /// [`send_oracle`](IOPProverChannel::send_oracle). The caller provides only the raw witness
@@ -105,14 +94,21 @@ where
 	/// commitments, and openings.
 	channel: Channel,
 	ntt: &'a NTT,
-	oracle_specs: Vec<OracleSpec>,
-	/// The combined FRI parameters over all committed oracles.
+	schedule: &'a OracleSchedule,
+	layouts: &'a [RoundLayout],
+	/// The combined FRI parameters over all round oracles.
 	fri_params: FRIParams<F>,
+	/// One entry per round committed so far, so its length is also the open round's index.
 	committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment, A::Vec<P>>>,
-	/// Oracle relations queued by [`IOPProverChannel::prove_oracle_relation`], indexed by oracle
-	/// index and opened together in [`Self::finish`]. One entry per committed oracle, so its
-	/// length is also the number of oracles committed so far.
-	queue: Vec<Vec<QueuedRelation<P, A::Vec<P>>>>,
+	/// The open round's oracle, allocated on its first constituent and committed on its last.
+	open: Option<FieldBuffer<P, A::Vec<P>>>,
+	/// How many oracles have been sent so far.
+	n_sent: usize,
+	/// How many of the open round's oracles have been sent so far.
+	n_in_round: usize,
+	/// The relations queued by [`IOPProverChannel::prove_multi_oracle_relation`], opened together
+	/// in [`Self::finish`].
+	relations: Vec<Relation<P, A::Vec<P>>>,
 	rng: StdRng,
 	/// The allocator every codeword, mask and encode temporary is drawn from.
 	alloc: A,
@@ -138,7 +134,8 @@ where
 	pub fn new(
 		channel: Channel,
 		ntt: &'a NTT,
-		oracle_specs: Vec<OracleSpec>,
+		schedule: &'a OracleSchedule,
+		layouts: &'a [RoundLayout],
 		fri_params: FRIParams<F>,
 		mut rng: impl CryptoRng,
 		alloc: A,
@@ -146,73 +143,136 @@ where
 		Self {
 			channel,
 			ntt,
-			oracle_specs,
+			schedule,
+			layouts,
 			fri_params,
 			committed_oracles: Vec::new(),
-			queue: Vec::new(),
+			open: None,
+			n_sent: 0,
+			n_in_round: 0,
+			relations: Vec::new(),
 			rng: StdRng::from_rng(&mut rng),
 			alloc,
 		}
 	}
 
+	/// Encodes and commits the next round oracle, the one at index `committed_oracles.len()`.
+	fn commit_round_oracle(&mut self, message: FieldBuffer<P, A::Vec<P>>) {
+		let index = self.committed_oracles.len();
+		let layout = &self.layouts[index];
+
+		// Encode round oracle `index` of the combined FRI parameters. ZK oracles interleave a fresh
+		// mask (`encode_masked`); non-ZK oracles encode the message alone (`encode_interleaved`).
+		let (codeword, mask) = if layout.is_zk {
+			let MaskedCodeword { codeword, mask } = fri::encode_masked(
+				&self.fri_params,
+				index,
+				self.ntt,
+				message.as_view(),
+				&mut self.rng,
+				&self.alloc,
+			);
+			(codeword, Some(mask))
+		} else {
+			(
+				fri::encode_interleaved(
+					&self.fri_params,
+					index,
+					self.ntt,
+					message.as_view(),
+					&self.alloc,
+				),
+				None,
+			)
+		};
+
+		// Commit the codeword over the Merkle channel, with one interleaved coset per leaf.
+		let merkle_scope = tracing::debug_span!("Merkle commit").entered();
+		let leaf_size = 1 << self.fri_params.input_oracles()[index].log_batch_size();
+		let commitment = self
+			.channel
+			.send_merkle_commitment(codeword.as_view(), leaf_size);
+		drop(merkle_scope);
+
+		self.committed_oracles.push(CommittedOracleData {
+			mask,
+			codeword,
+			commitment,
+			message,
+		});
+	}
+
 	/// Consumes the channel and proves the single combined opening over **all** committed oracles.
 	///
 	/// All oracle relations queued by
-	/// [`prove_oracle_relation`](IOPProverChannel::prove_oracle_relation) across every call are
-	/// processed here in one batch: masking, one batched sumcheck reducing the masked claims to a
-	/// shared point `r`, then one combined FRI opening over every committed oracle
-	/// (in oracle-index order). Mirrors [`BaseFoldVerifierChannel::finish`].
+	/// [`prove_multi_oracle_relation`](IOPProverChannel::prove_multi_oracle_relation) across every
+	/// call are processed here in one batch: batching into one relation, then one BaseFold sumcheck
+	/// opening over every committed oracle (in oracle-index order). Mirrors
+	/// [`BaseFoldVerifierChannel::finish`].
 	///
 	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold::channel::BaseFoldVerifierChannel::finish
 	pub fn finish(self) {
+		let n_remaining = self.schedule.specs().len() - self.n_sent;
+		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
+
+		if self.relations.is_empty() {
+			return;
+		}
+
 		let Self {
 			mut channel,
 			ntt,
-			oracle_specs,
+			schedule: _,
+			layouts,
 			fri_params,
 			committed_oracles,
-			queue,
+			open: _,
+			n_sent: _,
+			n_in_round: _,
+			relations,
 			rng: _,
 			alloc,
 		} = self;
 
-		let n_remaining = oracle_specs.len() - queue.len();
-		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
-
-		if queue.iter().all(Vec::is_empty) {
-			return;
-		}
-
 		prove_batch_zk_basefold(
 			&mut channel,
 			ntt,
-			&oracle_specs,
+			layouts,
 			&fri_params,
 			committed_oracles,
-			queue,
+			relations,
 			&alloc,
 		);
 	}
 }
 
-/// Proves the combined ZK BaseFold opening over all committed oracles.
+/// The variable count of the largest round oracle.
+fn max_log_len(layouts: &[RoundLayout]) -> usize {
+	layouts
+		.iter()
+		.map(|layout| layout.log_len)
+		.max()
+		.expect("at least one oracle")
+}
+
+/// Proves the combined ZK BaseFold opening over all committed round oracles.
 ///
 /// This drives `channel` — the Merkle channel taken from the destructured
-/// [`BaseFoldProverChannel`] — through its [`MerkleIPProverChannel`] interface: it sends the
-/// masked inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared
-/// point `r`, then opens all committed oracles together with a single combined FRI. Mirrors
-/// [`binius_iop::basefold::channel::BaseFoldVerifierChannel::finish`].
+/// [`BaseFoldProverChannel`] — through its [`MerkleIPProverChannel`] interface, in the steps of
+/// [`binius_iop::basefold::channel::BaseFoldVerifierChannel::finish`], which it mirrors:
+/// batch the relations, send the mask claim `s' = Σ_r <ω_r, T_r>` and fold with γ if some round is
+/// masked, then run one BaseFold sumcheck on `<G, T>`.
 ///
-/// Everything runs in oracle-index order: `relations` arrives indexed by oracle, as do the
-/// per-oracle data (`oracle_specs`, `fri_params`, `committed_oracles`), the masking inner products
-/// σ_i, the sumcheck provers, the reduced evaluations α_i, and the FRI openings.
+/// Everything per oracle runs in round order: the per-round data (`layouts`, `fri_params`,
+/// `committed_oracles`) is indexed by round.
+#[allow(clippy::too_many_arguments)]
 fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	channel: &mut Channel,
 	ntt: &NTT,
-	oracle_specs: &[OracleSpec],
+	layouts: &[RoundLayout],
 	fri_params: &FRIParams<F>,
 	mut committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment, A::Vec<P>>>,
-	relations: Vec<Vec<QueuedRelation<P, A::Vec<P>>>>,
+	relations: Vec<Relation<P, A::Vec<P>>>,
 	alloc: &A,
 ) where
 	A: Allocator,
@@ -221,278 +281,164 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
 {
-	let n_committed = committed_oracles.len();
-	assert_eq!(oracle_specs.len(), n_committed);
-	assert_eq!(relations.len(), n_committed);
+	assert_eq!(layouts.len(), committed_oracles.len());
 
-	// TODO: Remove this limitation, it shouldn't be necessary. It is currently because of how the
-	// sumcheck reduces to the multilinear evaluations (alphas): an oracle with no relation gets no
-	// sumcheck prover, so its α would have to come from a plain multilinear evaluation.
-	assert!(
-		relations.iter().all(|relations| !relations.is_empty()),
-		"expects at least one relation per committed oracle",
-	);
+	// `ℓ = max_r ℓ_r`, the variable count of the opening.
+	let n_vars = max_log_len(layouts);
+	let log_n_oracles = log2_ceil_usize(layouts.len());
 
-	// Take ownership of the committed messages π_i, leaving the masks and codewords in place. Every
-	// taken oracle must have been handed back with `return_oracle`.
-	let mut messages = committed_oracles
-		.iter_mut()
-		.enumerate()
-		.map(|(index, oracle)| {
-			oracle
-				.message
-				.take()
-				.unwrap_or_else(|| panic!("oracle {index} was taken but never returned"))
-		})
-		.collect::<Vec<_>>();
+	let transparents = batch_relations(channel, layouts, relations, alloc);
 
-	// Batch each oracle's claims into one, so everything below runs exactly one relation per
-	// committed oracle.
-	let relations = batch_relations_per_oracle(channel, relations, alloc);
+	// The claim `s = Σ_r <M_r, T_r>`, which the verifier holds as the batched claim.
+	let s = izip!(&committed_oracles, &transparents)
+		.map(|(committed, transparent)| inner_product_par(&committed.message, transparent))
+		.sum::<F>();
 
-	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
-	let max_n = oracle_specs
-		.iter()
-		.map(|spec| spec.log_msg_len)
-		.max()
-		.expect("at least one oracle");
-
-	// === Masking step (whitepaper 7.2) ===
-	// Only ZK oracles are masked. Send their σ_i = ⟨ω_i, T_i⟩ against the batched transparent (one
-	// per ZK oracle), then sample the single shared masking challenge γ — skipped entirely when no
-	// ZK oracle is present.
-	let any_zk_openings = oracle_specs.iter().any(|spec| spec.is_zk);
-	let (sigmas, gamma) = if any_zk_openings {
-		let _scope = tracing::debug_span!("Compute ZK mask opening values").entered();
-		let sigmas = izip!(&relations, oracle_specs, &committed_oracles)
-			.filter(|(_, spec, _)| spec.is_zk)
-			.map(|(relation, _, committed)| {
-				let mask = committed.mask.as_ref().expect("ZK oracle carries a mask");
-				inner_product_par(mask, &relation.transparent)
+	// A masked opening sends the mask claim `s' = Σ_r <ω_r, T_r>`, then folds each masked message
+	// to `(1 - γ)·M_r + γ·ω_r`, the fold the FRI opens, and targets `lerp(γ, s, s')`. An unmasked
+	// round has `ω_r = M_r`, so its fold is a no-op and it contributes its own claim to `s'`.
+	let (target, gamma) = if layouts.iter().any(|layout| layout.is_zk) {
+		let _scope = tracing::debug_span!("Mask fold").entered();
+		let s_prime = izip!(&committed_oracles, &transparents)
+			.map(|(committed, transparent)| {
+				let omega = committed.mask.as_ref().unwrap_or(&committed.message);
+				inner_product_par(omega, transparent)
 			})
-			.collect::<Vec<_>>();
-		channel.send_many(&sigmas);
-
+			.sum::<F>();
+		channel.send_one(s_prime);
 		let gamma = channel.sample();
 
-		(sigmas, Some(gamma))
+		let gamma_broadcast = P::broadcast(gamma);
+		for committed in &mut committed_oracles {
+			let CommittedOracleData { message, mask, .. } = committed;
+			if let Some(mask) = mask {
+				(message.as_mut(), mask.as_ref())
+					.into_par_iter()
+					.with_min_task(WorkPerItem::FieldMuls)
+					.for_each(|(message_i, &mask_i)| {
+						*message_i = extrapolate_line(*message_i, mask_i, gamma_broadcast);
+					});
+			}
+		}
+		(extrapolate_line(s, s_prime, gamma), Some(gamma))
 	} else {
-		(Vec::new(), None)
+		(s, None)
 	};
 
-	// Blind each ZK oracle's message in place: π_i' = (1-γ)π_i + γω_i. A non-ZK oracle's message
-	// passes through unmasked.
-	for (message, spec, committed) in izip!(&mut messages, oracle_specs, &committed_oracles) {
-		let n_i = spec.log_msg_len;
-		assert_eq!(message.log_len(), n_i); // pre-condition
-
-		if spec.is_zk {
-			let mask = committed.mask.as_ref().expect("ZK oracle carries a mask");
-			let gamma_broadcast = P::broadcast(gamma.expect("γ sampled when ZK oracles present"));
-
-			let _scope = tracing::debug_span!("Fold message and ZK mask", log_len = n_i).entered();
-			(message.as_mut(), mask.as_ref())
-				.into_par_iter()
-				.with_min_task(WorkPerItem::FieldMuls)
-				.for_each(|(message_i, &mask_i)| {
-					*message_i = extrapolate_line(*message_i, mask_i, gamma_broadcast);
-				});
-		}
-	}
-
-	// === Phase A: batched sumcheck on the masked claims ⟨π_i', T_i⟩ = s_i' ===
-	// One prover per committed oracle, in oracle-index order, each padded to `max_n`.
-	let mut sigma_iter = sigmas.into_iter();
-	let provers = izip!(relations, &messages, oracle_specs)
-		.map(|(relation, message, spec)| {
-			let BatchedRelation { transparent, claim } = relation;
-			let n_i = spec.log_msg_len;
-			assert_eq!(transparent.log_len(), n_i); // pre-condition
-
-			// ZK oracle: mask the claim with σ_i.
-			// Non-ZK oracle: the claim passes through unmasked.
-			let sum_prime = if spec.is_zk {
-				let sigma = sigma_iter.next().expect("one σ per ZK oracle");
-				let gamma = gamma.expect("γ sampled when ZK oracles present");
-				extrapolate_line(claim, sigma, gamma)
+	// `G` and `T` over `X` (low) and `Z` (high). The sumcheck binds `Z` high to low, but the FRI's
+	// outer tensor takes its first challenge as the low bit of the oracle index, so oracle `r`
+	// sits at chunk `bit_reverse(r)`.
+	let chunk_index = |r: usize| r.reverse_bits() >> (usize::BITS as usize - log_n_oracles);
+	let (combined, multiplicand) = {
+		let _scope = tracing::debug_span!("Compute batched witness").entered();
+		let mut combined = FieldBuffer::zeros_in(alloc, n_vars + log_n_oracles);
+		let mut multiplicand = FieldBuffer::zeros_in(alloc, n_vars + log_n_oracles);
+		for (r, (fri_oracle, committed, transparent)) in
+			izip!(fri_params.input_oracles(), &committed_oracles, &transparents).enumerate()
+		{
+			let n_r = committed.message.log_len();
+			let index = if log_n_oracles == 0 {
+				0
 			} else {
-				claim
+				chunk_index(r)
 			};
 
-			let mut store = MleStore::new(n_i, alloc);
-			let message_col = store.push(message.as_view());
-			let transparent_col = store.push_owned(transparent);
-			let inner = SharedSumcheckProver::new(
-				store,
-				[(sum_prime, BivariateProductEvaluator::new([message_col, transparent_col]))],
+			// `M^γ_r↑`: the message in the low `2^{n_r}` of each lift block, repeated across the
+			// high dims so it is constant along them, as the FRI lifts and repeats its codeword.
+			place_repeated(
+				combined.chunk_mut(n_vars, index).chunk(),
+				committed.message.as_view(),
+				F::ONE,
+				n_r + fri_oracle.log_lift,
 			);
-			PaddedSumcheckDecorator::new(inner, max_n - n_i, vec![sum_prime], 2)
-		})
-		.collect::<Vec<_>>();
-
-	let BatchSumcheckOutput {
-		challenges,
-		multilinear_evals,
-	} = {
-		let _scope =
-			tracing::debug_span!("Reduce linear relations to committed openings").entered();
-		sumcheck::batch_prove(provers, channel)
-	};
-
-	// Reduced oracle evaluations α_i = π_i'(ρ_i), one per committed oracle in oracle-index order.
-	let alphas = multilinear_evals
-		.iter()
-		.map(|evals| evals[0])
-		.collect::<Vec<_>>();
-	channel.send_many(&alphas);
-
-	// === Phase B: single combined-FRI MLE-check over the piecewise-concatenated oracle ===
-	// Collapse the oracle-index variables up front at sampled batching challenges `r'`: build the
-	// combined multilinear 𝛑(X) = Σ_i e[i]·π_i^↑(X) with e = eq(·, r') into one 2^𝐧 buffer, and the
-	// combined target s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
-	// `batch_prove` returns binding-order challenges; reverse to variable-indexed (low-to-high),
-	// so that ρ_i is the first n_i coords.
-	let mut challenges = challenges;
-	challenges.reverse();
-	let point = &challenges;
-	let log_n_oracles = log2_ceil_usize(n_committed);
-	let outer_challenges = channel.sample_many(log_n_oracles);
-
-	let (combined, s_prime) = {
-		let _scope = tracing::debug_span!("Compute batched witness").entered();
-
-		let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
-
-		let mut combined = FieldBuffer::zeros_in(alloc, max_n);
-		let mut s_prime = F::ZERO;
-		for (fri_oracle, witness_prime, eq_i, alpha_i) in
-			izip!(fri_params.input_oracles(), messages, eq_tensor, alphas)
-		{
-			let n_i = witness_prime.log_len();
-			// Each oracle occupies the low 2^{n_i} of every 2^{log_lift}·2^{n_i}-sized lift block,
-			// and that block is *repeated* across the 2^{log_repeat} high dims so the small
-			// oracle is constant along them (matching the FRI lift/repeat structure).
-			let log_lift = fri_oracle.log_lift;
-
-			// Repeat placement: add scalar · π_i' into the first 2^{n_i} entries of each of the
-			// 2^{log_repeat} chunks of size 2^{n_i + log_lift}.
-			// Borrow as a slice before the closure: the allocator's buffer type is only `Send`, so
-			// a closure capturing the owned buffer would not be `Sync` as `for_each` requires.
-			place_repeated(combined.as_mut_view(), witness_prime.as_view(), eq_i, n_i + log_lift);
-
-			// Repeat dims contribute 1; only the lift dims contribute an eq-to-zero factor.
-			s_prime += eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift]);
+			// `T_r↑`: supported only where the coordinates above `n_r` are zero, so that the sum
+			// of `M^γ_r↑ · T_r↑` over `X` is `<M^γ_r, T_r>`.
+			place_repeated(
+				multiplicand.chunk_mut(n_vars, index).chunk(),
+				transparent.as_view(),
+				F::ONE,
+				n_vars,
+			);
 		}
-
-		(combined, s_prime)
+		(combined, multiplicand)
 	};
 
-	// Codeword commitments in oracle-index order, matching `open_fri_params.input_oracles()`.
+	// Codeword commitments in oracle-index order, matching `fri_params.input_oracles()`.
 	let committed_codewords = committed_oracles
 		.into_iter()
 		.map(|committed| (committed.codeword, committed.commitment))
 		.collect();
 
 	let fri_folder = FRIFoldProver::new_batch(fri_params, ntt, committed_codewords);
-	prove_mlecheck_basefold(
-		combined,
-		point,
-		s_prime,
-		gamma,
-		&outer_challenges,
-		fri_folder,
-		channel,
-		alloc,
-	);
+	prove_sumcheck_basefold(combined, multiplicand, target, gamma, fri_folder, channel, alloc);
 }
 
-/// Batches each oracle's queued relations down to one, in oracle-index order.
+/// Batches the queued relations into the single relation `Σ_i <π_i, T_i> = S`.
 ///
-/// An oracle carrying `k > 1` claims has them folded into a single claim against a single
-/// transparent, using a batching challenge λ shared by every oracle:
+/// Relation `j`, `Σ_i <π_i, t_ji> = s_j`, is weighted by `μ^j` for one sampled challenge μ:
 ///
 /// ```text
-/// T_i = Σ_j λ^j · t_ij     the combined transparent
-/// S_i = Σ_j λ^j · s_ij     the combined claim
+/// T_i = Σ_j μ^j · t_ji     the combined transparent of oracle i
+/// S   = Σ_j μ^j · s_j      the combined claim
 /// ```
 ///
-/// The inner product is linear in the transparent, so `⟨π_i, T_i⟩ = S_i` holds exactly when every
-/// `⟨π_i, t_ij⟩ = s_ij` does, except with probability at most `Σ_i (k_i - 1) / |F|` over λ. λ is
-/// drawn after every claim it combines is already bound to the transcript, so no claim can be
-/// chosen as a function of it. The batched per-oracle claims are then combined again by the
-/// sumcheck's own outer batching coefficient.
+/// The inner product is linear in the transparent, so the combined relation holds exactly when
+/// every relation does, except with probability at most `(k - 1) / |F|` over μ for `k` relations.
+/// μ is drawn after every claim it combines is already bound to the transcript, so no claim can be
+/// chosen as a function of it. The prover never needs `S` itself.
 ///
-/// Each zero-padded `t_ij` is accumulated into only its explicit block of `T_i`, so it costs only
-/// that block's size. An oracle whose first transparent is a plain buffer accumulates into that
-/// buffer, and an oracle carrying only that relation folds nothing.
+/// Returns each round oracle's `T_i`, in round order. A round in no relation gets `T_i = 0`.
+///
+/// Each `t_ji` is accumulated into only its oracle's block of `T_i`, so it costs only that block's
+/// size. A round whose first operand is in relation 0, with weight 1, and spans the whole round
+/// oracle takes that operand as its accumulator with no copy.
 ///
 /// Mirrors [`binius_iop::basefold::channel`]'s verifier-side batching.
-fn batch_relations_per_oracle<A, F, P, Channel>(
+fn batch_relations<A, F, P, Channel>(
 	channel: &mut Channel,
-	relations: Vec<Vec<QueuedRelation<P, A::Vec<P>>>>,
+	layouts: &[RoundLayout],
+	relations: Vec<Relation<P, A::Vec<P>>>,
 	alloc: &A,
-) -> Vec<BatchedRelation<P, A::Vec<P>>>
+) -> Vec<FieldBuffer<P, A::Vec<P>>>
 where
 	A: Allocator,
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: MerkleIPProverChannel<F>,
 {
-	let lambda = channel.sample();
+	let mu = channel.sample();
 
-	relations
-		.into_iter()
-		.map(|relations| {
-			let mut relations = relations.into_iter();
-			let QueuedRelation {
-				transparent: first,
-				mut claim,
-			} = relations
-				.next()
-				.expect("pre-condition: every committed oracle carries at least one relation");
-
-			// A plain first transparent becomes the accumulator with no copy.
-			let mut transparent = first.materialize(alloc);
-
-			// Powers λ, λ², … scale the oracle's remaining relations into their blocks.
-			let mut coeff = lambda;
-			for relation in relations {
-				accumulate_scaled_structured(
-					transparent.as_mut_view(),
-					relation.transparent,
-					coeff,
-				);
-				claim += coeff * relation.claim;
-				coeff *= lambda;
+	let mut accumulators = layouts.iter().map(|_| None).collect::<Vec<_>>();
+	for (j, (mu_j, operands)) in izip!(powers(mu), relations).enumerate() {
+		for (oracle, transparent) in operands {
+			let log_len = layouts[oracle.round].log_len;
+			let slot = &mut accumulators[oracle.round];
+			if slot.is_none() && j == 0 && transparent.log_len() == log_len {
+				// Weight 1 and spans the whole round oracle: take it as the accumulator.
+				*slot = Some(transparent);
+				continue;
 			}
-			BatchedRelation { transparent, claim }
+			let accumulator = slot.get_or_insert_with(|| FieldBuffer::zeros_in(alloc, log_len));
+			let mut block = accumulator.chunk_mut(transparent.log_len(), oracle.block_offset);
+			accumulate_scaled_buffer(block.chunk(), transparent.as_view(), P::broadcast(mu_j));
+		}
+	}
+
+	izip!(accumulators, layouts)
+		.map(|(accumulator, layout)| {
+			accumulator.unwrap_or_else(|| FieldBuffer::zeros_in(alloc, layout.log_len))
 		})
 		.collect()
 }
 
-/// Adds `scalar · src` into `dst`, touching only the block `src` holds explicitly.
+/// Copies the first `len` scalars of `src` into `dst`, leaving the rest of `dst` untouched.
 ///
-/// ## Preconditions
-///
-/// * `src.log_len() == dst.log_len()`
-fn accumulate_scaled_structured<P: PackedField, Data: Deref<Target = [P]>>(
-	mut dst: FieldSliceMut<'_, P>,
-	src: StructuredBuffer<P, Data>,
-	scalar: P::Scalar,
-) {
-	match src {
-		StructuredBuffer::Buffer(buffer) => {
-			assert_eq!(buffer.log_len(), dst.log_len()); // precondition
-			accumulate_scaled_buffer(dst, buffer.as_view(), P::broadcast(scalar));
-		}
-		StructuredBuffer::ZeroPadded {
-			inner,
-			log_n_blocks,
-			index,
-		} => {
-			let mut block = dst.chunk_mut(dst.log_len() - log_n_blocks, index);
-			accumulate_scaled_structured(block.chunk(), *inner, scalar);
-		}
+/// Whole packed words are copied as words, and a partial last word scalar by scalar.
+fn copy_prefix<P: PackedField>(mut dst: FieldSliceMut<'_, P>, src: FieldSlice<'_, P>, len: usize) {
+	let n_words = len >> P::LOG_WIDTH;
+	dst.as_mut()[..n_words].copy_from_slice(&src.as_ref()[..n_words]);
+	for i in n_words << P::LOG_WIDTH..len {
+		dst.set(i, src.get(i));
 	}
 }
 
@@ -637,100 +583,92 @@ where
 	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs[self.queue.len()..]
+		&self.schedule.specs()[self.n_sent..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle {
-		let remaining = self.remaining_oracle_specs();
-		assert!(!remaining.is_empty(), "send_oracle called but no remaining oracle specs");
-
-		let index = self.queue.len();
-		let spec = &remaining[0];
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
+		let spec = *self
+			.remaining_oracle_specs()
+			.first()
+			.expect("send_oracle called but no remaining oracle specs");
 
 		// ZK channel expects raw witness buffer (NOT doubled).
 		assert_eq!(
 			buffer.log_len(),
-			spec.log_msg_len,
+			spec.log_msg_len(),
 			"oracle buffer log_len mismatch: expected {}, got {}",
-			spec.log_msg_len,
+			spec.log_msg_len(),
 			buffer.log_len()
 		);
 
-		// Encode oracle `index` of the combined FRI parameters. ZK oracles interleave a fresh mask
-		// (`encode_masked`); non-ZK oracles encode the message alone (`encode_interleaved`).
-		let (codeword, mask) = if spec.is_zk {
-			let MaskedCodeword { codeword, mask } = fri::encode_masked(
-				&self.fri_params,
-				index,
-				self.ntt,
-				buffer.as_view(),
-				&mut self.rng,
-				&self.alloc,
-			);
-			(codeword, Some(mask))
-		} else {
-			(
-				fri::encode_interleaved(
-					&self.fri_params,
-					index,
-					self.ntt,
-					buffer.as_view(),
-					&self.alloc,
-				),
-				None,
-			)
+		let index = self.committed_oracles.len();
+		let layout = &self.layouts[index];
+		let oracle = BaseFoldOracle {
+			round: index,
+			block_offset: layout.block_offsets[self.n_in_round],
+			spec,
 		};
+		self.n_sent += 1;
+		self.n_in_round += 1;
 
-		// Commit the codeword over the Merkle channel, with one interleaved coset per leaf.
-		let merkle_scope = tracing::debug_span!("Merkle commit").entered();
-		let leaf_size = 1 << self.fri_params.input_oracles()[index].log_batch_size();
-		let commitment = self
-			.channel
-			.send_merkle_commitment(codeword.as_view(), leaf_size);
-		drop(merkle_scope);
+		// A lone oracle is its round oracle, padding included. Any other is copied into its block,
+		// content only, since a round-mate may nest in the slack above it.
+		let message = if layout.block_offsets.len() == 1 {
+			FieldBuffer::from_view_in(&self.alloc, buffer)
+		} else {
+			let message = self
+				.open
+				.get_or_insert_with(|| FieldBuffer::zeros_in(&self.alloc, layout.log_len));
+			let mut block = message.chunk_mut(spec.log_msg_len(), oracle.block_offset);
+			copy_prefix(block.chunk(), buffer, spec.len);
+			drop(block);
 
-		self.committed_oracles.push(CommittedOracleData {
-			mask,
-			codeword,
-			commitment,
-			message: Some(buffer),
-		});
-		self.queue.push(Vec::new());
+			// The round's last oracle commits the whole round oracle.
+			if self.n_in_round < layout.block_offsets.len() {
+				return oracle;
+			}
+			self.open
+				.take()
+				.expect("the open round oracle was just written")
+		};
+		self.n_in_round = 0;
+		self.commit_round_oracle(message);
 
-		BaseFoldOracle { index }
+		oracle
 	}
 
-	fn prove_oracle_relation(
+	fn prove_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: StructuredBuffer<P, A::Vec<P>>,
-		claim: P::Scalar,
+		operands: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P, A::Vec<P>>)>,
+		_claim: P::Scalar,
 	) {
-		let n_committed = self.queue.len();
-		assert!(
-			oracle.index < n_committed,
-			"oracle index {} out of bounds, expected < {n_committed}",
-			oracle.index
-		);
-		let n_i = self.oracle_specs[oracle.index].log_msg_len;
-		assert_eq!(transparent.log_len(), n_i, "transparent log_len must match the oracle's");
-
-		// Queue the relation under its oracle; the actual opening (masking + sumcheck + combined
-		// FRI) happens once, over all committed oracles, in [`Self::finish`].
-		self.queue[oracle.index].push(QueuedRelation { transparent, claim });
-	}
-
-	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A> {
-		self.committed_oracles[oracle.index]
-			.message
-			.take()
-			.unwrap_or_else(|| panic!("oracle {} is already taken", oracle.index))
-	}
-
-	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		let message = &mut self.committed_oracles[oracle.index].message;
-		assert!(message.is_none(), "oracle {} was not taken", oracle.index);
-		*message = Some(buffer);
+		// Queue the relation; the actual opening (sumchecks + combined
+		// FRI) happens once, over all committed round oracles, in [`Self::finish`].
+		let n_committed = self.committed_oracles.len();
+		let operands = operands
+			.into_iter()
+			.map(|(oracle, transparent)| {
+				assert!(
+					oracle.round < n_committed,
+					"oracle's round {} is not committed yet",
+					oracle.round
+				);
+				assert_eq!(
+					transparent.log_len(),
+					oracle.spec.log_msg_len(),
+					"transparent log_len must match the oracle's"
+				);
+				debug_assert!(
+					transparent
+						.iter_scalars()
+						.skip(oracle.spec.len)
+						.all(|value| value == F::ZERO),
+					"an operand's transparent must vanish above its oracle's length"
+				);
+				(oracle, transparent)
+			})
+			.collect();
+		self.relations.push(operands);
 	}
 }
 
@@ -746,10 +684,12 @@ mod tests {
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
 		basefold::compiler::BaseFoldVerifierCompiler,
-		channel::{IOPVerifierChannel, OracleSpec},
+		channel::{IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn},
 		fri::MinProofSizeStrategy,
 		merkle_tree::BinaryMerkleTreeScheme,
 	};
+	use binius_ip::channel::IPVerifierChannel;
+	use binius_ip_prover::channel::IPProverChannel;
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_buffers,
@@ -757,7 +697,8 @@ mod tests {
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
-	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
+	use proptest::prelude::*;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::{IOPProverChannel, place_repeated};
@@ -779,6 +720,16 @@ mod tests {
 
 	fn make_merkle_scheme() -> BinaryMerkleTreeScheme<Ghash128b, StdHashSuite> {
 		BinaryMerkleTreeScheme::new()
+	}
+
+	/// The verifier's evaluator of a transparent the test holds in full.
+	fn eq_eval_fn<P: PackedField<Scalar = Ghash128b>>(
+		transparent: FieldBuffer<P>,
+	) -> TransparentEvalFn<Ghash128b> {
+		Box::new(move |point| {
+			let eq = eq_ind_partial_eval::<P>(point);
+			inner_product_buffers(&transparent, &eq)
+		})
 	}
 
 	fn generate_zk_oracle_data<F, P, R: Rng>(
@@ -809,11 +760,11 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![OracleSpec::new_zk(n_vars)];
+		let oracle_schedule = OracleSchedule::from_rounds([[OracleSpec::new_zk(1 << n_vars)]]);
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&make_merkle_scheme(),
-			oracle_specs,
+			oracle_schedule,
 			LOG_INV_RATE,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -833,10 +784,10 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		let oracle = prover_channel.send_oracle(buffer);
-		assert_eq!(oracle.index, 0);
+		let oracle = prover_channel.send_oracle(buffer.as_view());
+		assert_eq!(oracle.round, 0);
 
-		prover_channel.prove_oracle_relation(oracle, transparent_poly.clone().into(), eval_claim);
+		prover_channel.prove_oracle_relation(oracle, transparent_poly.clone(), eval_claim);
 		prover_channel.finish();
 
 		// === VERIFIER SIDE ===
@@ -846,19 +797,10 @@ mod tests {
 				&mut verifier_transcript,
 			);
 
-		let v_oracle = verifier_channel
-			.recv_oracle(1 << n_vars, n_vars, true)
-			.unwrap();
+		let v_oracle = verifier_channel.recv_oracle(1 << n_vars, true).unwrap();
 
 		verifier_channel
-			.verify_oracle_relation(
-				v_oracle,
-				Box::new(move |point: &[F]| {
-					let eq = eq_ind_partial_eval::<P>(point);
-					inner_product_buffers(&transparent_poly, &eq)
-				}),
-				eval_claim,
-			)
+			.verify_oracle_relation(v_oracle, eq_eval_fn(transparent_poly), eval_claim)
 			.unwrap();
 		verifier_channel.finish().unwrap();
 	}
@@ -879,11 +821,14 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![OracleSpec::new_zk(n_vars_1), OracleSpec::new_zk(n_vars_2)];
+		let oracle_schedule = OracleSchedule::from_rounds([
+			[OracleSpec::new_zk(1 << n_vars_1)],
+			[OracleSpec::new_zk(1 << n_vars_2)],
+		]);
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&make_merkle_scheme(),
-			oracle_specs,
+			oracle_schedule,
 			LOG_INV_RATE,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -903,19 +848,11 @@ mod tests {
 				GlobalAllocator,
 			);
 
-		let oracle_1 = prover_channel.send_oracle(buffer_1);
-		let oracle_2 = prover_channel.send_oracle(buffer_2);
+		let oracle_1 = prover_channel.send_oracle(buffer_1.as_view());
+		let oracle_2 = prover_channel.send_oracle(buffer_2.as_view());
 
-		prover_channel.prove_oracle_relation(
-			oracle_1,
-			transparent_poly_1.clone().into(),
-			eval_claim_1,
-		);
-		prover_channel.prove_oracle_relation(
-			oracle_2,
-			transparent_poly_2.clone().into(),
-			eval_claim_2,
-		);
+		prover_channel.prove_oracle_relation(oracle_1, transparent_poly_1.clone(), eval_claim_1);
+		prover_channel.prove_oracle_relation(oracle_2, transparent_poly_2.clone(), eval_claim_2);
 		prover_channel.finish();
 
 		// === VERIFIER SIDE ===
@@ -925,35 +862,17 @@ mod tests {
 				&mut verifier_transcript,
 			);
 
-		let v_oracle_1 = verifier_channel
-			.recv_oracle(1 << n_vars_1, n_vars_1, true)
-			.unwrap();
-		let v_oracle_2 = verifier_channel
-			.recv_oracle(1 << n_vars_2, n_vars_2, true)
-			.unwrap();
+		let v_oracle_1 = verifier_channel.recv_oracle(1 << n_vars_1, true).unwrap();
+		let v_oracle_2 = verifier_channel.recv_oracle(1 << n_vars_2, true).unwrap();
 
 		let tp1 = transparent_poly_1;
 		let tp2 = transparent_poly_2;
 
 		verifier_channel
-			.verify_oracle_relation(
-				v_oracle_1,
-				Box::new(move |point: &[F]| {
-					let eq = eq_ind_partial_eval::<P>(point);
-					inner_product_buffers(&tp1, &eq)
-				}),
-				eval_claim_1,
-			)
+			.verify_oracle_relation(v_oracle_1, eq_eval_fn(tp1), eval_claim_1)
 			.unwrap();
 		verifier_channel
-			.verify_oracle_relation(
-				v_oracle_2,
-				Box::new(move |point: &[F]| {
-					let eq = eq_ind_partial_eval::<P>(point);
-					inner_product_buffers(&tp2, &eq)
-				}),
-				eval_claim_2,
-			)
+			.verify_oracle_relation(v_oracle_2, eq_eval_fn(tp2), eval_claim_2)
 			.unwrap();
 		verifier_channel.finish().unwrap();
 	}
@@ -974,12 +893,11 @@ mod tests {
 			.collect();
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
-		let oracle_specs: Vec<OracleSpec> =
-			n_vars_list.iter().map(|&n| OracleSpec::new_zk(n)).collect();
+		let oracle_specs = n_vars_list.iter().map(|&n| OracleSpec::new_zk(1 << n));
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&make_merkle_scheme(),
-			oracle_specs,
+			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -1001,10 +919,10 @@ mod tests {
 
 		let oracles: Vec<_> = data
 			.iter()
-			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.clone()))
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect();
 		for (oracle, (_, transparent, claim)) in iter::zip(oracles, &data) {
-			prover_channel.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
+			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
 		}
 		prover_channel.finish();
 
@@ -1017,7 +935,7 @@ mod tests {
 
 		let v_oracles: Vec<_> = n_vars_list
 			.iter()
-			.map(|&n| verifier_channel.recv_oracle(1 << n, n, true).unwrap())
+			.map(|&n| verifier_channel.recv_oracle(1 << n, true).unwrap())
 			.collect();
 		for (i, (oracle, (_, transparent, claim))) in iter::zip(v_oracles, &data).enumerate() {
 			let transparent = transparent.clone();
@@ -1027,24 +945,19 @@ mod tests {
 				*claim
 			};
 			verifier_channel
-				.verify_oracle_relation(
-					oracle,
-					Box::new(move |point: &[F]| {
-						let eq = eq_ind_partial_eval::<P>(point);
-						inner_product_buffers(&transparent, &eq)
-					}),
-					claim,
-				)
+				.verify_oracle_relation(oracle, eq_eval_fn(transparent), claim)
 				.expect("verify_oracle_relation only queues");
 		}
 		verifier_channel.finish().is_ok()
 	}
 
 	/// Like `run_zk_channel` but with per-oracle `(n_vars, is_zk)` flags, exercising the mixed
-	/// ZK/non-ZK opening. If `tamper`, the verifier's claim on the first oracle is corrupted.
+	/// ZK/non-ZK opening. If `tamper`, the verifier's claim on the first oracle is corrupted. If
+	/// `corrupt_byte` is set, that byte of the proof is flipped.
 	fn run_mixed_channel<P: PackedField<Scalar = Ghash128b>>(
 		specs: &[(usize, bool)],
 		tamper: bool,
+		corrupt_byte: Option<usize>,
 	) -> bool {
 		type F = Ghash128b;
 
@@ -1055,20 +968,17 @@ mod tests {
 			.collect();
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
-		let oracle_specs: Vec<OracleSpec> = specs
-			.iter()
-			.map(|&(n, is_zk)| {
-				if is_zk {
-					OracleSpec::new_zk(n)
-				} else {
-					OracleSpec::new(n)
-				}
-			})
-			.collect();
+		let oracle_specs = specs.iter().map(|&(n, is_zk)| {
+			if is_zk {
+				OracleSpec::new_zk(1 << n)
+			} else {
+				OracleSpec::new(1 << n)
+			}
+		});
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&make_merkle_scheme(),
-			oracle_specs,
+			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -1089,14 +999,18 @@ mod tests {
 
 		let oracles: Vec<_> = data
 			.iter()
-			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.clone()))
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect();
 		for (oracle, (_, transparent, claim)) in iter::zip(oracles, &data) {
-			prover_channel.prove_oracle_relation(oracle, transparent.clone().into(), *claim);
+			prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
 		}
 		prover_channel.finish();
 
-		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut proof = prover_transcript.finalize();
+		if let Some(index) = corrupt_byte {
+			proof[index] ^= 1;
+		}
+		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		let mut verifier_channel = verifier_compiler
 			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
 				&mut verifier_transcript,
@@ -1104,7 +1018,7 @@ mod tests {
 
 		let v_oracles: Vec<_> = specs
 			.iter()
-			.map(|&(n, _)| verifier_channel.recv_oracle(1 << n, n, true).unwrap())
+			.map(|&(n, _)| verifier_channel.recv_oracle(1 << n, true).unwrap())
 			.collect();
 		for (i, (oracle, (_, transparent, claim))) in iter::zip(v_oracles, &data).enumerate() {
 			let transparent = transparent.clone();
@@ -1114,14 +1028,7 @@ mod tests {
 				*claim
 			};
 			verifier_channel
-				.verify_oracle_relation(
-					oracle,
-					Box::new(move |point: &[F]| {
-						let eq = eq_ind_partial_eval::<P>(point);
-						inner_product_buffers(&transparent, &eq)
-					}),
-					claim,
-				)
+				.verify_oracle_relation(oracle, eq_eval_fn(transparent), claim)
 				.expect("verify_oracle_relation only queues");
 		}
 		verifier_channel.finish().is_ok()
@@ -1227,19 +1134,45 @@ mod tests {
 	fn test_basefold_channel_mixed_zk_non_zk() {
 		// One non-ZK oracle (8 vars) and one ZK oracle (6 vars): exercises conditional masking,
 		// the heterogeneous combined-buffer lift/repeat placement, and the non-ZK unmasked commit.
-		assert!(run_mixed_channel::<PackedGhash1x128b>(&[(8, false), (6, true)], false));
+		assert!(run_mixed_channel::<PackedGhash1x128b>(&[(8, false), (6, true)], false, None));
 	}
 
 	#[test]
 	fn test_basefold_channel_zero_zk() {
 		// All non-ZK oracles: γ must never be sampled and the proof must still verify.
-		assert!(run_mixed_channel::<PackedGhash1x128b>(&[(6, false), (8, false)], false));
+		assert!(run_mixed_channel::<PackedGhash1x128b>(&[(6, false), (8, false)], false, None));
 	}
 
 	#[test]
 	fn test_basefold_channel_mixed_invalid_proof() {
 		// Tampering the claim on a mixed batch must be rejected.
-		assert!(!run_mixed_channel::<PackedGhash1x128b>(&[(8, false), (6, true)], true));
+		assert!(!run_mixed_channel::<PackedGhash1x128b>(&[(8, false), (6, true)], true, None));
+	}
+
+	/// A masked opening over `[(8, false), (6, true)]` writes, in order: the two round
+	/// commitments, then the mask claim `s'`, then the sumcheck round polynomials of two
+	/// coefficients each, the first of which is over the oracle-index variable `Z`. A digest is 32
+	/// bytes and a field element 16.
+	const S_PRIME_OFFSET: usize = 2 * 32;
+	const Z_ROUND_OFFSET: usize = S_PRIME_OFFSET + 16;
+
+	#[test]
+	fn test_basefold_channel_tampered_s_prime_is_rejected() {
+		let specs = [(8, false), (6, true)];
+		assert!(!run_mixed_channel::<PackedGhash1x128b>(&specs, false, Some(S_PRIME_OFFSET)));
+	}
+
+	#[test]
+	fn test_basefold_channel_tampered_z_round_is_rejected() {
+		let specs = [(8, false), (6, true)];
+		assert!(!run_mixed_channel::<PackedGhash1x128b>(&specs, false, Some(Z_ROUND_OFFSET)));
+	}
+
+	#[test]
+	fn test_basefold_channel_untampered_mixed_is_accepted() {
+		// The offsets above flip a byte; with none flipped the same opening verifies.
+		let specs = [(8, false), (6, true)];
+		assert!(run_mixed_channel::<PackedGhash1x128b>(&specs, false, None));
 	}
 
 	#[test]
@@ -1305,20 +1238,17 @@ mod tests {
 			.collect::<Vec<_>>();
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
-		let oracle_specs = specs
-			.iter()
-			.map(|&(n_vars, is_zk, _)| {
-				if is_zk {
-					OracleSpec::new_zk(n_vars)
-				} else {
-					OracleSpec::new(n_vars)
-				}
-			})
-			.collect::<Vec<_>>();
+		let oracle_specs = specs.iter().map(|&(n_vars, is_zk, _)| {
+			if is_zk {
+				OracleSpec::new_zk(1 << n_vars)
+			} else {
+				OracleSpec::new(1 << n_vars)
+			}
+		});
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			&make_merkle_scheme(),
-			oracle_specs,
+			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
 			&MinProofSizeStrategy,
@@ -1340,15 +1270,11 @@ mod tests {
 
 		let oracles = data
 			.iter()
-			.map(|(buffer, _)| prover_channel.send_oracle(buffer.clone()))
+			.map(|(buffer, _)| prover_channel.send_oracle(buffer.as_view()))
 			.collect::<Vec<_>>();
 		for &(index, round) in &arrivals {
 			let (transparent, claim) = &data[index].1[round];
-			prover_channel.prove_oracle_relation(
-				oracles[index],
-				transparent.clone().into(),
-				*claim,
-			);
+			prover_channel.prove_oracle_relation(oracles[index], transparent.clone(), *claim);
 		}
 		prover_channel.finish();
 
@@ -1361,11 +1287,7 @@ mod tests {
 
 		let v_oracles = specs
 			.iter()
-			.map(|&(n_vars, _, _)| {
-				verifier_channel
-					.recv_oracle(1 << n_vars, n_vars, true)
-					.unwrap()
-			})
+			.map(|&(n_vars, _, _)| verifier_channel.recv_oracle(1 << n_vars, true).unwrap())
 			.collect::<Vec<_>>();
 		for (position, &(index, round)) in arrivals.iter().enumerate() {
 			let (transparent, claim) = &data[index].1[round];
@@ -1376,14 +1298,7 @@ mod tests {
 				*claim
 			};
 			verifier_channel
-				.verify_oracle_relation(
-					v_oracles[index],
-					Box::new(move |point: &[F]| {
-						let eq = eq_ind_partial_eval::<P>(point);
-						inner_product_buffers(&transparent, &eq)
-					}),
-					claim,
-				)
+				.verify_oracle_relation(v_oracles[index], eq_eval_fn(transparent), claim)
 				.expect("verify_oracle_relation only queues");
 		}
 		verifier_channel.finish().is_ok()
@@ -1391,7 +1306,7 @@ mod tests {
 
 	#[test]
 	fn test_basefold_channel_two_relations_one_oracle() {
-		// Two claims on the same committed oracle: the channel batches them behind one λ.
+		// Two claims on the same committed oracle: the channel batches them behind one μ.
 		assert!(run_multi_relation_channel(&[(6, true, 2)], None));
 	}
 
@@ -1403,8 +1318,8 @@ mod tests {
 
 	#[test]
 	fn test_basefold_channel_mixed_relation_counts() {
-		// A non-ZK oracle with one claim and a ZK oracle with three, arriving interleaved: only the
-		// multi-claim oracle draws a λ, and the σ accounting must follow the batched relations.
+		// A non-ZK oracle with one claim and a ZK oracle with three, arriving interleaved: the σ
+		// accounting must follow the batched relations.
 		assert!(run_multi_relation_channel(&[(8, false, 1), (6, true, 3)], None));
 	}
 
@@ -1412,5 +1327,273 @@ mod tests {
 	fn test_basefold_channel_mixed_relation_counts_invalid() {
 		// Tampering a claim on the non-ZK oracle in a mixed batch must be rejected.
 		assert!(!run_multi_relation_channel(&[(8, false, 2), (6, true, 2)], Some(2)));
+	}
+
+	/// Runs a full prove/verify cycle over oracles described as `(n_vars, is_zk)`, with one
+	/// relation spanning the first two oracles and a single-oracle relation on the second.
+	///
+	/// Every further oracle appears in no relation. If `tamper`, the verifier's claim on the
+	/// spanning relation is corrupted; verification must then fail. Returns whether verification
+	/// accepted.
+	fn run_spanning_relation_channel(specs: &[(usize, bool)], tamper: bool) -> bool {
+		type F = Ghash128b;
+		type P = PackedGhash1x128b;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let data = specs
+			.iter()
+			.map(|&(n_vars, _)| generate_oracle_relations::<F, P, _>(&mut rng, n_vars, 1))
+			.collect::<Vec<_>>();
+		let (_, relations_0) = &data[0];
+		let (_, relations_1) = &data[1];
+		let (transparent_0, claim_0) = relations_0[0].clone();
+		let (transparent_1, claim_1) = relations_1[0].clone();
+		let spanning_claim = claim_0 + claim_1;
+
+		// A second relation on oracle 1 alone, so the spanning one is batched with another.
+		let point = random_scalars::<F>(&mut rng, specs[1].0);
+		let transparent_2 = eq_ind_partial_eval::<P>(&point);
+		let claim_2 = inner_product_buffers(&data[1].0, &transparent_2);
+
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
+		let oracle_specs = specs.iter().map(|&(n_vars, is_zk)| {
+			if is_zk {
+				OracleSpec::new_zk(1 << n_vars)
+			} else {
+				OracleSpec::new(1 << n_vars)
+			}
+		});
+
+		let verifier_compiler = BaseFoldVerifierCompiler::new(
+			&make_merkle_scheme(),
+			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
+			LOG_INV_RATE,
+			n_test_queries,
+			&MinProofSizeStrategy,
+		);
+
+		// === PROVER SIDE ===
+		let ntt = make_ntt(verifier_compiler.max_log_domain_size());
+		let prover_compiler =
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
+				&mut prover_transcript,
+				StdRng::seed_from_u64(1),
+				GlobalAllocator,
+			);
+
+		let oracles = data
+			.iter()
+			.map(|(buffer, _)| prover_channel.send_oracle(buffer.as_view()))
+			.collect::<Vec<_>>();
+		prover_channel.prove_multi_oracle_relation(
+			[
+				(oracles[0], transparent_0.clone()),
+				(oracles[1], transparent_1.clone()),
+			],
+			spanning_claim,
+		);
+		prover_channel.prove_oracle_relation(oracles[1], transparent_2.clone(), claim_2);
+		prover_channel.finish();
+
+		// === VERIFIER SIDE ===
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
+
+		let v_oracles = specs
+			.iter()
+			.map(|&(n_vars, _)| verifier_channel.recv_oracle(1 << n_vars, true).unwrap())
+			.collect::<Vec<_>>();
+		let spanning_claim = if tamper {
+			spanning_claim + F::ONE
+		} else {
+			spanning_claim
+		};
+		verifier_channel
+			.verify_multi_oracle_relation(
+				[
+					(v_oracles[0], eq_eval_fn(transparent_0)),
+					(v_oracles[1], eq_eval_fn(transparent_1)),
+				],
+				spanning_claim,
+			)
+			.expect("verify_oracle_relation only queues");
+		verifier_channel
+			.verify_oracle_relation(v_oracles[1], eq_eval_fn(transparent_2), claim_2)
+			.expect("verify_oracle_relation only queues");
+		verifier_channel.finish().is_ok()
+	}
+
+	#[test]
+	fn test_basefold_channel_relation_spanning_two_oracles() {
+		// Oracles of different sizes, so the spanning relation's operands differ in length.
+		assert!(run_spanning_relation_channel(&[(6, true), (8, true)], false));
+	}
+
+	#[test]
+	fn test_basefold_channel_relation_spanning_two_oracles_invalid() {
+		assert!(!run_spanning_relation_channel(&[(6, true), (8, true)], true));
+	}
+
+	#[test]
+	fn test_basefold_channel_relation_spanning_zk_and_non_zk() {
+		// A non-ZK operand carries the weight 1-γ in the masked sumcheck, and the third oracle is
+		// in no relation at all.
+		assert!(run_spanning_relation_channel(&[(8, false), (6, true), (5, true)], false));
+	}
+
+	#[test]
+	fn test_basefold_channel_relation_spanning_zk_and_non_zk_invalid() {
+		assert!(!run_spanning_relation_channel(&[(8, false), (6, true), (5, true)], true));
+	}
+
+	/// Runs a prove/verify cycle over oracles grouped into rounds, with a challenge between rounds.
+	///
+	/// Each oracle is `(len, is_zk)`. Its buffer is random above `len` too, which no relation may
+	/// see, and it carries two relations whose transparents vanish above `len`. If `tamper`, the
+	/// verifier's first claim is corrupted. Returns whether verification accepted.
+	fn run_round_trip<P: PackedField<Scalar = Ghash128b>>(
+		rounds: &[Vec<(usize, bool)>],
+		tamper: bool,
+	) -> bool {
+		type F = Ghash128b;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let schedule = OracleSchedule::from_rounds(
+			rounds
+				.iter()
+				.map(|round| round.iter().map(|&(len, is_zk)| OracleSpec { len, is_zk })),
+		);
+		let data = schedule
+			.specs()
+			.iter()
+			.map(|spec| {
+				let n_vars = spec.log_msg_len();
+				let buffer = random_field_buffer::<P>(&mut rng, n_vars);
+				let relations = (0..2)
+					.map(|_| {
+						let point = random_scalars::<F>(&mut rng, n_vars);
+						let mut transparent = eq_ind_partial_eval::<P>(&point);
+						for i in spec.len..1 << n_vars {
+							transparent.set(i, F::ZERO);
+						}
+						let claim = inner_product_buffers(&buffer, &transparent);
+						(transparent, claim)
+					})
+					.collect::<Vec<_>>();
+				(buffer, relations)
+			})
+			.collect::<Vec<_>>();
+
+		let verifier_compiler = BaseFoldVerifierCompiler::new(
+			&make_merkle_scheme(),
+			schedule,
+			LOG_INV_RATE,
+			calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE),
+			&MinProofSizeStrategy,
+		);
+		let ntt = make_ntt(verifier_compiler.max_log_domain_size());
+		let prover_compiler =
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
+
+		// === PROVER SIDE ===
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
+				&mut prover_transcript,
+				StdRng::seed_from_u64(1),
+				GlobalAllocator,
+			);
+		let mut data_iter = data.iter();
+		let mut oracles = Vec::new();
+		for round in rounds {
+			for (buffer, _) in data_iter.by_ref().take(round.len()) {
+				oracles.push(prover_channel.send_oracle(buffer.as_view()));
+			}
+			IPProverChannel::sample(&mut prover_channel);
+		}
+		for (&oracle, (_, relations)) in iter::zip(&oracles, &data) {
+			for (transparent, claim) in relations {
+				prover_channel.prove_oracle_relation(oracle, transparent.clone(), *claim);
+			}
+		}
+		prover_channel.finish();
+
+		// === VERIFIER SIDE ===
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
+		let mut v_oracles = Vec::new();
+		for round in rounds {
+			for &(len, _) in round {
+				v_oracles.push(verifier_channel.recv_oracle(len, true).unwrap());
+			}
+			IPVerifierChannel::sample(&mut verifier_channel);
+		}
+		for (position, (&oracle, (_, relations))) in iter::zip(&v_oracles, data).enumerate() {
+			for (index, (transparent, claim)) in relations.into_iter().enumerate() {
+				let claim = if tamper && position == 0 && index == 0 {
+					claim + F::ONE
+				} else {
+					claim
+				};
+				verifier_channel
+					.verify_oracle_relation(oracle, eq_eval_fn(transparent), claim)
+					.expect("verify_oracle_relation only queues");
+			}
+		}
+		verifier_channel.finish().is_ok()
+	}
+
+	#[test]
+	fn test_basefold_channel_round_oracle_before_a_larger_round_mate() {
+		// The 2^2 oracle arrives first but is placed after the 2^4 one, so its block is written
+		// before the block below it.
+		let rounds = [
+			vec![(1 << 2, true), (1 << 4, true), (3, false)],
+			vec![(1 << 5, true)],
+		];
+		assert!(run_round_trip::<PackedGhash1x128b>(&rounds, false));
+		assert!(run_round_trip::<PackedGhash4x128b>(&rounds, false));
+		assert!(!run_round_trip::<PackedGhash1x128b>(&rounds, true));
+	}
+
+	#[test]
+	fn test_basefold_channel_tenants_nest_in_slack() {
+		// The 9-entry oracle nests in the 15-entry one's slack, and the 2^2 one in the 9-entry
+		// one's, all inside one 2^5 round oracle.
+		let rounds = [vec![(15, false), (9, true), (1 << 2, true)]];
+		assert!(run_round_trip::<PackedGhash1x128b>(&rounds, false));
+		assert!(run_round_trip::<PackedGhash4x128b>(&rounds, false));
+		assert!(!run_round_trip::<PackedGhash4x128b>(&rounds, true));
+	}
+
+	/// One oracle of `2^ℓ` slots, for `ℓ < 5`, holding more than half of them.
+	fn arb_oracle() -> impl Strategy<Value = (usize, bool)> {
+		(0usize..5).prop_flat_map(|log_len| {
+			let min_len = (1usize << log_len >> 1) + 1;
+			(min_len..=1usize << log_len, any::<bool>())
+		})
+	}
+
+	proptest! {
+		#![proptest_config(ProptestConfig::with_cases(32))]
+
+		#[test]
+		fn round_trip_proptest(
+			rounds in prop::collection::vec(prop::collection::vec(arb_oracle(), 1..5), 1..5),
+		) {
+			// The wider packing mixes word-aligned blocks with sub-word ones.
+			prop_assert!(run_round_trip::<PackedGhash1x128b>(&rounds, false));
+			prop_assert!(run_round_trip::<PackedGhash4x128b>(&rounds, false));
+		}
 	}
 }

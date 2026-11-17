@@ -31,7 +31,7 @@ use digest::Output;
 
 use crate::{
 	shift::prove as prove_shift,
-	value_table::pack_table,
+	value_table::{commit_layout, pack_table},
 	witness::{FoldedWitness, OperandColumns},
 };
 
@@ -115,10 +115,8 @@ impl IOPProver {
 		};
 		let trace_oracle = {
 			let _scope = tracing::debug_span!("Commit trace").entered();
-			channel.send_oracle(trace_packed)
+			channel.send_oracle(trace_packed.as_view())
 		};
-		// Take the committed buffer back for the reductions.
-		let trace_packed = channel.take_oracle(trace_oracle.clone());
 
 		// One base domain shared by the AND-check and the shift, consistent by construction.
 		// The AND-check's univariate-skip domain spans one dimension above the 64-bit word.
@@ -267,13 +265,18 @@ impl IOPProver {
 			// The point is `r_j || r_rho || r_y`.
 			// Its instance coordinates fold the trace at `r_rho`.
 			let trace_point = [r_j, r_rho.as_slice(), r_y].concat();
-			ring_switch::prove(alloc, trace_packed.as_view(), &trace_point, channel)
+			ring_switch::prove(
+				alloc,
+				trace_packed.as_view(),
+				commit_layout(table).n_witness_elems,
+				&trace_point,
+				channel,
+			)
 		};
 
 		// Queue the trace opening against the ring-switch's transparent multilinear.
 		// The final call runs the single combined FRI opening and writes it to the transcript.
-		channel.prove_oracle_relation(trace_oracle.clone(), rs_eq_ind.into(), sumcheck_claim);
-		channel.return_oracle(trace_oracle, trace_packed);
+		channel.prove_oracle_relation(trace_oracle, rs_eq_ind, sumcheck_claim);
 	}
 }
 

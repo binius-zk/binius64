@@ -17,12 +17,16 @@
 //! Written `eq(X, Y)`, it extends the predicate `X == Y` multilinearly over the cube.
 //! Fixing one operand to a point leaves `2^n` coefficients, called the expansion of that point.
 //!
+//! Fixing a variable of a multilinear to a value likewise depends on the cube.
+//! The two halves the variable splits the coefficients into are weighted by its basis there.
+//!
 //! Every routine here is generic over the cube.
-//! The Boolean-cube specializations live beside them, in the sibling equality indicator module.
+//! The Boolean-cube specializations live beside them, in the sibling equality indicator and fold
+//! modules.
 
-use std::{iter, slice};
+use std::{iter, ops::Deref, slice};
 
-use binius_compute::{Allocator, BufferData, VecLike};
+use binius_compute::{Allocator, BufferData, CollectIntoAllocVec, VecLike};
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::{
 	prelude::*,
@@ -63,6 +67,17 @@ pub trait Hypercube {
 	/// Those weights are unique and free of `r`, so the same combination works at any coordinate.
 	fn contract_var<F: FieldOps>(lo: &mut F, hi: &F);
 
+	/// Fixes one variable to a coordinate, given the two halves the variable splits a multilinear
+	/// into.
+	///
+	/// ```text
+	/// lo * b_0(r) + hi * b_1(r)
+	/// ```
+	///
+	/// This is the inner loop of every fold.
+	/// So an implementor beats the two multiplications that pairing with the basis directly costs.
+	fn extrapolate_line<F: FieldOps>(lo: F, hi: F, coord: F) -> F;
+
 	/// Evaluates the equality indicator of one variable.
 	///
 	/// ```text
@@ -102,6 +117,13 @@ impl Hypercube for OneCube {
 	fn contract_var<F: FieldOps>(lo: &mut F, hi: &F) {
 		// The two basis polynomials sum to one, so both recovery weights are one.
 		*lo += hi;
+	}
+
+	#[inline(always)]
+	fn extrapolate_line<F: FieldOps>(lo: F, hi: F, coord: F) -> F {
+		// The basis is `(1 - r, r)`, so the pairing is the line through the halves at `r`.
+		// It is affine in `r`, so one multiplication and two additions suffice.
+		lo.clone() + (hi - lo) * coord
 	}
 
 	#[inline(always)]
@@ -147,6 +169,12 @@ impl Hypercube for InfCube {
 	fn contract_var<F: FieldOps>(_lo: &mut F, _hi: &F) {
 		// The low half already holds the value, so the weights are one and zero.
 		// Contracting a variable is therefore free for this cube.
+	}
+
+	#[inline(always)]
+	fn extrapolate_line<F: FieldOps>(lo: F, hi: F, coord: F) -> F {
+		// The constant basis polynomial is one, so the low half passes through unscaled.
+		lo + hi * coord
 	}
 
 	#[inline(always)]
@@ -536,14 +564,92 @@ pub fn scaled_eq_ind_partial_eval_scalars<Cube: Hypercube, F: FieldOps>(
 	result
 }
 
+/// Fixes the highest variable of a multilinear to a value, in place.
+///
+/// ```text
+/// g(X_0, ..., X_{n-2}) = f(X_0, ..., X_{n-2}, r)
+/// ```
+///
+/// The result occupies the first half of the buffer.
+/// The buffer then reports one variable fewer.
+///
+/// ## Preconditions
+///
+/// * the buffer must have at least one variable
+pub fn fold_highest_var_inplace<Cube: Hypercube, P: PackedField, Data: BufferData<P>>(
+	values: &mut FieldBuffer<P, Data>,
+	scalar: P::Scalar,
+) {
+	// Each scalar of the result costs one multiplication.
+	// Broadcasting the challenge once lets every packed word reuse the same multiplier.
+	let broadcast_scalar = P::broadcast(scalar);
+	{
+		// The two halves are the multilinear's coefficients on the highest variable's two vertices.
+		let mut split = values.split_half_mut();
+		let (mut lo, mut hi) = split.halves();
+		// Fix the variable in each pair at the challenge, overwriting the low half.
+		(lo.as_mut(), hi.as_mut())
+			.into_par_iter()
+			.with_min_task(WorkPerItem::FieldMuls)
+			.for_each(|(lo_i, hi_i)| {
+				*lo_i = Cube::extrapolate_line(*lo_i, *hi_i, broadcast_scalar);
+			});
+	}
+
+	// The result occupies a prefix, so the truncation drops the scalars past it.
+	values.truncate(values.log_len() - 1);
+}
+
+/// Fixes the highest variable of a multilinear to a value, writing into memory from an allocator.
+///
+/// ```text
+/// g(X_0, ..., X_{n-2}) = f(X_0, ..., X_{n-2}, r)
+/// ```
+///
+/// Each output coefficient fixes the variable in one pair of input coefficients.
+/// The input is left untouched.
+///
+/// Use this when the input is borrowed or must be preserved.
+/// Otherwise prefer the form that overwrites the input.
+///
+/// ## Preconditions
+///
+/// * the buffer must have at least one variable
+pub fn fold_highest_var<
+	Cube: Hypercube,
+	A: Allocator,
+	P: PackedField,
+	Data: Deref<Target = [P]>,
+>(
+	alloc: &A,
+	values: &FieldBuffer<P, Data>,
+	scalar: P::Scalar,
+) -> FieldVec<P, A> {
+	assert!(values.log_len() > 0, "precondition: buffer must have at least one variable");
+
+	// The two halves are the multilinear's coefficients on the highest variable's two vertices.
+	let broadcast_scalar = P::broadcast(scalar);
+	let (lo, hi) = values.split_half();
+
+	// Fix the variable in each pair at the challenge directly into a fresh buffer drawn from the
+	// allocator.
+	let data = (lo.as_ref(), hi.as_ref())
+		.into_par_iter()
+		.with_min_task(WorkPerItem::FieldMuls)
+		.map(|(&lo_i, &hi_i)| Cube::extrapolate_line(lo_i, hi_i, broadcast_scalar))
+		.collect_into_alloc_vec(alloc);
+	FieldBuffer::new(values.log_len() - 1, data)
+}
+
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_utils::rayon::task_size::{min_len_for_bytes, min_len_for_work};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b, random_scalars};
+	use crate::test_utils::{B128, Packed128b, random_field_buffer, random_scalars};
 
 	type P = Packed128b;
 	type F = B128;
@@ -695,6 +801,45 @@ mod tests {
 				.map(|(c, e)| *c * e)
 				.sum::<F>();
 			assert_eq!(inner_product, eval_monomial_basis(&coeffs, &point));
+		}
+	}
+
+	#[test]
+	fn extrapolate_line_matches_basis_definition() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Each implementor saves a multiplication over pairing the halves with the basis.
+		// So pin both against the generic pairing.
+		let [lo, hi, coord] = [(); 3].map(|_| random_scalars::<F>(&mut rng, 1)[0]);
+		let from_basis = |[b_0, b_1]: [F; 2]| lo * b_0 + hi * b_1;
+		assert_eq!(OneCube::extrapolate_line(lo, hi, coord), from_basis(OneCube::basis(&coord)));
+		assert_eq!(InfCube::extrapolate_line(lo, hi, coord), from_basis(InfCube::basis(&coord)));
+	}
+
+	#[test]
+	fn inf_cube_fold_fixes_the_highest_variable() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Folding monomial coefficients at r leaves the monomial coefficients of f(.., r).
+		// So the folded table read at x must equal the original read at (x, r).
+		for n_vars in [1, 2, 5] {
+			let original = random_field_buffer::<P>(&mut rng, n_vars);
+			let challenge = random_scalars::<F>(&mut rng, 1)[0];
+			let x = random_scalars::<F>(&mut rng, n_vars - 1);
+
+			let out_of_place =
+				fold_highest_var::<InfCube, _, _, _>(&GlobalAllocator, &original, challenge);
+			let mut in_place = original.clone();
+			fold_highest_var_inplace::<InfCube, _, _>(&mut in_place, challenge);
+			assert_eq!(out_of_place, in_place);
+
+			let original = original.iter_scalars().collect::<Vec<_>>();
+			let folded = in_place.iter_scalars().collect::<Vec<_>>();
+			let full_point = [x.as_slice(), &[challenge]].concat();
+			assert_eq!(
+				eval_monomial_basis(&folded, &x),
+				eval_monomial_basis(&original, &full_point)
+			);
 		}
 	}
 

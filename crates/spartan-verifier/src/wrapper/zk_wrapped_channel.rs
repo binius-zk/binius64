@@ -2,8 +2,7 @@
 
 //! ZK-wrapped verifier channel that delegates to a BaseFold ZK channel and an outer IOP verifier.
 //!
-//! [`ZKWrappedVerifierChannel`] wraps a [`BaseFoldVerifierChannel`], behind a
-//! [`MergeVerifierChannel`] that commits each round's oracles as one, and an [`IOPVerifier`].
+//! [`ZKWrappedVerifierChannel`] wraps a [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
 //! Inner-channel values flow through the wrapper as `CircuitElem`s backed by an
 //! [`InstanceGenerator`], which reconstructs the outer constraint system's public-input vector
 //! `[constants | inout | derived]` exactly as the prover's witness generator does — public-derived
@@ -12,21 +11,19 @@
 //!
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, iter, rc::Rc, sync::Arc};
 
 use binius_core::word::Word;
 use binius_field::BinaryField;
 use binius_iop::{
-	basefold::channel::BaseFoldVerifierChannel,
-	channel::{
-		IOPVerifierChannel, OracleSpec, TransparentEvalFn,
-		merge::{MergeOracle, MergeVerifierChannel},
-	},
+	basefold::channel::{BaseFoldOracle, BaseFoldVerifierChannel},
+	channel::{IOPVerifierChannel, OracleSpec, TransparentEvalFn},
 	merkle_channel::MerkleIPVerifierChannel,
 };
 use binius_ip::channel::{
 	IPVerifierChannel, WordIPVerifierChannel, pack_words_concrete, select_word, subset_sum_word,
 };
+use binius_math::multilinear::eval_one_hot;
 use binius_spartan_frontend::{
 	circuit_builder::{InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
@@ -34,7 +31,7 @@ use binius_spartan_frontend::{
 
 use crate::{Error, IOPVerifier, wrapper::circuit_elem::CircuitElem};
 
-/// A verifier channel that wraps a merged [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
+/// A verifier channel that wraps a [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
 ///
 /// `Self::Elem = CircuitElem<F, InstanceGenerator>`. F values received or sampled from the inner
 /// channel are written into the [`InstanceGenerator`]'s public segment as inout wires (in the same
@@ -51,9 +48,9 @@ where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
-	inner_channel: MergeVerifierChannel<'a, F, BaseFoldVerifierChannel<'a, F, Channel>>,
+	inner_channel: BaseFoldVerifierChannel<'a, F, Channel>,
 	outer_verifier: &'a IOPVerifier<F>,
-	precommit_oracle: MergeOracle,
+	precommit_oracle: BaseFoldOracle,
 	/// Reconstructs the outer public-input vector as the channel replays the inner verifier;
 	/// `build()` yields the `[constants | inout | derived]` segment for the outer verify.
 	instance_gen: Rc<RefCell<InstanceGenerator<F>>>,
@@ -93,7 +90,7 @@ where
 	/// Panics if the channel's oracle specs do not match the expected layout
 	/// `[outer_precommit, inner..., outer_private, outer_mask]`.
 	pub fn new(
-		mut inner_channel: MergeVerifierChannel<'a, F, BaseFoldVerifierChannel<'a, F, Channel>>,
+		mut inner_channel: BaseFoldVerifierChannel<'a, F, Channel>,
 		outer_verifier: &'a IOPVerifier<F>,
 		outer_layout: Arc<WitnessLayout<F>>,
 	) -> Result<Self, Error> {
@@ -118,11 +115,7 @@ where
 			"outer private/mask oracle specs must be the final suffix of channel specs"
 		);
 
-		let precommit_oracle = inner_channel.recv_oracle(
-			outer_oracle_specs[0].len,
-			outer_oracle_specs[0].log_msg_len,
-			true,
-		)?;
+		let precommit_oracle = inner_channel.recv_oracle(outer_oracle_specs[0].len, true)?;
 
 		Ok(Self {
 			inner_channel,
@@ -156,11 +149,12 @@ where
 		}
 	}
 
-	/// Allocates the next precommit wire (value-less to the verifier) as an element.
-	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, InstanceGenerator<F>> {
+	/// Allocates the next precommit wire (value-less to the verifier) as an element, with its index
+	/// in the precommit segment.
+	fn alloc_precommit_elem(&mut self) -> (CircuitElem<F, InstanceGenerator<F>>, usize) {
 		let wire = self.precommit_alloc.alloc();
 		let public_wire = self.instance_gen.borrow_mut().placeholder_precommit(wire);
-		CircuitElem::wire(&self.instance_gen, public_wire)
+		(CircuitElem::wire(&self.instance_gen, public_wire), wire.id() as usize)
 	}
 
 	/// Consumes the channel and runs the outer verifier.
@@ -183,7 +177,7 @@ where
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
 		// the single combined opening over all committed oracles now. `instance_gen` stays alive in
 		// `self` for the duration, so the transparent closures' `Weak` upgrades succeed.
-		inner_channel.into_inner().finish()?;
+		inner_channel.finish()?;
 		Ok(())
 	}
 }
@@ -203,7 +197,7 @@ where
 		// wire.
 		let val = self.inner_channel.recv_one()?;
 		let inout = self.alloc_inout_elem(val);
-		let key = self.alloc_precommit_elem();
+		let (key, _) = self.alloc_precommit_elem();
 		Ok(inout - key)
 	}
 
@@ -283,7 +277,7 @@ where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
-	type Oracle = MergeOracle;
+	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		let all = self.inner_channel.remaining_oracle_specs();
@@ -294,32 +288,33 @@ where
 	fn recv_oracle(
 		&mut self,
 		len: usize,
-		log_msg_len: usize,
 		is_witness_dependent: bool,
 	) -> Result<Self::Oracle, binius_iop::channel::Error> {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"recv_oracle called but no remaining inner oracle specs"
 		);
-		self.inner_channel
-			.recv_oracle(len, log_msg_len, is_witness_dependent)
+		self.inner_channel.recv_oracle(len, is_witness_dependent)
 	}
 
-	fn verify_oracle_relation(
+	fn verify_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: TransparentEvalFn<Self::Elem>,
+		operands: impl IntoIterator<Item = (Self::Oracle, TransparentEvalFn<Self::Elem>)>,
 		claim: Self::Elem,
 	) -> Result<(), binius_iop::channel::Error> {
-		// For each oracle opening, the prover sends the decrypted evaluation. Allocate it as an
-		// inout wire (written into the public segment) and attest `claim == decrypted_claim`,
-		// exactly as the symbolic `IronSpartanBuilderChannel` does. The assertion is a no-op on
-		// values here, but evaluating `claim - decrypted_claim` keeps the instance generator's
-		// wire allocation aligned with the symbolic constraint system. The relation is passed on
-		// to the inner channel with the decrypted value.
-		let decrypted_value = self.inner_channel.recv_one()?;
-		let decrypted_claim = self.alloc_inout_elem(decrypted_value);
-		self.assert_zero(claim - decrypted_claim)?;
+		// The prover sends the target as the ciphertext `c = s + k` under a fresh key, exactly as
+		// `recv_one` reads any value, and the symbolic `IronSpartanBuilderChannel` attests
+		// `claim == c - k`. The assertion is a no-op on values here, but evaluating it keeps the
+		// instance generator's wire allocation aligned with the symbolic constraint system. The
+		// relation is passed on to the inner channel against `c`, with the key's operand
+		// `<z_pre, e_k>` added, so that it holds iff the decrypted target does.
+		let ciphertext = self.inner_channel.recv_one()?;
+		let ciphertext_elem = self.alloc_inout_elem(ciphertext);
+		let (key, key_index) = self.alloc_precommit_elem();
+		self.assert_zero(claim - (ciphertext_elem - key))?;
+		// `e_k`: the one-hot vector at the key's index, over the precommit oracle's variables.
+		let key_indicator =
+			Box::new(move |point: &[F]| eval_one_hot(key_index, point)) as TransparentEvalFn<F>;
 
 		// Wrap the sumcheck challenge coordinates for the transparent closure (which expects
 		// `CircuitElem`s). The closure can do further arithmetic; results are required to be
@@ -332,20 +327,25 @@ where
 		// `claim == decrypted_claim`, with the transparent evaluation performed out of circuit.
 		// This F->CircuitElem->F bridge should eventually be replaced by an F-level transparent
 		// evaluator.
-		let eval_fn = move |vals: &[F]| {
-			let wrapped_vals = vals
-				.iter()
-				.map(|val| CircuitElem::Constant(*val))
-				.collect::<Vec<_>>();
+		let operands = operands.into_iter().map(|(oracle, transparent)| {
+			let eval_fn = move |vals: &[F]| {
+				let wrapped_vals = vals
+					.iter()
+					.map(|val| CircuitElem::Constant(*val))
+					.collect::<Vec<_>>();
 
-			match transparent(&wrapped_vals) {
-				CircuitElem::Constant(val) => val,
-				CircuitElem::Wire { wire, .. } => wire.value().expect(
-					"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)",
-				),
-			}
-		};
-		self.inner_channel
-			.verify_oracle_relation(oracle, Box::new(eval_fn), decrypted_value)
+				match transparent(&wrapped_vals) {
+					CircuitElem::Constant(val) => val,
+					CircuitElem::Wire { wire, .. } => wire.value().expect(
+						"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)",
+					),
+				}
+			};
+			(oracle, Box::new(eval_fn) as TransparentEvalFn<F>)
+		});
+		self.inner_channel.verify_multi_oracle_relation(
+			operands.chain(iter::once((self.precommit_oracle, key_indicator))),
+			ciphertext,
+		)
 	}
 }

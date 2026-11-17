@@ -469,7 +469,7 @@ mod tests {
 		let wiring_transpose =
 			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
 
-		let oracle_specs = vec![OracleSpec::new_zk(log_private)];
+		let oracle_specs = vec![OracleSpec::new_zk(1 << log_private)];
 
 		// === PROVER SIDE ===
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -477,7 +477,7 @@ mod tests {
 			NaiveProverChannel::<B128, _>::new(&mut prover_transcript, oracle_specs.clone());
 
 		// Send private witness oracle
-		let witness_oracle = prover_channel.send_oracle(private_buf);
+		let witness_oracle = prover_channel.send_oracle(private_buf.as_view());
 
 		// Sample lambda
 		let lambda: B128 = prover_channel.sample();
@@ -500,11 +500,7 @@ mod tests {
 		);
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relation(
-			witness_oracle,
-			wiring_poly.clone().into(),
-			trace_claim,
-		);
+		prover_channel.prove_oracle_relation(witness_oracle, wiring_poly.clone(), trace_claim);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -513,7 +509,7 @@ mod tests {
 
 		// Receive witness oracle
 		let witness_oracle = verifier_channel
-			.recv_oracle(1 << log_private, log_private, true)
+			.recv_oracle(1 << log_private, true)
 			.expect("recv_oracle should succeed");
 
 		// Sample the same lambda as prover

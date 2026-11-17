@@ -5,6 +5,8 @@
 
 use binius_field::field::FieldOps;
 
+use crate::multilinear::hypercube::{Hypercube, OneCube};
+
 /// Extrapolates a line through two points.
 ///
 /// The two points are `(0, x_0)` and `(1, x_1)`.
@@ -18,8 +20,8 @@ use binius_field::field::FieldOps;
 /// Read that way, this binds that variable to `z`.
 #[inline]
 pub fn extrapolate_line<F: FieldOps>(x0: F, x1: F, z: F) -> F {
-	// The line is affine in `z`, so one multiplication and two additions suffice.
-	x0.clone() + (x1 - x0) * z
+	// Binding a variable of the Boolean cube is exactly this line.
+	OneCube::extrapolate_line(x0, x1, z)
 }
 
 #[cfg(test)]

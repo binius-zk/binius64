@@ -64,6 +64,11 @@ impl ConstraintWire {
 		}
 	}
 
+	/// The wire's ID, its index among the wires of its kind.
+	pub const fn id(&self) -> u32 {
+		self.id
+	}
+
 	/// Creates a constraint wire referencing a precommit wire by ID.
 	pub const fn precommit(id: u32) -> Self {
 		Self {

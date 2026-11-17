@@ -8,8 +8,9 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_hash_prover::ParallelHashSuite;
 use binius_iop::{
-	basefold::compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::FRIParams,
-	merkle_tree::BinaryMerkleTreeScheme,
+	basefold::{compiler::BaseFoldVerifierCompiler, layout::RoundLayout},
+	channel::OracleSchedule,
+	fri::FRIParams,
 };
 use binius_math::ntt::AdditiveNTT;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
@@ -32,8 +33,9 @@ pub type TranscriptBaseFoldProverChannel<'a, F, P, NTT, T, Challenger_, H, A> =
 
 /// A compiler that creates BaseFold ZK prover channels with precomputed parameters.
 ///
-/// This compiler builds a single combined FRI over all oracles, with ZK oracles configured for
-/// zero-knowledge mode.
+/// This compiler commits each round of the schedule as one oracle and builds a single combined
+/// FRI over the round oracles, with ZK ones configured for zero-knowledge mode. It is built from a
+/// [`BaseFoldVerifierCompiler`], so both sides share one layout.
 #[derive(Debug)]
 pub struct BaseFoldProverCompiler<P, NTT>
 where
@@ -41,8 +43,9 @@ where
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
 {
 	ntt: NTT,
-	oracle_specs: Vec<OracleSpec>,
-	/// The combined FRI parameters over **all** oracles.
+	schedule: OracleSchedule,
+	layouts: Vec<RoundLayout>,
+	/// The combined FRI parameters over **all** round oracles.
 	fri_params: FRIParams<P::Scalar>,
 	_marker: PhantomData<P>,
 }
@@ -53,55 +56,17 @@ where
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 {
-	/// Creates a new compiler with precomputed combined FRI parameters.
-	///
-	/// The `merkle_scheme` is consulted only for proof-size estimation while choosing the FRI
-	/// parameters; it is not stored. Each oracle's batch size is derived from its ZK flag: a ZK
-	/// oracle fixes `log_batch_size = 1` (message ‖ equal-length mask), a non-ZK oracle takes a
-	/// flexible batch size.
-	pub fn new<H>(
-		ntt: NTT,
-		merkle_scheme: &BinaryMerkleTreeScheme<F, H>,
-		oracle_specs: Vec<OracleSpec>,
-		log_inv_rate: usize,
-		n_test_queries: usize,
-	) -> Self
-	where
-		H: ParallelHashSuite,
-	{
-		assert!(
-			!oracle_specs.is_empty(),
-			"BaseFoldProverCompiler requires at least one oracle spec"
-		);
-
-		// The single combined FRI parameters over all oracles. `optimal_for_batch` derives each
-		// oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message ‖
-		// equal-length mask); non-ZK oracles take a flexible batch size.
-		let (fri_params, _) = FRIParams::optimal_for_batch(
-			merkle_scheme,
-			&oracle_specs,
-			log_inv_rate,
-			n_test_queries,
-		);
-
-		Self {
-			ntt,
-			oracle_specs,
-			fri_params,
-			_marker: PhantomData,
-		}
-	}
-
 	/// Creates a prover compiler from a verifier compiler.
 	///
-	/// This reuses the precomputed FRI parameters and oracle specifications.
+	/// This reuses the precomputed FRI parameters, oracle schedule and round layouts.
 	pub fn from_verifier_compiler(
 		verifier_compiler: &BaseFoldVerifierCompiler<F>,
 		ntt: NTT,
 	) -> Self {
 		Self {
 			ntt,
-			oracle_specs: verifier_compiler.oracle_specs().to_vec(),
+			schedule: verifier_compiler.oracle_schedule().clone(),
+			layouts: verifier_compiler.layouts().to_vec(),
 			fri_params: verifier_compiler.fri_params().clone(),
 			_marker: PhantomData,
 		}
@@ -112,11 +77,6 @@ where
 		&self.ntt
 	}
 
-	/// Returns a reference to the oracle specifications.
-	pub fn oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs
-	}
-
 	/// Returns a reference to the precomputed combined FRI parameters.
 	pub const fn fri_params(&self) -> &FRIParams<F> {
 		&self.fri_params
@@ -125,8 +85,8 @@ where
 	/// Creates a ZK prover channel over the given Merkle channel and an RNG.
 	///
 	/// The returned channel drives all prover interaction through `channel`, committing and opening
-	/// oracles with this compiler's NTT, oracle specs, and combined FRI parameters. The caller
-	/// constructs the Merkle channel, so it decides how commitments are produced.
+	/// oracles with this compiler's NTT, schedule, round layouts, and combined FRI parameters. The
+	/// caller constructs the Merkle channel, so it decides how commitments are produced.
 	///
 	/// The RNG seeds the channel's own generator, whose only output is the ZK masks.
 	/// A mask is what hides a committed witness at the positions the verifier opens.
@@ -144,7 +104,8 @@ where
 		BaseFoldProverChannel::new(
 			channel,
 			&self.ntt,
-			self.oracle_specs.clone(),
+			&self.schedule,
+			&self.layouts,
 			self.fri_params.clone(),
 			rng,
 			alloc,
@@ -173,7 +134,7 @@ where
 	{
 		// A ZK oracle masks with the RNG, so a fixed seed here would silently break hiding.
 		assert!(
-			self.oracle_specs().iter().all(|spec| !spec.is_zk),
+			self.layouts.iter().all(|layout| !layout.is_zk),
 			"create_channel_without_zk requires every oracle to be non-ZK"
 		);
 

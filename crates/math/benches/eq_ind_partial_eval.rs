@@ -1,8 +1,13 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
+use binius_compute::GlobalAllocator;
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_math::{
-	multilinear::hypercube::{Hypercube, InfCube, OneCube, eq_ind_partial_eval},
+	multilinear::{
+		eq_prefix::eq_ind_prefix_partial_eval_in,
+		hypercube::{Hypercube, InfCube, OneCube, eq_ind_partial_eval},
+	},
 	test_utils::random_scalars,
 };
 use criterion::{
@@ -38,6 +43,13 @@ fn bench_eq_ind_partial_eval(c: &mut Criterion) {
 		let point = random_scalars::<F>(&mut rng, n_vars);
 		bench_cube::<OneCube>(&mut group, "one_cube", &point);
 		bench_cube::<InfCube>(&mut group, "inf_cube", &point);
+
+		// A prefix filling three quarters of the buffer.
+		let m = 3 << (n_vars - 2);
+		let id = BenchmarkId::new("one_cube_prefix_3/4", format!("n_vars={n_vars}"));
+		group.bench_function(id, |b| {
+			b.iter(|| eq_ind_prefix_partial_eval_in::<_, P>(&GlobalAllocator, m, &point));
+		});
 	}
 
 	group.finish();

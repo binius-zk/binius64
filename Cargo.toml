@@ -41,7 +41,7 @@ bytemuck = { version = "1.18.0", features = [
 bytes = "1.7.2"
 cfg-if = "1.0.0"
 clap = { version = "4.5", features = ["derive"] }
-cranelift-entity = "0.136.1"
+cranelift-entity = "0.137.0"
 criterion = { version = "0.8.0", default-features = false }
 derive_more = { version = "2.1.1", features = [
     "add",
@@ -80,7 +80,7 @@ rayon = "1.10.0"
 regex = "1.10"
 ripemd = "0.2.0"
 rsa = { version = "0.9.8", features = ["sha2"] }
-rstest = "0.27.0"
+rstest = "0.28.0"
 seq-macro = "0.3.5"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"

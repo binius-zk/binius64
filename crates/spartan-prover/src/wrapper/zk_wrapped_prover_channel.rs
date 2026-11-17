@@ -3,8 +3,7 @@
 //! ZK-wrapped prover channel that runs an inner proof and then proves the outer
 //! wrapper constraint system.
 //!
-//! [`ZKWrappedProverChannel`] wraps a [`BaseFoldProverChannel`], behind a [`MergeProverChannel`]
-//! that commits each round's oracles as one, and records all channel values.
+//! [`ZKWrappedProverChannel`] wraps a [`BaseFoldProverChannel`] and records all channel values.
 //! On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFold channel and records
 //! each value. After the inner proof is run, [`finish`] replays the recorded interaction through
 //! a caller-provided closure to fill the outer witness, then runs the outer IOP prover.
@@ -12,32 +11,28 @@
 //! [`BaseFoldProverChannel`]: binius_iop_prover::basefold::channel::BaseFoldProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
-use std::{iter::repeat_with, sync::Arc};
+use std::{
+	iter::{self, repeat_with},
+	sync::Arc,
+};
 
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{
-	basefold::channel::BaseFoldProverChannel,
-	channel::{
-		IOPProverChannel,
-		merge::{MergeOracle, MergeProverChannel},
-	},
+	basefold::channel::{BaseFoldOracle, BaseFoldProverChannel},
+	channel::IOPProverChannel,
 	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
-use binius_math::{FieldVec, StructuredBuffer, ntt::AdditiveNTT};
+use binius_math::{FieldBuffer, FieldSlice, FieldVec, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_verifier::IOPVerifier;
 use rand::CryptoRng;
 
 use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
 
-/// The channel the wrapper commits through: BaseFold, with each round's oracles merged into one.
-type MergedBaseFoldChannel<'a, F, P, NTT, Channel, A> =
-	MergeProverChannel<'a, P, A, BaseFoldProverChannel<'a, F, P, NTT, Channel, A>>;
-
-/// A prover channel that wraps a merged [`BaseFoldProverChannel`] and an outer Spartan IOP prover.
+/// A prover channel that wraps a [`BaseFoldProverChannel`] and an outer Spartan IOP prover.
 ///
 /// This channel records all channel values. On
 /// `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFold channel and records each
@@ -55,7 +50,7 @@ where
 	Channel: MerkleIPProverChannel<P::Scalar>,
 	A: Allocator,
 {
-	inner_channel: MergedBaseFoldChannel<'a, P::Scalar, P, NTT, Channel, A>,
+	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, Channel, A>,
 	outer_prover: &'a IOPProver<P::Scalar>,
 	/// Allocator for the outer proof's working buffers, borrowed from the owning prover so it
 	/// outlives this per-proof channel. Used in [`Self::finish`].
@@ -69,7 +64,10 @@ where
 	/// random — it is the one-time-pad encryption key for the outer encrypted transcript (to be
 	/// wired up in a follow-up; for now the outer circuit has no precommit wires that reference
 	/// it).
-	precommit_oracle: MergeOracle,
+	precommit_oracle: BaseFoldOracle,
+	/// The packed outer precommit buffer committed as [`Self::precommit_oracle`], which the outer
+	/// proof reads in [`Self::finish`].
+	precommit_packed: FieldVec<P, A>,
 	/// Number of outer oracles still to be committed on `inner_channel` during `finish` (the
 	/// outer prover's non-precommit oracles — private and mask).
 	n_outer_suffix_oracles: usize,
@@ -105,7 +103,7 @@ where
 	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 	///   replay the inner verification and fill the outer witness
 	pub fn new(
-		mut inner_channel: MergedBaseFoldChannel<'a, F, P, NTT, Channel, A>,
+		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, Channel, A>,
 		outer_prover: &'a IOPProver<F>,
 		outer_layout: Arc<WitnessLayout<F>>,
 		alloc: &'a A,
@@ -133,7 +131,7 @@ where
 			"outer private/mask oracle specs must be the final suffix of channel specs",
 		);
 
-		let (keys, precommit_oracle) = {
+		let (keys, precommit_oracle, precommit_packed) = {
 			let _scope = tracing::debug_span!("Commit Transcript Mask").entered();
 			Self::commit_transcript_mask(&mut inner_channel, outer_prover, alloc, rng)
 		};
@@ -148,6 +146,7 @@ where
 			next_key_idx: 0,
 			interaction: Vec::new(),
 			precommit_oracle,
+			precommit_packed,
 			n_outer_suffix_oracles: suffix_len,
 		}
 	}
@@ -157,11 +156,11 @@ where
 	/// inner verifier) contains a matching precommit wire per key that the outer proof uses to
 	/// decrypt.
 	fn commit_transcript_mask(
-		inner_channel: &mut MergedBaseFoldChannel<'a, F, P, NTT, Channel, A>,
+		inner_channel: &mut BaseFoldProverChannel<'a, F, P, NTT, Channel, A>,
 		outer_prover: &IOPProver<F>,
 		alloc: &A,
 		mut rng: impl CryptoRng,
-	) -> (Vec<F>, MergeOracle) {
+	) -> (Vec<F>, BaseFoldOracle, FieldVec<P, A>) {
 		let cs = outer_prover.constraint_system();
 		let keys = repeat_with(|| F::random(&mut rng))
 			.take(cs.n_precommit() as usize)
@@ -175,8 +174,8 @@ where
 			&precommit_blinding,
 			&mut rng,
 		);
-		let precommit_oracle = inner_channel.send_oracle(precommit_packed);
-		(keys, precommit_oracle)
+		let precommit_oracle = inner_channel.send_oracle(precommit_packed.as_view());
+		(keys, precommit_oracle, precommit_packed)
 	}
 
 	fn next_key(&mut self) -> F {
@@ -205,6 +204,7 @@ where
 			keys,
 			interaction,
 			precommit_oracle,
+			precommit_packed,
 			..
 		} = self;
 
@@ -222,13 +222,14 @@ where
 		outer_prover.prove::<P, _, _>(
 			&witness,
 			precommit_oracle,
+			precommit_packed.as_view(),
 			rng,
 			&mut inner_channel,
 			alloc,
 		)?;
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
 		// the single combined opening over all committed oracles now.
-		inner_channel.into_inner().finish();
+		inner_channel.finish();
 		Ok(())
 	}
 }
@@ -303,7 +304,7 @@ where
 	Channel: MerkleIPProverChannel<F>,
 	A: Allocator,
 {
-	type Oracle = MergeOracle;
+	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		let remaining = self.inner_channel.remaining_oracle_specs();
@@ -311,7 +312,7 @@ where
 		&remaining[..n_inner_remaining]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldVec<P, A>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"send_oracle called but no inner oracle specs remaining"
@@ -319,27 +320,26 @@ where
 		self.inner_channel.send_oracle(buffer)
 	}
 
-	fn prove_oracle_relation(
+	fn prove_multi_oracle_relation(
 		&mut self,
-		oracle: Self::Oracle,
-		transparent: StructuredBuffer<P, A::Vec<P>>,
+		operands: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P, A::Vec<P>>)>,
 		claim: P::Scalar,
 	) {
-		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
-		// checks in the circuit equality of this value with the expected expression over encrypted
-		// values.
-		self.inner_channel.send_one(claim);
-		self.interaction.push(claim);
+		// The target is a linear image of the witness, so it is sent as the ciphertext `c = s + k`
+		// under a fresh key `k`. The outer circuit decrypts it, and the compiler is handed the
+		// relation `<π, t> + <z_pre, e_k> = c`, which reads `k` from the precommit oracle at the
+		// key's index.
+		let key_index = self.next_key_idx;
+		self.send_one(claim);
+		let ciphertext = claim + self.keys[key_index];
 
-		self.inner_channel
-			.prove_oracle_relation(oracle, transparent, claim);
-	}
-
-	fn take_oracle(&mut self, oracle: Self::Oracle) -> FieldVec<P, A> {
-		self.inner_channel.take_oracle(oracle)
-	}
-
-	fn return_oracle(&mut self, oracle: Self::Oracle, buffer: FieldVec<P, A>) {
-		self.inner_channel.return_oracle(oracle, buffer);
+		let mut key_indicator = FieldBuffer::zeros_in(self.alloc, self.precommit_packed.log_len());
+		key_indicator.set(key_index, P::Scalar::ONE);
+		self.inner_channel.prove_multi_oracle_relation(
+			operands
+				.into_iter()
+				.chain(iter::once((self.precommit_oracle, key_indicator))),
+			ciphertext,
+		);
 	}
 }

@@ -8,19 +8,19 @@ use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{
-		IOPVerifierChannel,
-		merge::MergeVerifierChannel,
+		IOPVerifierChannel, OracleSpec,
 		oracle_setup::{DummyElem, OracleSetupChannel},
 	},
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_iop_prover::{
-	basefold::compiler::BaseFoldProverCompiler, channel::merge::MergeProverChannel,
-};
+use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly};
+use binius_math::{
+	FieldBuffer, FieldSlice,
+	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
+};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
 	circuits::powers,
@@ -37,8 +37,57 @@ use binius_spartan_verifier::{
 	constraint_system::ConstraintSystemPadded,
 	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
-use binius_transcript::ProverTranscript;
+use binius_transcript::{ProverTranscript, VerifierTranscript};
+use binius_utils::SerializeBytes;
 use rand::{SeedableRng, rngs::StdRng};
+
+/// A prover channel that records the target of every relation proved through it, then delegates.
+struct TargetRecorder<'c, Channel> {
+	channel: &'c mut Channel,
+	targets: Vec<B128>,
+}
+
+impl<Channel: IPProverChannel<B128>> IPProverChannel<B128> for TargetRecorder<'_, Channel> {
+	fn send_one(&mut self, elem: B128) {
+		self.channel.send_one(elem);
+	}
+
+	fn send_public_claim(&mut self, elem: B128) {
+		self.channel.send_public_claim(elem);
+	}
+
+	fn observe_one(&mut self, val: B128) {
+		self.channel.observe_one(val);
+	}
+
+	fn sample(&mut self) -> B128 {
+		self.channel.sample()
+	}
+}
+
+impl<Channel> IOPProverChannel<OptimalPackedB128, GlobalAllocator> for TargetRecorder<'_, Channel>
+where
+	Channel: IOPProverChannel<OptimalPackedB128, GlobalAllocator>,
+{
+	type Oracle = Channel::Oracle;
+
+	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
+		self.channel.remaining_oracle_specs()
+	}
+
+	fn send_oracle(&mut self, oracle: FieldSlice<'_, OptimalPackedB128>) -> Self::Oracle {
+		self.channel.send_oracle(oracle)
+	}
+
+	fn prove_multi_oracle_relation(
+		&mut self,
+		operands: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<OptimalPackedB128>)>,
+		claim: B128,
+	) {
+		self.targets.push(claim);
+		self.channel.prove_multi_oracle_relation(operands, claim);
+	}
+}
 
 /// Build a power7 circuit: assert that x^7 = y
 fn power7_circuit<Builder: CircuitBuilder>(
@@ -55,7 +104,9 @@ fn power7_circuit<Builder: CircuitBuilder>(
 fn test_zk_wrapped_prove_verify() {
 	// === Step 1: Build the inner constraint system (the pow7 circuit) ===
 	let mut inner_builder = ConstraintBuilder::new();
-	let x_wire = inner_builder.alloc_inout();
+	// `x` is committed rather than public, so the powers are private and the relations' targets
+	// depend on the witness.
+	let x_wire = inner_builder.alloc_precommit();
 	let y_wire = inner_builder.alloc_inout();
 	power7_circuit(&mut inner_builder, x_wire, y_wire);
 	let (inner_cs, inner_layout) = compile(inner_builder);
@@ -102,14 +153,12 @@ fn test_zk_wrapped_prove_verify() {
 	// Transcript layout: outer precommit oracle first (committed at wrapper construction),
 	// then all inner oracles, then the remaining outer oracles (private, mask). Replaying that
 	// sequence against one setup channel records where each round ends.
-	let inner_log_precommit = inner_cs.log_precommit() as usize;
 	let combined_schedule = {
 		let mut channel = OracleSetupChannel::new(true);
 		for cs in [outer_iop_verifier.constraint_system(), &inner_cs] {
 			<OracleSetupChannel as IOPVerifierChannel<B128>>::recv_oracle(
 				&mut channel,
 				cs.precommit_len(),
-				cs.log_precommit() as usize,
 				true,
 			)
 			.unwrap();
@@ -126,7 +175,7 @@ fn test_zk_wrapped_prove_verify() {
 
 	let zk_basefold_compiler = BaseFoldVerifierCompiler::new(
 		&merkle_scheme,
-		combined_schedule.merged_specs(),
+		combined_schedule,
 		log_inv_rate,
 		n_test_queries,
 		&MinProofSizeStrategy,
@@ -143,7 +192,7 @@ fn test_zk_wrapped_prove_verify() {
 	let y_val = x_val.pow([7]);
 
 	let mut witness_gen = WitnessGenerator::new(&inner_layout);
-	let x_assigned = witness_gen.write_inout(x_wire, x_val);
+	let x_assigned = witness_gen.write_precommit(x_wire, x_val);
 	let y_assigned = witness_gen.write_inout(y_wire, y_val);
 	power7_circuit(&mut witness_gen, x_assigned, y_assigned);
 	let inner_witness = witness_gen.build().expect("failed to build inner witness");
@@ -165,7 +214,7 @@ fn test_zk_wrapped_prove_verify() {
 			GlobalAllocator,
 		);
 	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
-		MergeProverChannel::new(basefold_channel, &combined_schedule, GlobalAllocator),
+		basefold_channel,
 		&outer_iop_prover,
 		Arc::clone(&outer_layout),
 		&GlobalAllocator,
@@ -186,30 +235,53 @@ fn test_zk_wrapped_prove_verify() {
 	// Observe public input through the wrapped channel.
 	wrapped_prover_channel.observe_many(&public);
 
-	// Commit the inner precommit oracle on the wrapped channel, then run the inner proof.
-	let inner_precommit_oracle = inner_iop_prover.commit_precommit::<OptimalPackedB128, _, _>(
-		&inner_witness,
-		&mut rng,
-		&mut wrapped_prover_channel,
-		&GlobalAllocator,
-	);
+	// Commit the inner precommit oracle on the wrapped channel, then run the inner proof,
+	// recording the plaintext target of every relation it proves.
+	let mut recorder = TargetRecorder {
+		channel: &mut wrapped_prover_channel,
+		targets: Vec::new(),
+	};
+	let (inner_precommit_oracle, inner_precommit_packed) = inner_iop_prover
+		.commit_precommit::<OptimalPackedB128, _, _>(
+			&inner_witness,
+			&mut rng,
+			&mut recorder,
+			&GlobalAllocator,
+		);
 	inner_iop_prover
 		.prove::<OptimalPackedB128, _, _>(
 			&inner_witness,
 			inner_precommit_oracle,
+			inner_precommit_packed.as_view(),
 			&mut rng,
-			&mut wrapped_prover_channel,
+			&mut recorder,
 			&GlobalAllocator,
 		)
 		.expect("inner prove failed");
+	let targets = recorder.targets;
 
 	// Finish runs the outer proof.
 	wrapped_prover_channel
 		.finish(rng)
 		.expect("outer prove failed");
 
+	// The targets are linear images of the witness, so none may cross the channel in the clear.
+	let proof = prover_transcript.finalize();
+	assert!(
+		targets.iter().any(|&target| target != B128::ZERO),
+		"the inner proof proves relations with non-trivial targets"
+	);
+	for target in targets.into_iter().filter(|&target| target != B128::ZERO) {
+		let mut bytes = Vec::new();
+		target.serialize(&mut bytes).unwrap();
+		assert!(
+			!proof.windows(bytes.len()).any(|window| window == bytes),
+			"a relation's target {target:?} appears in the proof in plaintext"
+		);
+	}
+
 	// === Step 8: Verify with ZKWrappedVerifierChannel ===
-	let mut verifier_transcript = prover_transcript.into_verifier();
+	let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 
 	// Verifier observes the public input on the transcript (Fiat-Shamir).
 	verifier_transcript.observe().write_slice(&public);
@@ -217,7 +289,7 @@ fn test_zk_wrapped_prove_verify() {
 	let verifier_channel = zk_basefold_compiler
 		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(&mut verifier_transcript);
 	let mut wrapped_verifier_channel = ZKWrappedVerifierChannel::new(
-		MergeVerifierChannel::new(verifier_channel, &combined_schedule),
+		verifier_channel,
 		&outer_iop_verifier,
 		Arc::clone(&outer_layout),
 	)
@@ -228,7 +300,7 @@ fn test_zk_wrapped_prove_verify() {
 
 	// Run the inner IOP verify through the wrapped channel.
 	let inner_precommit_oracle = wrapped_verifier_channel
-		.recv_oracle(inner_cs.precommit_len(), inner_log_precommit, true)
+		.recv_oracle(inner_cs.precommit_len(), true)
 		.unwrap();
 	inner_iop_verifier
 		.verify(inner_precommit_oracle, &inner_public_elems, &mut wrapped_verifier_channel)

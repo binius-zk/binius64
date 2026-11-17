@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, iter, ops::Deref};
+use std::{array, iter, mem::MaybeUninit, ops::Deref};
 
 use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
@@ -18,8 +18,10 @@ use binius_ip_prover::{
 	sumcheck::{bivariate_product_prover, prove_single},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_packed,
-	multilinear::eq::eq_ind_partial_eval, tensor_algebra::TensorAlgebra,
+	FieldBuffer, FieldSlice, FieldVec,
+	inner_product::inner_product_packed,
+	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero, scaled_eq_ind_partial_eval},
+	tensor_algebra::TensorAlgebra,
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::{
@@ -177,6 +179,8 @@ where
 ///     out[hi << n_lo | lo] = fold(eq_lo[lo] * eq_hi[hi])
 /// ```
 ///
+/// Entries at and above `n` are zero and are never computed.
+///
 /// The tensor expansion already costs one multiply per entry.
 /// So the fused product changes no operation count.
 /// It removes one full read pass and one full write pass over the `2^n` buffer.
@@ -184,6 +188,7 @@ where
 /// ## Arguments
 ///
 /// * `alloc` - the allocator the returned indicator is drawn from
+/// * `n` - the number of leading entries computed; the rest are zero
 /// * `eq_lo` - the low tensor factor
 /// * `eq_hi` - the high tensor factor
 /// * `row_batch_query` - the vector every entry is folded bitwise by
@@ -191,10 +196,12 @@ where
 /// ## Preconditions
 ///
 /// * `row_batch_query.len()` must equal 128, the extension degree of B128 over B1
+/// * `n <= 2^(eq_lo.log_len() + eq_hi.log_len())`
 /// * A block must cover a whole number of packed elements, so the chunking below aligns. The
 ///   exception is an output that fits inside one packed element, which is a single block.
 pub fn rs_eq_ind_from_factors<A, P>(
 	alloc: &A,
+	n: usize,
 	eq_lo: &FieldBuffer<B128>,
 	eq_hi: &FieldBuffer<B128>,
 	row_batch_query: &FieldBuffer<B128>,
@@ -213,28 +220,51 @@ where
 	.create(row_batch_query.as_ref());
 
 	let log_len = eq_lo.log_len() + eq_hi.log_len();
+	assert!(n <= 1 << log_len); // precondition
 	let packed_len = 1usize << log_len.saturating_sub(P::LOG_WIDTH);
 	let block_packed_len = 1 << eq_lo.log_len().saturating_sub(P::LOG_WIDTH);
 
+	// The blocks holding an entry below `n` are computed; the rest are filled with zeros.
+	let lo_len = eq_lo.as_ref().len();
+	let n_live_blocks = n.div_ceil(lo_len);
+	let block_vals = eq_hi.as_ref()[..n_live_blocks]
+		.par_iter()
+		.enumerate()
+		.map(|(hi, &eq_hi_val)| Some((n.min((hi + 1) * lo_len) - hi * lo_len, eq_hi_val)))
+		.chain(binius_utils::rayon::iter::repeat_n(None, eq_hi.as_ref().len() - n_live_blocks));
+
 	// The buffer is written exactly once, block by block, so it starts uninitialized.
 	let mut out = alloc.alloc::<P>(packed_len);
-	(
-		out.spare_capacity_mut()[..packed_len].par_chunks_mut(block_packed_len),
-		eq_hi.as_ref().par_iter(),
-	)
+	(out.spare_capacity_mut()[..packed_len].par_chunks_mut(block_packed_len), block_vals)
 		.into_par_iter()
-		.for_each(|(out_block, &eq_hi_val)| {
+		.for_each(|(out_block, block_val)| {
+			let Some((n_live, eq_hi_val)) = block_val else {
+				out_block.fill(MaybeUninit::new(P::zero()));
+				return;
+			};
+
 			// Each slot holds P::WIDTH consecutive entries of this hi-block.
-			// Every entry is one product of the two factors, folded and written once.
-			// A sub-width output leaves one short chunk, whose lanes past the last entry are
-			// filled with zeros rather than left undefined.
-			let lo_chunks = eq_lo.as_ref().chunks(P::WIDTH);
-			for (slot, lo_chunk) in iter::zip(out_block, lo_chunks) {
-				slot.write(P::from_scalars(
-					lo_chunk
-						.iter()
-						.map(|&lo| transform.transform(&(lo * eq_hi_val))),
-				));
+			// Every entry below `n` is one product of the two factors, folded and written once.
+			let entry = |lo: B128| transform.transform(&(lo * eq_hi_val));
+			// `as_chunks` needs a const width, which a generic `P::WIDTH` is not.
+			#[allow(clippy::chunks_exact_to_as_chunks)]
+			let lo_chunks = eq_lo.as_ref()[..n_live].chunks_exact(P::WIDTH);
+			let dangling = lo_chunks.remainder();
+			let (full, rest) = out_block.split_at_mut(n_live / P::WIDTH);
+			for (slot, lo_chunk) in iter::zip(full, lo_chunks) {
+				slot.write(P::from_fn(|j| entry(lo_chunk[j])));
+			}
+
+			// A dangling element, at `n` or in a sub-width output, has its lanes past the last
+			// entry filled with zeros rather than left undefined. So do the slots after it.
+			let mut rest = rest.iter_mut();
+			if !dangling.is_empty() {
+				rest.next()
+					.expect("a dangling entry has a slot")
+					.write(P::from_scalars(dangling.iter().map(|&lo| entry(lo))));
+			}
+			for slot in rest {
+				slot.write(P::zero());
 			}
 		});
 	// SAFETY: the block partition covers all `packed_len` slots and every slot was written.
@@ -243,13 +273,18 @@ where
 	FieldBuffer::new(log_len, out)
 }
 
-/// Expands `point` into the two factors of its equality tensor, low factor first.
+/// Expands `point` into the two factors of its equality tensor scaled by `scale`, low factor
+/// first.
 ///
 /// The `2^n` tensor itself is never materialized: both consumers read the factors directly.
-/// The low factor spans one row fold chunk, or the whole point when that is shorter.
-fn expand_tensor_factors(point: &[B128]) -> (FieldBuffer<B128>, FieldBuffer<B128>) {
+/// The low factor spans one row fold chunk, or the whole point when that is shorter. The scale
+/// enters through the high factor.
+fn expand_tensor_factors(point: &[B128], scale: B128) -> (FieldBuffer<B128>, FieldBuffer<B128>) {
 	let (point_lo, point_hi) = point.split_at(point.len().min(LOG_SPLIT_BLOCK));
-	(eq_ind_partial_eval::<B128>(point_lo), eq_ind_partial_eval::<B128>(point_hi))
+	(
+		eq_ind_partial_eval::<B128>(point_lo),
+		scaled_eq_ind_partial_eval::<B128>(point_hi, scale),
+	)
 }
 
 /// Output of ring-switching prover.
@@ -273,17 +308,25 @@ pub struct RingSwitchOutput<A: Allocator, P: PackedField> {
 /// ## Arguments
 ///
 /// * `alloc` - the allocator the ring-switching equality indicator is drawn from
-/// * `packed_witness` - the packed witness buffer (B1 polynomial packed into P elements)
+/// * `packed_witness` - the packed witness buffer (B1 polynomial packed into P elements), zero at
+///   and above `n_pack`
+/// * `n_pack` - the oracle's length; the indicator vanishes above it
 /// * `eval_point` - the evaluation point from shift reduction
 /// * `channel` - the prover channel for sending/sampling
 ///
+/// The claim may span more coordinates than the packed witness, when the word-index space is wider
+/// than the oracle. The witness is zero there, so the surplus coordinates contribute the scale
+/// `c = Π (1 - r_j)`, which enters every tensor entry before the row-batching fold.
+///
 /// ## Preconditions
 ///
-/// * `packed_witness.log_len() + log_packing == eval_point.len()` where log_packing is the base-2
+/// * `packed_witness.log_len() + log_packing <= eval_point.len()` where log_packing is the base-2
 ///   log of the extension degree of B128 over B1 (= 7)
+/// * `n_pack <= 2^packed_witness.log_len()`
 pub fn prove<A, P, Channel>(
 	alloc: &A,
 	packed_witness: FieldSlice<'_, P>,
+	n_pack: usize,
 	eval_point: &[B128],
 	channel: &mut Channel,
 ) -> RingSwitchOutput<A, P>
@@ -293,11 +336,13 @@ where
 	Channel: IPProverChannel<B128>,
 {
 	let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
-	assert_eq!(packed_witness.log_len() + log_packing, eval_point.len());
+	assert!(packed_witness.log_len() + log_packing <= eval_point.len());
+	assert!(n_pack <= 1 << packed_witness.log_len());
 
-	let eval_point_suffix = &eval_point[log_packing..];
+	let (eval_point_suffix, surplus) = eval_point[log_packing..].split_at(packed_witness.log_len());
+	let surplus_scale = eq_ind_zero(surplus);
 	let (eq_lo, eq_hi) = tracing::debug_span!("Expand evaluation suffix query")
-		.in_scope(|| expand_tensor_factors(eval_point_suffix));
+		.in_scope(|| expand_tensor_factors(eval_point_suffix, surplus_scale));
 
 	// Ring-switching partial evaluations (Method of Four Russians)
 	let s_hat_v = tracing::debug_span!("Compute ring-switching partial evaluations")
@@ -321,9 +366,13 @@ where
 		eq_r_double_prime.as_ref().iter().copied(),
 	);
 
-	// Compute ring-switching equality indicator (transparent poly)
-	let rs_eq_ind = tracing::debug_span!("Compute ring-switching equality indicator")
-		.in_scope(|| rs_eq_ind_from_factors::<A, P>(alloc, &eq_lo, &eq_hi, &eq_r_double_prime));
+	// Compute ring-switching equality indicator (transparent poly), zero at and above `n_pack` so
+	// it vanishes above the oracle. The fold is F2-linear, so this is the indicator of the
+	// truncated tensor.
+	let rs_eq_ind =
+		tracing::debug_span!("Compute ring-switching equality indicator").in_scope(|| {
+			rs_eq_ind_from_factors::<A, P>(alloc, n_pack, &eq_lo, &eq_hi, &eq_r_double_prime)
+		});
 
 	RingSwitchOutput {
 		rs_eq_ind,
@@ -378,7 +427,7 @@ pub fn prove_public_eval<A, P, Channel>(
 	let RingSwitchOutput {
 		rs_eq_ind,
 		sumcheck_claim,
-	} = prove(alloc, packed.as_view(), &[r_j, r_y_public].concat(), channel);
+	} = prove(alloc, packed.as_view(), 1 << log_public_elems, &[r_j, r_y_public].concat(), channel);
 
 	// The reduced claim is the sum of the two multilinears' product over the hypercube, which is
 	// what the trace's opening hands to BaseFold. Here it is discharged by the sumcheck alone: the
@@ -394,13 +443,18 @@ mod test {
 		ExtensionField, Field, Ghash128b, PackedField, PackedGhash2x128b, PackedGhash4x128b,
 		PackedSubfield, packed_extension,
 	};
+	use binius_hash::StdDigest;
 	use binius_math::{
 		FieldBuffer,
 		inner_product::{inner_product_buffers, inner_product_subfield},
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate_inplace},
 		test_utils::{index_to_hypercube_point, random_field_buffer, random_scalars},
 	};
-	use binius_verifier::{config::B1, ring_switch::eval_rs_eq};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use binius_verifier::{
+		config::B1,
+		ring_switch::{RingSwitchVerifyOutput, eval_rs_eq, verify},
+	};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
@@ -485,22 +539,38 @@ mod test {
 			let eq_lo = eq_ind_partial_eval::<F>(point_lo);
 			let eq_hi = eq_ind_partial_eval::<F>(point_hi);
 
-			let rs_eq_ind =
-				rs_eq_ind_from_factors::<_, P>(&GlobalAllocator, &eq_lo, &eq_hi, &row_batch_query);
-
-			for index in 0..1 << log_len {
-				let expected = eval_rs_eq::<F>(
-					&point,
-					&index_to_hypercube_point::<F>(log_len, index),
-					row_batch_query.as_ref(),
+			// The full length, and a truncation that ends mid-block and mid-packed-element.
+			for n in [1 << log_len, (1 << log_len) * 2 / 3] {
+				let rs_eq_ind = rs_eq_ind_from_factors::<_, P>(
+					&GlobalAllocator,
+					n,
+					&eq_lo,
+					&eq_hi,
+					&row_batch_query,
 				);
-				assert_eq!(rs_eq_ind.get(index), expected, "split_at={split_at}, index={index}");
-			}
 
-			// A sub-width buffer's trailing lanes are not entries, and the sumcheck provers
-			// downstream read them as zero, so the write must leave them zero.
-			let trailing = rs_eq_ind.as_ref()[0].iter().skip(1 << log_len);
-			assert!(trailing.take(P::WIDTH).all(|lane| lane == F::ZERO), "split_at={split_at}");
+				for index in 0..1 << log_len {
+					let expected = eval_rs_eq::<F>(
+						n,
+						&point,
+						&index_to_hypercube_point::<F>(log_len, index),
+						row_batch_query.as_ref(),
+					);
+					assert_eq!(
+						rs_eq_ind.get(index),
+						expected,
+						"split_at={split_at}, n={n}, index={index}"
+					);
+				}
+
+				// A sub-width buffer's trailing lanes are not entries, and the sumcheck provers
+				// downstream read them as zero, so the write must leave them zero.
+				let trailing = rs_eq_ind.as_ref()[0].iter().skip(1 << log_len);
+				assert!(
+					trailing.take(P::WIDTH).all(|lane| lane == F::ZERO),
+					"split_at={split_at}, n={n}"
+				);
+			}
 		}
 	}
 
@@ -533,9 +603,10 @@ mod test {
 		let row_batching_expanded_query: FieldBuffer<F> =
 			eq_ind_partial_eval(&row_batching_challenges);
 
-		let (eq_lo, eq_hi) = expand_tensor_factors(&z_vals);
+		let (eq_lo, eq_hi) = expand_tensor_factors(&z_vals, F::ONE);
 		let rs_eq = rs_eq_ind_from_factors::<_, F>(
 			&GlobalAllocator,
+			1 << n_vars_big_field,
 			&eq_lo,
 			&eq_hi,
 			&row_batching_expanded_query,
@@ -549,8 +620,12 @@ mod test {
 		let tensor_expanded_eval_point = eq_ind_partial_eval::<F>(&eval_point);
 		let expected_eval = inner_product_buffers(&rs_eq, &tensor_expanded_eval_point);
 
-		let actual_eval =
-			eval_rs_eq::<F>(&z_vals, &eval_point, row_batching_expanded_query.as_ref());
+		let actual_eval = eval_rs_eq::<F>(
+			1 << n_vars_big_field,
+			&z_vals,
+			&eval_point,
+			row_batching_expanded_query.as_ref(),
+		);
 
 		assert_eq!(expected_eval, actual_eval);
 	}
@@ -593,9 +668,64 @@ mod test {
 				.map(|&bits_packed| packed_extension::cast_ext::<B1, P>(bits_packed))
 				.collect(),
 		);
-		let (eq_lo, eq_hi) = expand_tensor_factors(suffix);
+		let (eq_lo, eq_hi) = expand_tensor_factors(suffix, F::ONE);
 		let s_hat_v = fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi);
 
 		assert_eq!(evaluate_inplace(s_hat_v, prefix), expected);
+	}
+
+	#[test]
+	fn a_short_oracle_with_surplus_coordinates_ring_switches() {
+		type P = PackedGhash2x128b;
+		type StdChallenger = HasherChallenger<StdDigest>;
+
+		// An oracle of 2^4 packed elements holding 11, claimed over a word-index space two
+		// coordinates wider than the oracle.
+		let (n_vars, n_pack, n_surplus) = (4, 11, 2);
+		let log_degree = <F as ExtensionField<B1>>::LOG_DEGREE;
+		let mut rng = StdRng::seed_from_u64(0);
+		let mut witness = random_field_buffer::<P>(&mut rng, n_vars);
+		for i in n_pack..1 << n_vars {
+			witness.set(i, F::ZERO);
+		}
+		let eval_point: Vec<F> = random_scalars(&mut rng, log_degree + n_vars + n_surplus);
+
+		// The claim is the witness bits over the wider space, where it is zero above the oracle.
+		let (inner_point, surplus) = eval_point.split_at(log_degree + n_vars);
+		let bits = PackedField::iter_slice(witness.as_ref())
+			.flat_map(|elem| ExtensionField::<B1>::iter_bases(&elem).collect::<Vec<_>>());
+		let tensor = eq_ind_partial_eval::<F>(inner_point);
+		let evaluation_claim = iter::zip(bits, tensor.iter_scalars())
+			.map(|(bit, weight)| weight * bit)
+			.sum::<F>()
+			* surplus.iter().map(|&r| F::ONE - r).product::<F>();
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let RingSwitchOutput {
+			rs_eq_ind,
+			sumcheck_claim,
+		} = prove(&GlobalAllocator, witness.as_view(), n_pack, &eval_point, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let RingSwitchVerifyOutput {
+			eq_r_double_prime,
+			sumcheck_claim: verifier_claim,
+		} = verify(evaluation_claim, &eval_point, &mut verifier_transcript).unwrap();
+
+		assert_eq!(verifier_claim, sumcheck_claim);
+		assert_eq!(inner_product_buffers(&witness, &rs_eq_ind), sumcheck_claim);
+		assert!(
+			rs_eq_ind
+				.iter_scalars()
+				.skip(n_pack)
+				.all(|value| value == F::ZERO)
+		);
+
+		// The verifier's succinct indicator agrees with the prover's buffer off the hypercube.
+		let query: Vec<F> = random_scalars(&mut rng, n_vars);
+		assert_eq!(
+			eval_rs_eq(n_pack, &eval_point[log_degree..], &query, &eq_r_double_prime),
+			inner_product_buffers(&rs_eq_ind, &eq_ind_partial_eval::<P>(&query)),
+		);
 	}
 }

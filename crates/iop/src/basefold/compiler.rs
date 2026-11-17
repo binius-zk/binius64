@@ -11,8 +11,11 @@ use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
 use crate::{
-	basefold::channel::BaseFoldVerifierChannel,
-	channel::OracleSpec,
+	basefold::{
+		channel::BaseFoldVerifierChannel,
+		layout::{RoundLayout, layout_rounds},
+	},
+	channel::OracleSchedule,
 	fri::{AritySelectionStrategy, FRIParams},
 	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
 	merkle_tree::BinaryMerkleTreeScheme,
@@ -20,15 +23,17 @@ use crate::{
 
 /// A compiler that creates BaseFold ZK verifier channels with precomputed parameters.
 ///
-/// This compiler builds a single combined FRI over all oracles. ZK oracles configure FRI
+/// This compiler commits each round of the schedule as one oracle, laid out by [`layout_rounds`],
+/// and builds a single combined FRI over the round oracles. ZK round oracles configure FRI
 /// parameters for zero-knowledge mode (`log_msg_len + 1` as the message length and
-/// `log_batch_size = 1`); non-ZK oracles take a flexible batch size with no mask.
+/// `log_batch_size = 1`); non-ZK ones take a flexible batch size with no mask.
 #[derive(Clone)]
 pub struct BaseFoldVerifierCompiler<F>
 where
 	F: BinaryField,
 {
-	oracle_specs: Vec<OracleSpec>,
+	schedule: OracleSchedule,
+	layouts: Vec<RoundLayout>,
 	fri_params: FRIParams<F>,
 }
 
@@ -39,12 +44,12 @@ where
 	/// Creates a new compiler with precomputed combined FRI parameters.
 	///
 	/// The `merkle_scheme` is consulted only for proof-size estimation while choosing the FRI
-	/// parameters; it is not stored. Each oracle's batch size is derived from its ZK flag: a ZK
-	/// oracle fixes `log_batch_size = 1` (message ‖ equal-length mask), a non-ZK oracle takes a
-	/// flexible batch size. Requires at least one oracle spec.
+	/// parameters; it is not stored. Each round oracle's batch size is derived from its ZK flag: a
+	/// ZK oracle fixes `log_batch_size = 1` (message ‖ equal-length mask), a non-ZK oracle takes a
+	/// flexible batch size. Requires at least one oracle.
 	pub fn new<H, Strategy>(
 		merkle_scheme: &BinaryMerkleTreeScheme<F, H>,
-		oracle_specs: Vec<OracleSpec>,
+		schedule: OracleSchedule,
 		log_inv_rate: usize,
 		n_test_queries: usize,
 		_arity_strategy: &Strategy,
@@ -54,30 +59,34 @@ where
 		Strategy: AritySelectionStrategy,
 	{
 		assert!(
-			!oracle_specs.is_empty(),
+			!schedule.specs().is_empty(),
 			"BaseFoldVerifierCompiler requires at least one oracle spec"
 		);
+		let layouts = layout_rounds(&schedule);
+		let round_specs = layouts.iter().map(RoundLayout::spec).collect::<Vec<_>>();
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
 		// arities to minimize proof size, so `_arity_strategy` is not consulted here. It derives
 		// each oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message
 		// ‖ mask), non-ZK oracles take a flexible batch size.
-		let (fri_params, _) = FRIParams::optimal_for_batch(
-			merkle_scheme,
-			&oracle_specs,
-			log_inv_rate,
-			n_test_queries,
-		);
+		let (fri_params, _) =
+			FRIParams::optimal_for_batch(merkle_scheme, &round_specs, log_inv_rate, n_test_queries);
 
 		Self {
-			oracle_specs,
+			schedule,
+			layouts,
 			fri_params,
 		}
 	}
 
-	/// Returns a reference to the oracle specifications.
-	pub fn oracle_specs(&self) -> &[OracleSpec] {
-		&self.oracle_specs
+	/// Returns the schedule of oracles the channels commit.
+	pub const fn oracle_schedule(&self) -> &OracleSchedule {
+		&self.schedule
+	}
+
+	/// Returns the layout of each round oracle.
+	pub fn layouts(&self) -> &[RoundLayout] {
+		&self.layouts
 	}
 
 	/// Returns a reference to the precomputed combined FRI parameters.
@@ -97,8 +106,8 @@ where
 	/// Creates a ZK verifier channel over the given Merkle channel.
 	///
 	/// The returned channel drives all prover interaction through `channel`, opening oracles with
-	/// this compiler's oracle specs and combined FRI parameters. The caller constructs the Merkle
-	/// channel, so it decides how commitments are received and verified.
+	/// this compiler's schedule, round layouts and combined FRI parameters. The caller constructs
+	/// the Merkle channel, so it decides how commitments are received and verified.
 	pub fn create_channel<Channel>(
 		&self,
 		channel: Channel,
@@ -106,7 +115,7 @@ where
 	where
 		Channel: MerkleIPVerifierChannel<F, Elem: From<F> + 'static>,
 	{
-		BaseFoldVerifierChannel::new(channel, &self.oracle_specs, &self.fri_params)
+		BaseFoldVerifierChannel::new(channel, &self.schedule, &self.layouts, &self.fri_params)
 	}
 
 	/// Creates a ZK verifier channel over a transcript, for the common case.

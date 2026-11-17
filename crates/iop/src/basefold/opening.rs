@@ -4,7 +4,7 @@
 //! The core BaseFold opening protocol on the verifier side.
 
 use binius_field::BinaryField;
-use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
+use binius_ip::sumcheck::{RoundCoeffs, RoundProof};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use super::error::Error;
@@ -13,44 +13,40 @@ use crate::{
 	merkle_channel::MerkleIPVerifierChannel,
 };
 
-/// Verifies a *combined* multilinear-evaluation BaseFold opening: a single degree-1 MLE-check
-/// interleaved with a single FRI over the piecewise-concatenated oracle of the Batched ZK BaseFold
-/// construction (whitepaper §7.2 / §sec:batched-basefold Step 2).
+/// Verifies the single BaseFold sumcheck opening of the Batched ZK BaseFold construction
+/// (binius.xyz#128, step 4).
 ///
-/// This is the verifier counterpart of
-/// `binius_iop_prover::basefold::prove_mlecheck_basefold`. A prior batched sumcheck has
-/// reduced the `k` masked opening claims to per-oracle point-evaluation claims `π_i'(ρ_i) = α_i` at
-/// a shared point `r ∈ K^𝐧` (`𝐧 = max_i n_i`). The oracle-index variables are then collapsed up
-/// front at sampled batching challenges `r'` into a single combined multilinear
-/// `𝛑(X) = Σ_i e[i] · π_i^↑(X)`, `e` the indicator expanded at `r'`, with target `s' = 𝛑(r)`; this
-/// routine checks `𝛑(r) = s'` against the `k` committed codewords via one combined FRI.
+/// This is the verifier counterpart of `binius_iop_prover::basefold::prove_sumcheck_basefold`. The
+/// claim is `Σ_{X,Z} G(X, Z) · T(X, Z) = eval_claim`, where `G` is the multilinear the FRI opens:
+/// the γ-folded round oracles, concatenated along the oracle-index variables `Z` (`log_n_oracles`
+/// of them) with `G(X, Z) = Σ_r M^γ_r↑(X) · eq(r, Z)`. `T` is the verifier-computable multiplicand.
+///
+/// The sumcheck binds the variables in the order the FRI folder consumes its challenges: the mask
+/// fold γ (no round polynomial, and only if some round is masked), then the `Z` variables, then
+/// the `X` variables, high to low. Each round polynomial is degree 2 and is received before the
+/// FRI round is processed, so that a commitment the FRI sends in the same round lands after it.
 ///
 /// ## Arguments
 ///
 /// * `codeword_commitments` - one per oracle, in the same order as [`FRIParams::input_oracles`], as
-///   commitment handles previously received over `channel` (via
-///   [`MerkleIPVerifierChannel::recv_merkle_commitment`]).
-/// * `eval_claim` - the combined target `s'`.
-/// * `eval_point` - the point `r` (length `𝐧 = fri_params.rs_code().log_dim()`), low-to-high order.
-/// * `batch_challenge` - the masking challenge `γ` used in the FRI inner (unbatch) round.
-/// * `outer_challenges` - the batching challenges `r'` (length `log_n_oracles`) used in the FRI
-///   outer (oracle-combine) rounds.
+///   commitment handles previously received over `channel`.
+/// * `eval_claim` - the target `Σ_{X,Z} G · T`.
+/// * `n_vars` - the number of variables `X`, the largest round oracle's.
+/// * `batch_challenge` - the mask fold challenge `γ`, if any round is masked.
+/// * `multiplicand_eval` - evaluates `T(ρ, ζ)`. It receives `ρ` in variable order (low to high) and
+///   `ζ` in the order sampled, which is the bit order of the oracle index.
 /// * `channel` - the Merkle channel carrying all prover interaction: round coefficients,
 ///   challenges, commitments, and query openings.
 ///
-/// The final consistency check is asserted internally, so `Ok` means the opening verified.
-///
-/// The MLE-check folds the equality-indicator factor into its round-proof recovery.
-/// So the final reduced value is the plain multilinear evaluation of the combined oracle at `r`.
-/// On an honest opening that value equals the final FRI value.
-/// This routine asserts their equality and rejects on any mismatch.
-pub fn verify_mlecheck_basefold<F, Channel>(
+/// The final consistency check `G(ρ, ζ) · T(ρ, ζ) = final sum` is asserted internally, so `Ok`
+/// means the opening verified.
+pub fn verify_sumcheck_basefold<F, Channel>(
 	fri_params: &FRIParams<F>,
 	codeword_commitments: &[Channel::Commitment],
 	eval_claim: Channel::Elem,
-	eval_point: &[Channel::Elem],
+	n_vars: usize,
 	batch_challenge: Option<Channel::Elem>,
-	outer_challenges: &[Channel::Elem],
+	multiplicand_eval: impl FnOnce(&[Channel::Elem], &[Channel::Elem]) -> Channel::Elem,
 	channel: &mut Channel,
 ) -> Result<(), Error>
 where
@@ -58,54 +54,30 @@ where
 	Channel: MerkleIPVerifierChannel<F>,
 	Channel::Elem: From<F>,
 {
-	// The MLE-check round polynomial is degree 1 (the composite is the multilinear itself).
-	const DEGREE: usize = 1;
+	// The round polynomial of a product of two multilinears is degree 2.
+	const DEGREE: usize = 2;
 
-	let log_n_oracles = log2_ceil_usize(fri_params.input_oracles().len());
-	assert_eq!(outer_challenges.len(), log_n_oracles);
-
-	// The MLE-check runs over the combined opening's `𝐧 = max_i log_msg_len_i` variables, supplied
-	// as `eval_point`. For an all-ZK batch this equals `rs_code().log_dim()`; with non-ZK oracles
-	// it can exceed it, since those oracles fold their batch dimensions within the leading MLE
-	// rounds.
-	let n_vars = eval_point.len();
-
-	// `n_inner` inner (unbatch) rounds: one for the shared mask challenge γ when any ZK oracle is
-	// present, none otherwise.
+	let log_n_oracles = log2_ceil_usize(codeword_commitments.len());
 	let n_inner = usize::from(batch_challenge.is_some());
-	let mut challenges = Vec::with_capacity(n_vars + n_inner + log_n_oracles);
+	let mut fri_challenges = Vec::with_capacity(n_inner + log_n_oracles + n_vars);
 	let mut fri_fold_verifier = FRIFoldVerifier::new(fri_params);
 
-	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) ZK codeword at the masking
-	// challenge.
+	// Inner (unbatch) round: fold every interleaved (M_r ‖ ω_r) ZK codeword at the masking
+	// challenge. It carries no round polynomial.
 	if let Some(gamma) = batch_challenge {
 		fri_fold_verifier.process_round(channel)?;
-		challenges.push(gamma);
+		fri_challenges.push(gamma);
 	}
 
-	// Outer rounds: combine the `k` lifted codewords at the batching challenges `r'`. These carry
-	// no sumcheck round-polynomial (the oracle-index variables are collapsed deterministically).
-	// The first fold consumes its challenges as `[γ] ++ r' ++ fresh_X`, so the outer challenges are
-	// processed here (right after γ) to land in the outer window; the leading standard rounds then
-	// supply each non-ZK oracle's later batch fold.
-	for outer_challenge in outer_challenges {
-		fri_fold_verifier.process_round(channel)?;
-		challenges.push(outer_challenge.clone());
-	}
-
-	// Standard rounds: the only sumcheck (MLE-check) rounds, folding the combined codeword at the
-	// fresh challenges over the `𝐧` variables `X`.
+	// The sumcheck rounds: `log_n_oracles` rounds over `Z`, then `n_vars` over `X`.
 	let mut sum = eval_claim;
-	for round in 0..n_vars {
-		let round_proof = mlecheck::RoundProof(RoundCoeffs(channel.recv_many(DEGREE)?));
+	for _ in 0..log_n_oracles + n_vars {
+		let round_proof = RoundProof(RoundCoeffs(channel.recv_many(DEGREE)?));
 		fri_fold_verifier.process_round(channel)?;
 
-		// MLE-check binds variables high-to-low, so round `i` uses coordinate `eval_point[n-1-i]`.
-		let alpha = eval_point[n_vars - 1 - round].clone();
-		let round_coeffs = round_proof.recover(sum, alpha);
 		let challenge = channel.sample();
-		sum = round_coeffs.evaluate(&challenge);
-		challenges.push(challenge);
+		sum = round_proof.recover(sum).evaluate(&challenge);
+		fri_challenges.push(challenge);
 	}
 
 	fri_fold_verifier.process_round(channel)?;
@@ -115,15 +87,16 @@ where
 		fri_params,
 		codeword_commitments,
 		&round_commitments,
-		&challenges,
+		&fri_challenges,
 	);
-
 	let final_fri_value = fri_verifier.verify(channel)?;
 
-	// The MLE-check folds the equality-indicator factor into its round-proof recovery.
-	// So the final reduced value is the plain evaluation, identical to the final FRI value.
-	// Reject on any mismatch.
-	channel.assert_zero(sum - final_fri_value)?;
+	// `Z` challenges come first, then `X` high to low; `ρ` is indexed low to high.
+	let (zeta, rho) = fri_challenges[n_inner..].split_at(log_n_oracles);
+	let rho = rho.iter().rev().cloned().collect::<Vec<_>>();
+	let multiplicand = multiplicand_eval(&rho, zeta);
+
+	channel.assert_zero(sum - final_fri_value * multiplicand)?;
 
 	Ok(())
 }
