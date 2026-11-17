@@ -42,13 +42,13 @@ impl RoundLayout {
 /// placed block, so a constituent may nest in the slack above another's content:
 ///
 /// ```text
-/// [ private: 98332 of 2^17 | mask 2^9 | precommit 2^10 | pad | unused ]
-///   0                        98816      99328            100352      2^17
+/// [ private: 98332 of 2^17 | pad 232 | mask 2^9 | precommit 2^10 | unused ]
+///   0                        98560      98816      99328            100352   2^17
 /// ```
 ///
 /// A zero-knowledge round also reserves a ZK pad of `pad_len` coordinates (binius.xyz#128, "ZK
 /// pad"), placed like one more constituent of `len = pad_len` in the sort and the scan. The caller
-/// passes `pad_len = q`, the codeword symbols the query phase opens. The round oracle is the least
+/// passes `pad_len = q`, the number of test queries. The round oracle is the least
 /// power of two holding every block and the pad. With every `len_i` a full power of two,
 /// the blocks lie end to end.
 pub fn layout_rounds(schedule: &OracleSchedule, pad_len: usize) -> Vec<RoundLayout> {
@@ -61,26 +61,22 @@ pub fn layout_rounds(schedule: &OracleSchedule, pad_len: usize) -> Vec<RoundLayo
 fn layout_round(specs: &[OracleSpec], pad_len: usize) -> RoundLayout {
 	let is_zk = specs.iter().any(|spec| spec.is_zk);
 
-	// The constituents as `(log block size, len)`, the ZK pad last if there is one.
+	// The constituents as `(log block size, len, spec index)`, largest block first. The ZK pad, if
+	// there is one, has no spec index.
 	let mut items = specs
 		.iter()
-		.map(|spec| (spec.log_msg_len(), spec.len))
+		.enumerate()
+		.map(|(i, spec)| (spec.log_msg_len(), spec.len, Some(i)))
+		.chain(is_zk.then(|| (log2_ceil_usize(pad_len), pad_len, None)))
 		.collect::<Vec<_>>();
-	if is_zk {
-		items.push((log2_ceil_usize(pad_len), pad_len));
-	}
-
-	let mut order = (0..items.len()).collect::<Vec<_>>();
-	order.sort_by_key(|&i| Reverse(items[i].0));
+	items.sort_by_key(|&(log_block, ..)| Reverse(log_block));
 
 	// Every placed extent as a half-open scalar range, kept sorted and disjoint.
 	let mut extents = Vec::<Range<usize>>::with_capacity(items.len());
 	let mut block_offsets = vec![0; specs.len()];
 	let mut pad = 0..0;
 	let mut end = 1;
-	for i in order {
-		let (log_block, len) = items[i];
-
+	for (log_block, len, spec_index) in items {
 		// Scan the extents in order for the lowest block that fits before the next one, hopping
 		// past each extent that it would overlap.
 		// Because the extents are sorted, the offset only moves forward, and the break index is
@@ -97,10 +93,9 @@ fn layout_round(specs: &[OracleSpec], pad_len: usize) -> RoundLayout {
 
 		let start = offset << log_block;
 		let extent = start..start + len;
-		if i < specs.len() {
-			block_offsets[i] = offset;
-		} else {
-			pad = extent.clone();
+		match spec_index {
+			Some(i) => block_offsets[i] = offset,
+			None => pad = extent.clone(),
 		}
 		extents.insert(pos, extent);
 		end = end.max((offset + 1) << log_block);
@@ -118,8 +113,8 @@ fn layout_round(specs: &[OracleSpec], pad_len: usize) -> RoundLayout {
 mod tests {
 	use super::*;
 
-	/// The pad length of the tests, `q = 2 · n_test_queries`.
-	const PAD_LEN: usize = 2 * 232;
+	/// The pad length of the tests, `q = n_test_queries`.
+	const PAD_LEN: usize = 232;
 
 	fn layout(specs: &[OracleSpec]) -> RoundLayout {
 		let schedule = OracleSchedule::from_rounds([specs.iter().copied()]);
@@ -140,8 +135,9 @@ mod tests {
 		assert_eq!(layout.log_len, 17);
 		assert!(layout.is_zk);
 		assert_eq!(layout.block_offsets, [97, 0, 193]);
-		// The pad takes the first free 2^10-aligned block, right after the precommit at 98 · 2^10.
-		assert_eq!(layout.pad, 100352..100352 + PAD_LEN);
+		// The pad takes the first free 2^8-aligned block, in the private oracle's slack at 385 ·
+		// 2^8.
+		assert_eq!(layout.pad, 98560..98560 + PAD_LEN);
 		assert!(layout.pad.end <= 1 << 17);
 	}
 
