@@ -1792,7 +1792,6 @@ mod tests {
 				OracleSchedule::from_rounds([[spec]]),
 				LOG_INV_RATE,
 				calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE),
-				&MinProofSizeStrategy,
 			);
 			let ntt = make_ntt(verifier_compiler.max_log_domain_size());
 			let prover_compiler =
