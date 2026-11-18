@@ -88,9 +88,10 @@ where
 	/// oracles with this compiler's NTT, schedule, round layouts, and combined FRI parameters. The
 	/// caller constructs the Merkle channel, so it decides how commitments are produced.
 	///
-	/// The RNG seeds the channel's own generator, whose only output is the ZK masks.
-	/// A mask is what hides a committed witness at the positions the verifier opens.
-	/// Hiding is therefore only as strong as this RNG, so it must be a cryptographic one.
+	/// The RNG seeds the channel's own generator, whose only output is the ZK masks and pads.
+	/// A mask hides a round oracle through the folding phase, and a pad hides the codeword symbols
+	/// the verifier opens. Hiding is therefore only as strong as this RNG, so it must be a
+	/// cryptographic one.
 	pub fn create_channel<Channel, A>(
 		&self,
 		channel: Channel,
@@ -114,7 +115,7 @@ where
 
 	/// Creates a prover channel for a compiler whose oracles are all non-ZK.
 	///
-	/// A mask is drawn from the channel's RNG only when committing a ZK oracle.
+	/// A mask and a pad are drawn from the channel's RNG only when committing a ZK oracle.
 	/// With no ZK oracle the RNG is never read, so its seed cannot affect the proof.
 	/// The seed is therefore fixed, and no randomness needs to be supplied by the caller.
 	///

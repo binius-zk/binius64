@@ -13,7 +13,10 @@ use binius_math::{
 use itertools::izip;
 
 use crate::{
-	basefold::{self, layout::RoundLayout},
+	basefold::{
+		self,
+		layout::{RoundLayout, zk_commit_point},
+	},
 	channel::{Error, IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn},
 	fri::FRIParams,
 	merkle_channel::MerkleIPVerifierChannel,
@@ -194,6 +197,11 @@ where
 /// `T_r↑` is `T_r` placed at the origin of the opening's variables: its value at `ρ` is that of
 /// `T_r` at the first `ℓ_r` coordinates, times `eq(0, ρ_{≥ℓ_r})`. The sum of `M_r↑ · T_r↑` over
 /// `X` is then `<M_r, T_r>` however `M_r↑` is lifted and repeated by the FRI.
+///
+/// A ZK round is committed relabeled by [`zk_commit_index`](basefold::layout::zk_commit_index),
+/// which puts its ZK pad on the lowest coefficients of its codeword. `M_r` and `T_r` above are then
+/// the relabeled tables, and the first `ℓ_r` coordinates of `ρ` map to the point over the round's
+/// own coordinates through [`zk_commit_point`]. The inner product, and so the claim, is unchanged.
 fn verify_batch_zk_basefold<F, Channel>(
 	channel: &mut Channel,
 	layouts: &[RoundLayout],
@@ -235,6 +243,20 @@ where
 	// On the round oracle, an operand is the oracle's own transparent `t` over its low variables,
 	// and zero outside its block `b` over the high ones.
 	let multiplicand_eval = move |rho: &[Channel::Elem], zeta: &[Channel::Elem]| {
+		// Each round's point over `M_r`. A ZK round is committed relabeled, so the point over its
+		// committed table maps to `M_r` through `zk_commit_point`.
+		let round_points = layouts
+			.iter()
+			.map(|layout| {
+				let point = &rho[..layout.log_len];
+				if layout.is_zk {
+					zk_commit_point(point)
+				} else {
+					point.to_vec()
+				}
+			})
+			.collect::<Vec<_>>();
+
 		let mut round_evals = vec![Channel::Elem::zero(); layouts.len()];
 		for (mu_j, relation) in izip!(powers(mu), &relations) {
 			for Operand {
@@ -242,8 +264,7 @@ where
 				transparent,
 			} in &relation.operands
 			{
-				let n_r = layouts[oracle.round].log_len;
-				let (low, high) = rho[..n_r].split_at(oracle.log_len);
+				let (low, high) = round_points[oracle.round].split_at(oracle.log_len);
 				let block_bits = (0..high.len())
 					.map(|bit| {
 						if (oracle.block_offset >> bit) & 1 == 1 {
