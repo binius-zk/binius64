@@ -44,7 +44,7 @@ use binius_iop::{
 		IOPVerifierChannel, OracleSchedule,
 		oracle_setup::{DummyElem, OracleSetupChannel},
 	},
-	fri::{self, MinProofSizeStrategy},
+	fri,
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::{channel::IPVerifierChannel, libra, mlecheck, sumcheck};
@@ -268,7 +268,6 @@ where
 			iop_verifier.oracle_schedule(),
 			log_inv_rate,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		Ok(Self {

@@ -23,7 +23,7 @@ use itertools::chain;
 use super::error::Error;
 use crate::{
 	config::{B1, B128, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
-	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
+	fri::{FRIParams, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::{
 		bitand::{AndCheckOutput, UnivariateSkipOutput, verify_univariate_skip},
@@ -347,12 +347,6 @@ where
 
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 
-		// Pick the proof-size-optimal FRI fold arity for this codeword length.
-		let log_code_len = oracle_schedule.specs()[0].log_msg_len() + log_inv_rate;
-		let fri_arity =
-			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
-				.arity;
-
 		// The query count is fixed by the rate and the soundness target.
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
@@ -361,7 +355,6 @@ where
 			oracle_schedule,
 			log_inv_rate,
 			n_test_queries,
-			&ConstantArityStrategy::new(fri_arity),
 		);
 
 		Ok(Self {

@@ -239,7 +239,6 @@ mod tests {
 	use binius_iop::{
 		basefold::compiler::BaseFoldVerifierCompiler,
 		channel::{OracleSchedule, OracleSpec, naive::NaiveVerifierChannel},
-		fri::MinProofSizeStrategy,
 		logup_star::{self as verify_logup, TransparentTableLookup},
 		merkle_tree::BinaryMerkleTreeScheme,
 	};
@@ -658,7 +657,6 @@ mod tests {
 			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		// Prove: commit the pushforwards with real FRI, run the reduction, open both relations.
@@ -712,7 +710,6 @@ mod tests {
 			OracleSchedule::from_rounds(oracle_specs.map(|spec| [spec])),
 			LOG_INV_RATE,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		// Prove: commit the pushforwards with real FRI, run the reduction, open them.
