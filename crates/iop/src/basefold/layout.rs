@@ -120,7 +120,7 @@ pub fn zk_commit_point<E: FieldOps>(point: &[E]) -> Vec<E> {
 
 fn layout_round(specs: &[OracleSpec], n_test_queries: usize) -> RoundLayout {
 	let mut order = (0..specs.len()).collect::<Vec<_>>();
-	order.sort_by_key(|&i| Reverse(specs[i].log_msg_len()));
+	order.sort_by_key(|&i| Reverse(specs[i].len));
 
 	// Every placed extent as a half-open scalar range, kept sorted and disjoint.
 	let mut extents = Vec::<Range<usize>>::with_capacity(specs.len());
@@ -225,6 +225,15 @@ mod tests {
 		assert_eq!(layout.log_len, 5);
 		assert!(!layout.is_zk);
 		assert_eq!(layout.block_offsets, [4, 0, 5]);
+	}
+
+	#[test]
+	fn oracles_sharing_a_log_length_are_placed_longest_first() {
+		// Both oracles have log length 4, but the 16-entry one is longer, so it is placed first
+		// despite coming second.
+		let layout = layout(&[OracleSpec::new(9), OracleSpec::new(16)]);
+		assert_eq!(layout.log_len, 5);
+		assert_eq!(layout.block_offsets, [1, 0]);
 	}
 
 	#[test]
