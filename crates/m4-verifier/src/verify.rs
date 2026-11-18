@@ -12,7 +12,7 @@ use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleSchedule, oracle_setup::OracleSetupChannel},
-	fri::{ConstantArityStrategy, calculate_n_test_queries},
+	fri::calculate_n_test_queries,
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::channel::WordIPVerifierChannel;
@@ -249,12 +249,7 @@ where
 		// out of sync with the oracles the checks actually commit.
 		let oracle_schedule = iop_verifier.oracle_schedule();
 
-		// Pick the proof-size-optimal FRI fold arity for this codeword length.
-		let log_code_len = layout.log_witness_elems + log_inv_rate;
 		let merkle_scheme = Scheme::<H>::new();
-		let fri_arity =
-			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
-				.arity;
 
 		// The query count is fixed by the rate and the soundness target.
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
@@ -264,7 +259,6 @@ where
 			oracle_schedule,
 			log_inv_rate,
 			n_test_queries,
-			&ConstantArityStrategy::new(fri_arity),
 		);
 
 		Self {

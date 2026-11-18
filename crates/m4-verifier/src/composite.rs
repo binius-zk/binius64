@@ -13,7 +13,7 @@ use binius_hash::HashSuite;
 use binius_iop::{
 	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleSchedule},
-	fri::{MinProofSizeStrategy, calculate_n_test_queries},
+	fri::calculate_n_test_queries,
 };
 use binius_ip::channel::WordIPVerifierChannel;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
@@ -200,7 +200,6 @@ where
 			oracle_schedule,
 			log_inv_rate,
 			n_test_queries,
-			&MinProofSizeStrategy,
 		);
 
 		Ok(Self {

@@ -164,8 +164,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_compute::GlobalAllocator;
-	use binius_field::{Ghash128b as B128, PackedGhash1x128b};
-	use binius_hash::StdHashSuite;
+	use binius_field::PackedGhash1x128b;
 	use binius_iop::fri::FRIParams;
 	use binius_math::{
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
@@ -174,11 +173,9 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::merkle_tree::prover::BinaryMerkleTreeProver;
 
 	#[test]
 	fn test_encode_masked() {
-		type F = B128;
 		type P = PackedGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(42);
@@ -188,18 +185,14 @@ mod tests {
 		let log_batch_size = 1;
 		let n_test_queries = 3;
 
-		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
-
 		let domain_context = GaoMateerOnTheFly::generate(log_dim + log_inv_rate);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
-		let params = FRIParams::with_strategy(
-			merkle_prover.scheme(),
-			log_dim + log_batch_size,
-			Some(log_batch_size),
-			log_inv_rate,
+		let params = FRIParams::new(
+			ReedSolomonCode::new(log_dim, log_inv_rate),
+			log_batch_size,
+			vec![2, 2, 2],
 			n_test_queries,
-			&binius_iop::fri::ConstantArityStrategy::new(2),
 		);
 
 		assert_eq!(params.log_batch_size(), 1);
