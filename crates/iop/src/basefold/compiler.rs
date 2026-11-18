@@ -64,8 +64,9 @@ where
 		let round_specs = layouts.iter().map(RoundLayout::spec).collect::<Vec<_>>();
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
-		// arities to minimize proof size. It derives each oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message
-		// ‖ mask), non-ZK oracles take a flexible batch size.
+		// arities to minimize proof size. It derives each oracle's batch size from its ZK flag: ZK
+		// oracles fix `log_batch_size = 1` (message ‖ mask), non-ZK oracles take a flexible batch
+		// size.
 		let (fri_params, _) =
 			FRIParams::optimal_for_batch(merkle_scheme, &round_specs, log_inv_rate, n_test_queries);
 
