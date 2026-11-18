@@ -52,7 +52,7 @@ use binius_iop::{
 	merkle_channel::MerkleIPVerifierChannel, merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::{
-	basefold::prove_sumcheck_basefold,
+	basefold::{index_rounds::IndexNode, prove_sumcheck_basefold},
 	fri::{self, FRIFoldProver, MaskedCodeword},
 	merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
 	merkle_tree::prover::BinaryMerkleTreeProver,
@@ -235,9 +235,14 @@ fn prove(shape: &Shape, setup: &Setup, seed: u64) -> Opening {
 	// both.
 	let fri_folder =
 		FRIFoldProver::new_batch(&setup.fri_params, &setup.ntt, vec![(codeword, commitment)]);
+	let log_w = witness_prime.log_len();
+	let node = IndexNode {
+		message: witness_prime,
+		transparent: eq_ind_partial_eval::<P>(&eval_point),
+		log_w,
+	};
 	prove_sumcheck_basefold(
-		witness_prime,
-		eq_ind_partial_eval::<P>(&eval_point),
+		vec![Some(node)],
 		eval_claim,
 		Some(gamma),
 		fri_folder,

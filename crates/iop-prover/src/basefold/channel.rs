@@ -5,7 +5,7 @@
 use std::{iter, ops::Deref};
 
 use binius_compute::Allocator;
-use binius_field::{BinaryField, Field, PackedField, util::powers};
+use binius_field::{BinaryField, PackedField, util::powers};
 use binius_iop::{
 	basefold::layout::RoundLayout,
 	channel::{OracleSchedule, OracleSpec},
@@ -27,7 +27,7 @@ use itertools::izip;
 use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	basefold::prove_sumcheck_basefold,
+	basefold::{index_rounds::IndexNode, prove_sumcheck_basefold},
 	channel::IOPProverChannel,
 	fri::{self, FRIFoldProver, MaskedCodeword},
 	merkle_channel::MerkleIPProverChannel,
@@ -262,15 +262,6 @@ where
 	}
 }
 
-/// The variable count of the largest round oracle.
-fn max_log_len(layouts: &[RoundLayout]) -> usize {
-	layouts
-		.iter()
-		.map(|layout| layout.log_len)
-		.max()
-		.expect("at least one oracle")
-}
-
 /// Proves the combined ZK BaseFold opening over all committed round oracles.
 ///
 /// This drives `channel` — the Merkle channel taken from the destructured
@@ -299,8 +290,6 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 {
 	assert_eq!(layouts.len(), committed_oracles.len());
 
-	// `ℓ = max_r ℓ_r`, the variable count of the opening.
-	let n_vars = max_log_len(layouts);
 	let log_n_oracles = log2_ceil_usize(layouts.len());
 
 	// A ZK round's message is stored as committed, relabeled, so its transparent is relabeled to
@@ -348,52 +337,26 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 		(s, None)
 	};
 
-	// `G` and `T` over `X` (low) and `Z` (high). The sumcheck binds `Z` high to low, but the FRI's
-	// outer tensor takes its first challenge as the low bit of the oracle index, so oracle `r`
-	// sits at chunk `bit_reverse(r)`.
-	let chunk_index = |r: usize| r.reverse_bits() >> (usize::BITS as usize - log_n_oracles);
-	let (combined, multiplicand) = {
-		let _scope = tracing::debug_span!("Compute batched witness").entered();
-		let mut combined = FieldBuffer::zeros_in(alloc, n_vars + log_n_oracles);
-		let mut multiplicand = FieldBuffer::zeros_in(alloc, n_vars + log_n_oracles);
-		for (r, (fri_oracle, committed, transparent)) in
-			izip!(fri_params.input_oracles(), &committed_oracles, &transparents).enumerate()
-		{
-			let n_r = committed.message.log_len();
-			let index = if log_n_oracles == 0 {
-				0
-			} else {
-				chunk_index(r)
-			};
-
-			// `M^γ_r↑`: the message in the low `2^{n_r}` of each lift block, repeated across the
-			// high dims so it is constant along them, as the FRI lifts and repeats its codeword.
-			place_repeated(
-				combined.chunk_mut(n_vars, index).chunk(),
-				committed.message.as_view(),
-				F::ONE,
-				n_r + fri_oracle.log_lift,
-			);
-			// `T_r↑`: supported only where the coordinates above `n_r` are zero, so that the sum
-			// of `M^γ_r↑ · T_r↑` over `X` is `<M^γ_r, T_r>`.
-			place_repeated(
-				multiplicand.chunk_mut(n_vars, index).chunk(),
-				transparent.as_view(),
-				F::ONE,
-				n_vars,
-			);
-		}
-		(combined, multiplicand)
-	};
-
 	// Codeword commitments in oracle-index order, matching `fri_params.input_oracles()`.
-	let committed_codewords = committed_oracles
-		.into_iter()
-		.map(|committed| (committed.codeword, committed.commitment))
-		.collect();
+	// The sumcheck binds the oracle-index variables `Z` high to low, but the FRI's outer tensor
+	// takes its first challenge as the low bit of the oracle index, so it pairs oracle `2k` with
+	// `2k + 1`. The oracle count is padded to a power of two with absent oracles.
+	let mut nodes = Vec::with_capacity(1 << log_n_oracles);
+	let mut committed_codewords = Vec::with_capacity(committed_oracles.len());
+	for (fri_oracle, committed, transparent) in
+		izip!(fri_params.input_oracles(), committed_oracles, transparents)
+	{
+		nodes.push(Some(IndexNode {
+			log_w: committed.message.log_len() + fri_oracle.log_lift,
+			message: committed.message,
+			transparent,
+		}));
+		committed_codewords.push((committed.codeword, committed.commitment));
+	}
+	nodes.resize_with(1 << log_n_oracles, || None);
 
 	let fri_folder = FRIFoldProver::new_batch(fri_params, ntt, committed_codewords);
-	prove_sumcheck_basefold(combined, multiplicand, target, gamma, fri_folder, channel, alloc);
+	prove_sumcheck_basefold(nodes, target, gamma, fri_folder, channel, alloc);
 }
 
 /// Batches the queued relations into the single relation `Σ_i <π_i, T_i> = S`.
@@ -509,59 +472,6 @@ fn reverse_scalars<P: PackedField>(mut buffer: FieldSliceMut<'_, P>) {
 			*low_i = reverse_lanes(*high_i);
 			*high_i = reverse_lanes(low_value);
 		});
-}
-
-/// Adds `scalar · src` into the low `2^src.log_len()` scalars of every `2^log_block`-sized block
-/// of `dst`.
-///
-/// This is the lift/repeat placement of one oracle into the combined buffer: the oracle occupies
-/// the low part of a lift block, and that block repeats across the high dims so the oracle is
-/// constant along them.
-///
-/// A block spanning at least one whole packed element gets a chunk of the buffer to itself. A
-/// narrower block does not: several of them then share one element, and no chunking can express
-/// the placement. The scalars of one element are the same repeating pattern for every element, so
-/// that pattern is built once and added to all of them.
-///
-/// ## Preconditions
-///
-/// * `src.log_len() <= log_block <= dst.log_len()`
-fn place_repeated<P: PackedField>(
-	mut dst: FieldSliceMut<'_, P>,
-	src: FieldSlice<'_, P>,
-	scalar: P::Scalar,
-	log_block: usize,
-) {
-	assert!(src.log_len() <= log_block); // precondition
-	assert!(log_block <= dst.log_len()); // precondition
-
-	let scalar_broadcast = P::broadcast(scalar);
-	if log_block >= P::LOG_WIDTH {
-		let chunk_packed = 1usize << (log_block - P::LOG_WIDTH);
-		dst.as_mut().par_chunks_mut(chunk_packed).for_each(|chunk| {
-			let chunk_buf = FieldSliceMut::from_slice(log_block, chunk);
-			accumulate_scaled_buffer(chunk_buf, src.as_view(), scalar_broadcast);
-		});
-	} else {
-		// Lane `k` of every element sits at position `k % 2^log_block` of its block, and carries
-		// the oracle only over the low `2^src.log_len()` of them. A buffer shorter than one
-		// element leaves its high lanes out of the pattern, so they stay zero.
-		let block_mask = (1usize << log_block) - 1;
-		let src_len = 1usize << src.log_len();
-		let lanes = P::WIDTH.min(1usize << dst.log_len());
-		let pattern = P::from_scalars((0..lanes).map(|lane| {
-			let position = lane & block_mask;
-			if position < src_len {
-				src.get(position)
-			} else {
-				P::Scalar::ZERO
-			}
-		}));
-		dst.as_mut()
-			.par_iter_mut()
-			.with_min_task(WorkPerItem::FieldMuls)
-			.for_each(|dst_i| *dst_i += scalar_broadcast * pattern);
-	}
 }
 
 fn accumulate_scaled_buffer<P: PackedField>(
@@ -749,7 +659,7 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		BinaryField, Field, Ghash128b, Ghash128b as B128, PackedField, PackedGhash1x128b,
-		PackedGhash2x128b, PackedGhash4x128b, Random,
+		PackedGhash2x128b, PackedGhash4x128b,
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
@@ -774,7 +684,7 @@ mod tests {
 	use proptest::prelude::*;
 	use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
-	use super::{IOPProverChannel, permute_to_zk_commit_order, place_repeated};
+	use super::{IOPProverChannel, permute_to_zk_commit_order};
 	use crate::basefold::compiler::BaseFoldProverCompiler;
 
 	type StdChallenger = HasherChallenger<StdDigest>;
@@ -1125,60 +1035,6 @@ mod tests {
 	///
 	/// The `[1, 2]` batch sits just the other side of the boundary — its blocks are exactly one
 	/// packed element — and covers the chunked path that the clamp must leave alone.
-	/// [`place_repeated`] must match the definition it implements, at every shape.
-	///
-	/// The two regimes it splits on — a lift block spanning whole packed elements, and several
-	/// blocks sharing one element — are selected by `log_block` against `P::LOG_WIDTH`, so the grid
-	/// runs three packed widths against every `(log_src, log_block, log_dst)` they admit. That
-	/// reaches shapes the FRI parameters do not currently produce, which is the point: the
-	/// placement should not depend on which of them the optimizer happens to choose.
-	#[test]
-	fn place_repeated_matches_the_naive_placement() {
-		fn check<P: PackedField<Scalar = B128>>(log_src: usize, log_block: usize, log_dst: usize) {
-			let mut rng = StdRng::seed_from_u64(0);
-			let src = random_field_buffer::<P>(&mut rng, log_src);
-			let initial = random_field_buffer::<P>(&mut rng, log_dst);
-			let scalar = B128::random(&mut rng);
-
-			// The definition: `scalar * src` lands in the low `2^log_src` scalars of each
-			// `2^log_block`-sized block, and nowhere else.
-			let mut expected = initial.clone();
-			for index in 0..1usize << log_dst {
-				let position = index % (1usize << log_block);
-				if position < 1usize << log_src {
-					expected.set(index, expected.get(index) + scalar * src.get(position));
-				}
-			}
-
-			let mut actual = initial;
-			place_repeated(actual.as_mut_view(), src.as_view(), scalar, log_block);
-
-			for index in 0..1usize << log_dst {
-				assert_eq!(
-					actual.get(index),
-					expected.get(index),
-					"P::LOG_WIDTH={}, log_src={log_src}, log_block={log_block}, log_dst={log_dst}, \
-					 index={index}",
-					P::LOG_WIDTH,
-				);
-			}
-		}
-
-		fn check_all_shapes<P: PackedField<Scalar = B128>>() {
-			for log_dst in 0..=4 {
-				for log_block in 0..=log_dst {
-					for log_src in 0..=log_block {
-						check::<P>(log_src, log_block, log_dst);
-					}
-				}
-			}
-		}
-
-		check_all_shapes::<PackedGhash1x128b>();
-		check_all_shapes::<PackedGhash2x128b>();
-		check_all_shapes::<PackedGhash4x128b>();
-	}
-
 	#[test]
 	fn batch_narrower_than_a_packed_element_proves() {
 		const {
