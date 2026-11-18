@@ -7,7 +7,7 @@ use std::{
 	slice::from_raw_parts_mut,
 };
 
-use binius_field::{BinaryField, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_utils::rayon::{
 	iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
 	slice::ParallelSliceMut,
@@ -88,14 +88,14 @@ fn forward_depth_first<P: PackedField>(
 	if layer >= layer_range.start {
 		// process only one layer of this block
 		let (block0, block1) = data.split_at_mut(block_size_half);
-		if block == 0 {
-			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
-			// So the butterfly collapses to `v += u`, with `u` left unchanged.
+		let twiddle = domain_context.twiddle(layer, block);
+		if twiddle == P::Scalar::ZERO {
+			// With a zero twiddle the butterfly collapses to `v += u`, with `u` left unchanged. Block
+			// 0's twiddle is zero when the domain is a subspace, but not when it is a coset.
 			for (u, v) in iter::zip(block0, block1) {
 				*v += *u;
 			}
 		} else {
-			let twiddle = domain_context.twiddle(layer, block);
 			let packed_twiddle = P::broadcast(twiddle);
 			for (u, v) in iter::zip(block0, block1) {
 				// perform butterfly
@@ -171,10 +171,10 @@ fn forward_breadth_first<P: PackedField>(
 			.take(1 << log_blocks);
 		let mut blocks = data.chunks_exact_mut(1 << log_block_size);
 
-		// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
+		// The twiddle of block 0 is zero when the domain is a subspace, but not when it is a coset.
 		// `base_block == 0` is the only case where this call's first block is the domain's block 0.
 		// Peel it off once per layer instead of branching per element.
-		if base_block == 0 {
+		if base_block == 0 && domain_context.twiddle(layer, 0) == P::Scalar::ZERO {
 			layer_twiddles.next();
 			if let Some(block) = blocks.next() {
 				let (block0, block1) = block.split_at_mut(1 << log_half_block_size);
@@ -206,10 +206,16 @@ fn forward_breadth_first<P: PackedField>(
 		let log_half_blocks_per_packed = log_blocks_per_packed + 1;
 
 		// calculate packed_twiddle_offset
+		//
+		// A twiddle is the sum of the layer's block-0 twiddle and a part that is linear in the
+		// block index. The block-0 twiddle is zero on a subspace domain but not on a coset. The
+		// per-pair twiddle below already carries it, so the offset holds only the linear part.
+		let block_zero_twiddle = domain_context.twiddle(layer, 0);
 		let mut packed_twiddle_offset = P::zero();
 		for block in 0..1 << log_blocks_per_packed {
-			let twiddle0 = domain_context.twiddle(layer, block);
-			let twiddle1 = domain_context.twiddle(layer, (1 << log_blocks_per_packed) | block);
+			let twiddle0 = domain_context.twiddle(layer, block) + block_zero_twiddle;
+			let twiddle1 = domain_context.twiddle(layer, (1 << log_blocks_per_packed) | block)
+				+ block_zero_twiddle;
 
 			let block_start = block << log_block_size;
 			for j in 0..1 << log_half_block_size {
@@ -284,9 +290,10 @@ fn forward_shared_layer<P: PackedField>(
 			let chunk1 = unsafe {
 				from_raw_parts_mut(data_ptr.add(chunk1 << log_chunk_len), 1 << log_chunk_len)
 			};
-			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
-			// `None` signals a task whose butterfly collapses to an add, no multiply.
-			let twiddle = (block != 0).then(|| P::broadcast(domain_context.twiddle(layer, block)));
+			// `None` signals a task whose butterfly collapses to an add, no multiply. That is a zero
+			// twiddle, which block 0 has when the domain is a subspace but not when it is a coset.
+			let twiddle = domain_context.twiddle(layer, block);
+			let twiddle = (twiddle != P::Scalar::ZERO).then(|| P::broadcast(twiddle));
 			(chunk0, chunk1, twiddle)
 		})
 		.collect();
@@ -339,7 +346,8 @@ fn fused_pair<P: PackedField>(
 
 /// Same as [`fused_pair`], for the super-block whose index is zero.
 ///
-/// There `twiddle_0` and `twiddle_1_even` are both the layer's block-0 twiddle, which is zero.
+/// There `twiddle_0` and `twiddle_1_even` are both the layer's block-0 twiddle, which is zero on
+/// a subspace domain.
 /// Each of their butterflies collapses to `v += u`, leaving `u` untouched.
 /// So plane 0 is never written, and its cache lines stay clean.
 fn fused_pair_zero_block<P: PackedField>(planes: [&mut [P]; 4], twiddle_1_odd: P) {
@@ -399,6 +407,9 @@ fn forward_shared_layer_pair<P: PackedField>(
 	let log_plane_len = log_d - first_layer - 2 - P::LOG_WIDTH;
 	let plane_len = 1 << log_plane_len;
 
+	let zero_block_twiddles = domain_context.twiddle(first_layer, 0) == P::Scalar::ZERO
+		&& domain_context.twiddle(first_layer + 1, 0) == P::Scalar::ZERO;
+
 	// Cut every plane into equal runs, enough of them to feed each share at least one.
 	// A run never drops below one packed element.
 	let log_run_len = log_plane_len.saturating_sub(log_num_shares - first_layer);
@@ -433,9 +444,9 @@ fn forward_shared_layer_pair<P: PackedField>(
 	tasks
 		.into_par_iter()
 		.for_each(|(planes, h, (twiddle_0, twiddle_1_even, twiddle_1_odd))| {
-			// `domain_context.twiddle(layer, 0)` is always zero (see `DomainContext::twiddle`).
-			// Only super-block 0 reads block 0, and it does so in both of its layers.
-			if h == 0 {
+			// Only super-block 0 reads block 0, and it does so in both of its layers. Block 0's
+			// twiddle is zero when the domain is a subspace, but not when it is a coset.
+			if h == 0 && zero_block_twiddles {
 				fused_pair_zero_block(planes, twiddle_1_odd);
 			} else {
 				fused_pair(planes, twiddle_0, twiddle_1_even, twiddle_1_odd);

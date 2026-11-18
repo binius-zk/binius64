@@ -180,7 +180,8 @@ fn test_zk_wrapped_prove_verify() {
 		n_test_queries,
 	);
 
-	let domain_context = GaoMateerOnTheFly::generate(zk_basefold_compiler.max_log_domain_size());
+	let domain_context =
+		GaoMateerOnTheFly::generate_coset(zk_basefold_compiler.max_log_domain_size());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 	let zk_basefold_prover: BaseFoldProverCompiler<OptimalPackedB128, _> =
 		BaseFoldProverCompiler::from_verifier_compiler(&zk_basefold_compiler, ntt);

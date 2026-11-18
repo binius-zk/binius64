@@ -35,15 +35,15 @@ pub struct ReedSolomonCode<F> {
 }
 
 impl<F: BinaryField> ReedSolomonCode<F> {
-	/// A code of the given dimension and rate, evaluated over the Gao-Mateer basis.
+	/// A code of the given dimension and rate, evaluated over a coset of the Gao-Mateer basis.
 	///
-	/// The evaluation domain is not a parameter: it is the Gao-Mateer basis of `log_dimension +
-	/// log_inv_rate`, the same one [`GaoMateerOnTheFly`] and [`GaoMateerPreExpanded`] generate. A
-	/// verifier can therefore rebuild the domain from the code's shape alone, without being told
-	/// which basis the prover encoded over.
+	/// The evaluation domain is not a parameter: it is the coset `β_n + U_n` of the Gao-Mateer
+	/// basis, where `n = log_dimension + log_inv_rate`, `β_n` is the basis element of index `n`,
+	/// and `U_n` is the span of the first `n`. This is the domain of NTTs built with
+	/// [`CosetDomainContext`]. A verifier can therefore rebuild the domain from the code's shape
+	/// alone, without being told which basis the prover encoded over.
 	///
-	/// [`GaoMateerOnTheFly`]: crate::ntt::domain_context::GaoMateerOnTheFly
-	/// [`GaoMateerPreExpanded`]: crate::ntt::domain_context::GaoMateerPreExpanded
+	/// [`CosetDomainContext`]: crate::ntt::domain_context::CosetDomainContext
 	pub const fn new(log_dimension: usize, log_inv_rate: usize) -> Self {
 		Self {
 			log_dimension,
@@ -52,12 +52,22 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		}
 	}
 
-	/// The evaluation domain: the Gao-Mateer basis of [`Self::log_len`] dimensions.
+	/// The direction space of the evaluation domain: the Gao-Mateer basis of [`Self::log_len`]
+	/// dimensions. The domain is the coset [`Self::coset_shift`] + this subspace.
 	///
 	/// Derived on demand rather than stored, so there is no way for it to disagree with the
 	/// domain a prover or verifier generates from the same dimension.
 	pub fn subspace(&self) -> BinarySubspace<F> {
 		GaoMateerOnTheFly::<F>::generate(self.log_len()).subspace(self.log_len())
+	}
+
+	/// The shift of the evaluation domain: the Gao-Mateer basis element of index
+	/// [`Self::log_len`].
+	pub fn coset_shift(&self) -> F {
+		let log_len = self.log_len();
+		GaoMateerOnTheFly::<F>::generate(log_len + 1)
+			.subspace(log_len + 1)
+			.basis()[log_len]
 	}
 
 	/// The dimension.
@@ -97,7 +107,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	/// ## Preconditions
 	///
 	/// * `data.log_len()` must equal `log_dim() + log_batch_size`.
-	/// * The NTT subspace must match the code's subspace.
+	/// * The NTT domain must match the code's domain.
 	///
 	/// ## Postconditions
 	///
@@ -118,6 +128,12 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 			ntt.subspace(self.log_len()),
 			self.subspace(),
 			"precondition: NTT subspace must match code subspace"
+		);
+		// The last layer's twiddle at block zero is the coset's shift. A context over the subspace
+		// itself, rather than the coset, has twiddle zero there.
+		assert!(
+			self.log_len() == 0 || ntt.twiddle(self.log_len() - 1, 0) == self.coset_shift(),
+			"precondition: NTT domain must be the code's coset"
 		);
 		assert_eq!(
 			data.log_len(),
@@ -176,8 +192,8 @@ mod tests {
 
 		let rs_code = ReedSolomonCode::<P::Scalar>::new(log_dim, log_inv_rate);
 
-		// The code's domain is the Gao-Mateer basis of its length, so the NTT generates the same.
-		let domain_context = GaoMateerPreExpanded::<P::Scalar>::generate(rs_code.log_len());
+		// The code's domain is the Gao-Mateer coset of its length, so the NTT generates the same.
+		let domain_context = GaoMateerPreExpanded::<P::Scalar>::generate_coset(rs_code.log_len());
 		let ntt = NeighborsLastReference {
 			domain_context: &domain_context,
 		};
@@ -197,8 +213,22 @@ mod tests {
 			reference_buffer.set(reverse_bits(i, bits), val);
 		}
 
-		// Perform large NTT with zero-padded coefficients.
-		ntt.forward_transform(reference_buffer.as_mut_view(), 0, log_batch_size);
+		// Perform the large NTT with zero-padded coefficients over the next-larger domain, which
+		// contains the code's coset as its upper half.
+		let large_domain_context =
+			GaoMateerPreExpanded::<P::Scalar>::generate(rs_code.log_len() + 1);
+		let large_ntt = NeighborsLastReference {
+			domain_context: &large_domain_context,
+		};
+		let mut padded = FieldBuffer::<P>::zeros(rs_code.log_len() + 1 + log_batch_size);
+		for i in 0..reference_buffer.len() {
+			padded.set(i, reference_buffer.get(i));
+		}
+		large_ntt.forward_transform(padded.as_mut_view(), 0, log_batch_size);
+		// Keep the upper half: the coset.
+		for i in 0..reference_buffer.len() {
+			reference_buffer.set(i, padded.get(reference_buffer.len() + i));
+		}
 
 		// Compare results
 		assert_eq!(
@@ -247,11 +277,11 @@ mod tests {
 
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// One shared NTT covers the larger code. Both codes evaluate over the Gao-Mateer basis, and
-		// the smaller one's is a prefix of the larger one's, which is what the shared twiddles
+		// One shared NTT covers the larger code. Both codes evaluate over a Gao-Mateer coset, and
+		// the smaller one's is the image of the larger one's, which is what the shared twiddles
 		// expect -- a property the codes now have by construction rather than by wiring.
 		let domain_context =
-			GaoMateerPreExpanded::<P::Scalar>::generate(log_dim_large + log_inv_rate);
+			GaoMateerPreExpanded::<P::Scalar>::generate_coset(log_dim_large + log_inv_rate);
 		let ntt = NeighborsLastReference {
 			domain_context: &domain_context,
 		};
@@ -296,5 +326,53 @@ mod tests {
 		test_lift_duplicate_identity_helper::<PackedGhash1x128b>(0, 4, 3);
 		// Same lifts with a wider packing width.
 		test_lift_duplicate_identity_helper::<PackedGhash4x128b>(4, 8, 2);
+	}
+}
+
+#[cfg(test)]
+mod coset_ntt_tests {
+	use binius_compute::GlobalAllocator;
+	use binius_field::PackedGhash1x128b;
+	use rand::{SeedableRng, rngs::StdRng};
+
+	use super::*;
+	use crate::{
+		ntt::{
+			NeighborsLastReference, NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly,
+		},
+		test_utils::random_field_buffer,
+	};
+
+	fn check_single_thread_ntt_matches_reference<
+		P: PackedField<Scalar = binius_field::Ghash128b>,
+	>() {
+		let mut rng = StdRng::seed_from_u64(0);
+		for (d, r, b) in [
+			(4, 2, 0),
+			(6, 2, 1),
+			(8, 3, 2),
+			(3, 1, 0),
+			(1, 2, 0),
+			(0, 3, 1),
+			(2, 1, 1),
+		] {
+			let code = ReedSolomonCode::<binius_field::Ghash128b>::new(d, r);
+			let msg = random_field_buffer::<P>(&mut rng, d + b);
+			let a =
+				NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate_coset(code.log_len()));
+			let c = NeighborsLastReference {
+				domain_context: GaoMateerOnTheFly::generate_coset(code.log_len()),
+			};
+			let x = code.encode_batch(&a, msg.as_view(), b, &GlobalAllocator);
+			let y = code.encode_batch(&c, msg.as_view(), b, &GlobalAllocator);
+			assert_eq!(x.as_ref(), y.as_ref(), "{d} {r} {b}");
+		}
+	}
+
+	#[test]
+	fn single_thread_ntt_matches_reference_on_the_coset() {
+		check_single_thread_ntt_matches_reference::<PackedGhash1x128b>();
+		check_single_thread_ntt_matches_reference::<binius_field::PackedGhash2x128b>();
+		check_single_thread_ntt_matches_reference::<binius_field::PackedGhash4x128b>();
 	}
 }

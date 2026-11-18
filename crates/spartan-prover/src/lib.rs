@@ -50,7 +50,10 @@ use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
 	inner_product::inner_product_buffers,
 	multilinear::eq::eq_ind_partial_eval,
-	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
+	ntt::{
+		NeighborsLastMultiThread,
+		domain_context::{CosetDomainContext, GaoMateerPreExpanded},
+	},
 	univariate::evaluate_univariate,
 };
 use binius_spartan_frontend::constraint_system::{
@@ -70,7 +73,7 @@ use rand::CryptoRng;
 
 use crate::wiring::{WiringTranspose, fold_constraints};
 
-type ProverNTT<F> = NeighborsLastMultiThread<GaoMateerPreExpanded<F>>;
+type ProverNTT<F> = NeighborsLastMultiThread<CosetDomainContext<GaoMateerPreExpanded<F>>>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -337,7 +340,7 @@ where
 		// Rebuild the verifier's evaluation domain, which its compiler fixed as the Gao-Mateer
 		// basis of that dimension.
 		let domain_context =
-			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
+			GaoMateerPreExpanded::generate_coset(verifier.iop_compiler().max_log_domain_size());
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
 		// Create the BaseFold ZK compiler from verifier compiler (reuses the oracle schedule and

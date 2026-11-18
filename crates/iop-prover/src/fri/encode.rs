@@ -185,7 +185,7 @@ mod tests {
 		let log_batch_size = 1;
 		let n_test_queries = 3;
 
-		let domain_context = GaoMateerOnTheFly::generate(log_dim + log_inv_rate);
+		let domain_context = GaoMateerOnTheFly::generate_coset(log_dim + log_inv_rate);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		let params = FRIParams::new(

@@ -44,7 +44,7 @@ fn test_commit_prove_verify_success<F, P>(
 	let params =
 		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries);
 
-	let domain_context = GaoMateerOnTheFly::generate(params.rs_code().log_len());
+	let domain_context = GaoMateerOnTheFly::generate_coset(params.rs_code().log_len());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	let n_round_commitments = arities.len();
@@ -225,7 +225,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 
 	// The reduced Reed-Solomon code is shared by every input oracle, so the domain only needs to
 	// cover its length.
-	let domain_context = GaoMateerOnTheFly::generate(log_dim + log_inv_rate);
+	let domain_context = GaoMateerOnTheFly::generate_coset(log_dim + log_inv_rate);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Each oracle has RS dimension `log_dim` (no lifting), so every oracle sits at the reduced
@@ -361,7 +361,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 
 	// Every oracle reduces to the shared dimension `log_dim`, so no lifting is exercised here — the
 	// focus is the inner-challenge windowing.
-	let domain_context = GaoMateerOnTheFly::generate(log_dim + log_inv_rate);
+	let domain_context = GaoMateerOnTheFly::generate_coset(log_dim + log_inv_rate);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Every oracle sits at the reduced dimension `log_dim` (no lifting). The ZK oracle (batch 1)
@@ -516,7 +516,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 
 	// A single shared domain context covers the reduced code; every per-oracle (smaller) code is
 	// derived from it so their subspaces are nested prefixes of the reduced subspace.
-	let domain_context = GaoMateerOnTheFly::generate(reduced_log_dim + log_inv_rate);
+	let domain_context = GaoMateerOnTheFly::generate_coset(reduced_log_dim + log_inv_rate);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Each oracle is lifted from its own RS dimension up to `reduced_log_dim` (`log_lift` is the
@@ -661,7 +661,7 @@ where
 	let params =
 		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries);
 
-	let domain_context = GaoMateerOnTheFly::generate(params.rs_code().log_len());
+	let domain_context = GaoMateerOnTheFly::generate_coset(params.rs_code().log_len());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());

@@ -50,7 +50,7 @@ fn bench_encode(c: &mut Criterion) {
 
 		for log_inv_rate in LOG_INV_RATES {
 			let rs_code = ReedSolomonCode::<B128>::new(log_dim, log_inv_rate);
-			let domain_context = GaoMateerOnTheFly::<B128>::generate(rs_code.log_len());
+			let domain_context = GaoMateerOnTheFly::<B128>::generate_coset(rs_code.log_len());
 			let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
 			// Codeword bytes, so the number reads as encode bandwidth across both axes.

@@ -660,7 +660,8 @@ mod tests {
 		);
 
 		// Prove: commit the pushforwards with real FRI, run the reduction, open both relations.
-		let domain_context = GaoMateerOnTheFly::generate(verifier_compiler.max_log_domain_size());
+		let domain_context =
+			GaoMateerOnTheFly::generate_coset(verifier_compiler.max_log_domain_size());
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let prover_compiler =
 			BaseFoldProverCompiler::<BP, _>::from_verifier_compiler(&verifier_compiler, ntt);
@@ -713,7 +714,8 @@ mod tests {
 		);
 
 		// Prove: commit the pushforwards with real FRI, run the reduction, open them.
-		let domain_context = GaoMateerOnTheFly::generate(verifier_compiler.max_log_domain_size());
+		let domain_context =
+			GaoMateerOnTheFly::generate_coset(verifier_compiler.max_log_domain_size());
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let prover_compiler =
 			BaseFoldProverCompiler::<BP, _>::from_verifier_compiler(&verifier_compiler, ntt);

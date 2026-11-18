@@ -13,7 +13,10 @@ use binius_ip_prover::{prodcheck::ProdcheckProver, sumcheck::batch::batch_prove}
 use binius_math::{
 	FieldBuffer,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
-	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerPreExpanded},
+	ntt::{
+		NeighborsLastSingleThread,
+		domain_context::{CosetDomainContext, GaoMateerPreExpanded},
+	},
 	test_utils::random_scalars,
 };
 use binius_prover::protocols::intmul::{
@@ -49,14 +52,16 @@ const N_TEST_QUERIES: usize = 1;
 /// oracles for free. The final batched opening in `finish` is not measured, since the full
 /// system amortizes it into the single opening shared with the witness trace.
 fn basefold_compiler()
--> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GaoMateerPreExpanded<F>>> {
+-> BaseFoldProverCompiler<P, NeighborsLastSingleThread<CosetDomainContext<GaoMateerPreExpanded<F>>>>
+{
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
 		&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
 		OracleSchedule::from_rounds([[OracleSpec::new(1 << LIMB_BITS)]]),
 		LOG_INV_RATE,
 		N_TEST_QUERIES,
 	);
-	let domain_context = GaoMateerPreExpanded::generate(verifier_compiler.max_log_domain_size());
+	let domain_context =
+		GaoMateerPreExpanded::generate_coset(verifier_compiler.max_log_domain_size());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 	BaseFoldProverCompiler::from_verifier_compiler(&verifier_compiler, ntt)
 }

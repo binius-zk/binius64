@@ -14,7 +14,10 @@ use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOP
 use binius_m4_verifier::{IOPVerifier, Verifier};
 use binius_math::{
 	BinarySubspace,
-	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded},
+	ntt::{
+		NeighborsLastMultiThread,
+		domain_context::{CosetDomainContext, GaoMateerPreExpanded},
+	},
 };
 use binius_prover::{
 	protocols::{
@@ -36,7 +39,8 @@ use crate::{
 };
 
 /// The multithreaded additive NTT used to encode the committed codeword.
-pub(crate) type ProverNtt = NeighborsLastMultiThread<GaoMateerPreExpanded<B128>>;
+pub(crate) type ProverNtt =
+	NeighborsLastMultiThread<CosetDomainContext<GaoMateerPreExpanded<B128>>>;
 
 /// IOP prover for the M4 constraint reduction of a particular constraint system.
 ///
@@ -314,7 +318,7 @@ where
 		// Reuse the verifier's evaluation domain so both sides agree on the code: its compiler
 		// fixed that domain as the Gao-Mateer basis of this dimension.
 		let domain_context =
-			GaoMateerPreExpanded::generate(verifier.iop_compiler().max_log_domain_size());
+			GaoMateerPreExpanded::generate_coset(verifier.iop_compiler().max_log_domain_size());
 
 		// Spread the NTT across the available cores.
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;

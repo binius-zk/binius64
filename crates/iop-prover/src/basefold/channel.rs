@@ -766,7 +766,10 @@ mod tests {
 		FieldBuffer,
 		inner_product::inner_product_buffers,
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
-		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
+		ntt::{
+			NeighborsLastSingleThread,
+			domain_context::{CosetDomainContext, GaoMateerOnTheFly},
+		},
 		reed_solomon::ReedSolomonCode,
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -786,8 +789,10 @@ mod tests {
 		security_bits.div_ceil(log_inv_rate)
 	}
 
-	fn make_ntt(log_domain_size: usize) -> NeighborsLastSingleThread<GaoMateerOnTheFly<Ghash128b>> {
-		let domain_context = GaoMateerOnTheFly::generate(log_domain_size);
+	fn make_ntt(
+		log_domain_size: usize,
+	) -> NeighborsLastSingleThread<CosetDomainContext<GaoMateerOnTheFly<Ghash128b>>> {
+		let domain_context = GaoMateerOnTheFly::generate_coset(log_domain_size);
 		NeighborsLastSingleThread::new(domain_context)
 	}
 
@@ -1760,14 +1765,6 @@ mod tests {
 			let positions = positions.into_iter().collect::<Vec<_>>();
 			assert_eq!(rank_at(&positions), n_test_queries, "positions {positions:?}");
 		}
-
-		// Without the relabeling, the symbol at position 0 is the round oracle's coordinate 0.
-		let unrelabeled = encode_pad_unit_vectors(false);
-		assert!(
-			unrelabeled
-				.iter()
-				.all(|codeword| codeword.get(0) == F::ZERO)
-		);
 	}
 
 	/// Every symbol of a ZK round's committed codeword depends on the prover's coins.

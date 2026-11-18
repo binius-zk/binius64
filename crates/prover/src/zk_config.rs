@@ -14,7 +14,10 @@ use binius_field::{Ghash128b as B128, PackedField};
 use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_ip::channel::WordIPVerifierChannel;
-use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GaoMateerPreExpanded};
+use binius_math::ntt::{
+	NeighborsLastMultiThread,
+	domain_context::{CosetDomainContext, GaoMateerPreExpanded},
+};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
@@ -26,7 +29,7 @@ use rand::CryptoRng;
 
 use crate::{IOPProver, protocols::shift::KeyCollection};
 
-type ProverNTT<F> = NeighborsLastMultiThread<GaoMateerPreExpanded<F>>;
+type ProverNTT<F> = NeighborsLastMultiThread<CosetDomainContext<GaoMateerPreExpanded<F>>>;
 
 /// Zero-knowledge prover for Binius64 constraint systems.
 ///
@@ -98,7 +101,7 @@ where
 		let log_domain_size = zk_verifier.basefold_compiler().max_log_domain_size();
 		let domain_context = {
 			let _guard = tracing::debug_span!("Precompute NTT domain").entered();
-			GaoMateerPreExpanded::generate(log_domain_size)
+			GaoMateerPreExpanded::generate_coset(log_domain_size)
 		};
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);

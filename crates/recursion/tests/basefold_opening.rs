@@ -63,7 +63,10 @@ use binius_math::{
 	inner_product::inner_product_buffers,
 	line::extrapolate_line,
 	multilinear::eq::{eq_ind, eq_ind_partial_eval},
-	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
+	ntt::{
+		NeighborsLastSingleThread,
+		domain_context::{CosetDomainContext, GaoMateerOnTheFly},
+	},
 	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_recursion::{Binius64BuilderChannel, Recorded, WitnessFillerChannel};
@@ -123,7 +126,7 @@ struct Setup {
 	/// The fold layout: code dimension, per-oracle shapes, fold arities and query count.
 	fri_params: FRIParams<B128>,
 	/// The additive NTT the prover encodes with.
-	ntt: NeighborsLastSingleThread<GaoMateerOnTheFly<B128>>,
+	ntt: NeighborsLastSingleThread<CosetDomainContext<GaoMateerOnTheFly<B128>>>,
 }
 
 impl Shape {
@@ -144,7 +147,7 @@ impl Shape {
 
 		// The domain must span the interleaved codeword.
 		// One extra variable for the mask that buys zero-knowledge, plus the rate.
-		let domain_context = GaoMateerOnTheFly::generate(self.n_vars + 1 + self.log_inv_rate);
+		let domain_context = GaoMateerOnTheFly::generate_coset(self.n_vars + 1 + self.log_inv_rate);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		// One zero-knowledge oracle makes the batch parameters valid for the masked encoder too.

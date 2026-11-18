@@ -195,6 +195,63 @@ fn gao_mateer_basis<F: BinaryField>(num_basis_elements: usize) -> Vec<F> {
 	basis
 }
 
+/// A [`DomainContext`] whose NTTs evaluate over a coset of the inner context's subspaces, rather
+/// than over the subspaces themselves.
+///
+/// An $n$-layer NTT over the inner context evaluates over $U_n$, the span of the first $n$ basis
+/// elements. Over this context, the same NTT evaluates over the coset $\beta_n + U_n$ instead.
+/// That is the upper half of the $(n+1)$-dimensional domain: the first layer of an $(n+1)$-layer
+/// NTT of a message padded with zeros only duplicates the message, so skipping that layer and
+/// keeping the half with top bit one leaves an $n$-layer NTT whose block index has its top bit
+/// set. The twiddle of layer $i$ and block $j$ here is therefore the inner context's twiddle of
+/// layer $i + 1$ and block $j + 2^i$.
+///
+/// Because the coset is carved out of the inner domain, a context supporting $n$-layer NTTs needs
+/// an inner context of $n + 1$ layers.
+///
+/// [`Self::subspace`] returns the inner subspaces, which are the directions of the cosets. The
+/// $n$-layer coset is $\beta_n + U_n$, where $\beta_n$ is the inner context's basis element of
+/// index $n$.
+#[derive(Debug, Clone)]
+pub struct CosetDomainContext<DC> {
+	inner: DC,
+}
+
+impl<DC: DomainContext> CosetDomainContext<DC> {
+	/// Wraps `inner`, which must have at least one more layer than the NTTs to be run.
+	///
+	/// ## Preconditions
+	///
+	/// - `inner.log_domain_size()` must be nonzero
+	pub fn new(inner: DC) -> Self {
+		assert!(inner.log_domain_size() > 0, "precondition: the inner domain must be nonzero");
+		Self { inner }
+	}
+}
+
+impl<DC: DomainContext> DomainContext for CosetDomainContext<DC> {
+	type Field = DC::Field;
+
+	fn log_domain_size(&self) -> usize {
+		self.inner.log_domain_size() - 1
+	}
+
+	fn subspace(&self, i: usize) -> BinarySubspace<DC::Field> {
+		self.inner.subspace(i)
+	}
+
+	fn twiddle(&self, layer: usize, block: usize) -> DC::Field {
+		self.inner.twiddle(layer + 1, block | (1 << layer))
+	}
+
+	fn iter_twiddles(&self, layer: usize, log_step_by: usize) -> impl Iterator<Item = DC::Field> {
+		// The blocks with the top bit set are the second half of the inner layer's blocks.
+		self.inner
+			.iter_twiddles(layer + 1, log_step_by)
+			.skip(1 << (layer - log_step_by))
+	}
+}
+
 /// Produces a specific "Gao-Mateer" $S^{(0)}$ and computes twiddles on-the-fly. Only works for
 /// binary fields whose degree over $\mathbb{F}_2$ is a power of two.
 ///
@@ -242,6 +299,15 @@ impl<F: BinaryField> GaoMateerOnTheFly<F> {
 		Self {
 			basis: gao_mateer_basis(log_domain_size),
 		}
+	}
+
+	/// Computes a [`DomainContext`] over the coset of the Gao-Mateer subspace; see
+	/// [`CosetDomainContext`].
+	///
+	/// The result supports NTTs of up to `log_domain_size` layers, so it is built from a
+	/// Gao-Mateer basis of `log_domain_size + 1` elements.
+	pub fn generate_coset(log_domain_size: usize) -> CosetDomainContext<Self> {
+		CosetDomainContext::new(Self::generate(log_domain_size + 1))
 	}
 }
 
@@ -303,6 +369,15 @@ impl<F: BinaryField> GaoMateerPreExpanded<F> {
 		assert_eq!(expanded.len(), 1usize << (log_domain_size - 1));
 
 		Self { basis, expanded }
+	}
+
+	/// Pre-computes a [`DomainContext`] over the coset of the Gao-Mateer subspace; see
+	/// [`CosetDomainContext`].
+	///
+	/// The result supports NTTs of up to `log_domain_size` layers, so it is built from a
+	/// Gao-Mateer basis of `log_domain_size + 1` elements.
+	pub fn generate_coset(log_domain_size: usize) -> CosetDomainContext<Self> {
+		CosetDomainContext::new(Self::generate(log_domain_size + 1))
 	}
 }
 

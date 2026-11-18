@@ -284,8 +284,8 @@ where
 ///
 /// `chunk_index` names the coset within that codeword and is a channel word, so it need not be
 /// known when the protocol is described. A twiddle is read as a sum over the set bits of its block
-/// index: `DomainContext::twiddle` is `F2`-linear in that argument and vanishes at zero, so the
-/// twiddle of a block is the sum of the twiddles of the individual bits. The bits below the coset
+/// index: `DomainContext::twiddle` is `F2`-affine in that argument, so the twiddle of a block is the
+/// twiddle of block zero plus the sum of the differences for the individual bits. The bits below the coset
 /// offset width are known here, and the rest come from `chunk_index` via
 /// [`WordIPVerifierChannel::subset_sum`].
 ///
@@ -307,14 +307,15 @@ where
 	let mut log_size = challenges.len();
 	for challenge in challenges {
 		let layer = log_len - 1;
-		// The twiddle of a block index is the sum of the basis elements its set bits select. That
-		// basis is the layer's subspace above the normalizing element, which `twiddle` itself
-		// indexes into.
-		let layer_subspace = domain_context.subspace(layer + 1);
-		let twiddle_basis = &layer_subspace.basis()[1..];
+		// The twiddle of a block index is a constant plus the sum of the basis elements its set bits
+		// select. Both are read off the domain context: the constant is the twiddle of block zero,
+		// and each basis element is the twiddle of a single-bit block less that constant. The
+		// constant is nonzero on a coset domain.
+		let constant = domain_context.twiddle(layer, 0);
+		let twiddle_basis = (0..layer)
+			.map(|k| domain_context.twiddle(layer, 1 << k) + constant)
+			.collect::<Vec<_>>();
 
-		// A block index is `(chunk_index << shift) | index_offset`, so its low `shift` bits are the
-		// offset within the coset and the rest are the coset index.
 		let shift = log_size - 1;
 		let chunk_basis = twiddle_basis[shift..]
 			.iter()
@@ -325,7 +326,7 @@ where
 		let offset_twiddles = expand_subset_sums(&twiddle_basis[..shift]);
 
 		for index_offset in 0..1 << shift {
-			let twiddle = chunk_twiddle.clone() + E::from(offset_twiddles[index_offset]);
+			let twiddle = chunk_twiddle.clone() + E::from(constant + offset_twiddles[index_offset]);
 
 			// Perform the inverse additive NTT butterfly, then extrapolate the resulting line at
 			// the folding challenge.

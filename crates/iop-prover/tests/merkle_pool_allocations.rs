@@ -146,7 +146,7 @@ fn a_pooled_encode_stops_allocating_the_codeword_globally() {
 	let mut rng = StdRng::seed_from_u64(0);
 
 	let merkle_prover = BinaryMerkleTreeProver::<B128, StdHashSuite>::new();
-	let domain_context = GaoMateerOnTheFly::generate(LOG_DIM + 1 + 1);
+	let domain_context = GaoMateerOnTheFly::generate_coset(LOG_DIM + 1 + 1);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 	let (params, _) = FRIParams::optimal_for_batch(
 		merkle_prover.scheme(),

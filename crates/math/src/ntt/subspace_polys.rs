@@ -40,7 +40,9 @@
 //! Two adjustments turn the identity above into a row of [`ReedSolomonCode::encode_batch`].
 //!
 //! First, build the polynomials on the *codeword* domain, then truncate to the message dimension.
-//! Encoding zero-pads the message, so the extra dimensions contribute nothing.
+//! Encoding zero-pads the message, so the extra dimensions contribute nothing. The codeword domain
+//! is a coset of the Gao-Mateer subspace, which is the half of the next-larger domain whose top
+//! index bit is set; so evaluate at indices with that bit set.
 //!
 //! Second, reverse the evaluation order before expanding.
 //! `encode_batch` encodes the bit-reversal permuted message, as `reed_solomon.rs` states.
@@ -352,10 +354,12 @@ mod tests {
 	/// Build on the codeword domain, truncate to the message dimension, then reverse.
 	/// The domain context is built once, since generating one per row dominates the test.
 	fn generator_rows(code: &ReedSolomonCode<F>) -> Vec<Vec<F>> {
-		let dc = GaoMateerPreExpanded::<F>::generate(code.log_len());
+		// The codeword domain is the coset `beta_n + U_n`, which is the half of the next-larger
+		// domain whose top index bit is set.
+		let dc = GaoMateerPreExpanded::<F>::generate(code.log_len() + 1);
 		(0..1 << code.log_len())
 			.map(|index| {
-				let mut evals = evals_at_domain_index(&dc, index);
+				let mut evals = evals_at_domain_index(&dc, index | (1 << code.log_len()));
 				evals.truncate(code.log_dim());
 				evals.reverse();
 				expand_subset_products(&evals)
@@ -368,7 +372,7 @@ mod tests {
 		for log_dim in 1..6 {
 			for log_inv_rate in 1..4 {
 				let code = ReedSolomonCode::<F>::new(log_dim, log_inv_rate);
-				let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::<F>::generate(
+				let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::<F>::generate_coset(
 					code.log_len(),
 				));
 				let mut rng = StdRng::seed_from_u64(7);
@@ -393,9 +397,9 @@ mod tests {
 			for log_inv_rate in 1..3 {
 				for log_batch in 1..3 {
 					let code = ReedSolomonCode::<F>::new(log_dim, log_inv_rate);
-					let ntt = NeighborsLastSingleThread::new(GaoMateerOnTheFly::<F>::generate(
-						code.log_len(),
-					));
+					let ntt = NeighborsLastSingleThread::new(
+						GaoMateerOnTheFly::<F>::generate_coset(code.log_len()),
+					);
 					let mut rng = StdRng::seed_from_u64(11);
 					let msg = random_field_buffer::<F>(&mut rng, log_dim + log_batch);
 					let codeword =
