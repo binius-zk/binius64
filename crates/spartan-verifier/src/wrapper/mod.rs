@@ -211,10 +211,7 @@ mod tests {
 		let (cs, _layout) = compile(constraint_builder);
 
 		// Build IOPVerifier directly from the constraint system.
-		let blinding_info = BlindingInfo {
-			n_dummy_wires: 10,
-			n_dummy_constraints: 2,
-		};
+		let blinding_info = BlindingInfo::default();
 		let cs = ConstraintSystemPadded::new(cs, blinding_info);
 		let iop_verifier = IOPVerifier::new(cs);
 		let cs = iop_verifier.constraint_system();

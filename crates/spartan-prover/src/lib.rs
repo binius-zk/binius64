@@ -505,14 +505,8 @@ fn pack_and_blind_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 
 	let mut buffer = FieldBuffer::new(log_private, packed);
 
-	// Add blinding values after the actual private wires
-	// Set random values for non-constraint dummy wires
-	for i in 0..blinding_info.n_dummy_wires {
-		buffer.set(n_private + i, F::random(&mut rng));
-	}
-
-	// Set random values for dummy constraint wires (A * B = C)
-	let constraint_wire_base = n_private + blinding_info.n_dummy_wires;
+	// Set random values for dummy constraint wires (A * B = C) after the actual private wires
+	let constraint_wire_base = n_private;
 	for i in 0..blinding_info.n_dummy_constraints {
 		let a = F::random(&mut rng);
 		let b = F::random(&mut rng);

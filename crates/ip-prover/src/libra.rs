@@ -243,7 +243,7 @@ mod tests {
 		let degree = 2;
 
 		// Create random mask buffer
-		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
+		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree);
 		let mask_buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
 
 		// Create random challenge point
@@ -286,7 +286,7 @@ mod tests {
 		let alloc = GlobalAllocator;
 
 		// Create random mask buffer (g')
-		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
+		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree);
 		let log_size = m_n + m_d;
 		let mask_buffer = random_field_buffer::<B128>(&mut rng, log_size);
 
@@ -361,7 +361,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 		let degree = 2;
 		for n_vars in [0, 1, 3, 4, 5] {
-			let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
+			let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree);
 			let challenge_point = random_scalars::<B128>(&mut rng, n_vars);
 			let query_point = random_scalars::<B128>(&mut rng, m_n + m_d);
 
@@ -391,7 +391,7 @@ mod tests {
 	fn infinity_round_polynomials_run_the_sumcheck() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let (n_vars, degree) = (5, 2);
-		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
+		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree);
 		let buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
 		let mask = Mask::new(n_vars, degree, buffer.as_view());
 
