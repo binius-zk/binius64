@@ -13,8 +13,8 @@ use binius_iop::{
 };
 use binius_ip_prover::channel::{IPProverChannel, WordIPProverChannel};
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldSliceMut, bit_reverse::bit_reverse_packed,
-	inner_product::inner_product_par, line::extrapolate_line, ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, FieldSliceMut, inner_product::inner_product_par,
+	line::extrapolate_line, ntt::AdditiveNTT,
 };
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
@@ -55,7 +55,7 @@ struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 	/// The committed round oracle `pi_i`, holding each constituent sent by
 	/// [`IOPProverChannel::send_oracle`] in its block, in the caller's allocator.
 	///
-	/// A ZK round oracle also holds its ZK pad, and is stored relabeled by
+	/// A ZK round oracle also holds its ZK pad, and is stored reversed by
 	/// [`zk_commit_index`](binius_iop::basefold::layout::zk_commit_index), as it is committed.
 	message: FieldBuffer<P, Data>,
 }
@@ -73,7 +73,7 @@ type Relation<P, Data> = Vec<(BaseFoldOracle, FieldBuffer<P, Data>)>;
 /// This channel owns an [`StdRng`] and generates random masks internally during
 /// [`send_oracle`](IOPProverChannel::send_oracle). The caller provides only the raw witness
 /// buffer (not doubled). The channel handles:
-/// - Filling each ZK round's pad with uniform elements and relabeling the round as it is committed
+/// - Filling each ZK round's pad with uniform elements and reversing the round as it is committed
 ///   (see [`binius_iop::basefold::layout`])
 /// - Generating a random mask of equal length
 /// - Interleaving witness and mask for FRI commitment
@@ -167,7 +167,7 @@ where
 		let index = self.committed_oracles.len();
 		let layout = &self.layouts[index];
 
-		// A ZK round fills its pad with uniform elements and is committed relabeled, which puts the
+		// A ZK round fills its pad with uniform elements and is committed reversed, which puts the
 		// pad on the lowest coefficients of its codeword. No operand reaches the pad, since every
 		// transparent vanishes above its oracle's content.
 		if layout.is_zk {
@@ -292,8 +292,8 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 	let log_n_oracles = log2_ceil_usize(layouts.len());
 
-	// A ZK round's message is stored as committed, relabeled, so its transparent is relabeled to
-	// match. Relabeling both sides of the inner product leaves it unchanged.
+	// A ZK round's message is stored as committed, reversed, so its transparent is reversed to
+	// match. Reversing both sides of the inner product leaves it unchanged.
 	let mut transparents = batch_relations(channel, layouts, relations, alloc);
 	for (transparent, layout) in iter::zip(&mut transparents, layouts) {
 		if layout.is_zk {
@@ -338,9 +338,9 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	};
 
 	// Codeword commitments in oracle-index order, matching `fri_params.input_oracles()`.
-	// The sumcheck binds the oracle-index variables `Z` high to low, but the FRI's outer tensor
-	// takes its first challenge as the low bit of the oracle index, so it pairs oracle `2k` with
-	// `2k + 1`. The oracle count is padded to a power of two with absent oracles.
+	// The sumcheck binds the oracle-index variables `Z` first, and the FRI's outer tensor takes its
+	// first challenge as the low bit of the oracle index, so it pairs oracle `2k` with `2k + 1`.
+	// The oracle count is padded to a power of two with absent oracles.
 	let mut nodes = Vec::with_capacity(1 << log_n_oracles);
 	let mut committed_codewords = Vec::with_capacity(committed_oracles.len());
 	for (fri_oracle, committed, transparent) in
@@ -431,11 +431,9 @@ fn copy_prefix<P: PackedField>(mut dst: FieldSliceMut<'_, P>, src: FieldSlice<'_
 /// Permutes a ZK round's table into the order the round is committed in, in place.
 ///
 /// Entry `i` of the result is entry `zk_commit_index(i)` of the input, the index with its bits
-/// reversed and complemented (see [`binius_iop::basefold::layout::zk_commit_index`]). Reversing the
-/// bits is [`bit_reverse_packed`], and complementing them all then reverses the order of the
-/// entries.
-fn permute_to_zk_commit_order<P: PackedField>(mut buffer: FieldSliceMut<'_, P>) {
-	bit_reverse_packed(buffer.as_mut_view());
+/// complemented (see [`binius_iop::basefold::layout::zk_commit_index`]), which reverses the order
+/// of the entries.
+fn permute_to_zk_commit_order<P: PackedField>(buffer: FieldSliceMut<'_, P>) {
 	reverse_scalars(buffer);
 }
 
@@ -1499,7 +1497,7 @@ mod tests {
 		assert!(!run_round_trip::<PackedGhash4x128b>(&rounds, true));
 	}
 
-	/// The prover's relabeling of a ZK round agrees with the index map and the verifier's point
+	/// The prover's reversal of a ZK round agrees with the index map and the verifier's point
 	/// map.
 	///
 	/// The permutation splits on whether the buffer spans whole packed elements, so this runs three
@@ -1563,9 +1561,8 @@ mod tests {
 	/// committed, and checks that their symbols at `q` positions form a matrix of full rank.
 	///
 	/// The positions `0..q` are the hard case. They lie in the low subspaces `U_k`, where a symbol
-	/// reads only the entries the encoder takes as low coefficients. Without the relabeling, those
-	/// entries are spread across the round oracle from coordinate 0 up, and the pad reaches none
-	/// of the symbols there.
+	/// reads only the entries the encoder takes as low coefficients. Without the reversal, those
+	/// entries are the round oracle's first, and the pad reaches none of the symbols there.
 	#[test]
 	fn any_q_opened_symbols_of_a_zk_round_are_independent_on_its_pad() {
 		type F = B128;
@@ -1631,8 +1628,8 @@ mod tests {
 	/// This commits the same witness under two prover seeds and compares the `Enc(M_r)` half of
 	/// the codewords. A symbol that agrees between them is a fixed function of the witness, which
 	/// the query phase reveals whenever a query lands on its position. The witness starts at
-	/// coordinate 0, which the bit-reversed encoding reads as the constant coefficient, so without
-	/// the relabeling the symbol at position 0 would be the witness's first entry.
+	/// coordinate 0, which the encoder reads as the constant coefficient, so without
+	/// the reversal the symbol at position 0 would be the witness's first entry.
 	///
 	/// The two specs cover a round that holds its pad in its slack, and one that grows for it.
 	#[test]

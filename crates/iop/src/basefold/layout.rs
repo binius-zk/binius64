@@ -12,28 +12,26 @@
 //! positions, the symbols restricted to the pad are linearly independent functionals.
 //!
 //! Where the pad sits decides whether that holds. The encoder reads entry `i` of an `ℓ`-variate
-//! table as the coefficient of the novel basis polynomial `X_{rev(i)}`, where `rev` reverses `ℓ`
-//! bits. It evaluates over a subspace `S` that contains 0, at index 0. Every `X_c` with `c ≥ 2^k`
-//! vanishes on `U_k = span(β_0, …, β_{k-1})`, so a symbol at a position in `U_k` reads only the
-//! entries `rev(c)` with `c < 2^k`. Those sit at stride `2^{ℓ-k}`, starting with entry 0, which is
-//! the first entry of the round's largest constituent. No pad outside the extents reaches them.
+//! table as the coefficient of the novel basis polynomial `X_i`. It evaluates over a subspace `S`
+//! that contains 0, at index 0. Every `X_c` with `c ≥ 2^k` vanishes on `U_k = span(β_0, …,
+//! β_{k-1})`, so a symbol at a position in `U_k` reads only the entries `c < 2^k`. Those are the
+//! first entries of the table, which are the first entries of the round's largest constituent. No
+//! pad outside the extents reaches them.
 //!
-//! A zero-knowledge round is therefore committed relabeled: entry `i` of its committed table is
-//! `M_r[σ(i)]`, where [`zk_commit_index`] gives `σ`, which reverses and complements the bits of
-//! `i`. Coefficient `c` of its codeword is then `M_r[2^ℓ - 1 - c]`. The pad is the top `q`
-//! coordinates of `M_r`, so it fills the coefficients `0..q`, whose basis polynomials span the
-//! polynomials of degree below `q`. Restricted to the pad, the symbols at `q` distinct positions
-//! are evaluations of those polynomials at distinct points, and these are linearly independent by
-//! interpolation.
+//! A zero-knowledge round is therefore committed reversed: entry `i` of its committed table is
+//! `M_r[σ(i)]`, where [`zk_commit_index`] gives `σ`, which complements the bits of `i`. Coefficient
+//! `c` of its codeword is then `M_r[2^ℓ - 1 - c]`. The pad is the top `q` coordinates of `M_r`, so
+//! it fills the coefficients `0..q`, whose basis polynomials span the polynomials of degree below
+//! `q`. Restricted to the pad, the symbols at `q` distinct positions are evaluations of those
+//! polynomials at distinct points, and these are linearly independent by interpolation.
 //!
-//! The opening runs on the committed table and does not see the relabeling, except where the
+//! The opening runs on the committed table and does not see the reversal, except where the
 //! verifier evaluates a transparent: for a zero-knowledge round it does so at
 //! [`zk_commit_point`] of the round's point.
 
 use std::{cmp::Reverse, ops::Range};
 
 use binius_field::FieldOps;
-use binius_math::bit_reverse::reverse_bits;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use crate::channel::{OracleSchedule, OracleSpec};
@@ -97,23 +95,22 @@ pub fn layout_rounds(schedule: &OracleSchedule, n_test_queries: usize) -> Vec<Ro
 
 /// The coordinate of `M_r` that entry `index` of a zero-knowledge round's committed table holds.
 ///
-/// The map reverses the low `log_len` bits of `index` and complements them. It is its own inverse,
-/// so it also gives the entry that a coordinate is committed at. See the
-/// [module documentation](self) for why a zero-knowledge round is committed relabeled.
+/// The map complements the low `log_len` bits of `index`, which reverses the order of the round.
+/// It is its own inverse, so it also gives the entry that a coordinate is committed at. See the
+/// [module documentation](self) for why a zero-knowledge round is committed reversed.
 pub const fn zk_commit_index(index: usize, log_len: usize) -> usize {
-	reverse_bits(index, log_len as u32) ^ ((1 << log_len) - 1)
+	index ^ ((1 << log_len) - 1)
 }
 
 /// The point over `M_r` that corresponds to `point` over a zero-knowledge round's committed table.
 ///
-/// For any table `T` over the round, let `T'` be `T` relabeled the way the round is committed,
+/// For any table `T` over the round, let `T'` be `T` reversed the way the round is committed,
 /// `T'[i] = T[zk_commit_index(i)]`. The multilinear extension of `T'` at `point` equals that of
-/// `T` at `zk_commit_point(point)`, which is `(1 - point[ℓ-1], …, 1 - point[0])`: reversing the
-/// bits of an index reverses the coordinates, and complementing a bit complements its coordinate.
+/// `T` at `zk_commit_point(point)`, which is `(1 - point[0], …, 1 - point[ℓ-1])`: complementing a
+/// bit of an index complements its coordinate.
 pub fn zk_commit_point<E: FieldOps>(point: &[E]) -> Vec<E> {
 	point
 		.iter()
-		.rev()
 		.map(|coordinate| E::one() - coordinate)
 		.collect()
 }
@@ -294,9 +291,9 @@ mod tests {
 	}
 
 	#[test]
-	fn zk_commit_index_reverses_and_complements_the_bits() {
-		assert_eq!(zk_commit_index(0b001, 3), 0b011);
-		assert_eq!(zk_commit_index(0b110, 3), 0b100);
+	fn zk_commit_index_complements_the_bits() {
+		assert_eq!(zk_commit_index(0b001, 3), 0b110);
+		assert_eq!(zk_commit_index(0b110, 3), 0b001);
 		assert_eq!(zk_commit_index(0, 0), 0);
 		for log_len in 0..8 {
 			for index in 0..1 << log_len {
@@ -306,12 +303,11 @@ mod tests {
 	}
 
 	#[test]
-	fn the_relabeling_puts_coordinate_c_from_the_top_on_coefficient_c() {
-		// The encoder reads entry `i` of the committed table as the coefficient `rev(i)`.
+	fn the_reversal_puts_coordinate_c_from_the_top_on_coefficient_c() {
+		// The encoder reads entry `i` of the committed table as the coefficient `i`.
 		for log_len in 0..8 {
 			for coordinate in 0..1 << log_len {
-				let entry = zk_commit_index(coordinate, log_len);
-				let coefficient = reverse_bits(entry, log_len as u32);
+				let coefficient = zk_commit_index(coordinate, log_len);
 				assert_eq!(coefficient, (1 << log_len) - 1 - coordinate);
 			}
 		}

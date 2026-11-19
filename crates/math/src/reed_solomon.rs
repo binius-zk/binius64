@@ -12,10 +12,7 @@ use binius_field::{BinaryField, PackedField};
 use getset::CopyGetters;
 
 use super::{FieldBuffer, FieldSlice, binary_subspace::BinarySubspace, ntt::AdditiveNTT};
-use crate::{
-	bit_reverse::bit_reverse_packed,
-	ntt::{DomainContext, domain_context::GaoMateerOnTheFly},
-};
+use crate::ntt::{DomainContext, domain_context::GaoMateerOnTheFly};
 
 /// [Reed–Solomon] codes over binary fields.
 ///
@@ -94,6 +91,10 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	/// This function interprets the message as a batch of independent vectors and applies an
 	/// interleaved Reed–Solomon.
 	///
+	/// Message entry `i` is the coefficient of the novel basis polynomial `X_{i >> log_batch_size}`
+	/// of batch lane `i mod 2^log_batch_size`, so the batch index is the low bits of the message
+	/// index. No bit reversal is applied.
+	///
 	/// ## Preconditions
 	///
 	/// * `data.log_len()` must equal `log_dim() + log_batch_size`.
@@ -142,8 +143,6 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		let log_output_len = self.log_dim() + log_batch_size + self.log_inv_rate;
 		let mut output = FieldBuffer::from_view_with_capacity_in(alloc, data, log_output_len);
 
-		// Permute the message once, then repeat it, so every copy inherits the permutation.
-		bit_reverse_packed(output.as_mut_view());
 		output.repeat_extend(log_output_len);
 
 		ntt.forward_transform(output.as_mut_view(), self.log_inv_rate, log_batch_size);
@@ -160,7 +159,6 @@ mod tests {
 	use super::*;
 	use crate::{
 		FieldBuffer,
-		bit_reverse::reverse_bits,
 		ntt::{NeighborsLastReference, domain_context::GaoMateerPreExpanded},
 		test_utils::random_field_buffer,
 	};
@@ -190,11 +188,10 @@ mod tests {
 			rs_code.encode_batch(&ntt, message.as_view(), log_batch_size, &GlobalAllocator);
 
 		// Method 2: Reference implementation - apply NTT with zero-padded coefficients to the
-		// bit-reversal permuted message.
+		// message in natural order.
 		let mut reference_buffer = FieldBuffer::zeros(rs_code.log_len() + log_batch_size);
 		for (i, val) in message.iter_scalars().enumerate() {
-			let bits = (rs_code.log_dim() + log_batch_size) as u32;
-			reference_buffer.set(reverse_bits(i, bits), val);
+			reference_buffer.set(i, val);
 		}
 
 		// Perform large NTT with zero-padded coefficients.
@@ -229,12 +226,12 @@ mod tests {
 
 	/// Pins the codeword-duplication identity that underlies Lifted FRI (oracle padding).
 	///
-	/// Lifting a message `π` of dimension `m` to a larger dimension `M = m + η` zero-pads it on
-	/// the most-significant hypercube coordinates (`ZeroPadMSB_η`). The novel-basis / bit-reversed
-	/// encoding turns this into a *duplication* of the codeword: encoding the lifted message over
-	/// the dimension-`M` code yields each entry of the dimension-`m` codeword repeated `2^η` times.
-	/// This test asserts the contiguous form `Enc_M(ZeroPadMSB_η(π))[j] == Enc_m(π)[j >> η]`, which
-	/// is the index translation Lifted FRI's prover and verifier rely on.
+	/// Lifting a message `π` of dimension `m` to a larger dimension `M = m + η` places entry `i` at
+	/// index `i << η` and zeros elsewhere (`Stride_η`), so it is the coefficient of `X_{i · 2^η}`.
+	/// The novel basis turns this into a *duplication* of the codeword: encoding the lifted
+	/// message over the dimension-`M` code yields each entry of the dimension-`m` codeword
+	/// repeated `2^η` times. This test asserts the contiguous form `Enc_M(Stride_η(π))[j] ==
+	/// Enc_m(π)[j >> η]`, which is the index translation Lifted FRI's prover and verifier rely on.
 	fn test_lift_duplicate_identity_helper<P: PackedField>(
 		log_dim_small: usize,
 		log_dim_large: usize,
@@ -262,11 +259,10 @@ mod tests {
 		// Random message for the small code.
 		let msg_small = random_field_buffer::<P>(&mut rng, log_dim_small);
 
-		// ZeroPadMSB lift: the small message occupies the low `2^log_dim_small` hypercube values,
-		// the high coordinates are zero.
+		// Strided lift: entry `i` of the small message sits at `i << eta`, the rest are zero.
 		let mut msg_large = FieldBuffer::<P>::zeros(log_dim_large);
 		for (i, val) in msg_small.iter_scalars().enumerate() {
-			msg_large.set(i, val);
+			msg_large.set(i << eta, val);
 		}
 
 		let enc_small = rs_small.encode_batch(&ntt, msg_small.as_view(), 0, &GlobalAllocator);

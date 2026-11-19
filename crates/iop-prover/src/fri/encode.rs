@@ -7,7 +7,7 @@ use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::fri::FRIParams;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
-use binius_utils::rand::par_rand;
+use binius_utils::{rand::par_rand, rayon::prelude::*};
 use rand::{CryptoRng, rngs::StdRng};
 
 /// Reed-Solomon encodes one input oracle's interleaved message.
@@ -76,7 +76,7 @@ where
 	rs_code.encode_batch(ntt, message.as_view(), log_batch_size, alloc)
 }
 
-/// Output of [`encode_masked`]: the interleaved (message ‖ mask) codeword and the generated mask.
+/// Output of [`encode_masked`]: the codeword of the interleaved (message, mask) pairs and the generated mask.
 ///
 /// Both buffers come from the allocator the encode was given, so a pooled prover holds neither on
 /// the global heap.
@@ -91,7 +91,7 @@ pub struct MaskedCodeword<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 /// Generates a random mask, interleaves it with the message, and Reed-Solomon encodes.
 ///
 /// This is used for zero-knowledge FRI commitments. The function generates a random mask of
-/// equal length to the input message, concatenates `message || mask` as the interleaved message
+/// equal length to the input message, interleaves `(message_i, mask_i)` as the interleaved message
 /// (with `log_batch_size = 1`), and performs Reed-Solomon encoding. The returned codeword is
 /// committed by sending it over a Merkle channel, like [`encode_interleaved`]'s.
 ///
@@ -103,7 +103,7 @@ pub struct MaskedCodeword<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 /// * `ntt` - the additive NTT for Reed-Solomon encoding
 /// * `message` - the raw message to encode (not doubled)
 /// * `rng` - cryptographic RNG for mask generation
-/// * `alloc` - the allocator the mask, the codeword, and the concatenation temporary are drawn from
+/// * `alloc` - the allocator the mask, the codeword, and the interleaving temporary are drawn from
 pub fn encode_masked<F, P, NTT, A>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
@@ -139,20 +139,40 @@ where
 	let mask = FieldBuffer::new(log_len, mask_values);
 	drop(gen_mask_scope);
 
+	// Interleave `(m_i, ω_i)`, so entry `2i` is the message and `2i + 1` its mask, and the batch
+	// index is the low bit.
 	let combined_values = if log_len < P::LOG_WIDTH {
-		let combined_value =
-			P::from_scalars(iter::chain(message.iter_scalars(), mask.iter_scalars()));
+		let combined_value = P::from_scalars(
+			iter::zip(message.iter_scalars(), mask.iter_scalars())
+				.flat_map(|(message_i, mask_i)| [message_i, mask_i]),
+		);
 		let mut values = alloc.alloc::<P>(1);
 		values.push(combined_value);
 		values
 	} else {
-		let _scope = tracing::debug_span!("Concatenate message and mask").entered();
+		let _scope = tracing::debug_span!("Interleave message and mask").entered();
 		// TODO: Ideally, encoding should not allocate and copy the memory into a temp buffer.
 		// Until then the temporary at least comes from the pool rather than the global heap.
-		let mut combined_values = alloc.alloc::<P>(2 * packed_len);
-		combined_values.extend_from_slice(message.as_ref());
-		combined_values.extend_from_slice(mask.as_ref());
-		combined_values
+		//
+		// Output word `2k + h` holds scalars `(2k + h) · W + l` for lane `l`, which are the pairs
+		// `m = k · W + (h · W + l) / 2` of input word `k`, with the low bit selecting the mask.
+		let message_words = message.as_ref();
+		let mask_words = mask.as_ref();
+		(0..2 * packed_len)
+			.into_par_iter()
+			.map(|j| {
+				let (k, h) = (j >> 1, j & 1);
+				let (message_word, mask_word) = (message_words[k], mask_words[k]);
+				P::from_fn(|lane| {
+					let position = h * P::WIDTH + lane;
+					if position & 1 == 0 {
+						message_word.get(position >> 1)
+					} else {
+						mask_word.get(position >> 1)
+					}
+				})
+			})
+			.collect_into_alloc_vec(alloc)
 	};
 	let combined = FieldBuffer::new(log_len + 1, combined_values);
 

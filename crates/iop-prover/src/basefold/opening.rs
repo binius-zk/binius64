@@ -8,7 +8,7 @@ use std::ops::Deref;
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::sumcheck::{bivariate_product_prover, common::SumcheckProver};
-use binius_math::ntt::AdditiveNTT;
+use binius_math::{bit_reverse::bit_reverse_packed, ntt::AdditiveNTT};
 
 use crate::{
 	basefold::index_rounds::{IndexNode, bind_oracle_index_variables},
@@ -26,14 +26,21 @@ use crate::{
 /// per-round buffers (see [`index_rounds`](super::index_rounds)), leaving one merged `G` and `T` of
 /// `n_vars` variables for the remaining rounds.
 ///
-/// The sumcheck binds high to low, which is the order the FRI folder consumes its challenges
-/// as `[γ ++ Z ++ X]`. The `Z` variables are bound in the order the FRI's outer tensor indexes
-/// its oracles, so the oracle index `r` sits at chunk `bit_reverse(r)` of `G`.
+/// The sumcheck binds low to high, which is the order the FRI folder consumes its challenges as
+/// `[γ ++ Z ++ X]`: the encoder takes entry `i` as the coefficient of `X_i`, so the first fold
+/// binds the lowest variable. The `Z` variables are the lowest, in the natural order of the oracle
+/// index, with a round's own variables above them.
+///
+/// The index rounds and the bivariate-product prover below bind high to low. Binding the
+/// bit-reversed buffers high to low gives the same round polynomials as binding the originals low
+/// to high, so each node's message and transparent are bit-reversed over their own variables once
+/// on entry, and the nodes are in natural order.
 ///
 /// ## Arguments
 ///
 /// * `nodes` - per round oracle, in oracle-index order, its γ-folded message `M^γ_r`, transparent
-///   `T_r`, and the log of the message's repeat period; padded with `None` to a power of two
+///   `T_r`, both in natural order, and the log of the message's repeat period; padded with `None`
+///   to a power of two
 /// * `eval_claim` - the target `Σ_{X,Z} G · T`
 /// * `batch_challenge` - the masking challenge `γ`; folds each interleaved `[M_r ‖ ω_r]` codeword
 ///   in the FRI inner (unbatch) round, which carries no round polynomial
@@ -45,7 +52,7 @@ use crate::{
 /// The final FRI value equals `G` at the final point.
 /// The verifier asserts that it matches the final sumcheck value when it runs the matching opening.
 pub fn prove_sumcheck_basefold<A, F, P, NTT, Channel, Data>(
-	nodes: Vec<Option<IndexNode<P, A>>>,
+	mut nodes: Vec<Option<IndexNode<P, A>>>,
 	eval_claim: F,
 	batch_challenge: Option<F>,
 	mut fri_folder: FRIFoldProver<'_, F, P, NTT, Channel::Commitment, Data>,
@@ -70,6 +77,12 @@ pub fn prove_sumcheck_basefold<A, F, P, NTT, Channel, Data>(
 	let log_n_oracles = nodes.len().trailing_zeros() as usize;
 	let n_inner = usize::from(batch_challenge.is_some());
 	assert_eq!(n_vars + log_n_oracles + n_inner, fri_folder.n_rounds());
+
+	// Bit-reverse each node, so that binding high to low is binding the natural order low to high.
+	for node in nodes.iter_mut().flatten() {
+		bit_reverse_packed(node.message.as_mut_view());
+		bit_reverse_packed(node.transparent.as_mut_view());
+	}
 
 	// Inner (unbatch) round: fold every interleaved (M_r ‖ ω_r) ZK codeword at the masking
 	// challenge.
