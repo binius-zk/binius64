@@ -5,6 +5,7 @@
 
 pub mod channel;
 pub mod compiler;
+pub mod index_rounds;
 mod opening;
 
 pub use opening::*;
