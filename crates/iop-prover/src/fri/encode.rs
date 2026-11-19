@@ -7,7 +7,7 @@ use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::fri::FRIParams;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
-use binius_utils::rand::par_rand;
+use binius_utils::{rand::par_rand, rayon::prelude::*};
 use rand::{CryptoRng, rngs::StdRng};
 
 /// Reed-Solomon encodes one input oracle's interleaved message.
@@ -76,7 +76,8 @@ where
 	rs_code.encode_batch(ntt, message.as_view(), log_batch_size, alloc)
 }
 
-/// Output of [`encode_masked`]: the interleaved (message ‖ mask) codeword and the generated mask.
+/// Output of [`encode_masked`]: the codeword of the interleaved (message, mask) pairs and the
+/// generated mask.
 ///
 /// Both buffers come from the allocator the encode was given, so a pooled prover holds neither on
 /// the global heap.
@@ -88,10 +89,17 @@ pub struct MaskedCodeword<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	pub mask: FieldBuffer<P, Data>,
 }
 
+/// Zips two packed elements: returns `[z_0, z_1]` where `z_0 || z_1` is `a_0, b_0, a_1, b_1, ...`.
+fn zip_packed<P: PackedField>([a, b]: [P; 2]) -> [P; 2] {
+	let (z_0, z_1) =
+		(0..P::LOG_WIDTH).fold((a, b), |(a, b), log_block_len| a.interleave(b, log_block_len));
+	[z_0, z_1]
+}
+
 /// Generates a random mask, interleaves it with the message, and Reed-Solomon encodes.
 ///
 /// This is used for zero-knowledge FRI commitments. The function generates a random mask of
-/// equal length to the input message, concatenates `message || mask` as the interleaved message
+/// equal length to the input message, interleaves `(message_i, mask_i)` as the interleaved message
 /// (with `log_batch_size = 1`), and performs Reed-Solomon encoding. The returned codeword is
 /// committed by sending it over a Merkle channel, like [`encode_interleaved`]'s.
 ///
@@ -103,7 +111,7 @@ pub struct MaskedCodeword<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 /// * `ntt` - the additive NTT for Reed-Solomon encoding
 /// * `message` - the raw message to encode (not doubled)
 /// * `rng` - cryptographic RNG for mask generation
-/// * `alloc` - the allocator the mask, the codeword, and the concatenation temporary are drawn from
+/// * `alloc` - the allocator the mask, the codeword, and the interleaving temporary are drawn from
 pub fn encode_masked<F, P, NTT, A>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
@@ -139,20 +147,38 @@ where
 	let mask = FieldBuffer::new(log_len, mask_values);
 	drop(gen_mask_scope);
 
+	// Interleave `(m_i, ω_i)`, so entry `2i` is the message and `2i + 1` its mask, and the batch
+	// index is the low bit.
 	let combined_values = if log_len < P::LOG_WIDTH {
-		let combined_value =
-			P::from_scalars(iter::chain(message.iter_scalars(), mask.iter_scalars()));
+		let combined_value = P::from_scalars(
+			iter::zip(message.iter_scalars(), mask.iter_scalars())
+				.flat_map(|(message_i, mask_i)| [message_i, mask_i]),
+		);
 		let mut values = alloc.alloc::<P>(1);
 		values.push(combined_value);
 		values
 	} else {
-		let _scope = tracing::debug_span!("Concatenate message and mask").entered();
+		let _scope = tracing::debug_span!("Interleave message and mask").entered();
 		// TODO: Ideally, encoding should not allocate and copy the memory into a temp buffer.
 		// Until then the temporary at least comes from the pool rather than the global heap.
-		let mut combined_values = alloc.alloc::<P>(2 * packed_len);
-		combined_values.extend_from_slice(message.as_ref());
-		combined_values.extend_from_slice(mask.as_ref());
-		combined_values
+		//
+		// Input words `k` of message and mask zip into output words `2k` and `2k + 1`.
+		let message_words = message.as_ref();
+		let mask_words = mask.as_ref();
+		let len = 2 * packed_len;
+		let mut values = alloc.alloc::<P>(len);
+		// The allocator may hand back more capacity than requested, so bound the spare slice.
+		values.spare_capacity_mut()[..len]
+			.par_chunks_exact_mut(2)
+			.enumerate()
+			.for_each(|(k, out)| {
+				let [even, odd] = zip_packed([message_words[k], mask_words[k]]);
+				out[0].write(even);
+				out[1].write(odd);
+			});
+		// SAFETY: the chunks cover all `len` slots, and each was written exactly once.
+		unsafe { values.set_len(len) };
+		values
 	};
 	let combined = FieldBuffer::new(log_len + 1, combined_values);
 

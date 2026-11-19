@@ -23,7 +23,7 @@ use crate::{
 ///
 /// The sumcheck binds the variables in the order the FRI folder consumes its challenges: the mask
 /// fold γ (no round polynomial, and only if some round is masked), then the `Z` variables, then
-/// the `X` variables, high to low. Each round polynomial is degree 2 and is received before the
+/// the `X` variables, low to high. Each round polynomial is degree 2 and is received before the
 /// FRI round is processed, so that a commitment the FRI sends in the same round lands after it.
 ///
 /// ## Arguments
@@ -33,8 +33,9 @@ use crate::{
 /// * `eval_claim` - the target `Σ_{X,Z} G · T`.
 /// * `n_vars` - the number of variables `X`, the largest round oracle's.
 /// * `batch_challenge` - the mask fold challenge `γ`, if any round is masked.
-/// * `multiplicand_eval` - evaluates `T(ρ, ζ)`. It receives `ρ` in variable order (low to high) and
-///   `ζ` in the order sampled, which is the bit order of the oracle index.
+/// * `multiplicand_eval` - evaluates `T(ρ, ζ)`. It receives `ρ` in the order sampled, which is the
+///   variable order (low to high), and `ζ` in the order sampled, which is the bit order of the
+///   oracle index.
 /// * `channel` - the Merkle channel carrying all prover interaction: round coefficients,
 ///   challenges, commitments, and query openings.
 ///
@@ -91,10 +92,9 @@ where
 	);
 	let final_fri_value = fri_verifier.verify(channel)?;
 
-	// `Z` challenges come first, then `X` high to low; `ρ` is indexed low to high.
+	// `Z` challenges come first, then `X` low to high, which is the order of `ρ`.
 	let (zeta, rho) = fri_challenges[n_inner..].split_at(log_n_oracles);
-	let rho = rho.iter().rev().cloned().collect::<Vec<_>>();
-	let multiplicand = multiplicand_eval(&rho, zeta);
+	let multiplicand = multiplicand_eval(rho, zeta);
 
 	channel.assert_zero(sum - final_fri_value * multiplicand)?;
 

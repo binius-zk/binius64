@@ -121,9 +121,7 @@ fn test_commit_prove_verify_success<F, P>(
 	//
 	// check c == t(r'_0, ..., r'_{\ell-1})
 	// note that the prover is claiming that the final_message is [c]
-	let mut eval_point = verifier_challenges.clone();
-	eval_point.reverse();
-	let computed_eval = evaluate(&msg, &eval_point);
+	let computed_eval = evaluate(&msg, &verifier_challenges);
 
 	let final_fri_value = verifier.verify(&mut channel).unwrap();
 	assert_eq!(computed_eval, final_fri_value);
@@ -315,7 +313,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	// so `max_early = 0` and the slice is `[outer ++ later]`. Oracle `i` folds with the
 	// `log_batch_size_i`-length suffix of the later group; the remaining (tail) challenges fold the
 	// shared reduced codeword. So the final value is
-	//   sum_i outer_tensor[i] * msg_i.evaluate(reversed(later_i ++ tail)).
+	//   sum_i outer_tensor[i] * msg_i.evaluate(later_i ++ tail)).
 	let max_later = log_batch_sizes.iter().copied().max().unwrap();
 	let log_n_oracles = log2_ceil_usize(log_batch_sizes.len());
 	let first_fold_arity = params.log_batch_size();
@@ -327,8 +325,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	let mut expected = F::ZERO;
 	for (i, (msg, &log_batch_size)) in iter::zip(&messages, &log_batch_sizes).enumerate() {
 		let later_i = &later[max_later - log_batch_size..];
-		let mut eval_point = later_i.iter().chain(tail).copied().collect::<Vec<_>>();
-		eval_point.reverse();
+		let eval_point = later_i.iter().chain(tail).copied().collect::<Vec<_>>();
 		expected += outer_tensor[i] * evaluate(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
@@ -450,7 +447,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 	// `early_window ++ later_window`, the suffixes of the early and later groups of lengths
 	// `log_early_batch_size_i` and `log_later_batch_size_i`. The remaining (tail) challenges fold
 	// the shared reduced codeword. So the final value is
-	//   sum_i outer_tensor[i] * msg_i.evaluate(reversed(early_i ++ later_i ++ tail)).
+	//   sum_i outer_tensor[i] * msg_i.evaluate(early_i ++ later_i ++ tail)).
 	let max_early = params
 		.input_oracles()
 		.iter()
@@ -478,13 +475,12 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 		let spec = &params.input_oracles()[i];
 		let early_i = &early[max_early - spec.log_early_batch_size..];
 		let later_i = &later[max_later - spec.log_later_batch_size..];
-		let mut eval_point = early_i
+		let eval_point = early_i
 			.iter()
 			.chain(later_i)
 			.chain(tail)
 			.copied()
 			.collect::<Vec<_>>();
-		eval_point.reverse();
 		expected += outer_tensor[i] * evaluate(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
@@ -606,14 +602,14 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	// `log_batch_size_i`-length suffix of the later group and combines with the outer-challenge
 	// tensor. The remaining `reduced_log_dim` tail challenges fold the combined codeword.
 	//
-	// Lifting oracle `i` embeds its codeword as `Enc_M(ZeroPadMSB_eta(m_i'))`, whose multilinear
-	// extension factors as `m_i'(low vars) * prod_j (1 - Y_j)` over the `eta_i = reduced_log_dim -
-	// log_dim_i` padded high variables. Folding `Enc_M(X)` evaluates `X` at the reversed tail
-	// challenges, so the padded high variables are bound by the first `eta_i` tail challenges
+	// Lifting oracle `i` embeds its codeword as `Enc_M(Stride_eta(m_i'))`, whose multilinear
+	// extension factors as `m_i'(high vars) * prod_j (1 - Y_j)` over the `eta_i = reduced_log_dim -
+	// log_dim_i` padded low variables. Folding `Enc_M(X)` evaluates `X` at the tail challenges
+	// in order, so the padded variables are bound by the first `eta_i` tail challenges
 	// (contributing the factor `prod (1 - tail_k)`), and the surviving `log_dim_i` tail challenges
 	// bind the real message. Hence the final value is
 	//   sum_i outer_tensor[i] * prod_{k<eta_i}(1 - tail_k)
-	//                          * msg_i.evaluate(reversed(later_i ++ tail[eta_i..])).
+	//                          * msg_i.evaluate(later_i ++ tail[eta_i..])).
 	let max_later = log_batch_sizes.iter().copied().max().unwrap();
 	let log_n_oracles = log2_ceil_usize(log_batch_sizes.len());
 	let first_fold_arity = params.log_batch_size();
@@ -627,15 +623,14 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		iter::zip(iter::zip(&messages, &log_batch_sizes), &oracle_log_dims).enumerate()
 	{
 		let eta = reduced_log_dim - log_dim;
-		// The lift (oracle padding) factor from the zero-padded high message variables.
+		// The lift (oracle padding) factor from the zero low message variables.
 		let pad_factor = tail[..eta].iter().map(|&t| F::ONE - t).product::<F>();
 		let later_i = &later[max_later - log_batch_size..];
-		let mut eval_point = later_i
+		let eval_point = later_i
 			.iter()
 			.chain(&tail[eta..])
 			.copied()
 			.collect::<Vec<_>>();
-		eval_point.reverse();
 		expected += outer_tensor[i] * pad_factor * evaluate(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
