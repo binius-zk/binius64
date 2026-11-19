@@ -3,7 +3,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField, Rijndael8b as B8};
 use binius_ip_prover::channel::IPProverChannel;
@@ -104,7 +104,7 @@ where
 mod tests {
 	use std::{array, iter::repeat_with};
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::arch::OptimalPackedB128;
 	use binius_transcript::{ProverTranscript, VerifierTranscript};
 	use binius_verifier::{

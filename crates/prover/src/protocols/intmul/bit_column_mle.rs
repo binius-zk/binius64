@@ -2,7 +2,7 @@
 
 use std::{array, iter};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{BinaryField, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_ip_prover::sumcheck::{
@@ -190,7 +190,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::word::Word;
 	use binius_field::{Field, FieldOps};
 	use binius_ip_prover::sumcheck::{prove_single_mlecheck, quadratic_mlecheck_prover};

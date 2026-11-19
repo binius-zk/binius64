@@ -3,7 +3,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldSlice, FieldVec};
@@ -137,7 +137,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{
 		FieldOps, Random,
 		arch::{OptimalB128, OptimalPackedB128},

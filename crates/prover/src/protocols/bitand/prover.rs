@@ -3,7 +3,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField, Rijndael8b as B8};
 use binius_ip_prover::sumcheck::{common::MleCheckProver, quadratic_mlecheck_prover};
@@ -23,7 +23,7 @@ use crate::fold_word::BitAxisFolder;
 /// See [`binius_verifier::protocols::bitand`] for the protocol specification.
 ///
 /// The columns are generic over their backing store `Data` (anything that dereferences to
-/// `[Word]`), so callers can supply pooled buffers ([`PoolVec`](binius_compute::PoolVec)) or plain
+/// `[Word]`), so callers can supply pooled buffers ([`PoolVec`](binius_alloc::PoolVec)) or plain
 /// `Vec<Word>` interchangeably.
 pub struct UnivariateRoundProver<F, Data>
 where
@@ -182,7 +182,7 @@ where
 mod test {
 	use std::{iter, iter::repeat_with};
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::word::Word;
 	use binius_field::{Rijndael8b, arch::OptimalPackedB128};
 	use binius_math::{

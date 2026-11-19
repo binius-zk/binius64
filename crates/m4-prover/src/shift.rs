@@ -4,7 +4,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
@@ -224,7 +224,7 @@ pub fn build_g_from_folded_words<F: BinaryField>(
 mod tests {
 	use std::iter;
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::{
 		ValueTable,
 		constraint_system::{AndConstraint, InoutSegment},

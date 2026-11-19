@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::FieldVec;
@@ -101,7 +101,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
 	use binius_ip::sumcheck::verify;
 	use binius_math::{

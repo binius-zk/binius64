@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use binius_compute::GlobalAllocator;
+use binius_alloc::GlobalAllocator;
 use binius_field::{Field, Ghash128b as B128, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_iop::{

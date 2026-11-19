@@ -16,7 +16,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::{Allocator, BufferData};
+use binius_alloc::{Allocator, BufferData};
 use binius_field::PackedField;
 
 use super::hypercube::{self, OneCube};
@@ -60,7 +60,7 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_utils::rayon::task_size::{WorkPerItem, min_len_for_work};
 	use proptest::prelude::*;
 	use rand::prelude::*;

@@ -1,5 +1,5 @@
 // Copyright 2025-2026 The Binius Developers
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_core::word::Word;
 use binius_field::{Field, Ghash128b, PackedGhash1x128b};
 use binius_hash::StdHashSuite;

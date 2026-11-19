@@ -14,7 +14,7 @@
 //!
 //! This is the prover mirror of the verifier's pushforward reduction in [`binius_ip::logup_star`].
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::FieldSlice;
 

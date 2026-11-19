@@ -300,7 +300,7 @@ impl<F: BinaryField + From<B8>> B8ToExtMulMap<F> {
 mod test {
 	use std::iter::repeat_with;
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_math::{BinarySubspace, FieldBuffer, univariate::EvaluationDomain};
 	use binius_utils::checked_arithmetics::log2_ceil_usize;

@@ -3,8 +3,8 @@
 
 use std::array;
 
+use binius_alloc::GlobalAllocator;
 use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
-use binius_compute::GlobalAllocator;
 use binius_core::{
 	constraint_system::{
 		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, InoutSegment, ValueVec,

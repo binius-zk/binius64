@@ -26,7 +26,7 @@
 
 use std::{iter, ops::Deref, slice};
 
-use binius_compute::{Allocator, BufferData, CollectIntoAllocVec, VecLike};
+use binius_alloc::{Allocator, BufferData, CollectIntoAllocVec, VecLike};
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::{
 	prelude::*,
@@ -643,7 +643,7 @@ pub fn fold_highest_var<
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_utils::rayon::task_size::{min_len_for_bytes, min_len_for_work};
 	use proptest::prelude::*;
 	use rand::prelude::*;

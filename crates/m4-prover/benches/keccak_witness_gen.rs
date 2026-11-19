@@ -7,8 +7,8 @@
 
 use std::array;
 
+use binius_alloc::GlobalAllocator;
 use binius_circuits::keccak::permutation::keccak_f1600;
-use binius_compute::GlobalAllocator;
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use criterion::{Criterion, criterion_group, criterion_main};

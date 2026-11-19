@@ -36,7 +36,7 @@ use std::{
 	slice,
 };
 
-use binius_compute::{Allocator, BufferData, VecLike};
+use binius_alloc::{Allocator, BufferData, VecLike};
 use binius_field::{
 	Field, PackedField,
 	packed::{get_packed_slice_unchecked, set_packed_slice_unchecked},
@@ -745,7 +745,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for SplitMut<P, Data> {
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::{BufferPool, GlobalAllocator};
+	use binius_alloc::{BufferPool, GlobalAllocator};
 	use binius_field::packed::get_packed_slice;
 	use binius_utils::rayon::task_size::min_len_for_bytes;
 	use proptest::prelude::*;

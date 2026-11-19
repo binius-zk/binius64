@@ -15,7 +15,7 @@
 
 use std::{iter, mem};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldVec, multilinear::eq::eq_one_var};
@@ -262,7 +262,7 @@ impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for OnePadMleCheckPro
 // produce the same round polynomials and the same child evaluations.
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Random, field::FieldOps};
 	use binius_math::{
 		FieldBuffer,

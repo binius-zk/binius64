@@ -4,7 +4,7 @@
 
 use std::array;
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{
 	BinaryField, Divisible, PackedField, U2, U4, Underlier,
@@ -385,7 +385,7 @@ fn padded_tensor<F: BinaryField>(challenges: &[F]) -> Vec<F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Field, Maskable};
 	use binius_math::{
 		multilinear::evaluate::evaluate,

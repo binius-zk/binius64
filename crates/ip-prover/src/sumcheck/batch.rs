@@ -136,7 +136,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use rand::prelude::*;
 
 	use super::batch_prove_mle;

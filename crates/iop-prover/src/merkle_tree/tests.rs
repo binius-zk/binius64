@@ -3,7 +3,7 @@
 
 use core::slice;
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{Ghash128b as B128, PackedField, PackedGhash2x128b, PackedGhash4x128b};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::merkle_tree::MerkleTreeScheme;

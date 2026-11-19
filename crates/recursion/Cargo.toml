@@ -23,7 +23,7 @@ digest.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-binius-compute = { path = "../compute" }
+binius-alloc = { path = "../alloc" }
 binius-iop-prover = { path = "../iop-prover" }
 binius-ip-prover = { path = "../ip-prover" }
 binius-math = { path = "../math", features = ["test-utils"] }

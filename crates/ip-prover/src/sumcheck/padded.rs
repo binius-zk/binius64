@@ -124,7 +124,7 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{
 		Random,
 		arch::{OptimalB128, OptimalPackedB128},

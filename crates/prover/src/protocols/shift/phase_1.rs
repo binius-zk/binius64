@@ -3,7 +3,7 @@
 
 use std::{iter, ops::Deref};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
@@ -594,7 +594,7 @@ impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::constraint_system::{
 		AndConstraint, ConstraintSystem, InoutSegment, Shift, ShiftedValueIndex, ValueIndex,
 	};

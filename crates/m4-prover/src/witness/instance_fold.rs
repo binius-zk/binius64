@@ -4,7 +4,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
+use binius_alloc::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_core::{ValueTable, word::Word};
 use binius_field::{BinaryField, PackedField};
 use binius_math::{FieldVec, inner_product::inner_product};
@@ -153,7 +153,7 @@ impl<F: BinaryField, A: Allocator> FoldedWitness<F, A> {
 mod tests {
 	use std::iter;
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::PackedGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use binius_math::{

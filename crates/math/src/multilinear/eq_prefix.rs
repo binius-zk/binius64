@@ -32,7 +32,7 @@
 
 use std::iter;
 
-use binius_compute::{Allocator, CollectIntoAllocVec};
+use binius_alloc::{Allocator, CollectIntoAllocVec};
 use binius_field::{ExtensionField, Field, PackedField, field::FieldOps};
 use binius_utils::rayon::{iter::repeat_n, prelude::*, task_size::min_len_for_bytes};
 
@@ -169,7 +169,7 @@ fn check_prefix_args(m: usize, x_len: usize, y_len: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{BinaryField1b as B1, Field};
 	use rand::prelude::*;
 

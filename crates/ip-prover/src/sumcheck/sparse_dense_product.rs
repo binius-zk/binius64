@@ -2,7 +2,7 @@
 
 //! Sumcheck prover for the product of a sparse and a dense multilinear.
 
-use binius_compute::BufferData;
+use binius_alloc::BufferData;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_utils::rayon::{
@@ -375,7 +375,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F>
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{
 		Random,
 		arch::{OptimalB128, OptimalPackedB128},

@@ -1,5 +1,5 @@
 // Copyright 2025 Irreducible Inc.
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_core::word::Word;
 use binius_field::arch::OptimalPackedB128;
 use binius_math::test_utils::random_scalars;

@@ -6,7 +6,7 @@
 
 use std::{iter, ops::Deref};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField, util::powers};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{
@@ -218,7 +218,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> AsRef<FieldBuffer<P, Data>> for 
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Random, arch::OptimalB128};
 	use binius_ip::libra::{libra_eval, mask_buffer_dimensions};
 	use binius_math::{
@@ -235,7 +235,7 @@ mod tests {
 
 	#[test]
 	fn test_libra_eval_inner_product_equals_mask_eval() {
-		use binius_compute::GlobalAllocator;
+		use binius_alloc::GlobalAllocator;
 		use binius_math::inner_product::inner_product_buffers;
 
 		let mut rng = StdRng::seed_from_u64(0);
@@ -274,7 +274,7 @@ mod tests {
 
 	#[test]
 	fn test_libra_eval_sumcheck() {
-		use binius_compute::GlobalAllocator;
+		use binius_alloc::GlobalAllocator;
 		use binius_ip::{libra::libra_eval, sumcheck::verify};
 		use binius_math::{inner_product::inner_product_par, multilinear::evaluate::evaluate};
 

@@ -5,7 +5,7 @@
 
 use std::{iter, mem::MaybeUninit, ops::Deref, ptr};
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_core::{
 	ValueSegment, ValueTable,
 	constraint_system::{Operand, Shift, ShiftVariant, ShiftedValueIndex},
@@ -385,7 +385,7 @@ impl<'a> ValueWords<'a> {
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
-	use binius_compute::{BufferPool, GlobalAllocator};
+	use binius_alloc::{BufferPool, GlobalAllocator};
 	use binius_core::constraint_system::{AndConstraint, Shift, ShiftVariant, ValueVec};
 	use binius_field::{PackedGhash1x128b, Rijndael8b as B8};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};

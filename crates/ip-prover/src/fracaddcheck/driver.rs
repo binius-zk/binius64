@@ -4,7 +4,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
@@ -384,7 +384,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_ip::fracaddcheck;
 	use binius_math::{
 		inner_product::inner_product,

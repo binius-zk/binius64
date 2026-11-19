@@ -4,7 +4,7 @@
 //!
 //! That composition is the bit-AND constraint, the widest quadratic the crate proves.
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip_prover::sumcheck::{
 	self, mle_store::MleStore, quadratic_mle_evaluator::QuadraticMleEvaluator,

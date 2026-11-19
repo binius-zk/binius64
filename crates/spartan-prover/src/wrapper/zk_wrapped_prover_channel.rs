@@ -16,7 +16,7 @@ use std::{
 	sync::Arc,
 };
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{

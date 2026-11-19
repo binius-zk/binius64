@@ -4,7 +4,7 @@
 //!
 //! See [`binius_ip::sumcheck::infinity`] for the protocol and the verifier.
 
-use binius_compute::BufferData;
+use binius_alloc::BufferData;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{

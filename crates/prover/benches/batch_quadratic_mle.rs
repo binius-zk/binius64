@@ -2,7 +2,7 @@
 
 use std::array;
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{Field, FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{

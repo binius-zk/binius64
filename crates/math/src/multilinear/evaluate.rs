@@ -5,7 +5,7 @@
 
 use std::ops::{Deref, DerefMut};
 
-use binius_compute::BufferData;
+use binius_alloc::BufferData;
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::prelude::*;
 

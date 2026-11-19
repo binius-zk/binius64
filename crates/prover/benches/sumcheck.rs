@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{arch::OptimalPackedB128, packed::PackedField};
 use binius_ip_prover::sumcheck::{prove_single_mlecheck, quadratic_mlecheck_prover};
 use binius_math::{

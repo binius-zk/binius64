@@ -5,7 +5,7 @@
 
 use std::{marker::PhantomData, mem::MaybeUninit};
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_field::PackedField;
 use binius_math::FieldBuffer;
 use binius_utils::checked_arithmetics::log2_ceil_usize;

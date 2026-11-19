@@ -2,7 +2,7 @@
 
 //! Naive [`IOPProverChannel`] for testing: writes full polynomials instead of using FRI.
 
-use binius_compute::GlobalAllocator;
+use binius_alloc::GlobalAllocator;
 use binius_field::{Field, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;

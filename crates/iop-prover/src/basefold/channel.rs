@@ -4,7 +4,7 @@
 
 use std::{iter, ops::Deref};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{BinaryField, PackedField, util::powers};
 use binius_iop::{
 	basefold::layout::RoundLayout,
@@ -654,7 +654,7 @@ where
 mod tests {
 	use std::{collections::BTreeSet, iter};
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{
 		BinaryField, Field, Ghash128b, Ghash128b as B128, PackedField, PackedGhash1x128b,
 		PackedGhash2x128b, PackedGhash4x128b,

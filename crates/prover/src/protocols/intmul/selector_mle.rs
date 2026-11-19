@@ -3,7 +3,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
@@ -293,7 +293,7 @@ where
 mod tests {
 	use std::iter::repeat_with;
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::FieldOps;
 	use binius_ip::sumcheck::verify;
 	use binius_ip_prover::sumcheck::prove_single;

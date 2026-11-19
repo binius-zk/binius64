@@ -1,8 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_alloc::{BufferPool, GlobalAllocator};
 use binius_circuits::sha256::sha256_fixed;
-use binius_compute::{BufferPool, GlobalAllocator};
 use binius_core::{
 	ValueVec,
 	constraint_system::{ConstraintSystem, InoutSegment},

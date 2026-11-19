@@ -11,7 +11,7 @@
 
 use std::iter;
 
-use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
+use binius_alloc::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec, multilinear::eq::scaled_eq_ind_partial_eval_into,
@@ -389,7 +389,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{
 		Field, PackedField, PackedGhash4x128b,
 		arch::{OptimalB128, OptimalPackedB128},

@@ -18,8 +18,8 @@
 
 use std::array;
 
+use binius_alloc::{BufferPool, GlobalAllocator};
 use binius_circuits::keccak::permutation::keccak_f1600;
-use binius_compute::{BufferPool, GlobalAllocator};
 use binius_core::{
 	ValueIndex, ValueTable,
 	constraint_system::{

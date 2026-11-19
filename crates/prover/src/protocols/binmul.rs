@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::{
@@ -166,7 +166,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::word::Word;
 	use binius_field::{Ghash128b, PackedGhash2x128b, Random};
 	use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};

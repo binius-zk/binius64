@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::{Allocator, GlobalAllocator};
+use binius_alloc::{Allocator, GlobalAllocator};
 use binius_field::Field;
 use binius_hash_prover::{BinaryMerkleTree, ParallelHashSuite};
 use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment};

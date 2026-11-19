@@ -4,7 +4,7 @@
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_hash_prover::ParallelHashSuite;
 use binius_iop::{

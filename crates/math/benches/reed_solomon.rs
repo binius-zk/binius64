@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{Ghash128b as B128, arch::OptimalPackedB128};
 use binius_math::{
 	ntt::{NeighborsLastMultiThread, domain_context::GaoMateerOnTheFly},

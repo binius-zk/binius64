@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldSlice, FieldVec};
@@ -207,7 +207,7 @@ where
 mod tests {
 	use std::{array, iter};
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{arch::OptimalPackedB128, field::FieldOps};
 	use binius_ip::mlecheck;
 	use binius_math::{

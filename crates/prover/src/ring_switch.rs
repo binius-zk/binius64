@@ -3,7 +3,7 @@
 
 use std::{array, iter, mem::MaybeUninit, ops::Deref};
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{
 	ExtensionField, PackedField,
@@ -438,7 +438,7 @@ pub fn prove_public_eval<A, P, Channel>(
 
 #[cfg(test)]
 mod test {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{
 		ExtensionField, Field, Ghash128b, PackedField, PackedGhash2x128b, PackedGhash4x128b,
 		PackedSubfield, packed_extension,

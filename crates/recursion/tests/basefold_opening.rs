@@ -42,7 +42,7 @@
 
 use std::iter;
 
-use binius_compute::GlobalAllocator;
+use binius_alloc::GlobalAllocator;
 use binius_core::word::Word;
 use binius_field::{Ghash128b as B128, PackedGhash1x128b};
 use binius_frontend::{CircuitStat, MAX_ASSERTION_FAILURES, PopulateError, Wire};

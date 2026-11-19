@@ -1,5 +1,5 @@
 [package]
-name = "binius-compute"
+name = "binius-alloc"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

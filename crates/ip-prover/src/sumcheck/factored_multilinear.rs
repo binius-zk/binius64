@@ -2,7 +2,7 @@
 
 //! A dense multilinear held as a product of factors over disjoint runs of variables.
 
-use binius_compute::BufferData;
+use binius_alloc::BufferData;
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 
@@ -140,7 +140,7 @@ impl<P: PackedField, Data: BufferData<P>> FactoredMultilinear<P, Data> {
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Ghash128b, PackedGhash1x128b, Random, arch::OptimalPackedB128};
 	use proptest::prelude::*;
 	use rand::{SeedableRng, prelude::StdRng};

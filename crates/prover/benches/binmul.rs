@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_core::word::Word;
 use binius_field::{Ghash128b, Random, arch::OptimalPackedB128};
 use binius_prover::protocols::binmul::prove;

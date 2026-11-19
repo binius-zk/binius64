@@ -3,7 +3,7 @@
 
 //! The artifact a build hands back: a constraint system plus what it takes to fill a witness.
 
-use binius_compute::{Allocator, BufferData, VecLike};
+use binius_alloc::{Allocator, BufferData, VecLike};
 use binius_core::{
 	ValueTable,
 	constraint_system::{ConstraintSystem, ValueIndex, ValueSegment, ValueVec, ValueVecLayout},
@@ -450,7 +450,7 @@ impl Circuit {
 mod tests {
 	use std::ops::IndexMut;
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::{ValueVec, constraint_system::InoutSegment};
 	use proptest::prelude::*;
 

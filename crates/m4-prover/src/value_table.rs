@@ -7,7 +7,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::{ValueTable, word::Word};
 use binius_field::PackedField;
 use binius_m4_verifier::BatchCommitLayout;
@@ -50,7 +50,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::{Word, constraint_system::InoutSegment};
 	use binius_field::PackedGhash1x128b;
 	use binius_frontend::CircuitBuilder;

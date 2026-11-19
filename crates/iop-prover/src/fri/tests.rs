@@ -3,7 +3,7 @@
 
 use std::{iter, vec};
 
-use binius_compute::GlobalAllocator;
+use binius_alloc::GlobalAllocator;
 use binius_field::{BinaryField, Field, Ghash128b as B128, PackedField, PackedGhash1x128b};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::{
