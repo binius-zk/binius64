@@ -165,14 +165,19 @@ where
 		// Input words `k` of message and mask zip into output words `2k` and `2k + 1`.
 		let message_words = message.as_ref();
 		let mask_words = mask.as_ref();
-		let mut values = alloc.alloc::<P>(2 * packed_len);
-		values.resize(2 * packed_len, P::zero());
-		values
+		let len = 2 * packed_len;
+		let mut values = alloc.alloc::<P>(len);
+		// The allocator may hand back more capacity than requested, so bound the spare slice.
+		values.spare_capacity_mut()[..len]
 			.par_chunks_exact_mut(2)
 			.enumerate()
 			.for_each(|(k, out)| {
-				out.copy_from_slice(&zip_packed([message_words[k], mask_words[k]]));
+				let [even, odd] = zip_packed([message_words[k], mask_words[k]]);
+				out[0].write(even);
+				out[1].write(odd);
 			});
+		// SAFETY: the chunks cover all `len` slots, and each was written exactly once.
+		unsafe { values.set_len(len) };
 		values
 	};
 	let combined = FieldBuffer::new(log_len + 1, combined_values);
