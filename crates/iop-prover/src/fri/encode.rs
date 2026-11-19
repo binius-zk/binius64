@@ -76,7 +76,8 @@ where
 	rs_code.encode_batch(ntt, message.as_view(), log_batch_size, alloc)
 }
 
-/// Output of [`encode_masked`]: the codeword of the interleaved (message, mask) pairs and the generated mask.
+/// Output of [`encode_masked`]: the codeword of the interleaved (message, mask) pairs and the
+/// generated mask.
 ///
 /// Both buffers come from the allocator the encode was given, so a pooled prover holds neither on
 /// the global heap.
@@ -86,6 +87,13 @@ pub struct MaskedCodeword<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	pub codeword: FieldBuffer<P, Data>,
 	/// The generated random mask, of equal length to the message.
 	pub mask: FieldBuffer<P, Data>,
+}
+
+/// Zips two packed elements: returns `[z_0, z_1]` where `z_0 || z_1` is `a_0, b_0, a_1, b_1, ...`.
+fn zip_packed<P: PackedField>([a, b]: [P; 2]) -> [P; 2] {
+	let (z_0, z_1) =
+		(0..P::LOG_WIDTH).fold((a, b), |(a, b), log_block_len| a.interleave(b, log_block_len));
+	[z_0, z_1]
 }
 
 /// Generates a random mask, interleaves it with the message, and Reed-Solomon encodes.
@@ -154,25 +162,18 @@ where
 		// TODO: Ideally, encoding should not allocate and copy the memory into a temp buffer.
 		// Until then the temporary at least comes from the pool rather than the global heap.
 		//
-		// Output word `2k + h` holds scalars `(2k + h) · W + l` for lane `l`, which are the pairs
-		// `m = k · W + (h · W + l) / 2` of input word `k`, with the low bit selecting the mask.
+		// Input words `k` of message and mask zip into output words `2k` and `2k + 1`.
 		let message_words = message.as_ref();
 		let mask_words = mask.as_ref();
-		(0..2 * packed_len)
-			.into_par_iter()
-			.map(|j| {
-				let (k, h) = (j >> 1, j & 1);
-				let (message_word, mask_word) = (message_words[k], mask_words[k]);
-				P::from_fn(|lane| {
-					let position = h * P::WIDTH + lane;
-					if position & 1 == 0 {
-						message_word.get(position >> 1)
-					} else {
-						mask_word.get(position >> 1)
-					}
-				})
-			})
-			.collect_into_alloc_vec(alloc)
+		let mut values = alloc.alloc::<P>(2 * packed_len);
+		values.resize(2 * packed_len, P::zero());
+		values
+			.par_chunks_exact_mut(2)
+			.enumerate()
+			.for_each(|(k, out)| {
+				out.copy_from_slice(&zip_packed([message_words[k], mask_words[k]]));
+			});
+		values
 	};
 	let combined = FieldBuffer::new(log_len + 1, combined_values);
 

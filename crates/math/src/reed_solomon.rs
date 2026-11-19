@@ -92,8 +92,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	/// interleaved Reed–Solomon.
 	///
 	/// Message entry `i` is the coefficient of the novel basis polynomial `X_{i >> log_batch_size}`
-	/// of batch lane `i mod 2^log_batch_size`, so the batch index is the low bits of the message
-	/// index. No bit reversal is applied.
+	/// of batch lane `i mod 2^log_batch_size`.
 	///
 	/// ## Preconditions
 	///
