@@ -13,7 +13,7 @@ use binius_iop::{
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	ReedSolomonCode,
+	FieldBuffer, ReedSolomonCode,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 	ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 	test_utils::{Packed128b, random_field_buffer},
@@ -26,6 +26,18 @@ use super::{FRIFoldProver, encode_interleaved};
 use crate::merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel};
 
 type StdChallenger = HasherChallenger<StdDigest>;
+
+/// Evaluates the message the encoder commits, `rev(message)`, at `point`.
+///
+/// The encoder commits the message reversed, `rev(m)[i] = m[2^ℓ - 1 - i]`, and reversing a table
+/// complements the coordinates of its multilinear extension, so this is `message` at `1 - point`.
+fn evaluate_reversed<P: PackedField>(message: &FieldBuffer<P>, point: &[P::Scalar]) -> P::Scalar {
+	let complement = point
+		.iter()
+		.map(|&coordinate| P::Scalar::ONE - coordinate)
+		.collect::<Vec<_>>();
+	evaluate(message, &complement)
+}
 
 fn test_commit_prove_verify_success<F, P>(
 	log_dimension: usize,
@@ -121,7 +133,7 @@ fn test_commit_prove_verify_success<F, P>(
 	//
 	// check c == t(r'_0, ..., r'_{\ell-1})
 	// note that the prover is claiming that the final_message is [c]
-	let computed_eval = evaluate(&msg, &verifier_challenges);
+	let computed_eval = evaluate_reversed(&msg, &verifier_challenges);
 
 	let final_fri_value = verifier.verify(&mut channel).unwrap();
 	assert_eq!(computed_eval, final_fri_value);
@@ -326,7 +338,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	for (i, (msg, &log_batch_size)) in iter::zip(&messages, &log_batch_sizes).enumerate() {
 		let later_i = &later[max_later - log_batch_size..];
 		let eval_point = later_i.iter().chain(tail).copied().collect::<Vec<_>>();
-		expected += outer_tensor[i] * evaluate(msg, &eval_point);
+		expected += outer_tensor[i] * evaluate_reversed(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
 }
@@ -481,7 +493,7 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 			.chain(tail)
 			.copied()
 			.collect::<Vec<_>>();
-		expected += outer_tensor[i] * evaluate(msg, &eval_point);
+		expected += outer_tensor[i] * evaluate_reversed(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
 }
@@ -631,7 +643,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 			.chain(&tail[eta..])
 			.copied()
 			.collect::<Vec<_>>();
-		expected += outer_tensor[i] * pad_factor * evaluate(msg, &eval_point);
+		expected += outer_tensor[i] * pad_factor * evaluate_reversed(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
 }

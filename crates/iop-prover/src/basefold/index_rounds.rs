@@ -13,16 +13,21 @@
 //! A node holds a message `g` and a transparent `t` of `n` variables each, and stands for
 //!
 //! ```text
-//! G↑(x) = g[x mod 2^w]  if (x mod 2^w) < 2^n, else 0
-//! T↑(x) = t[x]          if x < 2^n,           else 0
+//! G↑(x) = g[(x mod 2^w) - (2^w - 2^n)]  if (x mod 2^w) >= 2^w - 2^n, else 0
+//! T↑(x) = t[x - (2^n_vars - 2^n)]       if x >= 2^n_vars - 2^n,      else 0
 //! ```
 //!
-//! over `x < 2^n_vars`, where `w >= n` is the node's `log_w`: the message sits in the low `2^n`
-//! entries of each `2^w` block, and the block repeats. For a round oracle `w = n + log_lift`.
+//! over `x < 2^n_vars`, where `w >= n` is the node's `log_w`: the message sits in the top `2^n`
+//! entries of each `2^w` block, and the block repeats; the transparent sits in the top `2^n`
+//! entries of the whole space. (Round oracles are committed reversed and the FRI folds with
+//! complemented challenges, which moves the lift from the all-0 corner to the all-1 corner.) For a
+//! round oracle `w = n + log_lift`.
 //!
 //! The merge of a pair is `lo + α(lo + hi)` of the two lifted functions. The larger node (by `n`)
 //! has the larger `w`, so the merge is again a node of the same form with `n` and `w` of the larger
 //! one, and it is written in place over the larger node's buffers.
+
+use std::iter;
 
 use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
@@ -161,14 +166,18 @@ const fn split<'a, P: PackedField, A: Allocator>(
 	}
 }
 
-/// The small node's message lifted to a single block of the repeat, as words.
+/// The small node's buffer as the words it occupies at the end of a block.
 ///
-/// A node narrower than one packed word gets a single word, zero past its length.
+/// A node narrower than one packed word gets a single word, with the buffer in its top lanes and
+/// zero below.
 fn words_of<P: PackedField>(buffer: &FieldBuffer<P, impl std::ops::Deref<Target = [P]>>) -> Vec<P> {
 	if buffer.log_len() >= P::LOG_WIDTH {
 		buffer.as_ref()[..1 << (buffer.log_len() - P::LOG_WIDTH)].to_vec()
 	} else {
-		vec![P::from_scalars(buffer.iter_scalars())]
+		let n_zeros = P::WIDTH - buffer.len();
+		vec![P::from_scalars(
+			iter::repeat_n(P::Scalar::ZERO, n_zeros).chain(buffer.iter_scalars()),
+		)]
 	}
 }
 
@@ -195,19 +204,24 @@ where
 	let (cross_s_t_l, cross_l_t_s) = if shape.log_period >= P::LOG_WIDTH {
 		let g_small = words_of(&small.message);
 		let t_small = words_of(&small.transparent);
-		let n_prefix = g_small.len();
+		let n_suffix = g_small.len();
 		let period = 1usize << (shape.log_period - P::LOG_WIDTH);
 		let t_big = &big.transparent.as_ref()[..1 << (shape.n_big - P::LOG_WIDTH)];
-		let g_big = &big.message.as_ref()[..n_prefix.max(1)];
+		let g_big = &big.message.as_ref()[(1 << (shape.n_big - P::LOG_WIDTH)) - n_suffix..];
 
-		// `Σ_x gS↑(x) tL(x)`: the small message against the prefix of every period block of `tL`.
+		// `Σ_x gS↑(x) tL(x)`: the small message against the suffix of every period block of `tL`.
 		let cross_s_t_l = t_big
 			.par_chunks(period)
 			.map(|block| {
-				iter_sum::<P>(g_small.iter().zip(&block[..n_prefix]).map(|(&a, &b)| a * b))
+				iter_sum::<P>(
+					g_small
+						.iter()
+						.zip(&block[period - n_suffix..])
+						.map(|(&a, &b)| a * b),
+				)
 			})
 			.sum::<F>();
-		// `Σ_x gL(x) tS↑(x)`: the prefix of `gL` against the small transparent.
+		// `Σ_x gL(x) tS↑(x)`: the suffix of `gL` against the small transparent.
 		let cross_l_t_s = iter_sum::<P>(g_big.iter().zip(&t_small).map(|(&a, &b)| a * b));
 		(cross_s_t_l, cross_l_t_s)
 	} else {
@@ -215,13 +229,15 @@ where
 		let mut cross_s_t_l = F::ZERO;
 		let mut cross_l_t_s = F::ZERO;
 		let period_mask = (1usize << shape.log_period) - 1;
+		let message_start = (1usize << shape.log_period) - (1 << shape.n_small);
+		let transparent_start = (1usize << shape.n_big) - (1 << shape.n_small);
 		for x in 0..1usize << shape.n_big {
 			let position = x & period_mask;
-			if position < 1 << shape.n_small {
-				cross_s_t_l += small.message.get(position) * big.transparent.get(x);
+			if position >= message_start {
+				cross_s_t_l += small.message.get(position - message_start) * big.transparent.get(x);
 			}
-			if x < 1 << shape.n_small {
-				cross_l_t_s += big.message.get(x) * small.transparent.get(x);
+			if x >= transparent_start {
+				cross_l_t_s += big.message.get(x) * small.transparent.get(x - transparent_start);
 			}
 		}
 		(cross_s_t_l, cross_l_t_s)
@@ -262,25 +278,26 @@ where
 		let period = 1usize << (shape.log_period - P::LOG_WIDTH);
 		let g_small = words_of(&small.message);
 		let t_small = words_of(&small.transparent);
-		let n_prefix = g_small.len();
+		let n_suffix = g_small.len();
 		let (c_big, c_small) = (P::broadcast(c_big), P::broadcast(c_small));
 
-		// Each period block of the message holds the small message in its low words.
+		// Each period block of the message holds the small message in its high words.
 		big.message
 			.as_mut()
 			.par_chunks_mut(period)
 			.for_each(|block| {
-				let (prefix, rest) = block.split_at_mut(n_prefix);
-				for (word, &small_word) in prefix.iter_mut().zip(&g_small) {
-					*word = c_big * *word + c_small * small_word;
-				}
+				let (rest, suffix) = block.split_at_mut(period - n_suffix);
 				for word in rest {
 					*word *= c_big;
 				}
+				for (word, &small_word) in suffix.iter_mut().zip(&g_small) {
+					*word = c_big * *word + c_small * small_word;
+				}
 			});
-		// The transparent holds it once, in the low words.
-		let (prefix, rest) = big.transparent.as_mut().split_at_mut(n_prefix);
-		for (word, &small_word) in prefix.iter_mut().zip(&t_small) {
+		// The transparent holds it once, in the high words.
+		let n_words = big.transparent.as_ref().len();
+		let (rest, suffix) = big.transparent.as_mut().split_at_mut(n_words - n_suffix);
+		for (word, &small_word) in suffix.iter_mut().zip(&t_small) {
 			*word = c_big * *word + c_small * small_word;
 		}
 		rest.par_iter_mut()
@@ -288,15 +305,17 @@ where
 			.for_each(|word| *word *= c_big);
 	} else {
 		let period_mask = (1usize << shape.log_period) - 1;
+		let message_start = (1usize << shape.log_period) - (1 << shape.n_small);
+		let transparent_start = (1usize << shape.n_big) - (1 << shape.n_small);
 		for x in 0..1usize << shape.n_big {
 			let position = x & period_mask;
-			let small_g = if position < 1 << shape.n_small {
-				small.message.get(position)
+			let small_g = if position >= message_start {
+				small.message.get(position - message_start)
 			} else {
 				F::ZERO
 			};
-			let small_t = if x < 1 << shape.n_small {
-				small.transparent.get(x)
+			let small_t = if x >= transparent_start {
+				small.transparent.get(x - transparent_start)
 			} else {
 				F::ZERO
 			};

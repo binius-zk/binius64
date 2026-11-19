@@ -3,7 +3,7 @@
 
 //! The core BaseFold opening protocol on the verifier side.
 
-use binius_field::BinaryField;
+use binius_field::{BinaryField, FieldOps};
 use binius_ip::sumcheck::{RoundCoeffs, RoundProof};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
@@ -26,6 +26,10 @@ use crate::{
 /// the `X` variables, low to high. Each round polynomial is degree 2 and is received before the
 /// FRI round is processed, so that a commitment the FRI sends in the same round lands after it.
 ///
+/// The round oracles are committed reversed, so the FRI folds with the complement `1 - ρ` of each
+/// `X` challenge `ρ`, while γ and the `Z` challenges are passed as sampled. The sumcheck and the
+/// multiplicand run on the sampled challenges, and the final FRI value is `G(ρ, ζ)`.
+///
 /// ## Arguments
 ///
 /// * `codeword_commitments` - one per oracle, in the same order as [`FRIParams::input_oracles`], as
@@ -35,7 +39,7 @@ use crate::{
 /// * `batch_challenge` - the mask fold challenge `γ`, if any round is masked.
 /// * `multiplicand_eval` - evaluates `T(ρ, ζ)`. It receives `ρ` in the order sampled, which is the
 ///   variable order (low to high), and `ζ` in the order sampled, which is the bit order of the
-///   oracle index.
+///   oracle index. Both are the sampled challenges themselves, not the FRI's.
 /// * `channel` - the Merkle channel carrying all prover interaction: round coefficients,
 ///   challenges, commitments, and query openings.
 ///
@@ -72,13 +76,20 @@ where
 
 	// The sumcheck rounds: `log_n_oracles` rounds over `Z`, then `n_vars` over `X`.
 	let mut sum = eval_claim;
-	for _ in 0..log_n_oracles + n_vars {
+	let mut challenges = Vec::with_capacity(log_n_oracles + n_vars);
+	for round in 0..log_n_oracles + n_vars {
 		let round_proof = RoundProof(RoundCoeffs(channel.recv_many(DEGREE)?));
 		fri_fold_verifier.process_round(channel)?;
 
 		let challenge = channel.sample();
 		sum = round_proof.recover(sum).evaluate(&challenge);
-		fri_challenges.push(challenge);
+		// The FRI takes the `Z` challenges as sampled and complements the `X` ones.
+		fri_challenges.push(if round < log_n_oracles {
+			challenge.clone()
+		} else {
+			Channel::Elem::one() - challenge.clone()
+		});
+		challenges.push(challenge);
 	}
 
 	fri_fold_verifier.process_round(channel)?;
@@ -93,7 +104,7 @@ where
 	let final_fri_value = fri_verifier.verify(channel)?;
 
 	// `Z` challenges come first, then `X` low to high, which is the order of `ρ`.
-	let (zeta, rho) = fri_challenges[n_inner..].split_at(log_n_oracles);
+	let (zeta, rho) = challenges.split_at(log_n_oracles);
 	let multiplicand = multiplicand_eval(rho, zeta);
 
 	channel.assert_zero(sum - final_fri_value * multiplicand)?;

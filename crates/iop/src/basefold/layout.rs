@@ -18,20 +18,20 @@
 //! first entries of the table, which are the first entries of the round's largest constituent. No
 //! pad outside the extents reaches them.
 //!
-//! A zero-knowledge round is therefore committed reversed: entry `i` of its committed table is
-//! `M_r[σ(i)]`, where [`zk_commit_index`] gives `σ`, which complements the bits of `i`. Coefficient
-//! `c` of its codeword is then `M_r[2^ℓ - 1 - c]`. The pad is the top `q` coordinates of `M_r`, so
-//! it fills the coefficients `0..q`, whose basis polynomials span the polynomials of degree below
-//! `q`. Restricted to the pad, the symbols at `q` distinct positions are evaluations of those
-//! polynomials at distinct points, and these are linearly independent by interpolation.
+//! Every round oracle, zero-knowledge or not, is therefore committed reversed: the codeword is
+//! `Enc(rev(M_r))` with `rev(M)[i] = M[2^ℓ - 1 - i]`. Coefficient `c` of the codeword is then
+//! `M_r[2^ℓ - 1 - c]`. The pad is the top `q` coordinates of `M_r`, so it fills the coefficients
+//! `0..q`, whose basis polynomials span the polynomials of degree below `q`. Restricted to the
+//! pad, the symbols at `q` distinct positions are evaluations of those polynomials at distinct
+//! points, and these are linearly independent by interpolation.
 //!
-//! The opening runs on the committed table and does not see the reversal, except where the
-//! verifier evaluates a transparent: for a zero-knowledge round it does so at
-//! [`zk_commit_point`] of the round's point.
+//! Reversing a table complements the bits of its index, so the multilinear extension of `rev(M)` at
+//! `point` is that of `M` at `1 - point`. The FRI therefore folds with the complement `1 - ρ` of
+//! every sumcheck challenge `ρ` that binds a round oracle's variable, and its final value is the
+//! natural-order oracle at `ρ`. The sumcheck and the transparent evaluations run in natural order.
 
 use std::{cmp::Reverse, ops::Range};
 
-use binius_field::FieldOps;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use crate::channel::{OracleSchedule, OracleSpec};
@@ -90,28 +90,6 @@ pub fn layout_rounds(schedule: &OracleSchedule, n_test_queries: usize) -> Vec<Ro
 	schedule
 		.rounds()
 		.map(|specs| layout_round(specs, n_test_queries))
-		.collect()
-}
-
-/// The coordinate of `M_r` that entry `index` of a zero-knowledge round's committed table holds.
-///
-/// The map complements the low `log_len` bits of `index`, which reverses the order of the round.
-/// It is its own inverse, so it also gives the entry that a coordinate is committed at. See the
-/// [module documentation](self) for why a zero-knowledge round is committed reversed.
-pub const fn zk_commit_index(index: usize, log_len: usize) -> usize {
-	index ^ ((1 << log_len) - 1)
-}
-
-/// The point over `M_r` that corresponds to `point` over a zero-knowledge round's committed table.
-///
-/// For any table `T` over the round, let `T'` be `T` reversed the way the round is committed,
-/// `T'[i] = T[zk_commit_index(i)]`. The multilinear extension of `T'` at `point` equals that of
-/// `T` at `zk_commit_point(point)`, which is `(1 - point[0], …, 1 - point[ℓ-1])`: complementing a
-/// bit of an index complements its coordinate.
-pub fn zk_commit_point<E: FieldOps>(point: &[E]) -> Vec<E> {
-	point
-		.iter()
-		.map(|coordinate| E::one() - coordinate)
 		.collect()
 }
 
@@ -286,29 +264,6 @@ mod tests {
 			for (spec, &offset) in iter::zip(specs, &layout.block_offsets) {
 				let start = offset << spec.log_msg_len();
 				assert!(start + spec.len <= layout.pad().start, "{specs:?}");
-			}
-		}
-	}
-
-	#[test]
-	fn zk_commit_index_complements_the_bits() {
-		assert_eq!(zk_commit_index(0b001, 3), 0b110);
-		assert_eq!(zk_commit_index(0b110, 3), 0b001);
-		assert_eq!(zk_commit_index(0, 0), 0);
-		for log_len in 0..8 {
-			for index in 0..1 << log_len {
-				assert_eq!(zk_commit_index(zk_commit_index(index, log_len), log_len), index);
-			}
-		}
-	}
-
-	#[test]
-	fn the_reversal_puts_coordinate_c_from_the_top_on_coefficient_c() {
-		// The encoder reads entry `i` of the committed table as the coefficient `i`.
-		for log_len in 0..8 {
-			for coordinate in 0..1 << log_len {
-				let coefficient = zk_commit_index(coordinate, log_len);
-				assert_eq!(coefficient, (1 << log_len) - 1 - coordinate);
 			}
 		}
 	}

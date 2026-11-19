@@ -2,7 +2,7 @@
 
 //! BaseFold ZK implementation of the IOP prover channel.
 
-use std::{iter, ops::Deref};
+use std::ops::Deref;
 
 use binius_alloc::Allocator;
 use binius_field::{BinaryField, PackedField, util::powers};
@@ -55,8 +55,8 @@ struct CommittedOracleData<P: PackedField, C, Data: Deref<Target = [P]>> {
 	/// The committed round oracle `pi_i`, holding each constituent sent by
 	/// [`IOPProverChannel::send_oracle`] in its block, in the caller's allocator.
 	///
-	/// A ZK round oracle also holds its ZK pad, and is stored reversed by
-	/// [`zk_commit_index`](binius_iop::basefold::layout::zk_commit_index), as it is committed.
+	/// A ZK round oracle also holds its ZK pad. It is stored in natural order; the encoder commits
+	/// its reversal.
 	message: FieldBuffer<P, Data>,
 }
 
@@ -167,14 +167,13 @@ where
 		let index = self.committed_oracles.len();
 		let layout = &self.layouts[index];
 
-		// A ZK round fills its pad with uniform elements and is committed reversed, which puts the
-		// pad on the lowest coefficients of its codeword. No operand reaches the pad, since every
-		// transparent vanishes above its oracle's content.
+		// A ZK round fills its pad with uniform elements. Every round is committed reversed, which
+		// puts the pad on the lowest coefficients of its codeword. No operand reaches the pad,
+		// since every transparent vanishes above its oracle's content.
 		if layout.is_zk {
 			for i in layout.pad() {
 				message.set(i, F::random(&mut self.rng));
 			}
-			permute_to_zk_commit_order(message.as_mut_view());
 		}
 
 		// Encode round oracle `index` of the combined FRI parameters. ZK oracles interleave a fresh
@@ -292,14 +291,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 	let log_n_oracles = log2_ceil_usize(layouts.len());
 
-	// A ZK round's message is stored as committed, reversed, so its transparent is reversed to
-	// match. Reversing both sides of the inner product leaves it unchanged.
-	let mut transparents = batch_relations(channel, layouts, relations, alloc);
-	for (transparent, layout) in iter::zip(&mut transparents, layouts) {
-		if layout.is_zk {
-			permute_to_zk_commit_order(transparent.as_mut_view());
-		}
-	}
+	let transparents = batch_relations(channel, layouts, relations, alloc);
 
 	// The claim `s = Σ_r <M_r, T_r>`, which the verifier holds as the batched claim.
 	let s = izip!(&committed_oracles, &transparents)
@@ -426,50 +418,6 @@ fn copy_prefix<P: PackedField>(mut dst: FieldSliceMut<'_, P>, src: FieldSlice<'_
 	for i in n_words << P::LOG_WIDTH..len {
 		dst.set(i, src.get(i));
 	}
-}
-
-/// Permutes a ZK round's table into the order the round is committed in, in place.
-///
-/// Entry `i` of the result is entry `zk_commit_index(i)` of the input, the index with its bits
-/// complemented (see [`binius_iop::basefold::layout::zk_commit_index`]), which reverses the order
-/// of the entries.
-fn permute_to_zk_commit_order<P: PackedField>(buffer: FieldSliceMut<'_, P>) {
-	reverse_scalars(buffer);
-}
-
-/// Reverses the order of the scalars of a buffer, in place.
-fn reverse_scalars<P: PackedField>(mut buffer: FieldSliceMut<'_, P>) {
-	let log_len = buffer.log_len();
-	let words = buffer.as_mut();
-	if log_len < P::LOG_WIDTH {
-		// The buffer is the low `2^log_len` lanes of a single element, whose other lanes stay.
-		let len = 1 << log_len;
-		let element = words[0];
-		words[0] = P::from_fn(|lane| {
-			if lane < len {
-				element.get(len - 1 - lane)
-			} else {
-				element.get(lane)
-			}
-		});
-		return;
-	}
-
-	let reverse_lanes = |element: P| P::from_fn(|lane| element.get(P::WIDTH - 1 - lane));
-	if let [element] = words {
-		*element = reverse_lanes(*element);
-		return;
-	}
-	// Element `j` trades places with element `n - 1 - j`, and each one's lanes reverse in transit.
-	let (low, high) = words.split_at_mut(words.len() / 2);
-	low.par_iter_mut()
-		.zip(high.par_iter_mut().rev())
-		.with_min_task(WorkPerItem::FieldMuls)
-		.for_each(|(low_i, high_i)| {
-			let low_value = *low_i;
-			*low_i = reverse_lanes(*high_i);
-			*high_i = reverse_lanes(low_value);
-		});
 }
 
 fn accumulate_scaled_buffer<P: PackedField>(
@@ -657,15 +605,13 @@ mod tests {
 	use binius_alloc::GlobalAllocator;
 	use binius_field::{
 		BinaryField, Field, Ghash128b, Ghash128b as B128, PackedField, PackedGhash1x128b,
-		PackedGhash2x128b, PackedGhash4x128b,
+		PackedGhash4x128b,
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
-		basefold::{
-			compiler::BaseFoldVerifierCompiler,
-			layout::{layout_rounds, zk_commit_index, zk_commit_point},
-		},
+		basefold::{compiler::BaseFoldVerifierCompiler, layout::layout_rounds},
 		channel::{IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn},
+		fri::FRIParams,
 		merkle_tree::BinaryMerkleTreeScheme,
 	};
 	use binius_ip::channel::IPVerifierChannel;
@@ -673,7 +619,7 @@ mod tests {
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_buffers,
-		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
+		multilinear::eq::eq_ind_partial_eval,
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
 		reed_solomon::ReedSolomonCode,
 		test_utils::{random_field_buffer, random_scalars},
@@ -682,8 +628,8 @@ mod tests {
 	use proptest::prelude::*;
 	use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
-	use super::{IOPProverChannel, permute_to_zk_commit_order};
-	use crate::basefold::compiler::BaseFoldProverCompiler;
+	use super::IOPProverChannel;
+	use crate::{basefold::compiler::BaseFoldProverCompiler, fri};
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 
@@ -1497,39 +1443,6 @@ mod tests {
 		assert!(!run_round_trip::<PackedGhash4x128b>(&rounds, true));
 	}
 
-	/// The prover's reversal of a ZK round agrees with the index map and the verifier's point
-	/// map.
-	///
-	/// The permutation splits on whether the buffer spans whole packed elements, so this runs three
-	/// packed widths over lengths on both sides of each.
-	#[test]
-	fn zk_commit_order_matches_the_index_map_and_the_point_map() {
-		fn check<P: PackedField<Scalar = B128>>(log_len: usize) {
-			let mut rng = StdRng::seed_from_u64(log_len as u64);
-			let table = random_field_buffer::<P>(&mut rng, log_len);
-			let mut committed = table.clone();
-			permute_to_zk_commit_order(committed.as_mut_view());
-
-			for index in 0..1 << log_len {
-				assert_eq!(
-					committed.get(index),
-					table.get(zk_commit_index(index, log_len)),
-					"P::LOG_WIDTH={}, log_len={log_len}, index={index}",
-					P::LOG_WIDTH,
-				);
-			}
-
-			let point = random_scalars::<B128>(&mut rng, log_len);
-			assert_eq!(evaluate(&committed, &point), evaluate(&table, &zk_commit_point(&point)));
-		}
-
-		for log_len in 0..=6 {
-			check::<PackedGhash1x128b>(log_len);
-			check::<PackedGhash2x128b>(log_len);
-			check::<PackedGhash4x128b>(log_len);
-		}
-	}
-
 	/// The rank of a matrix over a field, by Gaussian elimination.
 	fn rank<F: Field>(mut rows: Vec<Vec<F>>) -> usize {
 		let n_cols = rows.first().map_or(0, Vec::len);
@@ -1557,12 +1470,14 @@ mod tests {
 	/// Any `q` opened symbols of a ZK round, restricted to its pad, are linearly independent.
 	///
 	/// This is what makes the opened symbols uniform given the rest of the round oracle. Encoding
-	/// is linear, so the test encodes the unit vector of each pad coordinate, as the round is
-	/// committed, and checks that their symbols at `q` positions form a matrix of full rank.
+	/// is linear, so the test encodes the unit vector of each pad coordinate with the encoder the
+	/// round is committed with, and checks that their symbols at `q` positions form a matrix of
+	/// full rank.
 	///
 	/// The positions `0..q` are the hard case. They lie in the low subspaces `U_k`, where a symbol
 	/// reads only the entries the encoder takes as low coefficients. Without the reversal, those
-	/// entries are the round oracle's first, and the pad reaches none of the symbols there.
+	/// entries are the round oracle's first, and the pad reaches none of the symbols there. The
+	/// encoder commits every round reversed, which puts the pad on those entries.
 	#[test]
 	fn any_q_opened_symbols_of_a_zk_round_are_independent_on_its_pad() {
 		type F = B128;
@@ -1574,16 +1489,25 @@ mod tests {
 		let rs_code = ReedSolomonCode::<F>::new(layout.log_len, LOG_INV_RATE);
 		let ntt = make_ntt(rs_code.log_len());
 
-		let encode_pad_unit_vectors = |relabel: bool| {
+		let fri_params = FRIParams::new(rs_code.clone(), 0, vec![], n_test_queries);
+
+		let encode_pad_unit_vectors = |reversed: bool| {
 			layout
 				.pad()
 				.map(|coordinate| {
 					let mut message = FieldBuffer::<P>::zeros(layout.log_len);
 					message.set(coordinate, F::ONE);
-					if relabel {
-						permute_to_zk_commit_order(message.as_mut_view());
+					if reversed {
+						fri::encode_interleaved(
+							&fri_params,
+							0,
+							&ntt,
+							message.as_view(),
+							&GlobalAllocator,
+						)
+					} else {
+						rs_code.encode_batch(&ntt, message.as_view(), 0, &GlobalAllocator)
 					}
-					rs_code.encode_batch(&ntt, message.as_view(), 0, &GlobalAllocator)
 				})
 				.collect::<Vec<_>>()
 		};
@@ -1614,13 +1538,9 @@ mod tests {
 			assert_eq!(rank_at(&positions), n_test_queries, "positions {positions:?}");
 		}
 
-		// Without the relabeling, the symbol at position 0 is the round oracle's coordinate 0.
-		let unrelabeled = encode_pad_unit_vectors(false);
-		assert!(
-			unrelabeled
-				.iter()
-				.all(|codeword| codeword.get(0) == F::ZERO)
-		);
+		// Without the reversal, the symbol at position 0 is the round oracle's coordinate 0.
+		let unreversed = encode_pad_unit_vectors(false);
+		assert!(unreversed.iter().all(|codeword| codeword.get(0) == F::ZERO));
 	}
 
 	/// Every symbol of a ZK round's committed codeword depends on the prover's coins.
@@ -1628,7 +1548,7 @@ mod tests {
 	/// This commits the same witness under two prover seeds and compares the `Enc(M_r)` half of
 	/// the codewords. A symbol that agrees between them is a fixed function of the witness, which
 	/// the query phase reveals whenever a query lands on its position. The witness starts at
-	/// coordinate 0, which the encoder reads as the constant coefficient, so without
+	/// coordinate 0, which an unreversed encoder reads as the constant coefficient, so without
 	/// the reversal the symbol at position 0 would be the witness's first entry.
 	///
 	/// The two specs cover a round that holds its pad in its slack, and one that grows for it.

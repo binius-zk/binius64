@@ -7,7 +7,7 @@
 
 use std::marker::PhantomData;
 
-use binius_alloc::Allocator;
+use binius_alloc::{Allocator, VecLike};
 use binius_field::{BinaryField, PackedField};
 use getset::CopyGetters;
 
@@ -114,15 +114,43 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		NTT: AdditiveNTT<Field = F> + Sync,
 		A: Allocator,
 	{
+		let log_output_len = self.log_dim() + log_batch_size + self.log_inv_rate;
+		let message = FieldBuffer::from_view_with_capacity_in(alloc, data, log_output_len);
+		self.encode_batch_in_place(ntt, message, log_batch_size)
+	}
+
+	/// Encodes a message that is already in an owned buffer, extending the buffer in place.
+	///
+	/// This is [`Self::encode_batch`] without the copy of the message: the caller writes the
+	/// message into a buffer whose store has room for the whole codeword, and the codeword grows in
+	/// that store.
+	///
+	/// ## Preconditions
+	///
+	/// * `message.log_len()` must equal `log_dim() + log_batch_size`.
+	/// * The store of `message` must have room reserved for `2^(log_dim() + log_batch_size +
+	///   log_inv_rate())` elements.
+	/// * The NTT subspace must match the code's subspace.
+	pub fn encode_batch_in_place<P, NTT, Data>(
+		&self,
+		ntt: &NTT,
+		mut message: FieldBuffer<P, Data>,
+		log_batch_size: usize,
+	) -> FieldBuffer<P, Data>
+	where
+		P: PackedField<Scalar = F>,
+		NTT: AdditiveNTT<Field = F> + Sync,
+		Data: VecLike<P>,
+	{
 		assert_eq!(
 			ntt.subspace(self.log_len()),
 			self.subspace(),
 			"precondition: NTT subspace must match code subspace"
 		);
 		assert_eq!(
-			data.log_len(),
+			message.log_len(),
 			self.log_dim() + log_batch_size,
-			"precondition: data.log_len() must equal log_dim() + log_batch_size"
+			"precondition: message.log_len() must equal log_dim() + log_batch_size"
 		);
 
 		let _scope = tracing::trace_span!(
@@ -140,12 +168,10 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		//
 		// That is one doubling per layer, so repeating the message does the skipped work.
 		let log_output_len = self.log_dim() + log_batch_size + self.log_inv_rate;
-		let mut output = FieldBuffer::from_view_with_capacity_in(alloc, data, log_output_len);
+		message.repeat_extend(log_output_len);
 
-		output.repeat_extend(log_output_len);
-
-		ntt.forward_transform(output.as_mut_view(), self.log_inv_rate, log_batch_size);
-		output
+		ntt.forward_transform(message.as_mut_view(), self.log_inv_rate, log_batch_size);
+		message
 	}
 }
 

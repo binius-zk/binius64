@@ -31,6 +31,10 @@ use crate::{
 /// binds the lowest variable. The `Z` variables are the lowest, in the natural order of the oracle
 /// index, with a round's own variables above them.
 ///
+/// Every round oracle is committed reversed, so the FRI folds with the complement `1 - ρ` of each
+/// `X` challenge `ρ` the sumcheck binds, and the final FRI value is `G` at `ρ`, in natural order.
+/// γ and the `Z` challenges are passed to the FRI as sampled.
+///
 /// The index rounds and the bivariate-product prover below bind high to low. Binding the
 /// bit-reversed buffers high to low gives the same round polynomials as binding the originals low
 /// to high, so each node's message and transparent are bit-reversed over their own variables once
@@ -119,7 +123,7 @@ pub fn prove_sumcheck_basefold<A, F, P, NTT, Channel, Data>(
 
 		let challenge = channel.sample();
 		sumcheck.fold(challenge);
-		fri_folder.receive_challenge(challenge);
+		fri_folder.receive_challenge(F::ONE + challenge);
 	}
 
 	fri_folder.execute_fold_round(channel);
