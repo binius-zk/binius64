@@ -19,9 +19,9 @@
 //!
 //! over `x < 2^n_vars`, where `w >= n` is the node's `log_w`: the message sits in the top `2^n`
 //! entries of each `2^w` block, and the block repeats; the transparent sits in the top `2^n`
-//! entries of the whole space. (Round oracles are committed reversed and the FRI folds with
-//! complemented challenges, which moves the lift from the all-0 corner to the all-1 corner.) For a
-//! round oracle `w = n + log_lift`.
+//! entries of the whole space. Round oracles are committed reversed and the FRI folds with
+//! complemented challenges, so the lift sits at the all-1 corner. For a round oracle
+//! `w = n + log_lift`.
 //!
 //! The merge of a pair is `lo + α(lo + hi)` of the two lifted functions. The larger node (by `n`)
 //! has the larger `w`, so the merge is again a node of the same form with `n` and `w` of the larger
@@ -326,4 +326,158 @@ where
 		}
 	}
 	big
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_alloc::GlobalAllocator;
+	use binius_field::{Ghash128b, PackedGhash1x128b, PackedGhash4x128b, Random};
+	use rand::{SeedableRng, rngs::StdRng};
+
+	use super::*;
+
+	const N_VARS: usize = 5;
+
+	type F = Ghash128b;
+
+	/// `G↑` of a message of `n` variables with repeat period `2^w`, over `x < 2^N_VARS`.
+	fn lift_message(g: &[F], w: usize) -> Vec<F> {
+		let start = (1usize << w) - g.len();
+		(0..1usize << N_VARS)
+			.map(|x| {
+				let position = x & ((1 << w) - 1);
+				if position >= start {
+					g[position - start]
+				} else {
+					F::ZERO
+				}
+			})
+			.collect()
+	}
+
+	/// `T↑` of a transparent of `n` variables, over `x < 2^N_VARS`.
+	fn lift_transparent(t: &[F]) -> Vec<F> {
+		let start = (1usize << N_VARS) - t.len();
+		(0..1usize << N_VARS)
+			.map(|x| if x >= start { t[x - start] } else { F::ZERO })
+			.collect()
+	}
+
+	fn dot(a: &[F], b: &[F]) -> F {
+		iter::zip(a, b).map(|(&a, &b)| a * b).sum()
+	}
+
+	/// `lo + α(lo + hi)` entrywise.
+	fn fold(lo: &[F], hi: &[F], alpha: F) -> Vec<F> {
+		iter::zip(lo, hi)
+			.map(|(&lo, &hi)| lo + alpha * (lo + hi))
+			.collect()
+	}
+
+	/// Runs the index rounds on nodes `(n, w)` and checks them against materialized `G(x, Z)` and
+	/// `T(x, Z)` bound over `Z` low bit first.
+	fn check<P: PackedField<Scalar = F>>(specs: &[(usize, usize)], seed: u64) {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let random = |rng: &mut StdRng, n: usize| -> Vec<F> {
+			(0..1usize << n).map(|_| F::random(&mut *rng)).collect()
+		};
+
+		let mut nodes = Vec::new();
+		// Materialized `G_r↑`, `T_r↑` per oracle index, with absent oracles zero.
+		let mut g_ref = Vec::new();
+		let mut t_ref = Vec::new();
+		for &(n, w) in specs {
+			let (g, t) = (random(&mut rng, n), random(&mut rng, n));
+			g_ref.push(lift_message(&g, w));
+			t_ref.push(lift_transparent(&t));
+			nodes.push(Some(IndexNode::<P, GlobalAllocator> {
+				message: FieldBuffer::from_values(&g),
+				transparent: FieldBuffer::from_values(&t),
+				log_w: w,
+			}));
+		}
+		let n_oracles = specs.len().next_power_of_two();
+		nodes.resize_with(n_oracles, || None);
+		g_ref.resize(n_oracles, vec![F::ZERO; 1 << N_VARS]);
+		t_ref.resize(n_oracles, vec![F::ZERO; 1 << N_VARS]);
+
+		let claim = iter::zip(&g_ref, &t_ref).map(|(g, t)| dot(g, t)).sum::<F>();
+
+		// Reference sumcheck over the oracle index, low bit first.
+		let mut expected_rounds = Vec::new();
+		let mut challenges = Vec::new();
+		let mut expected_claim = claim;
+		while g_ref.len() > 1 {
+			let (mut r0, mut r1, mut r_inf) = (F::ZERO, F::ZERO, F::ZERO);
+			for (g, t) in iter::zip(g_ref.chunks(2), t_ref.chunks(2)) {
+				r0 += dot(&g[0], &t[0]);
+				r1 += dot(&g[1], &t[1]);
+				let sum =
+					|a: &[F], b: &[F]| iter::zip(a, b).map(|(&a, &b)| a + b).collect::<Vec<_>>();
+				r_inf += dot(&sum(&g[0], &g[1]), &sum(&t[0], &t[1]));
+			}
+			// R(X) = r0 + (r0 + r1 + r_inf) X + r_inf X^2 in characteristic 2.
+			let coeffs = RoundCoeffs(vec![r0, r0 + r1 + r_inf, r_inf]);
+			let alpha = F::random(&mut rng);
+			expected_claim = coeffs.evaluate(&alpha);
+			g_ref = g_ref
+				.chunks(2)
+				.map(|pair| fold(&pair[0], &pair[1], alpha))
+				.collect();
+			t_ref = t_ref
+				.chunks(2)
+				.map(|pair| fold(&pair[0], &pair[1], alpha))
+				.collect();
+			expected_rounds.push(coeffs);
+			challenges.push(alpha);
+		}
+
+		let mut rounds = Vec::new();
+		let mut challenges_iter = challenges.iter();
+		let (node, final_claim) = bind_oracle_index_variables(nodes, claim, |coeffs| {
+			rounds.push(coeffs.clone());
+			*challenges_iter.next().expect("one challenge per round")
+		});
+
+		assert_eq!(rounds, expected_rounds);
+		assert_eq!(final_claim, expected_claim);
+		let g_node = node.message.iter_scalars().collect::<Vec<_>>();
+		let t_node = node.transparent.iter_scalars().collect::<Vec<_>>();
+		assert_eq!(lift_message(&g_node, node.log_w), g_ref[0]);
+		assert_eq!(lift_transparent(&t_node), t_ref[0]);
+		assert_eq!(dot(&g_ref[0], &t_ref[0]), final_claim);
+	}
+
+	/// The cases keep the nesting the merge relies on: a smaller node either has the larger node's
+	/// period or the larger node's period is its own length.
+	fn check_all<P: PackedField<Scalar = F>>() {
+		let cases: &[&[(usize, usize)]] = &[
+			// n_small == n_big
+			&[(3, 3), (3, 3)],
+			&[(3, 4), (3, 4)],
+			// w_small < n_big, larger node on either side
+			&[(2, 3), (4, 4)],
+			&[(4, 4), (2, 3)],
+			// w_small >= n_big
+			&[(2, 5), (4, 5)],
+			// a node with no variables
+			&[(0, 0), (3, 3)],
+			// a padded trailing oracle
+			&[(4, 4), (3, 4), (1, 3)],
+			&[(1, 1), (3, 3), (4, 4), (2, 3)],
+		];
+		for (seed, specs) in cases.iter().enumerate() {
+			check::<P>(specs, seed as u64);
+		}
+	}
+
+	#[test]
+	fn bind_matches_materialized_reference_1x128b() {
+		check_all::<PackedGhash1x128b>();
+	}
+
+	#[test]
+	fn bind_matches_materialized_reference_4x128b() {
+		check_all::<PackedGhash4x128b>();
+	}
 }

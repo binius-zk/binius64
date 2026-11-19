@@ -7,7 +7,10 @@ use binius_alloc::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::fri::FRIParams;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
-use binius_utils::{rand::par_rand, rayon::prelude::*};
+use binius_utils::{
+	rand::par_rand,
+	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
+};
 use rand::{CryptoRng, rngs::StdRng};
 
 /// Reverses the order of the lanes of a packed element.
@@ -83,6 +86,7 @@ where
 		let n_words = source.len();
 		words.spare_capacity_mut()[..n_words]
 			.par_iter_mut()
+			.with_min_task_bytes::<P>()
 			.enumerate()
 			.for_each(|(k, out)| {
 				out.write(reverse_lanes(source[n_words - 1 - k]));
@@ -96,7 +100,10 @@ where
 
 /// Reed-Solomon encodes the oracle's committed message, which `message` already holds.
 ///
-/// The store of `message` must have room for the codeword.
+/// ## Preconditions
+///
+/// * `message.log_len()` must equal the oracle's `log_dim() + log_batch_size`.
+/// * The store of `message` must have room for the codeword.
 fn encode_in_place<F, P, NTT, Data>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
@@ -159,8 +166,8 @@ fn zip_packed<P: PackedField>([a, b]: [P; 2]) -> [P; 2] {
 /// equal length to the input message and interleaves `(rev(message)_i, rev(mask)_i)` as the
 /// interleaved message (with `log_batch_size = 1`, the selector between message and mask being
 /// the low bit and left uncomplemented), where `rev(m)[i] = m[2^log_len - 1 - i]`. It then
-/// performs Reed-Solomon encoding. The reversal happens in the interleaving copy, as in
-/// [`encode_interleaved`], whose codeword this one is committed like. The returned `mask` and the
+/// performs Reed-Solomon encoding. The reversal happens in the interleaving copy; see
+/// [`encode_interleaved`]. The returned `mask` and the
 /// input `message` stay in natural order.
 ///
 /// ## Arguments
@@ -171,7 +178,7 @@ fn zip_packed<P: PackedField>([a, b]: [P; 2]) -> [P; 2] {
 /// * `ntt` - the additive NTT for Reed-Solomon encoding
 /// * `message` - the raw message to encode (not doubled), in natural order
 /// * `rng` - cryptographic RNG for mask generation
-/// * `alloc` - the allocator the mask, the codeword, and the interleaving temporary are drawn from
+/// * `alloc` - the allocator the mask and the codeword are drawn from
 pub fn encode_masked<F, P, NTT, A>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
@@ -227,6 +234,7 @@ where
 		// The allocator may hand back more capacity than requested, so bound the spare slice.
 		combined_values.spare_capacity_mut()[..len]
 			.par_chunks_exact_mut(2)
+			.with_min_task_bytes::<[P; 2]>()
 			.enumerate()
 			.for_each(|(k, out)| {
 				let [even, odd] = zip_packed([

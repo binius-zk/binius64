@@ -198,8 +198,8 @@ where
 ///
 /// Every round oracle is committed reversed (see [`basefold::layout`]), which puts the ZK pad on
 /// the lowest coefficients of a ZK round's codeword, and the FRI folds with the complement `1 - ρ`
-/// of every sumcheck challenge. The sumcheck and the transparent evaluations here are therefore
-/// in natural order, at `ρ` itself.
+/// of every `X` challenge (the oracle-index challenges and `γ` are used as sampled). The sumcheck
+/// and the transparent evaluations here are therefore in natural order, at `ρ` itself.
 fn verify_batch_zk_basefold<F, Channel>(
 	channel: &mut Channel,
 	layouts: &[RoundLayout],
@@ -275,7 +275,7 @@ where
 				// `eq(1, ρ_{<n-ℓ_r})`, the product of the low challenges.
 				let lift = rho[..n_vars - layout.log_len]
 					.iter()
-					.fold(Channel::Elem::one(), |acc, challenge| acc * challenge.clone());
+					.product::<Channel::Elem>();
 				eq_r * eval * lift
 			})
 			.sum::<Channel::Elem>()

@@ -1470,8 +1470,9 @@ mod tests {
 	/// Any `q` opened symbols of a ZK round, restricted to its pad, are linearly independent.
 	///
 	/// This is what makes the opened symbols uniform given the rest of the round oracle. Encoding
-	/// is linear, so the test encodes the unit vector of each pad coordinate with the encoder the
-	/// round is committed with, and checks that their symbols at `q` positions form a matrix of
+	/// is linear, so the test encodes the unit vector of each pad coordinate with
+	/// `encode_interleaved`, which by linearity is the `Enc(rev M_r)` half of the masked codeword,
+	/// and checks that their symbols at `q` positions form a matrix of
 	/// full rank.
 	///
 	/// The positions `0..q` are the hard case. They lie in the low subspaces `U_k`, where a symbol
