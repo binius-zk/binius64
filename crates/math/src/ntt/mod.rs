@@ -10,7 +10,6 @@
 pub mod domain_context;
 mod neighbors_last;
 mod reference;
-pub mod subspace_polys;
 #[cfg(test)]
 mod tests_evaluation;
 #[cfg(test)]
