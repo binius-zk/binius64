@@ -305,7 +305,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Generate random mask buffer
-		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
+		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree);
 		let buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
 
 		// Generate random evaluation point
@@ -374,7 +374,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Single variable mask buffer
-		let (m_n, m_d) = mask_buffer_dimensions(1, 2, 0);
+		let (m_n, m_d) = mask_buffer_dimensions(1, 2);
 		let buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
 
 		let eval_point: Vec<B128> = random_scalars(&mut rng, 1);
@@ -407,11 +407,11 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Generate random main mask buffer (using Mask as a simple MleCheckProver for testing)
-		let (m_n, m_d) = mask_buffer_dimensions(n_vars, main_degree, 0);
+		let (m_n, m_d) = mask_buffer_dimensions(n_vars, main_degree);
 		let main_buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
 
 		// Generate random ZK mask buffer
-		let (zk_m_n, zk_m_d) = mask_buffer_dimensions(n_vars, mask_degree, 0);
+		let (zk_m_n, zk_m_d) = mask_buffer_dimensions(n_vars, mask_degree);
 		let zk_buffer = random_field_buffer::<B128>(&mut rng, zk_m_n + zk_m_d);
 
 		// Generate random evaluation point

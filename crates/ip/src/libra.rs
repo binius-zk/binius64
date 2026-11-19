@@ -17,21 +17,19 @@ use binius_math::multilinear::hypercube::{Hypercube, eq_ind_partial_eval_scalars
 /// - `m_n`: log of number of rows (one per variable, padded to power of two)
 /// - `m_d`: log of row size (degree + 1 coefficients, padded to power of two)
 ///
-/// The protocol imposes `n * d + 1` linear constraints on the coefficients. The `n_extra_dof`
-/// parameter specifies additional degrees of freedom needed (e.g., for FRI openings), which
-/// may increase `m_n` to ensure `2^(m_n + m_d) >= n * d + 1 + n_extra_dof`.
+/// The protocol imposes `n * d + 1` linear constraints on the coefficients, so `m_n` is chosen
+/// such that `2^(m_n + m_d) >= n * d + 1`.
 ///
 /// # Arguments
 ///
 /// * `n_vars` - Number of variables (n).
 /// * `degree` - Degree of each univariate polynomial (d).
-/// * `n_extra_dof` - Number of additional degrees of freedom.
 ///
 /// # Returns
 ///
 /// A tuple `(m_n, m_d)` where the total mask buffer size is `2^(m_n + m_d)`.
-pub fn mask_buffer_dimensions(n_vars: usize, degree: usize, n_extra_dof: usize) -> (usize, usize) {
-	let min_buffer_size = n_vars * degree + 1 + n_extra_dof;
+pub fn mask_buffer_dimensions(n_vars: usize, degree: usize) -> (usize, usize) {
+	let min_buffer_size = n_vars * degree + 1;
 	let m_d = (degree + 1).next_power_of_two().ilog2() as usize;
 	// m_n must be large enough to hold n_vars rows AND satisfy the DOF constraint
 	let m_n_for_vars = n_vars.next_power_of_two().ilog2() as usize;

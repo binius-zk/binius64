@@ -115,7 +115,6 @@ fn test_zk_wrapped_prove_verify() {
 	let inner_cs = ConstraintSystemPadded::new(
 		inner_cs,
 		BlindingInfo {
-			n_dummy_wires: 0,
 			n_dummy_constraints: 0,
 		},
 	);
@@ -140,7 +139,7 @@ fn test_zk_wrapped_prove_verify() {
 	// === Step 4: Build outer padded constraint system ===
 	let log_inv_rate = 1;
 	let n_test_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
-	let blinding_info = BlindingInfo::for_fri_queries(n_test_queries);
+	let blinding_info = BlindingInfo::default();
 	let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
 	let outer_layout = Arc::new(outer_layout.with_blinding(*outer_cs.blinding_info()));
 

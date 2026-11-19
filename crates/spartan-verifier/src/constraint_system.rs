@@ -41,10 +41,9 @@ impl<F: Field> ConstraintSystemPadded<F> {
 			mul_constraints: &mut Vec<MulConstraint<WitnessIndex>>,
 			make_index: fn(u32) -> WitnessIndex,
 			n_circuit_wires: usize,
-			n_dummy_wires: usize,
 			n_dummy_constraints: usize,
 		) -> usize {
-			let dummy_base = n_circuit_wires + n_dummy_wires;
+			let dummy_base = n_circuit_wires;
 			for i in 0..n_dummy_constraints {
 				let a = make_index((dummy_base + 3 * i) as u32);
 				let b = make_index((dummy_base + 3 * i + 1) as u32);
@@ -56,7 +55,7 @@ impl<F: Field> ConstraintSystemPadded<F> {
 				});
 			}
 
-			n_circuit_wires + n_dummy_wires + 3 * n_dummy_constraints
+			n_circuit_wires + 3 * n_dummy_constraints
 		}
 
 		// Both committed segments have evaluations revealed in the clear, so both need dummy
@@ -65,14 +64,12 @@ impl<F: Field> ConstraintSystemPadded<F> {
 			&mut mul_constraints,
 			WitnessIndex::precommit,
 			cs.n_precommit() as usize,
-			blinding_info.n_dummy_wires,
 			blinding_info.n_dummy_constraints,
 		);
 		let private_len = add_blinding_constraints(
 			&mut mul_constraints,
 			WitnessIndex::private,
 			cs.n_private() as usize,
-			blinding_info.n_dummy_wires,
 			blinding_info.n_dummy_constraints,
 		);
 
@@ -91,8 +88,7 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		// Calculate mask buffer dimensions
 		let log_mul_constraints = checked_log_2(mul_constraints.len());
 		let mask_degree = 2; // quadratic composition
-		let mask_dims =
-			mask_buffer_dimensions(log_mul_constraints, mask_degree, blinding_info.n_dummy_wires);
+		let mask_dims = mask_buffer_dimensions(log_mul_constraints, mask_degree);
 
 		Self {
 			inner: cs,
@@ -199,10 +195,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn every_committed_segment_reserves_one_wire_beyond_the_fri_queries() {
-		// Each FRI query opens one Merkle leaf, revealing one codeword symbol of the segment.
-		const N_TEST_QUERIES: usize = 32;
-
+	fn every_committed_segment_reserves_room_for_its_dummy_constraints() {
 		// Any circuit will do: blinding is padding appended after whatever real wires exist.
 		let mut builder = ConstraintBuilder::<B128>::new();
 		let x = builder.alloc_inout();
@@ -213,19 +206,12 @@ mod tests {
 		let n_precommit = cs.n_precommit() as usize;
 		let n_private = cs.n_private() as usize;
 
-		let info = BlindingInfo::for_fri_queries(N_TEST_QUERIES);
+		let info = BlindingInfo::default();
 		let padded = ConstraintSystemPadded::new(cs, info);
 
-		// Invariant: the dummy wires must outnumber the queries.
-		// Spending exactly one per query would leave the unopened leaves with no randomness of
-		// their own, and the leaves carry no salt.
-		assert!(info.n_dummy_wires > N_TEST_QUERIES);
-
 		// Each segment is rounded up to a power of two, so its reserved size must still cover
-		// every real wire plus the whole blinding allowance, which is the same for both:
-		//
-		//     n_dummy_wires + 3 * n_dummy_constraints
-		let blinding = info.n_dummy_wires + 3 * info.n_dummy_constraints;
+		// every real wire plus the 3 wires of each dummy constraint.
+		let blinding = 3 * info.n_dummy_constraints;
 		assert!(padded.precommit_size() >= n_precommit + blinding);
 		assert!(padded.private_size() >= n_private + blinding);
 	}
@@ -237,11 +223,7 @@ mod tests {
 		// That relation only ever sums over wires that appear in a multiplication constraint, so
 		// a wire in no constraint is weighted by zero and can mask nothing.
 		//
-		// This pins where each segment's blinding lands:
-		//
-		//     dummy wires        in no constraint -> mask the codeword symbols FRI opens
-		//     dummy constraints  in a constraint -> mask the evaluations sent in the clear
-		const N_TEST_QUERIES: usize = 8;
+		// So the dummy constraints' wires must all appear in one to mask the evaluations.
 
 		let mut builder = ConstraintBuilder::<B128>::new();
 		let x = builder.alloc_inout();
@@ -250,7 +232,7 @@ mod tests {
 		let (cs, _layout) = compile(builder);
 
 		let n_circuit = [cs.n_precommit() as usize, cs.n_private() as usize];
-		let info = BlindingInfo::for_fri_queries(N_TEST_QUERIES);
+		let info = BlindingInfo::default();
 		let padded = ConstraintSystemPadded::new(cs, info);
 
 		// Collect, per segment, the wire indices the constraints actually touch.
@@ -269,18 +251,9 @@ mod tests {
 		}
 
 		for (segment, n_circuit) in in_support.iter().zip(n_circuit) {
-			// The dummy wires sit immediately after the circuit's own wires, and none of them may
-			// appear in a constraint — that is what makes them useless against an evaluation.
-			for offset in 0..info.n_dummy_wires {
-				assert!(
-					!segment.contains(&(n_circuit + offset)),
-					"a dummy wire reached the wiring relation"
-				);
-			}
-
 			// The dummy constraints follow, and all three of their wires must appear, or the
 			// evaluations revealed for this segment have nothing masking them.
-			let dummy_constraint_base = n_circuit + info.n_dummy_wires;
+			let dummy_constraint_base = n_circuit;
 			for offset in 0..3 * info.n_dummy_constraints {
 				assert!(
 					segment.contains(&(dummy_constraint_base + offset)),
