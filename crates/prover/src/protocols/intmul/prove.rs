@@ -3,7 +3,7 @@
 
 use std::{iter, marker::PhantomData};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Divisible, PackedField};
 use binius_iop_prover::{

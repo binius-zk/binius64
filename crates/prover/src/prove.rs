@@ -3,7 +3,7 @@
 
 use std::{marker::PhantomData, mem::MaybeUninit};
 
-use binius_compute::{Allocator, BufferPool, VecLike};
+use binius_alloc::{Allocator, BufferPool, VecLike};
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment, Operand, ValueVec},
 	word::Word,
@@ -569,7 +569,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::constraint_system::{AndConstraint, ConstraintSystem};
 	use binius_field::{Field, PackedGhash2x128b};
 	use binius_frontend::CircuitBuilder;

@@ -6,7 +6,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::{
@@ -124,7 +124,7 @@ where
 mod tests {
 	use std::{array, iter::repeat_with};
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Field, Rijndael8b as B8, arch::OptimalPackedB128};
 	use binius_ip::channel::Error as ChannelError;
 	use binius_math::{

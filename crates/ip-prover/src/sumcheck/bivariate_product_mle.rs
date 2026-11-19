@@ -1,6 +1,6 @@
 // Copyright 2023-2025 Irreducible Inc.
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::FieldVec;
 
@@ -121,7 +121,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use itertools::{self, Itertools};
 	use rand::prelude::*;
 

@@ -59,7 +59,7 @@ pub trait CollectIntoAllocVec: IndexedParallelIterator {
 	/// Allocates a buffer holding one element per item and fills it with the iterator's items.
 	///
 	/// ```
-	/// use binius_compute::{CollectIntoAllocVec, GlobalAllocator};
+	/// use binius_alloc::{CollectIntoAllocVec, GlobalAllocator};
 	/// use rayon::prelude::*;
 	///
 	/// let squares = (0..8usize).into_par_iter().map(|i| i * i);

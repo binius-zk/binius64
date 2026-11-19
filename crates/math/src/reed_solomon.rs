@@ -7,7 +7,7 @@
 
 use std::marker::PhantomData;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{BinaryField, PackedField};
 use getset::CopyGetters;
 
@@ -151,7 +151,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{BinaryField, PackedField, PackedGhash1x128b, PackedGhash4x128b};
 	use rand::{SeedableRng, rngs::StdRng};
 

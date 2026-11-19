@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use std::iter::repeat_with;
 
-use binius_compute::{BufferPool, GlobalAllocator};
+use binius_alloc::{BufferPool, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{Field, Random};
 use binius_ip_prover::sumcheck::{common::MleCheckProver, quadratic_mlecheck_prover};

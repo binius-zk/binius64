@@ -2,7 +2,7 @@
 
 //! The materialized layers of a fractional-addition circuit, and the driver that proves them.
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::fracaddcheck::FracAddEvalClaim;
 use binius_math::{FieldBuffer, FieldVec, line::extrapolate_line};
@@ -267,7 +267,7 @@ where
 mod tests {
 	use std::iter;
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_ip::fracaddcheck;
 	use binius_math::{
 		multilinear::evaluate::evaluate,

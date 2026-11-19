@@ -33,7 +33,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::{fracaddcheck::FracAddEvalClaim, sumcheck::RoundCoeffs};
 use binius_math::{batch_invert::BatchInversion, multilinear::eq::eq_one_var};

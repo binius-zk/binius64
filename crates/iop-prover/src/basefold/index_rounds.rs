@@ -24,7 +24,7 @@
 //! has the larger `w`, so the merge is again a node of the same form with `n` and `w` of the larger
 //! one, and it is written in place over the larger node's buffers.
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_ip_prover::sumcheck::round_evals::RoundEvals;

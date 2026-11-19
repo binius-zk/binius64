@@ -5,7 +5,7 @@
 //! the hypercube), and a [`SharedMleCheckProver`] driving one [`QuadraticMleEvaluator`] (the
 //! evaluation claim on the product's multilinear extension at a random point).
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip_prover::sumcheck::{
 	self,

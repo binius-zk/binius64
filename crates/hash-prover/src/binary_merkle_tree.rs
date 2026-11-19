@@ -3,7 +3,7 @@
 
 use std::{fmt, mem::MaybeUninit, slice};
 
-use binius_compute::{Allocator, GlobalAllocator, VecLike};
+use binius_alloc::{Allocator, GlobalAllocator, VecLike};
 use binius_field::Field;
 use binius_hash::CompressionFunction;
 use binius_utils::{

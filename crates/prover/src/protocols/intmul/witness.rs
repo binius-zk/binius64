@@ -3,7 +3,7 @@
 
 use std::{iter, mem::MaybeUninit, ops::Deref};
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::prodcheck::ProdcheckProver;
@@ -469,7 +469,7 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_math::test_utils::Packed128b;
 
 	use super::*;

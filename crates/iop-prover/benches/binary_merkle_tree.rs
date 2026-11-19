@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{Ghash128b as B128, PackedField, arch::OptimalPackedB128};
 use binius_hash::{blake3::Blake3HashSuite, sha256::Sha256HashSuite};
 use binius_hash_prover::ParallelHashSuite;

@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
@@ -665,7 +665,7 @@ mod tests {
 	use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use rand::prelude::*;
 
 	use super::*;

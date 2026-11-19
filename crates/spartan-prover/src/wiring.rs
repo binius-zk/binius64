@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
+use binius_alloc::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, FieldSlice, FieldVec};
 use binius_spartan_frontend::constraint_system::{
@@ -241,7 +241,7 @@ pub fn build_mulcheck_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Field, Ghash128b as B128, Random};
 	use binius_math::{
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},

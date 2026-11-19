@@ -8,7 +8,7 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_core::constraint_system::{ConstraintSystem, InoutSegment, ValueVec};
 use binius_field::{Ghash128b as B128, PackedField};
 use binius_hash_prover::ParallelHashSuite;

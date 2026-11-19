@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use binius_compute::GlobalAllocator;
+use binius_alloc::GlobalAllocator;
 use binius_core::{
 	ValueTable, Word, WordSource,
 	error::{ChipName, OperandFault},

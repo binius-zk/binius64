@@ -5,7 +5,7 @@
 
 use std::{array, hint::assert_unchecked, iter};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_math::FieldBuffer;
@@ -209,7 +209,7 @@ impl<F: BinaryField> BitAxisFolder<F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Field, PackedGhash2x128b, arch::OptimalPackedB128};
 	use binius_math::test_utils::random_scalars;
 	use binius_utils::checked_arithmetics::log2_ceil_usize;

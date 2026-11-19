@@ -26,7 +26,7 @@
 //!     prove_blake3_compression -- --ignored --nocapture
 //! ```
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_frontend::CircuitStat;
 use binius_hash::StdHashSuite;
 use binius_m4_prover::{

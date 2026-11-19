@@ -5,7 +5,7 @@
 
 use std::{iter, marker::PhantomData};
 
-use binius_compute::{Allocator, BufferPool};
+use binius_alloc::{Allocator, BufferPool};
 use binius_core::{
 	Word,
 	constraint_system::{InoutSegment, m4::WitnessM4},

@@ -3,7 +3,7 @@
 
 use std::{iter, ops::Deref};
 
-use binius_compute::{Allocator, CollectIntoAllocVec, VecLike};
+use binius_alloc::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::fri::FRIParams;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
@@ -189,7 +189,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::PackedGhash1x128b;
 	use binius_iop::fri::FRIParams;
 	use binius_math::{

@@ -5,7 +5,7 @@
 //! It is shared by the shift-reduction and constraint-reduction tests.
 //! Both need a circuit whose AND-constraint operands carry real shifts.
 
-use binius_compute::GlobalAllocator;
+use binius_alloc::GlobalAllocator;
 use binius_core::{ValueTable, word::Word};
 use binius_frontend::{Circuit, CircuitBuilder, CircuitM4, Wire, hints::Hint};
 

@@ -4,7 +4,7 @@
 //!
 //! The build is one pass over a table's whole cube, so it scales with the table and not the lookup.
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{FieldOps, arch::OptimalPackedB128};
 use binius_ip_prover::logup_star::witness::table_denominator;
 use binius_math::test_utils::random_scalars;

@@ -1,6 +1,6 @@
 // Copyright 2025-2026 The Binius Developers
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{FieldOps, arch::OptimalPackedB128};
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::prodcheck::ProdcheckProver;

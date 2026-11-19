@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::GlobalAllocator;
+use binius_alloc::GlobalAllocator;
 use binius_core::word::Word;
 use binius_field::{Ghash128b, PackedGhash2x128b, Random};
 use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};

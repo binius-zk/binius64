@@ -5,7 +5,7 @@
 pub mod grinding;
 pub mod naive;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::PackedField;
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;

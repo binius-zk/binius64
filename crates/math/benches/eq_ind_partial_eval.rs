@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::GlobalAllocator;
+use binius_alloc::GlobalAllocator;
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_math::{
 	multilinear::{

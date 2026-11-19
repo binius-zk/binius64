@@ -4,7 +4,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{BinaryField, Divisible, PackedField};
 use binius_ip::{
 	fracaddcheck::FracAddEvalClaim,
@@ -461,7 +461,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{
 		BinaryField1b, ExtensionField, Field,
 		arch::{OptimalB128, OptimalPackedB128},

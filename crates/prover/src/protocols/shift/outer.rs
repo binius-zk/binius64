@@ -7,7 +7,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::{ShiftVariant, word::Word};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
@@ -189,7 +189,7 @@ impl<F: BinaryField, A: Allocator> OuterShiftStage<F, A> {
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_core::constraint_system::Shift;
 	use binius_field::{Ghash128b, Random};
 	use binius_math::test_utils::random_scalars;

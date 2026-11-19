@@ -1,6 +1,6 @@
 // Copyright 2025-2026 The Binius Developers
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::FieldVec;
 
@@ -112,7 +112,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use itertools::{Itertools, izip};
 	use rand::prelude::*;
 

@@ -21,7 +21,7 @@
 
 use std::iter;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
@@ -812,7 +812,7 @@ fn map_reduce_with_fold_helper<P: PackedField, T: Send>(
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Field, FieldOps, PackedField};
 	use binius_math::test_utils::{Packed128b, random_field_buffer, random_scalars};
 	use itertools::Itertools;

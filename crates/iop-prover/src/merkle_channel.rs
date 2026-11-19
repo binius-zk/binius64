@@ -13,7 +13,7 @@
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
-use binius_compute::{Allocator, GlobalAllocator};
+use binius_alloc::{Allocator, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{Field, PackedField};
 use binius_hash_prover::{BinaryMerkleTree, ParallelHashSuite};

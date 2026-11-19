@@ -21,7 +21,7 @@ use std::{
 	},
 };
 
-use binius_compute::{BufferPool, GlobalAllocator};
+use binius_alloc::{BufferPool, GlobalAllocator};
 use binius_field::{Ghash128b as B128, PackedGhash1x128b};
 use binius_hash::StdHashSuite;
 use binius_iop::{channel::OracleSpec, fri::FRIParams};

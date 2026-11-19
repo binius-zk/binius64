@@ -3,7 +3,7 @@
 
 use std::{marker::PhantomData, ops::Deref};
 
-use binius_compute::{Allocator, BufferPool, VecLike};
+use binius_alloc::{Allocator, BufferPool, VecLike};
 use binius_core::{
 	constraint_system::{ConstraintSystem, InoutSegment, ValueTable},
 	word::Word,
@@ -374,7 +374,7 @@ mod tests {
 	use std::array;
 
 	use assert_matches::assert_matches;
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::PackedGhash1x128b;
 	use binius_frontend::CircuitBuilder;
 	use binius_hash::StdHashSuite;

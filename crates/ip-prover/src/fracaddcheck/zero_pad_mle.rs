@@ -321,7 +321,7 @@ impl<F: Field, Inner: MleCheckProver<F>> MleCheckProver<F> for ZeroPadMleCheckPr
 mod tests {
 	use std::iter;
 
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::{Random, arithmetic_traits::InvertOrZero, field::FieldOps};
 	use binius_math::{
 		FieldBuffer,

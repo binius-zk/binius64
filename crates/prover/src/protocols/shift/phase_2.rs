@@ -3,7 +3,7 @@
 
 use std::{cmp::max, iter};
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};

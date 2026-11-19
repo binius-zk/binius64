@@ -10,7 +10,7 @@
 //!
 //! [DP23]: <https://eprint.iacr.org/2023/1784>
 
-use binius_compute::{Allocator, BufferData, VecLike};
+use binius_alloc::{Allocator, BufferData, VecLike};
 use binius_field::{PackedField, field::FieldOps};
 
 use super::hypercube::{self, Hypercube, OneCube};
@@ -158,7 +158,7 @@ pub fn scaled_eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F], scale: F) ->
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::Field;
 	use rand::prelude::*;
 

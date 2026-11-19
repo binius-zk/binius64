@@ -2,7 +2,7 @@
 
 //! Bit-transposing a word list into one 64-word block per column.
 
-use binius_compute::{Allocator, VecLike};
+use binius_alloc::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{PackedBinaryField64x1b, transpose_square_blocks_array};
 use binius_math::bit_reverse::reverse_bits;
@@ -57,7 +57,7 @@ pub fn transpose_bits<A: Allocator>(alloc: &A, words: &[Word], n_vars: usize) ->
 
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use proptest::prelude::*;
 	use rand::prelude::*;
 

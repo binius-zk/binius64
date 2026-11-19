@@ -37,7 +37,7 @@ use std::{
 	ops::Deref,
 };
 
-use binius_compute::{Allocator, BufferPool, VecLike};
+use binius_alloc::{Allocator, BufferPool, VecLike};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash_prover::ParallelHashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};

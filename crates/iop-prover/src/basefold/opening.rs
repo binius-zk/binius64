@@ -5,7 +5,7 @@
 
 use std::ops::Deref;
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::sumcheck::{bivariate_product_prover, common::SumcheckProver};
 use binius_math::{bit_reverse::bit_reverse_packed, ntt::AdditiveNTT};

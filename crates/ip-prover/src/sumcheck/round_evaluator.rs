@@ -24,7 +24,7 @@
 use std::iter;
 
 use auto_impl::auto_impl;
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldSlice, multilinear::eq::eq_ind_partial_eval};
@@ -583,7 +583,7 @@ where
 // claims over shared columns).
 #[cfg(test)]
 mod tests {
-	use binius_compute::GlobalAllocator;
+	use binius_alloc::GlobalAllocator;
 	use binius_field::FieldOps;
 	use binius_ip::sumcheck::{batch_verify, batch_verify_mle};
 	use binius_math::{

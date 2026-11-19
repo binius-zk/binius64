@@ -17,7 +17,7 @@ binius-hash = { path = "../hash" }
 binius-hash-prover = { path = "../hash-prover" }
 binius-iop-prover = { path = "../iop-prover" }
 binius-ip = { path = "../ip" }
-binius-compute = { path = "../compute" }
+binius-alloc = { path = "../alloc" }
 binius-ip-prover = { path = "../ip-prover" }
 binius-m4-verifier = { path = "../m4-verifier" }
 binius-math = { path = "../math" }

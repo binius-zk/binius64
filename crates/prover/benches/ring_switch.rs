@@ -2,7 +2,7 @@
 
 use std::mem::size_of;
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_field::{ExtensionField, arch::OptimalPackedB128};
 use binius_math::{
 	multilinear::eq::eq_ind_partial_eval,

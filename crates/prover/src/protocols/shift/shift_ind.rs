@@ -4,7 +4,7 @@
 //! The sumcheck rounds binding the bit index the shift indicators read, and the shift indicator
 //! partial evaluations they run over.
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_core::{ShiftVariant, word::Word};
 use binius_field::{BinaryField, FieldOps, PackedField};
 use binius_ip_prover::{
@@ -475,7 +475,7 @@ mod tests {
 	/// scaled by the constant it carries.
 	#[test]
 	fn claimed_sum_is_the_weighted_indicator_sum() {
-		use binius_compute::GlobalAllocator;
+		use binius_alloc::GlobalAllocator;
 		use binius_field::{PackedGhash2x128b, Random, Rijndael8b};
 
 		type P = PackedGhash2x128b;

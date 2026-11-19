@@ -11,7 +11,7 @@ use std::{
 	slice,
 };
 
-use binius_compute::Allocator;
+use binius_alloc::Allocator;
 use binius_field::PackedField;
 
 use super::FieldBuffer;

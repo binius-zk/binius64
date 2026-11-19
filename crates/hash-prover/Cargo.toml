@@ -10,7 +10,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-binius-compute = { path = "../compute" }
+binius-alloc = { path = "../alloc" }
 binius-field = { path = "../field" }
 binius-hash = { path = "../hash" }
 binius-utils = { path = "../utils" }

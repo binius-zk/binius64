@@ -18,7 +18,7 @@
 
 use std::env;
 
-use binius_compute::BufferPool;
+use binius_alloc::BufferPool;
 use binius_frontend::BatchWitnessFiller;
 use binius_hash::StdHashSuite;
 use binius_m4_prover::{
