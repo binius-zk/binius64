@@ -7,16 +7,13 @@ use binius_field::{BinaryField, FieldOps, util::powers};
 use binius_ip::channel::{IPVerifierChannel, WordIPVerifierChannel};
 use binius_math::{
 	line::extrapolate_line,
-	multilinear::eq::{eq_ind, eq_ind_partial_eval_scalars, eq_ind_zero},
+	multilinear::eq::{eq_ind, eq_ind_partial_eval_scalars},
 	univariate::evaluate_univariate,
 };
 use itertools::izip;
 
 use crate::{
-	basefold::{
-		self,
-		layout::{RoundLayout, zk_commit_point},
-	},
+	basefold::{self, layout::RoundLayout},
 	channel::{Error, IOPVerifierChannel, OracleSchedule, OracleSpec, TransparentEvalFn},
 	fri::FRIParams,
 	merkle_channel::MerkleIPVerifierChannel,
@@ -194,15 +191,15 @@ where
 ///
 /// With no masked round there is no mask claim and no γ, and the target is `s`.
 ///
-/// `T_r↑` is `T_r` placed at the origin of the opening's variables: its value at `ρ` is that of
-/// `T_r` at the last `ℓ_r` coordinates, times `eq(0, ρ_{<n-ℓ_r})`, where `ρ` is the challenges in
-/// binding order. The sum of `M_r↑ · T_r↑` over
-/// `X` is then `<M_r, T_r>` however `M_r↑` is lifted and repeated by the FRI.
+/// `T_r↑` is `T_r` placed at the all-1 corner of the opening's variables: its value at `ρ` is that
+/// of `T_r` at the last `ℓ_r` coordinates, times `eq(1, ρ_{<n-ℓ_r})`, where `ρ` is the challenges
+/// in binding order. The sum of `M_r↑ · T_r↑` over `X` is then `<M_r, T_r>` however `M_r↑` is
+/// lifted and repeated by the FRI.
 ///
-/// A ZK round is committed reversed by [`zk_commit_index`](basefold::layout::zk_commit_index),
-/// which puts its ZK pad on the lowest coefficients of its codeword. `M_r` and `T_r` above are then
-/// the reversed tables, and the last `ℓ_r` coordinates of `ρ` map to the point over the round's
-/// own coordinates through [`zk_commit_point`]. The inner product, and so the claim, is unchanged.
+/// Every round oracle is committed reversed (see [`basefold::layout`]), which puts the ZK pad on
+/// the lowest coefficients of a ZK round's codeword, and the FRI folds with the complement `1 - ρ`
+/// of every `X` challenge (the oracle-index challenges and `γ` are used as sampled). The sumcheck
+/// and the transparent evaluations here are therefore in natural order, at `ρ` itself.
 fn verify_batch_zk_basefold<F, Channel>(
 	channel: &mut Channel,
 	layouts: &[RoundLayout],
@@ -244,19 +241,10 @@ where
 	// On the round oracle, an operand is the oracle's own transparent `t` over its low variables,
 	// and zero outside its block `b` over the high ones.
 	let multiplicand_eval = move |rho: &[Channel::Elem], zeta: &[Channel::Elem]| {
-		// Each round's point over `M_r`, the last `ℓ_r` challenges in binding order. A ZK round is
-		// committed reversed, so the point over its committed table maps to `M_r` through
-		// `zk_commit_point`.
+		// Each round's point over `M_r`, the last `ℓ_r` challenges in binding order.
 		let round_points = layouts
 			.iter()
-			.map(|layout| {
-				let point = &rho[n_vars - layout.log_len..];
-				if layout.is_zk {
-					zk_commit_point(point)
-				} else {
-					point.to_vec()
-				}
-			})
+			.map(|layout| &rho[n_vars - layout.log_len..])
 			.collect::<Vec<_>>();
 
 		let mut round_evals = vec![Channel::Elem::zero(); layouts.len()];
@@ -283,7 +271,13 @@ where
 
 		let eq_tensor = eq_ind_partial_eval_scalars(zeta);
 		izip!(round_evals, layouts, eq_tensor)
-			.map(|(eval, layout, eq_r)| eq_r * eval * eq_ind_zero(&rho[..n_vars - layout.log_len]))
+			.map(|(eval, layout, eq_r)| {
+				// `eq(1, ρ_{<n-ℓ_r})`, the product of the low challenges.
+				let lift = rho[..n_vars - layout.log_len]
+					.iter()
+					.product::<Channel::Elem>();
+				eq_r * eval * lift
+			})
 			.sum::<Channel::Elem>()
 	};
 

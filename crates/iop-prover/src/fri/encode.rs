@@ -1,16 +1,30 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, ops::Deref};
+use std::ops::Deref;
 
 use binius_alloc::{Allocator, CollectIntoAllocVec, VecLike};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::fri::FRIParams;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
-use binius_utils::{rand::par_rand, rayon::prelude::*};
+use binius_utils::{
+	rand::par_rand,
+	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
+};
 use rand::{CryptoRng, rngs::StdRng};
 
-/// Reed-Solomon encodes one input oracle's interleaved message.
+/// Reverses the order of the lanes of a packed element.
+fn reverse_lanes<P: PackedField>(word: P) -> P {
+	P::from_fn(|lane| word.get(P::WIDTH - 1 - lane))
+}
+
+/// Reed-Solomon encodes one input oracle's interleaved message, in reversed order.
+///
+/// The committed message is `rev(message)` over all `message.log_len()` bits, `rev(m)[i] =
+/// m[2^log_len - 1 - i]`, batch bits included. The reversal is done in the copy this encode makes
+/// anyway, so `message` itself is neither modified nor required in reversed order. The FRI that
+/// opens the codeword folds with the complement `1 - ρ` of each challenge that binds a message
+/// variable, which opens the natural-order `message` at `ρ`.
 ///
 /// `params` are the (possibly batched) FRI parameters and `oracle_index` selects which oracle of
 /// [`FRIParams::input_oracles`] is encoded. The oracle is Reed–Solomon encoded at its own
@@ -26,7 +40,7 @@ use rand::{CryptoRng, rngs::StdRng};
 /// * `params` - the (possibly batched) FRI protocol parameters.
 /// * `oracle_index` - the index into [`FRIParams::input_oracles`] of the oracle being encoded.
 /// * `ntt` - the additive NTT for Reed-Solomon encoding.
-/// * `message` - the interleaved message to encode.
+/// * `message` - the interleaved message to encode, in natural order.
 /// * `alloc` - the allocator the codeword is drawn from.
 ///
 /// ## Preconditions
@@ -58,10 +72,59 @@ where
 		"precondition: interleaved message length must match the oracle's spec"
 	);
 
+	// Write the reversed message into a store with room for the codeword, then encode in place.
+	let log_output_len = oracle_log_dim + log_batch_size + params.rs_code().log_inv_rate();
+	let mut words = alloc.alloc::<P>(1 << log_output_len.saturating_sub(P::LOG_WIDTH));
+	let source = message.as_ref();
+	if message.log_len() < P::LOG_WIDTH {
+		// The message is the low `2^log_len` lanes of a single word, whose other lanes are dead.
+		let len = 1 << message.log_len();
+		let word = source[0];
+		words.push(P::from_fn(|lane| word.get(if lane < len { len - 1 - lane } else { lane })));
+	} else {
+		// Word `k` of the result is word `n - 1 - k` of the message, with its lanes reversed.
+		let n_words = source.len();
+		words.spare_capacity_mut()[..n_words]
+			.par_iter_mut()
+			.with_min_task_bytes::<P>()
+			.enumerate()
+			.for_each(|(k, out)| {
+				out.write(reverse_lanes(source[n_words - 1 - k]));
+			});
+		// SAFETY: the loop wrote each of the `n_words` slots exactly once.
+		unsafe { words.set_len(n_words) };
+	}
+
+	encode_in_place(params, oracle_index, ntt, FieldBuffer::new(message.log_len(), words))
+}
+
+/// Reed-Solomon encodes the oracle's committed message, which `message` already holds.
+///
+/// ## Preconditions
+///
+/// * `message.log_len()` must equal the oracle's `log_dim() + log_batch_size`.
+/// * The store of `message` must have room for the codeword.
+fn encode_in_place<F, P, NTT, Data>(
+	params: &FRIParams<F>,
+	oracle_index: usize,
+	ntt: &NTT,
+	message: FieldBuffer<P, Data>,
+) -> FieldBuffer<P, Data>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	Data: VecLike<P>,
+{
+	let oracle_spec = &params.input_oracles()[oracle_index];
+	let log_batch_size = oracle_spec.log_batch_size();
+	let oracle_log_dim = params.rs_code().log_dim() - oracle_spec.log_lift;
+
 	// Encode this oracle at its own dimension (≤ the batched code's reduced dimension), at the
 	// same rate as the batched code. Both codes evaluate over the Gao-Mateer basis, the shorter
 	// one over a prefix of the longer's, which is how the per-oracle codeword stays consistent
-	// with the combined fold's lift. `encode_batch` checks the NTT agrees with that domain.
+	// with the combined fold's lift. `encode_batch_in_place` checks the NTT agrees with that
+	// domain.
 	let rs_code = ReedSolomonCode::new(oracle_log_dim, params.rs_code().log_inv_rate());
 
 	let _scope = tracing::debug_span!(
@@ -73,7 +136,7 @@ where
 	)
 	.entered();
 
-	rs_code.encode_batch(ntt, message.as_view(), log_batch_size, alloc)
+	rs_code.encode_batch_in_place(ntt, message, log_batch_size)
 }
 
 /// Output of [`encode_masked`]: the codeword of the interleaved (message, mask) pairs and the
@@ -96,12 +159,16 @@ fn zip_packed<P: PackedField>([a, b]: [P; 2]) -> [P; 2] {
 	[z_0, z_1]
 }
 
-/// Generates a random mask, interleaves it with the message, and Reed-Solomon encodes.
+/// Generates a random mask, interleaves it with the message, and Reed-Solomon encodes, in reversed
+/// order.
 ///
 /// This is used for zero-knowledge FRI commitments. The function generates a random mask of
-/// equal length to the input message, interleaves `(message_i, mask_i)` as the interleaved message
-/// (with `log_batch_size = 1`), and performs Reed-Solomon encoding. The returned codeword is
-/// committed by sending it over a Merkle channel, like [`encode_interleaved`]'s.
+/// equal length to the input message and interleaves `(rev(message)_i, rev(mask)_i)` as the
+/// interleaved message (with `log_batch_size = 1`, the selector between message and mask being
+/// the low bit and left uncomplemented), where `rev(m)[i] = m[2^log_len - 1 - i]`. It then
+/// performs Reed-Solomon encoding. The reversal happens in the interleaving copy; see
+/// [`encode_interleaved`]. The returned `mask` and the
+/// input `message` stay in natural order.
 ///
 /// ## Arguments
 ///
@@ -109,9 +176,9 @@ fn zip_packed<P: PackedField>([a, b]: [P; 2]) -> [P; 2] {
 /// * `oracle_index` - the index into [`FRIParams::input_oracles`] of the oracle being encoded; its
 ///   spec must have `log_batch_size == 1` and `log_msg_len - 1 == message.log_len()`.
 /// * `ntt` - the additive NTT for Reed-Solomon encoding
-/// * `message` - the raw message to encode (not doubled)
+/// * `message` - the raw message to encode (not doubled), in natural order
 /// * `rng` - cryptographic RNG for mask generation
-/// * `alloc` - the allocator the mask, the codeword, and the interleaving temporary are drawn from
+/// * `alloc` - the allocator the mask and the codeword are drawn from
 pub fn encode_masked<F, P, NTT, A>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
@@ -147,50 +214,52 @@ where
 	let mask = FieldBuffer::new(log_len, mask_values);
 	drop(gen_mask_scope);
 
-	// Interleave `(m_i, ω_i)`, so entry `2i` is the message and `2i + 1` its mask, and the batch
-	// index is the low bit.
-	let combined_values = if log_len < P::LOG_WIDTH {
-		let combined_value = P::from_scalars(
-			iter::zip(message.iter_scalars(), mask.iter_scalars())
-				.flat_map(|(message_i, mask_i)| [message_i, mask_i]),
-		);
-		let mut values = alloc.alloc::<P>(1);
-		values.push(combined_value);
-		values
+	// Interleave `(rev(m)_i, rev(ω)_i)`, so entry `2i` is the reversed message and `2i + 1` the
+	// reversed mask, and the batch index is the low bit. The store has room for the codeword.
+	let log_output_len = log_len + 1 + params.rs_code().log_inv_rate();
+	let mut combined_values = alloc.alloc::<P>(1 << log_output_len.saturating_sub(P::LOG_WIDTH));
+	if log_len < P::LOG_WIDTH {
+		let len = message.len();
+		combined_values.push(P::from_scalars(
+			(0..len).flat_map(|i| [message.get(len - 1 - i), mask.get(len - 1 - i)]),
+		));
 	} else {
 		let _scope = tracing::debug_span!("Interleave message and mask").entered();
-		// TODO: Ideally, encoding should not allocate and copy the memory into a temp buffer.
-		// Until then the temporary at least comes from the pool rather than the global heap.
-		//
-		// Input words `k` of message and mask zip into output words `2k` and `2k + 1`.
+		// Output words `2k` and `2k + 1` zip input words `n - 1 - k` of message and mask, each with
+		// its lanes reversed.
 		let message_words = message.as_ref();
 		let mask_words = mask.as_ref();
-		let len = 2 * packed_len;
-		let mut values = alloc.alloc::<P>(len);
+		let n_words = message_words.len();
+		let len = 2 * n_words;
 		// The allocator may hand back more capacity than requested, so bound the spare slice.
-		values.spare_capacity_mut()[..len]
+		combined_values.spare_capacity_mut()[..len]
 			.par_chunks_exact_mut(2)
+			.with_min_task_bytes::<[P; 2]>()
 			.enumerate()
 			.for_each(|(k, out)| {
-				let [even, odd] = zip_packed([message_words[k], mask_words[k]]);
+				let [even, odd] = zip_packed([
+					reverse_lanes(message_words[n_words - 1 - k]),
+					reverse_lanes(mask_words[n_words - 1 - k]),
+				]);
 				out[0].write(even);
 				out[1].write(odd);
 			});
 		// SAFETY: the chunks cover all `len` slots, and each was written exactly once.
-		unsafe { values.set_len(len) };
-		values
-	};
+		unsafe { combined_values.set_len(len) };
+	}
 	let combined = FieldBuffer::new(log_len + 1, combined_values);
 
-	let codeword = encode_interleaved(params, oracle_index, ntt, combined.as_view(), alloc);
+	let codeword = encode_in_place(params, oracle_index, ntt, combined);
 
 	MaskedCodeword { codeword, mask }
 }
 
 #[cfg(test)]
 mod tests {
+	use std::iter;
+
 	use binius_alloc::GlobalAllocator;
-	use binius_field::PackedGhash1x128b;
+	use binius_field::{Ghash128b, PackedGhash1x128b, PackedGhash2x128b, PackedGhash4x128b};
 	use binius_iop::fri::FRIParams;
 	use binius_math::{
 		ntt::{NeighborsLastSingleThread, domain_context::GaoMateerOnTheFly},
@@ -199,6 +268,88 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
+
+	/// `rev(m)[i] = m[2^log_len - 1 - i]`, by scalars.
+	fn reversed<P: PackedField>(buffer: &FieldBuffer<P>) -> FieldBuffer<P> {
+		FieldBuffer::from_values(
+			&buffer
+				.iter_scalars()
+				.collect::<Vec<_>>()
+				.into_iter()
+				.rev()
+				.collect::<Vec<_>>(),
+		)
+	}
+
+	/// The reversal splits on whether the message spans whole packed elements, so this runs three
+	/// packed widths over lengths on both sides of each.
+	#[test]
+	fn test_encode_interleaved_commits_the_reversed_message() {
+		fn check<P: PackedField<Scalar = Ghash128b>>(log_dim: usize, log_batch_size: usize) {
+			let mut rng = StdRng::seed_from_u64(log_dim as u64);
+			let log_inv_rate = 1;
+			let params = FRIParams::new(
+				ReedSolomonCode::new(log_dim, log_inv_rate),
+				log_batch_size,
+				vec![],
+				3,
+			);
+			let ntt =
+				NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(log_dim + log_inv_rate));
+
+			let message = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
+			let codeword =
+				encode_interleaved(&params, 0, &ntt, message.as_view(), &GlobalAllocator);
+			let expected = params.rs_code().encode_batch(
+				&ntt,
+				reversed(&message).as_view(),
+				log_batch_size,
+				&GlobalAllocator,
+			);
+			assert_eq!(codeword, expected, "P::LOG_WIDTH={}, log_dim={log_dim}", P::LOG_WIDTH);
+		}
+
+		for log_dim in 0..=6 {
+			check::<PackedGhash1x128b>(log_dim, 0);
+			check::<PackedGhash2x128b>(log_dim, 0);
+			check::<PackedGhash4x128b>(log_dim, 0);
+			check::<PackedGhash4x128b>(log_dim, 2);
+		}
+	}
+
+	#[test]
+	fn test_encode_masked_commits_the_interleaved_reversed_message_and_mask() {
+		fn check<P: PackedField<Scalar = Ghash128b>>(log_dim: usize) {
+			let mut rng = StdRng::seed_from_u64(log_dim as u64);
+			let log_inv_rate = 1;
+			let params = FRIParams::new(ReedSolomonCode::new(log_dim, log_inv_rate), 1, vec![], 3);
+			let ntt =
+				NeighborsLastSingleThread::new(GaoMateerOnTheFly::generate(log_dim + log_inv_rate));
+
+			let message = random_field_buffer::<P>(&mut rng, log_dim);
+			let MaskedCodeword { codeword, mask } =
+				encode_masked(&params, 0, &ntt, message.as_view(), &mut rng, &GlobalAllocator);
+
+			// Entry `2i` is the reversed message and `2i + 1` the reversed mask.
+			let interleaved =
+				iter::zip(reversed(&message).iter_scalars(), reversed(&mask).iter_scalars())
+					.flat_map(|(message_i, mask_i)| [message_i, mask_i])
+					.collect::<Vec<_>>();
+			let expected = params.rs_code().encode_batch(
+				&ntt,
+				FieldBuffer::<P>::from_values(&interleaved).as_view(),
+				1,
+				&GlobalAllocator,
+			);
+			assert_eq!(codeword, expected, "P::LOG_WIDTH={}, log_dim={log_dim}", P::LOG_WIDTH);
+		}
+
+		for log_dim in 0..=6 {
+			check::<PackedGhash1x128b>(log_dim);
+			check::<PackedGhash2x128b>(log_dim);
+			check::<PackedGhash4x128b>(log_dim);
+		}
+	}
 
 	#[test]
 	fn test_encode_masked() {

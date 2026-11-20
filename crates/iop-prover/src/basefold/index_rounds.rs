@@ -13,16 +13,21 @@
 //! A node holds a message `g` and a transparent `t` of `n` variables each, and stands for
 //!
 //! ```text
-//! G↑(x) = g[x mod 2^w]  if (x mod 2^w) < 2^n, else 0
-//! T↑(x) = t[x]          if x < 2^n,           else 0
+//! G↑(x) = g[(x mod 2^w) - (2^w - 2^n)]  if (x mod 2^w) >= 2^w - 2^n, else 0
+//! T↑(x) = t[x - (2^n_vars - 2^n)]       if x >= 2^n_vars - 2^n,      else 0
 //! ```
 //!
-//! over `x < 2^n_vars`, where `w >= n` is the node's `log_w`: the message sits in the low `2^n`
-//! entries of each `2^w` block, and the block repeats. For a round oracle `w = n + log_lift`.
+//! over `x < 2^n_vars`, where `w >= n` is the node's `log_w`: the message sits in the top `2^n`
+//! entries of each `2^w` block, and the block repeats; the transparent sits in the top `2^n`
+//! entries of the whole space. Round oracles are committed reversed and the FRI folds with
+//! complemented challenges, so the lift sits at the all-1 corner. For a round oracle
+//! `w = n + log_lift`.
 //!
 //! The merge of a pair is `lo + α(lo + hi)` of the two lifted functions. The larger node (by `n`)
 //! has the larger `w`, so the merge is again a node of the same form with `n` and `w` of the larger
 //! one, and it is written in place over the larger node's buffers.
+
+use std::iter;
 
 use binius_alloc::Allocator;
 use binius_field::{Field, PackedField};
@@ -161,14 +166,18 @@ const fn split<'a, P: PackedField, A: Allocator>(
 	}
 }
 
-/// The small node's message lifted to a single block of the repeat, as words.
+/// The small node's buffer as the words it occupies at the end of a block.
 ///
-/// A node narrower than one packed word gets a single word, zero past its length.
+/// A node narrower than one packed word gets a single word, with the buffer in its top lanes and
+/// zero below.
 fn words_of<P: PackedField>(buffer: &FieldBuffer<P, impl std::ops::Deref<Target = [P]>>) -> Vec<P> {
 	if buffer.log_len() >= P::LOG_WIDTH {
 		buffer.as_ref()[..1 << (buffer.log_len() - P::LOG_WIDTH)].to_vec()
 	} else {
-		vec![P::from_scalars(buffer.iter_scalars())]
+		let n_zeros = P::WIDTH - buffer.len();
+		vec![P::from_scalars(
+			iter::repeat_n(P::Scalar::ZERO, n_zeros).chain(buffer.iter_scalars()),
+		)]
 	}
 }
 
@@ -195,19 +204,24 @@ where
 	let (cross_s_t_l, cross_l_t_s) = if shape.log_period >= P::LOG_WIDTH {
 		let g_small = words_of(&small.message);
 		let t_small = words_of(&small.transparent);
-		let n_prefix = g_small.len();
+		let n_suffix = g_small.len();
 		let period = 1usize << (shape.log_period - P::LOG_WIDTH);
 		let t_big = &big.transparent.as_ref()[..1 << (shape.n_big - P::LOG_WIDTH)];
-		let g_big = &big.message.as_ref()[..n_prefix.max(1)];
+		let g_big = &big.message.as_ref()[(1 << (shape.n_big - P::LOG_WIDTH)) - n_suffix..];
 
-		// `Σ_x gS↑(x) tL(x)`: the small message against the prefix of every period block of `tL`.
+		// `Σ_x gS↑(x) tL(x)`: the small message against the suffix of every period block of `tL`.
 		let cross_s_t_l = t_big
 			.par_chunks(period)
 			.map(|block| {
-				iter_sum::<P>(g_small.iter().zip(&block[..n_prefix]).map(|(&a, &b)| a * b))
+				iter_sum::<P>(
+					g_small
+						.iter()
+						.zip(&block[period - n_suffix..])
+						.map(|(&a, &b)| a * b),
+				)
 			})
 			.sum::<F>();
-		// `Σ_x gL(x) tS↑(x)`: the prefix of `gL` against the small transparent.
+		// `Σ_x gL(x) tS↑(x)`: the suffix of `gL` against the small transparent.
 		let cross_l_t_s = iter_sum::<P>(g_big.iter().zip(&t_small).map(|(&a, &b)| a * b));
 		(cross_s_t_l, cross_l_t_s)
 	} else {
@@ -215,13 +229,15 @@ where
 		let mut cross_s_t_l = F::ZERO;
 		let mut cross_l_t_s = F::ZERO;
 		let period_mask = (1usize << shape.log_period) - 1;
+		let message_start = (1usize << shape.log_period) - (1 << shape.n_small);
+		let transparent_start = (1usize << shape.n_big) - (1 << shape.n_small);
 		for x in 0..1usize << shape.n_big {
 			let position = x & period_mask;
-			if position < 1 << shape.n_small {
-				cross_s_t_l += small.message.get(position) * big.transparent.get(x);
+			if position >= message_start {
+				cross_s_t_l += small.message.get(position - message_start) * big.transparent.get(x);
 			}
-			if x < 1 << shape.n_small {
-				cross_l_t_s += big.message.get(x) * small.transparent.get(x);
+			if x >= transparent_start {
+				cross_l_t_s += big.message.get(x) * small.transparent.get(x - transparent_start);
 			}
 		}
 		(cross_s_t_l, cross_l_t_s)
@@ -262,25 +278,26 @@ where
 		let period = 1usize << (shape.log_period - P::LOG_WIDTH);
 		let g_small = words_of(&small.message);
 		let t_small = words_of(&small.transparent);
-		let n_prefix = g_small.len();
+		let n_suffix = g_small.len();
 		let (c_big, c_small) = (P::broadcast(c_big), P::broadcast(c_small));
 
-		// Each period block of the message holds the small message in its low words.
+		// Each period block of the message holds the small message in its high words.
 		big.message
 			.as_mut()
 			.par_chunks_mut(period)
 			.for_each(|block| {
-				let (prefix, rest) = block.split_at_mut(n_prefix);
-				for (word, &small_word) in prefix.iter_mut().zip(&g_small) {
-					*word = c_big * *word + c_small * small_word;
-				}
+				let (rest, suffix) = block.split_at_mut(period - n_suffix);
 				for word in rest {
 					*word *= c_big;
 				}
+				for (word, &small_word) in suffix.iter_mut().zip(&g_small) {
+					*word = c_big * *word + c_small * small_word;
+				}
 			});
-		// The transparent holds it once, in the low words.
-		let (prefix, rest) = big.transparent.as_mut().split_at_mut(n_prefix);
-		for (word, &small_word) in prefix.iter_mut().zip(&t_small) {
+		// The transparent holds it once, in the high words.
+		let n_words = big.transparent.as_ref().len();
+		let (rest, suffix) = big.transparent.as_mut().split_at_mut(n_words - n_suffix);
+		for (word, &small_word) in suffix.iter_mut().zip(&t_small) {
 			*word = c_big * *word + c_small * small_word;
 		}
 		rest.par_iter_mut()
@@ -288,15 +305,17 @@ where
 			.for_each(|word| *word *= c_big);
 	} else {
 		let period_mask = (1usize << shape.log_period) - 1;
+		let message_start = (1usize << shape.log_period) - (1 << shape.n_small);
+		let transparent_start = (1usize << shape.n_big) - (1 << shape.n_small);
 		for x in 0..1usize << shape.n_big {
 			let position = x & period_mask;
-			let small_g = if position < 1 << shape.n_small {
-				small.message.get(position)
+			let small_g = if position >= message_start {
+				small.message.get(position - message_start)
 			} else {
 				F::ZERO
 			};
-			let small_t = if x < 1 << shape.n_small {
-				small.transparent.get(x)
+			let small_t = if x >= transparent_start {
+				small.transparent.get(x - transparent_start)
 			} else {
 				F::ZERO
 			};
@@ -307,4 +326,158 @@ where
 		}
 	}
 	big
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_alloc::GlobalAllocator;
+	use binius_field::{Ghash128b, PackedGhash1x128b, PackedGhash4x128b, Random};
+	use rand::{SeedableRng, rngs::StdRng};
+
+	use super::*;
+
+	const N_VARS: usize = 5;
+
+	type F = Ghash128b;
+
+	/// `G↑` of a message of `n` variables with repeat period `2^w`, over `x < 2^N_VARS`.
+	fn lift_message(g: &[F], w: usize) -> Vec<F> {
+		let start = (1usize << w) - g.len();
+		(0..1usize << N_VARS)
+			.map(|x| {
+				let position = x & ((1 << w) - 1);
+				if position >= start {
+					g[position - start]
+				} else {
+					F::ZERO
+				}
+			})
+			.collect()
+	}
+
+	/// `T↑` of a transparent of `n` variables, over `x < 2^N_VARS`.
+	fn lift_transparent(t: &[F]) -> Vec<F> {
+		let start = (1usize << N_VARS) - t.len();
+		(0..1usize << N_VARS)
+			.map(|x| if x >= start { t[x - start] } else { F::ZERO })
+			.collect()
+	}
+
+	fn dot(a: &[F], b: &[F]) -> F {
+		iter::zip(a, b).map(|(&a, &b)| a * b).sum()
+	}
+
+	/// `lo + α(lo + hi)` entrywise.
+	fn fold(lo: &[F], hi: &[F], alpha: F) -> Vec<F> {
+		iter::zip(lo, hi)
+			.map(|(&lo, &hi)| lo + alpha * (lo + hi))
+			.collect()
+	}
+
+	/// Runs the index rounds on nodes `(n, w)` and checks them against materialized `G(x, Z)` and
+	/// `T(x, Z)` bound over `Z` low bit first.
+	fn check<P: PackedField<Scalar = F>>(specs: &[(usize, usize)], seed: u64) {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let random = |rng: &mut StdRng, n: usize| -> Vec<F> {
+			(0..1usize << n).map(|_| F::random(&mut *rng)).collect()
+		};
+
+		let mut nodes = Vec::new();
+		// Materialized `G_r↑`, `T_r↑` per oracle index, with absent oracles zero.
+		let mut g_ref = Vec::new();
+		let mut t_ref = Vec::new();
+		for &(n, w) in specs {
+			let (g, t) = (random(&mut rng, n), random(&mut rng, n));
+			g_ref.push(lift_message(&g, w));
+			t_ref.push(lift_transparent(&t));
+			nodes.push(Some(IndexNode::<P, GlobalAllocator> {
+				message: FieldBuffer::from_values(&g),
+				transparent: FieldBuffer::from_values(&t),
+				log_w: w,
+			}));
+		}
+		let n_oracles = specs.len().next_power_of_two();
+		nodes.resize_with(n_oracles, || None);
+		g_ref.resize(n_oracles, vec![F::ZERO; 1 << N_VARS]);
+		t_ref.resize(n_oracles, vec![F::ZERO; 1 << N_VARS]);
+
+		let claim = iter::zip(&g_ref, &t_ref).map(|(g, t)| dot(g, t)).sum::<F>();
+
+		// Reference sumcheck over the oracle index, low bit first.
+		let mut expected_rounds = Vec::new();
+		let mut challenges = Vec::new();
+		let mut expected_claim = claim;
+		while g_ref.len() > 1 {
+			let (mut r0, mut r1, mut r_inf) = (F::ZERO, F::ZERO, F::ZERO);
+			for (g, t) in iter::zip(g_ref.chunks(2), t_ref.chunks(2)) {
+				r0 += dot(&g[0], &t[0]);
+				r1 += dot(&g[1], &t[1]);
+				let sum =
+					|a: &[F], b: &[F]| iter::zip(a, b).map(|(&a, &b)| a + b).collect::<Vec<_>>();
+				r_inf += dot(&sum(&g[0], &g[1]), &sum(&t[0], &t[1]));
+			}
+			// R(X) = r0 + (r0 + r1 + r_inf) X + r_inf X^2 in characteristic 2.
+			let coeffs = RoundCoeffs(vec![r0, r0 + r1 + r_inf, r_inf]);
+			let alpha = F::random(&mut rng);
+			expected_claim = coeffs.evaluate(&alpha);
+			g_ref = g_ref
+				.chunks(2)
+				.map(|pair| fold(&pair[0], &pair[1], alpha))
+				.collect();
+			t_ref = t_ref
+				.chunks(2)
+				.map(|pair| fold(&pair[0], &pair[1], alpha))
+				.collect();
+			expected_rounds.push(coeffs);
+			challenges.push(alpha);
+		}
+
+		let mut rounds = Vec::new();
+		let mut challenges_iter = challenges.iter();
+		let (node, final_claim) = bind_oracle_index_variables(nodes, claim, |coeffs| {
+			rounds.push(coeffs.clone());
+			*challenges_iter.next().expect("one challenge per round")
+		});
+
+		assert_eq!(rounds, expected_rounds);
+		assert_eq!(final_claim, expected_claim);
+		let g_node = node.message.iter_scalars().collect::<Vec<_>>();
+		let t_node = node.transparent.iter_scalars().collect::<Vec<_>>();
+		assert_eq!(lift_message(&g_node, node.log_w), g_ref[0]);
+		assert_eq!(lift_transparent(&t_node), t_ref[0]);
+		assert_eq!(dot(&g_ref[0], &t_ref[0]), final_claim);
+	}
+
+	/// The cases keep the nesting the merge relies on: a smaller node either has the larger node's
+	/// period or the larger node's period is its own length.
+	fn check_all<P: PackedField<Scalar = F>>() {
+		let cases: &[&[(usize, usize)]] = &[
+			// n_small == n_big
+			&[(3, 3), (3, 3)],
+			&[(3, 4), (3, 4)],
+			// w_small < n_big, larger node on either side
+			&[(2, 3), (4, 4)],
+			&[(4, 4), (2, 3)],
+			// w_small >= n_big
+			&[(2, 5), (4, 5)],
+			// a node with no variables
+			&[(0, 0), (3, 3)],
+			// a padded trailing oracle
+			&[(4, 4), (3, 4), (1, 3)],
+			&[(1, 1), (3, 3), (4, 4), (2, 3)],
+		];
+		for (seed, specs) in cases.iter().enumerate() {
+			check::<P>(specs, seed as u64);
+		}
+	}
+
+	#[test]
+	fn bind_matches_materialized_reference_1x128b() {
+		check_all::<PackedGhash1x128b>();
+	}
+
+	#[test]
+	fn bind_matches_materialized_reference_4x128b() {
+		check_all::<PackedGhash4x128b>();
+	}
 }

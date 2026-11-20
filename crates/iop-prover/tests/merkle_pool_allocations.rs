@@ -136,8 +136,8 @@ const LOG_DIM: usize = 16;
 
 #[test]
 fn a_pooled_encode_stops_allocating_the_codeword_globally() {
-	// Invariant: with the allocator threaded through, the Reed-Solomon codeword, the mask and the
-	// concatenation temporary all come from the pool, so a repeat encode asks the OS for nothing.
+	// Invariant: with the allocator threaded through, the Reed-Solomon codeword and the mask all
+	// come from the pool, so a repeat encode asks the OS for nothing.
 	//
 	// Fixture state: the same message encoded four times through each allocator.
 	let _measuring = MEASURING
