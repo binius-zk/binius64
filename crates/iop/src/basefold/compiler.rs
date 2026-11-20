@@ -29,6 +29,13 @@ use crate::{
 /// `log_batch_size = 1`); non-ZK ones take a flexible batch size with no mask. Each ZK round also
 /// reserves a ZK pad of one coordinate per test query, which hides the codeword symbols the query
 /// phase opens.
+///
+/// # Invariant
+///
+/// A ZK round oracle is batched only with its mask. Its FRI codeword has `log_batch_size = 1`, and
+/// the code's message length (`rs_code.log_dim() - log_lift`) equals the round layout's
+/// `log_len`, so the oracle is fully encoded with no further lifting or batching. The ZK pad's
+/// hiding argument relies on this. [`Self::new`] asserts it.
 #[derive(Clone)]
 pub struct BaseFoldVerifierCompiler<F>
 where
@@ -49,6 +56,11 @@ where
 	/// parameters; it is not stored. Each round oracle's batch size is derived from its ZK flag: a
 	/// ZK oracle fixes `log_batch_size = 1` (message ‖ equal-length mask), a non-ZK oracle takes a
 	/// flexible batch size. Requires at least one oracle.
+	///
+	/// # Panics
+	///
+	/// Panics if a ZK round oracle is not fully encoded, i.e. its codeword does not have
+	/// `log_batch_size = 1` and a message length equal to the layout's.
 	pub fn new<H>(
 		merkle_scheme: &BinaryMerkleTreeScheme<F, H>,
 		schedule: OracleSchedule,
@@ -71,6 +83,25 @@ where
 		// size.
 		let (fri_params, _) =
 			FRIParams::optimal_for_batch(merkle_scheme, &round_specs, log_inv_rate, n_test_queries);
+
+		// ZK hiding invariant: each ZK round oracle is batched only with its mask and is fully
+		// encoded.
+		let input_oracles = fri_params.input_oracles();
+		assert_eq!(input_oracles.len(), layouts.len());
+		for (layout, codeword) in layouts.iter().zip(input_oracles) {
+			if layout.is_zk {
+				assert_eq!(
+					codeword.log_batch_size(),
+					1,
+					"ZK round oracle must batch only with its mask"
+				);
+				assert_eq!(
+					fri_params.rs_code().log_dim() - codeword.log_lift,
+					layout.log_len,
+					"ZK round oracle must be fully encoded"
+				);
+			}
+		}
 
 		Self {
 			schedule,
